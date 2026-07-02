@@ -1,0 +1,42 @@
+{
+  "name": "vpaste-desktop",
+  "private": true,
+  "version": "1.5.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:app": "powershell -ExecutionPolicy Bypass -File ./scripts/run-dev-app.ps1",
+    "build": "tsc && vite build",
+    "build:installer-shell": "tsc -p installer-shell/tsconfig.json && vite build --config installer-shell/vite.config.ts",
+    "build:macos-release": "bash ./scripts/build-macos-release.sh",
+    "build:windows-release": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-windows-release.ps1",
+    "updater:manifest:macos": "node ./scripts/generate-macos-updater-manifest.mjs",
+    "updater:manifest": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/generate-windows-updater-manifest.ps1",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.11.4",
+    "@emotion/styled": "^11.11.0",
+    "@mui/icons-material": "^5.15.12",
+    "@mui/material": "^5.15.12",
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-cli": "^2.4.1",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-global-shortcut": "^2.3.1",
+    "@tauri-apps/plugin-log": "^2.8.0",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.21.3"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.2",
+    "@types/react": "^18.2.15",
+    "@types/react-dom": "^18.2.7",
+    "@vitejs/plugin-react": "^4.2.1",
+    "typescript": "^5.0.2",
+    "vite": "^5.0.0"
+  }
+}

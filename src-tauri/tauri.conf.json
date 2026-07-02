@@ -1,0 +1,95 @@
+{
+  "build": {
+    "beforeDevCommand": "node ./scripts/start-vite-dev.mjs",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420"
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.icns",
+      "icons/icon.png"
+    ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "installerHooks": "installer-assets/nsis-hooks.nsh",
+        "installMode": "currentUser",
+        "compression": "zlib",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "displayLanguageSelector": false,
+        "startMenuFolder": "vPaste"
+      }
+    },
+    "macOS": {
+      "infoPlist": "Info.plist"
+    }
+  },
+  "productName": "vPaste",
+  "mainBinaryName": "vPaste",
+  "version": "1.5.0",
+  "identifier": "com.loxonl.vpaste",
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhCMkZBOTA5ODEwMURDMkQKUldRdDNBR0JDYWt2aTl5bG5ON2t4cjJZTkJuUFpkWmwwY2ZhUXBCNWpnSjU4TkxXVWdtTGE4bVUK",
+      "endpoints": [
+        "https://downloads.vpaste.app/windows/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "clipboardPreview",
+        "url": "/clipboard/preview",
+        "fullscreen": false,
+        "resizable": false,
+        "visible": false,
+        "focus": false,
+        "skipTaskbar": true,
+        "decorations": false,
+        "hiddenTitle": true,
+        "alwaysOnTop": true,
+        "titleBarStyle": "Overlay",
+        "height": 500,
+        "width": 500
+      }
+    ],
+    "security": {
+      "assetProtocol": {
+        "scope": [
+          "**"
+        ],
+        "enable": true
+      },
+      "csp": {
+        "default-src": "'self' 'unsafe-inline' 'unsafe-eval' customprotocol: asset:",
+        "connect-src": "ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420 https: http:",
+        "frame-src": "https: http: asset:",
+        "font-src": [
+          "https://fonts.gstatic.com"
+        ],
+        "img-src": "'self' asset: http://asset.localhost blob: data: https: http:",
+        "style-src": "'unsafe-inline' 'self' https: http:",
+        "script-src": "'self' 'unsafe-inline' 'unsafe-eval' http://localhost:1420"
+      }
+    }
+  }
+}

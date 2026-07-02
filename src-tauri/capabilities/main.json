@@ -1,0 +1,39 @@
+{
+  "identifier": "desktop-capability",
+  "description": "",
+  "local": true,
+  "windows": [
+    "main",
+    "clipboard",
+    "config",
+    "clipboardPreview"
+  ],
+  "permissions": [
+    "core:path:default",
+    "core:event:default",
+    "core:window:default",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-size",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-position",
+    "core:window:allow-start-dragging",
+    "core:window:allow-is-visible",
+    "core:window:allow-available-monitors",
+    "core:webview:allow-set-webview-focus",
+    "core:app:default",
+    "core:resources:default",
+    "core:menu:default",
+    "core:tray:default",
+    "global-shortcut:allow-is-registered",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-unregister-all",
+    "log:default",
+    "global-shortcut:default",
+    "dialog:default",
+    "dialog:allow-message",
+    "updater:default"
+  ]
+}

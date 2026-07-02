@@ -1,0 +1,47 @@
+name: Clipboard format support
+description: Request better support for a clipboard format or app pair.
+title: "[Clipboard]: "
+labels: ["area: clipboard", "status: needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste real sensitive clipboard contents. Use sanitized or synthetic reproduction data only.
+  - type: input
+    id: source-app
+    attributes:
+      label: Source application
+      description: Where does the clipboard content come from?
+    validations:
+      required: true
+  - type: input
+    id: target-app
+    attributes:
+      label: Target application
+      description: Where do you paste or restore it?
+  - type: dropdown
+    id: format
+    attributes:
+      label: Clipboard format type
+      options:
+        - Text
+        - Link / URL
+        - Image
+        - File
+        - Rich HTML / RTF
+        - Color
+        - Source app / icon metadata
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: preserve
+    attributes:
+      label: What should be preserved?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Sanitized reproduction
+      description: Provide synthetic content or steps only.

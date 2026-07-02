@@ -1,0 +1,36 @@
+name: Build or release issue
+description: Report a source build, CI, packaging, or release workflow issue.
+title: "[Build]: "
+labels: ["type: release", "area: ci", "status: needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste signing keys, tokens, certificates, notarization secrets, or private paths. Redact sensitive values.
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: Which command failed?
+      placeholder: npm run build
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: Windows / macOS / GitHub Actions
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Tool versions
+      description: Node, npm, Rust, Cargo, Tauri CLI, etc.
+  - type: textarea
+    id: error
+    attributes:
+      label: Error output
+      description: Redact private paths, tokens, signing keys, and certificates.
+    validations:
+      required: true

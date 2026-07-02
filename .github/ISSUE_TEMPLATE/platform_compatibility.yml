@@ -1,0 +1,38 @@
+name: Platform compatibility
+description: Report behavior that differs by OS, window manager, or application.
+title: "[Platform]: "
+labels: ["status: needs-triage"]
+body:
+  - type: input
+    id: os-version
+    attributes:
+      label: OS and version
+      placeholder: Windows 11 24H2 / macOS 15.x
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: vPaste version or commit
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment details
+      description: Window manager, display setup, affected apps, or other relevant details.
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Do not include private clipboard contents.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior

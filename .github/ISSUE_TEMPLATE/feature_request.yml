@@ -1,0 +1,49 @@
+name: Feature request
+description: Suggest an improvement or new workflow.
+title: "[Feature]: "
+labels: ["type: feature", "status: needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the user problem first. Do not include private clipboard contents or third-party assets without rights.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow
+      description: What are you trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform relevance
+      options:
+        - Windows
+        - macOS
+        - Cross-platform
+        - Not platform-specific
+  - type: dropdown
+    id: clipboard-format
+    attributes:
+      label: Clipboard formats affected
+      options:
+        - Text
+        - Link / URL
+        - Image
+        - File
+        - Rich HTML / RTF
+        - Color
+        - Source app / icon metadata
+        - Not clipboard-related
+        - Other

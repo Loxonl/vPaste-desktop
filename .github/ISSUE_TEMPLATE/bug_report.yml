@@ -1,0 +1,64 @@
+name: Bug report
+description: Report a reproducible problem in vPaste Desktop.
+title: "[Bug]: "
+labels: ["type: bug", "status: needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Do not paste secrets, passwords, tokens, private messages, or sensitive clipboard contents. Use synthetic examples.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: App version, commit hash, or source build information.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use sanitized or synthetic data only.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: clipboard-format
+    attributes:
+      label: Clipboard content type
+      options:
+        - Text
+        - Link / URL
+        - Image
+        - File
+        - Rich HTML / RTF
+        - Color
+        - Source app / icon metadata
+        - Not clipboard-related
+        - Other
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Optional. Scrub private data before attaching.

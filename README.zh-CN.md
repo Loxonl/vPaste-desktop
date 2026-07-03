@@ -15,6 +15,16 @@ vPaste 是一个本地优先的 Windows / macOS 桌面剪贴板管理器。它�
 - 基于 Tauri 的 Windows / macOS 桌面外壳。
 - 英文和简体中文界面文本。
 
+## 界面截图
+
+![vPaste 主剪贴板面板](docs/assets/readme/main-panel.png)
+
+![标签、收藏与分类筛选](docs/assets/readme/tabs-categories.png)
+
+![图片、链接、文件与富文本预览](docs/assets/readme/preview.png)
+
+![设置窗口](docs/assets/readme/settings.png)
+
 ## 隐私
 
 vPaste 设计为本地运行。剪贴板数据保存在用户设备上。在平台支持的情况下，系统标记的敏感剪贴板内容默认会被忽略。

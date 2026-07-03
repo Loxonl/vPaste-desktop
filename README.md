@@ -15,6 +15,16 @@ This repository is the clean GPL-3.0-only public baseline for the desktop app.
 - Windows and macOS desktop shell via Tauri.
 - English and Simplified Chinese UI strings.
 
+## Screenshots
+
+![vPaste main clipboard panel](docs/assets/readme/main-panel.png)
+
+![Tabs, favorites, and category filters](docs/assets/readme/tabs-categories.png)
+
+![Image, link, file, and rich text preview](docs/assets/readme/preview.png)
+
+![Settings window](docs/assets/readme/settings.png)
+
 ## Privacy
 
 vPaste is designed to run locally. Clipboard data is stored on the user's device. System-marked sensitive clipboard content is ignored by default where supported.

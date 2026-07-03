@@ -11,5 +11,16 @@ Public documentation for vPaste Desktop.
 - [macOS Adaptation Plan](open-source/platform/macos.md)
 - [Clipboard Test Cases](open-source/testing/clipboard-cases.md)
 - [PR Check Rules](open-source/testing/pr-check-rules.md)
+- [README Assets](assets/readme/) - public screenshots used by the README
 
-Release-flow documentation and the public landing page are maintained separately and will be added after review.
+## Release Flow (maintainer-only)
+
+Official packaging, signing, updater, and installer tooling run in the maintainer environment and are not part of this repository.
+
+- [Windows Release Flow](open-source/releases/windows-release-flow.md)
+- [Windows Install / Update / Uninstall Flow](open-source/releases/windows-install-update-flow.md)
+- [macOS Release Flow](open-source/releases/macos-release-flow.md)
+
+## Website
+
+- [Landing Page Draft](website/index.html) - public landing page (build-from-source until signed releases exist)

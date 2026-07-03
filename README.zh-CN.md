@@ -90,3 +90,5 @@ Pop-Location
 ## 许可证
 
 vPaste Desktop 使用 GPL-3.0-only 许可证。见 [LICENSE](LICENSE)。
+
+第三方依赖声明和署名说明见 [docs/open-source/third-party-notices.md](docs/open-source/third-party-notices.md)。

@@ -7,6 +7,7 @@ Public documentation for vPaste Desktop.
 - [Architecture](open-source/architecture.md)
 - [Clipboard Format Matrix](open-source/clipboard-format-matrix.md)
 - [Language Packs](open-source/language-packs.md)
+- [Third-Party Notices and Attribution](open-source/third-party-notices.md)
 - [Windows Platform Notes](open-source/platform/windows.md)
 - [macOS Adaptation Plan](open-source/platform/macos.md)
 - [Clipboard Test Cases](open-source/testing/clipboard-cases.md)

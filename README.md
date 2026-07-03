@@ -90,3 +90,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). By opening a pull request, contributors 
 ## License
 
 vPaste Desktop is licensed under GPL-3.0-only. See [LICENSE](LICENSE).
+
+Third-party dependency notices and attribution notes are tracked in [docs/open-source/third-party-notices.md](docs/open-source/third-party-notices.md).

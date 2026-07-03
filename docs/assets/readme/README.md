@@ -40,5 +40,7 @@ Manual screenshots are still acceptable before the UI stabilizes. Do not commit 
 
 - Prefer PNG for screenshots and SVG for diagrams.
 - Keep each image reasonably small before committing.
+- Use only project-owned screenshots, generated UI states, or other assets the project has the right to publish under the repository's GPL-3.0-only documentation baseline.
 - Avoid screenshots with private clipboard content, personal paths, tokens, or account information.
+- Use sanitized demo data instead of real clipboard history or account-specific content.
 - Use the same app theme, scaling, and sample data when updating screenshots so the README stays visually consistent across Windows and macOS.

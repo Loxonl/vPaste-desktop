@@ -1,0 +1,68 @@
+# Third-Party Notices and Attribution
+
+vPaste Desktop is licensed under GPL-3.0-only. It also uses third-party open-source packages from the JavaScript and Rust ecosystems.
+
+This document records public attribution notes for the clean repository. The lockfiles remain the source of truth for exact package versions:
+
+- `package-lock.json` for npm packages.
+- `src-tauri/Cargo.lock` for Rust crates.
+
+Before publishing binary release artifacts, regenerate dependency inventories from the current lockfiles and keep this document in sync.
+
+## Direct npm Dependencies
+
+The current lockfile resolves these direct npm dependencies:
+
+| Package | Version | License | Scope |
+|---|---:|---|---|
+| `@emotion/react` | 11.14.0 | MIT | runtime |
+| `@emotion/styled` | 11.14.1 | MIT | runtime |
+| `@mui/icons-material` | 5.18.0 | MIT | runtime |
+| `@mui/material` | 5.18.0 | MIT | runtime |
+| `@tauri-apps/api` | 2.11.0 | Apache-2.0 OR MIT | runtime |
+| `@tauri-apps/plugin-cli` | 2.4.1 | MIT OR Apache-2.0 | runtime |
+| `@tauri-apps/plugin-dialog` | 2.7.1 | MIT OR Apache-2.0 | runtime |
+| `@tauri-apps/plugin-global-shortcut` | 2.3.1 | MIT OR Apache-2.0 | runtime |
+| `@tauri-apps/plugin-log` | 2.8.0 | MIT OR Apache-2.0 | runtime |
+| `@tauri-apps/plugin-process` | 2.3.1 | MIT OR Apache-2.0 | runtime |
+| `@tauri-apps/plugin-updater` | 2.10.1 | MIT OR Apache-2.0 | runtime |
+| `react` | 18.3.1 | MIT | runtime |
+| `react-dom` | 18.3.1 | MIT | runtime |
+| `react-router-dom` | 6.30.4 | MIT | runtime |
+| `@tauri-apps/cli` | 2.11.2 | Apache-2.0 OR MIT | development |
+| `@types/react` | 18.3.27 | MIT | development |
+| `@types/react-dom` | 18.3.7 | MIT | development |
+| `@vitejs/plugin-react` | 4.7.0 | MIT | development |
+| `typescript` | 5.9.3 | Apache-2.0 | development |
+| `vite` | 5.4.21 | MIT | development |
+
+## npm Attribution Notes
+
+- `caniuse-lite` is included through the frontend build toolchain and is licensed under CC-BY-4.0. Attribute the Can I Use data project when distributing packaged builds that include generated browser compatibility data.
+- `browserslist` is included through the frontend build toolchain and is licensed under MIT.
+- Remaining npm production transitive dependencies reviewed for this baseline use common permissive licenses such as MIT, Apache-2.0, BSD-3-Clause, and ISC.
+
+## Rust Dependency Notes
+
+The Rust/Tauri side uses direct crates listed in `src-tauri/Cargo.toml`, with resolved versions in `src-tauri/Cargo.lock`. Most direct Rust dependencies are MIT, Apache-2.0, MIT/Apache dual licensed, ISC, or similarly permissive licenses.
+
+Notable attribution or license-selection items from the current locked dependency graph:
+
+| Crate(s) | License | Notice |
+|---|---|---|
+| `cssparser`, `selectors`, `cssparser-macros`, `dtoa-short`, `option-ext` | MPL-2.0 | Keep MPL-2.0 notices and source-file license obligations in release attribution. |
+| `r-efi` | MIT OR Apache-2.0 OR LGPL-2.1-or-later | vPaste selects the MIT/Apache-2.0 licensing path for distribution notices. |
+| ICU crates, including `icu_collections`, `icu_locale_core`, `icu_normalizer`, `icu_properties`, `icu_provider`, and data crates | Unicode-3.0 | Include Unicode license attribution in binary-release notices when these crates are present. |
+| `unicode-ident` | (MIT OR Apache-2.0) AND Unicode-3.0 | Include Unicode license attribution. |
+| `webpki-root-certs` | CDLA-Permissive-2.0 | Include CDLA-Permissive-2.0 attribution. |
+| `clipboard-win` | BSL-1.0 | Windows clipboard dependency; include Boost Software License attribution. |
+| `libfuzzer-sys` | (MIT OR Apache-2.0) AND NCSA | Include NCSA attribution if the crate remains in the locked graph. |
+
+## Release Maintainer Checklist
+
+Before publishing official binary artifacts:
+
+1. Re-run npm and Cargo license inventory from the current lockfiles.
+2. Confirm this document still covers all non-MIT/Apache/ISC/BSD attribution items.
+3. Include the applicable third-party notices with release artifacts or link to this document from the release notes.
+4. Keep Vite/esbuild security remediation as a separate toolchain-upgrade decision until the project intentionally upgrades Vite across a major version.

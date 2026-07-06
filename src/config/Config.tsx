@@ -34,6 +34,7 @@ import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined';
 import GitHubIcon from '@mui/icons-material/GitHub';
 import LaunchOutlinedIcon from '@mui/icons-material/LaunchOutlined';
 import SystemUpdateAltOutlinedIcon from '@mui/icons-material/SystemUpdateAltOutlined';
+import CloseIcon from '@mui/icons-material/Close';
 
 interface Shortcutkey {
     main_window?: string;
@@ -342,6 +343,16 @@ function WindowControls() {
         void currentWindow.hide().catch(e => error(`Failed to hide config window: ${e}`));
     };
 
+    if (!isMacPlatform()) {
+        return (
+            <div className="windows-window-controls" data-tauri-no-drag="true">
+                <button className="windows-window-close" type="button" aria-label="Close" onClick={hideWindow}>
+                    <CloseIcon fontSize="small" />
+                </button>
+            </div>
+        );
+    }
+
     return (
         <div className="window-controls" data-tauri-no-drag="true">
             <button className="window-control close" type="button" aria-label="Close" onClick={hideWindow}>
@@ -367,6 +378,7 @@ export default function Config() {
     const [config, setConfig] = React.useState<ConfigData>(DEFAULT_CONFIG);
     const [storagePaths, setStoragePaths] = React.useState<StoragePaths | null>(null);
     const [blockingOperation, setBlockingOperation] = React.useState<SettingsBlockingOperation | null>(null);
+    const [windowsControlsHoverReady, setWindowsControlsHoverReady] = React.useState(false);
     const blockingOperationRef = React.useRef<SettingsBlockingOperation | null>(null);
 
     React.useEffect(() => {
@@ -405,6 +417,7 @@ export default function Config() {
 
     React.useEffect(() => {
         const applyTarget = (target: unknown) => {
+            setWindowsControlsHoverReady(false);
             if (blockingOperationRef.current) return;
             if (target === "about" || localStorage.getItem("vpaste.config.target") === "about") {
                 localStorage.removeItem("vpaste.config.target");
@@ -447,7 +460,14 @@ export default function Config() {
 
     return (
         <>
-            <div className="config-container">
+            <div
+                className={`config-container ${windowsControlsHoverReady ? "windows-controls-hover-ready" : ""}`}
+                onMouseMoveCapture={() => {
+                    if (!windowsControlsHoverReady) {
+                        setWindowsControlsHoverReady(true);
+                    }
+                }}
+            >
                 <div className="config-drag-region" onMouseDown={startConfigWindowDrag} />
                 <WindowControls />
                 <div className="sidebar">

@@ -106,6 +106,43 @@ body {
     transform: rotate(-45deg);
 }
 
+.windows-window-controls {
+    position: fixed;
+    top: 0;
+    right: 0;
+    z-index: 4;
+    display: flex;
+    -webkit-app-region: no-drag;
+}
+
+.windows-window-close {
+    width: 46px;
+    height: 32px;
+    border: 0;
+    padding: 0;
+    display: inline-grid;
+    place-items: center;
+    color: rgba(31, 36, 43, 0.78);
+    background: transparent;
+    font: inherit;
+    cursor: default;
+    transition: background-color 120ms ease, color 120ms ease;
+}
+
+.config-container.windows-controls-hover-ready .windows-window-close:hover {
+    color: #ffffff;
+    background: #d92f25;
+}
+
+.config-container.windows-controls-hover-ready .windows-window-close:active {
+    background: #b8261f;
+}
+
+.windows-window-close:focus-visible {
+    outline: 2px solid rgba(30, 146, 238, 0.55);
+    outline-offset: -2px;
+}
+
 .settings-blocking-overlay {
     position: absolute;
     inset: 0;

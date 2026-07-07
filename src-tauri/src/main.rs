@@ -4682,7 +4682,10 @@ fn cached_or_load_png_bytes(path: &str, dib_cache_path: &Path) -> Result<Option<
 
 #[cfg(target_os = "windows")]
 fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
-    use clipboard_win::{formats::CF_DIB, Clipboard};
+    use clipboard_win::{
+        formats::{CF_DIB, CF_DIBV5},
+        Clipboard,
+    };
 
     let start = Instant::now();
     let cache_path = image_dib_cache_path(path);
@@ -4742,14 +4745,39 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
             png_bytes = cached_or_load_png_bytes(path, cache_path)?;
         }
     }
+    let dibv5 = clipboard::windows::image_convert::convert_bitmap_to_dibv5(&dib)
+        .map_err(|err| {
+            info!("Could not build CF_DIBV5 clipboard payload: {}", err);
+            err
+        })
+        .ok();
 
     let clipboard_start = Instant::now();
     let _clipboard = Clipboard::new_attempts(10).map_err(|err| format!("{:?}", err))?;
     mark_next_clipboard_change_as_internal();
-    clipboard_win::raw::set(CF_DIB, &dib).map_err(|err| {
-        error!("Failed to set image DIB: {:?}", err);
-        format!("{:?}", err)
-    })?;
+    let mut has_dibv5_format = false;
+    if let Some(bytes) = dibv5.as_ref() {
+        match clipboard_win::raw::set(CF_DIBV5, bytes) {
+            Ok(()) => {
+                has_dibv5_format = true;
+                if let Err(err) = clipboard_win::raw::set_without_clear(CF_DIB, &dib) {
+                    error!("Failed to set image DIB after DIBV5: {:?}", err);
+                }
+            }
+            Err(err) => {
+                error!("Failed to set image DIBV5: {:?}", err);
+                clipboard_win::raw::set(CF_DIB, &dib).map_err(|err| {
+                    error!("Failed to set image DIB: {:?}", err);
+                    format!("{:?}", err)
+                })?;
+            }
+        }
+    } else {
+        clipboard_win::raw::set(CF_DIB, &dib).map_err(|err| {
+            error!("Failed to set image DIB: {:?}", err);
+            format!("{:?}", err)
+        })?;
+    }
     let has_png_format = png_bytes.is_some();
     if let Some(bytes) = png_bytes.as_ref() {
         if let Some(png_format) = registered_clipboard_format("PNG") {
@@ -4758,10 +4786,11 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
     }
     write_internal_clipboard_marker_without_open();
     info!(
-        "Copied image DIB to clipboard in {}ms, total {}ms, bytes={}, png={}",
+        "Copied image to clipboard in {}ms, total {}ms, dib_bytes={}, dibv5={}, png={}",
         clipboard_start.elapsed().as_millis(),
         start.elapsed().as_millis(),
         dib.len(),
+        has_dibv5_format,
         has_png_format
     );
     Ok(())

@@ -6,6 +6,7 @@ const BI_RGB: u32 = 0;
 const BI_BITFIELDS: u32 = 3;
 const BITMAPINFOHEADER_SIZE: usize = 40;
 const BITMAPV5HEADER_SIZE: usize = 124;
+const LCS_SRGB: u32 = 0x7352_4742;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -127,7 +128,7 @@ fn bitfield_mask_size(header: BitmapInfoHeader) -> usize {
     }
 }
 
-pub fn convert_bitmap_to_png(data: &[u8]) -> Result<Vec<u8>, String> {
+fn convert_bitmap_to_rgba_image(data: &[u8]) -> Result<RgbaImage, String> {
     let header = parse_bitmap_info_header(data)?;
     let width = header.bi_width as u32;
     let height = header.bi_height.unsigned_abs();
@@ -179,11 +180,22 @@ pub fn convert_bitmap_to_png(data: &[u8]) -> Result<Vec<u8>, String> {
         }
     }
 
+    Ok(img)
+}
+
+pub fn convert_bitmap_to_png(data: &[u8]) -> Result<Vec<u8>, String> {
+    let img = convert_bitmap_to_rgba_image(data)?;
+
     let mut image_buffer = Vec::new();
     img.write_to(&mut Cursor::new(&mut image_buffer), ImageFormat::Png)
         .map_err(|err| format!("encode png failed: {}", err))?;
 
     Ok(image_buffer)
+}
+
+pub fn convert_bitmap_to_dibv5(data: &[u8]) -> Result<Vec<u8>, String> {
+    let rgba = convert_bitmap_to_rgba_image(data)?;
+    convert_rgba_image_to_dibv5(&rgba)
 }
 
 fn append_u16(buffer: &mut Vec<u8>, value: u16) {
@@ -196,6 +208,57 @@ fn append_u32(buffer: &mut Vec<u8>, value: u32) {
 
 fn append_i32(buffer: &mut Vec<u8>, value: i32) {
     buffer.extend_from_slice(&value.to_le_bytes());
+}
+
+fn convert_rgba_image_to_dibv5(rgba: &RgbaImage) -> Result<Vec<u8>, String> {
+    let width = rgba.width();
+    let height = rgba.height();
+    let pixel_size = width
+        .checked_mul(height)
+        .and_then(|size| size.checked_mul(4))
+        .ok_or_else(|| "image is too large".to_string())?;
+
+    if width > i32::MAX as u32 || height > i32::MAX as u32 {
+        return Err("image dimensions are too large".to_string());
+    }
+
+    let mut dib = Vec::with_capacity(BITMAPV5HEADER_SIZE + pixel_size as usize);
+    append_u32(&mut dib, BITMAPV5HEADER_SIZE as u32);
+    append_i32(&mut dib, width as i32);
+    append_i32(&mut dib, -(height as i32));
+    append_u16(&mut dib, 1);
+    append_u16(&mut dib, 32);
+    append_u32(&mut dib, BI_BITFIELDS);
+    append_u32(&mut dib, pixel_size);
+    append_i32(&mut dib, 0);
+    append_i32(&mut dib, 0);
+    append_u32(&mut dib, 0);
+    append_u32(&mut dib, 0);
+    append_u32(&mut dib, 0x00ff_0000);
+    append_u32(&mut dib, 0x0000_ff00);
+    append_u32(&mut dib, 0x0000_00ff);
+    append_u32(&mut dib, 0xff00_0000);
+    append_u32(&mut dib, LCS_SRGB);
+    for _ in 0..9 {
+        append_i32(&mut dib, 0);
+    }
+    append_u32(&mut dib, 0);
+    append_u32(&mut dib, 0);
+    append_u32(&mut dib, 0);
+    append_u32(&mut dib, 0);
+    append_u32(&mut dib, 0);
+    append_u32(&mut dib, 0);
+    append_u32(&mut dib, 0);
+    debug_assert_eq!(dib.len(), BITMAPV5HEADER_SIZE);
+
+    for pixel in rgba.pixels() {
+        dib.push(pixel[2]);
+        dib.push(pixel[1]);
+        dib.push(pixel[0]);
+        dib.push(pixel[3]);
+    }
+
+    Ok(dib)
 }
 
 #[allow(dead_code)]
@@ -250,4 +313,37 @@ fn convert_dynamic_image_to_dib(img: image::DynamicImage) -> Result<Vec<u8>, Str
     }
 
     Ok(dib)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_u32_at(data: &[u8], start: usize) -> u32 {
+        u32::from_le_bytes([
+            data[start],
+            data[start + 1],
+            data[start + 2],
+            data[start + 3],
+        ])
+    }
+
+    #[test]
+    fn converts_dib_to_dibv5_with_alpha_masks() {
+        let rgba = RgbaImage::from_pixel(2, 1, Rgba([10, 20, 30, 128]));
+        let dib = convert_dynamic_image_to_dib(image::DynamicImage::ImageRgba8(rgba)).unwrap();
+        let dibv5 = convert_bitmap_to_dibv5(&dib).unwrap();
+
+        assert_eq!(read_u32_at(&dibv5, 0), BITMAPV5HEADER_SIZE as u32);
+        assert_eq!(read_u32_at(&dibv5, 16), BI_BITFIELDS);
+        assert_eq!(read_u32_at(&dibv5, 40), 0x00ff_0000);
+        assert_eq!(read_u32_at(&dibv5, 44), 0x0000_ff00);
+        assert_eq!(read_u32_at(&dibv5, 48), 0x0000_00ff);
+        assert_eq!(read_u32_at(&dibv5, 52), 0xff00_0000);
+        assert_eq!(dibv5.len(), BITMAPV5HEADER_SIZE + 8);
+
+        let png = convert_bitmap_to_png(&dibv5).unwrap();
+        let restored = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(restored.get_pixel(0, 0).0, [10, 20, 30, 128]);
+    }
 }

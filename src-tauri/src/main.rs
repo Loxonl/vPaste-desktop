@@ -78,6 +78,8 @@ static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static TRAY_MENU_WATCHING: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
 static LAST_FOREGROUND_HWND_BEFORE_CLIPBOARD: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "windows")]
+static LAST_FOCUSED_HWND_BEFORE_CLIPBOARD: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 static LAST_FOREGROUND_APP_PID: Mutex<Option<i32>> = Mutex::new(None);
 #[cfg(test)]
@@ -426,16 +428,42 @@ fn record_foreground_app_before_clipboard() {
 
     #[link(name = "user32")]
     extern "system" {
+        fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
+        fn GetCurrentThreadId() -> u32;
+        fn GetFocus() -> Hwnd;
         fn GetForegroundWindow() -> Hwnd;
         fn IsWindow(hwnd: Hwnd) -> i32;
+        fn GetWindowThreadProcessId(hwnd: Hwnd, process_id: *mut u32) -> u32;
     }
 
     let hwnd = unsafe { GetForegroundWindow() };
     if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
+        LAST_FOCUSED_HWND_BEFORE_CLIPBOARD.store(0, Ordering::SeqCst);
         return;
     }
+
+    let current_thread = unsafe { GetCurrentThreadId() };
+    let target_thread = unsafe { GetWindowThreadProcessId(hwnd, std::ptr::null_mut()) };
+    let attached = target_thread != 0
+        && target_thread != current_thread
+        && unsafe { AttachThreadInput(current_thread, target_thread, 1) } != 0;
+    let focused_hwnd = unsafe { GetFocus() };
+    if attached {
+        unsafe {
+            let _ = AttachThreadInput(current_thread, target_thread, 0);
+        }
+    }
+
     LAST_FOREGROUND_HWND_BEFORE_CLIPBOARD.store(hwnd as u64, Ordering::SeqCst);
-    info!("Recorded foreground window before clipboard: {:?}", hwnd);
+    if !focused_hwnd.is_null() && unsafe { IsWindow(focused_hwnd) } != 0 {
+        LAST_FOCUSED_HWND_BEFORE_CLIPBOARD.store(focused_hwnd as u64, Ordering::SeqCst);
+    } else {
+        LAST_FOCUSED_HWND_BEFORE_CLIPBOARD.store(0, Ordering::SeqCst);
+    }
+    info!(
+        "Recorded foreground before clipboard: hwnd={:?}, focus={:?}, attached={}",
+        hwnd, focused_hwnd, attached
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -477,6 +505,8 @@ fn restore_foreground_app_before_paste() {
         fn GetWindowThreadProcessId(hwnd: Hwnd, process_id: *mut u32) -> u32;
         fn IsIconic(hwnd: Hwnd) -> i32;
         fn IsWindow(hwnd: Hwnd) -> i32;
+        fn SetActiveWindow(hwnd: Hwnd) -> Hwnd;
+        fn SetFocus(hwnd: Hwnd) -> Hwnd;
         fn SetForegroundWindow(hwnd: Hwnd) -> i32;
         fn ShowWindow(hwnd: Hwnd, cmd_show: i32) -> i32;
     }
@@ -488,6 +518,7 @@ fn restore_foreground_app_before_paste() {
         info!("Skip foreground restore: no valid previous window");
         return;
     }
+    let focused_hwnd = LAST_FOCUSED_HWND_BEFORE_CLIPBOARD.load(Ordering::SeqCst) as Hwnd;
 
     unsafe {
         if IsIconic(hwnd) != 0 {
@@ -502,6 +533,17 @@ fn restore_foreground_app_before_paste() {
 
         let _ = BringWindowToTop(hwnd);
         let _ = SetForegroundWindow(hwnd);
+        let _ = SetActiveWindow(hwnd);
+        let focus_restore_attempted = if !focused_hwnd.is_null() && IsWindow(focused_hwnd) != 0 {
+            let _ = SetFocus(focused_hwnd);
+            true
+        } else {
+            false
+        };
+        info!(
+            "Restoring foreground before paste: target={:?}, focus={:?}, focus_restore_attempted={}, attached={}",
+            hwnd, focused_hwnd, focus_restore_attempted, attached
+        );
 
         if attached {
             let _ = AttachThreadInput(current_thread, target_thread, 0);

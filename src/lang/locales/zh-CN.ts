@@ -314,6 +314,7 @@ const zhCN: LanguagePack = {
         "settings.updateDesc": "当前版本 {version}，有新版本时提醒你，确认后再安装",
         "settings.updateCheck": "检查更新",
         "settings.updateChecking": "检查中...",
+        "settings.updateOpenReleasePrompt": "发现新版本 {version}，是否打开 GitHub Release 页面？",
         "settings.updateInstall": "下载并安装",
         "settings.updateInstallingShort": "安装中...",
         "settings.updateAvailable": "发现新版本 {version}",

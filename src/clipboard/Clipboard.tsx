@@ -1661,7 +1661,6 @@ export default function Clipboard() {
     const [tutorialRunId, setTutorialRunId] = useState(0);
     const [tutorialConfig, setTutorialConfig] = useState<ClipboardBehaviorConfig>({});
     const [tutorialPastePermissionGranted, setTutorialPastePermissionGranted] = useState(false);
-    const [tutorialCopied, setTutorialCopied] = useState(false);
     const [mainShortcut, setMainShortcut] = useState(DEFAULT_MAIN_SHORTCUT);
 
     // Initialize with mock data
@@ -2151,7 +2150,7 @@ export default function Clipboard() {
         hideAltHints();
         activeTabRef.current = "all";
         setActiveTab("all");
-        setTutorialCopied(false);
+        suppressClickAfterDragRef.current = false;
         setTutorialRunId(id => id + 1);
         setTutorialActive(true);
         void refreshTutorialConfig();
@@ -2222,7 +2221,6 @@ export default function Clipboard() {
         try {
             await invoke("complete_onboarding");
             setTutorialActive(false);
-            setTutorialCopied(false);
             setTutorialConfig(config => ({ ...config, onboarding_completed: true }));
             void fetchHistory();
         } catch (e) {
@@ -2685,9 +2683,6 @@ export default function Clipboard() {
         });
 
         const unlistenClipboard = listen<string>('listen_new_clipboard', (_) => {
-            if (tutorialActiveRef.current) {
-                setTutorialCopied(true);
-            }
             void fetchHistory();
         });
 
@@ -2697,7 +2692,6 @@ export default function Clipboard() {
 
         const unlistenTutorialCompleted = listen('tutorial-completed', () => {
             setTutorialActive(false);
-            setTutorialCopied(false);
         });
 
         const unlistenCustomTabs = listen<{ activeId?: string, tabs?: CustomTab[] } | string>('custom-tabs-changed', event => {
@@ -3585,6 +3579,8 @@ export default function Clipboard() {
     };
 
     const handleCardsWheel = (event: WheelEvent) => {
+        if (tutorialActiveRef.current) return;
+
         setContextMenu(null);
         setTabContextMenu(null);
         const container = cardsContainerRef.current;
@@ -3883,12 +3879,24 @@ export default function Clipboard() {
             <div
                 className="cards-container"
                 ref={cardsContainerRef}
-                onScroll={() => maybeLoadMoreHistory()}
-                onPointerDown={handleCardsPointerDown}
-                onPointerMove={handleCardsPointerMove}
-                onPointerUp={finishCardsPointerDrag}
-                onPointerCancel={finishCardsPointerDrag}
-                onLostPointerCapture={finishCardsPointerDrag}
+                onScroll={() => {
+                    if (!tutorialActive) maybeLoadMoreHistory();
+                }}
+                onPointerDown={(event) => {
+                    if (!tutorialActive) handleCardsPointerDown(event);
+                }}
+                onPointerMove={(event) => {
+                    if (!tutorialActive) handleCardsPointerMove(event);
+                }}
+                onPointerUp={(event) => {
+                    if (!tutorialActive) finishCardsPointerDrag(event);
+                }}
+                onPointerCancel={(event) => {
+                    if (!tutorialActive) finishCardsPointerDrag(event);
+                }}
+                onLostPointerCapture={(event) => {
+                    if (!tutorialActive) finishCardsPointerDrag(event);
+                }}
                 onClickCapture={(event) => {
                     if (suppressClickAfterDragRef.current) {
                         event.preventDefault();
@@ -3905,7 +3913,6 @@ export default function Clipboard() {
                         shortcutText={tutorialShortcutText}
                         permissions={tutorialPermissions}
                         filters={tutorialFilters}
-                        copied={tutorialCopied}
                         onPermissionAction={handleTutorialPermissionAction}
                         onToggleFilter={handleTutorialFilterToggle}
                         onComplete={completeTutorial}

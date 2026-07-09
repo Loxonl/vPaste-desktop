@@ -111,8 +111,6 @@ export default function TutorialOverlay({
         };
     }, [step]);
 
-    const allPermissionsDone = permissions.every(permission => permission.done);
-
     return (
         <div className="tutorial-root" ref={rootRef}>
             {step === 0 && (
@@ -156,7 +154,7 @@ export default function TutorialOverlay({
                         ))}
                     </div>
                     <div className="tutorial-actions tutorial-animate-item">
-                        <button type="button" className="tutorial-primary" disabled={!allPermissionsDone} onClick={() => setStep(2)}>
+                        <button type="button" className="tutorial-primary" onClick={() => setStep(2)}>
                             {t("tutorial.continue")}
                         </button>
                     </div>

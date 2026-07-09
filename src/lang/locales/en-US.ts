@@ -342,7 +342,7 @@ const enUS: LanguagePack = {
         "tutorial.continue": "Continue",
         "tutorial.finish": "Finish",
         "tutorial.permissions.title": "Enable the essentials",
-        "tutorial.permissions.desc": "Turn on the small permissions that keep vPaste ready when you need it.",
+        "tutorial.permissions.desc": "Enable these now for the best experience, or continue and finish them later in Settings.",
         "tutorial.permission.startup": "Launch at startup",
         "tutorial.permission.startup.desc": "Start vPaste automatically after sign-in.",
         "tutorial.permission.background": "Run in background",

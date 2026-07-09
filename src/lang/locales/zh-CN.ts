@@ -342,7 +342,7 @@ const zhCN: LanguagePack = {
         "tutorial.continue": "继续",
         "tutorial.finish": "完成",
         "tutorial.permissions.title": "开启必要能力",
-        "tutorial.permissions.desc": "打开这些小权限，vPaste 才能随时可用。",
+        "tutorial.permissions.desc": "建议现在开启这些能力；也可以先继续，之后在设置里补充。",
         "tutorial.permission.startup": "允许开机启动",
         "tutorial.permission.startup.desc": "登录系统后自动启动 vPaste。",
         "tutorial.permission.background": "后台运行授权",

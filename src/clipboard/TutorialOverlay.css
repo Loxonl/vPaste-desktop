@@ -7,9 +7,7 @@
   justify-content: center;
   overflow: hidden;
   color: #1f242b;
-  background:
-    radial-gradient(circle at 16% 12%, rgba(30, 146, 238, 0.13), transparent 28%),
-    radial-gradient(circle at 86% 82%, rgba(31, 157, 104, 0.11), transparent 30%);
+  background: transparent;
 }
 
 .tutorial-welcome {
@@ -55,19 +53,24 @@
 }
 
 .tutorial-panel {
-  width: min(1040px, calc(100vw - 52px));
-  min-height: 250px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 4px 0;
+  width: min(1040px, calc(100vw - 40px));
+  max-height: calc(100% - 16px);
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 104px;
+  grid-auto-rows: auto;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 0;
   will-change: transform, opacity;
 }
 
 .tutorial-panel-heading {
+  grid-column: 1;
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 
 .tutorial-panel-heading > svg {
@@ -82,37 +85,40 @@
 
 .tutorial-panel-heading h2 {
   margin: 0;
-  font-size: 22px;
+  font-size: 20px;
   line-height: 1.2;
   letter-spacing: 0;
 }
 
 .tutorial-panel-heading p {
   max-width: 640px;
-  margin: 5px 0 0;
+  margin: 4px 0 0;
   color: rgba(31, 36, 43, 0.64);
   font-size: 13px;
-  line-height: 1.45;
+  line-height: 1.36;
   text-wrap: pretty;
 }
 
 .tutorial-card-row {
+  grid-column: 1;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
+  min-width: 0;
 }
 
 .tutorial-card {
-  min-height: 232px;
+  min-height: 118px;
   display: grid;
-  grid-template-columns: 26px 1fr;
-  grid-template-rows: auto 1fr auto;
-  column-gap: 10px;
-  padding: 12px;
+  grid-template-columns: 72px 24px minmax(0, 1fr);
+  grid-template-rows: 1fr auto;
+  align-items: center;
+  column-gap: 9px;
+  padding: 10px;
   border: 1px solid rgba(31, 36, 43, 0.09);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: 0 10px 28px rgba(35, 43, 54, 0.06);
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: 0 8px 22px rgba(35, 43, 54, 0.055);
   transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
 }
 
@@ -123,15 +129,15 @@
 
 .tutorial-card.done {
   border-color: rgba(31, 157, 104, 0.32);
-  background: rgba(245, 255, 250, 0.88);
+  background: rgba(255, 255, 255, 0.82);
 }
 
 .tutorial-card-visual {
-  grid-column: 1 / -1;
-  height: 112px;
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  height: 72px;
   display: grid;
   place-items: center;
-  margin-bottom: 2px;
   border: 1px solid rgba(31, 36, 43, 0.06);
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.68);
@@ -146,6 +152,8 @@
 }
 
 .tutorial-card-status {
+  grid-column: 2;
+  grid-row: 1 / span 2;
   color: #1f9d68;
 }
 
@@ -161,25 +169,26 @@
 
 .tutorial-card h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.2;
   letter-spacing: 0;
 }
 
 .tutorial-card p {
-  margin: 6px 0 0;
+  margin: 4px 0 0;
   color: rgba(31, 36, 43, 0.64);
   font-size: 12px;
-  line-height: 1.4;
+  line-height: 1.32;
   text-wrap: pretty;
 }
 
 .tutorial-card button {
-  grid-column: 2;
+  grid-column: 3;
+  grid-row: 2;
   justify-self: start;
-  min-height: 34px;
+  min-height: 30px;
   min-width: 76px;
-  margin-top: 12px;
+  margin-top: 8px;
   padding: 0 14px;
   border: 0;
   border-radius: 7px;
@@ -200,9 +209,11 @@
 }
 
 .tutorial-toggle-grid {
+  grid-column: 1;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
+  min-width: 0;
 }
 
 .tutorial-toggle {
@@ -211,7 +222,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  min-height: 72px;
+  min-height: 68px;
   padding: 0 13px;
   border: 1px solid rgba(31, 36, 43, 0.09);
   border-radius: 8px;
@@ -277,15 +288,15 @@
 }
 
 .tutorial-shortcut {
-  align-items: stretch;
-  max-width: 760px;
+  max-width: 920px;
 }
 
 .tutorial-shortcut-hero {
+  grid-column: 1;
   display: grid;
   justify-items: center;
-  gap: 10px;
-  padding: 28px 24px;
+  gap: 7px;
+  padding: 18px 24px;
   border: 1px solid rgba(31, 36, 43, 0.09);
   border-radius: 8px;
   background:
@@ -301,7 +312,7 @@
 }
 
 .tutorial-shortcut-hero strong {
-  font-size: clamp(42px, 8vw, 76px);
+  font-size: clamp(38px, 6.8vw, 60px);
   line-height: 0.96;
   letter-spacing: 0;
 }
@@ -310,12 +321,13 @@
   max-width: 460px;
   margin: 0;
   color: rgba(31, 36, 43, 0.66);
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.36;
   text-align: center;
 }
 
 .tutorial-shortcut-steps {
+  grid-column: 1;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -333,14 +345,21 @@
 }
 
 .tutorial-actions {
+  grid-column: 2;
+  grid-row: 1 / span 3;
+  align-self: center;
+  justify-self: end;
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
+  justify-content: center;
+  align-items: stretch;
   gap: 8px;
+  width: 96px;
 }
 
 .tutorial-actions button {
-  min-height: 34px;
-  min-width: 74px;
+  min-height: 36px;
+  width: 100%;
   padding: 0 14px;
   border: 0;
   border-radius: 7px;
@@ -362,6 +381,7 @@
 }
 
 .tutorial-actions .tutorial-primary {
+  order: -1;
   background: #202423;
   color: #fff;
 }
@@ -370,7 +390,7 @@
   .tutorial-root {
     align-items: flex-start;
     overflow-y: auto;
-    padding: 20px 0;
+    padding: 16px 0;
   }
 
   .tutorial-welcome {
@@ -384,6 +404,7 @@
 
   .tutorial-panel {
     width: min(520px, calc(100vw - 32px));
+    grid-template-columns: 1fr;
   }
 
   .tutorial-card-row,
@@ -394,13 +415,19 @@
   .tutorial-card {
     min-height: 0;
   }
+
+  .tutorial-actions {
+    grid-column: 1;
+    grid-row: auto;
+    justify-self: stretch;
+    flex-direction: row;
+    width: auto;
+  }
 }
 
 :root[data-theme="dark"] .tutorial-root {
   color: #eef2f8;
-  background:
-    radial-gradient(circle at 16% 12%, rgba(61, 166, 255, 0.15), transparent 28%),
-    radial-gradient(circle at 86% 82%, rgba(50, 203, 132, 0.13), transparent 30%);
+  background: transparent;
 }
 
 :root[data-theme="dark"] .tutorial-welcome-orbit,
@@ -422,7 +449,7 @@
 }
 
 :root[data-theme="dark"] .tutorial-card.done {
-  background: rgba(24, 73, 49, 0.68);
+  background: rgba(31, 35, 42, 0.78);
 }
 
 :root[data-theme="dark"] .tutorial-toggle:has(input:checked) {

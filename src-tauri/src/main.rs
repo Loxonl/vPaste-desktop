@@ -97,11 +97,6 @@ const PREVIEW_IMAGE_PADDING: f64 = 72.0;
 const PREVIEW_CLIPBOARD_GAP: f64 = 16.0;
 const DEFAULT_SCREEN_HEIGHT: f64 = 1080.0;
 const DEFAULT_SCREEN_WIDTH: f64 = 1920.0;
-const ONBOARDING_TARGET_WIDTH: f64 = 760.0;
-const ONBOARDING_TARGET_HEIGHT: f64 = 720.0;
-const ONBOARDING_MIN_WIDTH: f64 = 620.0;
-const ONBOARDING_MIN_HEIGHT: f64 = 560.0;
-const ONBOARDING_SCREEN_MARGIN: f64 = 48.0;
 const DAY_MILLIS: u64 = 24 * 60 * 60 * 1000;
 const IMAGE_PREVIEW_CACHE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 const IMAGE_CLIPBOARD_CACHE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
@@ -895,35 +890,13 @@ fn mark_onboarding_completed(app: &tauri::AppHandle) {
     }
 }
 
-fn onboarding_window_size(window: &tauri::WebviewWindow) -> (f64, f64) {
-    let bounds = screen_bounds(window);
-    let available_width = (bounds.width - ONBOARDING_SCREEN_MARGIN * 2.0).max(ONBOARDING_MIN_WIDTH);
-    let available_height =
-        (bounds.height - ONBOARDING_SCREEN_MARGIN * 2.0).max(ONBOARDING_MIN_HEIGHT);
-
-    (
-        ONBOARDING_TARGET_WIDTH.min(available_width),
-        ONBOARDING_TARGET_HEIGHT.min(available_height),
-    )
-}
-
 fn show_onboarding_window(app: &tauri::AppHandle) -> Result<(), String> {
-    info!("Opening onboarding window");
+    info!("Opening tutorial in main panel");
     let window = app
-        .get_webview_window("onboarding")
-        .ok_or_else(|| "onboarding window not found".to_string())?;
-    let (width, height) = onboarding_window_size(&window);
-    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }));
-    let _ = window.unminimize();
-    let _ = window.set_always_on_top(true);
-    #[cfg(target_os = "macos")]
-    set_macos_window_level(&window, 101); // NSPopUpMenuWindowLevel
-    let _ = window.center();
-    window.show().map_err(|err| err.to_string())?;
-    activate_native_window(&window, "onboarding open");
-    let _ = AsRef::<tauri::Webview>::as_ref(&window).set_focus();
-    window.set_focus().map_err(|err| err.to_string())?;
-    let _ = window.emit("onboarding-opened", ());
+        .get_webview_window("clipboard")
+        .ok_or_else(|| "clipboard window not found".to_string())?;
+    show_clipboard_window(&window);
+    let _ = window.emit("tutorial-started", ());
     Ok(())
 }
 
@@ -935,8 +908,8 @@ fn open_onboarding_window(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn complete_onboarding(app: tauri::AppHandle) -> Result<(), String> {
     mark_onboarding_completed(&app);
-    if let Some(window) = app.get_webview_window("onboarding") {
-        window.hide().map_err(|err| err.to_string())?;
+    if let Some(window) = app.get_webview_window("clipboard") {
+        let _ = window.emit("tutorial-completed", ());
     }
     Ok(())
 }
@@ -2066,6 +2039,15 @@ fn is_process_trusted_with_prompt(_prompt: bool) -> bool {
 #[tauri::command]
 fn ensure_paste_accessibility_permission() -> PasteAccessibilityPermissionStatus {
     let granted = is_process_trusted_with_prompt(true);
+    PasteAccessibilityPermissionStatus {
+        granted,
+        needs_settings: !granted,
+    }
+}
+
+#[tauri::command]
+fn check_paste_accessibility_permission() -> PasteAccessibilityPermissionStatus {
+    let granted = is_process_trusted_with_prompt(false);
     PasteAccessibilityPermissionStatus {
         granted,
         needs_settings: !granted,
@@ -5740,56 +5722,6 @@ fn record_text_history(content: String) {
 }
 
 #[tauri::command]
-fn copy_onboarding_sample(
-    app: tauri::AppHandle,
-    sample_type: String,
-    sample: String,
-) -> Result<(), String> {
-    let app_source = "vPaste";
-    let app_icon_path = clipboard::vpaste_source_icon_path().unwrap_or_default();
-    match sample_type.as_str() {
-        "image" => {
-            let dir = PathBuf::from(app_runtime_dir(&["onboarding"]));
-            fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
-            let path = dir.join("vpaste-sample-image.png");
-            fs::write(&path, include_bytes!("../icons/icon.png")).map_err(|err| err.to_string())?;
-            let path_string = path.to_string_lossy().to_string();
-            copy(app, path_string.clone(), "Image".to_string(), None)?;
-            let bytes = fs::read(path).map_err(|err| err.to_string())?;
-            clipboard::insert_image_with_text_and_app(&bytes, "", app_source, &app_icon_path);
-        }
-        "file" => {
-            let dir = PathBuf::from(app_runtime_dir(&["onboarding"]));
-            fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
-            let path = dir.join("vpaste-sample-file.txt");
-            fs::write(
-                &path,
-                "vPaste - a modern Windows clipboard manager with rich previews, tabs, favorites, and quick paste workflows.",
-            )
-            .map_err(|err| err.to_string())?;
-            let files = vec![path.to_string_lossy().to_string()];
-            let content = serde_json::to_string(&files).map_err(|err| err.to_string())?;
-            copy(app, content, "File".to_string(), None)?;
-            clipboard::insert_file_from_app(&files, app_source, &app_icon_path);
-        }
-        "link" => {
-            let link = if sample.starts_with("http://") || sample.starts_with("https://") {
-                sample
-            } else {
-                format!("https://{}", sample)
-            };
-            copy(app, link.clone(), "Text".to_string(), None)?;
-            clipboard::insert_text_from_app_without_link_preview(link, app_source, &app_icon_path);
-        }
-        _ => {
-            copy(app, sample.clone(), "Text".to_string(), None)?;
-            clipboard::insert_text_from_app(sample, app_source, &app_icon_path);
-        }
-    }
-    Ok(())
-}
-
-#[tauri::command]
 fn set_window_size(
     window: tauri::Window,
     width: u32,
@@ -6187,11 +6119,6 @@ fn main() {
                     api.prevent_close();
                     let _ = window.hide();
                 }
-                if window.label() == "onboarding" {
-                    api.prevent_close();
-                    mark_onboarding_completed(window.app_handle());
-                    let _ = window.hide();
-                }
                 if window.label() == "clipboardPreview" {
                     api.prevent_close();
                     let _ = window.hide();
@@ -6390,25 +6317,6 @@ fn main() {
                 }
                 info!("Config window built successfully");
 
-                let onboarding_window =
-                    WebviewWindowBuilder::new(&handle, "onboarding", App("onboarding".into()))
-                        .title("vPaste")
-                        .visible(false)
-                        .fullscreen(false)
-                        .focused(false)
-                        .resizable(false)
-                        .maximizable(false)
-                        .inner_size(ONBOARDING_TARGET_WIDTH, ONBOARDING_TARGET_HEIGHT)
-                        .always_on_top(true);
-                info!("Attempting to build onboarding window");
-                let onboarding_window = onboarding_window.build().unwrap();
-                apply_vpaste_window_icon(&onboarding_window);
-                #[cfg(target_os = "macos")]
-                {
-                    set_macos_window_level(&onboarding_window, 101);
-                }
-                info!("Onboarding window built successfully");
-
                 let tray_menu_window =
                     WebviewWindowBuilder::new(&handle, "trayMenu", App("tray-menu".into()))
                         .title("vPaste Tray")
@@ -6522,7 +6430,6 @@ fn main() {
             save_config,
             clear_history,
             simulate_cmd_c,
-            copy_onboarding_sample,
             finish_hide_clipboard_window,
             begin_hide_clipboard_window,
             hide_clipboard_if_inactive,
@@ -6558,6 +6465,7 @@ fn main() {
             reveal_file_in_folder,
             open_url_in_browser,
             ensure_paste_accessibility_permission,
+            check_paste_accessibility_permission,
             open_accessibility_settings,
             set_item_favorite,
             list_item_tags,
@@ -6581,6 +6489,9 @@ fn main() {
         .build(context)
         .expect("build vpaste failed")
         .run(|app, event| {
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 if let Err(err) = show_main_panel_for_app(app) {

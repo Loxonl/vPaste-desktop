@@ -1,0 +1,307 @@
+.tutorial-root {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: #1f242b;
+}
+
+.tutorial-welcome {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  will-change: transform, opacity;
+}
+
+.tutorial-welcome img {
+  width: 104px;
+  height: 104px;
+  object-fit: contain;
+}
+
+.tutorial-welcome h1 {
+  margin: 0;
+  font-size: 38px;
+  line-height: 1.04;
+  letter-spacing: 0;
+}
+
+.tutorial-welcome p {
+  margin: 10px 0 0;
+  font-size: 17px;
+  color: rgba(31, 36, 43, 0.68);
+}
+
+.tutorial-panel {
+  width: min(980px, calc(100vw - 56px));
+  min-height: 206px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  will-change: transform, opacity;
+}
+
+.tutorial-panel-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.tutorial-panel-heading > svg {
+  width: 30px;
+  height: 30px;
+  color: #1e92ee;
+  flex: 0 0 auto;
+}
+
+.tutorial-panel-heading h2 {
+  margin: 0;
+  font-size: 19px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.tutorial-panel-heading p {
+  margin: 4px 0 0;
+  color: rgba(31, 36, 43, 0.62);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.tutorial-card-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.tutorial-card {
+  min-height: 112px;
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  grid-template-rows: 1fr auto;
+  column-gap: 9px;
+  padding: 12px;
+  border: 1px solid rgba(31, 36, 43, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 8px 20px rgba(35, 43, 54, 0.05);
+}
+
+.tutorial-card.done {
+  border-color: rgba(31, 157, 104, 0.28);
+  background: rgba(245, 255, 250, 0.78);
+}
+
+.tutorial-card-status {
+  color: #1f9d68;
+}
+
+.tutorial-card-status span {
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 3px;
+  border-radius: 50%;
+  border: 1px solid rgba(31, 36, 43, 0.22);
+}
+
+.tutorial-card h3 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.tutorial-card p {
+  margin: 5px 0 0;
+  color: rgba(31, 36, 43, 0.62);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.tutorial-card button {
+  grid-column: 2;
+  justify-self: start;
+  min-height: 28px;
+  margin-top: 10px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: #202423;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.tutorial-card.done button {
+  background: #1f9d68;
+}
+
+.tutorial-toggle-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.tutorial-toggle {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 60px;
+  padding: 0 12px;
+  border: 1px solid rgba(31, 36, 43, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 8px 20px rgba(35, 43, 54, 0.045);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.tutorial-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tutorial-toggle i {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(31, 36, 43, 0.18);
+  flex: 0 0 auto;
+}
+
+.tutorial-toggle i::after {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  top: 3px;
+  left: 3px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(31, 36, 43, 0.22);
+  transition: transform 150ms ease;
+}
+
+.tutorial-toggle input:checked + i {
+  background: #1e92ee;
+}
+
+.tutorial-toggle input:checked + i::after {
+  transform: translateX(18px);
+}
+
+.tutorial-shortcut {
+  align-items: stretch;
+}
+
+.tutorial-shortcut-key {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 16px;
+  padding: 14px 18px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: 0 8px 20px rgba(35, 43, 54, 0.05);
+}
+
+.tutorial-shortcut-key span {
+  color: rgba(31, 36, 43, 0.62);
+  font-size: 13px;
+}
+
+.tutorial-shortcut-key strong {
+  font-size: 34px;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.tutorial-copy-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: rgba(31, 36, 43, 0.66);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.tutorial-copy-check.done {
+  color: #1f9d68;
+}
+
+.tutorial-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.tutorial-actions button {
+  min-height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 7px;
+  background: rgba(31, 36, 43, 0.10);
+  color: #202423;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.tutorial-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.tutorial-actions .tutorial-primary {
+  background: #202423;
+  color: #fff;
+}
+
+:root[data-theme="dark"] .tutorial-root {
+  color: #eef2f8;
+}
+
+:root[data-theme="dark"] .tutorial-welcome p,
+:root[data-theme="dark"] .tutorial-panel-heading p,
+:root[data-theme="dark"] .tutorial-card p,
+:root[data-theme="dark"] .tutorial-shortcut-key span,
+:root[data-theme="dark"] .tutorial-copy-check {
+  color: rgba(238, 242, 248, 0.66);
+}
+
+:root[data-theme="dark"] .tutorial-card,
+:root[data-theme="dark"] .tutorial-toggle,
+:root[data-theme="dark"] .tutorial-shortcut-key {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(31, 35, 42, 0.74);
+}
+
+:root[data-theme="dark"] .tutorial-card.done {
+  background: rgba(24, 73, 49, 0.68);
+}
+
+:root[data-theme="dark"] .tutorial-actions button {
+  color: #eef2f8;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+:root[data-theme="dark"] .tutorial-actions .tutorial-primary,
+:root[data-theme="dark"] .tutorial-card button {
+  background: #eef2f8;
+  color: #15191f;
+}
+
+:root[data-theme="dark"] .tutorial-card.done button {
+  background: #1f9d68;
+  color: #fff;
+}

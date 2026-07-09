@@ -613,6 +613,12 @@ body {
   min-width: 316px;
 }
 
+.tutorial-header-spacer {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+}
+
 .search-button,
 .tag-manager-button,
 .settings-button {

@@ -1,12 +1,10 @@
 import React from "react";
 import { gsap } from "gsap";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
-import RocketLaunchOutlinedIcon from "@mui/icons-material/RocketLaunchOutlined";
-import SettingsSuggestOutlinedIcon from "@mui/icons-material/SettingsSuggestOutlined";
-import KeyboardCommandKeyOutlinedIcon from "@mui/icons-material/KeyboardCommandKeyOutlined";
 import startupVisual from "../assets/tutorial/permission-startup.svg";
 import backgroundVisual from "../assets/tutorial/permission-background.svg";
 import pasteVisual from "../assets/tutorial/permission-paste.svg";
+import shortcutVisual from "../assets/tutorial/shortcut-popover.svg";
 import "./TutorialOverlay.css";
 
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
@@ -43,6 +41,16 @@ const permissionVisuals: Record<TutorialPermissionId, string> = {
     startup: startupVisual,
     background: backgroundVisual,
     paste: pasteVisual,
+};
+
+type StepShellProps = {
+    index: number;
+    title: string;
+    description: string;
+    children: React.ReactNode;
+    onBack?: () => void;
+    onNext: () => void;
+    nextLabel?: string;
 };
 
 export default function TutorialOverlay({
@@ -97,8 +105,26 @@ export default function TutorialOverlay({
                 )
                 .fromTo(
                     ".tutorial-animate-item",
-                    { y: 18, autoAlpha: 0, scale: 0.98 },
-                    { y: 0, autoAlpha: 1, scale: 1, duration: 0.42, stagger: 0.06 },
+                    { y: 16, autoAlpha: 0, scale: 0.98 },
+                    { y: 0, autoAlpha: 1, scale: 1, duration: 0.42, stagger: 0.055 },
+                    "<0.12",
+                )
+                .fromTo(
+                    ".tutorial-orbit-item",
+                    { y: 10, rotate: -1.5, scale: 0.96 },
+                    { y: 0, rotate: 0, scale: 1, duration: 0.42, stagger: 0.045, ease: "back.out(1.35)" },
+                    "<0.08",
+                )
+                .fromTo(
+                    ".tutorial-status-pill.done",
+                    { scale: 0.86, autoAlpha: 0 },
+                    { scale: 1, autoAlpha: 1, duration: 0.28, stagger: 0.04, ease: "back.out(1.8)" },
+                    "<0.16",
+                )
+                .fromTo(
+                    ".shortcut-motion-line",
+                    { scaleX: 0, transformOrigin: "left center", autoAlpha: 0 },
+                    { scaleX: 1, autoAlpha: 1, duration: 0.42 },
                     "<0.12",
                 );
         }, root);
@@ -110,6 +136,37 @@ export default function TutorialOverlay({
             ctx.revert();
         };
     }, [step]);
+
+    const renderStep = ({
+        index,
+        title,
+        description,
+        children,
+        onBack,
+        onNext,
+        nextLabel = t("tutorial.continue"),
+    }: StepShellProps) => (
+        <section className="tutorial-panel">
+            <div className="tutorial-step-copy tutorial-animate-item">
+                <span className="tutorial-step-index">{String(index).padStart(2, "0")}</span>
+                <h2>{title}</h2>
+                <p>{description}</p>
+                {onBack && (
+                    <button type="button" className="tutorial-nav-button tutorial-back-action" onClick={onBack}>
+                        {t("tutorial.back")}
+                    </button>
+                )}
+            </div>
+            <div className="tutorial-main tutorial-animate-item">
+                {children}
+            </div>
+            <div className="tutorial-actions tutorial-animate-item">
+                <button type="button" className="tutorial-nav-button tutorial-primary" onClick={onNext}>
+                    {nextLabel}
+                </button>
+            </div>
+        </section>
+    );
 
     return (
         <div className="tutorial-root" ref={rootRef}>
@@ -126,53 +183,51 @@ export default function TutorialOverlay({
             )}
 
             {step === 1 && (
-                <section className="tutorial-panel tutorial-permissions">
-                    <div className="tutorial-panel-heading tutorial-animate-item">
-                        <RocketLaunchOutlinedIcon fontSize="small" />
-                        <div>
-                            <h2>{t("tutorial.permissions.title")}</h2>
-                            <p>{t("tutorial.permissions.desc")}</p>
-                        </div>
-                    </div>
-                    <div className="tutorial-card-row">
+                renderStep({
+                    index: 1,
+                    title: t("tutorial.permissions.title"),
+                    description: t("tutorial.permissions.desc"),
+                    onNext: () => setStep(2),
+                    children: (
+                    <div className="tutorial-permission-row">
                         {permissions.map(permission => (
-                            <article className={`tutorial-card tutorial-animate-item ${permission.done ? "done" : ""}`} key={permission.id}>
+                            <article className={`tutorial-permission-card tutorial-orbit-item ${permission.done ? "done" : ""}`} key={permission.id}>
                                 <div className="tutorial-card-visual">
                                     <img src={permissionVisuals[permission.id]} alt="" aria-hidden="true" />
                                 </div>
-                                <div className="tutorial-card-status">
-                                    {permission.done ? <CheckCircleIcon fontSize="small" /> : <span />}
-                                </div>
-                                <div>
+                                <div className="tutorial-card-body">
                                     <h3>{permission.title}</h3>
                                     <p>{permission.description}</p>
                                 </div>
-                                <button type="button" onClick={() => onPermissionAction(permission.id)}>
-                                    {permission.done ? t("tutorial.done") : permission.actionLabel}
-                                </button>
+                                <div className="tutorial-card-footer">
+                                    <span className={`tutorial-status-pill ${permission.done ? "done" : ""}`}>
+                                        {permission.done && <CheckCircleIcon fontSize="inherit" />}
+                                        {permission.done ? t("tutorial.permission.ready") : t("tutorial.permission.pending")}
+                                    </span>
+                                    {!permission.done && (
+                                        <button type="button" className="tutorial-card-action" onClick={() => onPermissionAction(permission.id)}>
+                                            {permission.actionLabel}
+                                        </button>
+                                    )}
+                                </div>
                             </article>
                         ))}
                     </div>
-                    <div className="tutorial-actions tutorial-animate-item">
-                        <button type="button" className="tutorial-primary" onClick={() => setStep(2)}>
-                            {t("tutorial.continue")}
-                        </button>
-                    </div>
-                </section>
+                    ),
+                })
             )}
 
             {step === 2 && (
-                <section className="tutorial-panel tutorial-filters">
-                    <div className="tutorial-panel-heading tutorial-animate-item">
-                        <SettingsSuggestOutlinedIcon fontSize="small" />
-                        <div>
-                            <h2>{t("tutorial.filters.title")}</h2>
-                            <p>{t("tutorial.filters.desc")}</p>
-                        </div>
-                    </div>
+                renderStep({
+                    index: 2,
+                    title: t("tutorial.filters.title"),
+                    description: t("tutorial.filters.desc"),
+                    onBack: () => setStep(1),
+                    onNext: () => setStep(3),
+                    children: (
                     <div className="tutorial-toggle-grid">
                         {filters.map(filter => (
-                            <label className="tutorial-toggle tutorial-animate-item" key={filter.id}>
+                            <label className="tutorial-toggle tutorial-orbit-item" key={filter.id}>
                                 <span>{filter.name}</span>
                                 <input
                                     type="checkbox"
@@ -183,45 +238,33 @@ export default function TutorialOverlay({
                             </label>
                         ))}
                     </div>
-                    <div className="tutorial-actions tutorial-animate-item">
-                        <button type="button" onClick={() => setStep(1)}>
-                            {t("tutorial.back")}
-                        </button>
-                        <button type="button" className="tutorial-primary" onClick={() => setStep(3)}>
-                            {t("tutorial.continue")}
-                        </button>
-                    </div>
-                </section>
+                    ),
+                })
             )}
 
             {step === 3 && (
-                <section className="tutorial-panel tutorial-shortcut">
-                    <div className="tutorial-panel-heading tutorial-animate-item">
-                        <KeyboardCommandKeyOutlinedIcon fontSize="small" />
-                        <div>
-                            <h2>{t("tutorial.shortcut.title")}</h2>
-                            <p>{t("tutorial.shortcut.desc")}</p>
+                renderStep({
+                    index: 3,
+                    title: t("tutorial.shortcut.title"),
+                    description: t("tutorial.shortcut.desc"),
+                    onBack: () => setStep(2),
+                    onNext: onComplete,
+                    nextLabel: t("tutorial.finish"),
+                    children: (
+                    <div className="tutorial-shortcut-stage">
+                        <img className="tutorial-shortcut-art tutorial-orbit-item" src={shortcutVisual} alt="" aria-hidden="true" />
+                        <div className="tutorial-shortcut-keycap tutorial-orbit-item">
+                            <span>{t("tutorial.shortcut.default")}</span>
+                            <strong>{shortcutText}</strong>
+                        </div>
+                        <div className="tutorial-shortcut-flow tutorial-orbit-item" aria-hidden="true">
+                            <span>{t("tutorial.shortcut.open")}</span>
+                            <i className="shortcut-motion-line" />
+                            <span>{t("tutorial.shortcut.hideWindow")}</span>
                         </div>
                     </div>
-                    <div className="tutorial-shortcut-hero tutorial-animate-item">
-                        <span>{t("tutorial.shortcut.default")}</span>
-                        <strong>{shortcutText}</strong>
-                        <p>{t("tutorial.shortcut.hint")}</p>
-                    </div>
-                    <div className="tutorial-shortcut-steps tutorial-animate-item" aria-hidden="true">
-                        <span>{t("tutorial.shortcut.open")}</span>
-                        <i />
-                        <span>{t("tutorial.shortcut.hideWindow")}</span>
-                    </div>
-                    <div className="tutorial-actions tutorial-animate-item">
-                        <button type="button" onClick={() => setStep(2)}>
-                            {t("tutorial.back")}
-                        </button>
-                        <button type="button" className="tutorial-primary" onClick={onComplete}>
-                            {t("tutorial.finish")}
-                        </button>
-                    </div>
-                </section>
+                    ),
+                })
             )}
         </div>
     );

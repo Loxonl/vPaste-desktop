@@ -1,12 +1,25 @@
-<svg width="220" height="144" viewBox="0 0 220 144" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="18" y="18" width="184" height="108" rx="18" fill="#EFF7FF"/>
-  <rect x="38" y="42" width="104" height="62" rx="10" fill="white" stroke="#B9DFFF" stroke-width="2"/>
-  <circle cx="52" cy="55" r="4" fill="#4AA3FF"/>
-  <circle cx="65" cy="55" r="4" fill="#A5D4FF"/>
-  <path d="M55 77H125" stroke="#7EBFFF" stroke-width="5" stroke-linecap="round"/>
-  <path d="M55 91H103" stroke="#C5E4FF" stroke-width="5" stroke-linecap="round"/>
-  <path d="M155 48C170.464 48 183 60.536 183 76C183 91.464 170.464 104 155 104C139.536 104 127 91.464 127 76C127 60.536 139.536 48 155 48Z" fill="#1E92EE"/>
-  <path d="M155 61L162.5 77H147.5L155 61Z" fill="white"/>
-  <path d="M147 86H163" stroke="white" stroke-width="5" stroke-linecap="round"/>
-  <path d="M74 116H146" stroke="#D3EAFD" stroke-width="7" stroke-linecap="round"/>
+<svg width="280" height="172" viewBox="0 0 280 172" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="startupBg" x1="54" y1="28" x2="211" y2="151" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F8FBFF"/>
+      <stop offset="1" stop-color="#EAF3FF"/>
+    </linearGradient>
+    <filter id="startupShadow" x="28" y="24" width="224" height="126" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="12" stdDeviation="12" flood-color="#2266B8" flood-opacity=".16"/>
+    </filter>
+  </defs>
+  <rect width="280" height="172" rx="22" fill="url(#startupBg)"/>
+  <g filter="url(#startupShadow)">
+    <rect x="48" y="42" width="184" height="86" rx="16" fill="white"/>
+    <rect x="48" y="42" width="184" height="24" rx="16" fill="#EEF4FB"/>
+    <circle cx="64" cy="54" r="4.5" fill="#FF6B5D"/>
+    <circle cx="80" cy="54" r="4.5" fill="#F7C75F"/>
+    <circle cx="96" cy="54" r="4.5" fill="#8FD17D"/>
+    <path d="M73 86H136" stroke="#D1DCE8" stroke-width="7" stroke-linecap="round"/>
+    <path d="M73 104H116" stroke="#E7EDF4" stroke-width="7" stroke-linecap="round"/>
+    <rect x="154" y="77" width="48" height="48" rx="14" fill="#2D7FF9"/>
+    <path d="M178 91V86C178 80.8 181.9 77 187 77C192.1 77 196 80.8 196 86V91" transform="translate(-9 6)" stroke="white" stroke-width="5" stroke-linecap="round"/>
+    <rect x="168" y="99" width="22" height="18" rx="5" fill="white" fill-opacity=".92"/>
+  </g>
+  <path d="M136 143C172.451 143 202 136.508 202 128.5C202 120.492 172.451 114 136 114C99.5492 114 70 120.492 70 128.5C70 136.508 99.5492 143 136 143Z" fill="#CFE5FF" fill-opacity=".58"/>
 </svg>

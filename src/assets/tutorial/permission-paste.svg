@@ -1,10 +1,24 @@
-<svg width="220" height="144" viewBox="0 0 220 144" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="18" y="18" width="184" height="108" rx="18" fill="#FFF7EA"/>
-  <rect x="50" y="42" width="78" height="78" rx="13" fill="white" stroke="#FFD59E" stroke-width="2"/>
-  <rect x="68" y="31" width="42" height="20" rx="8" fill="#FFB84D"/>
-  <path d="M68 70H110" stroke="#FFC978" stroke-width="6" stroke-linecap="round"/>
-  <path d="M68 88H102" stroke="#FFE1B6" stroke-width="6" stroke-linecap="round"/>
-  <rect x="116" y="54" width="52" height="52" rx="14" fill="#FF8A4C"/>
-  <path d="M136 70L153 83L136 96V88H126V78H136V70Z" fill="white"/>
-  <path d="M52 126H168" stroke="#FFE3BD" stroke-width="7" stroke-linecap="round"/>
+<svg width="280" height="172" viewBox="0 0 280 172" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="pasteBg" x1="55" y1="18" x2="214" y2="154" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFDFC"/>
+      <stop offset="1" stop-color="#FFF1E7"/>
+    </linearGradient>
+    <filter id="pasteShadow" x="39" y="25" width="211" height="126" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="12" stdDeviation="12" flood-color="#C45A24" flood-opacity=".16"/>
+    </filter>
+  </defs>
+  <rect width="280" height="172" rx="22" fill="url(#pasteBg)"/>
+  <g filter="url(#pasteShadow)">
+    <rect x="60" y="42" width="74" height="92" rx="18" fill="white"/>
+    <rect x="79" y="31" width="36" height="22" rx="9" fill="#FFB84D"/>
+    <path d="M78 76H116" stroke="#F7C47C" stroke-width="7" stroke-linecap="round"/>
+    <path d="M78 96H108" stroke="#FFE0B8" stroke-width="7" stroke-linecap="round"/>
+    <rect x="125" y="58" width="92" height="62" rx="18" fill="white"/>
+    <rect x="145" y="77" width="44" height="28" rx="10" fill="#FF884D"/>
+    <path d="M162 86L171 91L162 96V92H151V90H162V86Z" fill="white"/>
+    <path d="M201 41C214.255 41 225 51.745 225 65C225 78.255 214.255 89 201 89C187.745 89 177 78.255 177 65C177 51.745 187.745 41 201 41Z" fill="#FFFFFF"/>
+    <path d="M191 65L198 72L212 56" stroke="#FF884D" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <path d="M140 145C177.555 145 208 138.284 208 130C208 121.716 177.555 115 140 115C102.445 115 72 121.716 72 130C72 138.284 102.445 145 140 145Z" fill="#FFE1C8"/>
 </svg>

@@ -1,0 +1,27 @@
+<svg width="320" height="188" viewBox="0 0 320 188" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="shortcutBg" x1="52" y1="16" x2="261" y2="174" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EDF5FF"/>
+    </linearGradient>
+    <filter id="shortcutShadow" x="24" y="19" width="270" height="154" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="15" flood-color="#1C5FB8" flood-opacity=".16"/>
+    </filter>
+  </defs>
+  <rect width="320" height="188" rx="24" fill="url(#shortcutBg)"/>
+  <g filter="url(#shortcutShadow)">
+    <rect x="46" y="47" width="144" height="92" rx="20" fill="white"/>
+    <rect x="62" y="66" width="36" height="36" rx="11" fill="#2D7FF9"/>
+    <path d="M107 73H162" stroke="#CAD8E6" stroke-width="7" stroke-linecap="round"/>
+    <path d="M107 93H151" stroke="#E1EAF4" stroke-width="7" stroke-linecap="round"/>
+    <path d="M107 113H170" stroke="#E1EAF4" stroke-width="7" stroke-linecap="round"/>
+    <rect x="168" y="31" width="92" height="58" rx="18" fill="white" fill-opacity=".96"/>
+    <path d="M192 52H235" stroke="#D7E2EF" stroke-width="7" stroke-linecap="round"/>
+    <path d="M192 70H221" stroke="#E7EEF6" stroke-width="7" stroke-linecap="round"/>
+    <rect x="202" y="107" width="60" height="42" rx="14" fill="#111827"/>
+    <path d="M218 128H246" stroke="white" stroke-width="6" stroke-linecap="round"/>
+  </g>
+  <path d="M184 110C196 110 204 103 211 92" stroke="#2D7FF9" stroke-width="5" stroke-linecap="round" stroke-dasharray="2 11"/>
+  <path d="M196 96L213 90L210 108" stroke="#2D7FF9" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M160 166C203.078 166 238 158.837 238 150C238 141.163 203.078 134 160 134C116.922 134 82 141.163 82 150C82 158.837 116.922 166 160 166Z" fill="#DCEBFF"/>
+</svg>

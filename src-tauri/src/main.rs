@@ -78,6 +78,8 @@ static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static TRAY_MENU_WATCHING: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
 static LAST_FOREGROUND_HWND_BEFORE_CLIPBOARD: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "windows")]
+static LAST_FOCUSED_HWND_BEFORE_CLIPBOARD: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "macos")]
 static LAST_FOREGROUND_APP_PID: Mutex<Option<i32>> = Mutex::new(None);
 #[cfg(test)]
@@ -426,16 +428,42 @@ fn record_foreground_app_before_clipboard() {
 
     #[link(name = "user32")]
     extern "system" {
+        fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
+        fn GetCurrentThreadId() -> u32;
+        fn GetFocus() -> Hwnd;
         fn GetForegroundWindow() -> Hwnd;
         fn IsWindow(hwnd: Hwnd) -> i32;
+        fn GetWindowThreadProcessId(hwnd: Hwnd, process_id: *mut u32) -> u32;
     }
 
     let hwnd = unsafe { GetForegroundWindow() };
     if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
+        LAST_FOCUSED_HWND_BEFORE_CLIPBOARD.store(0, Ordering::SeqCst);
         return;
     }
+
+    let current_thread = unsafe { GetCurrentThreadId() };
+    let target_thread = unsafe { GetWindowThreadProcessId(hwnd, std::ptr::null_mut()) };
+    let attached = target_thread != 0
+        && target_thread != current_thread
+        && unsafe { AttachThreadInput(current_thread, target_thread, 1) } != 0;
+    let focused_hwnd = unsafe { GetFocus() };
+    if attached {
+        unsafe {
+            let _ = AttachThreadInput(current_thread, target_thread, 0);
+        }
+    }
+
     LAST_FOREGROUND_HWND_BEFORE_CLIPBOARD.store(hwnd as u64, Ordering::SeqCst);
-    info!("Recorded foreground window before clipboard: {:?}", hwnd);
+    if !focused_hwnd.is_null() && unsafe { IsWindow(focused_hwnd) } != 0 {
+        LAST_FOCUSED_HWND_BEFORE_CLIPBOARD.store(focused_hwnd as u64, Ordering::SeqCst);
+    } else {
+        LAST_FOCUSED_HWND_BEFORE_CLIPBOARD.store(0, Ordering::SeqCst);
+    }
+    info!(
+        "Recorded foreground before clipboard: hwnd={:?}, focus={:?}, attached={}",
+        hwnd, focused_hwnd, attached
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -477,6 +505,8 @@ fn restore_foreground_app_before_paste() {
         fn GetWindowThreadProcessId(hwnd: Hwnd, process_id: *mut u32) -> u32;
         fn IsIconic(hwnd: Hwnd) -> i32;
         fn IsWindow(hwnd: Hwnd) -> i32;
+        fn SetActiveWindow(hwnd: Hwnd) -> Hwnd;
+        fn SetFocus(hwnd: Hwnd) -> Hwnd;
         fn SetForegroundWindow(hwnd: Hwnd) -> i32;
         fn ShowWindow(hwnd: Hwnd, cmd_show: i32) -> i32;
     }
@@ -488,6 +518,7 @@ fn restore_foreground_app_before_paste() {
         info!("Skip foreground restore: no valid previous window");
         return;
     }
+    let focused_hwnd = LAST_FOCUSED_HWND_BEFORE_CLIPBOARD.load(Ordering::SeqCst) as Hwnd;
 
     unsafe {
         if IsIconic(hwnd) != 0 {
@@ -502,6 +533,17 @@ fn restore_foreground_app_before_paste() {
 
         let _ = BringWindowToTop(hwnd);
         let _ = SetForegroundWindow(hwnd);
+        let _ = SetActiveWindow(hwnd);
+        let focus_restore_attempted = if !focused_hwnd.is_null() && IsWindow(focused_hwnd) != 0 {
+            let _ = SetFocus(focused_hwnd);
+            true
+        } else {
+            false
+        };
+        info!(
+            "Restoring foreground before paste: target={:?}, focus={:?}, focus_restore_attempted={}, attached={}",
+            hwnd, focused_hwnd, focus_restore_attempted, attached
+        );
 
         if attached {
             let _ = AttachThreadInput(current_thread, target_thread, 0);
@@ -4629,6 +4671,31 @@ fn write_image_png_cache(dib_cache_path: &Path, bytes: &[u8]) -> Result<(), Stri
 }
 
 #[cfg(target_os = "windows")]
+fn image_clipboard_file_path(path: &str, bytes: &[u8]) -> PathBuf {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(path.as_bytes());
+    hasher.update(bytes.len().to_le_bytes());
+    hasher.update(bytes);
+    PathBuf::from(app_runtime_dir(&["image_clipboard_cache"]))
+        .join(format!("{}.png", hex::encode(hasher.finalize())))
+}
+
+#[cfg(target_os = "windows")]
+fn write_image_clipboard_file(path: &str, bytes: &[u8]) -> Result<String, String> {
+    let file_path = image_clipboard_file_path(path, bytes);
+    if let Some(parent) = file_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    if !file_path.exists() {
+        fs::write(&file_path, bytes)
+            .map_err(|err| format!("write image clipboard file failed: {err}"))?;
+    }
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+#[cfg(target_os = "windows")]
 fn mark_image_not_png(dib_cache_path: &Path) {
     let marker_path = image_not_png_marker_path(dib_cache_path);
     if let Some(parent) = marker_path.parent() {
@@ -4682,7 +4749,10 @@ fn cached_or_load_png_bytes(path: &str, dib_cache_path: &Path) -> Result<Option<
 
 #[cfg(target_os = "windows")]
 fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
-    use clipboard_win::{formats::CF_DIB, Clipboard};
+    use clipboard_win::{
+        formats::{FileList, CF_DIB, CF_DIBV5},
+        Clipboard, Setter,
+    };
 
     let start = Instant::now();
     let cache_path = image_dib_cache_path(path);
@@ -4742,14 +4812,74 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
             png_bytes = cached_or_load_png_bytes(path, cache_path)?;
         }
     }
+    let dibv5 = clipboard::windows::image_convert::convert_bitmap_to_dibv5(&dib)
+        .map_err(|err| {
+            info!("Could not build CF_DIBV5 clipboard payload: {}", err);
+            err
+        })
+        .ok();
 
     let clipboard_start = Instant::now();
     let _clipboard = Clipboard::new_attempts(10).map_err(|err| format!("{:?}", err))?;
     mark_next_clipboard_change_as_internal();
-    clipboard_win::raw::set(CF_DIB, &dib).map_err(|err| {
-        error!("Failed to set image DIB: {:?}", err);
-        format!("{:?}", err)
-    })?;
+    let mut has_file_drop_format = false;
+    if let Some(bytes) = png_bytes.as_ref() {
+        match write_image_clipboard_file(path, bytes).and_then(|file_path| {
+            FileList
+                .write_clipboard(&[file_path])
+                .map_err(|err| format!("set image clipboard file list failed: {:?}", err))
+        }) {
+            Ok(()) => {
+                has_file_drop_format = true;
+            }
+            Err(err) => {
+                info!("Could not set image clipboard file list: {}", err);
+            }
+        }
+    }
+
+    let mut has_dibv5_format = false;
+    if let Some(bytes) = dibv5.as_ref() {
+        let set_dibv5 = if has_file_drop_format {
+            clipboard_win::raw::set_without_clear(CF_DIBV5, bytes)
+        } else {
+            clipboard_win::raw::set(CF_DIBV5, bytes)
+        };
+        match set_dibv5 {
+            Ok(()) => {
+                has_dibv5_format = true;
+                if let Err(err) = clipboard_win::raw::set_without_clear(CF_DIB, &dib) {
+                    error!("Failed to set image DIB after DIBV5: {:?}", err);
+                }
+            }
+            Err(err) => {
+                error!("Failed to set image DIBV5: {:?}", err);
+                if has_file_drop_format {
+                    clipboard_win::raw::set_without_clear(CF_DIB, &dib).map_err(|err| {
+                        error!("Failed to set image DIB: {:?}", err);
+                        format!("{:?}", err)
+                    })?;
+                } else {
+                    clipboard_win::raw::set(CF_DIB, &dib).map_err(|err| {
+                        error!("Failed to set image DIB: {:?}", err);
+                        format!("{:?}", err)
+                    })?;
+                }
+            }
+        }
+    } else {
+        if has_file_drop_format {
+            clipboard_win::raw::set_without_clear(CF_DIB, &dib).map_err(|err| {
+                error!("Failed to set image DIB: {:?}", err);
+                format!("{:?}", err)
+            })?;
+        } else {
+            clipboard_win::raw::set(CF_DIB, &dib).map_err(|err| {
+                error!("Failed to set image DIB: {:?}", err);
+                format!("{:?}", err)
+            })?;
+        }
+    }
     let has_png_format = png_bytes.is_some();
     if let Some(bytes) = png_bytes.as_ref() {
         if let Some(png_format) = registered_clipboard_format("PNG") {
@@ -4758,11 +4888,13 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
     }
     write_internal_clipboard_marker_without_open();
     info!(
-        "Copied image DIB to clipboard in {}ms, total {}ms, bytes={}, png={}",
+        "Copied image to clipboard in {}ms, total {}ms, dib_bytes={}, dibv5={}, png={}, hdrop={}",
         clipboard_start.elapsed().as_millis(),
         start.elapsed().as_millis(),
         dib.len(),
-        has_png_format
+        has_dibv5_format,
+        has_png_format,
+        has_file_drop_format
     );
     Ok(())
 }

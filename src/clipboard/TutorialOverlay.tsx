@@ -85,7 +85,7 @@ export default function TutorialOverlay({
         const ctx = gsap.context(() => {
             if (step === 0) {
                 if (reduceMotion) {
-                    reduceMotionTimer = window.setTimeout(() => setStep(hasPermissionStep ? 1 : 2), 900);
+                    reduceMotionTimer = window.setTimeout(() => setStep(hasPermissionStep ? 1 : 2), 650);
                     return;
                 }
 
@@ -120,7 +120,7 @@ export default function TutorialOverlay({
                         "<0.12",
                     )
                     .to(".tutorial-welcome-orbit", { y: -5, duration: 0.32, ease: "sine.inOut", yoyo: true, repeat: 1 }, "+=0.2")
-                    .to(".tutorial-welcome", { xPercent: -120, autoAlpha: 0, duration: 0.7 }, "+=1.15")
+                    .to(".tutorial-welcome", { xPercent: -120, autoAlpha: 0, duration: 0.7 }, "+=0.75")
                     .call(() => setStep(hasPermissionStep ? 1 : 2));
                 return;
             }

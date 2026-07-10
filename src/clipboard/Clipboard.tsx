@@ -3662,7 +3662,7 @@ export default function Clipboard() {
         name: `${filter.emoji} ${t(filter.titleKey)}`,
         enabled: customTabs.some(tab => tab.id === tutorialFilterTabId(filter.id)),
     }));
-    const tutorialShortcutText = formatShortcutLabel(mainShortcut);
+    const tutorialShortcutText = formatShortcutLabel(mainShortcut, tutorialPlatform === "mac");
 
     const contextMenuOptions = contextMenu
         ? buildContextMenuOptions(contextMenu.item, contextMenu.itemTags, contextMenu.colorOptions)
@@ -3763,20 +3763,24 @@ export default function Clipboard() {
                         <span className="tab-label">{t("tabs.favorite")}</span>
                         {altHintsVisible && <span className="alt-tab-hint">F</span>}
                     </button>
-                    {!tutorialActive && dynamicTabs.map(entry => {
+                    {dynamicTabs.map(entry => {
                         if (entry.kind === "filter") {
                             const tab = entry.tab;
                             return (
                                 <button
                                     key={entry.id}
                                     type="button"
-                                    className={`tab-item custom ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`}
-                                    draggable
-                                    onClick={() => setActiveTab(entry.id)}
-                                    onDoubleClick={event => openEditTabEditor(tab, event.currentTarget)}
+                                    className={`tab-item custom ${tutorialActive ? 'tutorial-locked' : ''} ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`}
+                                    draggable={!tutorialActive}
+                                    onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab(entry.id)}
+                                    onDoubleClick={tutorialActive ? undefined : event => openEditTabEditor(tab, event.currentTarget)}
                                     onContextMenu={event => {
                                         event.preventDefault();
                                         event.stopPropagation();
+                                        if (tutorialActive) {
+                                            blockTutorialNavigation();
+                                            return;
+                                        }
                                         setContextMenu(null);
                                         const position = floatingPositionFromClick(
                                             event.clientX,
@@ -3793,7 +3797,9 @@ export default function Clipboard() {
                                             originY: event.clientY,
                                         });
                                     }}
-                                    onDragStart={() => setDraggingTabId(entry.id)}
+                                    onDragStart={() => {
+                                        if (!tutorialActive) setDraggingTabId(entry.id);
+                                    }}
                                     onDragEnd={() => setDraggingTabId("")}
                                     onDrop={event => {
                                         event.preventDefault();
@@ -3809,13 +3815,17 @@ export default function Clipboard() {
                             <button
                                 key={entry.id}
                                 type="button"
-                                className={`tab-item record ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`}
-                                draggable
-                                onClick={() => setActiveTab(entry.id)}
-                                onDoubleClick={event => openEditRecordTagEditor(tag, event.currentTarget)}
+                                className={`tab-item record ${tutorialActive ? 'tutorial-locked' : ''} ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`}
+                                draggable={!tutorialActive}
+                                onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab(entry.id)}
+                                onDoubleClick={tutorialActive ? undefined : event => openEditRecordTagEditor(tag, event.currentTarget)}
                                 onContextMenu={event => {
                                     event.preventDefault();
                                     event.stopPropagation();
+                                    if (tutorialActive) {
+                                        blockTutorialNavigation();
+                                        return;
+                                    }
                                     setContextMenu(null);
                                     const position = floatingPositionFromClick(
                                         event.clientX,
@@ -3832,7 +3842,9 @@ export default function Clipboard() {
                                         originY: event.clientY,
                                     });
                                 }}
-                                onDragStart={() => setDraggingTabId(entry.id)}
+                                onDragStart={() => {
+                                    if (!tutorialActive) setDraggingTabId(entry.id);
+                                }}
                                 onDragEnd={() => setDraggingTabId("")}
                                 onDrop={event => {
                                     event.preventDefault();

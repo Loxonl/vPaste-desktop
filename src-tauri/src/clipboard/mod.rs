@@ -1605,14 +1605,6 @@ pub fn insert_text_from_app(content: String, app_source: &str, app_icon_path: &s
     insert_text_from_app_impl(content, app_source, app_icon_path);
 }
 
-pub fn insert_text_from_app_without_link_preview(
-    content: String,
-    app_source: &str,
-    app_icon_path: &str,
-) {
-    insert_text_from_app_impl(content, app_source, app_icon_path);
-}
-
 pub fn insert_rich_text_from_app(
     plain_text: String,
     html: Option<Vec<u8>>,

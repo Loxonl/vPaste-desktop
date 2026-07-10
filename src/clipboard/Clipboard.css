@@ -613,6 +613,12 @@ body {
   min-width: 316px;
 }
 
+.tutorial-header-spacer {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+}
+
 .search-button,
 .tag-manager-button,
 .settings-button {
@@ -882,6 +888,42 @@ body {
   gap: 8px;
 }
 
+.tutorial-debug-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid rgba(87, 98, 111, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.38);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.settings-button.tutorial-debug-button {
+  width: 44px;
+  height: 24px;
+  gap: 3px;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  color: rgba(41, 48, 46, 0.68);
+  font-size: 10px;
+  font-weight: 720;
+}
+
+.settings-button.tutorial-debug-button:hover {
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 5px 12px rgba(31, 38, 36, 0.1);
+}
+
+.settings-button.tutorial-debug-button > svg.settings-icon {
+  width: 13px !important;
+  height: 13px !important;
+  min-width: 13px;
+  min-height: 13px;
+  font-size: 13px !important;
+}
+
 .tag-manager-button,
 .settings-button {
   flex: 0 0 auto;
@@ -962,6 +1004,22 @@ body {
   background: rgba(33, 38, 45, 0.64);
   color: var(--theme-text);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09), 0 1px 6px rgba(0, 0, 0, 0.24);
+}
+
+:root[data-theme="dark"] .tutorial-debug-group {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(25, 30, 37, 0.48);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+:root[data-theme="dark"] .settings-button.tutorial-debug-button {
+  background: transparent;
+  color: rgba(221, 226, 235, 0.76);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .settings-button.tutorial-debug-button:hover {
+  background: rgba(55, 63, 74, 0.84);
 }
 
 :root[data-theme="dark"] .search-button:hover,

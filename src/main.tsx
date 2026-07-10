@@ -8,7 +8,6 @@ import Preview from "./clipboard/Preview.tsx";
 import TabEditor from "./clipboard/TabEditor.tsx";
 import Config from "./config/Config.tsx";
 import TrayMenu from "./tray/TrayMenu.tsx";
-import Onboarding from "./onboarding/Onboarding.tsx";
 import "./theme.css";
 import { installThemeSync } from "./theme.ts";
 
@@ -64,7 +63,6 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
                 <Route path="/tab-editor" element={<TabEditor />} />
                 <Route path="/config" element={<Config />} />
                 <Route path="/tray-menu" element={<TrayMenu />} />
-                <Route path="/onboarding" element={<Onboarding />} />
                 <Route path="/" element={<Clipboard />} />
                 <Route path="*" element={<Clipboard />} />
             </Routes>

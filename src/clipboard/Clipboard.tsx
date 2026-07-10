@@ -8,16 +8,20 @@ import { error } from "@tauri-apps/plugin-log";
 import { listen } from "@tauri-apps/api/event";
 import { Item, ItemTag, ItemType } from "./Item.tsx";
 import { formatRelativeTime, useLanguage } from "../lang";
-import { isMacPlatform } from "../shortcutDisplay";
+import { formatShortcutLabel, isMacPlatform } from "../shortcutDisplay";
 import FolderCopyOutlinedIcon from "@mui/icons-material/FolderCopyOutlined";
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
+import AppleIcon from "@mui/icons-material/Apple";
+import WindowOutlinedIcon from "@mui/icons-material/WindowOutlined";
 import AddIcon from "@mui/icons-material/Add";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
 import StarBorderOutlinedIcon from "@mui/icons-material/StarBorderOutlined";
+import TutorialOverlay, { TutorialFilterId, TutorialFilterTab, TutorialPermission, TutorialPermissionId, TutorialPlatform } from "./TutorialOverlay.tsx";
+import aboutLogo from "../assets/about-logo.png";
 
 const CLIPBOARD_ANIMATION_MS = 120;
 const DEFAULT_PASTE_AS_TEXT_SHORTCUT = "Shift+Enter";
@@ -72,6 +76,9 @@ type DominantColor = {
 };
 
 type ClipboardBehaviorConfig = {
+    startup?: boolean;
+    display_tray_icon?: boolean;
+    onboarding_completed?: boolean;
     retain_search_history?: boolean;
     retain_last_position?: boolean;
     retain_tab_position?: boolean;
@@ -82,6 +89,7 @@ type ClipboardBehaviorConfig = {
     last_update_check_at?: string;
     ignored_update_version?: string;
     shortcut_keys?: {
+        main_window?: string | null;
         paste_into_plain_text?: string | null;
     };
 };
@@ -344,6 +352,18 @@ const DEFAULT_CUSTOM_FILTER: CustomTabFilter = {
     relativeAmount: "",
     relativeUnit: "day",
 };
+const DEFAULT_MAIN_SHORTCUT = "Alt+V";
+const TUTORIAL_FILTER_TABS: Array<{ id: TutorialFilterId; emoji: string; titleKey: string; itemType: ItemType }> = [
+    { id: "text", emoji: "📝", titleKey: "type.text", itemType: ItemType.Text },
+    { id: "image", emoji: "🖼️", titleKey: "type.image", itemType: ItemType.Image },
+    { id: "link", emoji: "🔗", titleKey: "type.link", itemType: ItemType.Link },
+    { id: "color", emoji: "🎨", titleKey: "type.color", itemType: ItemType.Color },
+    { id: "file", emoji: "📁", titleKey: "type.file", itemType: ItemType.File },
+];
+
+function tutorialFilterTabId(id: TutorialFilterId): string {
+    return `tutorial-filter-${id}`;
+}
 
 function normalizeAppSources(filter: Partial<CustomTabFilter> & { appSource?: unknown; appSources?: unknown }): string[] {
     if (Array.isArray(filter.appSources)) {
@@ -1646,6 +1666,12 @@ export default function Clipboard() {
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [altHintsVisible, setAltHintsVisible] = useState(false);
     const [simulatedHoverHash, setSimulatedHoverHash] = useState("");
+    const [tutorialActive, setTutorialActive] = useState(false);
+    const [tutorialRunId, setTutorialRunId] = useState(0);
+    const [tutorialConfig, setTutorialConfig] = useState<ClipboardBehaviorConfig>({});
+    const [tutorialPastePermissionGranted, setTutorialPastePermissionGranted] = useState(false);
+    const [tutorialPlatform, setTutorialPlatform] = useState<TutorialPlatform>(() => isMacPlatform() ? "mac" : "windows");
+    const [mainShortcut, setMainShortcut] = useState(DEFAULT_MAIN_SHORTCUT);
 
     // Initialize with mock data
     const [clipboardPage, setPage] = useState(() => {
@@ -1684,6 +1710,7 @@ export default function Clipboard() {
     const suppressClickAfterDragRef = useRef(false);
     const searchWordRef = useRef("");
     const activeTabRef = useRef("all");
+    const tutorialActiveRef = useRef(false);
     const selectedRef = useRef("");
     const pageListRef = useRef<Item[]>([]);
     const pasteAsTextShortcutRef = useRef(DEFAULT_PASTE_AS_TEXT_SHORTCUT);
@@ -1799,6 +1826,10 @@ export default function Clipboard() {
     useEffect(() => {
         activeTabRef.current = activeTab;
     }, [activeTab]);
+
+    useEffect(() => {
+        tutorialActiveRef.current = tutorialActive;
+    }, [tutorialActive]);
 
     useEffect(() => {
         const activeRecordTagId = recordTagIdFromTab(activeTab);
@@ -2097,6 +2128,117 @@ export default function Clipboard() {
 
     const saveBehaviorConfig = async (config: ClipboardBehaviorConfig) => {
         await invoke('save_config', { config: JSON.stringify(config) });
+    };
+
+    const refreshTutorialPastePermission = async () => {
+        try {
+            const status = await invoke<PasteAccessibilityPermissionStatus>('check_paste_accessibility_permission');
+            setTutorialPastePermissionGranted(status.granted);
+            return status.granted;
+        } catch (e) {
+            error(`Failed to refresh tutorial Accessibility permission: ${e}`);
+            return false;
+        }
+    };
+
+    const refreshTutorialConfig = async () => {
+        const config = await loadBehaviorConfig();
+        setTutorialConfig(config);
+        setMainShortcut(config.shortcut_keys?.main_window || DEFAULT_MAIN_SHORTCUT);
+        return config;
+    };
+
+    const startTutorial = async (platform: TutorialPlatform = isMacPlatform() ? "mac" : "windows") => {
+        setContextMenu(null);
+        setTabContextMenu(null);
+        setTagCreateChoice(null);
+        setDeleteConfirmTab(null);
+        setDeleteConfirmRecordTag(null);
+        setPasteAccessibilityPrompt(null);
+        setSearchWord("");
+        setSearchOpen(false);
+        hideAltHints();
+        activeTabRef.current = "all";
+        setActiveTab("all");
+        suppressClickAfterDragRef.current = false;
+        setTutorialPlatform(platform);
+        setTutorialRunId(id => id + 1);
+        setTutorialActive(true);
+        void refreshTutorialConfig();
+        if (platform === "mac") {
+            void refreshTutorialPastePermission();
+        }
+    };
+
+    const saveTutorialConfig = async (nextConfig: ClipboardBehaviorConfig) => {
+        await saveBehaviorConfig(nextConfig);
+        setTutorialConfig(nextConfig);
+        setMainShortcut(nextConfig.shortcut_keys?.main_window || DEFAULT_MAIN_SHORTCUT);
+    };
+
+    const handleTutorialPermissionAction = async (id: TutorialPermissionId) => {
+        try {
+            if (id === "paste") {
+                const granted = await ensurePasteAccessibilityPermission();
+                setTutorialPastePermissionGranted(granted);
+                if (!granted) {
+                    await openAccessibilitySettings();
+                }
+                return;
+            }
+
+            const config = await loadBehaviorConfig();
+            const nextConfig = id === "startup"
+                ? { ...config, startup: true }
+                : { ...config, display_tray_icon: true };
+            await saveTutorialConfig(nextConfig);
+        } catch (e) {
+            showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
+        }
+    };
+
+    const makeTutorialFilterTab = (id: TutorialFilterId): CustomTab | null => {
+        const meta = TUTORIAL_FILTER_TABS.find(tab => tab.id === id);
+        if (!meta) return null;
+        return {
+            id: tutorialFilterTabId(id),
+            name: `${meta.emoji} ${t(meta.titleKey)}`,
+            filter: { ...DEFAULT_CUSTOM_FILTER, itemType: meta.itemType },
+        };
+    };
+
+    const handleTutorialFilterToggle = (id: TutorialFilterId, enabled: boolean) => {
+        const tabId = tutorialFilterTabId(id);
+        const tab = makeTutorialFilterTab(id);
+        if (!tab) return;
+
+        setCustomTabs(tabs => {
+            const exists = tabs.some(candidate => candidate.id === tabId);
+            if (enabled && !exists) return [...tabs, tab];
+            if (!enabled && exists) return tabs.filter(candidate => candidate.id !== tabId);
+            return tabs;
+        });
+
+        if (enabled) {
+            appendTabOrderId(tabId);
+        } else {
+            removeTabOrderId(tabId);
+            if (activeTabRef.current === tabId) {
+                activeTabRef.current = "all";
+                setActiveTab("all");
+            }
+        }
+    };
+
+    const completeTutorial = async () => {
+        try {
+            await invoke("complete_onboarding");
+            setTutorialActive(false);
+            setTutorialConfig(config => ({ ...config, onboarding_completed: true }));
+            void fetchHistory();
+        } catch (e) {
+            showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
+        }
     };
 
     const shouldRunAutoUpdateCheck = (config: ClipboardBehaviorConfig) => {
@@ -2557,6 +2699,14 @@ export default function Clipboard() {
             void fetchHistory();
         });
 
+        const unlistenTutorialStarted = listen('tutorial-started', () => {
+            void startTutorial();
+        });
+
+        const unlistenTutorialCompleted = listen('tutorial-completed', () => {
+            setTutorialActive(false);
+        });
+
         const unlistenCustomTabs = listen<{ activeId?: string, tabs?: CustomTab[] } | string>('custom-tabs-changed', event => {
             const payload = typeof event.payload === "string"
                 ? JSON.parse(event.payload || "{}") as { activeId?: string, tabs?: CustomTab[] }
@@ -2598,7 +2748,12 @@ export default function Clipboard() {
             setTabContextMenu(null);
             setTagCreateChoice(null);
         };
-        const handleWindowFocus = () => consumePendingItemTagsChanged();
+        const handleWindowFocus = () => {
+            consumePendingItemTagsChanged();
+            if (tutorialActiveRef.current) {
+                void refreshTutorialPastePermission();
+            }
+        };
         const handleStorage = (event: StorageEvent) => {
             if (event.key === PENDING_ITEM_TAGS_CHANGED_KEY && event.newValue) {
                 consumePendingItemTagsChanged();
@@ -2611,6 +2766,13 @@ export default function Clipboard() {
         window.addEventListener('blur', handleWindowBlur);
         window.addEventListener('click', closeContextMenu);
         window.addEventListener('resize', closeContextMenu);
+        void loadBehaviorConfig()
+            .then(config => {
+                if (config.onboarding_completed === false && !tutorialActiveRef.current) {
+                    void startTutorial();
+                }
+            })
+            .catch(e => error(`Failed to check tutorial state: ${e}`));
         void runAutoUpdateCheck();
 
         return () => {
@@ -2639,6 +2801,8 @@ export default function Clipboard() {
             unlistenCustomTabs.then(f => f()).catch(e => error(`Failed to unlisten custom tabs: ${e}`));
             unlistenItemTags.then(f => f()).catch(e => error(`Failed to unlisten item tags: ${e}`));
             unlistenPreviewNavigation.then(f => f()).catch(e => error(`Failed to unlisten preview navigation: ${e}`));
+            unlistenTutorialStarted.then(f => f()).catch(e => error(`Failed to unlisten tutorial start: ${e}`));
+            unlistenTutorialCompleted.then(f => f()).catch(e => error(`Failed to unlisten tutorial complete: ${e}`));
             window.removeEventListener('mousemove', clearSimulatedHover, { capture: true });
             window.removeEventListener('focus', handleWindowFocus);
             window.removeEventListener('storage', handleStorage);
@@ -3428,6 +3592,8 @@ export default function Clipboard() {
     };
 
     const handleCardsWheel = (event: WheelEvent) => {
+        if (tutorialActiveRef.current) return;
+
         setContextMenu(null);
         setTabContextMenu(null);
         const container = cardsContainerRef.current;
@@ -3467,6 +3633,44 @@ export default function Clipboard() {
     const openConfigWindow = () => {
         void invoke('open_config_window').catch(e => error(`Failed to open config window: ${e}`));
     };
+
+    const openTutorialFromDebug = (platform: TutorialPlatform) => {
+        void startTutorial(platform);
+    };
+
+    const blockTutorialNavigation = () => {
+        showToast(t("tutorial.finishFirst"), "info", 2200);
+    };
+
+    const tutorialPermissions: TutorialPermission[] = [
+        {
+            id: "startup",
+            title: t("tutorial.permission.startup"),
+            description: t("tutorial.permission.startup.desc"),
+            done: tutorialConfig.startup === true,
+            actionLabel: t("tutorial.permission.enable"),
+        },
+        {
+            id: "background",
+            title: t("tutorial.permission.background"),
+            description: t("tutorial.permission.background.desc"),
+            done: tutorialConfig.display_tray_icon !== false,
+            actionLabel: t("tutorial.permission.enable"),
+        },
+        {
+            id: "paste",
+            title: t("tutorial.permission.paste"),
+            description: t("tutorial.permission.paste.desc"),
+            done: tutorialPastePermissionGranted,
+            actionLabel: t("tutorial.permission.openSettings"),
+        },
+    ];
+    const tutorialFilters: TutorialFilterTab[] = TUTORIAL_FILTER_TABS.map(filter => ({
+        id: filter.id,
+        name: `${filter.emoji} ${t(filter.titleKey)}`,
+        enabled: customTabs.some(tab => tab.id === tutorialFilterTabId(filter.id)),
+    }));
+    const tutorialShortcutText = formatShortcutLabel(mainShortcut, tutorialPlatform === "mac");
 
     const contextMenuOptions = contextMenu
         ? buildContextMenuOptions(contextMenu.item, contextMenu.itemTags, contextMenu.colorOptions)
@@ -3519,36 +3723,40 @@ export default function Clipboard() {
             )}
             {/* Header */}
             <div className="clipboard-header">
-                <div className={`search-box ${searchOpen || searchWord ? 'open' : ''}`}>
-                    <button
-                        type="button"
-                        className="search-button"
-                        title={t("common.search")}
-                        onClick={focusSearchInput}
-                    >
-                        <SearchIcon className="search-icon" fontSize="inherit" />
-                    </button>
-                    {(searchOpen || searchWord) && (
-                        <input
-                            ref={searchInputRef}
-                            type="text"
-                            className="search-input"
-                            placeholder={t("common.search")}
-                            value={searchWord as string}
-                            onChange={handleSearchChange}
-                            onBlur={() => {
-                                if (!searchWord) {
-                                    setSearchOpen(false);
-                                }
-                            }}
-                        />
-                    )}
-                </div>
+                {tutorialActive ? (
+                    <div className="tutorial-header-spacer" />
+                ) : (
+                    <div className={`search-box ${searchOpen || searchWord ? 'open' : ''}`}>
+                        <button
+                            type="button"
+                            className="search-button"
+                            title={t("common.search")}
+                            onClick={focusSearchInput}
+                        >
+                            <SearchIcon className="search-icon" fontSize="inherit" />
+                        </button>
+                        {(searchOpen || searchWord) && (
+                            <input
+                                ref={searchInputRef}
+                                type="text"
+                                className="search-input"
+                                placeholder={t("common.search")}
+                                value={searchWord as string}
+                                onChange={handleSearchChange}
+                                onBlur={() => {
+                                    if (!searchWord) {
+                                        setSearchOpen(false);
+                                    }
+                                }}
+                            />
+                        )}
+                    </div>
+                )}
                 <div className="header-tabs" onDragOver={event => event.preventDefault()}>
                     <button
                         type="button"
                         className={`tab-item fixed ${activeTab === "all" ? 'active' : ''}`}
-                        onClick={() => setActiveTab("all")}
+                        onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab("all")}
                     >
                         <AppsOutlinedIcon className="tab-icon tab-icon-all" fontSize="inherit" />
                         <span className="tab-label">{t("tabs.all")}</span>
@@ -3557,7 +3765,7 @@ export default function Clipboard() {
                     <button
                         type="button"
                         className={`tab-item fixed ${activeTab === "favorite" ? 'active' : ''}`}
-                        onClick={() => setActiveTab("favorite")}
+                        onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab("favorite")}
                     >
                         <StarBorderOutlinedIcon className="tab-icon tab-icon-favorite" fontSize="inherit" />
                         <span className="tab-label">{t("tabs.favorite")}</span>
@@ -3570,13 +3778,17 @@ export default function Clipboard() {
                                 <button
                                     key={entry.id}
                                     type="button"
-                                    className={`tab-item custom ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`}
-                                    draggable
-                                    onClick={() => setActiveTab(entry.id)}
-                                    onDoubleClick={event => openEditTabEditor(tab, event.currentTarget)}
+                                    className={`tab-item custom ${tutorialActive ? 'tutorial-locked' : ''} ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`}
+                                    draggable={!tutorialActive}
+                                    onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab(entry.id)}
+                                    onDoubleClick={tutorialActive ? undefined : event => openEditTabEditor(tab, event.currentTarget)}
                                     onContextMenu={event => {
                                         event.preventDefault();
                                         event.stopPropagation();
+                                        if (tutorialActive) {
+                                            blockTutorialNavigation();
+                                            return;
+                                        }
                                         setContextMenu(null);
                                         const position = floatingPositionFromClick(
                                             event.clientX,
@@ -3593,7 +3805,9 @@ export default function Clipboard() {
                                             originY: event.clientY,
                                         });
                                     }}
-                                    onDragStart={() => setDraggingTabId(entry.id)}
+                                    onDragStart={() => {
+                                        if (!tutorialActive) setDraggingTabId(entry.id);
+                                    }}
                                     onDragEnd={() => setDraggingTabId("")}
                                     onDrop={event => {
                                         event.preventDefault();
@@ -3609,13 +3823,17 @@ export default function Clipboard() {
                             <button
                                 key={entry.id}
                                 type="button"
-                                className={`tab-item record ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`}
-                                draggable
-                                onClick={() => setActiveTab(entry.id)}
-                                onDoubleClick={event => openEditRecordTagEditor(tag, event.currentTarget)}
+                                className={`tab-item record ${tutorialActive ? 'tutorial-locked' : ''} ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`}
+                                draggable={!tutorialActive}
+                                onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab(entry.id)}
+                                onDoubleClick={tutorialActive ? undefined : event => openEditRecordTagEditor(tag, event.currentTarget)}
                                 onContextMenu={event => {
                                     event.preventDefault();
                                     event.stopPropagation();
+                                    if (tutorialActive) {
+                                        blockTutorialNavigation();
+                                        return;
+                                    }
                                     setContextMenu(null);
                                     const position = floatingPositionFromClick(
                                         event.clientX,
@@ -3632,7 +3850,9 @@ export default function Clipboard() {
                                         originY: event.clientY,
                                     });
                                 }}
-                                onDragStart={() => setDraggingTabId(entry.id)}
+                                onDragStart={() => {
+                                    if (!tutorialActive) setDraggingTabId(entry.id);
+                                }}
                                 onDragEnd={() => setDraggingTabId("")}
                                 onDrop={event => {
                                     event.preventDefault();
@@ -3643,25 +3863,49 @@ export default function Clipboard() {
                             </button>
                         );
                     })}
-                    <button
-                        ref={addTabButtonRef}
-                        type="button"
-                        className="tab-add-button"
-                        title={t("tabs.add")}
-                        onClick={event => {
-                            event.stopPropagation();
-                            openTagCreateChoice(event.clientX, event.clientY);
-                        }}
-                    >
-                        <AddIcon fontSize="small" />
-                    </button>
+                    {!tutorialActive && (
+                        <button
+                            ref={addTabButtonRef}
+                            type="button"
+                            className="tab-add-button"
+                            title={t("tabs.add")}
+                            onClick={event => {
+                                event.stopPropagation();
+                                openTagCreateChoice(event.clientX, event.clientY);
+                            }}
+                        >
+                            <AddIcon fontSize="small" />
+                        </button>
+                    )}
                 </div>
                 <div className="header-actions">
+                    {!tutorialActive && (
+                        <div className="tutorial-debug-group" aria-label={t("tutorial.debug")}>
+                            <button
+                                type="button"
+                                className="settings-button tutorial-debug-button"
+                                title={t("tutorial.debug.windows")}
+                                onClick={() => openTutorialFromDebug("windows")}
+                            >
+                                <WindowOutlinedIcon className="settings-icon" fontSize="inherit" />
+                                <span>Win</span>
+                            </button>
+                            <button
+                                type="button"
+                                className="settings-button tutorial-debug-button"
+                                title={t("tutorial.debug.mac")}
+                                onClick={() => openTutorialFromDebug("mac")}
+                            >
+                                <AppleIcon className="settings-icon" fontSize="inherit" />
+                                <span>Mac</span>
+                            </button>
+                        </div>
+                    )}
                     <button
                         type="button"
                         className="settings-button"
                         title={t("common.settings")}
-                        onClick={openConfigWindow}
+                        onClick={tutorialActive ? blockTutorialNavigation : openConfigWindow}
                     >
                         <SettingsOutlinedIcon className="settings-icon" fontSize="inherit" />
                     </button>
@@ -3672,12 +3916,24 @@ export default function Clipboard() {
             <div
                 className="cards-container"
                 ref={cardsContainerRef}
-                onScroll={() => maybeLoadMoreHistory()}
-                onPointerDown={handleCardsPointerDown}
-                onPointerMove={handleCardsPointerMove}
-                onPointerUp={finishCardsPointerDrag}
-                onPointerCancel={finishCardsPointerDrag}
-                onLostPointerCapture={finishCardsPointerDrag}
+                onScroll={() => {
+                    if (!tutorialActive) maybeLoadMoreHistory();
+                }}
+                onPointerDown={(event) => {
+                    if (!tutorialActive) handleCardsPointerDown(event);
+                }}
+                onPointerMove={(event) => {
+                    if (!tutorialActive) handleCardsPointerMove(event);
+                }}
+                onPointerUp={(event) => {
+                    if (!tutorialActive) finishCardsPointerDrag(event);
+                }}
+                onPointerCancel={(event) => {
+                    if (!tutorialActive) finishCardsPointerDrag(event);
+                }}
+                onLostPointerCapture={(event) => {
+                    if (!tutorialActive) finishCardsPointerDrag(event);
+                }}
                 onClickCapture={(event) => {
                     if (suppressClickAfterDragRef.current) {
                         event.preventDefault();
@@ -3686,25 +3942,40 @@ export default function Clipboard() {
                     }
                 }}
             >
-                <div className="cards-grid">
-                    {clipboardPage.list.map((item, index) => (
-                        <ClipboardCard
-                            key={item.getHash() as string}
-                            item={item}
-                            selected={selected === item.getHash()}
-                            simulatedHover={simulatedHoverHash === item.getHash()}
-                            refreshKey={fileRefreshKey}
-                            searchQuery={searchWord as string}
-                            shortcutHint={altHintsVisible && index < 9 ? String(index + 1) : undefined}
-                            mediaPlaybackReady={animationState === 'entered'}
-                            t={t}
-                            onContextMenu={openClipboardContextMenu}
-                        />
-                    ))}
-                    {isLoadingMore && (
-                        <div className="history-loading-card">{t("common.loading")}</div>
-                    )}
-                </div>
+                {tutorialActive ? (
+                    <TutorialOverlay
+                        key={tutorialRunId}
+                        t={t}
+                        logoSrc={aboutLogo}
+                        shortcutText={tutorialShortcutText}
+                        platform={tutorialPlatform}
+                        permissions={tutorialPermissions}
+                        filters={tutorialFilters}
+                        onPermissionAction={handleTutorialPermissionAction}
+                        onToggleFilter={handleTutorialFilterToggle}
+                        onComplete={completeTutorial}
+                    />
+                ) : (
+                    <div className="cards-grid">
+                        {clipboardPage.list.map((item, index) => (
+                            <ClipboardCard
+                                key={item.getHash() as string}
+                                item={item}
+                                selected={selected === item.getHash()}
+                                simulatedHover={simulatedHoverHash === item.getHash()}
+                                refreshKey={fileRefreshKey}
+                                searchQuery={searchWord as string}
+                                shortcutHint={altHintsVisible && index < 9 ? String(index + 1) : undefined}
+                                mediaPlaybackReady={animationState === 'entered'}
+                                t={t}
+                                onContextMenu={openClipboardContextMenu}
+                            />
+                        ))}
+                        {isLoadingMore && (
+                            <div className="history-loading-card">{t("common.loading")}</div>
+                        )}
+                    </div>
+                )}
             </div>
             {tagCreateChoice && (
                 <div

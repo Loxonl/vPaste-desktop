@@ -23,18 +23,18 @@ export function isMacPlatform(): boolean {
     return MAC_PLATFORM_PATTERNS.some(pattern => platform.includes(pattern));
 }
 
-export function getModifierDisplayLabel(modifier: string): string {
+export function getModifierDisplayLabel(modifier: string, macPlatform = isMacPlatform()): string {
     const normalized = modifier.trim().toLowerCase();
 
     if (normalized === "control" || normalized === "ctrl") return "Ctrl";
-    if (normalized === "alt") return isMacPlatform() ? "Option" : "Alt";
+    if (normalized === "alt") return macPlatform ? "Option" : "Alt";
     if (normalized === "shift") return "Shift";
     if (normalized === "command" || normalized === "meta" || normalized === "cmd") return "Command";
-    if (normalized === "super" || normalized === "win" || normalized === "windows") return isMacPlatform() ? "Command" : "Win";
+    if (normalized === "super" || normalized === "win" || normalized === "windows") return macPlatform ? "Command" : "Win";
     return modifier;
 }
 
-export function formatShortcutLabel(value?: string): string {
+export function formatShortcutLabel(value?: string, macPlatform = isMacPlatform()): string {
     if (!value) return "";
 
     return value
@@ -42,7 +42,7 @@ export function formatShortcutLabel(value?: string): string {
         .map(part => {
             const normalized = part.trim().toLowerCase();
             if (["control", "ctrl", "alt", "shift", "command", "meta", "cmd", "super", "win", "windows"].includes(normalized)) {
-                return getModifierDisplayLabel(part);
+                return getModifierDisplayLabel(part, macPlatform);
             }
             if (normalized === "enter" || normalized === "return") return "Enter";
             if (normalized === "escape" || normalized === "esc") return "Esc";

@@ -594,6 +594,14 @@ function getTypeAccentColor(type: ItemType): string {
     }
 }
 
+const APP_ICON_HEADER_ACCENT_COLOR = "#637083";
+
+function getFormatTagColor(type: ItemType, headerColor: DominantColor | null, hasAppIcon: boolean): string {
+    if (headerColor) return headerColor.color;
+    if (hasAppIcon) return APP_ICON_HEADER_ACCENT_COLOR;
+    return getTypeAccentColor(type);
+}
+
 function compactPath(path: string, maxLength: number = 28): string {
     const normalized = path.replace(/\\/g, "/");
     if (normalized.length <= maxLength) return normalized;
@@ -1446,10 +1454,10 @@ function ClipboardCardComponent({ item, selected, simulatedHover, refreshKey, se
         ? { color: item.getTitleColor() as string, textColor: textColorForBackground(item.getTitleColor() as string) }
         : null;
     const [headerColor, setHeaderColor] = useState<DominantColor | null>(initialHeaderColor);
-    const formatTagColor = headerColor?.color || getTypeAccentColor(visualType);
-    const [hovered, setHovered] = useState(false);
     const appIconPath = item.getAppIconPath();
     const appIconSrc = appIconPath ? convertFileSrc(appIconPath) : "";
+    const formatTagColor = getFormatTagColor(visualType, headerColor, Boolean(appIconSrc));
+    const [hovered, setHovered] = useState(false);
     const isMacosAppIcon = appIconPath.endsWith("-macos.png");
     const previewActive = selected || hovered || simulatedHover;
     const updateGifFormat = useCallback((gif: boolean) => {

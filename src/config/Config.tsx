@@ -737,6 +737,7 @@ function DataSettings({ config, storagePaths, t, onSave, onBlockingOperationChan
     const [storageDirDraft, setStorageDirDraft] = React.useState(config.storage_dir || "");
     const [cleanupDays, setCleanupDays] = React.useState<string>("");
     const [cleanupInfo, setCleanupInfo] = React.useState<StorageCleanupInfo | null>(null);
+    const [storageSummary, setStorageSummary] = React.useState<StorageCleanupInfo | null>(null);
     const [recentAppSources, setRecentAppSources] = React.useState<AppSourceOption[]>([]);
     const [selectedPrivacyApp, setSelectedPrivacyApp] = React.useState("");
     const [cleanupWorking, setCleanupWorking] = React.useState(false);
@@ -765,6 +766,16 @@ function DataSettings({ config, storagePaths, t, onSave, onBlockingOperationChan
         loadRecentAppSources();
     }, [loadRecentAppSources]);
 
+    const refreshStorageSummary = React.useCallback(() => {
+        invoke<StorageCleanupInfo>('estimate_storage_cleanup', { days: 0 })
+            .then(setStorageSummary)
+            .catch(e => error(`Failed to load storage summary: ${e}`));
+    }, []);
+
+    React.useEffect(() => {
+        refreshStorageSummary();
+    }, [refreshStorageSummary]);
+
     React.useEffect(() => {
         if (selectedPrivacyApp && config.ignored_app_sources.includes(selectedPrivacyApp)) {
             setSelectedPrivacyApp("");
@@ -775,12 +786,13 @@ function DataSettings({ config, storagePaths, t, onSave, onBlockingOperationChan
         const resetCleanup = () => {
             setCleanupDays("");
             setCleanupInfo(null);
+            refreshStorageSummary();
         };
         const unlisten = listen("config-opened", resetCleanup);
         return () => {
             unlisten.then(fn => fn()).catch(e => error(`Failed to unlisten config-opened: ${e}`));
         };
-    }, []);
+    }, [refreshStorageSummary]);
 
     React.useEffect(() => {
         const unlisten = listen<HistoryArchiveProgressPayload>("history-archive-progress", event => {
@@ -891,6 +903,7 @@ function DataSettings({ config, storagePaths, t, onSave, onBlockingOperationChan
             if (cleanupDays) {
                 refreshCleanupInfo(Number(cleanupDays));
             }
+            refreshStorageSummary();
         } catch (e) {
             error(`Failed to import history: ${e}`);
             setTransferMessage({ kind: 'error', text: t("settings.importFailed", { error: String(e) }) });
@@ -913,6 +926,7 @@ function DataSettings({ config, storagePaths, t, onSave, onBlockingOperationChan
             setCleanupInfo(info);
             const nextInfo = await invoke<StorageCleanupInfo>('estimate_storage_cleanup', { days: Number(cleanupDays) });
             setCleanupInfo(nextInfo);
+            refreshStorageSummary();
         } catch (e) {
             error(`Failed to cleanup storage history: ${e}`);
         } finally {
@@ -1079,7 +1093,9 @@ function DataSettings({ config, storagePaths, t, onSave, onBlockingOperationChan
                                     primary={t("settings.cleanupHistory")}
                                     secondary={cleanupInfo
                                         ? t("settings.cleanupEstimate", { bytes: formatBytes(cleanupInfo.bytes), items: cleanupInfo.items })
-                                        : t("settings.cleanupPlaceholder")}
+                                        : storageSummary
+                                            ? t("settings.cleanupSummary", { bytes: formatBytes(storageSummary.bytes), items: storageSummary.items })
+                                            : t("settings.cleanupSummaryLoading")}
                                     primaryTypographyProps={PRIMARY_TEXT_PROPS}
                                     secondaryTypographyProps={SECONDARY_TEXT_PROPS}
                                 />

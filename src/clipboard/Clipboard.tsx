@@ -14,12 +14,13 @@ import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutl
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
-import SchoolOutlinedIcon from "@mui/icons-material/SchoolOutlined";
+import AppleIcon from "@mui/icons-material/Apple";
+import WindowOutlinedIcon from "@mui/icons-material/WindowOutlined";
 import AddIcon from "@mui/icons-material/Add";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
 import StarBorderOutlinedIcon from "@mui/icons-material/StarBorderOutlined";
-import TutorialOverlay, { TutorialFilterId, TutorialFilterTab, TutorialPermission, TutorialPermissionId } from "./TutorialOverlay.tsx";
+import TutorialOverlay, { TutorialFilterId, TutorialFilterTab, TutorialPermission, TutorialPermissionId, TutorialPlatform } from "./TutorialOverlay.tsx";
 import aboutLogo from "../assets/about-logo.png";
 
 const CLIPBOARD_ANIMATION_MS = 120;
@@ -1661,6 +1662,7 @@ export default function Clipboard() {
     const [tutorialRunId, setTutorialRunId] = useState(0);
     const [tutorialConfig, setTutorialConfig] = useState<ClipboardBehaviorConfig>({});
     const [tutorialPastePermissionGranted, setTutorialPastePermissionGranted] = useState(false);
+    const [tutorialPlatform, setTutorialPlatform] = useState<TutorialPlatform>(() => isMacPlatform() ? "mac" : "windows");
     const [mainShortcut, setMainShortcut] = useState(DEFAULT_MAIN_SHORTCUT);
 
     // Initialize with mock data
@@ -2138,7 +2140,7 @@ export default function Clipboard() {
         return config;
     };
 
-    const startTutorial = async () => {
+    const startTutorial = async (platform: TutorialPlatform = isMacPlatform() ? "mac" : "windows") => {
         setContextMenu(null);
         setTabContextMenu(null);
         setTagCreateChoice(null);
@@ -2151,10 +2153,13 @@ export default function Clipboard() {
         activeTabRef.current = "all";
         setActiveTab("all");
         suppressClickAfterDragRef.current = false;
+        setTutorialPlatform(platform);
         setTutorialRunId(id => id + 1);
         setTutorialActive(true);
         void refreshTutorialConfig();
-        void refreshTutorialPastePermission();
+        if (platform === "mac") {
+            void refreshTutorialPastePermission();
+        }
     };
 
     const saveTutorialConfig = async (nextConfig: ClipboardBehaviorConfig) => {
@@ -3621,8 +3626,8 @@ export default function Clipboard() {
         void invoke('open_config_window').catch(e => error(`Failed to open config window: ${e}`));
     };
 
-    const openTutorialFromDebug = () => {
-        void invoke('open_onboarding_window').catch(e => error(`Failed to open tutorial: ${e}`));
+    const openTutorialFromDebug = (platform: TutorialPlatform) => {
+        void startTutorial(platform);
     };
 
     const blockTutorialNavigation = () => {
@@ -3855,14 +3860,26 @@ export default function Clipboard() {
                 </div>
                 <div className="header-actions">
                     {!tutorialActive && (
-                        <button
-                            type="button"
-                            className="settings-button tutorial-debug-button"
-                            title={t("tutorial.debug")}
-                            onClick={openTutorialFromDebug}
-                        >
-                            <SchoolOutlinedIcon className="settings-icon" fontSize="inherit" />
-                        </button>
+                        <div className="tutorial-debug-group" aria-label={t("tutorial.debug")}>
+                            <button
+                                type="button"
+                                className="settings-button tutorial-debug-button"
+                                title={t("tutorial.debug.windows")}
+                                onClick={() => openTutorialFromDebug("windows")}
+                            >
+                                <WindowOutlinedIcon className="settings-icon" fontSize="inherit" />
+                                <span>Win</span>
+                            </button>
+                            <button
+                                type="button"
+                                className="settings-button tutorial-debug-button"
+                                title={t("tutorial.debug.mac")}
+                                onClick={() => openTutorialFromDebug("mac")}
+                            >
+                                <AppleIcon className="settings-icon" fontSize="inherit" />
+                                <span>Mac</span>
+                            </button>
+                        </div>
                     )}
                     <button
                         type="button"
@@ -3911,6 +3928,7 @@ export default function Clipboard() {
                         t={t}
                         logoSrc={aboutLogo}
                         shortcutText={tutorialShortcutText}
+                        platform={tutorialPlatform}
                         permissions={tutorialPermissions}
                         filters={tutorialFilters}
                         onPermissionAction={handleTutorialPermissionAction}

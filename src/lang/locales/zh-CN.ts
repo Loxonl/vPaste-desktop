@@ -336,6 +336,8 @@ const zhCN: LanguagePack = {
         "settings.updateFeedHint": "Stable 通道，升级默认保留数据",
 
         "tutorial.debug": "打开向导",
+        "tutorial.debug.windows": "测试 Windows 向导",
+        "tutorial.debug.mac": "测试 macOS 向导",
         "tutorial.finishFirst": "请先完成向导内容",
         "tutorial.done": "已完成",
         "tutorial.back": "上一步",
@@ -359,8 +361,6 @@ const zhCN: LanguagePack = {
         "tutorial.shortcut.desc": "按一次呼出窗口，再按一次收起。",
         "tutorial.shortcut.default": "默认快捷键",
         "tutorial.shortcut.hint": "在任意应用里按下它，vPaste 会立刻出现；再按一次就会收起。",
-        "tutorial.shortcut.open": "打开窗口",
-        "tutorial.shortcut.hideWindow": "隐藏窗口",
     },
 };
 

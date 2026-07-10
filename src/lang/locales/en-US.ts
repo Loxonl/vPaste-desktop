@@ -336,6 +336,8 @@ const enUS: LanguagePack = {
         "settings.updateFeedHint": "Stable channel. Your data is kept during upgrades",
 
         "tutorial.debug": "Open tutorial",
+        "tutorial.debug.windows": "Test Windows tutorial",
+        "tutorial.debug.mac": "Test macOS tutorial",
         "tutorial.finishFirst": "Please finish the tutorial first.",
         "tutorial.done": "Done",
         "tutorial.back": "Previous",
@@ -359,8 +361,6 @@ const enUS: LanguagePack = {
         "tutorial.shortcut.desc": "Press once to summon vPaste, then again to tuck it away.",
         "tutorial.shortcut.default": "Default shortcut",
         "tutorial.shortcut.hint": "Press it in any app to bring vPaste up instantly. Press it again to tuck the window away.",
-        "tutorial.shortcut.open": "Open window",
-        "tutorial.shortcut.hideWindow": "Hide window",
     },
 };
 

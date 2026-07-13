@@ -21,7 +21,3 @@ Official packaging, signing, updater, and installer tooling run in the maintaine
 - [Windows Release Flow](open-source/releases/windows-release-flow.md)
 - [Windows Install / Update / Uninstall Flow](open-source/releases/windows-install-update-flow.md)
 - [macOS Release Flow](open-source/releases/macos-release-flow.md)
-
-## Website
-
-- [Landing Page Draft](website/index.html) - public landing page (build-from-source until signed releases exist)

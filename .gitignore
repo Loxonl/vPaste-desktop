@@ -12,8 +12,6 @@ docs/*
 !docs/assets/
 !docs/assets/readme/
 !docs/assets/readme/**
-!docs/website/
-!docs/website/**
 docs/team/
 docs/team/**
 docs/local/

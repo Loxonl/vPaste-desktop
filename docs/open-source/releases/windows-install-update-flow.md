@@ -2,7 +2,7 @@
 
 > 维护者向。官方打包、签名、更新器与安装器外壳工具在维护者环境中运行，不包含在本公开仓库中。贡献者无需执行本流程；贡献者的构建/检查命令见 README 与 CONTRIBUTING。
 
-本文档记录 vPaste Windows 官网直装链路的当前约定。当前阶段只维护 Stable 通道，不覆盖企业 MSI、MSIX、Intune 或全用户安装。
+本文档记录 vPaste Windows Stable 直装链路的当前约定。当前阶段不覆盖企业 MSI、MSIX、Intune 或全用户安装。
 
 ## 交付物
 

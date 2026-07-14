@@ -30,6 +30,7 @@ const HISTORY_DATA_URL_CACHE_LIMIT = 80;
 const ACTIVE_IMAGE_LOAD_DELAY_MS = 140;
 const IMAGE_EXPORT_DIR_KEY = "vpaste.imageExportDir.v1";
 const PENDING_ITEM_TAGS_CHANGED_KEY = "vpaste.pendingItemTagsChangedPayload";
+const PENDING_PERMISSION_WINDOW_KEY = "vpaste.pendingOnboardingPermission.v1";
 const historyDataUrlCache = new Map<string, string>();
 const historyPreviewSrcCache = new Map<string, string>();
 const historyOriginalSrcCache = new Map<string, string>();
@@ -51,11 +52,6 @@ type ToastState = {
     onAction?: () => void;
 } | null;
 
-type PasteAccessibilityPermissionState = {
-    title: string;
-    description: string;
-} | null;
-
 type FilePreviewInfo = {
     kind: 'single-preview' | 'single-icon' | 'single-folder' | 'multiple' | 'pdf-preview' | 'text-preview';
     paths: string[];
@@ -75,7 +71,6 @@ type DominantColor = {
 };
 
 type ClipboardBehaviorConfig = {
-    startup?: boolean;
     display_tray_icon?: boolean;
     onboarding_completed?: boolean;
     retain_search_history?: boolean;
@@ -93,6 +88,11 @@ type ClipboardBehaviorConfig = {
 type PasteAccessibilityPermissionStatus = {
     granted: boolean;
     needs_settings: boolean;
+};
+
+type TutorialPermissionStatus = {
+    background: { done: boolean; error?: string | null };
+    paste: { done: boolean; needs_settings: boolean; error?: string | null };
 };
 
 type LinkPreviewUpdate = {
@@ -1650,15 +1650,13 @@ export default function Clipboard() {
     const [deleteConfirmTab, setDeleteConfirmTab] = useState<CustomTab | null>(null);
     const [deleteConfirmRecordTag, setDeleteConfirmRecordTag] = useState<ItemTag | null>(null);
     const [itemTags, setItemTags] = useState<ItemTag[]>([]);
-    const [pasteAccessibilityPrompt, setPasteAccessibilityPrompt] = useState<PasteAccessibilityPermissionState>(null);
     const [hasMoreHistory, setHasMoreHistory] = useState(true);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [altHintsVisible, setAltHintsVisible] = useState(false);
     const [simulatedHoverHash, setSimulatedHoverHash] = useState("");
     const [tutorialActive, setTutorialActive] = useState(false);
     const [tutorialRunId, setTutorialRunId] = useState(0);
-    const [tutorialConfig, setTutorialConfig] = useState<ClipboardBehaviorConfig>({});
-    const [tutorialPastePermissionGranted, setTutorialPastePermissionGranted] = useState(false);
+    const [tutorialPermissionStatus, setTutorialPermissionStatus] = useState<TutorialPermissionStatus | null>(null);
     const [tutorialPlatform, setTutorialPlatform] = useState<TutorialPlatform>(() => isMacPlatform() ? "mac" : "windows");
     const [mainShortcut, setMainShortcut] = useState(DEFAULT_MAIN_SHORTCUT);
 
@@ -2064,43 +2062,25 @@ export default function Clipboard() {
         }
     };
 
-    const closePasteAccessibilityPrompt = () => {
-        setPasteAccessibilityPrompt(null);
+    const openPasteAccessibilityGuide = async () => {
+        const payload = { permission: "paste", languageCode };
+        localStorage.setItem(PENDING_PERMISSION_WINDOW_KEY, JSON.stringify(payload));
+        setContextMenu(null);
+        await invoke("open_onboarding_permission_window", payload);
     };
 
     const ensurePasteAccessibilityPermission = async (): Promise<boolean> => {
         try {
             const status = await invoke<PasteAccessibilityPermissionStatus>('ensure_paste_accessibility_permission');
             if (status.granted) {
-                setPasteAccessibilityPrompt(null);
                 return true;
             }
-            setContextMenu(null);
-            setPasteAccessibilityPrompt({
-                title: t('clipboard.accessibilityRequiredTitle'),
-                description: t('clipboard.accessibilityRequiredDesc'),
-            });
+            await openPasteAccessibilityGuide();
             return false;
         } catch (e) {
             error(`Failed to check Accessibility permission: ${e}`);
             showToast(t("clipboard.actionFailed", { error: String(e) }), 'error');
             return false;
-        }
-    };
-
-    const openAccessibilitySettings = async () => {
-        try {
-            await invoke('open_accessibility_settings');
-        } catch (e) {
-            error(`Failed to open Accessibility settings: ${e}`);
-            showToast(t('clipboard.accessibilityOpenSettingsFailed', { error: String(e) }), 'error');
-        }
-    };
-
-    const retryPasteAccessibilityPermission = async () => {
-        const granted = await ensurePasteAccessibilityPermission();
-        if (granted) {
-            closePasteAccessibilityPrompt();
         }
     };
 
@@ -2114,24 +2094,19 @@ export default function Clipboard() {
         }
     };
 
-    const saveBehaviorConfig = async (config: ClipboardBehaviorConfig) => {
-        await invoke('save_config', { config: JSON.stringify(config) });
-    };
-
-    const refreshTutorialPastePermission = async () => {
+    const refreshTutorialPermissionStatus = async (): Promise<TutorialPermissionStatus | null> => {
         try {
-            const status = await invoke<PasteAccessibilityPermissionStatus>('check_paste_accessibility_permission');
-            setTutorialPastePermissionGranted(status.granted);
-            return status.granted;
+            const status = await invoke<TutorialPermissionStatus>('get_onboarding_permission_status');
+            setTutorialPermissionStatus(status);
+            return status;
         } catch (e) {
-            error(`Failed to refresh tutorial Accessibility permission: ${e}`);
-            return false;
+            error(`Failed to refresh tutorial permission status: ${e}`);
+            return null;
         }
     };
 
     const refreshTutorialConfig = async () => {
         const config = await loadBehaviorConfig();
-        setTutorialConfig(config);
         setMainShortcut(config.shortcut_keys?.main_window || DEFAULT_MAIN_SHORTCUT);
         return config;
     };
@@ -2142,7 +2117,6 @@ export default function Clipboard() {
         setTagCreateChoice(null);
         setDeleteConfirmTab(null);
         setDeleteConfirmRecordTag(null);
-        setPasteAccessibilityPrompt(null);
         setSearchWord("");
         setSearchOpen(false);
         hideAltHints();
@@ -2154,32 +2128,16 @@ export default function Clipboard() {
         setTutorialActive(true);
         void refreshTutorialConfig();
         if (platform === "mac") {
-            void refreshTutorialPastePermission();
+            setTutorialPermissionStatus(null);
+            void refreshTutorialPermissionStatus();
         }
-    };
-
-    const saveTutorialConfig = async (nextConfig: ClipboardBehaviorConfig) => {
-        await saveBehaviorConfig(nextConfig);
-        setTutorialConfig(nextConfig);
-        setMainShortcut(nextConfig.shortcut_keys?.main_window || DEFAULT_MAIN_SHORTCUT);
     };
 
     const handleTutorialPermissionAction = async (id: TutorialPermissionId) => {
         try {
-            if (id === "paste") {
-                const granted = await ensurePasteAccessibilityPermission();
-                setTutorialPastePermissionGranted(granted);
-                if (!granted) {
-                    await openAccessibilitySettings();
-                }
-                return;
-            }
-
-            const config = await loadBehaviorConfig();
-            const nextConfig = id === "startup"
-                ? { ...config, startup: true }
-                : { ...config, display_tray_icon: true };
-            await saveTutorialConfig(nextConfig);
+            const payload = { permission: id, languageCode };
+            localStorage.setItem(PENDING_PERMISSION_WINDOW_KEY, JSON.stringify(payload));
+            await invoke("open_onboarding_permission_window", payload);
         } catch (e) {
             showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
         }
@@ -2222,7 +2180,6 @@ export default function Clipboard() {
         try {
             await invoke("complete_onboarding");
             setTutorialActive(false);
-            setTutorialConfig(config => ({ ...config, onboarding_completed: true }));
             void fetchHistory();
         } catch (e) {
             showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
@@ -2648,6 +2605,10 @@ export default function Clipboard() {
             setTutorialActive(false);
         });
 
+        const unlistenPermissionStatusChanged = listen('onboarding-permission-status-changed', () => {
+            void refreshTutorialPermissionStatus();
+        });
+
         const unlistenCustomTabs = listen<{ activeId?: string, tabs?: CustomTab[] } | string>('custom-tabs-changed', event => {
             const payload = typeof event.payload === "string"
                 ? JSON.parse(event.payload || "{}") as { activeId?: string, tabs?: CustomTab[] }
@@ -2691,8 +2652,13 @@ export default function Clipboard() {
         };
         const handleWindowFocus = () => {
             consumePendingItemTagsChanged();
-            if (tutorialActiveRef.current) {
-                void refreshTutorialPastePermission();
+            if (tutorialActiveRef.current && isMacPlatform()) {
+                void refreshTutorialPermissionStatus();
+            }
+        };
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible' && tutorialActiveRef.current && isMacPlatform()) {
+                void refreshTutorialPermissionStatus();
             }
         };
         const handleStorage = (event: StorageEvent) => {
@@ -2703,6 +2669,7 @@ export default function Clipboard() {
         const clearSimulatedHover = () => setSimulatedHoverHash("");
         window.addEventListener('mousemove', clearSimulatedHover, { capture: true });
         window.addEventListener('focus', handleWindowFocus);
+        document.addEventListener('visibilitychange', handleVisibilityChange);
         window.addEventListener('storage', handleStorage);
         window.addEventListener('blur', handleWindowBlur);
         window.addEventListener('click', closeContextMenu);
@@ -2742,8 +2709,10 @@ export default function Clipboard() {
             unlistenPreviewNavigation.then(f => f()).catch(e => error(`Failed to unlisten preview navigation: ${e}`));
             unlistenTutorialStarted.then(f => f()).catch(e => error(`Failed to unlisten tutorial start: ${e}`));
             unlistenTutorialCompleted.then(f => f()).catch(e => error(`Failed to unlisten tutorial complete: ${e}`));
+            unlistenPermissionStatusChanged.then(f => f()).catch(e => error(`Failed to unlisten onboarding permission status: ${e}`));
             window.removeEventListener('mousemove', clearSimulatedHover, { capture: true });
             window.removeEventListener('focus', handleWindowFocus);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
             window.removeEventListener('storage', handleStorage);
             window.removeEventListener('blur', handleWindowBlur);
             window.removeEventListener('click', closeContextMenu);
@@ -3583,24 +3552,17 @@ export default function Clipboard() {
 
     const tutorialPermissions: TutorialPermission[] = [
         {
-            id: "startup",
-            title: t("tutorial.permission.startup"),
-            description: t("tutorial.permission.startup.desc"),
-            done: tutorialConfig.startup === true,
-            actionLabel: t("tutorial.permission.enable"),
-        },
-        {
             id: "background",
             title: t("tutorial.permission.background"),
             description: t("tutorial.permission.background.desc"),
-            done: tutorialConfig.display_tray_icon !== false,
+            done: tutorialPermissionStatus?.background.done === true,
             actionLabel: t("tutorial.permission.enable"),
         },
         {
             id: "paste",
             title: t("tutorial.permission.paste"),
             description: t("tutorial.permission.paste.desc"),
-            done: tutorialPastePermissionGranted,
+            done: tutorialPermissionStatus?.paste.done === true,
             actionLabel: t("tutorial.permission.openSettings"),
         },
     ];
@@ -4077,35 +4039,6 @@ export default function Clipboard() {
                             </button>
                             <button type="button" className="danger" onClick={() => void deleteRecordTag(deleteConfirmRecordTag)}>
                                 {t("tabs.delete")}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-            {pasteAccessibilityPrompt && (
-                <div
-                    className="clipboard-permission-backdrop"
-                    role="alertdialog"
-                    aria-modal="true"
-                    aria-labelledby="clipboard-permission-title"
-                    aria-describedby="clipboard-permission-desc"
-                    onClick={closePasteAccessibilityPrompt}
-                >
-                    <div
-                        className="clipboard-permission-dialog"
-                        onClick={event => event.stopPropagation()}
-                    >
-                        <strong id="clipboard-permission-title">{pasteAccessibilityPrompt.title}</strong>
-                        <p id="clipboard-permission-desc">{pasteAccessibilityPrompt.description}</p>
-                        <div className="clipboard-permission-actions">
-                            <button type="button" onClick={closePasteAccessibilityPrompt}>
-                                {t("clipboard.accessibilityCancel")}
-                            </button>
-                            <button type="button" onClick={() => void retryPasteAccessibilityPermission()}>
-                                {t("clipboard.accessibilityRetry")}
-                            </button>
-                            <button type="button" className="primary" onClick={() => void openAccessibilitySettings()}>
-                                {t("clipboard.accessibilityOpenSettings")}
                             </button>
                         </div>
                     </div>

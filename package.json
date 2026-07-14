@@ -22,6 +22,7 @@
     "build": "tsc && vite build",
     "build:windows": "tauri build --bundles nsis --config src-tauri/tauri.local.conf.json",
     "build:macos": "tauri build --bundles dmg --config src-tauri/tauri.local.conf.json",
+    "build:macos-release": "bash ./scripts/build-macos-release.sh",
     "check:licenses": "node scripts/check-third-party-licenses.mjs",
     "check:release": "node scripts/check-release-version.mjs",
     "preview": "vite preview",

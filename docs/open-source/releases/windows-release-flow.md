@@ -1,64 +1,42 @@
 # Windows Release Flow
 
-> Maintainer-only. Official Windows packaging, signing, updater, and installer-shell tooling run in the maintainer environment and are not part of this public repository. Contributors do not need this flow; the contributor build/check commands are in the README and CONTRIBUTING.
+Windows x64 is an official release target. The complete build definition is public in `.github/workflows/release.yml`; only certificates and private keys remain outside the repository.
 
-## Scope
+## Local package
 
-This document records the maintainer Windows packaging path for vPaste. It assumes feature work, review, and broader validation already happen through the GitHub branch and PR workflow. The packaging scripts and installer shell referenced below live in the maintainer's private release environment, not in this repository.
+Run on Windows:
 
-## Build Command (maintainer environment)
+```powershell
+npm ci
+npm run build:windows
+```
 
-Official Windows packaging is produced by a maintainer-side release script (not present in this repository) that builds the frontend and main Tauri app, patches the generated NSIS script, rebuilds the NSIS payload, builds the modern setup shell with that payload embedded, signs the public setup shell for updater verification, and writes `latest.json`.
+This creates a standard Tauri NSIS current-user installer under `src-tauri/target/release/bundle/nsis/`. The local override disables updater artifact generation, so no updater private key is needed. The result is not an official signed release.
 
-## Artifacts
+## Official package
 
-- Public installer: `src-tauri/target/release/bundle/nsis/vPaste_<version>_x64-setup.exe`
-- Internal NSIS payload: `src-tauri/target/release/bundle/nsis/vPaste_<version>_x64-nsis-payload.exe`
-- Updater signature: `src-tauri/target/release/bundle/nsis/vPaste_<version>_x64-setup.exe.sig`
-- Updater manifest: `src-tauri/target/release/bundle/updater/latest.json`
+Pushing a matching `v<version>` tag starts the Release workflow. It:
 
-## Version Files
+1. Confirms the versions in npm, Cargo, and Tauri metadata match the tag.
+2. Reinstalls dependencies from lockfiles and reruns the public checks.
+3. Imports the base64-encoded PFX from the protected `release` environment.
+4. Builds the standard Tauri NSIS installer for `x86_64-pc-windows-msvc`.
+5. Applies Windows Authenticode signing and timestamps the installer.
+6. Creates the Tauri updater signature and adds the Windows entry to `latest.json`.
+7. Verifies Authenticode, generates SHA-256 checksums, and records build provenance.
+8. Uploads everything to a draft GitHub Release for manual smoke testing.
 
-Keep these aligned before packaging:
+Windows code signing and Tauri updater signing are separate. Authenticode establishes Windows publisher trust; the updater signature lets the installed app verify an update package.
 
-- `package.json`
-- `package-lock.json`
-- `src-tauri/Cargo.toml`
-- `src-tauri/Cargo.lock`
-- `src-tauri/tauri.conf.json`
-- `installer-shell/src-tauri/Cargo.toml`
-- `installer-shell/src-tauri/tauri.conf.json`
-- `src/config/Config.tsx`
+## Expected assets
 
-## Maintainer Packaging Steps
+- `vPaste_<version>_windows_x86_64-setup.exe`
+- Matching `.exe.sig`
+- Shared `latest.json`
+- `SHA256SUMS.txt`
+- `THIRD_PARTY_LICENSES.json`
+- `SBOM.cdx.json`
+- `LICENSE`
+- GitHub-generated source `.zip` and `.tar.gz`
 
-1. Confirm the release branch has gone through the normal PR path and required GitHub checks.
-2. Confirm the version files above already contain the intended version.
-3. Run the maintainer-side Windows release script in the maintainer environment.
-4. Check the generated artifacts exist and use the intended version.
-5. Check `latest.json` points to the intended stable update feed and does not contain local paths or secrets.
-6. Keep the NSIS payload for troubleshooting only. Upload the public setup shell, `.sig`, and `latest.json`.
-
-## GitHub Release
-
-Create or update tag `v<version>`.
-
-Upload:
-
-- `vPaste_<version>_x64-setup.exe`
-- `vPaste_<version>_x64-setup.exe.sig`
-- `latest.json`
-
-The public `setup.exe` is the modern setup shell. The NSIS payload should not be the default download entry. The `.sig` and `latest.json` are public updater artifacts. They must not contain the private signing key.
-
-## Installer Notes
-
-- The setup shell owns the visible install, update, and uninstall experience.
-- NSIS remains the reliable hidden execution path for writing and removing the app.
-- Default install mode is current user.
-- Keep install path selection available from the setup shell advanced options.
-- Preserve user data during upgrade.
-- Start menu should include a direct uninstall shortcut that opens `vPasteSetup.exe --uninstall`.
-- The Windows uninstall registry entry should point to the setup shell uninstall mode when supported.
-- Do not describe default NSIS pages as a modern installer UI.
-- Avoid fixed-size NSIS header/sidebar bitmaps that become blurry on high-DPI displays.
+The public build intentionally uses Tauri's reproducible NSIS path. No private installer shell or patched binary payload is part of the release contract.

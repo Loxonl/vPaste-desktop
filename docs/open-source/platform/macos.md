@@ -92,7 +92,7 @@ Use a macOS-safe launch-at-login mechanism. Avoid Windows startup registry assum
 
 Public macOS releases target macOS 11 Big Sur or newer. Apple silicon support starts at macOS 11, and Intel/universal release builds use the same `MACOSX_DEPLOYMENT_TARGET=11.0` baseline unless a separate legacy Intel build is explicitly created and tested.
 
-Initial deliverable can be a local `.app` or `.dmg`. Public distribution later requires:
+Local ad-hoc `.app` / `.dmg` packaging is available through `npm run build:macos`. The public Release workflow implements the following requirements and will fail until its protected credentials are configured:
 
 - Apple Developer account.
 - Developer ID Application certificate.
@@ -102,7 +102,7 @@ Initial deliverable can be a local `.app` or `.dmg`. Public distribution later r
 
 ### Updater
 
-Tauri updater can be reused conceptually, but macOS endpoints, signatures, package format, and installation behavior must be verified separately from Windows.
+The shared GitHub `latest.json` feed contains separate `darwin-aarch64` and `darwin-x86_64` entries. Each points to a signed `.app.tar.gz`; installation behavior must still be smoke-tested on both architectures before a draft Release is published.
 
 ## Expected Risks
 
@@ -122,9 +122,9 @@ Tauri updater can be reused conceptually, but macOS endpoints, signatures, packa
 5. Implement source app name/icon.
 6. Validate main panel focus, outside click behavior, and keyboard navigation.
 7. Add macOS settings differences.
-8. Add local `.app`/`.dmg` packaging.
-9. Add signing and notarization.
-10. Add macOS updater flow.
+8. Validate local `.app`/`.dmg` packaging.
+9. Configure and validate the protected signing/notarization environment.
+10. Validate clean install and updater flow on both architectures.
 
 ## Verification Matrix
 

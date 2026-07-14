@@ -40,7 +40,8 @@ npm run build
 Rust/Tauri check:
 
 ```powershell
-cargo check --manifest-path src-tauri\Cargo.toml
+cargo check --locked --all-targets --manifest-path src-tauri\Cargo.toml
+cargo test --locked --all-targets --manifest-path src-tauri\Cargo.toml
 ```
 
 Rust formatting check:
@@ -49,6 +50,13 @@ Rust formatting check:
 Push-Location src-tauri
 cargo fmt --all --check
 Pop-Location
+```
+
+Release metadata and dependency-license checks:
+
+```powershell
+npm run check:release
+npm run check:licenses
 ```
 
 ## Privacy and security

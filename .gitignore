@@ -33,6 +33,9 @@ src-tauri/debug/
 src-tauri/gen/
 src-tauri/target-*/
 src-tauri/bundle/
+src-tauri/tauri.release-signing.conf.json
+certificate.p12
+certificate.pfx
 installer-shell/dist/
 installer-shell/src-tauri/target/
 installer-shell/src-tauri/gen/

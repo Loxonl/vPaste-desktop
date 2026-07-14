@@ -8,7 +8,7 @@ Use this checklist before requesting review.
 - Do not merge directly from local work into `main`; open a GitHub PR.
 - Use the PR title format `vPaste-#<issue-number>: <english summary>`. For PRs without a related issue, use `MINOR: <english summary>`.
 - Request maintainer review.
-- Wait for GitHub Actions before merging. At minimum, `Check` should pass; `Build` should pass when it runs.
+- Wait for GitHub Actions before merging. `Check` and all three `Build` matrix jobs should pass. After the repository is public, `Dependency Review` and `CodeQL` should also pass.
 - Keep the change focused.
 - Fill in `.github/pull_request_template.md`.
 - Explain user-facing behavior.
@@ -42,10 +42,10 @@ Use GitHub GraphQL for unresolved review thread details when `gh pr view` is not
 | Change Type | Required Check |
 |---|---|
 | Frontend TypeScript/CSS/UI | `npm run build` |
-| Rust backend/Tauri commands | `cargo check --manifest-path src-tauri\Cargo.toml` |
-| Rust formatting-sensitive changes | `cargo fmt` |
+| Rust backend/Tauri commands | `cargo check --locked --all-targets --manifest-path src-tauri\Cargo.toml` and `cargo test --locked --all-targets --manifest-path src-tauri\Cargo.toml` |
+| Rust formatting-sensitive changes | `cargo fmt --all --check --manifest-path src-tauri\Cargo.toml` |
 | Clipboard behavior | Relevant cases from `docs/open-source/testing/clipboard-cases.md` |
-| Release scripts/config | Relevant release flow document |
+| Release scripts/config | `npm run check:release`, `npm run check:licenses`, workflow lint, and the relevant release flow document |
 | Language text | Verify both `src/lang/locales/en-US.ts` and `src/lang/locales/zh-CN.ts` when applicable |
 
 ## Platform Expectations

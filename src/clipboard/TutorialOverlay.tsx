@@ -1,5 +1,4 @@
 import React from "react";
-import { gsap } from "gsap";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
 import startupVisual from "../assets/tutorial/permission-startup.svg";
@@ -76,135 +75,124 @@ export default function TutorialOverlay({
     const filterStepIndex = hasPermissionStep ? 2 : 1;
     const shortcutStepIndex = hasPermissionStep ? 3 : 2;
 
-    React.useEffect(() => {
+    React.useLayoutEffect(() => {
         const root = rootRef.current;
         if (!root) return;
 
         const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-        let reduceMotionTimer: number | null = null;
-        const ctx = gsap.context(() => {
-            if (step === 0) {
-                if (reduceMotion) {
-                    reduceMotionTimer = window.setTimeout(() => setStep(hasPermissionStep ? 1 : 2), 650);
-                    return;
-                }
+        const animations: Animation[] = [];
+        let stepTimer: number | null = null;
+        const animate = (
+            selector: string,
+            keyframes: Keyframe[],
+            options: KeyframeAnimationOptions,
+            stagger = 0,
+        ) => {
+            root.querySelectorAll<HTMLElement>(selector).forEach((element, index) => {
+                animations.push(element.animate(keyframes, {
+                    fill: "both",
+                    ...options,
+                    delay: Number(options.delay ?? 0) + index * stagger,
+                }));
+            });
+        };
 
-                gsap.timeline({ defaults: { ease: "power3.inOut" } })
-                    .fromTo(
-                        ".tutorial-welcome",
-                        { xPercent: 120, autoAlpha: 0, scale: 0.98 },
-                        { xPercent: 0, autoAlpha: 1, scale: 1, duration: 0.82 },
-                    )
-                    .fromTo(
-                        ".tutorial-welcome-orbit",
-                        { rotate: -8, scale: 0.92 },
-                        { rotate: 0, scale: 1, duration: 0.72, ease: "back.out(1.3)" },
-                        "<0.12",
-                    )
-                    .fromTo(
-                        ".tutorial-welcome-logo",
-                        { rotate: -14, scale: 0.76 },
-                        { rotate: 0, scale: 1, duration: 0.68, ease: "elastic.out(1, 0.55)" },
-                        "<0.02",
-                    )
-                    .fromTo(
-                        ".tutorial-welcome-word",
-                        { y: 24, autoAlpha: 0, rotateX: -24 },
-                        { y: 0, autoAlpha: 1, rotateX: 0, duration: 0.48, stagger: 0.07 },
-                        "<0.12",
-                    )
-                    .fromTo(
-                        ".tutorial-welcome-accent",
-                        { scaleX: 0, transformOrigin: "left center" },
-                        { scaleX: 1, duration: 0.46, ease: "expo.out" },
-                        "<0.12",
-                    )
-                    .to(".tutorial-welcome-orbit", { y: -5, duration: 0.32, ease: "sine.inOut", yoyo: true, repeat: 1 }, "+=0.2")
-                    .to(".tutorial-welcome", { xPercent: -120, autoAlpha: 0, duration: 0.7 }, "+=0.75")
-                    .call(() => setStep(hasPermissionStep ? 1 : 2));
-                return;
+        if (step === 0) {
+            const welcomeDuration = reduceMotion ? 650 : 3300;
+            if (!reduceMotion) {
+                animate(".tutorial-welcome", [
+                    {
+                        transform: "translate3d(64px, 0, 0) scale(.965)",
+                        opacity: 0,
+                        easing: "cubic-bezier(.22,1,.36,1)",
+                    },
+                    { transform: "translate3d(0, 0, 0) scale(1)", opacity: 1, offset: .17 },
+                    {
+                        transform: "translate3d(0, 0, 0) scale(1)",
+                        opacity: 1,
+                        offset: .78,
+                        easing: "cubic-bezier(.65,0,.35,1)",
+                    },
+                    { transform: "translate3d(-120%, 0, 0) scale(1)", opacity: 0 },
+                ], { duration: welcomeDuration, easing: "linear" });
+                animate(".tutorial-welcome-orbit", [
+                    { transform: "rotate(-5deg) scale(.96) translateY(0)" },
+                    { transform: "rotate(1deg) scale(1.015) translateY(0)", offset: .72 },
+                    { transform: "rotate(0) scale(1) translateY(0)" },
+                ], { duration: 560, delay: 30, easing: "cubic-bezier(.22,1,.36,1)" });
+                animate(".tutorial-welcome-logo", [
+                    { transform: "rotate(-7deg) scale(.84)", opacity: 0 },
+                    { transform: "rotate(1deg) scale(1.025)", opacity: 1, offset: .78 },
+                    { transform: "rotate(0) scale(1)", opacity: 1 },
+                ], { duration: 520, delay: 50, easing: "cubic-bezier(.22,1,.36,1)" });
+                animate(".tutorial-welcome-word", [
+                    { transform: "translateY(24px) rotateX(-24deg)", opacity: 0 },
+                    { transform: "translateY(0) rotateX(0)", opacity: 1 },
+                ], { duration: 420, delay: 180, easing: "cubic-bezier(.16,1,.3,1)" }, 55);
+                animate(".tutorial-welcome-accent", [
+                    { transform: "scaleX(0)" },
+                    { transform: "scaleX(1)" },
+                ], { duration: 320, delay: 360, easing: "cubic-bezier(.16,1,.3,1)" });
             }
-
-            if (reduceMotion) return;
-            const timeline = gsap.timeline({ defaults: { ease: "power3.out" } })
-                .fromTo(
-                    ".tutorial-panel",
-                    { x: 84, autoAlpha: 0, rotateY: -4, transformPerspective: 900 },
-                    { x: 0, autoAlpha: 1, rotateY: 0, duration: 0.52 },
-                )
-                .fromTo(
-                    ".tutorial-step-copy",
-                    { x: -24, autoAlpha: 0 },
-                    { x: 0, autoAlpha: 1, duration: 0.42 },
-                    "<0.08",
-                )
-                .fromTo(
-                    ".tutorial-actions",
-                    { x: 28, autoAlpha: 0 },
-                    { x: 0, autoAlpha: 1, duration: 0.4, ease: "back.out(1.45)" },
-                    "<0.08",
-                )
-                .fromTo(
-                    ".tutorial-primary",
-                    { scale: 0.82 },
-                    { scale: 1, duration: 0.42, ease: "elastic.out(1, 0.62)" },
-                    "<0.12",
-                );
+            stepTimer = window.setTimeout(() => setStep(hasPermissionStep ? 1 : 2), welcomeDuration);
+        } else if (!reduceMotion) {
+            animate(".tutorial-panel", [
+                { transform: "perspective(900px) translateX(84px) rotateY(-4deg)", opacity: 0 },
+                { transform: "perspective(900px) translateX(0) rotateY(0)", opacity: 1 },
+            ], { duration: 520, easing: "cubic-bezier(.16,1,.3,1)" });
+            animate(".tutorial-step-copy", [
+                { transform: "translateX(-24px)", opacity: 0 },
+                { transform: "translateX(0)", opacity: 1 },
+            ], { duration: 420, delay: 80, easing: "cubic-bezier(.16,1,.3,1)" });
+            animate(".tutorial-actions", [
+                { transform: "translateX(28px)", opacity: 0 },
+                { transform: "translateX(0)", opacity: 1 },
+            ], { duration: 400, delay: 100, easing: "cubic-bezier(.34,1.56,.64,1)" });
+            animate(".tutorial-primary", [
+                { transform: "scale(.82)" },
+                { transform: "scale(1)" },
+            ], { duration: 420, delay: 180, easing: "cubic-bezier(.34,1.56,.64,1)" });
 
             if (step === 1) {
-                timeline
-                    .fromTo(
-                        ".tutorial-permission-card",
-                        { y: 34, autoAlpha: 0, rotateY: -9, scale: 0.94, transformPerspective: 700 },
-                        { y: 0, autoAlpha: 1, rotateY: 0, scale: 1, duration: 0.52, stagger: 0.075, ease: "back.out(1.3)" },
-                        "<0.02",
-                    )
-                    .fromTo(
-                        ".tutorial-card-visual img",
-                        { scale: 1.16, y: 9 },
-                        { scale: 1, y: 0, duration: 0.56, stagger: 0.06, ease: "expo.out" },
-                        "<0.1",
-                    )
-                    .fromTo(
-                        ".tutorial-status-pill",
-                        { scale: 0.72, autoAlpha: 0, y: -8 },
-                        { scale: 1, autoAlpha: 1, y: 0, duration: 0.34, stagger: 0.05, ease: "back.out(2)" },
-                        "<0.05",
-                    );
+                animate(".tutorial-permission-card", [
+                    { transform: "perspective(700px) translateY(34px) rotateY(-9deg) scale(.94)", opacity: 0 },
+                    { transform: "perspective(700px) translateY(0) rotateY(0) scale(1)", opacity: 1 },
+                ], { duration: 520, delay: 160, easing: "cubic-bezier(.34,1.56,.64,1)" }, 75);
+                animate(".tutorial-card-visual img", [
+                    { transform: "translateY(9px) scale(1.16)" },
+                    { transform: "translateY(0) scale(1)" },
+                ], { duration: 560, delay: 260, easing: "cubic-bezier(.16,1,.3,1)" }, 60);
+                animate(".tutorial-status-pill", [
+                    { transform: "translateY(-8px) scale(.72)", opacity: 0 },
+                    { transform: "translateY(0) scale(1)", opacity: 1 },
+                ], { duration: 340, delay: 330, easing: "cubic-bezier(.34,1.56,.64,1)" }, 50);
             } else if (step === 2) {
-                timeline.fromTo(
-                    ".tutorial-toggle",
-                    { y: 28, autoAlpha: 0, rotate: -2.5, scale: 0.9 },
-                    { y: 0, autoAlpha: 1, rotate: 0, scale: 1, duration: 0.46, stagger: 0.065, ease: "back.out(1.5)" },
-                    "<0.02",
-                );
+                animate(".tutorial-toggle", [
+                    { transform: "translateY(28px) rotate(-2.5deg) scale(.9)", opacity: 0 },
+                    { transform: "translateY(0) rotate(0) scale(1)", opacity: 1 },
+                ], { duration: 460, delay: 160, easing: "cubic-bezier(.34,1.56,.64,1)" }, 65);
             } else if (step === 3) {
-                timeline
-                    .fromTo(
-                        ".tutorial-shortcut-art",
-                        { x: -36, autoAlpha: 0, rotate: -2 },
-                        { x: 0, autoAlpha: 1, rotate: 0, duration: 0.55, ease: "expo.out" },
-                        "<0.02",
-                    )
-                    .fromTo(
-                        ".tutorial-shortcut-keycap",
-                        { x: 42, autoAlpha: 0, scale: 0.82 },
-                        { x: 0, autoAlpha: 1, scale: 1, duration: 0.52, ease: "back.out(1.7)" },
-                        "<0.08",
-                    )
-                    .to(
-                        ".tutorial-shortcut-keycap strong",
-                        { scale: 1.06, duration: 0.3, ease: "sine.inOut", yoyo: true, repeat: 1 },
-                        ">-0.08",
-                    );
+                animate(".tutorial-shortcut-art", [
+                    { transform: "translateX(-36px) rotate(-2deg)", opacity: 0 },
+                    { transform: "translateX(0) rotate(0)", opacity: 1 },
+                ], { duration: 550, delay: 160, easing: "cubic-bezier(.16,1,.3,1)" });
+                animate(".tutorial-shortcut-keycap", [
+                    { transform: "translateX(42px) scale(.82)", opacity: 0 },
+                    { transform: "translateX(0) scale(1)", opacity: 1 },
+                ], { duration: 520, delay: 240, easing: "cubic-bezier(.34,1.56,.64,1)" });
+                animate(".tutorial-shortcut-keycap strong", [
+                    { transform: "scale(1)" },
+                    { transform: "scale(1.06)", offset: .5 },
+                    { transform: "scale(1)" },
+                ], { duration: 600, delay: 650, easing: "ease-in-out" });
             }
-        }, root);
+        }
 
         return () => {
-            if (reduceMotionTimer !== null) {
-                window.clearTimeout(reduceMotionTimer);
+            if (stepTimer !== null) {
+                window.clearTimeout(stepTimer);
             }
-            ctx.revert();
+            animations.forEach(animation => animation.cancel());
         };
     }, [hasPermissionStep, step]);
 
@@ -219,30 +207,35 @@ export default function TutorialOverlay({
         if (!root || step !== 1 || newlyEnabled.length === 0) return;
         if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 
-        const ctx = gsap.context(() => {
-            newlyEnabled.forEach((permission, index) => {
-                const card = root.querySelector<HTMLElement>(`[data-permission-id="${permission.id}"]`);
-                if (!card) return;
+        const animations: Animation[] = [];
+        newlyEnabled.forEach((permission, index) => {
+            const card = root.querySelector<HTMLElement>(`[data-permission-id="${permission.id}"]`);
+            if (!card) return;
+            const delay = index * 60;
+            animations.push(card.animate([
+                { transform: "translateY(0) scale(1)" },
+                { transform: "translateY(-7px) scale(1.025)", offset: .35 },
+                { transform: "translateY(0) scale(1)" },
+            ], { duration: 620, delay, easing: "cubic-bezier(.34,1.56,.64,1)" }));
 
-                gsap.timeline({ delay: index * 0.06 })
-                    .to(card, { y: -7, scale: 1.025, duration: 0.22, ease: "power2.out" })
-                    .fromTo(
-                        card.querySelector(".tutorial-status-pill"),
-                        { scale: 0.45, autoAlpha: 0, rotate: -8 },
-                        { scale: 1, autoAlpha: 1, rotate: 0, duration: 0.42, ease: "back.out(2.4)" },
-                        "<",
-                    )
-                    .fromTo(
-                        card.querySelector(".tutorial-status-burst"),
-                        { scale: 0.25, autoAlpha: 0.75 },
-                        { scale: 2.1, autoAlpha: 0, duration: 0.5, ease: "power2.out" },
-                        "<",
-                    )
-                    .to(card, { y: 0, scale: 1, duration: 0.32, ease: "elastic.out(1, 0.65)", clearProps: "transform" });
-            });
-        }, root);
+            const status = card.querySelector<HTMLElement>(".tutorial-status-pill");
+            if (status) {
+                animations.push(status.animate([
+                    { transform: "scale(.45) rotate(-8deg)", opacity: 0 },
+                    { transform: "scale(1) rotate(0)", opacity: 1 },
+                ], { duration: 420, delay, easing: "cubic-bezier(.34,1.56,.64,1)" }));
+            }
 
-        return () => ctx.revert();
+            const burst = card.querySelector<HTMLElement>(".tutorial-status-burst");
+            if (burst) {
+                animations.push(burst.animate([
+                    { transform: "scale(.25)", opacity: .75 },
+                    { transform: "scale(2.1)", opacity: 0 },
+                ], { duration: 500, delay, easing: "cubic-bezier(.16,1,.3,1)" }));
+            }
+        });
+
+        return () => animations.forEach(animation => animation.cancel());
     }, [permissions, step]);
 
     const renderStep = ({

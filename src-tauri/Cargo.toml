@@ -3,6 +3,7 @@ name = "vpaste-desktop"
 version = "1.5.0"
 authors = ["Lox"]
 edition = "2021"
+rust-version = "1.91.1"
 
 [[bin]]
 name = "vPaste"

@@ -5,10 +5,10 @@ All notable public changes to vPaste Desktop will be documented in this file.
 ## Unreleased
 
 - Added reproducible, signed draft GitHub Releases for Windows x64 and macOS Apple silicon/Intel.
-- Added updater metadata, checksums, CycloneDX SBOM, dependency-license inventory, provenance attestations, Dependabot, dependency review, and CodeQL workflows.
+- Added updater metadata, checksums, CycloneDX SBOM, dependency-license inventory, provenance attestations, dependency review, and CodeQL workflows.
 - Removed the privileged `workflow_run` checkout pattern and pinned GitHub Actions to immutable commits.
 - Replaced the GSAP tutorial animation dependency with the browser-native Web Animations API to keep the GPL dependency boundary unambiguous.
-- Upgraded the frontend build toolchain to Vite 8.
+- Moved the frontend build toolchain to Vite 7 after Vite 8's Rolldown default introduced a runtime module-interop regression with the current MUI integration.
 
 ## Initial clean open-source baseline
 

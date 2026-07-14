@@ -1,7 +1,6 @@
 import React from "react";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
-import startupVisual from "../assets/tutorial/permission-startup.svg";
 import backgroundVisual from "../assets/tutorial/permission-background.svg";
 import pasteVisual from "../assets/tutorial/permission-paste.svg";
 import shortcutVisual from "../assets/tutorial/shortcut-popover.svg";
@@ -9,7 +8,7 @@ import "./TutorialOverlay.css";
 
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
 
-export type TutorialPermissionId = "startup" | "background" | "paste";
+export type TutorialPermissionId = "background" | "paste";
 export type TutorialFilterId = "text" | "image" | "link" | "color" | "file";
 export type TutorialPlatform = "windows" | "mac";
 
@@ -34,13 +33,12 @@ type TutorialOverlayProps = {
     platform: TutorialPlatform;
     permissions: TutorialPermission[];
     filters: TutorialFilterTab[];
-    onPermissionAction: (id: TutorialPermissionId) => void;
+    onPermissionAction: (id: TutorialPermissionId) => void | Promise<void>;
     onToggleFilter: (id: TutorialFilterId, enabled: boolean) => void;
     onComplete: () => void;
 };
 
 const permissionVisuals: Record<TutorialPermissionId, string> = {
-    startup: startupVisual,
     background: backgroundVisual,
     paste: pasteVisual,
 };
@@ -277,12 +275,10 @@ export default function TutorialOverlay({
                         <img className="tutorial-welcome-logo" src={logoSrc} alt="vPaste" />
                     </div>
                     <div className="tutorial-welcome-copy">
-                        <h1 aria-label="Welcome to vPaste">
-                            <span className="tutorial-welcome-word">Welcome</span>{" "}
-                            <span className="tutorial-welcome-word">to</span>{" "}
-                            <span className="tutorial-welcome-word">vPaste</span>
+                        <h1 aria-label={t("tutorial.welcome.title")}>
+                            <span className="tutorial-welcome-word">{t("tutorial.welcome.title")}</span>
                         </h1>
-                        <p className="tutorial-welcome-word">Your clipboard, always one shortcut away.</p>
+                        <p className="tutorial-welcome-word">{t("tutorial.welcome.desc")}</p>
                         <i className="tutorial-welcome-accent" aria-hidden="true" />
                     </div>
                 </section>
@@ -304,6 +300,9 @@ export default function TutorialOverlay({
                             >
                                 <div className="tutorial-card-visual">
                                     <img src={permissionVisuals[permission.id]} alt="" aria-hidden="true" />
+                                    <span className="tutorial-card-brand" aria-hidden="true">
+                                        <img src={logoSrc} alt="" />
+                                    </span>
                                     <span className={`tutorial-status-pill ${permission.done ? "done" : ""}`}>
                                         <i className="tutorial-status-burst" aria-hidden="true" />
                                         {permission.done && <CheckCircleIcon fontSize="inherit" />}
@@ -315,7 +314,7 @@ export default function TutorialOverlay({
                                     <p>{permission.description}</p>
                                 </div>
                                 {!permission.done && (
-                                    <button type="button" className="tutorial-card-action" onClick={() => onPermissionAction(permission.id)}>
+                                    <button type="button" className="tutorial-card-action" onClick={() => void onPermissionAction(permission.id)}>
                                         <span>{permission.actionLabel}</span>
                                         <ArrowOutwardRoundedIcon fontSize="inherit" />
                                     </button>
@@ -371,6 +370,7 @@ export default function TutorialOverlay({
                     ),
                 })
             )}
+
         </div>
     );
 }

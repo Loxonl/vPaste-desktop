@@ -32,11 +32,14 @@ use tauri_plugin_updater::UpdaterExt;
 use tauri::utils::TitleBarStyle;
 
 use tauri_plugin_autostart::MacosLauncher;
-#[cfg(not(debug_assertions))]
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_log::{Target, TargetKind};
 use WebviewUrl::App;
+
+#[cfg(target_os = "macos")]
+#[link(name = "ServiceManagement", kind = "framework")]
+extern "C" {}
 
 // ...
 
@@ -76,6 +79,7 @@ static PREVIEW_PINNED: AtomicBool = AtomicBool::new(false);
 static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static TRAY_MENU_WATCHING: AtomicBool = AtomicBool::new(false);
+static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
 static LAST_FOREGROUND_HWND_BEFORE_CLIPBOARD: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "windows")]
@@ -141,6 +145,28 @@ struct PasteAccessibilityPermissionStatus {
     needs_settings: bool,
 }
 
+#[derive(Serialize)]
+struct OnboardingPermissionStatus {
+    background: OnboardingPermissionItemStatus,
+    paste: OnboardingPermissionItemStatus,
+}
+
+#[derive(Serialize)]
+struct OnboardingPermissionItemStatus {
+    done: bool,
+    needs_settings: bool,
+    error: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MacosBackgroundAgentStatus {
+    NotRegistered,
+    Enabled,
+    RequiresApproval,
+    NotFound,
+}
+
 #[derive(Clone, Copy, Serialize)]
 struct ClipboardHistoryPausePayload {
     paused: bool,
@@ -188,38 +214,6 @@ fn set_clipboard_blur_hide_suppressed(suppressed: bool) {
         now_millis().saturating_add(800)
     };
     CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL.store(until, Ordering::SeqCst);
-}
-
-#[cfg(target_os = "windows")]
-fn acquire_single_instance_lock() -> bool {
-    use std::ffi::c_void;
-    use std::os::windows::ffi::OsStrExt;
-
-    type Handle = *mut c_void;
-
-    const ERROR_ALREADY_EXISTS: u32 = 183;
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn CreateMutexW(attributes: *mut c_void, initial_owner: i32, name: *const u16) -> Handle;
-        fn GetLastError() -> u32;
-    }
-
-    let name = std::ffi::OsStr::new("Local\\vPaste.SingleInstance")
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<u16>>();
-    let handle = unsafe { CreateMutexW(std::ptr::null_mut(), 1, name.as_ptr()) };
-    if handle.is_null() {
-        return true;
-    }
-    let already_exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
-    !already_exists
-}
-
-#[cfg(not(target_os = "windows"))]
-fn acquire_single_instance_lock() -> bool {
-    true
 }
 
 #[derive(Serialize)]
@@ -947,6 +941,82 @@ fn open_onboarding_window(app: tauri::AppHandle) -> Result<(), String> {
     show_onboarding_window(&app)
 }
 
+fn restore_clipboard_after_permission_guide(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("clipboard") {
+        show_clipboard_window(&window);
+        focus_clipboard_window(&window, "permission guide closed");
+    }
+}
+
+#[tauri::command]
+fn open_onboarding_permission_window(
+    app: tauri::AppHandle,
+    permission: String,
+    language_code: Option<String>,
+) -> Result<(), String> {
+    if !matches!(permission.as_str(), "background" | "paste") {
+        return Err(format!("unsupported onboarding permission: {}", permission));
+    }
+
+    let window = app
+        .get_webview_window("onboardingPermission")
+        .ok_or_else(|| "onboarding permission window not found".to_string())?;
+    let _ = window.unminimize();
+    let _ = window.center();
+    let _ = window.set_shadow(false);
+    window
+        .set_always_on_top(true)
+        .map_err(|err| err.to_string())?;
+    #[cfg(target_os = "macos")]
+    set_macos_window_level(&window, 102);
+    window.show().map_err(|err| err.to_string())?;
+    activate_native_window(&window, "onboarding permission open");
+    window.set_focus().map_err(|err| err.to_string())?;
+    let _ = AsRef::<tauri::Webview>::as_ref(&window).set_focus();
+    #[cfg(target_os = "macos")]
+    configure_macos_transparent_window(&window);
+    window
+        .emit(
+            "onboarding-permission-open",
+            serde_json::json!({
+                "permission": permission,
+                "languageCode": language_code.unwrap_or_default(),
+            }),
+        )
+        .map_err(|err| err.to_string())?;
+
+    if let Some(clipboard_window) = app.get_webview_window("clipboard") {
+        let _ = finish_hide_window(&clipboard_window);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_onboarding_permission_window(
+    app: tauri::AppHandle,
+    restore_parent: bool,
+) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("onboardingPermission") {
+        window.hide().map_err(|err| err.to_string())?;
+    }
+    if restore_parent {
+        restore_clipboard_after_permission_guide(&app);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn notify_onboarding_permission_status_changed(
+    app: tauri::AppHandle,
+    permission: String,
+) -> Result<(), String> {
+    if !matches!(permission.as_str(), "background" | "paste") {
+        return Err(format!("unsupported onboarding permission: {}", permission));
+    }
+    app.emit("onboarding-permission-status-changed", permission)
+        .map_err(|err| err.to_string())
+}
+
 #[tauri::command]
 fn complete_onboarding(app: tauri::AppHandle) -> Result<(), String> {
     mark_onboarding_completed(&app);
@@ -1630,6 +1700,27 @@ fn set_macos_window_level(window: &tauri::WebviewWindow, level: isize) {
 }
 
 #[cfg(target_os = "macos")]
+fn configure_macos_transparent_window(window: &tauri::WebviewWindow) {
+    use cocoa::appkit::{NSColor, NSWindow};
+    use cocoa::base::{id, nil, NO};
+
+    let window_clone = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        if let Ok(ns_window) = window_clone.ns_window() {
+            unsafe {
+                if !ns_window.is_null() {
+                    let ns_window = ns_window as id;
+                    ns_window.setOpaque_(NO);
+                    ns_window.setBackgroundColor_(NSColor::clearColor(nil));
+                    ns_window.setHasShadow_(NO);
+                    ns_window.invalidateShadow();
+                }
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
 fn enable_macos_mouse_moved_events(window: &tauri::WebviewWindow) {
     use cocoa::base::id;
     use objc::{msg_send, sel, sel_impl};
@@ -2078,8 +2169,18 @@ fn is_process_trusted_with_prompt(_prompt: bool) -> bool {
     true
 }
 
+fn lower_onboarding_permission_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("onboardingPermission") {
+        let _ = window.set_always_on_top(false);
+        #[cfg(target_os = "macos")]
+        set_macos_window_level(&window, 0);
+    }
+}
+
 #[tauri::command]
-fn ensure_paste_accessibility_permission() -> PasteAccessibilityPermissionStatus {
+fn ensure_paste_accessibility_permission(
+    _app: tauri::AppHandle,
+) -> PasteAccessibilityPermissionStatus {
     let granted = is_process_trusted_with_prompt(true);
     PasteAccessibilityPermissionStatus {
         granted,
@@ -2097,35 +2198,124 @@ fn check_paste_accessibility_permission() -> PasteAccessibilityPermissionStatus 
 }
 
 #[tauri::command]
-fn open_accessibility_settings() -> Result<(), String> {
+fn get_onboarding_permission_status(app: tauri::AppHandle) -> OnboardingPermissionStatus {
+    let background = match check_autostart_enabled(&app) {
+        Ok(done) => OnboardingPermissionItemStatus {
+            done,
+            #[cfg(target_os = "macos")]
+            needs_settings: macos_background_agent_status()
+                == Some(MacosBackgroundAgentStatus::RequiresApproval),
+            #[cfg(not(target_os = "macos"))]
+            needs_settings: false,
+            error: None,
+        },
+        Err(error) => OnboardingPermissionItemStatus {
+            done: false,
+            needs_settings: false,
+            error: Some(error),
+        },
+    };
+    let paste_done = is_process_trusted_with_prompt(false);
+
+    OnboardingPermissionStatus {
+        background,
+        paste: OnboardingPermissionItemStatus {
+            done: paste_done,
+            needs_settings: !paste_done,
+            error: None,
+        },
+    }
+}
+
+#[tauri::command]
+fn enable_onboarding_background_service(
+    app: tauri::AppHandle,
+) -> Result<OnboardingPermissionItemStatus, String> {
+    let enabled = sync_autostart(&app, true)?;
+    sync_tray_visibility(&app, true)?;
+
+    let mut current = config::get();
+    current.display_tray_icon = true;
+    current.startup = enabled;
+    config::save(current);
+
+    let needs_settings = {
+        #[cfg(target_os = "macos")]
+        {
+            macos_background_agent_status() == Some(MacosBackgroundAgentStatus::RequiresApproval)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    };
+    let _ = app.emit("onboarding-permission-status-changed", "background");
+    Ok(OnboardingPermissionItemStatus {
+        done: enabled,
+        needs_settings,
+        error: None,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn open_macos_settings_candidates(candidates: &[&str]) -> Result<(), String> {
+    for candidate in candidates {
+        let status = std::process::Command::new("open")
+            .arg(candidate)
+            .status()
+            .map_err(|err| format!("打开系统设置失败：{}", err))?;
+        if status.success() {
+            return Ok(());
+        }
+    }
+
+    let fallback = std::process::Command::new("open")
+        .arg("-b")
+        .arg("com.apple.systempreferences")
+        .status()
+        .map_err(|err| format!("打开系统设置失败：{}", err))?;
+    if fallback.success() {
+        Ok(())
+    } else {
+        Err("无法打开系统设置".to_string())
+    }
+}
+
+#[tauri::command]
+fn open_login_items_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let candidates = [
+        if let Some(service_class) = objc::runtime::Class::get("SMAppService") {
+            unsafe {
+                use objc::{msg_send, sel, sel_impl};
+                let _: () = msg_send![service_class, openSystemSettingsLoginItems];
+            }
+            return Ok(());
+        }
+        open_macos_settings_candidates(&[
+            "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
+            "x-apple.systempreferences:com.apple.preference.users?LoginItems",
+            "x-apple.systempreferences:com.apple.preference.users",
+        ])
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn open_accessibility_settings(app: tauri::AppHandle) -> Result<(), String> {
+    lower_onboarding_permission_window(&app);
+    #[cfg(target_os = "macos")]
+    {
+        open_macos_settings_candidates(&[
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
             "x-apple.systempreferences:com.apple.Settings.PrivacySecurity.extension?Privacy_Accessibility",
             "x-apple.systempreferences:com.apple.preference.security",
-        ];
-
-        for candidate in candidates {
-            let status = std::process::Command::new("open")
-                .arg(candidate)
-                .status()
-                .map_err(|err| format!("打开系统设置失败：{}", err))?;
-            if status.success() {
-                return Ok(());
-            }
-        }
-
-        let fallback = std::process::Command::new("open")
-            .arg("-b")
-            .arg("com.apple.systempreferences")
-            .status()
-            .map_err(|err| format!("打开系统设置失败：{}", err))?;
-        if fallback.success() {
-            return Ok(());
-        }
-
-        return Err("无法打开系统设置".to_string());
+        ])
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -4048,8 +4238,27 @@ async fn cleanup_storage_history(days: u64) -> Result<StorageCleanupInfo, String
 }
 
 #[tauri::command]
-fn get_config() -> String {
-    serde_json::to_string(&config::get()).unwrap()
+fn get_config(app: tauri::AppHandle) -> String {
+    let mut current = config::get();
+    let actual_startup = match check_autostart_enabled(&app) {
+        Ok(enabled) => enabled,
+        Err(err) => {
+            error!(
+                "Failed to read autostart status; reporting it as disabled: {}",
+                err
+            );
+            false
+        }
+    };
+    if current.startup != actual_startup {
+        info!(
+            "Updating stored autostart preference from {} to actual status {}",
+            current.startup, actual_startup
+        );
+        current.startup = actual_startup;
+        config::save(current.clone());
+    }
+    serde_json::to_string(&current).unwrap()
 }
 
 #[tauri::command]
@@ -4436,18 +4645,184 @@ mod shortcut_policy_tests {
     }
 }
 
-fn sync_autostart(app: &tauri::AppHandle, startup: bool) {
+#[cfg(target_os = "macos")]
+const MACOS_BACKGROUND_AGENT_PLIST: &str = "com.loxonl.vpaste.background.plist";
+
+#[cfg(target_os = "macos")]
+fn macos_background_agent() -> Option<cocoa::base::id> {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::NSString;
+    use objc::runtime::Class;
+    use objc::{msg_send, sel, sel_impl};
+
+    let service_class = Class::get("SMAppService")?;
+    let plist_name = unsafe { NSString::alloc(nil).init_str(MACOS_BACKGROUND_AGENT_PLIST) };
+    let service: id = unsafe { msg_send![service_class, agentServiceWithPlistName: plist_name] };
+    unsafe {
+        let _: () = msg_send![plist_name, release];
+    }
+    (service != nil).then_some(service)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_background_agent_status() -> Option<MacosBackgroundAgentStatus> {
+    use cocoa::base::id;
+    use objc::{msg_send, sel, sel_impl};
+
+    let service: id = macos_background_agent()?;
+
+    let status: isize = unsafe { msg_send![service, status] };
+    Some(match status {
+        0 => MacosBackgroundAgentStatus::NotRegistered,
+        1 => MacosBackgroundAgentStatus::Enabled,
+        2 => MacosBackgroundAgentStatus::RequiresApproval,
+        _ => MacosBackgroundAgentStatus::NotFound,
+    })
+}
+
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
+fn macos_service_error(error: cocoa::base::id) -> String {
+    use cocoa::base::nil;
+    use objc::{msg_send, sel, sel_impl};
+
+    if error == nil {
+        return "unknown Service Management error".to_string();
+    }
+    let description: cocoa::base::id = unsafe { msg_send![error, localizedDescription] };
+    nsstring_to_string(description)
+        .unwrap_or_else(|| "unknown Service Management error".to_string())
+}
+
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
+fn unregister_legacy_macos_main_app_service() -> Result<(), String> {
+    use cocoa::base::{id, nil};
+    use objc::runtime::Class;
+    use objc::{msg_send, sel, sel_impl};
+
+    let Some(service_class) = Class::get("SMAppService") else {
+        return Ok(());
+    };
+    let service: id = unsafe { msg_send![service_class, mainAppService] };
+    if service == nil {
+        return Ok(());
+    }
+    let status: isize = unsafe { msg_send![service, status] };
+    if status == 0 {
+        return Ok(());
+    }
+
+    let mut error: id = nil;
+    let succeeded: bool = unsafe { msg_send![service, unregisterAndReturnError: &mut error] };
+    if succeeded {
+        info!("removed legacy macOS login item registration");
+        Ok(())
+    } else {
+        Err(format!(
+            "failed to remove legacy macOS login item: {}",
+            macos_service_error(error)
+        ))
+    }
+}
+
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
+fn sync_macos_background_agent(startup: bool) -> Option<Result<bool, String>> {
+    use cocoa::base::{id, nil};
+    use objc::{msg_send, sel, sel_impl};
+
+    let service: id = macos_background_agent()?;
+
+    if let Err(err) = unregister_legacy_macos_main_app_service() {
+        error!("{}", err);
+    }
+
+    let before = macos_background_agent_status().unwrap_or(MacosBackgroundAgentStatus::NotFound);
+    if startup && before == MacosBackgroundAgentStatus::Enabled {
+        return Some(Ok(true));
+    }
+    if startup && before == MacosBackgroundAgentStatus::RequiresApproval {
+        return Some(Ok(false));
+    }
+    if !startup && before == MacosBackgroundAgentStatus::NotRegistered {
+        return Some(Ok(false));
+    }
+
+    let mut error: id = nil;
+    let succeeded: bool = unsafe {
+        if startup {
+            msg_send![service, registerAndReturnError: &mut error]
+        } else {
+            msg_send![service, unregisterAndReturnError: &mut error]
+        }
+    };
+    let after = macos_background_agent_status().unwrap_or(MacosBackgroundAgentStatus::NotFound);
+
+    if startup && after == MacosBackgroundAgentStatus::RequiresApproval {
+        info!("macOS background agent is registered and awaiting user approval");
+        return Some(Ok(false));
+    }
+    if succeeded {
+        return Some(Ok(after == MacosBackgroundAgentStatus::Enabled));
+    }
+
+    Some(Err(format!(
+        "failed to {} macOS background agent: {}",
+        if startup { "register" } else { "unregister" },
+        macos_service_error(error)
+    )))
+}
+
+fn check_autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    if let Some(status) = macos_background_agent_status() {
+        return Ok(status == MacosBackgroundAgentStatus::Enabled);
+    }
+
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|err| format!("failed to check autostart status: {}", err))
+}
+
+fn sync_autostart(app: &tauri::AppHandle, startup: bool) -> Result<bool, String> {
     #[cfg(debug_assertions)]
     {
-        let _ = (app, startup);
+        let enabled = check_autostart_enabled(app)?;
+        info!(
+            "skipping autostart registration in debug build (requested: {}, enabled: {})",
+            startup, enabled
+        );
+        Ok(enabled)
     }
     #[cfg(not(debug_assertions))]
     {
-        if startup {
-            let _ = app.autolaunch().enable();
-        } else {
-            let _ = app.autolaunch().disable();
+        #[cfg(target_os = "macos")]
+        if let Some(result) = sync_macos_background_agent(startup) {
+            if result.is_ok() {
+                if let Err(err) = app.autolaunch().disable() {
+                    error!("Failed to remove legacy macOS LaunchAgent entry: {}", err);
+                }
+            }
+            if startup && result.as_ref().is_ok_and(|enabled| !*enabled) {
+                lower_onboarding_permission_window(app);
+                let _ = open_login_items_settings();
+            }
+            return result;
         }
+
+        if startup {
+            app.autolaunch()
+                .enable()
+                .map_err(|err| format!("failed to enable autostart: {}", err))?;
+        } else {
+            app.autolaunch()
+                .disable()
+                .map_err(|err| format!("failed to disable autostart: {}", err))?;
+        }
+        let enabled = check_autostart_enabled(app)?;
+        info!(
+            "autostart sync completed (requested: {}, enabled: {})",
+            startup, enabled
+        );
+        Ok(enabled)
     }
 }
 
@@ -4518,7 +4893,17 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
 
     let registration_info =
         sync_main_window_shortcut(&app, previous_main_shortcut, next_main_shortcut)?;
-    sync_autostart(&app, config_struct.startup);
+    if previous_config.startup != config_struct.startup {
+        let enabled = sync_autostart(&app, config_struct.startup)?;
+        if enabled != config_struct.startup {
+            return Err(if config_struct.startup {
+                "无法注册开机启动项，开关已保持关闭".to_string()
+            } else {
+                "无法移除开机启动项，开关状态未保存".to_string()
+            });
+        }
+    }
+    sync_tray_visibility(&app, config_struct.display_tray_icon)?;
 
     config::save(config_struct);
     let _ = app.emit("language-changed", next_language);
@@ -6120,7 +6505,20 @@ fn install_vpaste_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         })
         .build(app)?;
 
+    TRAY_ICON_VISIBLE.store(true, Ordering::SeqCst);
     Ok(())
+}
+
+fn sync_tray_visibility(app: &tauri::AppHandle, visible: bool) -> Result<bool, String> {
+    let Some(tray) = app.tray_by_id(TRAY_ICON_ID) else {
+        TRAY_ICON_VISIBLE.store(false, Ordering::SeqCst);
+        return Err("tray icon is not installed".to_string());
+    };
+
+    tray.set_visible(visible)
+        .map_err(|err| format!("failed to set tray visibility: {}", err))?;
+    TRAY_ICON_VISIBLE.store(visible, Ordering::SeqCst);
+    Ok(TRAY_ICON_VISIBLE.load(Ordering::SeqCst))
 }
 
 fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
@@ -6215,13 +6613,18 @@ fn main() {
         error!("{:?}", backtrace::Backtrace::new())
     }));
 
-    if !acquire_single_instance_lock() {
-        return;
-    }
-
     let context = tauri::generate_context!();
     info!("running vPaste");
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("onboardingPermission") {
+                let _ = window.hide();
+            }
+            if let Some(window) = app.get_webview_window("clipboard") {
+                show_clipboard_window(&window);
+                focus_clipboard_window(&window, "second instance launch");
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -6268,6 +6671,11 @@ fn main() {
                 if window.label() == "emojiPicker" {
                     api.prevent_close();
                     let _ = window.hide();
+                }
+                if window.label() == "onboardingPermission" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    restore_clipboard_after_permission_guide(window.app_handle());
                 }
             }
             if let tauri::WindowEvent::Focused(false) = event {
@@ -6362,7 +6770,9 @@ fn main() {
 
             // Register user-facing entry points before heavier startup maintenance.
             let config = config::get();
-            sync_autostart(app.handle(), config.startup);
+            if let Err(err) = sync_tray_visibility(app.handle(), config.display_tray_icon) {
+                error!("Failed to sync tray visibility at startup: {}", err);
+            }
             if let Some(s) = config.shortcut_keys.main_window.clone() {
                 match parse_optional_shortcut(Some(s.as_str()), "唤起主窗口") {
                     Ok(shortcut) => {
@@ -6448,6 +6858,36 @@ fn main() {
                     });
                 }
                 info!("Config window built successfully");
+
+                let onboarding_permission_window = WebviewWindowBuilder::new(
+                    &handle,
+                    "onboardingPermission",
+                    App("onboarding-permission".into()),
+                )
+                .title("vPaste Permission Guide")
+                .visible(false)
+                .focused(false)
+                .decorations(false)
+                .transparent(true)
+                .background_color(tauri::window::Color(0, 0, 0, 0))
+                .resizable(false)
+                .minimizable(false)
+                .maximizable(false)
+                .always_on_top(true)
+                .shadow(false)
+                .inner_size(940_f64, 430_f64)
+                .build()
+                .unwrap();
+                let _ = onboarding_permission_window
+                    .set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                let _ = onboarding_permission_window.set_shadow(false);
+                let _ = onboarding_permission_window.center();
+                apply_vpaste_window_icon(&onboarding_permission_window);
+                #[cfg(target_os = "macos")]
+                {
+                    set_macos_window_level(&onboarding_permission_window, 102);
+                    configure_macos_transparent_window(&onboarding_permission_window);
+                }
 
                 let tray_menu_window =
                     WebviewWindowBuilder::new(&handle, "trayMenu", App("tray-menu".into()))
@@ -6550,6 +6990,8 @@ fn main() {
             list_recent_app_source_options,
             refresh_link_previews,
             get_config,
+            get_onboarding_permission_status,
+            enable_onboarding_background_service,
             get_clipboard_history_paused,
             set_clipboard_history_paused,
             toggle_clipboard_history_paused,
@@ -6569,6 +7011,9 @@ fn main() {
             minimize_current_window,
             open_config_window,
             open_onboarding_window,
+            open_onboarding_permission_window,
+            hide_onboarding_permission_window,
+            notify_onboarding_permission_status_changed,
             complete_onboarding,
             is_alt_key_pressed,
             is_quick_input_modifier_pressed,
@@ -6598,6 +7043,7 @@ fn main() {
             open_url_in_browser,
             ensure_paste_accessibility_permission,
             check_paste_accessibility_permission,
+            open_login_items_settings,
             open_accessibility_settings,
             set_item_favorite,
             list_item_tags,

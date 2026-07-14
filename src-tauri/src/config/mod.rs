@@ -47,7 +47,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            startup: true,
+            startup: false,
             display_tray_icon: true,
             multilingual: default_language(),
             theme_mode: default_theme_mode(),

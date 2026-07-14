@@ -33,7 +33,10 @@
     },
     "macOS": {
       "infoPlist": "Info.plist",
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "files": {
+        "Library/LaunchAgents/com.loxonl.vpaste.background.plist": "macos/LaunchAgents/com.loxonl.vpaste.background.plist"
+      }
     }
   },
   "productName": "vPaste",

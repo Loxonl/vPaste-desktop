@@ -143,7 +143,7 @@ const PRIMARY_TEXT_PROPS = { fontSize: '14px', fontWeight: 380, color: '#1f242b'
 const SECONDARY_TEXT_PROPS = { fontSize: '12px', color: '#7f7f7f', letterSpacing: 0, lineHeight: 1.35, mt: 0.15, fontWeight: 350 };
 
 const DEFAULT_CONFIG: ConfigData = {
-    startup: true,
+    startup: false,
     display_tray_icon: true,
     multilingual: DEFAULT_LANGUAGE,
     theme_mode: "system",
@@ -412,6 +412,10 @@ export default function Config() {
         const applyTarget = (target: unknown) => {
             setWindowsControlsHoverReady(false);
             if (blockingOperationRef.current) return;
+            void invoke<string>('get_config', {}).then(raw => {
+                const latest = JSON.parse(raw) as Partial<ConfigData>;
+                setConfig(current => ({ ...current, startup: latest.startup === true }));
+            }).catch(e => error(`Failed to refresh startup status: ${e}`));
             if (target === "about" || localStorage.getItem("vpaste.config.target") === "about") {
                 localStorage.removeItem("vpaste.config.target");
                 setValue(3);
@@ -546,7 +550,8 @@ function GeneralSettings({ config, languages, t, onSave }: SettingsProps & { lan
         : [{ value: config.multilingual, label: config.multilingual }, ...languages];
 
     const handleStartupChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-        onSave({ ...config, startup: event.target.checked });
+        void onSave({ ...config, startup: event.target.checked })
+            .catch(e => error(`Failed to change startup setting: ${e}`));
     };
 
     const handleTrayChange = (event: React.ChangeEvent<HTMLInputElement>) => {

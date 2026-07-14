@@ -39,13 +39,13 @@
     "@tauri-apps/plugin-log": "^2.8.0",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
-    "react": "^18.2.0",
+    "react": "^19.2.7",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.21.3"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2",
-    "@types/react": "^18.2.15",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^18.2.7",
     "@vitejs/plugin-react": "^6.0.3",
     "typescript": "^5.0.2",

@@ -31,7 +31,8 @@ if (uniqueVersions.size !== 1) {
 }
 
 const version = [...uniqueVersions][0];
-const tag = process.argv[2] ?? process.env.RELEASE_TAG ?? process.env.GITHUB_REF_NAME;
+const githubTag = process.env.GITHUB_REF_TYPE === "tag" ? process.env.GITHUB_REF_NAME : undefined;
+const tag = process.argv[2] ?? process.env.RELEASE_TAG ?? githubTag;
 if (tag && tag !== `v${version}`) {
   throw new Error(`Release tag ${tag} does not match application version v${version}.`);
 }

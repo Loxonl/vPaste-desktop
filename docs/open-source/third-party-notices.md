@@ -7,7 +7,7 @@ This document records public attribution notes for the clean repository. The loc
 - `package-lock.json` for npm packages.
 - `src-tauri/Cargo.lock` for Rust crates.
 
-Before publishing binary release artifacts, regenerate dependency inventories from the current lockfiles and keep this document in sync.
+The Release workflow runs `npm run check:licenses` and publishes `THIRD_PARTY_LICENSES.json`, generated from both lockfiles, with every binary release. A custom, missing, or denied third-party license fails the workflow and requires explicit review.
 
 ## Direct npm Dependencies
 
@@ -32,15 +32,13 @@ The current lockfile resolves these direct npm dependencies:
 | `@tauri-apps/cli` | 2.11.2 | Apache-2.0 OR MIT | development |
 | `@types/react` | 18.3.27 | MIT | development |
 | `@types/react-dom` | 18.3.7 | MIT | development |
-| `@vitejs/plugin-react` | 4.7.0 | MIT | development |
+| `@vitejs/plugin-react` | 6.0.3 | MIT | development |
 | `typescript` | 5.9.3 | Apache-2.0 | development |
-| `vite` | 5.4.21 | MIT | development |
+| `vite` | 8.1.4 | MIT | development |
 
 ## npm Attribution Notes
 
-- `caniuse-lite` is included through the frontend build toolchain and is licensed under CC-BY-4.0. Attribute the Can I Use data project when distributing packaged builds that include generated browser compatibility data.
-- `browserslist` is included through the frontend build toolchain and is licensed under MIT.
-- Remaining npm production transitive dependencies reviewed for this baseline use common permissive licenses such as MIT, Apache-2.0, BSD-3-Clause, and ISC.
+The current npm graph uses 0BSD, Apache-2.0, BSD-3-Clause, ISC, MIT, and MPL-2.0 license expressions. The generated Release inventory records the exact package, version, scope, and expression from the lockfile.
 
 ## Rust Dependency Notes
 
@@ -62,7 +60,7 @@ Notable attribution or license-selection items from the current locked dependenc
 
 Before publishing official binary artifacts:
 
-1. Re-run npm and Cargo license inventory from the current lockfiles.
+1. Run `npm run check:licenses` and review the generated Release inventory.
 2. Confirm this document still covers all non-MIT/Apache/ISC/BSD attribution items.
 3. Include the applicable third-party notices with release artifacts or link to this document from the release notes.
-4. Keep Vite/esbuild security remediation as a separate toolchain-upgrade decision until the project intentionally upgrades Vite across a major version.
+4. Review every newly introduced custom or reciprocal license before merging the dependency change.

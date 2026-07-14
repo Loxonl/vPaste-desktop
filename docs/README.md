@@ -14,14 +14,11 @@ Public documentation for vPaste Desktop.
 - [PR Check Rules](open-source/testing/pr-check-rules.md)
 - [README Assets](assets/readme/) - public screenshots used by the README
 
-## Release Flow (maintainer-only)
+## Release Flow
 
-Official packaging, signing, updater, and installer tooling run in the maintainer environment and are not part of this repository.
+Release configuration and automation are public and reproducible. Signing credentials remain protected in the GitHub `release` environment.
 
+- [Release Checklist](open-source/releases/release-checklist.md)
 - [Windows Release Flow](open-source/releases/windows-release-flow.md)
 - [Windows Install / Update / Uninstall Flow](open-source/releases/windows-install-update-flow.md)
 - [macOS Release Flow](open-source/releases/macos-release-flow.md)
-
-## Website
-
-- [Landing Page Draft](website/index.html) - public landing page (build-from-source until signed releases exist)

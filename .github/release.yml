@@ -1,0 +1,23 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+  categories:
+    - title: Breaking changes
+      labels:
+        - breaking-change
+    - title: Features
+      labels:
+        - enhancement
+        - "type: feature"
+    - title: Fixes
+      labels:
+        - bug
+        - "type: bug"
+    - title: Documentation
+      labels:
+        - documentation
+        - "type: docs"
+    - title: Other changes
+      labels:
+        - "*"

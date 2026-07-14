@@ -3,6 +3,7 @@ name = "vpaste-desktop"
 version = "1.5.0"
 authors = ["Lox"]
 edition = "2021"
+rust-version = "1.91.1"
 
 [[bin]]
 name = "vPaste"
@@ -59,7 +60,7 @@ arboard = "3.6.1"
 reqwest = { version = "0.12.24", features = ["blocking", "cookies"] }
 scraper = "0.24.0"
 tauri-plugin-clipboard-manager = "=2.3.2"
-window-vibrancy = "0.7.1"
+window-vibrancy = "=0.6.0"
 
 [target."cfg(windows)".dependencies]
 winreg = "0.55"

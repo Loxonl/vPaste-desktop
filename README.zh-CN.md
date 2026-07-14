@@ -2,9 +2,7 @@
 
 vPaste 是一个本地优先的 Windows / macOS 桌面剪贴板管理器。它在你的设备上保存剪贴板历史，支持快速搜索和预览，并尽量保留有用的剪贴板上下文，而不把剪贴板数据发送到云端服务。
 
-本仓库是桌面应用的干净 GPL-3.0-only 公开基线。
-
-> 状态：早期干净开源基线。当前可以从源码构建；暂不承诺已经提供官方签名发布包。
+本仓库包含桌面应用的 GPL-3.0-only 公开源码和可复现发布定义。
 
 ## 功能
 
@@ -33,8 +31,8 @@ vPaste 设计为本地运行。剪贴板数据保存在用户设备上。在平�
 
 ## 环境要求
 
-- Node.js 24，或其他当前受支持且兼容本项目工具链的 Node.js 版本。
-- Rust stable 工具链。
+- Node.js 24.11.1 与 npm 11。
+- Rust 1.91.1。
 - Tauri 2 在 Windows 或 macOS 上开发所需的平台依赖。
 
 ## 开发
@@ -77,15 +75,33 @@ cargo fmt --all --check
 Pop-Location
 ```
 
+构建不带 Updater 签名的本地安装包：
+
+```powershell
+# Windows x64 NSIS
+npm run build:windows
+
+# macOS DMG（需在 macOS 上执行）
+npm run build:macos
+```
+
+本地包仅用于开发测试，不属于官方签名发布包。
+
 ## 发布
 
-官方签名发布包暂不属于这次初始干净基线。Release、签名、更新器和安装器自动化会在经过公开安全审查后，再作为公开约定写入文档。
+推送 `v1.5.0` 这样的版本 tag 后，公开 Release 工作流会创建一个 GitHub Release 草稿，其中包含：
 
-在公开发布包可用之前，请从源码构建用于测试和开发。
+- Windows x64 NSIS 安装包。
+- Apple silicon 与 Intel 两种 macOS DMG 和更新包。
+- Tauri Updater 签名与 `latest.json`。
+- SHA-256 校验和、CycloneDX SBOM、依赖许可证清单和构建来源证明。
+- GitHub 自动生成的源码归档及 GPL 许可证。
+
+正式包必须通过 Windows Authenticode 签名，以及 Apple Developer ID 签名和公证；维护者完成安装/更新冒烟测试后再手动发布草稿。详见[发布检查清单](docs/open-source/releases/release-checklist.md)。
 
 ## 贡献
 
-请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。提交 Pull Request 即表示贡献者确认自己有权提交这些改动，并同意这些贡献作为本项目的一部分按 GPL-3.0-only 授权。
+请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。提交 Pull Request 即表示贡献者确认自己有权提交这些改动，并同意这些贡献作为本项目的一部分按 GPL-3.0-only 授权。
 
 ## 许可证
 

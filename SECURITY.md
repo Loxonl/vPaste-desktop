@@ -1,5 +1,9 @@
 # Security Policy
 
+## Supported Versions
+
+Security fixes target the latest published stable release and the `main` branch. Older releases may be asked to upgrade before a fix is provided.
+
 ## Reporting Security Issues
 
 Please do not open a public issue with sensitive security details.
@@ -15,6 +19,7 @@ Do not paste secrets, passwords, tokens, private messages, or sensitive clipboar
 ## Do Not Commit
 
 - Tauri updater private keys.
+- Windows/macOS code-signing certificates, private keys, passwords, and notarization API keys.
 - GitHub tokens.
 - `.env` files.
 - Local clipboard history databases.

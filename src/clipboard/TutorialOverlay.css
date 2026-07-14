@@ -37,6 +37,8 @@
   height: 118px;
   object-fit: contain;
   image-rendering: auto;
+  backface-visibility: hidden;
+  will-change: transform, opacity;
 }
 
 .tutorial-welcome-copy {

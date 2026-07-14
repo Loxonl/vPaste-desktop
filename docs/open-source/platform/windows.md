@@ -56,4 +56,4 @@ Implementation expectations:
 
 ## Windows Release
 
-Release-flow documentation is maintained separately and will be added after review.
+The reproducible Windows packaging and signing process is documented in [Windows Release Flow](../releases/windows-release-flow.md).

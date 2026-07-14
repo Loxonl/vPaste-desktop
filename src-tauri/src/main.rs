@@ -5189,6 +5189,10 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
     let clipboard_start = Instant::now();
     let _clipboard = Clipboard::new_attempts(10).map_err(|err| format!("{:?}", err))?;
     mark_next_clipboard_change_as_internal();
+    clipboard_win::raw::empty().map_err(|err| {
+        error!("Failed to clear clipboard before image restore: {:?}", err);
+        format!("{:?}", err)
+    })?;
     let mut has_file_drop_format = false;
     if let Some(bytes) = png_bytes.as_ref() {
         match write_image_clipboard_file(path, bytes).and_then(|file_path| {
@@ -5207,12 +5211,7 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
 
     let mut has_dibv5_format = false;
     if let Some(bytes) = dibv5.as_ref() {
-        let set_dibv5 = if has_file_drop_format {
-            clipboard_win::raw::set_without_clear(CF_DIBV5, bytes)
-        } else {
-            clipboard_win::raw::set(CF_DIBV5, bytes)
-        };
-        match set_dibv5 {
+        match clipboard_win::raw::set_without_clear(CF_DIBV5, bytes) {
             Ok(()) => {
                 has_dibv5_format = true;
                 if let Err(err) = clipboard_win::raw::set_without_clear(CF_DIB, &dib) {
@@ -5221,31 +5220,17 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
             }
             Err(err) => {
                 error!("Failed to set image DIBV5: {:?}", err);
-                if has_file_drop_format {
-                    clipboard_win::raw::set_without_clear(CF_DIB, &dib).map_err(|err| {
-                        error!("Failed to set image DIB: {:?}", err);
-                        format!("{:?}", err)
-                    })?;
-                } else {
-                    clipboard_win::raw::set(CF_DIB, &dib).map_err(|err| {
-                        error!("Failed to set image DIB: {:?}", err);
-                        format!("{:?}", err)
-                    })?;
-                }
+                clipboard_win::raw::set_without_clear(CF_DIB, &dib).map_err(|err| {
+                    error!("Failed to set image DIB: {:?}", err);
+                    format!("{:?}", err)
+                })?;
             }
         }
     } else {
-        if has_file_drop_format {
-            clipboard_win::raw::set_without_clear(CF_DIB, &dib).map_err(|err| {
-                error!("Failed to set image DIB: {:?}", err);
-                format!("{:?}", err)
-            })?;
-        } else {
-            clipboard_win::raw::set(CF_DIB, &dib).map_err(|err| {
-                error!("Failed to set image DIB: {:?}", err);
-                format!("{:?}", err)
-            })?;
-        }
+        clipboard_win::raw::set_without_clear(CF_DIB, &dib).map_err(|err| {
+            error!("Failed to set image DIB: {:?}", err);
+            format!("{:?}", err)
+        })?;
     }
     let has_png_format = png_bytes.is_some();
     if let Some(bytes) = png_bytes.as_ref() {
@@ -5291,6 +5276,10 @@ fn copy_gif_bytes_to_clipboard_as_file(path: &str, bytes: &[u8]) -> Result<bool,
     let files = vec![cache_path.to_string_lossy().to_string()];
     let _clipboard = Clipboard::new_attempts(10).map_err(|err| format!("{:?}", err))?;
     mark_next_clipboard_change_as_internal();
+    clipboard_win::raw::empty().map_err(|err| {
+        error!("Failed to clear clipboard before GIF restore: {:?}", err);
+        format!("{:?}", err)
+    })?;
     FileList.write_clipboard(&files).map_err(|err| {
         error!("Failed to set gif file list: {:?}", err);
         format!("{:?}", err)

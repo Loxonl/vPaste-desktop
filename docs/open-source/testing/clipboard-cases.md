@@ -46,6 +46,7 @@ Expected:
 
 ## Images
 
+- Copy a distinctive text value, then restore several different image records in sequence.
 - Copy a screenshot.
 - Copy an image directly from a browser page.
 - Copy a local PNG file.
@@ -56,6 +57,7 @@ Expected:
 
 Expected:
 
+- Every restored image pastes as that image; the earlier text value must not remain as a fallback clipboard format.
 - Image preview appears without blocking the panel.
 - Main panel image cards keep using lightweight card previews during keyboard navigation; full-size image data should only load for preview, paste, or export actions.
 - Transparent image cards use a clean background.

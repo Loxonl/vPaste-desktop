@@ -33,7 +33,7 @@
     "@emotion/styled": "^11.11.0",
     "@mui/icons-material": "^5.15.12",
     "@mui/material": "^5.15.12",
-    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-cli": "^2.4.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-global-shortcut": "^2.3.1",

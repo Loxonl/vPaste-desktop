@@ -29,7 +29,6 @@ const HISTORY_PAGE_LIMIT = 36;
 const HISTORY_DATA_URL_CACHE_LIMIT = 80;
 const ACTIVE_IMAGE_LOAD_DELAY_MS = 140;
 const IMAGE_EXPORT_DIR_KEY = "vpaste.imageExportDir.v1";
-const UPDATE_CHECK_DAY_MS = 24 * 60 * 60 * 1000;
 const PENDING_ITEM_TAGS_CHANGED_KEY = "vpaste.pendingItemTagsChangedPayload";
 const historyDataUrlCache = new Map<string, string>();
 const historyPreviewSrcCache = new Map<string, string>();
@@ -85,20 +84,10 @@ type ClipboardBehaviorConfig = {
     link_auto_preview?: boolean;
     quick_input_enabled?: boolean;
     tab_quick_select_enabled?: boolean;
-    update_check_enabled?: boolean;
-    last_update_check_at?: string;
-    ignored_update_version?: string;
     shortcut_keys?: {
         main_window?: string | null;
         paste_into_plain_text?: string | null;
     };
-};
-
-type UpdateInfo = {
-    current_version: string;
-    version: string;
-    date?: string | null;
-    body?: string | null;
 };
 
 type PasteAccessibilityPermissionStatus = {
@@ -1723,7 +1712,6 @@ export default function Clipboard() {
     const isLoadingMoreRef = useRef(false);
     const customTabsStorageReadyRef = useRef(false);
     const pendingRecordTagAssignTargetRef = useRef<Item | null>(null);
-    const pendingUpdateRef = useRef<UpdateInfo | null>(null);
     const previewRequestSeqRef = useRef(0);
     const activateClipboardCardRef = useRef<(hash: string, plainText: boolean) => void>(() => { });
     const dynamicTabs = useMemo(
@@ -2240,49 +2228,6 @@ export default function Clipboard() {
             showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
         }
     };
-
-    const shouldRunAutoUpdateCheck = (config: ClipboardBehaviorConfig) => {
-        if (config.update_check_enabled === false) return false;
-        if (!config.last_update_check_at) return true;
-        const lastCheckTime = Date.parse(config.last_update_check_at);
-        return Number.isNaN(lastCheckTime) || Date.now() - lastCheckTime >= UPDATE_CHECK_DAY_MS;
-    };
-
-    const openUpdateSettings = () => {
-        localStorage.setItem("vpaste.config.target", "about");
-        void invoke('open_config_window', { target: "about" })
-            .catch(e => error(`Failed to open update settings: ${e}`));
-    };
-
-    const showUpdatePrompt = (update: UpdateInfo) => {
-        showToast(
-            t("clipboard.updateAvailable", { version: update.version }),
-            "info",
-            9000,
-            t("clipboard.updateOpenSettings"),
-            openUpdateSettings,
-        );
-    };
-
-    const runAutoUpdateCheck = async () => {
-        const config = await loadBehaviorConfig();
-        if (Object.keys(config).length === 0) return;
-        if (!shouldRunAutoUpdateCheck(config)) return;
-
-        const checkedAt = new Date().toISOString();
-        try {
-            await saveBehaviorConfig({ ...config, last_update_check_at: checkedAt });
-            const update = await invoke<UpdateInfo | null>("check_for_app_update");
-            if (!update || update.version === config.ignored_update_version) return;
-            pendingUpdateRef.current = update;
-        } catch (e) {
-            error(`Failed to auto check update: ${e}`);
-            void saveBehaviorConfig({ ...config, last_update_check_at: checkedAt }).catch(saveErr => {
-                error(`Failed to persist update check timestamp: ${saveErr}`);
-            });
-        }
-    };
-
     const tabLabelForBackend = (tabId: string): string => {
         if (tabId === "favorite") return "__favorite";
         if (tabId === "all") return "__all";
@@ -2660,10 +2605,6 @@ export default function Clipboard() {
             } else {
                 setSimulatedHoverHash("");
             }
-            if (pendingUpdateRef.current) {
-                showUpdatePrompt(pendingUpdateRef.current);
-                pendingUpdateRef.current = null;
-            }
             syncAltHintsFromNative();
             window.setTimeout(syncAltHintsFromNative, 70);
             window.setTimeout(syncAltHintsFromNative, 160);
@@ -2773,8 +2714,6 @@ export default function Clipboard() {
                 }
             })
             .catch(e => error(`Failed to check tutorial state: ${e}`));
-        void runAutoUpdateCheck();
-
         return () => {
             clearAnimationTimer();
             stopDragInertia();

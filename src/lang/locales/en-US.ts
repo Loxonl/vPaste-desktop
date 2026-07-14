@@ -315,6 +315,7 @@ const enUS: LanguagePack = {
         "settings.updateDesc": "Current version {version}. Get notified first and install only when you confirm",
         "settings.updateCheck": "Check for Updates",
         "settings.updateChecking": "Checking...",
+        "settings.updateOpenReleasePrompt": "Update {version} is available. Open the GitHub release page?",
         "settings.updateInstall": "Download and Install",
         "settings.updateInstallingShort": "Installing...",
         "settings.updateAvailable": "Update {version} is available",

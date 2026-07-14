@@ -33,7 +33,6 @@ import AutoDeleteOutlinedIcon from '@mui/icons-material/AutoDeleteOutlined';
 import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined';
 import GitHubIcon from '@mui/icons-material/GitHub';
 import LaunchOutlinedIcon from '@mui/icons-material/LaunchOutlined';
-import SystemUpdateAltOutlinedIcon from '@mui/icons-material/SystemUpdateAltOutlined';
 import CloseIcon from '@mui/icons-material/Close';
 
 interface Shortcutkey {
@@ -123,18 +122,12 @@ interface AppVersionInfo {
     version: string;
 }
 
-interface UpdateProgressPayload {
-    stage: string;
-    chunk_length?: number | null;
-    content_length?: number | null;
-}
-
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
 type LanguageOption = { value: string; label: string };
 type SettingsBlockingOperation = { title: string; description: string; progress?: number | null };
 
-const APP_REPOSITORY_URL = "https://github.com/Loxonl/vPaste";
-const APP_CHANGELOG_URL = "https://github.com/Loxonl/vPaste/releases";
+const APP_REPOSITORY_URL = "https://github.com/Loxonl/vPaste-desktop";
+const APP_CHANGELOG_URL = `${APP_REPOSITORY_URL}/releases`;
 const PAGE_STACK_SX = { maxWidth: '100%', margin: 0 };
 const PAGE_TITLE_SX = { fontWeight: 650, color: '#15191f', letterSpacing: 0, fontSize: '24px', lineHeight: 1.16 };
 const SECTION_TITLE_SX = { color: '#1f242b', mb: 0.8, ml: 1.1, fontSize: '13px', fontWeight: 480, letterSpacing: 0 };
@@ -1497,14 +1490,10 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
     );
 }
 
-function AboutSettings({ config, dir: _dir, t, onSave }: SettingsProps & { dir: string }) {
+function AboutSettings({ dir: _dir, t }: SettingsProps & { dir: string }) {
     const [checking, setChecking] = React.useState(false);
-    const [installing, setInstalling] = React.useState(false);
     const [appVersion, setAppVersion] = React.useState<string | null>(null);
-    const [updateInfo, setUpdateInfo] = React.useState<UpdateInfo | null>(null);
     const [updateMessage, setUpdateMessage] = React.useState<{ kind: 'success' | 'error' | 'info', text: string } | null>(null);
-    const [downloadedBytes, setDownloadedBytes] = React.useState(0);
-    const [totalBytes, setTotalBytes] = React.useState<number | null>(null);
 
     React.useEffect(() => {
         invoke<AppVersionInfo>("get_app_version")
@@ -1512,61 +1501,32 @@ function AboutSettings({ config, dir: _dir, t, onSave }: SettingsProps & { dir: 
             .catch(e => error(`Failed to load app version: ${e}`));
     }, []);
 
-    React.useEffect(() => {
-        let mounted = true;
-        let downloaded = 0;
-        let total: number | null = null;
-        const unlistenProgress = listen<UpdateProgressPayload>("update-download-progress", (event) => {
-            if (!mounted) return;
-            const payload = event.payload;
-            if (payload.stage === "started") {
-                downloaded = 0;
-                total = payload.content_length ?? null;
-                setDownloadedBytes(0);
-                setTotalBytes(total);
-            } else if (payload.stage === "progress") {
-                downloaded += payload.chunk_length ?? 0;
-                setDownloadedBytes(downloaded);
-            } else if (payload.stage === "finished") {
-                setDownloadedBytes(total ?? downloaded);
-            }
-        });
-        const unlistenState = listen<UpdateProgressPayload>("update-install-state", (event) => {
-            if (!mounted) return;
-            if (event.payload.stage === "installing") {
-                setUpdateMessage({ kind: 'info', text: t("settings.updateInstalling") });
-            }
-        });
-        return () => {
-            mounted = false;
-            unlistenProgress.then(fn => fn()).catch(e => error(`Failed to unlisten update progress: ${e}`));
-            unlistenState.then(fn => fn()).catch(e => error(`Failed to unlisten update state: ${e}`));
-        };
-    }, [t]);
+    const openExternal = (url: string) => {
+        void invoke("open_url_in_browser", { url }).catch(e => error(`Failed to open external link: ${e}`));
+    };
 
-    const resetProgress = () => {
-        setDownloadedBytes(0);
-        setTotalBytes(null);
+    const releaseUrlForVersion = (version: string) => {
+        const normalized = version.startsWith("v") ? version : `v${version}`;
+        return `${APP_CHANGELOG_URL}/tag/${encodeURIComponent(normalized)}`;
     };
 
     const handleCheckUpdate = async () => {
         try {
             setChecking(true);
-            resetProgress();
             setUpdateMessage(null);
             const result = await invoke<UpdateInfo | null>("check_for_app_update");
-            setUpdateInfo(result);
             if (result?.current_version) {
                 setAppVersion(result.current_version);
             }
-            setUpdateMessage(result
-                ? { kind: 'success', text: t("settings.updateAvailable", { version: result.version }) }
-                : { kind: 'info', text: t("settings.updateLatest") });
-            void onSave({
-                ...config,
-                last_update_check_at: new Date().toISOString(),
-                ignored_update_version: result ? "" : config.ignored_update_version,
-            });
+            if (!result) {
+                setUpdateMessage({ kind: 'info', text: t("settings.updateLatest") });
+                return;
+            }
+
+            setUpdateMessage({ kind: 'success', text: t("settings.updateAvailable", { version: result.version }) });
+            if (window.confirm(t("settings.updateOpenReleasePrompt", { version: result.version }))) {
+                openExternal(releaseUrlForVersion(result.version));
+            }
         } catch (e) {
             error(`Failed to check update: ${e}`);
             setUpdateMessage({ kind: 'error', text: t("settings.updateCheckFailed", { error: String(e) }) });
@@ -1575,47 +1535,7 @@ function AboutSettings({ config, dir: _dir, t, onSave }: SettingsProps & { dir: 
         }
     };
 
-    const handleUpdateCheckEnabledChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-        void onSave({ ...config, update_check_enabled: event.target.checked });
-    };
-
-    const handleIgnoreVersion = () => {
-        if (!updateInfo) return;
-        void onSave({ ...config, ignored_update_version: updateInfo.version });
-        setUpdateMessage({ kind: 'info', text: t("settings.updateIgnored", { version: updateInfo.version }) });
-    };
-
-    const handleAllowVersionPrompt = () => {
-        void onSave({ ...config, ignored_update_version: "" });
-        setUpdateMessage({ kind: 'info', text: t("settings.updatePromptRestored") });
-    };
-
-    const handleInstallUpdate = async () => {
-        try {
-            setInstalling(true);
-            resetProgress();
-            setUpdateMessage({ kind: 'info', text: t("settings.updateDownloading") });
-            await invoke("install_app_update");
-            setUpdateMessage({ kind: 'success', text: t("settings.updateReadyToInstall") });
-        } catch (e) {
-            error(`Failed to install update: ${e}`);
-            setUpdateMessage({ kind: 'error', text: t("settings.updateInstallFailed", { error: String(e) }) });
-        } finally {
-            setInstalling(false);
-        }
-    };
-
-    const progressText = totalBytes && totalBytes > 0
-        ? t("settings.updateProgress", { downloaded: formatBytes(downloadedBytes), total: formatBytes(totalBytes) })
-        : downloadedBytes > 0
-            ? t("settings.updateProgressUnknown", { downloaded: formatBytes(downloadedBytes) })
-            : "";
-
-    const displayVersion = updateInfo?.current_version || appVersion || t("settings.versionUnknown");
-
-    const openExternal = (url: string) => {
-        void invoke("open_url_in_browser", { url }).catch(e => error(`Failed to open external link: ${e}`));
-    };
+    const displayVersion = appVersion || t("settings.versionUnknown");
 
     return (
         <Stack spacing={2.25} sx={PAGE_STACK_SX}>
@@ -1630,106 +1550,27 @@ function AboutSettings({ config, dir: _dir, t, onSave }: SettingsProps & { dir: 
                     <Typography variant="body2" sx={{ mt: 0.65, color: 'var(--settings-muted)', lineHeight: 1.55 }}>
                         {t("settings.about.subtitle")}
                     </Typography>
-                    <span className="about-version-pill">
-                        {t("common.version", { version: displayVersion })}
-                    </span>
+                    <div className="about-version-actions">
+                        <span className="about-version-pill">
+                            {t("common.version", { version: displayVersion })}
+                        </span>
+                        <Button
+                            variant="contained"
+                            color="inherit"
+                            size="small"
+                            disabled={checking}
+                            onClick={handleCheckUpdate}
+                            sx={{ textTransform: 'none', boxShadow: 'none', flex: '0 0 auto', borderRadius: '999px', minHeight: 26, px: 1.35, fontSize: 12, fontWeight: 650, bgcolor: 'rgba(31, 36, 43, 0.08)', color: '#26303a', '&:hover': { bgcolor: 'rgba(31, 36, 43, 0.12)' } }}
+                        >
+                            {checking ? t("settings.updateChecking") : t("settings.updateCheck")}
+                        </Button>
+                    </div>
+                    {updateMessage && (
+                        <div className={`about-update-status ${updateMessage.kind === 'error' ? 'error' : updateMessage.kind === 'success' ? 'success' : 'working'}`}>
+                            {updateMessage.text}
+                        </div>
+                    )}
                 </div>
-            </Box>
-            <Box>
-                <Typography variant="subtitle2" sx={SECTION_TITLE_SX}>
-                    {t("settings.about.updateSection")}
-                </Typography>
-                <List sx={LIST_SX}>
-                    <ListItem sx={{ ...LIST_ITEM_SX, alignItems: 'flex-start' }}>
-                        <Stack spacing={0.95} sx={{ width: '100%' }}>
-                            <Stack direction="row" spacing={1.1} alignItems="flex-start">
-                                <span className="about-inline-icon">
-                                    <SystemUpdateAltOutlinedIcon fontSize="small" />
-                                </span>
-                                <ListItemText
-                                    primary={t("settings.updateTitle")}
-                                    secondary={t("settings.updateDesc", { version: displayVersion })}
-                                    primaryTypographyProps={PRIMARY_TEXT_PROPS}
-                                    secondaryTypographyProps={SECONDARY_TEXT_PROPS}
-                                    sx={{ m: 0 }}
-                                />
-                            </Stack>
-                            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                                <Button
-                                    variant="contained"
-                                    color="inherit"
-                                    size="small"
-                                    disabled={checking || installing}
-                                    onClick={handleCheckUpdate}
-                                    sx={{ textTransform: 'none', boxShadow: 'none', flex: '0 0 auto', borderRadius: '8px', fontWeight: 600, bgcolor: 'rgba(31, 36, 43, 0.08)', color: '#26303a', '&:hover': { bgcolor: 'rgba(31, 36, 43, 0.12)' } }}
-                                >
-                                    {checking ? t("settings.updateChecking") : t("settings.updateCheck")}
-                                </Button>
-                                <Button
-                                    variant="outlined"
-                                    size="small"
-                                    disabled={!updateInfo || checking || installing}
-                                    onClick={handleInstallUpdate}
-                                    sx={{ textTransform: 'none', flex: '0 0 auto', borderRadius: '8px', fontWeight: 600 }}
-                                >
-                                    {installing ? t("settings.updateInstallingShort") : t("settings.updateInstall")}
-                                </Button>
-                                {updateInfo && config.ignored_update_version !== updateInfo.version && (
-                                    <Button
-                                        variant="text"
-                                        size="small"
-                                        disabled={checking || installing}
-                                        onClick={handleIgnoreVersion}
-                                        sx={{ textTransform: 'none', flex: '0 0 auto', borderRadius: '8px', fontWeight: 600 }}
-                                    >
-                                        {t("settings.updateIgnore")}
-                                    </Button>
-                                )}
-                                {config.ignored_update_version && (
-                                    <Button
-                                        variant="text"
-                                        size="small"
-                                        disabled={checking || installing}
-                                        onClick={handleAllowVersionPrompt}
-                                        sx={{ textTransform: 'none', flex: '0 0 auto', borderRadius: '8px', fontWeight: 600 }}
-                                    >
-                                        {t("settings.updateRestorePrompt")}
-                                    </Button>
-                                )}
-                            </Stack>
-                            {updateInfo && (
-                                <div className="update-card">
-                                    <div className="update-card__version">
-                                        {t("settings.updateAvailable", { version: updateInfo.version })}
-                                    </div>
-                                    <div className="update-card__meta">
-                                        {t("settings.updateCurrentVersion", { version: updateInfo.current_version })}
-                                        {updateInfo.date ? ` · ${t("settings.updateDate", { date: updateInfo.date })}` : ""}
-                                    </div>
-                                    {updateInfo.body && <pre className="update-card__notes">{updateInfo.body}</pre>}
-                                </div>
-                            )}
-                            {(progressText || updateMessage) && (
-                                <div className={`storage-migration-status ${updateMessage?.kind === 'error' ? 'error' : updateMessage?.kind === 'success' ? 'success' : 'working'}`}>
-                                    {installing && <CircularProgress size={14} thickness={5} />}
-                                    <span>{progressText || updateMessage?.text}</span>
-                                </div>
-                            )}
-                            <Typography variant="caption" sx={{ color: 'var(--settings-muted)' }}>
-                                {t("settings.updateFeedHint")}
-                            </Typography>
-                        </Stack>
-                    </ListItem>
-                    <ListItem sx={{ ...LIST_ITEM_SX, alignItems: 'center' }}>
-                        <ListItemText
-                            primary={t("settings.updateAutoCheck")}
-                            secondary={t("settings.updateAutoCheckDesc")}
-                            primaryTypographyProps={PRIMARY_TEXT_PROPS}
-                            secondaryTypographyProps={SECONDARY_TEXT_PROPS}
-                        />
-                        <QQSwitch checked={config.update_check_enabled !== false} onChange={handleUpdateCheckEnabledChange} />
-                    </ListItem>
-                </List>
             </Box>
             <Box>
                 <Typography variant="subtitle2" sx={SECTION_TITLE_SX}>
@@ -1748,7 +1589,7 @@ function AboutSettings({ config, dir: _dir, t, onSave }: SettingsProps & { dir: 
                         <span className="about-link-card__icon"><GitHubIcon fontSize="small" /></span>
                         <span className="about-link-card__body">
                             <span className="about-link-card__title">{t("settings.about.github")}</span>
-                            <span className="about-link-card__desc">Loxonl/vPaste</span>
+                            <span className="about-link-card__desc">Loxonl/vPaste-desktop</span>
                         </span>
                         <LaunchOutlinedIcon className="about-link-card__launch" fontSize="small" />
                     </button>

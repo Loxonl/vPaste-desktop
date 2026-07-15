@@ -53,6 +53,10 @@ type StepShellProps = {
     nextLabel?: string;
 };
 
+const WELCOME_REVEAL_MS = 680;
+const WELCOME_HOLD_MS = 1500;
+const WELCOME_EXIT_MS = 500;
+
 export default function TutorialOverlay({
     t,
     logoSrc,
@@ -96,7 +100,11 @@ export default function TutorialOverlay({
         };
 
         if (step === 0) {
-            const welcomeDuration = reduceMotion ? 650 : 3300;
+            const welcomeDuration = reduceMotion
+                ? WELCOME_HOLD_MS
+                : WELCOME_REVEAL_MS + WELCOME_HOLD_MS + WELCOME_EXIT_MS;
+            const revealOffset = WELCOME_REVEAL_MS / welcomeDuration;
+            const exitOffset = (WELCOME_REVEAL_MS + WELCOME_HOLD_MS) / welcomeDuration;
             if (!reduceMotion) {
                 animate(".tutorial-welcome", [
                     {
@@ -104,11 +112,11 @@ export default function TutorialOverlay({
                         opacity: 0,
                         easing: "cubic-bezier(.22,1,.36,1)",
                     },
-                    { transform: "translate3d(0, 0, 0) scale(1)", opacity: 1, offset: .17 },
+                    { transform: "translate3d(0, 0, 0) scale(1)", opacity: 1, offset: revealOffset },
                     {
                         transform: "translate3d(0, 0, 0) scale(1)",
                         opacity: 1,
-                        offset: .78,
+                        offset: exitOffset,
                         easing: "cubic-bezier(.65,0,.35,1)",
                     },
                     { transform: "translate3d(-120%, 0, 0) scale(1)", opacity: 0 },

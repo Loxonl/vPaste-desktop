@@ -8,7 +8,7 @@ import "./TrayMenu.css";
 type TrayAction = "show_main_panel" | "open_config_window" | "quit_app";
 type PauseChangedPayload = { paused: boolean };
 
-const TRAY_MENU_WIDTH = 184;
+const TRAY_MENU_WIDTH = 200;
 
 const items: Array<{ labelKey: string; action: TrayAction }> = [
     { labelKey: "tray.showMain", action: "show_main_panel" },

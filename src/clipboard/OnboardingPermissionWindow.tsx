@@ -6,12 +6,11 @@ import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import aboutLogo from "../assets/about-logo.png";
 import authorizeTips from "../assets/tutorial/authorize-tips.png";
+import backgroundAuthorizeTips from "../assets/tutorial/background-authorize-tips.png";
 import { useLanguage } from "../lang";
 import { loadAndApplyTheme } from "../theme";
 import type { TutorialPermissionId } from "./TutorialOverlay";
 import "./TutorialOverlay.css";
-
-type TFunction = (key: string, params?: Record<string, string | number>) => string;
 
 type PermissionWindowPayload = {
     permission: TutorialPermissionId;
@@ -31,44 +30,11 @@ function isPermissionId(value: unknown): value is TutorialPermissionId {
     return value === "background" || value === "paste";
 }
 
-function PermissionGuideVisual({ id, t }: { id: TutorialPermissionId; t: TFunction }) {
-    const isBackground = id === "background";
-    if (!isBackground) {
-        return (
-            <div className="tutorial-guide-art tutorial-guide-art-paste" aria-hidden="true">
-                <img className="tutorial-guide-authorize-tips" src={authorizeTips} alt="" />
-            </div>
-        );
-    }
-
-    const panelTitle = t(`tutorial.permission.guide.${id}.panel`);
-    const settingLabel = t(`tutorial.permission.guide.${id}.setting`);
-
+function PermissionGuideVisual({ id }: { id: TutorialPermissionId }) {
+    const image = id === "background" ? backgroundAuthorizeTips : authorizeTips;
     return (
-        <div className={`tutorial-guide-art tutorial-guide-art-${id}`} aria-hidden="true">
-            <div className="tutorial-guide-window">
-                <div className="tutorial-guide-toolbar">
-                    <span className="tutorial-guide-traffic-lights"><i /><i /><i /></span>
-                    <strong>{t("tutorial.permission.guide.systemSettings")}</strong>
-                    <span />
-                </div>
-                <div className="tutorial-guide-background-stage">
-                    <div className="tutorial-guide-background-heading">
-                        <small>{t("tutorial.permission.guide.general")}</small>
-                        <strong>{panelTitle}</strong>
-                    </div>
-                    <span className="tutorial-guide-background-section">{settingLabel}</span>
-                    <div className="tutorial-guide-settings-card">
-                        <span className="tutorial-guide-brand-icon"><img src={aboutLogo} alt="" /></span>
-                        <span className="tutorial-guide-setting-copy">
-                            <strong>vPaste</strong>
-                            <small>{t("tutorial.permission.guide.background.itemDesc")}</small>
-                        </span>
-                        <span className="tutorial-guide-switch on"><i /></span>
-                    </div>
-                    <span className="tutorial-guide-callout">{t("tutorial.permission.guide.background.callout")}</span>
-                </div>
-            </div>
+        <div className="tutorial-guide-art tutorial-guide-art-permission-image" aria-hidden="true">
+            <img className="tutorial-guide-authorize-tips" src={image} alt="" />
         </div>
     );
 }
@@ -211,7 +177,7 @@ export default function OnboardingPermissionWindow() {
                         <p id="tutorial-guide-description">{t(`tutorial.permission.guide.${permission}.desc`)}</p>
                     </div>
                 </div>
-                <PermissionGuideVisual id={permission} t={t} />
+                <PermissionGuideVisual id={permission} />
                 <div className="tutorial-guide-actions">
                     <button
                         type="button"

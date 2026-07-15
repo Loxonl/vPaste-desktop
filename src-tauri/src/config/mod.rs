@@ -47,7 +47,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            startup: false,
+            startup: true,
             display_tray_icon: true,
             multilingual: default_language(),
             theme_mode: default_theme_mode(),
@@ -203,4 +203,14 @@ pub fn save(config: Config) {
         .unwrap()
         .write_all(config_json.as_bytes())
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn startup_is_enabled_by_default() {
+        assert!(Config::default().startup);
+    }
 }

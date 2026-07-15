@@ -55,6 +55,14 @@ Run the desktop app in development mode:
 npm run dev:app
 ```
 
+Run the desktop app with the session-only tutorial preview toolbar on Windows or macOS:
+
+```powershell
+npm run dev:debug
+```
+
+Developer mode is available only in debug builds. It previews the Windows/macOS tutorial, built-in language, and light/dark theme without changing saved settings. Quit an existing vPaste instance before using this command on macOS.
+
 Build the frontend:
 
 ```powershell

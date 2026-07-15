@@ -65,7 +65,8 @@ export function translateWithPack(
 }
 
 export function useLanguage() {
-    const [languageCode, setLanguageCode] = useState(DEFAULT_LANGUAGE);
+    const [configuredLanguageCode, setLanguageCode] = useState(DEFAULT_LANGUAGE);
+    const [previewLanguageCode, setPreviewLanguageCode] = useState<LanguageCode | null>(null);
     const [packs, setPacks] = useState<LanguagePack[]>(LANGUAGE_PACKS);
 
     useEffect(() => {
@@ -103,6 +104,7 @@ export function useLanguage() {
         };
     }, []);
 
+    const languageCode = previewLanguageCode || configuredLanguageCode;
     const pack = useMemo(() => getLanguagePack(languageCode, packs), [languageCode, packs]);
     const t = useMemo(
         () => (key: string, params?: Record<string, string | number>) => translateWithPack(pack, key, params),
@@ -112,6 +114,7 @@ export function useLanguage() {
     return {
         languageCode,
         setLanguageCode,
+        setPreviewLanguageCode,
         pack,
         t,
         languages: languageOptions(packs),

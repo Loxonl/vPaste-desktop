@@ -616,16 +616,6 @@
   object-fit: contain;
 }
 
-.tutorial-guide-kicker {
-  display: block;
-  margin-bottom: 6px;
-  color: #187edc;
-  font-size: 10px;
-  font-weight: 790;
-  letter-spacing: 0.055em;
-  text-transform: uppercase;
-}
-
 .tutorial-guide-copy h1,
 .tutorial-guide-copy h2 {
   margin: 0;
@@ -662,8 +652,11 @@
   height: auto;
   aspect-ratio: 1859 / 772;
   padding: 0;
-  overflow: hidden;
-  background: #2e86d2;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .tutorial-guide-authorize-tips {
@@ -984,6 +977,7 @@
 .permission-guide-window-root {
   box-sizing: border-box;
   width: 100%;
+  min-width: 0;
   min-height: 100vh;
   display: grid;
   place-items: center;
@@ -997,12 +991,80 @@
 
 .permission-guide-standalone-dialog {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 320px;
   box-sizing: border-box;
-  grid-template-columns: minmax(180px, 0.72fr) minmax(380px, 1.35fr) minmax(220px, 0.8fr);
-  gap: 16px;
-  clip-path: inset(0 round 24px);
-  box-shadow: none;
+  grid-template-columns: 170px minmax(0, 1fr) 150px;
+  gap: 12px;
+  padding-inline: 18px;
+  border-color: rgba(57, 80, 107, 0.16);
+  box-shadow:
+    0 8px 18px rgba(21, 31, 45, 0.16),
+    0 1px 3px rgba(21, 31, 45, 0.1),
+    inset 0 1px 0 #fff;
+}
+
+.permission-guide-standalone-dialog .tutorial-guide-copy {
+  display: block;
+  align-self: center;
+  transform: none;
+}
+
+.permission-guide-standalone-dialog .tutorial-guide-logo {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 14px);
+  width: 56px;
+  height: 56px;
+  border-radius: 17px;
+}
+
+.permission-guide-standalone-dialog .tutorial-guide-logo img {
+  width: 48px;
+  height: 48px;
+}
+
+.permission-guide-standalone-dialog .tutorial-guide-copy h1 {
+  color: #187edc;
+  font-size: 15px;
+  line-height: 1.2;
+  letter-spacing: 0.015em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.permission-guide-standalone-dialog .tutorial-guide-copy p {
+  margin-top: 7px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.permission-guide-standalone-dialog .tutorial-guide-actions {
+  width: 100%;
+  justify-items: center;
+}
+
+.permission-guide-standalone-dialog .tutorial-guide-primary {
+  position: relative;
+  max-width: 220px;
+  min-height: 42px;
+  justify-content: center;
+  padding-inline: 28px;
+}
+
+.permission-guide-standalone-dialog .tutorial-guide-primary svg {
+  position: absolute;
+  right: 11px;
+}
+
+.permission-guide-standalone-dialog .tutorial-guide-primary,
+.permission-guide-standalone-dialog .tutorial-guide-later {
+  font-size: 13px;
+}
+
+.permission-guide-standalone-dialog .tutorial-guide-later {
+  min-height: 34px;
 }
 
 .permission-guide-error {
@@ -1073,6 +1135,15 @@
     grid-template-columns: 56px 1fr;
     align-items: center;
     transform: none;
+  }
+
+  .permission-guide-standalone-dialog .tutorial-guide-copy {
+    display: grid;
+    gap: 12px;
+  }
+
+  .permission-guide-standalone-dialog .tutorial-guide-logo {
+    position: static;
   }
 
   .tutorial-guide-art {
@@ -1147,7 +1218,11 @@
 }
 
 :root[data-theme="dark"] .permission-guide-standalone-dialog {
-  box-shadow: none;
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow:
+    0 10px 22px rgba(0, 0, 0, 0.34),
+    0 1px 4px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 :root[data-theme="dark"] .tutorial-guide-copy p,

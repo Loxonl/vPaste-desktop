@@ -16,12 +16,15 @@ import SearchIcon from "@mui/icons-material/Search";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import AppleIcon from "@mui/icons-material/Apple";
 import WindowOutlinedIcon from "@mui/icons-material/WindowOutlined";
+import LightModeRoundedIcon from "@mui/icons-material/LightModeRounded";
+import DarkModeRoundedIcon from "@mui/icons-material/DarkModeRounded";
 import AddIcon from "@mui/icons-material/Add";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
 import StarBorderOutlinedIcon from "@mui/icons-material/StarBorderOutlined";
 import TutorialOverlay, { TutorialFilterId, TutorialFilterTab, TutorialPermission, TutorialPermissionId, TutorialPlatform } from "./TutorialOverlay.tsx";
 import aboutLogo from "../assets/about-logo.png";
+import { getResolvedTheme, getThemePreview, setThemePreview, type ResolvedTheme } from "../theme";
 
 const CLIPBOARD_ANIMATION_MS = 120;
 const DEFAULT_PASTE_AS_TEXT_SHORTCUT = "Shift+Enter";
@@ -1633,7 +1636,7 @@ const ClipboardCard = React.memo(ClipboardCardComponent, (prev, next) => (
 ));
 
 export default function Clipboard() {
-    const { t, languageCode } = useLanguage();
+    const { t, languageCode, setPreviewLanguageCode } = useLanguage();
     const [selected, setSelected] = useState<String>("");
     const [searchWord, setSearchWord] = useState<String>("");
     const [searchOpen, setSearchOpen] = useState<boolean>(false);
@@ -1658,12 +1661,24 @@ export default function Clipboard() {
     const [tutorialRunId, setTutorialRunId] = useState(0);
     const [tutorialPermissionStatus, setTutorialPermissionStatus] = useState<TutorialPermissionStatus | null>(null);
     const [tutorialPlatform, setTutorialPlatform] = useState<TutorialPlatform>(() => isMacPlatform() ? "mac" : "windows");
+    const [developerMode, setDeveloperMode] = useState(false);
+    const [developerTheme, setDeveloperTheme] = useState<ResolvedTheme>(() => getResolvedTheme());
     const [mainShortcut, setMainShortcut] = useState(DEFAULT_MAIN_SHORTCUT);
 
     // Initialize with mock data
     const [clipboardPage, setPage] = useState(() => {
         return new ClipboardPage([], 0);
     });
+
+    useEffect(() => {
+        if (!import.meta.env.DEV) return;
+        invoke<boolean>("get_developer_mode")
+            .then(enabled => {
+                setDeveloperMode(enabled);
+                if (enabled) setDeveloperTheme(getResolvedTheme());
+            })
+            .catch(e => error(`Failed to detect developer mode: ${e}`));
+    }, []);
 
     const [animationState, setAnimationState] = useState<'hidden' | 'entering' | 'entered' | 'exiting'>('entered');
     const animationTimerRef = useRef<number | null>(null);
@@ -2063,7 +2078,8 @@ export default function Clipboard() {
     };
 
     const openPasteAccessibilityGuide = async () => {
-        const payload = { permission: "paste", languageCode };
+        const themePreview = getThemePreview();
+        const payload = { permission: "paste", languageCode, themePreview };
         localStorage.setItem(PENDING_PERMISSION_WINDOW_KEY, JSON.stringify(payload));
         setContextMenu(null);
         await invoke("open_onboarding_permission_window", payload);
@@ -2135,7 +2151,8 @@ export default function Clipboard() {
 
     const handleTutorialPermissionAction = async (id: TutorialPermissionId) => {
         try {
-            const payload = { permission: id, languageCode };
+            const themePreview = getThemePreview();
+            const payload = { permission: id, languageCode, themePreview };
             localStorage.setItem(PENDING_PERMISSION_WINDOW_KEY, JSON.stringify(payload));
             await invoke("open_onboarding_permission_window", payload);
         } catch (e) {
@@ -3546,6 +3563,16 @@ export default function Clipboard() {
         void startTutorial(platform);
     };
 
+    const toggleDeveloperLanguage = () => {
+        setPreviewLanguageCode(languageCode === "Chinese" ? "English" : "Chinese");
+    };
+
+    const toggleDeveloperTheme = () => {
+        const nextTheme: ResolvedTheme = getResolvedTheme() === "dark" ? "light" : "dark";
+        setThemePreview(nextTheme);
+        setDeveloperTheme(nextTheme);
+    };
+
     const blockTutorialNavigation = () => {
         showToast(t("tutorial.finishFirst"), "info", 2200);
     };
@@ -3780,12 +3807,15 @@ export default function Clipboard() {
                     )}
                 </div>
                 <div className="header-actions">
-                    {!tutorialActive && (
-                        <div className="tutorial-debug-group" aria-label={t("tutorial.debug")}>
+                    {developerMode && (
+                        <div className="developer-toolbar" aria-label={t("tutorial.debug.tools")}>
+                            <span className="developer-toolbar-badge" aria-hidden="true">DEV</span>
                             <button
                                 type="button"
-                                className="settings-button tutorial-debug-button"
+                                className={`settings-button developer-toolbar-button${tutorialActive && tutorialPlatform === "windows" ? " is-active" : ""}`}
                                 title={t("tutorial.debug.windows")}
+                                aria-label={t("tutorial.debug.windows")}
+                                aria-pressed={tutorialActive && tutorialPlatform === "windows"}
                                 onClick={() => openTutorialFromDebug("windows")}
                             >
                                 <WindowOutlinedIcon className="settings-icon" fontSize="inherit" />
@@ -3793,12 +3823,36 @@ export default function Clipboard() {
                             </button>
                             <button
                                 type="button"
-                                className="settings-button tutorial-debug-button"
+                                className={`settings-button developer-toolbar-button${tutorialActive && tutorialPlatform === "mac" ? " is-active" : ""}`}
                                 title={t("tutorial.debug.mac")}
+                                aria-label={t("tutorial.debug.mac")}
+                                aria-pressed={tutorialActive && tutorialPlatform === "mac"}
                                 onClick={() => openTutorialFromDebug("mac")}
                             >
                                 <AppleIcon className="settings-icon" fontSize="inherit" />
                                 <span>Mac</span>
+                            </button>
+                            <span className="developer-toolbar-divider" aria-hidden="true" />
+                            <button
+                                type="button"
+                                className="settings-button developer-toolbar-button developer-toolbar-icon-button"
+                                title={t("tutorial.debug.language")}
+                                aria-label={t("tutorial.debug.language")}
+                                onClick={toggleDeveloperLanguage}
+                            >
+                                <span>{languageCode === "Chinese" ? "中" : "EN"}</span>
+                            </button>
+                            <button
+                                type="button"
+                                className="settings-button developer-toolbar-button developer-toolbar-icon-button"
+                                title={t(developerTheme === "dark" ? "tutorial.debug.theme.dark" : "tutorial.debug.theme.light")}
+                                aria-label={t(developerTheme === "dark" ? "tutorial.debug.theme.dark" : "tutorial.debug.theme.light")}
+                                aria-pressed={developerTheme === "dark"}
+                                onClick={toggleDeveloperTheme}
+                            >
+                                {developerTheme === "dark"
+                                    ? <DarkModeRoundedIcon className="settings-icon" fontSize="inherit" />
+                                    : <LightModeRoundedIcon className="settings-icon" fontSize="inherit" />}
                             </button>
                         </div>
                     )}

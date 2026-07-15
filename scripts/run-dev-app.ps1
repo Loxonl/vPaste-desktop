@@ -1,3 +1,7 @@
+param(
+  [switch]$DeveloperMode
+)
+
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
@@ -14,6 +18,13 @@ foreach ($process in $oldProcesses) {
   Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
 }
 Start-Sleep -Milliseconds 300
+
+$otherRunningApps = Get-CimInstance Win32_Process | Where-Object {
+  $_.Name -in @("vPaste.exe", "vpaste-desktop.exe")
+}
+if ($otherRunningApps) {
+  throw "Quit the running vPaste app before starting the local debug build."
+}
 
 $listener = Get-NetTCPConnection -LocalPort $DevUrlPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($listener) {
@@ -55,4 +66,8 @@ if (-not (Test-Path $Exe)) {
   throw "vPaste debug executable was not found: $Exe"
 }
 
-Start-Process -FilePath $Exe -WorkingDirectory (Split-Path -Parent $Exe)
+if ($DeveloperMode) {
+  Start-Process -FilePath $Exe -ArgumentList "--dev-mode" -WorkingDirectory (Split-Path -Parent $Exe)
+} else {
+  Start-Process -FilePath $Exe -WorkingDirectory (Split-Path -Parent $Exe)
+}

@@ -338,8 +338,12 @@ const enUS: LanguagePack = {
         "settings.updateFeedHint": "Stable channel. Your data is kept during upgrades",
 
         "tutorial.debug": "Open tutorial",
+        "tutorial.debug.tools": "Developer preview tools",
         "tutorial.debug.windows": "Test Windows tutorial",
         "tutorial.debug.mac": "Test macOS tutorial",
+        "tutorial.debug.language": "Switch tutorial language",
+        "tutorial.debug.theme.light": "Light theme preview",
+        "tutorial.debug.theme.dark": "Dark theme preview",
         "tutorial.finishFirst": "Please finish the tutorial first",
         "tutorial.done": "Done",
         "tutorial.back": "Previous",

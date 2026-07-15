@@ -3,34 +3,54 @@ import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
 
 export type ThemeMode = "system" | "light" | "dark";
+export type ResolvedTheme = "light" | "dark";
 
 const THEME_ATTRIBUTE = "data-theme";
 const THEME_MODE_ATTRIBUTE = "data-theme-mode";
 const THEME_STORAGE_KEY = "vpaste.themeMode";
 const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
 let currentMode: ThemeMode = "system";
+let previewMode: ResolvedTheme | null = null;
 let isSyncingFromConfig = false;
 
 function normalizeThemeMode(value: unknown): ThemeMode {
     return value === "light" || value === "dark" || value === "system" ? value : "system";
 }
 
-function resolvedTheme(mode: ThemeMode): "light" | "dark" {
+function resolvedTheme(mode: ThemeMode): ResolvedTheme {
     return mode === "system" ? (mediaQuery.matches ? "dark" : "light") : mode;
+}
+
+function renderTheme() {
+    const theme = previewMode || resolvedTheme(currentMode);
+    const mode = previewMode || currentMode;
+    document.documentElement.setAttribute(THEME_ATTRIBUTE, theme);
+    document.documentElement.setAttribute(THEME_MODE_ATTRIBUTE, mode);
+    document.body?.setAttribute(THEME_ATTRIBUTE, theme);
+    document.body?.setAttribute(THEME_MODE_ATTRIBUTE, mode);
 }
 
 export function applyThemeMode(mode: ThemeMode) {
     currentMode = normalizeThemeMode(mode);
-    const theme = resolvedTheme(currentMode);
-    document.documentElement.setAttribute(THEME_ATTRIBUTE, theme);
-    document.documentElement.setAttribute(THEME_MODE_ATTRIBUTE, currentMode);
-    document.body?.setAttribute(THEME_ATTRIBUTE, theme);
-    document.body?.setAttribute(THEME_MODE_ATTRIBUTE, currentMode);
+    renderTheme();
     try {
         localStorage.setItem(THEME_STORAGE_KEY, currentMode);
     } catch {
         // localStorage can be unavailable during early webview startup.
     }
+}
+
+export function setThemePreview(mode: ResolvedTheme | null) {
+    previewMode = mode === "light" || mode === "dark" ? mode : null;
+    renderTheme();
+}
+
+export function getThemePreview(): ResolvedTheme | null {
+    return previewMode;
+}
+
+export function getResolvedTheme(): ResolvedTheme {
+    return previewMode || resolvedTheme(currentMode);
 }
 
 function applyStoredThemeMode() {

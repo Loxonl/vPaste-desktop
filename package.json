@@ -19,6 +19,7 @@
   "scripts": {
     "dev": "vite",
     "dev:app": "powershell -ExecutionPolicy Bypass -File ./scripts/run-dev-app.ps1",
+    "dev:debug": "node ./scripts/run-dev-debug.mjs",
     "build": "tsc && vite build",
     "build:windows": "tauri build --bundles nsis --config src-tauri/tauri.local.conf.json",
     "build:macos": "tauri build --bundles dmg --config src-tauri/tauri.local.conf.json",

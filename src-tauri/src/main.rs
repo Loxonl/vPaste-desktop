@@ -95,9 +95,56 @@ const TRAY_MENU_WIDTH: i32 = 200;
 const TRAY_MENU_HEIGHT: i32 = 184;
 const TRAY_MENU_CURSOR_GAP: i32 = 8;
 const TRAY_ICON_ID: &str = "vpaste-tray";
+const DEVELOPER_MODE_ARG: &str = "--dev-mode";
 const PREVIEW_WINDOW_WIDTH: f64 = 760.0;
 const PREVIEW_WINDOW_HEIGHT: f64 = 560.0;
 const PREVIEW_IMAGE_MIN_WIDTH: f64 = 420.0;
+
+fn developer_mode_enabled_for_args<I, S>(args: I, debug_build: bool) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    debug_build
+        && args
+            .into_iter()
+            .any(|arg| arg.as_ref() == DEVELOPER_MODE_ARG)
+}
+
+#[tauri::command]
+fn get_developer_mode() -> bool {
+    developer_mode_enabled_for_args(std::env::args(), cfg!(debug_assertions))
+}
+
+#[cfg(test)]
+mod developer_mode_tests {
+    use super::developer_mode_enabled_for_args;
+
+    #[test]
+    fn developer_mode_requires_exact_argument_in_debug_build() {
+        assert!(developer_mode_enabled_for_args(
+            ["vpaste", "--dev-mode"],
+            true
+        ));
+        assert!(!developer_mode_enabled_for_args(["vpaste"], true));
+        assert!(!developer_mode_enabled_for_args(
+            ["vpaste", "--dev-mode=true"],
+            true
+        ));
+        assert!(!developer_mode_enabled_for_args(
+            ["vpaste", "--dev-mode-extra"],
+            true
+        ));
+    }
+
+    #[test]
+    fn developer_mode_is_disabled_in_release_builds() {
+        assert!(!developer_mode_enabled_for_args(
+            ["vpaste", "--dev-mode"],
+            false
+        ));
+    }
+}
 const PREVIEW_IMAGE_MIN_HEIGHT: f64 = 320.0;
 const PREVIEW_IMAGE_PADDING: f64 = 72.0;
 const PREVIEW_CLIPBOARD_GAP: f64 = 16.0;
@@ -953,10 +1000,17 @@ fn open_onboarding_permission_window(
     app: tauri::AppHandle,
     permission: String,
     language_code: Option<String>,
+    theme_preview: Option<String>,
 ) -> Result<(), String> {
     if !matches!(permission.as_str(), "background" | "paste") {
         return Err(format!("unsupported onboarding permission: {}", permission));
     }
+    let theme_preview = match theme_preview.as_deref() {
+        None => None,
+        Some("light") => Some("light"),
+        Some("dark") => Some("dark"),
+        Some(value) => return Err(format!("unsupported theme preview: {}", value)),
+    };
 
     let window = app
         .get_webview_window("onboardingPermission")
@@ -981,6 +1035,7 @@ fn open_onboarding_permission_window(
             serde_json::json!({
                 "permission": permission,
                 "languageCode": language_code.unwrap_or_default(),
+                "themePreview": theme_preview,
             }),
         )
         .map_err(|err| err.to_string())?;
@@ -6986,6 +7041,7 @@ fn main() {
             list_recent_app_source_options,
             refresh_link_previews,
             get_config,
+            get_developer_mode,
             get_onboarding_permission_status,
             enable_onboarding_background_service,
             get_clipboard_history_paused,

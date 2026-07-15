@@ -8,13 +8,14 @@ import aboutLogo from "../assets/about-logo.png";
 import authorizeTips from "../assets/tutorial/authorize-tips.png";
 import backgroundAuthorizeTips from "../assets/tutorial/background-authorize-tips.png";
 import { useLanguage } from "../lang";
-import { loadAndApplyTheme } from "../theme";
+import { loadAndApplyTheme, setThemePreview, type ResolvedTheme } from "../theme";
 import type { TutorialPermissionId } from "./TutorialOverlay";
 import "./TutorialOverlay.css";
 
 type PermissionWindowPayload = {
     permission: TutorialPermissionId;
     languageCode?: string;
+    themePreview?: ResolvedTheme | null;
 };
 
 type PermissionStatus = {
@@ -56,6 +57,9 @@ export default function OnboardingPermissionWindow() {
         if (payload.languageCode) {
             setLanguageCode(payload.languageCode);
         }
+        setThemePreview(payload.themePreview === "light" || payload.themePreview === "dark"
+            ? payload.themePreview
+            : null);
         localStorage.removeItem(PENDING_PERMISSION_WINDOW_KEY);
         void loadAndApplyTheme();
     };

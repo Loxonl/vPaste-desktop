@@ -55,6 +55,14 @@ npm run dev
 npm run dev:app
 ```
 
+在 Windows 或 macOS 上运行带有 Tutorial 预览工具栏的桌面调试模式：
+
+```powershell
+npm run dev:debug
+```
+
+开发者模式仅在 Debug 构建中可用，可临时预览 Windows/macOS 引导流程、内置语言和浅色/深色主题，不会修改已保存的设置。在 macOS 上运行前请先退出已有的 vPaste 进程。
+
 构建前端：
 
 ```powershell

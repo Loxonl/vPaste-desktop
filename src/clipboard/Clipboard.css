@@ -888,7 +888,7 @@ body {
   gap: 8px;
 }
 
-.tutorial-debug-group {
+.developer-toolbar {
   display: flex;
   align-items: center;
   gap: 2px;
@@ -899,9 +899,26 @@ body {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
 
-.settings-button.tutorial-debug-button {
-  width: 44px;
-  height: 24px;
+.developer-toolbar-badge {
+  padding: 0 7px;
+  color: rgba(34, 105, 217, 0.88);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 24px;
+  user-select: none;
+}
+
+.developer-toolbar-divider {
+  width: 1px;
+  height: 14px;
+  margin: 0 2px;
+  background: rgba(87, 98, 111, 0.14);
+}
+
+.settings-button.developer-toolbar-button {
+  width: 42px;
+  height: 26px;
   gap: 3px;
   border-radius: 999px;
   background: transparent;
@@ -911,12 +928,26 @@ body {
   font-weight: 720;
 }
 
-.settings-button.tutorial-debug-button:hover {
+.settings-button.developer-toolbar-button:hover,
+.settings-button.developer-toolbar-button.is-active {
   background: rgba(255, 255, 255, 0.86);
   box-shadow: 0 5px 12px rgba(31, 38, 36, 0.1);
 }
 
-.settings-button.tutorial-debug-button > svg.settings-icon {
+.settings-button.developer-toolbar-button.is-active {
+  color: #246ddd;
+}
+
+.settings-button.developer-toolbar-icon-button {
+  width: 30px;
+}
+
+.settings-button.developer-toolbar-button:focus-visible {
+  outline: 2px solid rgba(47, 119, 232, 0.75);
+  outline-offset: 1px;
+}
+
+.settings-button.developer-toolbar-button > svg.settings-icon {
   width: 13px !important;
   height: 13px !important;
   min-width: 13px;
@@ -1006,20 +1037,33 @@ body {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09), 0 1px 6px rgba(0, 0, 0, 0.24);
 }
 
-:root[data-theme="dark"] .tutorial-debug-group {
+:root[data-theme="dark"] .developer-toolbar {
   border-color: rgba(255, 255, 255, 0.08);
   background: rgba(25, 30, 37, 0.48);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
-:root[data-theme="dark"] .settings-button.tutorial-debug-button {
+:root[data-theme="dark"] .developer-toolbar-badge {
+  color: rgba(112, 166, 255, 0.92);
+}
+
+:root[data-theme="dark"] .developer-toolbar-divider {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+:root[data-theme="dark"] .settings-button.developer-toolbar-button {
   background: transparent;
   color: rgba(221, 226, 235, 0.76);
   box-shadow: none;
 }
 
-:root[data-theme="dark"] .settings-button.tutorial-debug-button:hover {
+:root[data-theme="dark"] .settings-button.developer-toolbar-button:hover,
+:root[data-theme="dark"] .settings-button.developer-toolbar-button.is-active {
   background: rgba(55, 63, 74, 0.84);
+}
+
+:root[data-theme="dark"] .settings-button.developer-toolbar-button.is-active {
+  color: #8bb8ff;
 }
 
 :root[data-theme="dark"] .search-button:hover,

@@ -93,6 +93,7 @@ const CLIPBOARD_ANIMATION_MS: u64 = 120;
 const CLIPBOARD_HORIZONTAL_BLEED: f64 = 12.0;
 const TRAY_MENU_WIDTH: i32 = 200;
 const TRAY_MENU_HEIGHT: i32 = 184;
+#[cfg(not(target_os = "macos"))]
 const TRAY_MENU_CURSOR_GAP: i32 = 8;
 const TRAY_ICON_ID: &str = "vpaste-tray";
 const PREVIEW_WINDOW_WIDTH: f64 = 760.0;
@@ -6459,14 +6460,22 @@ fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
                 )
             })
             .unwrap_or((0, 0, i32::MAX, i32::MAX));
-        let target_x = cursor
-            .map(|position| position.x + TRAY_MENU_CURSOR_GAP)
-            .unwrap_or_else(|| icon_center_x - menu_size.width as i32 / 2)
-            .clamp(min_x, max_x);
-        let target_y = cursor
-            .map(|position| position.y - menu_size.height as i32 - TRAY_MENU_CURSOR_GAP)
-            .unwrap_or(icon_bottom_y)
-            .clamp(min_y, max_y);
+        #[cfg(target_os = "macos")]
+        let (target_x, target_y) = (
+            (icon_center_x - menu_size.width as i32 / 2).clamp(min_x, max_x),
+            icon_bottom_y.clamp(min_y, max_y),
+        );
+        #[cfg(not(target_os = "macos"))]
+        let (target_x, target_y) = (
+            cursor
+                .map(|position| position.x + TRAY_MENU_CURSOR_GAP)
+                .unwrap_or_else(|| icon_center_x - menu_size.width as i32 / 2)
+                .clamp(min_x, max_x),
+            cursor
+                .map(|position| position.y - menu_size.height as i32 - TRAY_MENU_CURSOR_GAP)
+                .unwrap_or(icon_bottom_y)
+                .clamp(min_y, max_y),
+        );
         let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
             x: target_x,
             y: target_y,
@@ -6900,7 +6909,11 @@ fn main() {
                 apply_vpaste_window_icon(&tray_menu_window);
                 #[cfg(target_os = "macos")]
                 {
+                    let _ = tray_menu_window
+                        .set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                    let _ = tray_menu_window.set_shadow(false);
                     set_macos_window_level(&tray_menu_window, 101);
+                    configure_macos_transparent_window(&tray_menu_window);
                 }
 
                 let emoji_picker_window =

@@ -9,6 +9,8 @@ type TrayAction = "show_main_panel" | "open_config_window" | "quit_app";
 type PauseChangedPayload = { paused: boolean };
 
 const TRAY_MENU_WIDTH = 200;
+const MACOS_TRAY_MENU_GUTTER_X = 10;
+const isMacOS = navigator.userAgent.toLowerCase().includes("macintosh");
 
 const items: Array<{ labelKey: string; action: TrayAction }> = [
     { labelKey: "tray.showMain", action: "show_main_panel" },
@@ -26,7 +28,10 @@ export default function TrayMenu() {
         requestAnimationFrame(() => {
             const height = Math.ceil(menuRef.current?.getBoundingClientRect().height ?? 0);
             if (height > 0) {
-                void invoke("resize_tray_menu", { width: TRAY_MENU_WIDTH, height })
+                const width = isMacOS
+                    ? TRAY_MENU_WIDTH + MACOS_TRAY_MENU_GUTTER_X * 2
+                    : TRAY_MENU_WIDTH;
+                void invoke("resize_tray_menu", { width, height })
                     .catch(e => error(`Failed to resize tray menu: ${e}`));
             }
         });
@@ -88,32 +93,34 @@ export default function TrayMenu() {
     };
 
     return (
-        <div ref={menuRef} className="tray-menu-shell">
-            <button
-                type="button"
-                className={`tray-status-card ${paused ? "paused" : "recording"}`}
-                onClick={() => void togglePause()}
-                disabled={toggleWorking}
-                aria-pressed={paused}
-            >
-                <span className="tray-status-indicator" />
-                <span className="tray-status-copy">
-                    {t(paused ? "tray.resumeHistory" : "tray.pauseHistory")}
-                </span>
-                <span className="tray-status-state">
-                    {t(paused ? "tray.historyPausedShort" : "tray.historyRecordingShort")}
-                </span>
-            </button>
-            {items.map(item => (
+        <div ref={menuRef} className={`tray-menu-frame ${isMacOS ? "macos" : ""}`}>
+            <div className="tray-menu-shell">
                 <button
-                    key={item.action}
                     type="button"
-                    className="tray-menu-item"
-                    onClick={() => void runAction(item.action)}
+                    className={`tray-status-card ${paused ? "paused" : "recording"}`}
+                    onClick={() => void togglePause()}
+                    disabled={toggleWorking}
+                    aria-pressed={paused}
                 >
-                    {t(item.labelKey)}
+                    <span className="tray-status-indicator" />
+                    <span className="tray-status-copy">
+                        {t(paused ? "tray.resumeHistory" : "tray.pauseHistory")}
+                    </span>
+                    <span className="tray-status-state">
+                        {t(paused ? "tray.historyPausedShort" : "tray.historyRecordingShort")}
+                    </span>
                 </button>
-            ))}
+                {items.map(item => (
+                    <button
+                        key={item.action}
+                        type="button"
+                        className="tray-menu-item"
+                        onClick={() => void runAction(item.action)}
+                    >
+                        {t(item.labelKey)}
+                    </button>
+                ))}
+            </div>
         </div>
     );
 }

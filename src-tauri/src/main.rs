@@ -2250,6 +2250,13 @@ fn enable_onboarding_background_service(
         }
     };
     let _ = app.emit("onboarding-permission-status-changed", "background");
+
+    #[cfg(target_os = "macos")]
+    {
+        lower_onboarding_permission_window(&app);
+        open_login_items_settings()?;
+    }
+
     Ok(OnboardingPermissionItemStatus {
         done: enabled,
         needs_settings,

@@ -195,6 +195,7 @@ struct PasteAccessibilityPermissionStatus {
 
 #[derive(Serialize)]
 struct OnboardingPermissionStatus {
+    background: OnboardingPermissionItemStatus,
     paste: OnboardingPermissionItemStatus,
 }
 
@@ -205,7 +206,7 @@ struct OnboardingPermissionItemStatus {
     error: Option<String>,
 }
 
-#[cfg(any(all(target_os = "macos", not(debug_assertions)), test))]
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MacosServiceStatus {
     NotRegistered,
@@ -2254,14 +2255,63 @@ fn check_paste_accessibility_permission() -> PasteAccessibilityPermissionStatus 
 
 #[tauri::command]
 fn get_onboarding_permission_status() -> OnboardingPermissionStatus {
+    #[cfg(target_os = "macos")]
+    let background = match macos_background_agent_status() {
+        Some(status) => OnboardingPermissionItemStatus {
+            done: status == MacosServiceStatus::Enabled,
+            needs_settings: status == MacosServiceStatus::RequiresApproval,
+            error: None,
+        },
+        None => OnboardingPermissionItemStatus {
+            done: false,
+            needs_settings: false,
+            error: Some("macOS background service is unavailable".to_string()),
+        },
+    };
+    #[cfg(not(target_os = "macos"))]
+    let background = OnboardingPermissionItemStatus {
+        done: true,
+        needs_settings: false,
+        error: None,
+    };
     let paste_done = is_process_trusted_with_prompt(false);
 
     OnboardingPermissionStatus {
+        background,
         paste: OnboardingPermissionItemStatus {
             done: paste_done,
             needs_settings: !paste_done,
             error: None,
         },
+    }
+}
+
+#[tauri::command]
+fn enable_onboarding_background_service(
+    app: tauri::AppHandle,
+) -> Result<OnboardingPermissionItemStatus, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let enabled = sync_macos_background_agent(true)
+            .ok_or_else(|| "macOS background service is unavailable".to_string())??;
+        let status = macos_background_agent_status().unwrap_or(MacosServiceStatus::NotFound);
+        let needs_settings = status == MacosServiceStatus::RequiresApproval;
+        let _ = app.emit("onboarding-permission-status-changed", "background");
+
+        lower_onboarding_permission_window(&app);
+        open_login_items_settings()?;
+
+        Ok(OnboardingPermissionItemStatus {
+            done: enabled,
+            needs_settings,
+            error: None,
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("background service permission is only available on macOS".to_string())
     }
 }
 
@@ -2289,7 +2339,7 @@ fn open_macos_settings_candidates(candidates: &[&str]) -> Result<(), String> {
     }
 }
 
-#[cfg(all(target_os = "macos", not(debug_assertions)))]
+#[cfg(target_os = "macos")]
 fn open_login_items_settings() -> Result<(), String> {
     if let Some(service_class) = objc::runtime::Class::get("SMAppService") {
         unsafe {
@@ -4645,10 +4695,10 @@ mod shortcut_policy_tests {
     }
 }
 
-#[cfg(all(target_os = "macos", not(debug_assertions)))]
+#[cfg(target_os = "macos")]
 const MACOS_BACKGROUND_AGENT_PLIST: &str = "com.loxonl.vpaste.background.plist";
 
-#[cfg(all(target_os = "macos", not(debug_assertions)))]
+#[cfg(target_os = "macos")]
 fn macos_background_agent() -> Option<cocoa::base::id> {
     use cocoa::base::{id, nil};
     use cocoa::foundation::NSString;
@@ -4675,7 +4725,7 @@ fn macos_main_app_service() -> Option<cocoa::base::id> {
     (service != nil).then_some(service)
 }
 
-#[cfg(all(target_os = "macos", not(debug_assertions)))]
+#[cfg(target_os = "macos")]
 fn macos_service_status(service: cocoa::base::id) -> MacosServiceStatus {
     use objc::{msg_send, sel, sel_impl};
 
@@ -4683,7 +4733,7 @@ fn macos_service_status(service: cocoa::base::id) -> MacosServiceStatus {
     macos_service_status_from_raw(status)
 }
 
-#[cfg(any(all(target_os = "macos", not(debug_assertions)), test))]
+#[cfg(any(target_os = "macos", test))]
 fn macos_service_status_from_raw(status: isize) -> MacosServiceStatus {
     match status {
         0 => MacosServiceStatus::NotRegistered,
@@ -4698,7 +4748,7 @@ fn macos_main_app_service_status() -> Option<MacosServiceStatus> {
     macos_main_app_service().map(macos_service_status)
 }
 
-#[cfg(all(target_os = "macos", not(debug_assertions)))]
+#[cfg(target_os = "macos")]
 fn macos_service_error(error: cocoa::base::id) -> String {
     use cocoa::base::nil;
     use objc::{msg_send, sel, sel_impl};
@@ -4711,32 +4761,51 @@ fn macos_service_error(error: cocoa::base::id) -> String {
         .unwrap_or_else(|| "unknown Service Management error".to_string())
 }
 
-#[cfg(all(target_os = "macos", not(debug_assertions)))]
-fn cleanup_legacy_macos_background_agent() -> Result<(), String> {
+#[cfg(target_os = "macos")]
+fn macos_background_agent_status() -> Option<MacosServiceStatus> {
+    macos_background_agent().map(macos_service_status)
+}
+
+#[cfg(target_os = "macos")]
+fn sync_macos_background_agent(enabled: bool) -> Option<Result<bool, String>> {
     use cocoa::base::{id, nil};
     use objc::{msg_send, sel, sel_impl};
 
-    let Some(service) = macos_background_agent() else {
-        return Ok(());
-    };
-    if matches!(
-        macos_service_status(service),
-        MacosServiceStatus::NotRegistered | MacosServiceStatus::NotFound
-    ) {
-        return Ok(());
+    let service: id = macos_background_agent()?;
+    let before = macos_service_status(service);
+    if enabled && before == MacosServiceStatus::Enabled {
+        return Some(Ok(true));
+    }
+    if enabled && before == MacosServiceStatus::RequiresApproval {
+        return Some(Ok(false));
+    }
+    if !enabled && before == MacosServiceStatus::NotRegistered {
+        return Some(Ok(false));
     }
 
     let mut error: id = nil;
-    let succeeded: bool = unsafe { msg_send![service, unregisterAndReturnError: &mut error] };
-    if succeeded {
-        info!("removed legacy macOS background agent registration");
-        Ok(())
-    } else {
-        Err(format!(
-            "failed to remove legacy macOS background agent: {}",
-            macos_service_error(error)
-        ))
+    let succeeded: bool = unsafe {
+        if enabled {
+            msg_send![service, registerAndReturnError: &mut error]
+        } else {
+            msg_send![service, unregisterAndReturnError: &mut error]
+        }
+    };
+    let after = macos_service_status(service);
+
+    if enabled && after == MacosServiceStatus::RequiresApproval {
+        info!("macOS background agent is awaiting user approval");
+        return Some(Ok(false));
     }
+    if succeeded {
+        return Some(Ok(after == MacosServiceStatus::Enabled));
+    }
+
+    Some(Err(format!(
+        "failed to {} macOS background agent: {}",
+        if enabled { "register" } else { "unregister" },
+        macos_service_error(error)
+    )))
 }
 
 #[cfg(all(target_os = "macos", not(debug_assertions)))]
@@ -4796,9 +4865,6 @@ fn check_autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
 fn sync_autostart(app: &tauri::AppHandle, startup: bool) -> Result<bool, String> {
     #[cfg(all(target_os = "macos", not(debug_assertions)))]
     {
-        if let Err(err) = cleanup_legacy_macos_background_agent() {
-            error!("{}", err);
-        }
         if let Some(result) = sync_macos_main_app_service(startup) {
             if result.is_ok() {
                 if let Err(err) = app.autolaunch().disable() {
@@ -4900,8 +4966,13 @@ mod autostart_tests {
     }
 
     #[test]
-    fn onboarding_permissions_do_not_include_autostart_or_background() {
+    fn onboarding_permissions_include_background_but_not_autostart() {
         let status = OnboardingPermissionStatus {
+            background: OnboardingPermissionItemStatus {
+                done: false,
+                needs_settings: true,
+                error: None,
+            },
             paste: OnboardingPermissionItemStatus {
                 done: false,
                 needs_settings: true,
@@ -4911,8 +4982,8 @@ mod autostart_tests {
         let value = serde_json::to_value(status).unwrap();
 
         assert!(value.get("paste").is_some());
+        assert!(value.get("background").is_some());
         assert!(value.get("startup").is_none());
-        assert!(value.get("background").is_none());
     }
 }
 
@@ -7084,6 +7155,7 @@ fn main() {
             get_config,
             get_developer_mode,
             get_onboarding_permission_status,
+            enable_onboarding_background_service,
             get_clipboard_history_paused,
             set_clipboard_history_paused,
             toggle_clipboard_history_paused,

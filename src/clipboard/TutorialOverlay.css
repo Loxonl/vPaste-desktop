@@ -868,6 +868,47 @@
   transform: rotate(7deg);
 }
 
+.tutorial-guide-background-stage {
+  position: relative;
+  height: calc(100% - 34px);
+  display: grid;
+  align-content: center;
+  gap: 7px;
+  padding: 13px 32px 11px;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(102, 213, 171, 0.22), transparent 50%),
+    linear-gradient(160deg, #f8fcff, #ecf8f3);
+}
+
+.tutorial-guide-background-heading {
+  display: grid;
+  gap: 1px;
+}
+
+.tutorial-guide-background-heading small {
+  color: rgba(31, 36, 43, 0.46);
+  font-size: 7px;
+}
+
+.tutorial-guide-background-heading strong {
+  color: rgba(31, 36, 43, 0.88);
+  font-size: 12px;
+}
+
+.tutorial-guide-background-section {
+  color: rgba(31, 36, 43, 0.62);
+  font-size: 8px;
+  font-weight: 720;
+}
+
+.tutorial-guide-background-stage .tutorial-guide-setting-copy small {
+  justify-self: start;
+  padding: 0;
+  background: transparent;
+  color: rgba(31, 36, 43, 0.5);
+  font-weight: 500;
+}
+
 .tutorial-guide-callout {
   justify-self: center;
   padding: 3px 9px;

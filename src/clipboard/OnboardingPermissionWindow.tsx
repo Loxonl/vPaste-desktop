@@ -6,6 +6,7 @@ import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import aboutLogo from "../assets/about-logo.png";
 import authorizeTips from "../assets/tutorial/authorize-tips.png";
+import backgroundAuthorizeTips from "../assets/tutorial/background-authorize-tips.png";
 import { useLanguage } from "../lang";
 import { loadAndApplyTheme, setThemePreview, type ResolvedTheme } from "../theme";
 import type { TutorialPermissionId } from "./TutorialOverlay";
@@ -18,19 +19,23 @@ type PermissionWindowPayload = {
 };
 
 type PermissionStatus = {
+    background: { done: boolean };
     paste: { done: boolean };
 };
+
+type PermissionItemStatus = { done: boolean; needs_settings?: boolean };
 
 const PENDING_PERMISSION_WINDOW_KEY = "vpaste.pendingOnboardingPermission.v1";
 
 function isPermissionId(value: unknown): value is TutorialPermissionId {
-    return value === "paste";
+    return value === "background" || value === "paste";
 }
 
-function PermissionGuideVisual() {
+function PermissionGuideVisual({ id }: { id: TutorialPermissionId }) {
+    const image = id === "background" ? backgroundAuthorizeTips : authorizeTips;
     return (
         <div className="tutorial-guide-art tutorial-guide-art-permission-image" aria-hidden="true">
-            <img className="tutorial-guide-authorize-tips" src={authorizeTips} alt="" />
+            <img className="tutorial-guide-authorize-tips" src={image} alt="" />
         </div>
     );
 }
@@ -133,8 +138,13 @@ export default function OnboardingPermissionWindow() {
         setPending(true);
         setActionError("");
         try {
-            await invoke("ensure_paste_accessibility_permission");
-            await invoke("open_accessibility_settings");
+            if (permission === "paste") {
+                await invoke("ensure_paste_accessibility_permission");
+                await invoke("open_accessibility_settings");
+            } else {
+                await invoke<PermissionItemStatus>("enable_onboarding_background_service");
+                await notifyStatusChanged();
+            }
         } catch (e) {
             setActionError(t("clipboard.actionFailed", { error: String(e) }));
             error(`Failed to enable onboarding permission ${permission}: ${e}`);
@@ -170,7 +180,7 @@ export default function OnboardingPermissionWindow() {
                         <p id="tutorial-guide-description">{t(`tutorial.permission.guide.${permission}.desc`)}</p>
                     </div>
                 </div>
-                <PermissionGuideVisual />
+                <PermissionGuideVisual id={permission} />
                 <div className="tutorial-guide-actions">
                     <button
                         type="button"

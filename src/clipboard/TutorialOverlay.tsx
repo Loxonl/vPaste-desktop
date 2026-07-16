@@ -1,13 +1,14 @@
 import React from "react";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
+import backgroundVisual from "../assets/tutorial/permission-background.svg";
 import pasteVisual from "../assets/tutorial/permission-paste.svg";
 import shortcutVisual from "../assets/tutorial/shortcut-popover.svg";
 import "./TutorialOverlay.css";
 
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
 
-export type TutorialPermissionId = "paste";
+export type TutorialPermissionId = "background" | "paste";
 export type TutorialFilterId = "text" | "image" | "link" | "color" | "file";
 export type TutorialPlatform = "windows" | "mac";
 
@@ -38,6 +39,7 @@ type TutorialOverlayProps = {
 };
 
 const permissionVisuals: Record<TutorialPermissionId, string> = {
+    background: backgroundVisual,
     paste: pasteVisual,
 };
 

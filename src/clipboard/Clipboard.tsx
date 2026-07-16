@@ -94,6 +94,7 @@ type PasteAccessibilityPermissionStatus = {
 };
 
 type TutorialPermissionStatus = {
+    background: { done: boolean; needs_settings: boolean; error?: string | null };
     paste: { done: boolean; needs_settings: boolean; error?: string | null };
 };
 
@@ -3577,6 +3578,13 @@ export default function Clipboard() {
     };
 
     const tutorialPermissions: TutorialPermission[] = [
+        {
+            id: "background",
+            title: t("tutorial.permission.background"),
+            description: t("tutorial.permission.background.desc"),
+            done: tutorialPermissionStatus?.background.done === true,
+            actionLabel: t("tutorial.permission.enable"),
+        },
         {
             id: "paste",
             title: t("tutorial.permission.paste"),

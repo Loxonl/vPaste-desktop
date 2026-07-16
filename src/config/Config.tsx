@@ -143,7 +143,7 @@ const PRIMARY_TEXT_PROPS = { fontSize: '14px', fontWeight: 380, color: '#1f242b'
 const SECONDARY_TEXT_PROPS = { fontSize: '12px', color: '#7f7f7f', letterSpacing: 0, lineHeight: 1.35, mt: 0.15, fontWeight: 350 };
 
 const DEFAULT_CONFIG: ConfigData = {
-    startup: false,
+    startup: true,
     display_tray_icon: true,
     multilingual: DEFAULT_LANGUAGE,
     theme_mode: "system",

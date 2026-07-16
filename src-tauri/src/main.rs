@@ -195,7 +195,6 @@ struct PasteAccessibilityPermissionStatus {
 
 #[derive(Serialize)]
 struct OnboardingPermissionStatus {
-    background: OnboardingPermissionItemStatus,
     paste: OnboardingPermissionItemStatus,
 }
 
@@ -206,9 +205,9 @@ struct OnboardingPermissionItemStatus {
     error: Option<String>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(all(target_os = "macos", not(debug_assertions)), test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MacosBackgroundAgentStatus {
+enum MacosServiceStatus {
     NotRegistered,
     Enabled,
     RequiresApproval,
@@ -2254,70 +2253,16 @@ fn check_paste_accessibility_permission() -> PasteAccessibilityPermissionStatus 
 }
 
 #[tauri::command]
-fn get_onboarding_permission_status(app: tauri::AppHandle) -> OnboardingPermissionStatus {
-    let background = match check_autostart_enabled(&app) {
-        Ok(done) => OnboardingPermissionItemStatus {
-            done,
-            #[cfg(target_os = "macos")]
-            needs_settings: macos_background_agent_status()
-                == Some(MacosBackgroundAgentStatus::RequiresApproval),
-            #[cfg(not(target_os = "macos"))]
-            needs_settings: false,
-            error: None,
-        },
-        Err(error) => OnboardingPermissionItemStatus {
-            done: false,
-            needs_settings: false,
-            error: Some(error),
-        },
-    };
+fn get_onboarding_permission_status() -> OnboardingPermissionStatus {
     let paste_done = is_process_trusted_with_prompt(false);
 
     OnboardingPermissionStatus {
-        background,
         paste: OnboardingPermissionItemStatus {
             done: paste_done,
             needs_settings: !paste_done,
             error: None,
         },
     }
-}
-
-#[tauri::command]
-fn enable_onboarding_background_service(
-    app: tauri::AppHandle,
-) -> Result<OnboardingPermissionItemStatus, String> {
-    let enabled = sync_autostart(&app, true)?;
-    sync_tray_visibility(&app, true)?;
-
-    let mut current = config::get();
-    current.display_tray_icon = true;
-    current.startup = enabled;
-    config::save(current);
-
-    let needs_settings = {
-        #[cfg(target_os = "macos")]
-        {
-            macos_background_agent_status() == Some(MacosBackgroundAgentStatus::RequiresApproval)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            false
-        }
-    };
-    let _ = app.emit("onboarding-permission-status-changed", "background");
-
-    #[cfg(target_os = "macos")]
-    {
-        lower_onboarding_permission_window(&app);
-        open_login_items_settings()?;
-    }
-
-    Ok(OnboardingPermissionItemStatus {
-        done: enabled,
-        needs_settings,
-        error: None,
-    })
 }
 
 #[cfg(target_os = "macos")]
@@ -2344,28 +2289,20 @@ fn open_macos_settings_candidates(candidates: &[&str]) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
 fn open_login_items_settings() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(service_class) = objc::runtime::Class::get("SMAppService") {
-            unsafe {
-                use objc::{msg_send, sel, sel_impl};
-                let _: () = msg_send![service_class, openSystemSettingsLoginItems];
-            }
-            return Ok(());
+    if let Some(service_class) = objc::runtime::Class::get("SMAppService") {
+        unsafe {
+            use objc::{msg_send, sel, sel_impl};
+            let _: () = msg_send![service_class, openSystemSettingsLoginItems];
         }
-        open_macos_settings_candidates(&[
-            "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
-            "x-apple.systempreferences:com.apple.preference.users?LoginItems",
-            "x-apple.systempreferences:com.apple.preference.users",
-        ])
+        return Ok(());
     }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(())
-    }
+    open_macos_settings_candidates(&[
+        "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
+        "x-apple.systempreferences:com.apple.preference.users?LoginItems",
+        "x-apple.systempreferences:com.apple.preference.users",
+    ])
 }
 
 #[tauri::command]
@@ -4708,10 +4645,10 @@ mod shortcut_policy_tests {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
 const MACOS_BACKGROUND_AGENT_PLIST: &str = "com.loxonl.vpaste.background.plist";
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
 fn macos_background_agent() -> Option<cocoa::base::id> {
     use cocoa::base::{id, nil};
     use cocoa::foundation::NSString;
@@ -4727,20 +4664,38 @@ fn macos_background_agent() -> Option<cocoa::base::id> {
     (service != nil).then_some(service)
 }
 
-#[cfg(target_os = "macos")]
-fn macos_background_agent_status() -> Option<MacosBackgroundAgentStatus> {
-    use cocoa::base::id;
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
+fn macos_main_app_service() -> Option<cocoa::base::id> {
+    use cocoa::base::{id, nil};
+    use objc::runtime::Class;
     use objc::{msg_send, sel, sel_impl};
 
-    let service: id = macos_background_agent()?;
+    let service_class = Class::get("SMAppService")?;
+    let service: id = unsafe { msg_send![service_class, mainAppService] };
+    (service != nil).then_some(service)
+}
+
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
+fn macos_service_status(service: cocoa::base::id) -> MacosServiceStatus {
+    use objc::{msg_send, sel, sel_impl};
 
     let status: isize = unsafe { msg_send![service, status] };
-    Some(match status {
-        0 => MacosBackgroundAgentStatus::NotRegistered,
-        1 => MacosBackgroundAgentStatus::Enabled,
-        2 => MacosBackgroundAgentStatus::RequiresApproval,
-        _ => MacosBackgroundAgentStatus::NotFound,
-    })
+    macos_service_status_from_raw(status)
+}
+
+#[cfg(any(all(target_os = "macos", not(debug_assertions)), test))]
+fn macos_service_status_from_raw(status: isize) -> MacosServiceStatus {
+    match status {
+        0 => MacosServiceStatus::NotRegistered,
+        1 => MacosServiceStatus::Enabled,
+        2 => MacosServiceStatus::RequiresApproval,
+        _ => MacosServiceStatus::NotFound,
+    }
+}
+
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
+fn macos_main_app_service_status() -> Option<MacosServiceStatus> {
+    macos_main_app_service().map(macos_service_status)
 }
 
 #[cfg(all(target_os = "macos", not(debug_assertions)))]
@@ -4757,55 +4712,48 @@ fn macos_service_error(error: cocoa::base::id) -> String {
 }
 
 #[cfg(all(target_os = "macos", not(debug_assertions)))]
-fn unregister_legacy_macos_main_app_service() -> Result<(), String> {
+fn cleanup_legacy_macos_background_agent() -> Result<(), String> {
     use cocoa::base::{id, nil};
-    use objc::runtime::Class;
     use objc::{msg_send, sel, sel_impl};
 
-    let Some(service_class) = Class::get("SMAppService") else {
+    let Some(service) = macos_background_agent() else {
         return Ok(());
     };
-    let service: id = unsafe { msg_send![service_class, mainAppService] };
-    if service == nil {
-        return Ok(());
-    }
-    let status: isize = unsafe { msg_send![service, status] };
-    if status == 0 {
+    if matches!(
+        macos_service_status(service),
+        MacosServiceStatus::NotRegistered | MacosServiceStatus::NotFound
+    ) {
         return Ok(());
     }
 
     let mut error: id = nil;
     let succeeded: bool = unsafe { msg_send![service, unregisterAndReturnError: &mut error] };
     if succeeded {
-        info!("removed legacy macOS login item registration");
+        info!("removed legacy macOS background agent registration");
         Ok(())
     } else {
         Err(format!(
-            "failed to remove legacy macOS login item: {}",
+            "failed to remove legacy macOS background agent: {}",
             macos_service_error(error)
         ))
     }
 }
 
 #[cfg(all(target_os = "macos", not(debug_assertions)))]
-fn sync_macos_background_agent(startup: bool) -> Option<Result<bool, String>> {
+fn sync_macos_main_app_service(startup: bool) -> Option<Result<bool, String>> {
     use cocoa::base::{id, nil};
     use objc::{msg_send, sel, sel_impl};
 
-    let service: id = macos_background_agent()?;
+    let service: id = macos_main_app_service()?;
 
-    if let Err(err) = unregister_legacy_macos_main_app_service() {
-        error!("{}", err);
-    }
-
-    let before = macos_background_agent_status().unwrap_or(MacosBackgroundAgentStatus::NotFound);
-    if startup && before == MacosBackgroundAgentStatus::Enabled {
+    let before = macos_service_status(service);
+    if startup && before == MacosServiceStatus::Enabled {
         return Some(Ok(true));
     }
-    if startup && before == MacosBackgroundAgentStatus::RequiresApproval {
+    if startup && before == MacosServiceStatus::RequiresApproval {
         return Some(Ok(false));
     }
-    if !startup && before == MacosBackgroundAgentStatus::NotRegistered {
+    if !startup && before == MacosServiceStatus::NotRegistered {
         return Some(Ok(false));
     }
 
@@ -4817,27 +4765,27 @@ fn sync_macos_background_agent(startup: bool) -> Option<Result<bool, String>> {
             msg_send![service, unregisterAndReturnError: &mut error]
         }
     };
-    let after = macos_background_agent_status().unwrap_or(MacosBackgroundAgentStatus::NotFound);
+    let after = macos_service_status(service);
 
-    if startup && after == MacosBackgroundAgentStatus::RequiresApproval {
-        info!("macOS background agent is registered and awaiting user approval");
+    if startup && after == MacosServiceStatus::RequiresApproval {
+        info!("macOS main app login item is awaiting user approval");
         return Some(Ok(false));
     }
     if succeeded {
-        return Some(Ok(after == MacosBackgroundAgentStatus::Enabled));
+        return Some(Ok(after == MacosServiceStatus::Enabled));
     }
 
     Some(Err(format!(
-        "failed to {} macOS background agent: {}",
+        "failed to {} macOS main app login item: {}",
         if startup { "register" } else { "unregister" },
         macos_service_error(error)
     )))
 }
 
 fn check_autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
-    #[cfg(target_os = "macos")]
-    if let Some(status) = macos_background_agent_status() {
-        return Ok(status == MacosBackgroundAgentStatus::Enabled);
+    #[cfg(all(target_os = "macos", not(debug_assertions)))]
+    if let Some(status) = macos_main_app_service_status() {
+        return Ok(status == MacosServiceStatus::Enabled);
     }
 
     app.autolaunch()
@@ -4846,19 +4794,12 @@ fn check_autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
 }
 
 fn sync_autostart(app: &tauri::AppHandle, startup: bool) -> Result<bool, String> {
-    #[cfg(debug_assertions)]
+    #[cfg(all(target_os = "macos", not(debug_assertions)))]
     {
-        let enabled = check_autostart_enabled(app)?;
-        info!(
-            "skipping autostart registration in debug build (requested: {}, enabled: {})",
-            startup, enabled
-        );
-        Ok(enabled)
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        #[cfg(target_os = "macos")]
-        if let Some(result) = sync_macos_background_agent(startup) {
+        if let Err(err) = cleanup_legacy_macos_background_agent() {
+            error!("{}", err);
+        }
+        if let Some(result) = sync_macos_main_app_service(startup) {
             if result.is_ok() {
                 if let Err(err) = app.autolaunch().disable() {
                     error!("Failed to remove legacy macOS LaunchAgent entry: {}", err);
@@ -4870,22 +4811,108 @@ fn sync_autostart(app: &tauri::AppHandle, startup: bool) -> Result<bool, String>
             }
             return result;
         }
+    }
 
-        if startup {
-            app.autolaunch()
-                .enable()
-                .map_err(|err| format!("failed to enable autostart: {}", err))?;
-        } else {
-            app.autolaunch()
-                .disable()
-                .map_err(|err| format!("failed to disable autostart: {}", err))?;
-        }
-        let enabled = check_autostart_enabled(app)?;
-        info!(
-            "autostart sync completed (requested: {}, enabled: {})",
-            startup, enabled
+    if startup {
+        app.autolaunch()
+            .enable()
+            .map_err(|err| format!("failed to enable autostart: {}", err))?;
+    } else {
+        app.autolaunch()
+            .disable()
+            .map_err(|err| format!("failed to disable autostart: {}", err))?;
+    }
+    let enabled = check_autostart_enabled(app)?;
+    info!(
+        "autostart sync completed (requested: {}, enabled: {})",
+        startup, enabled
+    );
+    Ok(enabled)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_legacy_autostart_entry(value: &str, current_exe: Option<&str>) -> bool {
+    let text = value.replace('/', "\\").to_ascii_lowercase();
+    if current_exe
+        .filter(|path| !path.is_empty())
+        .map(|path| text.contains(&path.replace('/', "\\").to_ascii_lowercase()))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    text.contains("cargo")
+        || text.contains("target\\debug")
+        || text.contains("vpaste-desktop.exe")
+        || text.contains("antigravity\\vpaste-desktop")
+}
+
+#[cfg(test)]
+mod autostart_tests {
+    use super::{
+        is_legacy_autostart_entry, macos_service_status_from_raw, MacosServiceStatus,
+        OnboardingPermissionItemStatus, OnboardingPermissionStatus,
+    };
+
+    #[test]
+    fn keeps_the_current_debug_autostart_entry() {
+        let current = r"E:\Coding\vPaste\src-tauri\target\debug\vPaste.exe";
+        assert!(!is_legacy_autostart_entry(
+            &format!(r#""{current}""#),
+            Some(current)
+        ));
+    }
+
+    #[test]
+    fn removes_another_checkout_debug_autostart_entry() {
+        assert!(is_legacy_autostart_entry(
+            r#""E:\Coding\old-vPaste\src-tauri\target\debug\vPaste.exe""#,
+            Some(r"E:\Coding\vPaste\src-tauri\target\debug\vPaste.exe")
+        ));
+    }
+
+    #[test]
+    fn keeps_a_release_autostart_entry() {
+        assert!(!is_legacy_autostart_entry(
+            r#""C:\Program Files\vPaste\vPaste.exe""#,
+            None
+        ));
+    }
+
+    #[test]
+    fn maps_macos_main_app_service_statuses() {
+        assert_eq!(
+            macos_service_status_from_raw(0),
+            MacosServiceStatus::NotRegistered
         );
-        Ok(enabled)
+        assert_eq!(
+            macos_service_status_from_raw(1),
+            MacosServiceStatus::Enabled
+        );
+        assert_eq!(
+            macos_service_status_from_raw(2),
+            MacosServiceStatus::RequiresApproval
+        );
+        assert_eq!(
+            macos_service_status_from_raw(3),
+            MacosServiceStatus::NotFound
+        );
+    }
+
+    #[test]
+    fn onboarding_permissions_do_not_include_autostart_or_background() {
+        let status = OnboardingPermissionStatus {
+            paste: OnboardingPermissionItemStatus {
+                done: false,
+                needs_settings: true,
+                error: None,
+            },
+        };
+        let value = serde_json::to_value(status).unwrap();
+
+        assert!(value.get("paste").is_some());
+        assert!(value.get("startup").is_none());
+        assert!(value.get("background").is_none());
     }
 }
 
@@ -4901,6 +4928,9 @@ fn cleanup_legacy_autostart_entries() {
         "vPaste.exe",
         "vpaste-desktop.exe",
     ];
+    let current_exe = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.to_str().map(str::to_owned));
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let Ok(run_key) = hkcu.open_subkey_with_flags(
         r"Software\Microsoft\Windows\CurrentVersion\Run",
@@ -4912,12 +4942,7 @@ fn cleanup_legacy_autostart_entries() {
         let Ok(value) = run_key.get_value::<String, _>(name) else {
             continue;
         };
-        let text = value.to_ascii_lowercase();
-        let is_legacy_dev_entry = text.contains("cargo")
-            || text.contains("target\\debug")
-            || text.contains("vpaste-desktop.exe")
-            || text.contains("antigravity\\vpaste-desktop");
-        if is_legacy_dev_entry {
+        if is_legacy_autostart_entry(&value, current_exe.as_deref()) {
             let _ = run_key.delete_value(name);
             info!("removed legacy autostart entry: {}", name);
         }
@@ -6830,6 +6855,9 @@ fn main() {
 
             // Register user-facing entry points before heavier startup maintenance.
             let config = config::get();
+            if let Err(err) = sync_autostart(app.handle(), config.startup) {
+                error!("Failed to sync autostart at startup: {}", err);
+            }
             if let Err(err) = sync_tray_visibility(app.handle(), config.display_tray_icon) {
                 error!("Failed to sync tray visibility at startup: {}", err);
             }
@@ -7056,7 +7084,6 @@ fn main() {
             get_config,
             get_developer_mode,
             get_onboarding_permission_status,
-            enable_onboarding_background_service,
             get_clipboard_history_paused,
             set_clipboard_history_paused,
             toggle_clipboard_history_paused,
@@ -7108,7 +7135,6 @@ fn main() {
             open_url_in_browser,
             ensure_paste_accessibility_permission,
             check_paste_accessibility_permission,
-            open_login_items_settings,
             open_accessibility_settings,
             set_item_favorite,
             list_item_tags,

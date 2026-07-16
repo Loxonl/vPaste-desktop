@@ -82,6 +82,7 @@ static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static TRAY_MENU_WATCHING: AtomicBool = AtomicBool::new(false);
 static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
 static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
+static PASTE_FALLBACK_NOTICE_GENERATION: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(target_os = "macos", debug_assertions))]
 static DEBUG_BACKGROUND_AGENT_ENABLED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
@@ -100,6 +101,7 @@ const CLIPBOARD_HORIZONTAL_BLEED: f64 = 12.0;
 const PASTE_FALLBACK_NOTICE_WIDTH: f64 = 560.0;
 const PASTE_FALLBACK_NOTICE_HEIGHT: f64 = 76.0;
 const PASTE_FALLBACK_NOTICE_TOP_INSET: f64 = 18.0;
+const PASTE_FALLBACK_NOTICE_DURATION_MS: u64 = 4_000;
 const TRAY_MENU_WIDTH: i32 = 200;
 const TRAY_MENU_HEIGHT: i32 = 184;
 #[cfg(not(target_os = "macos"))]
@@ -1193,15 +1195,26 @@ fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String> {
     notice_window
         .set_position(tauri::Position::Logical(LogicalPosition { x, y }))
         .map_err(|err| err.to_string())?;
-    notice_window
-        .emit("paste-fallback-notice-show", ())
-        .map_err(|err| err.to_string())?;
+    let generation = PASTE_FALLBACK_NOTICE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     notice_window.show().map_err(|err| err.to_string())?;
+    let app_for_timer = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(
+            PASTE_FALLBACK_NOTICE_DURATION_MS,
+        ));
+        if PASTE_FALLBACK_NOTICE_GENERATION.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        if let Some(window) = app_for_timer.get_webview_window("pasteFallbackNotice") {
+            let _ = window.hide();
+        }
+    });
     Ok(())
 }
 
 #[tauri::command]
 fn hide_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String> {
+    PASTE_FALLBACK_NOTICE_GENERATION.fetch_add(1, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("pasteFallbackNotice") {
         window.hide().map_err(|err| err.to_string())?;
     }

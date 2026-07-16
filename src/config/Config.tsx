@@ -122,12 +122,26 @@ interface AppVersionInfo {
     version: string;
 }
 
+type PermissionId = 'background' | 'paste';
+
+interface PermissionItemStatus {
+    done: boolean;
+    needs_settings: boolean;
+    error?: string | null;
+}
+
+interface PermissionStatus {
+    background: PermissionItemStatus;
+    paste: PermissionItemStatus;
+}
+
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
 type LanguageOption = { value: string; label: string };
 type SettingsBlockingOperation = { title: string; description: string; progress?: number | null };
 
 const APP_REPOSITORY_URL = "https://github.com/Loxonl/vPaste-desktop";
 const APP_CHANGELOG_URL = `${APP_REPOSITORY_URL}/releases`;
+const PENDING_PERMISSION_WINDOW_KEY = "vpaste.pendingOnboardingPermission.v1";
 const PAGE_STACK_SX = { maxWidth: '100%', margin: 0 };
 const PAGE_TITLE_SX = { fontWeight: 650, color: '#15191f', letterSpacing: 0, fontSize: '24px', lineHeight: 1.16 };
 const SECTION_TITLE_SX = { color: '#1f242b', mb: 0.8, ml: 1.1, fontSize: '13px', fontWeight: 480, letterSpacing: 0 };
@@ -419,6 +433,8 @@ export default function Config() {
             if (target === "about" || localStorage.getItem("vpaste.config.target") === "about") {
                 localStorage.removeItem("vpaste.config.target");
                 setValue(3);
+            } else if (target === "permissions") {
+                setValue(0);
             }
         };
         applyTarget(null);
@@ -545,9 +561,48 @@ interface SettingsProps {
 }
 
 function GeneralSettings({ config, languages, t, onSave }: SettingsProps & { languages: LanguageOption[] }) {
+    const [permissionStatus, setPermissionStatus] = React.useState<PermissionStatus | null>(null);
     const languageChoices = languages.some(language => language.value === config.multilingual)
         ? languages
         : [{ value: config.multilingual, label: config.multilingual }, ...languages];
+
+    const refreshPermissionStatus = React.useCallback(() => {
+        if (!isMacPlatform()) return;
+        void invoke<PermissionStatus>('get_onboarding_permission_status')
+            .then(setPermissionStatus)
+            .catch(e => error(`Failed to load permission status: ${e}`));
+    }, []);
+
+    React.useEffect(() => {
+        if (!isMacPlatform()) return;
+        refreshPermissionStatus();
+        const unlistenStatus = listen('onboarding-permission-status-changed', refreshPermissionStatus);
+        const unlistenConfigOpened = listen('config-opened', refreshPermissionStatus);
+        const handleFocus = () => refreshPermissionStatus();
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible') refreshPermissionStatus();
+        };
+        window.addEventListener('focus', handleFocus);
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        return () => {
+            unlistenStatus.then(fn => fn()).catch(e => error(`Failed to unlisten permission status: ${e}`));
+            unlistenConfigOpened.then(fn => fn()).catch(e => error(`Failed to unlisten config permission refresh: ${e}`));
+            window.removeEventListener('focus', handleFocus);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
+    }, [refreshPermissionStatus]);
+
+    const openPermissionGuide = (permission: PermissionId) => {
+        const themePreview = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+        const payload = {
+            permission,
+            languageCode: config.multilingual,
+            themePreview,
+        };
+        localStorage.setItem(PENDING_PERMISSION_WINDOW_KEY, JSON.stringify(payload));
+        void invoke('open_onboarding_permission_window', payload)
+            .catch(e => error(`Failed to open ${permission} permission guide: ${e}`));
+    };
 
     const handleStartupChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         void onSave({ ...config, startup: event.target.checked })
@@ -649,6 +704,32 @@ function GeneralSettings({ config, languages, t, onSave }: SettingsProps & { lan
                         </Select>
                     </ListItem>
                     <Divider component="li" />
+                    {isMacPlatform() && (['background', 'paste'] as PermissionId[]).map(permission => {
+                        const done = permissionStatus?.[permission].done === true;
+                        const label = permissionStatus === null
+                            ? t("settings.permissions.checking")
+                            : t(done ? "settings.permissions.enabled" : "settings.permissions.required");
+                        return (
+                            <React.Fragment key={permission}>
+                                <ListItem sx={LIST_ITEM_SX}>
+                                    <ListItemText
+                                        primary={t(`settings.permissions.${permission}`)}
+                                        primaryTypographyProps={PRIMARY_TEXT_PROPS}
+                                    />
+                                    <button
+                                        type="button"
+                                        className={`permission-status-button ${done ? 'enabled' : 'required'}`}
+                                        disabled={permissionStatus === null || done}
+                                        onClick={() => openPermissionGuide(permission)}
+                                    >
+                                        <span className="permission-status-dot" aria-hidden="true" />
+                                        {label}
+                                    </button>
+                                </ListItem>
+                                <Divider component="li" />
+                            </React.Fragment>
+                        );
+                    })}
                     <ListItem sx={LIST_ITEM_SX}>
                         <ListItemText primary={t("settings.onboarding")} primaryTypographyProps={PRIMARY_TEXT_PROPS} />
                         <Button variant="outlined" size="small" onClick={openOnboarding} sx={{ textTransform: 'none', flex: '0 0 auto', borderRadius: '8px', px: 2.2, fontWeight: 600 }}>

@@ -81,6 +81,9 @@ static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static TRAY_MENU_WATCHING: AtomicBool = AtomicBool::new(false);
 static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
+static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
+#[cfg(all(target_os = "macos", debug_assertions))]
+static DEBUG_BACKGROUND_AGENT_ENABLED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
 static LAST_FOREGROUND_HWND_BEFORE_CLIPBOARD: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "windows")]
@@ -94,6 +97,9 @@ const CLIPBOARD_SHOW_ANIMATION_MS: u64 = 170;
 const CLIPBOARD_HIDE_ANIMATION_MS: u64 = 140;
 const CLIPBOARD_ANIMATION_FRAME_MS: u64 = 8;
 const CLIPBOARD_HORIZONTAL_BLEED: f64 = 12.0;
+const PASTE_FALLBACK_NOTICE_WIDTH: f64 = 560.0;
+const PASTE_FALLBACK_NOTICE_HEIGHT: f64 = 76.0;
+const PASTE_FALLBACK_NOTICE_TOP_INSET: f64 = 18.0;
 const TRAY_MENU_WIDTH: i32 = 200;
 const TRAY_MENU_HEIGHT: i32 = 184;
 #[cfg(not(target_os = "macos"))]
@@ -209,7 +215,7 @@ struct OnboardingPermissionItemStatus {
     error: Option<String>,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(all(target_os = "macos", not(debug_assertions)), test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MacosServiceStatus {
     NotRegistered,
@@ -1173,6 +1179,41 @@ fn open_config_window(app: tauri::AppHandle, target: Option<String>) -> Result<(
 }
 
 #[tauri::command]
+fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String> {
+    let clipboard_window = app
+        .get_webview_window("clipboard")
+        .ok_or_else(|| "clipboard window not found".to_string())?;
+    let notice_window = app
+        .get_webview_window("pasteFallbackNotice")
+        .ok_or_else(|| "paste fallback notice window not found".to_string())?;
+    let bounds = screen_bounds(&clipboard_window);
+    let x = bounds.x + (bounds.width - PASTE_FALLBACK_NOTICE_WIDTH) / 2.0;
+    let y = bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT + PASTE_FALLBACK_NOTICE_TOP_INSET;
+
+    notice_window
+        .set_position(tauri::Position::Logical(LogicalPosition { x, y }))
+        .map_err(|err| err.to_string())?;
+    notice_window
+        .emit("paste-fallback-notice-show", ())
+        .map_err(|err| err.to_string())?;
+    notice_window.show().map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("pasteFallbackNotice") {
+        window.hide().map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn restore_foreground_app() {
+    restore_foreground_app_before_paste();
+}
+
+#[tauri::command]
 fn minimize_current_window(window: tauri::WebviewWindow) -> Result<(), String> {
     window.minimize().map_err(|err| err.to_string())
 }
@@ -1215,7 +1256,17 @@ fn open_onboarding_window(app: tauri::AppHandle) -> Result<(), String> {
     show_onboarding_window(&app)
 }
 
-fn restore_clipboard_after_permission_guide(app: &tauri::AppHandle) {
+fn restore_parent_after_permission_guide(app: &tauri::AppHandle) {
+    if PERMISSION_GUIDE_RETURN_TO_CONFIG.swap(false, Ordering::SeqCst) {
+        if let Some(window) = app.get_webview_window("config") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            activate_native_window(&window, "permission guide closed to config");
+            let _ = window.set_focus();
+            let _ = AsRef::<tauri::Webview>::as_ref(&window).set_focus();
+            return;
+        }
+    }
     if let Some(window) = app.get_webview_window("clipboard") {
         show_clipboard_window(&window);
         focus_clipboard_window(&window, "permission guide closed");
@@ -1225,6 +1276,7 @@ fn restore_clipboard_after_permission_guide(app: &tauri::AppHandle) {
 #[tauri::command]
 fn open_onboarding_permission_window(
     app: tauri::AppHandle,
+    source_window: tauri::WebviewWindow,
     permission: String,
     language_code: Option<String>,
     theme_preview: Option<String>,
@@ -1238,6 +1290,7 @@ fn open_onboarding_permission_window(
         Some("dark") => Some("dark"),
         Some(value) => return Err(format!("unsupported theme preview: {}", value)),
     };
+    PERMISSION_GUIDE_RETURN_TO_CONFIG.store(source_window.label() == "config", Ordering::SeqCst);
 
     let window = app
         .get_webview_window("onboardingPermission")
@@ -1282,7 +1335,7 @@ fn hide_onboarding_permission_window(
         window.hide().map_err(|err| err.to_string())?;
     }
     if restore_parent {
-        restore_clipboard_after_permission_guide(&app);
+        restore_parent_after_permission_guide(&app);
     }
     Ok(())
 }
@@ -2481,7 +2534,7 @@ fn check_paste_accessibility_permission() -> PasteAccessibilityPermissionStatus 
 
 #[tauri::command]
 fn get_onboarding_permission_status() -> OnboardingPermissionStatus {
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(debug_assertions)))]
     let background = match macos_background_agent_status() {
         Some(status) => OnboardingPermissionItemStatus {
             done: status == MacosServiceStatus::Enabled,
@@ -2493,6 +2546,12 @@ fn get_onboarding_permission_status() -> OnboardingPermissionStatus {
             needs_settings: false,
             error: Some("macOS background service is unavailable".to_string()),
         },
+    };
+    #[cfg(all(target_os = "macos", debug_assertions))]
+    let background = OnboardingPermissionItemStatus {
+        done: DEBUG_BACKGROUND_AGENT_ENABLED.load(Ordering::SeqCst),
+        needs_settings: !DEBUG_BACKGROUND_AGENT_ENABLED.load(Ordering::SeqCst),
+        error: None,
     };
     #[cfg(not(target_os = "macos"))]
     let background = OnboardingPermissionItemStatus {
@@ -2518,20 +2577,36 @@ fn enable_onboarding_background_service(
 ) -> Result<OnboardingPermissionItemStatus, String> {
     #[cfg(target_os = "macos")]
     {
-        let enabled = sync_macos_background_agent(true)
-            .ok_or_else(|| "macOS background service is unavailable".to_string())??;
-        let status = macos_background_agent_status().unwrap_or(MacosServiceStatus::NotFound);
-        let needs_settings = status == MacosServiceStatus::RequiresApproval;
-        let _ = app.emit("onboarding-permission-status-changed", "background");
+        #[cfg(debug_assertions)]
+        {
+            DEBUG_BACKGROUND_AGENT_ENABLED.store(true, Ordering::SeqCst);
+            let _ = app.emit("onboarding-permission-status-changed", "background");
+            lower_onboarding_permission_window(&app);
+            open_login_items_settings()?;
+            return Ok(OnboardingPermissionItemStatus {
+                done: true,
+                needs_settings: false,
+                error: None,
+            });
+        }
 
-        lower_onboarding_permission_window(&app);
-        open_login_items_settings()?;
+        #[cfg(not(debug_assertions))]
+        {
+            let enabled = sync_macos_background_agent(true)
+                .ok_or_else(|| "macOS background service is unavailable".to_string())??;
+            let status = macos_background_agent_status().unwrap_or(MacosServiceStatus::NotFound);
+            let needs_settings = status == MacosServiceStatus::RequiresApproval;
+            let _ = app.emit("onboarding-permission-status-changed", "background");
 
-        Ok(OnboardingPermissionItemStatus {
-            done: enabled,
-            needs_settings,
-            error: None,
-        })
+            lower_onboarding_permission_window(&app);
+            open_login_items_settings()?;
+
+            Ok(OnboardingPermissionItemStatus {
+                done: enabled,
+                needs_settings,
+                error: None,
+            })
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -4921,10 +4996,10 @@ mod shortcut_policy_tests {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
 const MACOS_BACKGROUND_AGENT_PLIST: &str = "com.loxonl.vpaste.background.plist";
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
 fn macos_background_agent() -> Option<cocoa::base::id> {
     use cocoa::base::{id, nil};
     use cocoa::foundation::NSString;
@@ -4951,7 +5026,7 @@ fn macos_main_app_service() -> Option<cocoa::base::id> {
     (service != nil).then_some(service)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
 fn macos_service_status(service: cocoa::base::id) -> MacosServiceStatus {
     use objc::{msg_send, sel, sel_impl};
 
@@ -4959,7 +5034,7 @@ fn macos_service_status(service: cocoa::base::id) -> MacosServiceStatus {
     macos_service_status_from_raw(status)
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(all(target_os = "macos", not(debug_assertions)), test))]
 fn macos_service_status_from_raw(status: isize) -> MacosServiceStatus {
     match status {
         0 => MacosServiceStatus::NotRegistered,
@@ -4974,7 +5049,7 @@ fn macos_main_app_service_status() -> Option<MacosServiceStatus> {
     macos_main_app_service().map(macos_service_status)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
 fn macos_service_error(error: cocoa::base::id) -> String {
     use cocoa::base::nil;
     use objc::{msg_send, sel, sel_impl};
@@ -4987,12 +5062,12 @@ fn macos_service_error(error: cocoa::base::id) -> String {
         .unwrap_or_else(|| "unknown Service Management error".to_string())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
 fn macos_background_agent_status() -> Option<MacosServiceStatus> {
     macos_background_agent().map(macos_service_status)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(debug_assertions)))]
 fn sync_macos_background_agent(enabled: bool) -> Option<Result<bool, String>> {
     use cocoa::base::{id, nil};
     use objc::{msg_send, sel, sel_impl};
@@ -7059,7 +7134,7 @@ fn main() {
                 if window.label() == "onboardingPermission" {
                     api.prevent_close();
                     let _ = window.hide();
-                    restore_clipboard_after_permission_guide(window.app_handle());
+                    restore_parent_after_permission_guide(window.app_handle());
                 }
             }
             if let tauri::WindowEvent::Focused(false) = event {
@@ -7276,6 +7351,37 @@ fn main() {
                     configure_macos_transparent_window(&onboarding_permission_window);
                 }
 
+                #[cfg(target_os = "macos")]
+                {
+                    let paste_fallback_notice_window = WebviewWindowBuilder::new(
+                        &handle,
+                        "pasteFallbackNotice",
+                        App("paste-fallback-notice".into()),
+                    )
+                    .title("vPaste")
+                    .visible(false)
+                    .focused(false)
+                    .focusable(false)
+                    .decorations(false)
+                    .transparent(true)
+                    .background_color(tauri::window::Color(0, 0, 0, 0))
+                    .skip_taskbar(true)
+                    .always_on_top(true)
+                    .accept_first_mouse(true)
+                    .resizable(false)
+                    .minimizable(false)
+                    .maximizable(false)
+                    .shadow(false)
+                    .inner_size(PASTE_FALLBACK_NOTICE_WIDTH, PASTE_FALLBACK_NOTICE_HEIGHT)
+                    .build()
+                    .unwrap();
+                    let _ = paste_fallback_notice_window
+                        .set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                    let _ = paste_fallback_notice_window.set_shadow(false);
+                    set_macos_window_level(&paste_fallback_notice_window, 102);
+                    configure_macos_transparent_window(&paste_fallback_notice_window);
+                }
+
                 let tray_menu_window =
                     WebviewWindowBuilder::new(&handle, "trayMenu", App("tray-menu".into()))
                         .title("vPaste Tray")
@@ -7405,6 +7511,9 @@ fn main() {
             open_onboarding_window,
             open_onboarding_permission_window,
             hide_onboarding_permission_window,
+            show_paste_fallback_notice,
+            hide_paste_fallback_notice,
+            restore_foreground_app,
             notify_onboarding_permission_status_changed,
             complete_onboarding,
             is_alt_key_pressed,

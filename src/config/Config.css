@@ -281,6 +281,68 @@ body {
     font-size: 13px;
 }
 
+.permission-status-button {
+    min-width: 94px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    flex: 0 0 auto;
+    padding: 0 11px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 620;
+    transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.permission-status-button:disabled {
+    opacity: 1;
+}
+
+.permission-status-button.enabled {
+    color: #16734b;
+    border-color: rgba(22, 145, 91, 0.14);
+    background: rgba(36, 176, 112, 0.10);
+    cursor: default;
+}
+
+.permission-status-button.required {
+    color: #8a5208;
+    border-color: rgba(219, 139, 23, 0.24);
+    background: rgba(255, 184, 72, 0.16);
+    box-shadow: 0 3px 10px rgba(173, 106, 10, 0.08);
+    cursor: pointer;
+}
+
+.permission-status-button.required:not(:disabled):hover {
+    border-color: rgba(219, 139, 23, 0.38);
+    background: rgba(255, 184, 72, 0.25);
+    box-shadow: 0 5px 14px rgba(173, 106, 10, 0.12);
+}
+
+.permission-status-button.required:not(:disabled):active {
+    transform: scale(0.98);
+}
+
+.permission-status-dot {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 7px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.permission-status-button.enabled .permission-status-dot {
+    box-shadow: 0 0 0 3px rgba(22, 145, 91, 0.10);
+}
+
+.permission-status-button.required .permission-status-dot {
+    box-shadow: 0 0 0 3px rgba(219, 139, 23, 0.12);
+}
+
 .shortcut-recorder {
     width: 148px;
     min-width: 148px;
@@ -893,6 +955,24 @@ body {
 :root[data-theme="dark"] .content-area .MuiButton-contained.Mui-disabled {
     color: rgba(255, 255, 255, 0.34) !important;
     background: rgba(255, 255, 255, 0.08) !important;
+}
+
+:root[data-theme="dark"] .permission-status-button.enabled {
+    color: #7ee2b5;
+    border-color: rgba(94, 211, 157, 0.16);
+    background: rgba(31, 137, 91, 0.22);
+}
+
+:root[data-theme="dark"] .permission-status-button.required {
+    color: #ffd58a;
+    border-color: rgba(255, 190, 89, 0.22);
+    background: rgba(173, 106, 10, 0.24);
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.16);
+}
+
+:root[data-theme="dark"] .permission-status-button.required:not(:disabled):hover {
+    border-color: rgba(255, 190, 89, 0.34);
+    background: rgba(173, 106, 10, 0.34);
 }
 
 :root[data-theme="dark"] .shortcut-recorder {

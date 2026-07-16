@@ -843,6 +843,40 @@ body {
   gap: 8px;
 }
 
+.permission-summary-banner {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid rgba(216, 137, 18, 0.24);
+  border-radius: 999px;
+  color: #78500f;
+  background: rgba(255, 184, 72, 0.14);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.56);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+
+.permission-summary-banner:hover {
+  border-color: rgba(216, 137, 18, 0.36);
+  background: rgba(255, 184, 72, 0.22);
+}
+
+.permission-summary-banner:active {
+  transform: scale(0.98);
+}
+
+.permission-summary-banner > svg {
+  width: 14px;
+  height: 14px;
+  font-size: 14px !important;
+}
+
 .developer-toolbar {
   display: flex;
   align-items: center;
@@ -996,6 +1030,18 @@ body {
   border-color: rgba(255, 255, 255, 0.08);
   background: rgba(25, 30, 37, 0.48);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+:root[data-theme="dark"] .permission-summary-banner {
+  color: #ffd58a;
+  border-color: rgba(255, 190, 89, 0.22);
+  background: rgba(173, 106, 10, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+:root[data-theme="dark"] .permission-summary-banner:hover {
+  border-color: rgba(255, 190, 89, 0.34);
+  background: rgba(173, 106, 10, 0.32);
 }
 
 :root[data-theme="dark"] .developer-toolbar-badge {

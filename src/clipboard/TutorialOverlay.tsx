@@ -54,7 +54,7 @@ type StepShellProps = {
 };
 
 const WELCOME_REVEAL_MS = 680;
-const WELCOME_HOLD_MS = 1500;
+const WELCOME_HOLD_MS = 900;
 const WELCOME_EXIT_MS = 500;
 
 export default function TutorialOverlay({

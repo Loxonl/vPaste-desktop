@@ -2071,26 +2071,12 @@ export default function Clipboard() {
         }
     };
 
-    const openPasteAccessibilityGuide = async () => {
-        const themePreview = getThemePreview();
-        const payload = { permission: "paste", languageCode, themePreview };
-        localStorage.setItem(PENDING_PERMISSION_WINDOW_KEY, JSON.stringify(payload));
-        setContextMenu(null);
-        await hideCurrentWindowWithAnimation();
-        await invoke("open_onboarding_permission_window", payload);
-    };
-
-    const ensurePasteAccessibilityPermission = async (): Promise<boolean> => {
+    const checkPasteAccessibilityPermission = async (): Promise<boolean> => {
         try {
-            const status = await invoke<PasteAccessibilityPermissionStatus>('ensure_paste_accessibility_permission');
-            if (status.granted) {
-                return true;
-            }
-            await openPasteAccessibilityGuide();
-            return false;
+            const status = await invoke<PasteAccessibilityPermissionStatus>('check_paste_accessibility_permission');
+            return status.granted;
         } catch (e) {
             error(`Failed to check Accessibility permission: ${e}`);
-            showToast(t("clipboard.actionFailed", { error: String(e) }), 'error');
             return false;
         }
     };
@@ -2663,12 +2649,12 @@ export default function Clipboard() {
         };
         const handleWindowFocus = () => {
             consumePendingItemTagsChanged();
-            if (tutorialActiveRef.current && isMacPlatform()) {
+            if (isMacPlatform()) {
                 void refreshTutorialPermissionStatus();
             }
         };
         const handleVisibilityChange = () => {
-            if (document.visibilityState === 'visible' && tutorialActiveRef.current && isMacPlatform()) {
+            if (document.visibilityState === 'visible' && isMacPlatform()) {
                 void refreshTutorialPermissionStatus();
             }
         };
@@ -2685,6 +2671,9 @@ export default function Clipboard() {
         window.addEventListener('blur', handleWindowBlur);
         window.addEventListener('click', closeContextMenu);
         window.addEventListener('resize', closeContextMenu);
+        if (isMacPlatform()) {
+            void refreshTutorialPermissionStatus();
+        }
         void loadBehaviorConfig()
             .then(config => {
                 if (config.onboarding_completed === false && !tutorialActiveRef.current) {
@@ -2961,11 +2950,19 @@ export default function Clipboard() {
         return false;
     };
 
-    const clickClipboardItem = async (hash: string, plainText: boolean = false, restoreAlt: boolean = false, triggerKey: string = "") => {
-        const hasPermission = await ensurePasteAccessibilityPermission();
-        if (!hasPermission) {
-            return;
+    const finishCopyWithoutAutoPaste = async () => {
+        await invoke('show_paste_fallback_notice')
+            .catch(e => error(`Failed to show paste fallback notice: ${e}`));
+        try {
+            await hideCurrentWindowWithAnimation();
+        } finally {
+            await invoke('restore_foreground_app')
+                .catch(e => error(`Failed to restore foreground app: ${e}`));
         }
+    };
+
+    const clickClipboardItem = async (hash: string, plainText: boolean = false, restoreAlt: boolean = false, triggerKey: string = "") => {
+        const hasPermission = await checkPasteAccessibilityPermission();
         const item = pageListRef.current.find(i => i.getHash() === hash);
         if (item) {
             selectedRef.current = hash;
@@ -2996,13 +2993,19 @@ export default function Clipboard() {
                 if (restoreAlt) {
                     await waitForQuickInputModifierRelease(triggerKey);
                 }
-                if (itemType === "Image") {
+                if (itemType === "Image" && hasPermission) {
                     const hidePromise = hideCurrentWindowWithAnimation();
                     await invoke('copy', { item: content, itemType, hash: copyHash });
                     await hidePromise;
                 } else {
                     await invoke('copy', { item: content, itemType, hash: copyHash });
-                    await hideCurrentWindowWithAnimation();
+                    if (hasPermission) {
+                        await hideCurrentWindowWithAnimation();
+                    }
+                }
+                if (!hasPermission) {
+                    await finishCopyWithoutAutoPaste();
+                    return;
                 }
                 await invoke('paste', { hash, restoreAlt, triggerKey });
                 await fetchHistoryWith(searchWordRef.current, activeTabRef.current);
@@ -3018,16 +3021,17 @@ export default function Clipboard() {
     };
 
     const pastePlainTextItem = async (item: Item) => {
-        const hasPermission = await ensurePasteAccessibilityPermission();
-        if (!hasPermission) {
-            return;
-        }
+        const hasPermission = await checkPasteAccessibilityPermission();
         setContextMenu(null);
         selectedRef.current = item.getHash() as string;
         setSelected(item.getHash());
         try {
             const text = await invoke<string>('plain_text_content', { hash: item.getHash() });
             await invoke('copy', { item: text, itemType: 'Text', hash: null });
+            if (!hasPermission) {
+                await finishCopyWithoutAutoPaste();
+                return;
+            }
             await hideCurrentWindowWithAnimation();
             await invoke<unknown>('paste', { hash: item.getHash(), triggerKey: "" });
         } catch (e) {
@@ -3563,6 +3567,15 @@ export default function Clipboard() {
         void startTutorial(platform);
     };
 
+    const openPermissionCenter = async () => {
+        try {
+            await hideCurrentWindowWithAnimation();
+            await invoke('open_config_window', { target: 'permissions' });
+        } catch (e) {
+            error(`Failed to open permission settings: ${e}`);
+        }
+    };
+
     const toggleDeveloperLanguage = () => {
         setPreviewLanguageCode(languageCode === "Chinese" ? "English" : "Chinese");
     };
@@ -3807,6 +3820,19 @@ export default function Clipboard() {
                     )}
                 </div>
                 <div className="header-actions">
+                    {isMacPlatform()
+                        && !tutorialActive
+                        && tutorialPermissionStatus !== null
+                        && (!tutorialPermissionStatus.background.done || !tutorialPermissionStatus.paste.done) && (
+                        <button
+                            type="button"
+                            className="permission-summary-banner"
+                            onClick={openPermissionCenter}
+                        >
+                            <WarningAmberOutlinedIcon fontSize="inherit" />
+                            <span>{t("clipboard.permissionsIncomplete")}</span>
+                        </button>
+                    )}
                     {developerMode && (
                         <div className="developer-toolbar" aria-label={t("tutorial.debug.tools")}>
                             <span className="developer-toolbar-badge" aria-hidden="true">DEV</span>

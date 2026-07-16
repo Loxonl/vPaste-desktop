@@ -7,6 +7,7 @@ import EmojiPicker from "./clipboard/EmojiPicker.tsx";
 import Preview from "./clipboard/Preview.tsx";
 import TabEditor from "./clipboard/TabEditor.tsx";
 import OnboardingPermissionWindow from "./clipboard/OnboardingPermissionWindow.tsx";
+import PasteFallbackNotice from "./clipboard/PasteFallbackNotice.tsx";
 import Config from "./config/Config.tsx";
 import TrayMenu from "./tray/TrayMenu.tsx";
 import "./theme.css";
@@ -63,6 +64,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
                 <Route path="/emoji-picker" element={<EmojiPicker />} />
                 <Route path="/tab-editor" element={<TabEditor />} />
                 <Route path="/onboarding-permission" element={<OnboardingPermissionWindow />} />
+                <Route path="/paste-fallback-notice" element={<PasteFallbackNotice />} />
                 <Route path="/config" element={<Config />} />
                 <Route path="/tray-menu" element={<TrayMenu />} />
                 <Route path="/" element={<Clipboard />} />

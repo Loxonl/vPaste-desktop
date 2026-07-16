@@ -13,14 +13,11 @@ body {
   flex-direction: column;
   height: 100vh;
   width: 100vw;
-  opacity: 0;
-  transform: translate3d(0, 100%, 0);
   background:
     linear-gradient(180deg, rgba(252, 252, 249, 0.16), rgba(225, 228, 222, 0.08)),
     var(--theme-backdrop);
   backdrop-filter: blur(38px) saturate(1.42);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
-  will-change: transform, opacity;
 }
 
 :root[data-theme="dark"] .clipboard-container {
@@ -539,48 +536,6 @@ body {
   to {
     opacity: 1;
     transform: translate(-50%, 0);
-  }
-}
-
-.clipboard-container.entering {
-  animation: slideUpIn 120ms cubic-bezier(0.2, 0.0, 0.0, 1.0) forwards;
-}
-
-.clipboard-container.entered {
-  opacity: 1;
-  transform: translate3d(0, 0, 0);
-}
-
-.clipboard-container.exiting {
-  animation: slideDownOut 110ms cubic-bezier(0.4, 0.0, 1.0, 1.0) forwards;
-}
-
-.clipboard-container.hidden {
-  opacity: 0;
-  transform: translate3d(0, 100%, 0);
-}
-
-@keyframes slideUpIn {
-  0% {
-    opacity: 0.6;
-    transform: translate3d(0, 100%, 0);
-  }
-
-  100% {
-    opacity: 1;
-    transform: translate3d(0, 0, 0);
-  }
-}
-
-@keyframes slideDownOut {
-  0% {
-    opacity: 1;
-    transform: translate3d(0, 0, 0);
-  }
-
-  100% {
-    opacity: 0.7;
-    transform: translate3d(0, 100%, 0);
   }
 }
 

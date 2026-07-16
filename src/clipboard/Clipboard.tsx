@@ -26,7 +26,7 @@ import TutorialOverlay, { TutorialFilterId, TutorialFilterTab, TutorialPermissio
 import aboutLogo from "../assets/about-logo.png";
 import { getResolvedTheme, getThemePreview, setThemePreview, type ResolvedTheme } from "../theme";
 
-const CLIPBOARD_ANIMATION_MS = 120;
+const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const DEFAULT_PASTE_AS_TEXT_SHORTCUT = "Shift+Enter";
 const HISTORY_PAGE_LIMIT = 36;
 const HISTORY_DATA_URL_CACHE_LIMIT = 80;
@@ -1681,7 +1681,6 @@ export default function Clipboard() {
     }, []);
 
     const [animationState, setAnimationState] = useState<'hidden' | 'entering' | 'entered' | 'exiting'>('entered');
-    const animationTimerRef = useRef<number | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const cardsContainerRef = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
@@ -1897,22 +1896,17 @@ export default function Clipboard() {
         isLoadingMoreRef.current = isLoadingMore;
     }, [isLoadingMore]);
 
-    const clearAnimationTimer = () => {
-        if (animationTimerRef.current !== null) {
-            window.clearTimeout(animationTimerRef.current);
-            animationTimerRef.current = null;
-        }
-    };
-
     const hideCurrentWindowWithAnimation = async () => {
-        clearAnimationTimer();
         setAnimationState('exiting');
         const generation = await invoke<number>('begin_hide_clipboard_window')
             .catch(e => {
                 error(`Failed to mark clipboard hiding: ${e}`);
                 return 0;
             });
-        await new Promise(resolve => window.setTimeout(resolve, CLIPBOARD_ANIMATION_MS));
+        if (generation === 0) {
+            setAnimationState('hidden');
+            return;
+        }
         await invoke('finish_hide_clipboard_window', { generation });
         setAnimationState('hidden');
     };
@@ -2082,6 +2076,7 @@ export default function Clipboard() {
         const payload = { permission: "paste", languageCode, themePreview };
         localStorage.setItem(PENDING_PERMISSION_WINDOW_KEY, JSON.stringify(payload));
         setContextMenu(null);
+        await hideCurrentWindowWithAnimation();
         await invoke("open_onboarding_permission_window", payload);
     };
 
@@ -2154,6 +2149,7 @@ export default function Clipboard() {
             const themePreview = getThemePreview();
             const payload = { permission: id, languageCode, themePreview };
             localStorage.setItem(PENDING_PERMISSION_WINDOW_KEY, JSON.stringify(payload));
+            await hideCurrentWindowWithAnimation();
             await invoke("open_onboarding_permission_window", payload);
         } catch (e) {
             showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
@@ -2567,7 +2563,6 @@ export default function Clipboard() {
 
     useEffect(() => {
         const unlistenShow = listen<{ x: number, y: number } | null>('window-show', event => {
-            clearAnimationTimer();
             resetCardsPointerState();
             selectFirstLoadedItem(true);
             void applyShowPreferences();
@@ -2582,16 +2577,15 @@ export default function Clipboard() {
             syncAltHintsFromNative();
             window.setTimeout(syncAltHintsFromNative, 70);
             window.setTimeout(syncAltHintsFromNative, 160);
-            scheduleFileRefresh(CLIPBOARD_ANIMATION_MS + 140);
+            scheduleFileRefresh(CLIPBOARD_SHOW_REFRESH_DELAY_MS);
             setAnimationState('entering');
-            animationTimerRef.current = window.setTimeout(() => {
-                setAnimationState('entered');
-                animationTimerRef.current = null;
-            }, CLIPBOARD_ANIMATION_MS);
+        });
+
+        const unlistenShowComplete = listen('window-show-complete', () => {
+            setAnimationState('entered');
         });
 
         const unlistenHide = listen('window-hide', () => {
-            clearAnimationTimer();
             resetCardsPointerState();
             searchRequestSeqRef.current += 1;
             if (scrollRefreshTimerRef.current !== null) {
@@ -2604,10 +2598,10 @@ export default function Clipboard() {
             }
             hideAltHints();
             setAnimationState('exiting');
-            animationTimerRef.current = window.setTimeout(() => {
-                setAnimationState('hidden');
-                animationTimerRef.current = null;
-            }, CLIPBOARD_ANIMATION_MS);
+        });
+
+        const unlistenHidden = listen('window-hidden', () => {
+            setAnimationState('hidden');
         });
 
         const unlistenClipboard = listen<string>('listen_new_clipboard', (_) => {
@@ -2699,7 +2693,6 @@ export default function Clipboard() {
             })
             .catch(e => error(`Failed to check tutorial state: ${e}`));
         return () => {
-            clearAnimationTimer();
             stopDragInertia();
             if (toastTimerRef.current !== null) {
                 window.clearTimeout(toastTimerRef.current);
@@ -2719,7 +2712,9 @@ export default function Clipboard() {
             }
             clearAltHintTimer();
             unlistenShow.then(f => f()).catch(e => error(`Failed to unlisten show: ${e}`));
+            unlistenShowComplete.then(f => f()).catch(e => error(`Failed to unlisten show completion: ${e}`));
             unlistenHide.then(f => f()).catch(e => error(`Failed to unlisten hide: ${e}`));
+            unlistenHidden.then(f => f()).catch(e => error(`Failed to unlisten hidden: ${e}`));
             unlistenClipboard.then(f => f()).catch(e => error(`Failed to unlisten clipboard: ${e}`));
             unlistenCustomTabs.then(f => f()).catch(e => error(`Failed to unlisten custom tabs: ${e}`));
             unlistenItemTags.then(f => f()).catch(e => error(`Failed to unlisten item tags: ${e}`));
@@ -3555,8 +3550,13 @@ export default function Clipboard() {
         };
     });
 
-    const openConfigWindow = () => {
-        void invoke('open_config_window').catch(e => error(`Failed to open config window: ${e}`));
+    const openConfigWindow = async () => {
+        try {
+            await hideCurrentWindowWithAnimation();
+            await invoke('open_config_window');
+        } catch (e) {
+            error(`Failed to open config window: ${e}`);
+        }
     };
 
     const openTutorialFromDebug = (platform: TutorialPlatform) => {

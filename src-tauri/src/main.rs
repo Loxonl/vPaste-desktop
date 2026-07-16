@@ -68,6 +68,7 @@ lazy_static! {
 
 static CLIPBOARD_VISIBLE: AtomicBool = AtomicBool::new(false);
 static CLIPBOARD_HIDING: AtomicBool = AtomicBool::new(false);
+static CLIPBOARD_WINDOW_TRANSITION_LOCK: Mutex<()> = Mutex::new(());
 pub(crate) static CLIPBOARD_IGNORE_NEXT_CHANGE: AtomicBool = AtomicBool::new(false);
 pub(crate) static CLIPBOARD_HISTORY_PAUSED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
@@ -89,7 +90,9 @@ static LAST_FOREGROUND_APP_PID: Mutex<Option<i32>> = Mutex::new(None);
 #[cfg(test)]
 pub static TEST_APP_DATA_LOCK: Mutex<()> = Mutex::new(());
 const CLIPBOARD_WINDOW_HEIGHT: f64 = 302.0;
-const CLIPBOARD_ANIMATION_MS: u64 = 120;
+const CLIPBOARD_SHOW_ANIMATION_MS: u64 = 170;
+const CLIPBOARD_HIDE_ANIMATION_MS: u64 = 140;
+const CLIPBOARD_ANIMATION_FRAME_MS: u64 = 8;
 const CLIPBOARD_HORIZONTAL_BLEED: f64 = 12.0;
 const TRAY_MENU_WIDTH: i32 = 200;
 const TRAY_MENU_HEIGHT: i32 = 184;
@@ -388,6 +391,46 @@ fn screen_bounds(window: &tauri::WebviewWindow) -> ScreenBounds {
 }
 
 #[cfg(target_os = "windows")]
+fn system_reduces_motion() -> bool {
+    use std::ffi::c_void;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    };
+
+    let mut animations_enabled = 1_i32;
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            Some(&mut animations_enabled as *mut i32 as *mut c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+        .is_ok()
+            && animations_enabled == 0
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn system_reduces_motion() -> bool {
+    use cocoa::base::{id, nil};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        if workspace == nil {
+            return false;
+        }
+        let reduce_motion: bool = msg_send![workspace, accessibilityDisplayShouldReduceMotion];
+        reduce_motion
+    }
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn system_reduces_motion() -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
 fn cursor_physical_position() -> Option<tauri::PhysicalPosition<i32>> {
     #[repr(C)]
     struct Point {
@@ -625,9 +668,72 @@ fn restore_foreground_app_before_paste() {
     }
 }
 
-fn finish_hide_window(window: &tauri::WebviewWindow) -> Result<(), String> {
-    // Windows applies its own hide animation to native windows. Move the
-    // native window below the screen first so only our CSS slide-down is seen.
+#[derive(Clone, Copy)]
+enum ClipboardWindowAnimation {
+    Show,
+    Hide,
+}
+
+fn clipboard_window_animation_progress(progress: f64, animation: ClipboardWindowAnimation) -> f64 {
+    let progress = progress.clamp(0.0, 1.0);
+    match animation {
+        ClipboardWindowAnimation::Show => 1.0 - (1.0 - progress).powi(3),
+        ClipboardWindowAnimation::Hide => progress.powi(3),
+    }
+}
+
+fn current_window_logical_y(window: &tauri::WebviewWindow) -> Option<f64> {
+    let position = window.outer_position().ok()?;
+    let scale_factor = window.scale_factor().ok()?;
+    Some(position.y as f64 / scale_factor)
+}
+
+fn animate_clipboard_window_y(
+    window: &tauri::WebviewWindow,
+    x: f64,
+    from_y: f64,
+    to_y: f64,
+    duration_ms: u64,
+    generation: u64,
+    animation: ClipboardWindowAnimation,
+) -> Result<bool, String> {
+    if system_reduces_motion() || (from_y - to_y).abs() < 0.5 {
+        if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
+            return Ok(false);
+        }
+        window
+            .set_position(tauri::Position::Logical(tauri::LogicalPosition {
+                x,
+                y: to_y,
+            }))
+            .map_err(|err| err.to_string())?;
+        return Ok(true);
+    }
+
+    let started = Instant::now();
+    let duration = std::time::Duration::from_millis(duration_ms);
+    loop {
+        if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
+            return Ok(false);
+        }
+
+        let progress = (started.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0);
+        let eased = clipboard_window_animation_progress(progress, animation);
+        let y = from_y + (to_y - from_y) * eased;
+        window
+            .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }))
+            .map_err(|err| err.to_string())?;
+
+        if progress >= 1.0 {
+            return Ok(true);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(
+            CLIPBOARD_ANIMATION_FRAME_MS,
+        ));
+    }
+}
+
+fn finish_hide_window_locked(window: &tauri::WebviewWindow) -> Result<(), String> {
     let bounds = screen_bounds(window);
     let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
         x: bounds.x - CLIPBOARD_HORIZONTAL_BLEED,
@@ -637,9 +743,74 @@ fn finish_hide_window(window: &tauri::WebviewWindow) -> Result<(), String> {
     CLIPBOARD_VISIBLE.store(false, Ordering::SeqCst);
     CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
     CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
+    let _ = window.emit("window-hidden", ());
     #[cfg(target_os = "macos")]
     maybe_hide_macos_dock_icon();
     Ok(())
+}
+
+fn finish_hide_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    finish_hide_window_locked(window)
+}
+
+fn finish_animated_hide_window(
+    window: &tauri::WebviewWindow,
+    generation: u64,
+) -> Result<(), String> {
+    if generation == 0 {
+        return Ok(());
+    }
+
+    let bounds = screen_bounds(window);
+    let x = bounds.x - CLIPBOARD_HORIZONTAL_BLEED;
+    let target_y = bounds.y + bounds.height;
+    let start_y = current_window_logical_y(window)
+        .unwrap_or(bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT);
+    let animation_result = animate_clipboard_window_y(
+        window,
+        x,
+        start_y,
+        target_y,
+        CLIPBOARD_HIDE_ANIMATION_MS,
+        generation,
+        ClipboardWindowAnimation::Hide,
+    );
+
+    let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
+        return Ok(());
+    }
+    if let Err(err) = animation_result {
+        error!("Failed to animate clipboard window down: {}", err);
+    }
+    finish_hide_window_locked(window)
+}
+
+#[cfg(test)]
+mod clipboard_window_animation_tests {
+    use super::{clipboard_window_animation_progress, ClipboardWindowAnimation};
+
+    #[test]
+    fn show_and_hide_curves_keep_exact_endpoints() {
+        for animation in [
+            ClipboardWindowAnimation::Show,
+            ClipboardWindowAnimation::Hide,
+        ] {
+            assert_eq!(clipboard_window_animation_progress(0.0, animation), 0.0);
+            assert_eq!(clipboard_window_animation_progress(1.0, animation), 1.0);
+        }
+    }
+
+    #[test]
+    fn show_arrives_quickly_and_hide_leaves_quickly() {
+        assert!(clipboard_window_animation_progress(0.5, ClipboardWindowAnimation::Show) > 0.5);
+        assert!(clipboard_window_animation_progress(0.5, ClipboardWindowAnimation::Hide) < 0.5);
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -811,10 +982,17 @@ fn focus_clipboard_window(window: &tauri::WebviewWindow, context: &str) {
 }
 
 fn hide_clipboard_window(window: &tauri::WebviewWindow) {
-    if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) || CLIPBOARD_HIDING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let generation = CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let generation = {
+        let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+            || CLIPBOARD_HIDING.swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+        CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
+    };
 
     if let Err(err) = window.emit("window-hide", ()) {
         error!("Failed to emit window-hide event: {:?}", err);
@@ -822,55 +1000,74 @@ fn hide_clipboard_window(window: &tauri::WebviewWindow) {
 
     let window = window.clone();
     std::thread::spawn(move || {
-        // Wait briefly for the CSS slide-out to finish before removing the native window.
-        std::thread::sleep(std::time::Duration::from_millis(CLIPBOARD_ANIMATION_MS));
-        if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
-            info!("Skip stale clipboard hide generation {}", generation);
-            return;
-        }
-
-        if let Err(err) = finish_hide_window(&window) {
+        if let Err(err) = finish_animated_hide_window(&window, generation) {
             error!("Failed to hide clipboard window: {:?}", err);
         }
     });
 }
 
 fn show_clipboard_window(window: &tauri::WebviewWindow) {
-    if CLIPBOARD_VISIBLE.load(Ordering::SeqCst) && !CLIPBOARD_HIDING.load(Ordering::SeqCst) {
-        return;
-    }
-
-    record_foreground_app_before_clipboard();
-    CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
     let bounds = screen_bounds(window);
+    let x = bounds.x - CLIPBOARD_HORIZONTAL_BLEED;
+    let target_y = bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT;
+    let hidden_y = bounds.y + bounds.height;
+    let generation;
+    let start_y;
 
-    // Ensure position is correct (at bottom)
-    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-        width: bounds.width + CLIPBOARD_HORIZONTAL_BLEED * 2.0,
-        height: CLIPBOARD_WINDOW_HEIGHT,
-    }));
-    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
-        x: bounds.x - CLIPBOARD_HORIZONTAL_BLEED,
-        y: bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT,
-    }));
+    {
+        let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if CLIPBOARD_VISIBLE.load(Ordering::SeqCst) && !CLIPBOARD_HIDING.load(Ordering::SeqCst) {
+            return;
+        }
 
-    if let Err(err) = window.show() {
-        error!("Failed to show clipboard window: {:?}", err);
-        return;
+        let was_visible = window.is_visible().unwrap_or(false);
+        if !was_visible {
+            record_foreground_app_before_clipboard();
+        }
+        generation = CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+
+        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+            width: bounds.width + CLIPBOARD_HORIZONTAL_BLEED * 2.0,
+            height: CLIPBOARD_WINDOW_HEIGHT,
+        }));
+        start_y = if was_visible {
+            current_window_logical_y(window).unwrap_or(hidden_y)
+        } else {
+            hidden_y
+        };
+        let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
+            x,
+            y: start_y,
+        }));
+
+        if !was_visible {
+            if let Err(err) = window.show() {
+                error!("Failed to show clipboard window: {:?}", err);
+                return;
+            }
+        }
+
+        CLIPBOARD_VISIBLE.store(true, Ordering::SeqCst);
+        CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
     }
 
     let cursor = cursor_physical_position().and_then(|cursor| {
-        let position = window.outer_position().ok()?;
-        let size = window.outer_size().ok()?;
         let scale_factor = window.scale_factor().ok()?;
-        let x = (cursor.x - position.x) as f64 / scale_factor;
-        let y = (cursor.y - position.y) as f64 / scale_factor;
-        if x >= 0.0
-            && y >= 0.0
-            && cursor.x <= position.x + size.width as i32
-            && cursor.y <= position.y + size.height as i32
+        let target_x = (x * scale_factor).round() as i32;
+        let target_y = (target_y * scale_factor).round() as i32;
+        let width =
+            ((bounds.width + CLIPBOARD_HORIZONTAL_BLEED * 2.0) * scale_factor).round() as i32;
+        let height = (CLIPBOARD_WINDOW_HEIGHT * scale_factor).round() as i32;
+        let cursor_x = (cursor.x - target_x) as f64 / scale_factor;
+        let cursor_y = (cursor.y - target_y) as f64 / scale_factor;
+        if cursor_x >= 0.0
+            && cursor_y >= 0.0
+            && cursor.x <= target_x + width
+            && cursor.y <= target_y + height
         {
-            Some(serde_json::json!({ "x": x, "y": y }))
+            Some(serde_json::json!({ "x": cursor_x, "y": cursor_y }))
         } else {
             None
         }
@@ -879,31 +1076,60 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
         error!("Failed to emit window-show event: {:?}", err);
     }
 
-    CLIPBOARD_VISIBLE.store(true, Ordering::SeqCst);
-    CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
     focus_clipboard_window(window, "show clipboard");
+
+    let animation_window = window.clone();
+    std::thread::spawn(move || {
+        match animate_clipboard_window_y(
+            &animation_window,
+            x,
+            start_y,
+            target_y,
+            CLIPBOARD_SHOW_ANIMATION_MS,
+            generation,
+            ClipboardWindowAnimation::Show,
+        ) {
+            Ok(true) => {
+                let _ = animation_window.emit("window-show-complete", ());
+            }
+            Ok(false) => info!("Skip stale clipboard show generation {}", generation),
+            Err(err) => {
+                error!("Failed to animate clipboard window up: {}", err);
+                if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) == generation {
+                    let _ = animation_window.set_position(tauri::Position::Logical(
+                        tauri::LogicalPosition { x, y: target_y },
+                    ));
+                    let _ = animation_window.emit("window-show-complete", ());
+                }
+            }
+        }
+    });
 }
 
 #[tauri::command]
-fn begin_hide_clipboard_window() -> u64 {
-    CLIPBOARD_HIDING.store(true, Ordering::SeqCst);
-    CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
+fn begin_hide_clipboard_window(window: tauri::WebviewWindow) -> u64 {
+    let generation = {
+        let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+            return 0;
+        }
+        CLIPBOARD_HIDING.store(true, Ordering::SeqCst);
+        CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
+    };
+    let _ = window.emit("window-hide", ());
+    generation
 }
 
 #[tauri::command]
-fn finish_hide_clipboard_window(
+async fn finish_hide_clipboard_window(
     window: tauri::WebviewWindow,
     generation: u64,
 ) -> Result<(), String> {
-    if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
-        info!(
-            "Skip stale frontend clipboard hide generation {}",
-            generation
-        );
-        return Ok(());
-    }
-    CLIPBOARD_HIDING.store(true, Ordering::SeqCst);
-    finish_hide_window(&window)
+    tauri::async_runtime::spawn_blocking(move || finish_animated_hide_window(&window, generation))
+        .await
+        .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
@@ -6701,6 +6927,7 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
         .decorations(false)
         .resizable(false)
         .maximizable(false)
+        .shadow(false)
         .transparent(true)
         .background_color(tauri::window::Color(0, 0, 0, 0))
         .skip_taskbar(true)
@@ -6723,6 +6950,7 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
 
     let clipboard_window = clipboard_window.build()?;
     let _ = clipboard_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    let _ = clipboard_window.set_shadow(false);
     apply_vpaste_window_icon(&clipboard_window);
 
     #[cfg(target_os = "macos")]

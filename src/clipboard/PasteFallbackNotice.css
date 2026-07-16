@@ -13,13 +13,6 @@ body,
     width: 100%;
     height: 100%;
     padding: 8px 10px 14px;
-    opacity: 0;
-    transform: translateY(6px) scale(0.98);
-    transition: opacity 150ms ease, transform 150ms ease;
-    pointer-events: none;
-}
-
-.paste-fallback-notice-root.visible {
     opacity: 1;
     transform: translateY(0) scale(1);
     pointer-events: auto;
@@ -37,7 +30,6 @@ body,
     border-radius: 15px;
     color: #24282f;
     background: rgba(255, 255, 255, 0.96);
-    box-shadow: 0 12px 30px rgba(23, 30, 40, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.72);
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
     -webkit-font-smoothing: antialiased;
 }
@@ -89,7 +81,6 @@ body,
     color: var(--theme-text);
     background: rgba(31, 35, 42, 0.97);
     border-color: rgba(255, 255, 255, 0.09);
-    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 :root[data-theme="dark"] .paste-fallback-notice-icon {

@@ -423,13 +423,16 @@ export default function Config() {
     }, []);
 
     React.useEffect(() => {
-        const applyTarget = (target: unknown) => {
-            setWindowsControlsHoverReady(false);
-            if (blockingOperationRef.current) return;
+        const refreshStartupStatus = () => {
             void invoke<string>('get_config', {}).then(raw => {
                 const latest = JSON.parse(raw) as Partial<ConfigData>;
                 setConfig(current => ({ ...current, startup: latest.startup === true }));
             }).catch(e => error(`Failed to refresh startup status: ${e}`));
+        };
+        const applyTarget = (target: unknown) => {
+            setWindowsControlsHoverReady(false);
+            if (blockingOperationRef.current) return;
+            refreshStartupStatus();
             if (target === "about" || localStorage.getItem("vpaste.config.target") === "about") {
                 localStorage.removeItem("vpaste.config.target");
                 setValue(3);
@@ -439,8 +442,16 @@ export default function Config() {
         };
         applyTarget(null);
         const unlisten = listen<string>("config-opened", event => applyTarget(event.payload));
+        const handleFocus = () => refreshStartupStatus();
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible') refreshStartupStatus();
+        };
+        window.addEventListener('focus', handleFocus);
+        document.addEventListener('visibilitychange', handleVisibilityChange);
         return () => {
             unlisten.then(fn => fn()).catch(e => error(`Failed to unlisten config-opened target: ${e}`));
+            window.removeEventListener('focus', handleFocus);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
         };
     }, []);
 

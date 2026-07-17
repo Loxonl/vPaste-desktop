@@ -7,6 +7,12 @@ use crate::clipboard::color;
 pub struct Page<T> {
     pub list: Vec<T>,
     pub consumed: u128,
+    #[serde(rename = "hasMore")]
+    pub has_more: bool,
+    #[serde(rename = "nextId")]
+    pub next_id: u64,
+    #[serde(rename = "nextTime")]
+    pub next_time: u64,
 }
 
 #[derive(serde::Serialize, Debug)]

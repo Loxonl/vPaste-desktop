@@ -566,6 +566,20 @@ class ClipboardPage {
     }
 }
 
+type SearchPagePayload = {
+    list: any[];
+    consumed: number;
+    hasMore: boolean;
+    nextId: number;
+    nextTime: number;
+};
+
+type SearchPageResult = {
+    items: Item[];
+    consumed: number;
+    hasMore: boolean;
+};
+
 
 // Helper function to get type label
 function getTypeLabel(type: ItemType, t: TFunction): string {
@@ -1098,6 +1112,48 @@ function itemFromPayload(i: any): Item {
         i.richHtml,
         Array.isArray(i.tags) ? i.tags : [],
     );
+}
+
+async function fetchSearchPage(
+    keywords: string,
+    label: string,
+    lastId: number,
+    lastTime: number,
+    limit: number,
+    isCurrent: () => boolean,
+): Promise<SearchPageResult | null> {
+    const items: Item[] = [];
+    let consumed = 0;
+    let hasMore = true;
+    let cursorId = lastId;
+    let cursorTime = lastTime;
+
+    while (items.length < limit && hasMore) {
+        if (!isCurrent()) return null;
+        const res = await invoke<string>('search', {
+            keywords,
+            lastId: cursorId,
+            lastTime: cursorTime,
+            limit: limit - items.length,
+            label,
+        });
+        if (!isCurrent()) return null;
+
+        const page = JSON.parse(res) as SearchPagePayload;
+        items.push(...page.list.map(itemFromPayload));
+        consumed += page.consumed;
+        hasMore = page.hasMore;
+        if (!hasMore || items.length >= limit) break;
+        if ((page.nextId === 0 && page.nextTime === 0)
+            || (page.nextId === cursorId && page.nextTime === cursorTime)) {
+            hasMore = false;
+            break;
+        }
+        cursorId = page.nextId;
+        cursorTime = page.nextTime;
+    }
+
+    return { items, consumed, hasMore };
 }
 
 function ImagePreview({ item, active, t, onGifFormatChange }: { item: Item, active: boolean, t: TFunction, onGifFormatChange: (isGif: boolean) => void }) {
@@ -2405,22 +2461,20 @@ export default function Clipboard() {
         try {
             const tagSearch = parseTagSearch(keywords);
             const label = mergeTagSearchFilter(tabLabelForBackend(tab), tagSearch.tagNames);
-            const res = await invoke<string>('search', {
-                keywords: tagSearch.keywords,
-                lastId: 0,
-                lastTime: 0,
-                limit: HISTORY_PAGE_LIMIT,
+            const page = await fetchSearchPage(
+                tagSearch.keywords,
                 label,
-            });
-            if (requestSeq !== searchRequestSeqRef.current) {
-                return;
-            }
-            const page = JSON.parse(res);
-            const items = page.list.map(itemFromPayload);
+                0,
+                0,
+                HISTORY_PAGE_LIMIT,
+                () => requestSeq === searchRequestSeqRef.current,
+            );
+            if (!page) return;
+            const items = page.items;
             pageListRef.current = items;
             lastHistoryFetchRef.current = { keywords, tab };
             setPage(new ClipboardPage(items, page.consumed));
-            setHasMoreHistory(items.length === HISTORY_PAGE_LIMIT);
+            setHasMoreHistory(page.hasMore);
             const selectedIndex = items.findIndex((item: Item) => item.getHash() === selectedRef.current);
             if (options.selectFirst || selectedIndex === -1) {
                 const firstHash = items[0]?.getHash() as string | undefined;
@@ -2451,22 +2505,24 @@ export default function Clipboard() {
         setIsLoadingMore(true);
         isLoadingMoreRef.current = true;
         try {
+            const requestSeq = searchRequestSeqRef.current;
             const tagSearch = parseTagSearch(searchWordRef.current);
             const label = mergeTagSearchFilter(tabLabelForBackend(activeTabRef.current), tagSearch.tagNames);
-            const res = await invoke<string>('search', {
-                keywords: tagSearch.keywords,
-                lastId: lastItem.getId(),
-                lastTime: lastItem.getTime(),
-                limit: HISTORY_PAGE_LIMIT,
+            const page = await fetchSearchPage(
+                tagSearch.keywords,
                 label,
-            });
-            const page = JSON.parse(res);
-            const nextItems = page.list.map(itemFromPayload);
+                lastItem.getId(),
+                lastItem.getTime(),
+                HISTORY_PAGE_LIMIT,
+                () => requestSeq === searchRequestSeqRef.current,
+            );
+            if (!page) return;
+            const nextItems = page.items;
             const existingHashes = new Set(currentList.map(item => item.getHash()));
             const merged = currentList.concat(nextItems.filter((item: Item) => !existingHashes.has(item.getHash())));
             pageListRef.current = merged;
             setPage(new ClipboardPage(merged, page.consumed));
-            setHasMoreHistory(nextItems.length === HISTORY_PAGE_LIMIT);
+            setHasMoreHistory(page.hasMore);
             scheduleImageClipboardCachePrewarm(nextItems);
         } catch (e) {
             error(`Failed to load more history: ${e}`);

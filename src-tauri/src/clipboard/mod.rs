@@ -460,11 +460,13 @@ pub fn search(
         last_time = i64::MAX as u64;
     }
     let mut items = Vec::new();
+    let mut next_cursor = None;
+    let has_more;
 
     if keywords.trim().is_empty() {
         let (search_sql, params) = build_filter_query(&filter, last_id, last_time, limit);
         let conn = db();
-        let prepare = conn.prepare(search_sql);
+        let prepare = conn.prepare(&search_sql);
         if prepare.is_err() {
             return Err(prepare.err().unwrap().to_string());
         }
@@ -475,16 +477,23 @@ pub fn search(
         for item in clipboard_iter {
             items.push(item.map_err(|err| err.to_string())?);
         }
+        next_cursor = items.last().map(|item| (item.id as u64, item.time));
+        has_more = items.len() == limit;
     } else {
         let mut seen_hashes = HashSet::new();
         let scan_limit = limit.max(5000);
-        let (search_sql, params) = build_filter_query(&filter, last_id, last_time, scan_limit);
         let conn = db();
-        let mut prepare = conn.prepare(search_sql).map_err(|err| err.to_string())?;
+        let (search_sql, params) = build_filter_query(&filter, last_id, last_time, scan_limit);
+        let mut prepare = conn.prepare(&search_sql).map_err(|err| err.to_string())?;
         let mut rows = prepare
             .query(params_from_iter(params))
             .map_err(|err| err.to_string())?;
+        let mut scanned = 0;
         while let Some(row) = rows.next().map_err(|err| err.to_string())? {
+            scanned += 1;
+            let row_id = row.get::<_, u64>("id").map_err(|err| err.to_string())?;
+            let row_time = row.get::<_, u64>("time").map_err(|err| err.to_string())?;
+            next_cursor = Some((row_id, row_time));
             if row_matches_keywords(row, keywords)? {
                 let item = convert_item(row).map_err(|err| err.to_string())?;
                 if seen_hashes.insert(item.hash.clone()) {
@@ -497,12 +506,17 @@ pub fn search(
         }
         items.sort_by(|a, b| b.time.cmp(&a.time).then_with(|| b.id.cmp(&a.id)));
         items.truncate(limit);
+        has_more = items.len() == limit || scanned == scan_limit;
     }
 
+    let (next_id, next_time) = next_cursor.unwrap_or((0, 0));
     // let count = conn.query_row("select count(*) from clipboard", [], |row| row.get(0)).expect("count clipoard error");
     Ok(Page {
         list: items,
         consumed: 0,
+        has_more,
+        next_id,
+        next_time,
     })
 }
 
@@ -631,8 +645,8 @@ fn build_filter_query(
     last_id: u64,
     last_time: u64,
     limit: usize,
-) -> (&'static str, Vec<Value>) {
-    let mut clauses = vec!["(time < ? or (time = ? and id < ?))"];
+) -> (String, Vec<Value>) {
+    let mut clauses = vec!["(time < ? or (time = ? and id < ?))".to_string()];
     let mut params = vec![
         Value::Integer(last_time as i64),
         Value::Integer(last_time as i64),
@@ -646,7 +660,7 @@ fn build_filter_query(
         "select * from clipboard where {} order by time desc, id desc limit ?",
         clauses.join(" and ")
     );
-    (Box::leak(sql.into_boxed_str()), params)
+    (sql, params)
 }
 
 fn filter_app_sources(filter: &SearchFilter) -> Vec<String> {
@@ -671,17 +685,13 @@ fn filter_app_sources(filter: &SearchFilter) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn apply_filter_clauses<'a>(
-    filter: &'a SearchFilter,
-    clauses: &mut Vec<&'a str>,
-    params: &mut Vec<Value>,
-) {
+fn apply_filter_clauses(filter: &SearchFilter, clauses: &mut Vec<String>, params: &mut Vec<Value>) {
     let mode = filter.mode.as_deref().unwrap_or("");
     if mode == "favorite" || filter.favorite == Some(true) {
-        clauses.push("label = ?");
+        clauses.push("label = ?".to_string());
         params.push(Value::Integer(1));
     } else if filter.favorite == Some(false) {
-        clauses.push("label <> ?");
+        clauses.push("label <> ?".to_string());
         params.push(Value::Integer(1));
     }
 
@@ -692,30 +702,27 @@ fn apply_filter_clauses<'a>(
         .filter(|value| !value.is_empty())
     {
         if item_type == "File" {
-            clauses.push("(item_type = ? or item_type = ?)");
+            clauses.push("(item_type = ? or item_type = ?)".to_string());
             params.push(Value::Text("File".to_string()));
             params.push(Value::Text("TextFile".to_string()));
         } else if item_type == "Text" {
-            clauses.push("(item_type = ? or item_type = ?)");
+            clauses.push("(item_type = ? or item_type = ?)".to_string());
             params.push(Value::Text("Text".to_string()));
             params.push(Value::Text("TextFile".to_string()));
         } else {
-            clauses.push("item_type = ?");
+            clauses.push("item_type = ?".to_string());
             params.push(Value::Text(item_type.to_string()));
         }
     }
 
     let app_sources = filter_app_sources(filter);
     if app_sources.len() == 1 {
-        clauses.push("app_source = ?");
+        clauses.push("app_source = ?".to_string());
         params.push(Value::Text(app_sources[0].clone()));
     } else if app_sources.len() > 1 {
-        clauses.push(Box::leak(
-            format!(
-                "app_source in ({})",
-                vec!["?"; app_sources.len()].join(", ")
-            )
-            .into_boxed_str(),
+        clauses.push(format!(
+            "app_source in ({})",
+            vec!["?"; app_sources.len()].join(", ")
         ));
         params.extend(app_sources.into_iter().map(Value::Text));
     }
@@ -724,7 +731,7 @@ fn apply_filter_clauses<'a>(
         if amount > 0 {
             if let Some(unit_ms) = relative_unit_millis(unit) {
                 let cutoff = Utc::now().timestamp_millis() as u64 - amount.saturating_mul(unit_ms);
-                clauses.push("time >= ?");
+                clauses.push("time >= ?".to_string());
                 params.push(Value::Integer(cutoff as i64));
             }
         }
@@ -737,7 +744,8 @@ fn apply_filter_clauses<'a>(
                 from clipboard_tags ct
                 join tags t on t.id = ct.tag_id
                 where ct.clipboard_id = clipboard.id and t.name = ? collate nocase
-            )",
+            )"
+            .to_string(),
         );
         params.push(Value::Text(tag_name));
     }
@@ -749,7 +757,8 @@ fn apply_filter_clauses<'a>(
                     select 1
                     from clipboard_tags ct
                     where ct.clipboard_id = clipboard.id and ct.tag_id = ?
-                )",
+                )"
+                .to_string(),
             );
             params.push(Value::Integer(tag_id));
         }
@@ -2488,6 +2497,36 @@ mod tests {
         crate::config::save(crate::config::Config::default());
     }
 
+    fn seed_search_history(total: usize, content_for_index: impl Fn(usize) -> String) {
+        crate::clipboard::db::init();
+        let mut conn = db();
+        let transaction = conn.transaction().unwrap();
+        {
+            let mut statement = transaction
+                .prepare(
+                    "
+                    insert into clipboard(
+                        hash, time, content, preview_content, item_type, search_index, source,
+                        app_source, app_icon_path, title_color, icon, label
+                    )
+                    values(?1, ?2, ?3, ?3, ?4, 1, ?3, '', '', '', '', 0)
+                    ",
+                )
+                .unwrap();
+            for index in 0..total {
+                statement
+                    .execute(params![
+                        format!("search-test-{index}"),
+                        (total - index) as i64,
+                        content_for_index(index),
+                        ItemType::Text.to_string(),
+                    ])
+                    .unwrap();
+            }
+        }
+        transaction.commit().unwrap();
+    }
+
     #[test]
     fn rich_text_symbol_hash_ignores_volatile_payload() {
         let first_html = b"<span data-copy-id=\"1\">&#10067;</span>".to_vec();
@@ -2616,6 +2655,88 @@ mod tests {
         assert!(old_item_removed);
         assert!(retained_item_exists);
         assert!(final_owner_removed_file);
+    }
+
+    #[test]
+    fn keyword_search_scans_beyond_first_candidate_batch() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        seed_search_history(5001, |index| {
+            if index == 5000 {
+                "old needle".to_string()
+            } else {
+                "other".to_string()
+            }
+        });
+
+        let first_batch = search("needle", 0, 0, 36, "__all").unwrap();
+        assert!(first_batch.list.is_empty());
+        assert!(first_batch.has_more);
+        assert_ne!((first_batch.next_id, first_batch.next_time), (0, 0));
+
+        let page = search(
+            "needle",
+            first_batch.next_id,
+            first_batch.next_time,
+            36,
+            "__all",
+        )
+        .unwrap();
+
+        assert_eq!(page.list.len(), 1);
+        assert_eq!(page.list[0].content, "old needle");
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn keyword_search_paginates_without_skipping_matches() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        seed_search_history(5040, |index| {
+            if index >= 5000 {
+                format!("needle-{index}")
+            } else {
+                "other".to_string()
+            }
+        });
+
+        let scan = search("needle", 0, 0, 36, "__all").unwrap();
+        assert!(scan.list.is_empty());
+        assert!(scan.has_more);
+        let first = search("needle", scan.next_id, scan.next_time, 36, "__all").unwrap();
+        assert_eq!(first.list.len(), 36);
+        assert!(first.has_more);
+        let second = search("needle", first.next_id, first.next_time, 36, "__all").unwrap();
+
+        assert_eq!(second.list.len(), 4);
+        assert!(!second.has_more);
+        let first_hashes = first
+            .list
+            .iter()
+            .map(|item| item.hash.as_str())
+            .collect::<HashSet<_>>();
+        assert!(second
+            .list
+            .iter()
+            .all(|item| !first_hashes.contains(item.hash.as_str())));
+    }
+
+    #[test]
+    fn filter_query_owns_dynamic_sql() {
+        let filter = SearchFilter {
+            app_sources: Some(vec!["Code".to_string(), "Terminal".to_string()]),
+            ..Default::default()
+        };
+
+        let (sql, params) = build_filter_query(&filter, i64::MAX as u64, i64::MAX as u64, 36);
+
+        let _: &String = &sql;
+        assert!(sql.contains("app_source in (?, ?)"));
+        assert_eq!(params.len(), 6);
     }
 }
 

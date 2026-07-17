@@ -1224,8 +1224,6 @@ pub fn rich_clipboard_meta(hash: &str) -> Option<RichClipboardMeta> {
 }
 
 pub fn delete_by_hash(hash: &str) -> Result<usize, String> {
-    use std::collections::HashSet;
-
     let conn = db();
     let candidate = conn
         .query_row(
@@ -1252,17 +1250,11 @@ pub fn delete_by_hash(hash: &str) -> Result<usize, String> {
         return Ok(0);
     };
 
-    engine::delete(&candidate.hash);
-    let mut paths_to_delete = HashSet::new();
-    for path in internal_paths_for_cleanup(
-        &candidate.item_type,
-        &candidate.hash,
-        &candidate.content,
-        &candidate.source,
-    ) {
-        paths_to_delete.insert(path);
-    }
+    let candidates = std::slice::from_ref(&candidate);
+    let paths_to_delete = internal_paths_for_candidates(candidates);
+    let retained_paths = internal_paths_referenced_by_survivors(candidates, &paths_to_delete)?;
 
+    engine::delete(&candidate.hash);
     conn.execute(
         "DELETE FROM clipboard_tags WHERE clipboard_id = ?1",
         [candidate.id],
@@ -1274,7 +1266,10 @@ pub fn delete_by_hash(hash: &str) -> Result<usize, String> {
         .map_err(|err| err.to_string())?;
 
     for path in paths_to_delete {
-        if path.is_file() && is_path_inside_history_storage(&path) {
+        if !retained_paths.contains(&path)
+            && path.is_file()
+            && is_path_inside_history_storage(&path)
+        {
             let _ = fs::remove_file(path);
         }
     }
@@ -1371,56 +1366,95 @@ fn cleanup_candidates(days: u64) -> Result<Vec<CleanupCandidate>, String> {
     Ok(candidates)
 }
 
-pub fn cleanup_estimate(days: u64) -> Result<CleanupEstimate, String> {
-    use std::collections::HashSet;
+fn internal_paths_for_candidates(candidates: &[CleanupCandidate]) -> HashSet<PathBuf> {
+    let mut paths = HashSet::new();
+    for candidate in candidates {
+        paths.extend(internal_paths_for_cleanup(
+            &candidate.item_type,
+            &candidate.hash,
+            &candidate.content,
+            &candidate.source,
+        ));
+    }
+    paths
+}
 
-    let candidates = cleanup_candidates(days)?;
-    let mut seen_paths = HashSet::new();
-    let mut bytes = 0_u64;
-
-    for candidate in &candidates {
+fn internal_paths_referenced_by_survivors(
+    candidates: &[CleanupCandidate],
+    paths_to_check: &HashSet<PathBuf>,
+) -> Result<HashSet<PathBuf>, String> {
+    if paths_to_check.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let candidate_ids = candidates
+        .iter()
+        .map(|candidate| candidate.id)
+        .collect::<HashSet<_>>();
+    let mut retained_paths = HashSet::new();
+    for candidate in cleanup_candidates(0)? {
+        if candidate_ids.contains(&candidate.id) {
+            continue;
+        }
         for path in internal_paths_for_cleanup(
             &candidate.item_type,
             &candidate.hash,
             &candidate.content,
             &candidate.source,
         ) {
-            if seen_paths.insert(path.clone()) {
-                bytes = bytes.saturating_add(
-                    fs::metadata(&path)
-                        .map(|metadata| metadata.len())
-                        .unwrap_or(0),
-                );
+            if paths_to_check.contains(&path) {
+                retained_paths.insert(path);
             }
         }
+        if retained_paths.len() == paths_to_check.len() {
+            break;
+        }
     }
+    Ok(retained_paths)
+}
 
-    Ok(CleanupEstimate {
+fn cleanup_estimate_for_candidates(
+    candidates: &[CleanupCandidate],
+    paths: &HashSet<PathBuf>,
+    retained_paths: &HashSet<PathBuf>,
+) -> CleanupEstimate {
+    let bytes = paths
+        .iter()
+        .filter(|path| !retained_paths.contains(*path))
+        .fold(0_u64, |total, path| {
+            total.saturating_add(
+                fs::metadata(path)
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0),
+            )
+        });
+    CleanupEstimate {
         bytes,
         items: candidates.len(),
-    })
+    }
+}
+
+pub fn cleanup_estimate(days: u64) -> Result<CleanupEstimate, String> {
+    let candidates = cleanup_candidates(days)?;
+    let paths = internal_paths_for_candidates(&candidates);
+    let retained_paths = internal_paths_referenced_by_survivors(&candidates, &paths)?;
+    Ok(cleanup_estimate_for_candidates(
+        &candidates,
+        &paths,
+        &retained_paths,
+    ))
 }
 
 pub fn cleanup_older_than(days: u64) -> Result<CleanupEstimate, String> {
-    use std::collections::HashSet;
-
     let candidates = cleanup_candidates(days)?;
-    let estimate = cleanup_estimate(days)?;
+    let paths_to_delete = internal_paths_for_candidates(&candidates);
+    let retained_paths = internal_paths_referenced_by_survivors(&candidates, &paths_to_delete)?;
+    let estimate = cleanup_estimate_for_candidates(&candidates, &paths_to_delete, &retained_paths);
     if candidates.is_empty() {
         return Ok(estimate);
     }
 
-    let mut paths_to_delete = HashSet::new();
     for candidate in &candidates {
         engine::delete(&candidate.hash);
-        for path in internal_paths_for_cleanup(
-            &candidate.item_type,
-            &candidate.hash,
-            &candidate.content,
-            &candidate.source,
-        ) {
-            paths_to_delete.insert(path);
-        }
     }
 
     let ids = candidates
@@ -1444,7 +1478,10 @@ pub fn cleanup_older_than(days: u64) -> Result<CleanupEstimate, String> {
     .map_err(|err| err.to_string())?;
 
     for path in paths_to_delete {
-        if path.is_file() && is_path_inside_history_storage(&path) {
+        if !retained_paths.contains(&path)
+            && path.is_file()
+            && is_path_inside_history_storage(&path)
+        {
             let _ = fs::remove_file(path);
         }
     }
@@ -2413,6 +2450,44 @@ mod tests {
     use super::*;
     use rusqlite::params;
 
+    fn seed_shared_link_preview(app_data: &tempfile::TempDir, old_time: u64) -> PathBuf {
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        let config = crate::config::Config {
+            storage_dir: app_data.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        crate::config::save(config);
+        crate::clipboard::db::init();
+
+        let preview_path = PathBuf::from(data_dir()).join("shared-link-preview");
+        secure_store::write_file(&preview_path, b"shared preview").unwrap();
+        let conn = db();
+        for (hash, time, url) in [
+            ("old-link", old_time, "https://example.com/old"),
+            (
+                "new-link",
+                current_timestamp_millis(),
+                "https://example.com/new",
+            ),
+        ] {
+            let content = format!("{url}|||{}|||Example|||icon", preview_path.display());
+            conn.execute(
+                "insert into clipboard(
+                    hash, time, content, preview_content, item_type, search_index, source,
+                    app_source, app_icon_path, title_color, icon, label
+                 ) values(?1, ?2, ?3, ?3, 'Link', 1, '', '', '', '', '', 0)",
+                params![hash, time as i64, secure_store::encrypt_text(&content)],
+            )
+            .unwrap();
+        }
+        preview_path
+    }
+
+    fn reset_test_storage_config() {
+        crate::config::save(crate::config::Config::default());
+    }
+
     #[test]
     fn rich_text_symbol_hash_ignores_volatile_payload() {
         let first_html = b"<span data-copy-id=\"1\">&#10067;</span>".to_vec();
@@ -2499,6 +2574,48 @@ mod tests {
         assert!(assign_tag(hash, urgent.id).is_err());
         let tags_after_delete = search("", 0, 0, 10, "__all").unwrap().list[0].tags.clone();
         assert!(tags_after_delete.is_empty());
+    }
+
+    #[test]
+    fn deleting_link_keeps_preview_file_referenced_by_another_item() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let preview_path = seed_shared_link_preview(&app_data, 1);
+
+        delete_by_hash("old-link").unwrap();
+        let shared_file_preserved = preview_path.exists();
+        let retained_item_exists = try_get_by_hash(&"new-link".to_string()).is_some();
+
+        delete_by_hash("new-link").unwrap();
+        let final_owner_removed_file = !preview_path.exists();
+        reset_test_storage_config();
+
+        assert!(shared_file_preserved);
+        assert!(retained_item_exists);
+        assert!(final_owner_removed_file);
+    }
+
+    #[test]
+    fn cleanup_keeps_preview_file_referenced_by_retained_item() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let preview_path = seed_shared_link_preview(&app_data, 1);
+
+        let first_cleanup = cleanup_older_than(30).unwrap();
+        let shared_file_preserved = preview_path.exists();
+        let old_item_removed = try_get_by_hash(&"old-link".to_string()).is_none();
+        let retained_item_exists = try_get_by_hash(&"new-link".to_string()).is_some();
+
+        cleanup_older_than(0).unwrap();
+        let final_owner_removed_file = !preview_path.exists();
+        reset_test_storage_config();
+
+        assert_eq!(first_cleanup.items, 1);
+        assert_eq!(first_cleanup.bytes, 0);
+        assert!(shared_file_preserved);
+        assert!(old_item_removed);
+        assert!(retained_item_exists);
+        assert!(final_owner_removed_file);
     }
 }
 

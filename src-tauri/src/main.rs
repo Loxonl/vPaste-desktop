@@ -696,6 +696,7 @@ fn current_window_logical_y(window: &tauri::WebviewWindow) -> Option<f64> {
     Some(position.y as f64 / scale_factor)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn animate_clipboard_window_y(
     window: &tauri::WebviewWindow,
     x: f64,
@@ -731,6 +732,72 @@ fn animate_clipboard_window_y(
         window
             .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }))
             .map_err(|err| err.to_string())?;
+
+        if progress >= 1.0 {
+            return Ok(true);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(
+            CLIPBOARD_ANIMATION_FRAME_MS,
+        ));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_macos_clipboard_window_position(
+    window: &tauri::WebviewWindow,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let animation_window = window.clone();
+    let (positioned_tx, positioned_rx) = std::sync::mpsc::sync_channel(1);
+    window
+        .run_on_main_thread(move || {
+            let result = animation_window
+                .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }))
+                .map_err(|err| err.to_string());
+            let _ = positioned_tx.send(result);
+        })
+        .map_err(|err| err.to_string())?;
+
+    positioned_rx
+        .recv()
+        .map_err(|err| format!("failed to update macOS clipboard window position: {err}"))?
+}
+
+#[cfg(target_os = "macos")]
+fn animate_clipboard_window_y(
+    window: &tauri::WebviewWindow,
+    x: f64,
+    from_y: f64,
+    to_y: f64,
+    duration_ms: u64,
+    generation: u64,
+    animation: ClipboardWindowAnimation,
+) -> Result<bool, String> {
+    if system_reduces_motion() || (from_y - to_y).abs() < 0.5 {
+        if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
+            return Ok(false);
+        }
+        window
+            .set_position(tauri::Position::Logical(tauri::LogicalPosition {
+                x,
+                y: to_y,
+            }))
+            .map_err(|err| err.to_string())?;
+        return Ok(true);
+    }
+
+    let started = Instant::now();
+    let duration = std::time::Duration::from_millis(duration_ms);
+    loop {
+        if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
+            return Ok(false);
+        }
+
+        let progress = (started.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0);
+        let eased = clipboard_window_animation_progress(progress, animation);
+        let y = from_y + (to_y - from_y) * eased;
+        set_macos_clipboard_window_position(window, x, y)?;
 
         if progress >= 1.0 {
             return Ok(true);
@@ -4603,17 +4670,15 @@ async fn cleanup_storage_history(days: u64) -> Result<StorageCleanupInfo, String
 
 #[tauri::command]
 fn get_config(app: tauri::AppHandle) -> String {
+    if let Err(err) = refresh_stored_autostart_from_system(&app) {
+        error!("Failed to refresh stored autostart status: {}", err);
+    }
+    serde_json::to_string(&config::get()).unwrap()
+}
+
+fn refresh_stored_autostart_from_system(app: &tauri::AppHandle) -> Result<bool, String> {
     let mut current = config::get();
-    let actual_startup = match check_autostart_enabled(&app) {
-        Ok(enabled) => enabled,
-        Err(err) => {
-            error!(
-                "Failed to read autostart status; reporting it as disabled: {}",
-                err
-            );
-            false
-        }
-    };
+    let actual_startup = check_autostart_enabled(app)?;
     if current.startup != actual_startup {
         info!(
             "Updating stored autostart preference from {} to actual status {}",
@@ -4622,7 +4687,7 @@ fn get_config(app: tauri::AppHandle) -> String {
         current.startup = actual_startup;
         config::save(current.clone());
     }
-    serde_json::to_string(&current).unwrap()
+    Ok(actual_startup)
 }
 
 #[tauri::command]
@@ -5366,7 +5431,8 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
 
     let registration_info =
         sync_main_window_shortcut(&app, previous_main_shortcut, next_main_shortcut)?;
-    if previous_config.startup != config_struct.startup {
+    let actual_startup = check_autostart_enabled(&app)?;
+    if actual_startup != config_struct.startup {
         let enabled = sync_autostart(&app, config_struct.startup)?;
         if enabled != config_struct.startup {
             return Err(if config_struct.startup {
@@ -7241,7 +7307,12 @@ fn main() {
             install_vpaste_tray(app.handle())?;
 
             // Register user-facing entry points before heavier startup maintenance.
+            #[cfg(target_os = "macos")]
+            if let Err(err) = refresh_stored_autostart_from_system(app.handle()) {
+                error!("Failed to refresh autostart status at startup: {}", err);
+            }
             let config = config::get();
+            #[cfg(not(target_os = "macos"))]
             if let Err(err) = sync_autostart(app.handle(), config.startup) {
                 error!("Failed to sync autostart at startup: {}", err);
             }

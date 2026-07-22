@@ -16,7 +16,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { info, error } from "@tauri-apps/plugin-log";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import aboutLogo from "../assets/about-logo.png";
+import aboutLogo from "../assets/vpaste-app-icon.png";
 import { DEFAULT_LANGUAGE, useLanguage } from "../lang";
 import { formatShortcutLabel, getModifierDisplayLabel, isMacPlatform } from "../shortcutDisplay";
 import { applyThemeMode, type ThemeMode } from "../theme";

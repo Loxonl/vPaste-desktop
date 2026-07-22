@@ -81,6 +81,7 @@ static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static TRAY_MENU_WATCHING: AtomicBool = AtomicBool::new(false);
 static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
+static TRAY_ICON_DARK: AtomicBool = AtomicBool::new(false);
 static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
 static PASTE_FALLBACK_NOTICE_GENERATION: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(target_os = "macos", debug_assertions))]
@@ -5445,6 +5446,7 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
     sync_tray_visibility(&app, config_struct.display_tray_icon)?;
 
     config::save(config_struct);
+    sync_tray_theme_for_mode(&app, &next_theme_mode);
     let _ = app.emit("language-changed", next_language);
     let _ = app.emit("theme-changed", next_theme_mode);
     if let Err(err) = ensure_history_storage_dirs() {
@@ -6859,8 +6861,46 @@ fn simulate_cmd_c() -> Result<(), String> {
     Ok(())
 }
 
-fn build_tray_icon(paused: bool) -> TauriImage<'static> {
-    match image::load_from_memory(include_bytes!("../icons/tray-icon.png")) {
+fn tray_uses_dark_icon(theme_mode: &str, system_dark: bool) -> bool {
+    match theme_mode {
+        "dark" => true,
+        "light" => false,
+        _ => system_dark,
+    }
+}
+
+#[cfg(test)]
+mod tray_theme_tests {
+    use super::tray_uses_dark_icon;
+
+    #[test]
+    fn explicit_theme_mode_controls_tray_icon() {
+        assert!(tray_uses_dark_icon("dark", false));
+        assert!(!tray_uses_dark_icon("light", true));
+    }
+
+    #[test]
+    fn system_and_unknown_modes_follow_system_theme() {
+        assert!(tray_uses_dark_icon("system", true));
+        assert!(!tray_uses_dark_icon("system", false));
+        assert!(tray_uses_dark_icon("unexpected", true));
+    }
+}
+
+fn system_uses_dark_theme(app: &tauri::AppHandle) -> bool {
+    app.webview_windows()
+        .values()
+        .find_map(|window| window.theme().ok())
+        .is_some_and(|theme| matches!(theme, tauri::Theme::Dark))
+}
+
+fn build_tray_icon(paused: bool, dark: bool) -> TauriImage<'static> {
+    let icon_bytes = if dark {
+        include_bytes!("../icons/tray-icon-dark.png").as_slice()
+    } else {
+        include_bytes!("../icons/tray-icon-light.png").as_slice()
+    };
+    match image::load_from_memory(icon_bytes) {
         Ok(image) => {
             let mut image = image.to_rgba8();
             if paused {
@@ -6920,9 +6960,9 @@ fn draw_pause_badge(image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) {
     }
 }
 
-fn update_tray_pause_appearance(app: &tauri::AppHandle, paused: bool) {
+fn update_tray_appearance(app: &tauri::AppHandle, paused: bool) {
     if let Some(tray) = app.tray_by_id(TRAY_ICON_ID) {
-        let icon = build_tray_icon(paused);
+        let icon = build_tray_icon(paused, TRAY_ICON_DARK.load(Ordering::SeqCst));
         if let Err(err) = tray.set_icon(Some(icon)) {
             error!("failed to update tray icon: {:?}", err);
         }
@@ -6933,9 +6973,15 @@ fn update_tray_pause_appearance(app: &tauri::AppHandle, paused: bool) {
     }
 }
 
+fn sync_tray_theme_for_mode(app: &tauri::AppHandle, theme_mode: &str) {
+    let dark = tray_uses_dark_icon(theme_mode, system_uses_dark_theme(app));
+    TRAY_ICON_DARK.store(dark, Ordering::SeqCst);
+    update_tray_appearance(app, CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst));
+}
+
 fn set_clipboard_history_paused_state(app: &tauri::AppHandle, paused: bool) -> bool {
     CLIPBOARD_HISTORY_PAUSED.store(paused, Ordering::SeqCst);
-    update_tray_pause_appearance(app, paused);
+    update_tray_appearance(app, paused);
     let _ = app.emit(
         "clipboard-history-pause-changed",
         ClipboardHistoryPausePayload { paused },
@@ -7018,7 +7064,10 @@ fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
 }
 
 fn install_vpaste_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let tray_icon = build_tray_icon(CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst));
+    let config = config::get();
+    let dark = tray_uses_dark_icon(&config.theme_mode, system_uses_dark_theme(app));
+    TRAY_ICON_DARK.store(dark, Ordering::SeqCst);
+    let tray_icon = build_tray_icon(CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst), dark);
 
     let _tray = tauri::tray::TrayIconBuilder::with_id(TRAY_ICON_ID)
         .icon(tray_icon)
@@ -7187,6 +7236,17 @@ fn main() {
                 .build(),
         )
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::ThemeChanged(theme) = event {
+                let config = config::get();
+                if config.theme_mode == "system" {
+                    let dark = matches!(*theme, tauri::Theme::Dark);
+                    TRAY_ICON_DARK.store(dark, Ordering::SeqCst);
+                    update_tray_appearance(
+                        window.app_handle(),
+                        CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst),
+                    );
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "config" {
                     api.prevent_close();

@@ -962,6 +962,7 @@ body {
   user-select: none;
   -webkit-user-select: none;
   touch-action: pan-y;
+  overscroll-behavior-x: none;
   scrollbar-width: none;
   /* Firefox */
   -ms-overflow-style: none;
@@ -970,6 +971,14 @@ body {
 
 .cards-container.dragging {
   cursor: grabbing;
+}
+
+.cards-container.wheel-scrolling .clipboard-card {
+  transition: none;
+}
+
+.cards-container.wheel-scrolling .card-item-tags-track {
+  animation-play-state: paused;
 }
 
 .cards-container.dragging .clipboard-card {
@@ -1155,8 +1164,8 @@ body {
   font-weight: 560;
 }
 
-.cards-container:not(.dragging) .clipboard-card:hover,
-.cards-container:not(.dragging) .clipboard-card.simulated-hover {
+.cards-container:not(.dragging):not(.wheel-scrolling) .clipboard-card:hover,
+.cards-container:not(.dragging):not(.wheel-scrolling) .clipboard-card.simulated-hover {
   transform: translateY(-3px);
   box-shadow: 0 16px 34px rgba(0, 0, 0, 0.15), inset 0 0 0 1px rgba(255, 255, 255, 0.68);
 }

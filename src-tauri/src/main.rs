@@ -1056,6 +1056,29 @@ fn focus_clipboard_window(window: &tauri::WebviewWindow, context: &str) {
     }
 }
 
+fn log_clipboard_window_state(window: &tauri::WebviewWindow, phase: &str, generation: Option<u64>) {
+    let visible = window.is_visible().ok();
+    let focused = window.is_focused().ok();
+    let position = window.outer_position().ok();
+    let size = window.inner_size().ok();
+    let url = window
+        .url()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|err| format!("unavailable:{err}"));
+    info!(
+        "[main-panel] phase={} generation={:?} tracked_visible={} tracked_hiding={} native_visible={:?} focused={:?} position={:?} size={:?} url={}",
+        phase,
+        generation,
+        CLIPBOARD_VISIBLE.load(Ordering::SeqCst),
+        CLIPBOARD_HIDING.load(Ordering::SeqCst),
+        visible,
+        focused,
+        position,
+        size,
+        url,
+    );
+}
+
 fn hide_clipboard_window(window: &tauri::WebviewWindow) {
     let generation = {
         let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
@@ -1082,6 +1105,7 @@ fn hide_clipboard_window(window: &tauri::WebviewWindow) {
 }
 
 fn show_clipboard_window(window: &tauri::WebviewWindow) {
+    log_clipboard_window_state(window, "show-request", None);
     let bounds = screen_bounds(window);
     let x = bounds.x - CLIPBOARD_HORIZONTAL_BLEED;
     let target_y = bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT;
@@ -1094,6 +1118,7 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if CLIPBOARD_VISIBLE.load(Ordering::SeqCst) && !CLIPBOARD_HIDING.load(Ordering::SeqCst) {
+            log_clipboard_window_state(window, "show-skipped-already-visible", None);
             return;
         }
 
@@ -1128,6 +1153,8 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
         CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
     }
 
+    log_clipboard_window_state(window, "native-window-shown", Some(generation));
+
     let cursor = cursor_physical_position().and_then(|cursor| {
         let scale_factor = window.scale_factor().ok()?;
         let target_x = (x * scale_factor).round() as i32;
@@ -1152,6 +1179,7 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
     }
 
     focus_clipboard_window(window, "show clipboard");
+    log_clipboard_window_state(window, "show-event-emitted-and-focused", Some(generation));
 
     let animation_window = window.clone();
     std::thread::spawn(move || {
@@ -1166,6 +1194,11 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
         ) {
             Ok(true) => {
                 let _ = animation_window.emit("window-show-complete", ());
+                log_clipboard_window_state(
+                    &animation_window,
+                    "show-animation-complete",
+                    Some(generation),
+                );
             }
             Ok(false) => info!("Skip stale clipboard show generation {}", generation),
             Err(err) => {
@@ -1565,6 +1598,40 @@ fn tab_editor_window_active(app: &tauri::AppHandle) -> bool {
                     || is_native_window_foreground(&window, "tab editor active guard"))
         })
         .unwrap_or(false)
+}
+
+fn emoji_picker_window_active(app: &tauri::AppHandle) -> bool {
+    app.get_webview_window("emojiPicker")
+        .map(|window| {
+            window.is_visible().unwrap_or(false)
+                && (window.is_focused().unwrap_or(false)
+                    || is_native_window_foreground(&window, "emoji picker active guard"))
+        })
+        .unwrap_or(false)
+}
+
+fn close_tag_editor_windows_after_focus_loss(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        if tab_editor_window_active(&app) || emoji_picker_window_active(&app) {
+            return;
+        }
+        if let Some(emoji_picker) = app.get_webview_window("emojiPicker") {
+            let _ = emoji_picker.hide();
+        }
+        if let Some(tab_editor) = app.get_webview_window("tabEditor") {
+            let _ = tab_editor.hide();
+        }
+        let clipboard_foreground =
+            app_window_is_foreground(&app, "clipboard", "tab editor blur clipboard guard");
+        let preview_foreground =
+            app_window_is_foreground(&app, "clipboardPreview", "tab editor blur preview guard");
+        if !clipboard_foreground && !preview_foreground {
+            if let Some(clipboard) = app.get_webview_window("clipboard") {
+                hide_clipboard_window(&clipboard);
+            }
+        }
+    });
 }
 
 #[cfg(target_os = "windows")]
@@ -2243,16 +2310,45 @@ fn open_tab_editor_window(
 #[tauri::command]
 fn open_emoji_picker_window(
     app: tauri::AppHandle,
-    x: f64,
-    y: f64,
+    anchor_x: f64,
+    anchor_y: f64,
     payload: String,
 ) -> Result<(), String> {
+    const PICKER_WIDTH: f64 = 262_f64;
+    const PICKER_HEIGHT: f64 = 148_f64;
+    const PICKER_GAP: f64 = 5_f64;
+    const SCREEN_MARGIN: f64 = 8_f64;
+    let tab_editor = app
+        .get_webview_window("tabEditor")
+        .ok_or_else(|| "tab editor window not found".to_string())?;
+    let scale_factor = tab_editor.scale_factor().map_err(|err| err.to_string())?;
+    let editor_origin = tab_editor
+        .outer_position()
+        .map_err(|err| err.to_string())?
+        .to_logical::<f64>(scale_factor);
+    let mut x = editor_origin.x + anchor_x - PICKER_WIDTH / 2_f64;
+    let mut y = editor_origin.y + anchor_y - PICKER_HEIGHT - PICKER_GAP;
+    if let Some(monitor) = tab_editor
+        .current_monitor()
+        .map_err(|err| err.to_string())?
+    {
+        let monitor_origin = monitor.position().to_logical::<f64>(scale_factor);
+        let monitor_size = monitor.size().to_logical::<f64>(scale_factor);
+        x = x.clamp(
+            monitor_origin.x + SCREEN_MARGIN,
+            monitor_origin.x + monitor_size.width - PICKER_WIDTH - SCREEN_MARGIN,
+        );
+        y = y.clamp(
+            monitor_origin.y + SCREEN_MARGIN,
+            monitor_origin.y + monitor_size.height - PICKER_HEIGHT - SCREEN_MARGIN,
+        );
+    }
     let window = app
         .get_webview_window("emojiPicker")
         .ok_or_else(|| "emoji picker window not found".to_string())?;
     let _ = window.set_size(tauri::Size::Logical(LogicalSize {
-        width: 262_f64,
-        height: 148_f64,
+        width: PICKER_WIDTH,
+        height: PICKER_HEIGHT,
     }));
     window
         .set_position(tauri::Position::Logical(LogicalPosition { x, y }))
@@ -7153,7 +7249,27 @@ fn main() {
 
     let context = tauri::generate_context!();
     info!("running vPaste");
-    tauri::Builder::default()
+    let builder = tauri::Builder::default().on_page_load(|webview, payload| {
+        info!(
+            "[renderer-lifecycle] label={} event={:?} url={}",
+            webview.label(),
+            payload.event(),
+            payload.url(),
+        );
+    });
+    #[cfg(target_os = "macos")]
+    let builder = builder.on_web_content_process_terminate(|webview| {
+        let url = webview
+            .url()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|err| format!("unavailable:{err}"));
+        error!(
+            "[renderer-process-terminated] label={} url={}",
+            webview.label(),
+            url,
+        );
+    });
+    builder
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("onboardingPermission") {
                 let _ = window.hide();
@@ -7187,6 +7303,23 @@ fn main() {
                 .build(),
         )
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(focused) = event {
+                if window.label() == "clipboard" {
+                    if let Some(clipboard_window) =
+                        window.app_handle().get_webview_window("clipboard")
+                    {
+                        log_clipboard_window_state(
+                            &clipboard_window,
+                            if *focused {
+                                "focus-gained"
+                            } else {
+                                "focus-lost"
+                            },
+                            Some(CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst)),
+                        );
+                    }
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "config" {
                     api.prevent_close();
@@ -7234,6 +7367,12 @@ fn main() {
             if let tauri::WindowEvent::Focused(false) = event {
                 if window.label() == "emojiPicker" {
                     let _ = window.hide();
+                    close_tag_editor_windows_after_focus_loss(window.app_handle().clone());
+                }
+            }
+            if let tauri::WindowEvent::Focused(false) = event {
+                if window.label() == "tabEditor" {
+                    close_tag_editor_windows_after_focus_loss(window.app_handle().clone());
                 }
             }
             if let tauri::WindowEvent::Focused(false) = event {

@@ -51,9 +51,6 @@ const PENDING_EMOJI_SELECTION_KEY = "vpaste.pendingEmojiSelection";
 const TAB_EDITOR_WIDTH = 286;
 const MIN_TAG_EDITOR_HEIGHT = 154;
 const MAX_TAG_EDITOR_HEIGHT = 520;
-const EMOJI_PICKER_WIDTH = 262;
-const EMOJI_PICKER_HEIGHT = 148;
-const FLOATING_GAP = 5;
 const RECORD_TAG_TAB_PREFIX = "record:";
 const DEFAULT_CUSTOM_FILTER: CustomTabFilter = {
     itemType: "",
@@ -266,17 +263,6 @@ export default function TabEditor() {
         const button = emojiButtonRef.current;
         if (!button) return;
         const rect = button.getBoundingClientRect();
-        const screenBounds = window.screen as Screen & { availLeft?: number; availTop?: number };
-        const availLeft = screenBounds.availLeft ?? 0;
-        const availTop = screenBounds.availTop ?? 0;
-        const x = Math.max(
-            availLeft,
-            Math.min(window.screenX + rect.left, availLeft + window.screen.availWidth - EMOJI_PICKER_WIDTH),
-        );
-        const y = Math.max(
-            availTop,
-            Math.min(window.screenY + rect.top - EMOJI_PICKER_HEIGHT - FLOATING_GAP, availTop + window.screen.availHeight - EMOJI_PICKER_HEIGHT),
-        );
         const payload = {
             selectedEmoji,
             languageCode,
@@ -284,7 +270,11 @@ export default function TabEditor() {
         localStorage.setItem(PENDING_EMOJI_PICKER_PAYLOAD_KEY, JSON.stringify(payload));
         setEmojiPickerOpen(true);
         setAppSourceOpen(false);
-        void invoke('open_emoji_picker_window', { x, y, payload: JSON.stringify(payload) })
+        void invoke('open_emoji_picker_window', {
+            anchorX: rect.left + rect.width / 2,
+            anchorY: rect.top,
+            payload: JSON.stringify(payload),
+        })
             .catch(e => {
                 setEmojiPickerOpen(false);
                 error(`Failed to open emoji picker: ${e}`);

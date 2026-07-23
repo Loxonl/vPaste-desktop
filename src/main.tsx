@@ -12,8 +12,10 @@ import Config from "./config/Config.tsx";
 import TrayMenu from "./tray/TrayMenu.tsx";
 import "./theme.css";
 import { installThemeSync } from "./theme.ts";
+import { installRendererDiagnostics, logRendererSnapshot } from "./rendererDiagnostics.ts";
 
 info(`Rendering app, path: ${window.location.pathname}`);
+installRendererDiagnostics();
 installThemeSync();
 
 function isEditableTarget(target: EventTarget | null) {
@@ -73,3 +75,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
         </Router>
     </React.StrictMode>,
 );
+
+window.requestAnimationFrame(() => {
+    logRendererSnapshot("react-first-frame");
+});

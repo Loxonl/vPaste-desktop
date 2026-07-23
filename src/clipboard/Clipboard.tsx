@@ -5,6 +5,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { desktopDir, downloadDir } from "@tauri-apps/api/path";
 import { error } from "@tauri-apps/plugin-log";
+import { logRendererSnapshot } from "../rendererDiagnostics";
 import { listen } from "@tauri-apps/api/event";
 import { Item, ItemTag, ItemType } from "./Item.tsx";
 import { formatRelativeTime, useLanguage } from "../lang";
@@ -324,8 +325,6 @@ type ItemTagsChangedPayload = {
 type TagCreateChoiceState = {
     x: number;
     y: number;
-    originX: number;
-    originY: number;
 } | null;
 const RECORD_TAG_TAB_PREFIX = "record:";
 const TAB_EDITOR_WIDTH = 286;
@@ -524,6 +523,21 @@ function floatingPositionFromClick(clientX: number, clientY: number, width: numb
     };
 }
 
+function floatingPositionFromAnchor(anchor: HTMLElement, width: number, height: number) {
+    const rect = anchor.getBoundingClientRect();
+    const centeredLeft = rect.left + rect.width / 2 - width / 2;
+    const below = rect.bottom + CONTEXT_MENU_GAP;
+    const above = rect.top - height - CONTEXT_MENU_GAP;
+    return {
+        x: clampToViewport(centeredLeft, width, window.innerWidth),
+        y: clampToViewport(
+            below + height <= window.innerHeight - VIEWPORT_MARGIN ? below : above,
+            height,
+            window.innerHeight,
+        ),
+    };
+}
+
 function clampToScreen(value: number, size: number, min: number, maxSize: number): number {
     return Math.max(min + VIEWPORT_MARGIN, Math.min(value, min + maxSize - size - VIEWPORT_MARGIN));
 }
@@ -553,7 +567,22 @@ function screenFloatingPositionFromAnchor(anchor: HTMLElement | null | undefined
     if (!rect) {
         return screenFloatingPositionFromClick(window.innerWidth - width - VIEWPORT_MARGIN, VIEWPORT_MARGIN, width, height);
     }
-    return screenAnchoredPositionFromClick(rect.right, rect.bottom, width, height);
+    const screenBounds = window.screen as Screen & { availLeft?: number; availTop?: number };
+    const availLeft = screenBounds.availLeft ?? 0;
+    const availTop = screenBounds.availTop ?? 0;
+    const centeredLeft = window.screenX + rect.left + rect.width / 2 - width / 2;
+    const below = window.screenY + rect.bottom + CONTEXT_MENU_GAP;
+    const above = window.screenY + rect.top - height - CONTEXT_MENU_GAP;
+    const availableBottom = availTop + window.screen.availHeight - VIEWPORT_MARGIN;
+    return {
+        x: clampToScreen(centeredLeft, width, availLeft, window.screen.availWidth),
+        y: clampToScreen(
+            below + height <= availableBottom ? below : above,
+            height,
+            availTop,
+            window.screen.availHeight,
+        ),
+    };
 }
 
 class ClipboardPage {
@@ -2251,11 +2280,11 @@ export default function Clipboard() {
         return tab ? customTabFilterPayload(tab) : "__all";
     };
 
-    const openTagCreateChoice = (clientX: number, clientY: number) => {
-        const position = floatingPositionFromClick(clientX, clientY, TAG_CREATE_CHOICE_WIDTH, TAG_CREATE_CHOICE_HEIGHT);
+    const openTagCreateChoice = (anchor: HTMLElement) => {
+        const position = floatingPositionFromAnchor(anchor, TAG_CREATE_CHOICE_WIDTH, TAG_CREATE_CHOICE_HEIGHT);
         setContextMenu(null);
         setTabContextMenu(null);
-        setTagCreateChoice({ ...position, originX: clientX, originY: clientY });
+        setTagCreateChoice(position);
     };
 
     const openTabEditorWindow = (mode: TabEditorMode, kind: TagEditorKind, tab?: CustomTab, recordTag?: ItemTag, anchor?: HTMLElement | null) => {
@@ -2605,6 +2634,20 @@ export default function Clipboard() {
 
     useEffect(() => {
         const unlistenShow = listen<{ x: number, y: number } | null>('window-show', event => {
+            logRendererSnapshot("clipboard-window-show-event", {
+                historyItems: pageListRef.current.length,
+                selectedHashPresent: Boolean(selectedRef.current),
+            });
+            window.setTimeout(() => {
+                logRendererSnapshot("clipboard-window-show-after-80ms", {
+                    historyItems: pageListRef.current.length,
+                });
+            }, 80);
+            window.setTimeout(() => {
+                logRendererSnapshot("clipboard-window-show-after-300ms", {
+                    historyItems: pageListRef.current.length,
+                });
+            }, 300);
             resetCardsPointerState();
             selectFirstLoadedItem(true);
             void applyShowPreferences();
@@ -2625,6 +2668,11 @@ export default function Clipboard() {
 
         const unlistenShowComplete = listen('window-show-complete', () => {
             setAnimationState('entered');
+            window.requestAnimationFrame(() => {
+                logRendererSnapshot("clipboard-window-show-complete", {
+                    historyItems: pageListRef.current.length,
+                });
+            });
         });
 
         const unlistenHide = listen('window-hide', () => {
@@ -3868,7 +3916,7 @@ export default function Clipboard() {
                             title={t("tabs.add")}
                             onClick={event => {
                                 event.stopPropagation();
-                                openTagCreateChoice(event.clientX, event.clientY);
+                                openTagCreateChoice(event.currentTarget);
                             }}
                         >
                             <AddIcon fontSize="small" />
@@ -4024,9 +4072,8 @@ export default function Clipboard() {
                     <button
                         type="button"
                         onClick={() => {
-                            const { originX, originY } = tagCreateChoice;
                             setTagCreateChoice(null);
-                            openTabEditorWindowAt("add", "filter", undefined, undefined, originX, originY);
+                            openTabEditorWindow("add", "filter", undefined, undefined, addTabButtonRef.current);
                         }}
                     >
                         <strong>{t("tabs.filterTag")}</strong>
@@ -4035,9 +4082,8 @@ export default function Clipboard() {
                     <button
                         type="button"
                         onClick={() => {
-                            const { originX, originY } = tagCreateChoice;
                             setTagCreateChoice(null);
-                            openTabEditorWindowAt("add", "record", undefined, undefined, originX, originY);
+                            openTabEditorWindow("add", "record", undefined, undefined, addTabButtonRef.current);
                         }}
                     >
                         <strong>{t("tabs.recordTag")}</strong>

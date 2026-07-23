@@ -23,7 +23,7 @@ import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
 import StarBorderOutlinedIcon from "@mui/icons-material/StarBorderOutlined";
 import TutorialOverlay, { TutorialFilterId, TutorialFilterTab, TutorialPermission, TutorialPermissionId, TutorialPlatform } from "./TutorialOverlay.tsx";
-import aboutLogo from "../assets/about-logo.png";
+import aboutLogo from "../assets/vpaste-app-icon.png";
 import { getResolvedTheme, getThemePreview, setThemePreview, type ResolvedTheme } from "../theme";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;

@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
 import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
-import aboutLogo from "../assets/about-logo.png";
+import aboutLogo from "../assets/vpaste-app-icon.png";
 import authorizeTips from "../assets/tutorial/authorize-tips.png";
 import backgroundAuthorizeTips from "../assets/tutorial/background-authorize-tips.png";
 import { useLanguage } from "../lang";

@@ -319,7 +319,7 @@ fn is_vpaste_source(app_source: &str) -> bool {
 pub fn vpaste_source_icon_path() -> Option<String> {
     let cache_dir = PathBuf::from(app_runtime_dir(&["app_icons"]));
     fs::create_dir_all(&cache_dir).ok()?;
-    let icon_path = cache_dir.join("vpaste-source-icon-v2.png");
+    let icon_path = cache_dir.join("vpaste-source-icon-v3.png");
     if !icon_path.exists() {
         fs::write(
             &icon_path,

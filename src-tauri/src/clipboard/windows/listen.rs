@@ -853,7 +853,7 @@ fn extract_process_icon_png(exe_path: &Path) -> Option<String> {
     let _ = fs::create_dir_all(&cache_dir);
 
     if is_vpaste_exe(exe_path) {
-        let icon_path = cache_dir.join("vpaste-source-icon-v2.png");
+        let icon_path = cache_dir.join("vpaste-source-icon-v3.png");
         if !icon_path.exists() {
             fs::write(
                 &icon_path,

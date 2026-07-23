@@ -31,6 +31,12 @@ const DEFAULT_PASTE_AS_TEXT_SHORTCUT = "Shift+Enter";
 const HISTORY_PAGE_LIMIT = 36;
 const HISTORY_DATA_URL_CACHE_LIMIT = 80;
 const ACTIVE_IMAGE_LOAD_DELAY_MS = 140;
+const WHEEL_LINE_DELTA_PX = 40;
+const WHEEL_MOUSE_TIME_CONSTANT_MS = 60;
+const WHEEL_PRECISION_TIME_CONSTANT_MS = 24;
+const WHEEL_SCROLL_IDLE_MS = 100;
+const WHEEL_SCROLL_STOP_EPSILON_PX = 0.35;
+const WHEEL_SCROLL_MAX_FRAME_MS = 34;
 const IMAGE_EXPORT_DIR_KEY = "vpaste.imageExportDir.v1";
 const PENDING_ITEM_TAGS_CHANGED_KEY = "vpaste.pendingItemTagsChangedPayload";
 const PENDING_PERMISSION_WINDOW_KEY = "vpaste.pendingOnboardingPermission.v1";
@@ -44,6 +50,18 @@ type HistoryImageMetadata = {
     height: number;
     isGif: boolean;
 };
+
+function normalizeWheelDelta(event: WheelEvent, pageSize: number): { delta: number; rawDelta: number } {
+    const rawDelta = Math.abs(event.deltaY) > Math.abs(event.deltaX)
+        ? event.deltaY
+        : event.deltaX;
+    const multiplier = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? WHEEL_LINE_DELTA_PX
+        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+            ? Math.max(1, pageSize)
+            : 1;
+    return { delta: rawDelta * multiplier, rawDelta };
+}
 
 type ToastKind = 'info' | 'warning' | 'error';
 
@@ -1746,8 +1764,16 @@ export default function Clipboard() {
     const scrollRefreshTimerRef = useRef<number | null>(null);
     const imagePrewarmTimerRef = useRef<number | null>(null);
     const lastLoadMoreCheckRef = useRef(0);
-    const wheelScrollDeltaRef = useRef(0);
-    const wheelScrollFrameRef = useRef<number | null>(null);
+    const wheelScrollingRef = useRef(false);
+    const wheelScrollIdleTimerRef = useRef<number | null>(null);
+    const wheelScrollStateRef = useRef({
+        target: 0,
+        frame: null as number | null,
+        lastFrameTime: null as number | null,
+        lastEventTime: 0,
+        timeConstant: WHEEL_MOUSE_TIME_CONSTANT_MS,
+    });
+    const cardsWheelHandlerRef = useRef<(event: WheelEvent) => void>(() => undefined);
     const searchDebounceTimerRef = useRef<number | null>(null);
     const searchRequestSeqRef = useRef(0);
     const lastHistoryFetchRef = useRef<{ keywords: string; tab: string } | null>(null);
@@ -2341,7 +2367,42 @@ export default function Clipboard() {
         }
     };
 
+    const deactivateWheelScrolling = () => {
+        wheelScrollIdleTimerRef.current = null;
+        wheelScrollingRef.current = false;
+        cardsContainerRef.current?.classList.remove('wheel-scrolling');
+    };
+
+    const scheduleWheelScrollIdle = () => {
+        if (wheelScrollIdleTimerRef.current !== null) {
+            window.clearTimeout(wheelScrollIdleTimerRef.current);
+        }
+        const elapsed = performance.now() - wheelScrollStateRef.current.lastEventTime;
+        wheelScrollIdleTimerRef.current = window.setTimeout(
+            deactivateWheelScrolling,
+            Math.max(0, WHEEL_SCROLL_IDLE_MS - elapsed),
+        );
+    };
+
+    const stopWheelScroll = () => {
+        const state = wheelScrollStateRef.current;
+        if (state.frame !== null) {
+            window.cancelAnimationFrame(state.frame);
+            state.frame = null;
+        }
+        if (wheelScrollIdleTimerRef.current !== null) {
+            window.clearTimeout(wheelScrollIdleTimerRef.current);
+            wheelScrollIdleTimerRef.current = null;
+        }
+        state.lastFrameTime = null;
+        state.target = cardsContainerRef.current?.scrollLeft ?? state.target;
+        if (wheelScrollingRef.current) {
+            deactivateWheelScrolling();
+        }
+    };
+
     const scrollCardIntoView = (index: number, behavior: ScrollBehavior = 'auto') => {
+        stopWheelScroll();
         const container = cardsContainerRef.current;
         const cards = container?.querySelectorAll<HTMLElement>('.clipboard-card');
         const card = cards?.item(index);
@@ -2594,6 +2655,7 @@ export default function Clipboard() {
     };
 
     const resetCardsPointerState = () => {
+        stopWheelScroll();
         const dragState = dragScrollRef.current;
         if (dragState?.frame !== null && dragState?.frame !== undefined) {
             window.cancelAnimationFrame(dragState.frame);
@@ -2748,9 +2810,13 @@ export default function Clipboard() {
             if (imagePrewarmTimerRef.current !== null) {
                 window.clearTimeout(imagePrewarmTimerRef.current);
             }
-            if (wheelScrollFrameRef.current !== null) {
-                window.cancelAnimationFrame(wheelScrollFrameRef.current);
-                wheelScrollFrameRef.current = null;
+            if (wheelScrollStateRef.current.frame !== null) {
+                window.cancelAnimationFrame(wheelScrollStateRef.current.frame);
+                wheelScrollStateRef.current.frame = null;
+            }
+            if (wheelScrollIdleTimerRef.current !== null) {
+                window.clearTimeout(wheelScrollIdleTimerRef.current);
+                wheelScrollIdleTimerRef.current = null;
             }
             if (searchDebounceTimerRef.current !== null) {
                 window.clearTimeout(searchDebounceTimerRef.current);
@@ -3474,12 +3540,14 @@ export default function Clipboard() {
     };
 
     const handleCardsPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-        if (event.button !== 0 || !event.isPrimary || isTextInputTarget(event.target)) return;
+        if (!event.isPrimary) return;
+        stopWheelScroll();
+        stopDragInertia();
+        if (event.button !== 0 || isTextInputTarget(event.target)) return;
         const target = event.target as HTMLElement;
         if (target.closest('button') || target.closest('.context-menu')) return;
         const targetCard = target.closest<HTMLElement>('.clipboard-card');
 
-        stopDragInertia();
         setContextMenu(null);
         event.currentTarget.setPointerCapture(event.pointerId);
         dragScrollRef.current = {
@@ -3571,44 +3639,118 @@ export default function Clipboard() {
         }
     };
 
+    const startWheelScrollAnimation = () => {
+        const state = wheelScrollStateRef.current;
+        if (state.frame !== null) return;
+
+        const step = (timestamp: number) => {
+            const nextContainer = cardsContainerRef.current;
+            if (!nextContainer) {
+                state.frame = null;
+                state.lastFrameTime = null;
+                scheduleWheelScrollIdle();
+                return;
+            }
+
+            const elapsed = state.lastFrameTime === null
+                ? 1000 / 60
+                : Math.min(WHEEL_SCROLL_MAX_FRAME_MS, Math.max(0, timestamp - state.lastFrameTime));
+            state.lastFrameTime = timestamp;
+            const remaining = state.target - nextContainer.scrollLeft;
+
+            if (Math.abs(remaining) <= WHEEL_SCROLL_STOP_EPSILON_PX) {
+                nextContainer.scrollLeft = state.target;
+                state.frame = null;
+                state.lastFrameTime = null;
+                maybeLoadMoreHistory();
+                scheduleWheelScrollIdle();
+                return;
+            }
+
+            const progress = 1 - Math.exp(-elapsed / state.timeConstant);
+            nextContainer.scrollLeft += remaining * progress;
+            maybeLoadMoreHistory();
+            state.frame = window.requestAnimationFrame(step);
+        };
+
+        state.frame = window.requestAnimationFrame(step);
+    };
+
     const handleCardsWheel = (event: WheelEvent) => {
-        if (tutorialActiveRef.current) return;
+        if (tutorialActiveRef.current || event.ctrlKey) return;
 
         setContextMenu(null);
         setTabContextMenu(null);
         const container = cardsContainerRef.current;
         if (!container) return;
 
-        const scrollAmount = Math.abs(event.deltaY) > Math.abs(event.deltaX)
-            ? event.deltaY
-            : event.deltaX;
+        const { delta: scrollAmount, rawDelta } = normalizeWheelDelta(event, container.clientWidth);
         if (scrollAmount === 0) return;
 
+        const maxScroll = Math.max(0, container.scrollWidth - container.clientWidth);
+        if (maxScroll === 0) return;
+
         event.preventDefault();
-        wheelScrollDeltaRef.current += scrollAmount;
-        if (wheelScrollFrameRef.current !== null) {
+        if (wheelScrollIdleTimerRef.current !== null) {
+            window.clearTimeout(wheelScrollIdleTimerRef.current);
+            wheelScrollIdleTimerRef.current = null;
+        }
+        if (!wheelScrollingRef.current) {
+            wheelScrollingRef.current = true;
+            container.classList.add('wheel-scrolling');
+        }
+
+        const state = wheelScrollStateRef.current;
+        const now = performance.now();
+        const eventInterval = now - state.lastEventTime;
+        state.lastEventTime = now;
+
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+            if (state.frame !== null) {
+                window.cancelAnimationFrame(state.frame);
+                state.frame = null;
+            }
+            state.lastFrameTime = null;
+            state.target = Math.max(0, Math.min(maxScroll, container.scrollLeft + scrollAmount));
+            container.scrollLeft = state.target;
+            maybeLoadMoreHistory();
+            scheduleWheelScrollIdle();
             return;
         }
-        wheelScrollFrameRef.current = window.requestAnimationFrame(() => {
-            wheelScrollFrameRef.current = null;
-            const nextDelta = wheelScrollDeltaRef.current;
-            wheelScrollDeltaRef.current = 0;
-            const nextContainer = cardsContainerRef.current;
-            if (!nextContainer || nextDelta === 0) return;
-            nextContainer.scrollLeft += nextDelta;
-            maybeLoadMoreHistory();
-        });
+
+        if (state.frame === null) {
+            state.target = container.scrollLeft;
+            state.lastFrameTime = null;
+        }
+        const remaining = state.target - container.scrollLeft;
+        if (remaining !== 0 && Math.sign(remaining) !== Math.sign(scrollAmount)) {
+            state.target = container.scrollLeft;
+        }
+        state.target = Math.max(0, Math.min(maxScroll, state.target + scrollAmount));
+
+        const precisionInput = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL && (
+            Math.abs(rawDelta) < 50
+            || !Number.isInteger(rawDelta)
+            || (eventInterval > 0 && eventInterval < 24 && Math.abs(rawDelta) < 100)
+        );
+        state.timeConstant = precisionInput
+            ? WHEEL_PRECISION_TIME_CONSTANT_MS
+            : WHEEL_MOUSE_TIME_CONSTANT_MS;
+        startWheelScrollAnimation();
     };
+
+    cardsWheelHandlerRef.current = handleCardsWheel;
 
     useEffect(() => {
         const container = cardsContainerRef.current;
         if (!container) return;
 
-        container.addEventListener('wheel', handleCardsWheel, { passive: false });
+        const handleWheel = (event: WheelEvent) => cardsWheelHandlerRef.current(event);
+        container.addEventListener('wheel', handleWheel, { passive: false });
         return () => {
-            container.removeEventListener('wheel', handleCardsWheel);
+            container.removeEventListener('wheel', handleWheel);
         };
-    });
+    }, []);
 
     const openConfigWindow = async () => {
         try {

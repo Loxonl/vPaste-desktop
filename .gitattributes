@@ -1,0 +1,17 @@
+# Keep text files consistent across operating systems and local Git settings.
+* text=auto eol=lf
+
+# Windows command scripts require CRLF line endings.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets must never be modified by line-ending normalization.
+*.bmp binary
+*.gif binary
+*.icns binary
+*.ico binary
+*.jpeg binary
+*.jpg binary
+*.pdf binary
+*.png binary
+*.webp binary

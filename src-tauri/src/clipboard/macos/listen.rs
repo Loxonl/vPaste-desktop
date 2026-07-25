@@ -5,6 +5,7 @@ use arboard::Clipboard;
 use cocoa::base::{id, nil};
 use cocoa::foundation::NSString;
 use log::{error, info};
+use objc::rc::autoreleasepool;
 use objc::{class, msg_send, sel, sel_impl};
 use scraper::Html;
 use std::collections::HashMap;
@@ -55,7 +56,7 @@ fn is_ignored_app_source(app_source: &str) -> bool {
 
 pub fn start(window: WebviewWindow) {
     thread::spawn(move || {
-        let mut system_clipboard = match Clipboard::new() {
+        let mut system_clipboard = match autoreleasepool(Clipboard::new) {
             Ok(c) => c,
             Err(e) => {
                 error!("Failed to initialize clipboard: {}", e);
@@ -63,40 +64,49 @@ pub fn start(window: WebviewWindow) {
             }
         };
 
-        let mut last_change_count = pasteboard_change_count();
+        let mut last_change_count = autoreleasepool(pasteboard_change_count);
 
         loop {
-            if CLIPBOARD_IGNORE_NEXT_CHANGE.swap(false, Ordering::SeqCst) {
-                info!("skip internal clipboard change");
-                last_change_count = pasteboard_change_count();
-                thread::sleep(Duration::from_millis(CLIPBOARD_POLL_INTERVAL_MS));
-                continue;
-            }
-
-            let current_change_count = pasteboard_change_count();
-            if current_change_count == last_change_count {
-                thread::sleep(Duration::from_millis(CLIPBOARD_POLL_INTERVAL_MS));
-                continue;
-            }
-            last_change_count = current_change_count;
-
-            if is_clipboard_history_paused() {
-                info!("skip clipboard history while recording is paused");
-                thread::sleep(Duration::from_millis(CLIPBOARD_POLL_INTERVAL_MS));
-                continue;
-            }
-
-            let start = Instant::now();
-            if parse_with_retry(&mut system_clipboard) {
-                info!("clipboard parsed in {}ms", start.elapsed().as_millis());
+            // Cocoa returns autoreleased pasteboard, workspace, image, and data objects.
+            // Drain them before this long-lived listener thread goes back to sleep.
+            let should_emit = autoreleasepool(|| {
+                poll_clipboard_once(&mut system_clipboard, &mut last_change_count)
+            });
+            if should_emit {
                 emit_clipboard_event(&window);
-            } else {
-                info!("clipboard ignored in {}ms", start.elapsed().as_millis());
             }
 
             thread::sleep(Duration::from_millis(CLIPBOARD_POLL_INTERVAL_MS));
         }
     });
+}
+
+fn poll_clipboard_once(system_clipboard: &mut Clipboard, last_change_count: &mut isize) -> bool {
+    if CLIPBOARD_IGNORE_NEXT_CHANGE.swap(false, Ordering::SeqCst) {
+        info!("skip internal clipboard change");
+        *last_change_count = pasteboard_change_count();
+        return false;
+    }
+
+    let current_change_count = pasteboard_change_count();
+    if current_change_count == *last_change_count {
+        return false;
+    }
+    *last_change_count = current_change_count;
+
+    if is_clipboard_history_paused() {
+        info!("skip clipboard history while recording is paused");
+        return false;
+    }
+
+    let start = Instant::now();
+    if parse_with_retry(system_clipboard) {
+        info!("clipboard parsed in {}ms", start.elapsed().as_millis());
+        true
+    } else {
+        info!("clipboard ignored in {}ms", start.elapsed().as_millis());
+        false
+    }
 }
 
 fn parse_with_retry(system_clipboard: &mut Clipboard) -> bool {

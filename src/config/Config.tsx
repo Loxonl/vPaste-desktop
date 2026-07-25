@@ -16,7 +16,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { info, error } from "@tauri-apps/plugin-log";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import aboutLogo from "../assets/vpaste-app-icon.png";
+import appIcon from "../assets/vpaste-app-icon.png";
 import { DEFAULT_LANGUAGE, useLanguage } from "../lang";
 import { formatShortcutLabel, getModifierDisplayLabel, isMacPlatform } from "../shortcutDisplay";
 import { applyThemeMode, type ThemeMode } from "../theme";
@@ -1638,7 +1638,7 @@ function AboutSettings({ dir: _dir, t }: SettingsProps & { dir: string }) {
         <Stack spacing={2.25} sx={PAGE_STACK_SX}>
             <Box className="about-hero">
                 <div className="about-logo-tile">
-                    <img src={aboutLogo} alt="vPaste" />
+                    <img src={appIcon} alt="vPaste" />
                 </div>
                 <div className="about-copy">
                     <Typography variant="h5" sx={{ fontWeight: 700, color: 'var(--settings-title)', letterSpacing: 0 }}>

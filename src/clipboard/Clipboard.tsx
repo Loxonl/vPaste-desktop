@@ -23,7 +23,7 @@ import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
 import StarBorderOutlinedIcon from "@mui/icons-material/StarBorderOutlined";
 import TutorialOverlay, { TutorialFilterId, TutorialFilterTab, TutorialPermission, TutorialPermissionId, TutorialPlatform } from "./TutorialOverlay.tsx";
-import aboutLogo from "../assets/vpaste-app-icon.png";
+import brandLogo from "../assets/vpaste-logo-master.svg";
 import { getResolvedTheme, getThemePreview, setThemePreview, type ResolvedTheme } from "../theme";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
@@ -4125,7 +4125,7 @@ export default function Clipboard() {
                     <TutorialOverlay
                         key={tutorialRunId}
                         t={t}
-                        logoSrc={aboutLogo}
+                        logoSrc={brandLogo}
                         shortcutText={tutorialShortcutText}
                         platform={tutorialPlatform}
                         permissions={tutorialPermissions}

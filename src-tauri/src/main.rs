@@ -81,6 +81,7 @@ static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static TRAY_MENU_WATCHING: AtomicBool = AtomicBool::new(false);
 static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "linux")]
 static TRAY_ICON_DARK: AtomicBool = AtomicBool::new(false);
 static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
 static PASTE_FALLBACK_NOTICE_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -6861,6 +6862,7 @@ fn simulate_cmd_c() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn tray_uses_dark_icon(theme_mode: &str, system_dark: bool) -> bool {
     match theme_mode {
         "dark" => true,
@@ -6869,7 +6871,7 @@ fn tray_uses_dark_icon(theme_mode: &str, system_dark: bool) -> bool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tray_theme_tests {
     use super::tray_uses_dark_icon;
 
@@ -6887,6 +6889,7 @@ mod tray_theme_tests {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn system_uses_dark_theme(app: &tauri::AppHandle) -> bool {
     app.webview_windows()
         .values()
@@ -6895,6 +6898,15 @@ fn system_uses_dark_theme(app: &tauri::AppHandle) -> bool {
 }
 
 fn build_tray_icon(paused: bool, dark: bool) -> TauriImage<'static> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    let _ = dark;
+    #[cfg(target_os = "windows")]
+    let icon_bytes = include_bytes!("../icons/tray-icon.png").as_slice();
+    // macOS treats this monochrome source as a template image and automatically
+    // renders it black or white to match the current menu bar appearance.
+    #[cfg(target_os = "macos")]
+    let icon_bytes = include_bytes!("../icons/tray-icon-light.png").as_slice();
+    #[cfg(target_os = "linux")]
     let icon_bytes = if dark {
         include_bytes!("../icons/tray-icon-dark.png").as_slice()
     } else {
@@ -6962,8 +6974,15 @@ fn draw_pause_badge(image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) {
 
 fn update_tray_appearance(app: &tauri::AppHandle, paused: bool) {
     if let Some(tray) = app.tray_by_id(TRAY_ICON_ID) {
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        let icon = build_tray_icon(paused, false);
+        #[cfg(target_os = "linux")]
         let icon = build_tray_icon(paused, TRAY_ICON_DARK.load(Ordering::SeqCst));
-        if let Err(err) = tray.set_icon(Some(icon)) {
+        #[cfg(target_os = "macos")]
+        let icon_result = tray.set_icon_with_as_template(Some(icon), true);
+        #[cfg(not(target_os = "macos"))]
+        let icon_result = tray.set_icon(Some(icon));
+        if let Err(err) = icon_result {
             error!("failed to update tray icon: {:?}", err);
         }
         let tooltip = if paused { "vPaste - Paused" } else { "vPaste" };
@@ -6973,6 +6992,10 @@ fn update_tray_appearance(app: &tauri::AppHandle, paused: bool) {
     }
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn sync_tray_theme_for_mode(_app: &tauri::AppHandle, _theme_mode: &str) {}
+
+#[cfg(target_os = "linux")]
 fn sync_tray_theme_for_mode(app: &tauri::AppHandle, theme_mode: &str) {
     let dark = tray_uses_dark_icon(theme_mode, system_uses_dark_theme(app));
     TRAY_ICON_DARK.store(dark, Ordering::SeqCst);
@@ -7064,12 +7087,19 @@ fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
 }
 
 fn install_vpaste_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let config = config::get();
-    let dark = tray_uses_dark_icon(&config.theme_mode, system_uses_dark_theme(app));
-    TRAY_ICON_DARK.store(dark, Ordering::SeqCst);
-    let tray_icon = build_tray_icon(CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst), dark);
+    #[cfg(target_os = "windows")]
+    let tray_icon = build_tray_icon(CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst), false);
+    #[cfg(target_os = "macos")]
+    let tray_icon = build_tray_icon(CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst), false);
+    #[cfg(target_os = "linux")]
+    let tray_icon = {
+        let config = config::get();
+        let dark = tray_uses_dark_icon(&config.theme_mode, system_uses_dark_theme(app));
+        TRAY_ICON_DARK.store(dark, Ordering::SeqCst);
+        build_tray_icon(CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst), dark)
+    };
 
-    let _tray = tauri::tray::TrayIconBuilder::with_id(TRAY_ICON_ID)
+    let tray_builder = tauri::tray::TrayIconBuilder::with_id(TRAY_ICON_ID)
         .icon(tray_icon)
         .tooltip("vPaste")
         .on_tray_icon_event(|tray, event| {
@@ -7087,8 +7117,10 @@ fn install_vpaste_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     show_vpaste_tray_menu(app, rect);
                 }
             }
-        })
-        .build(app)?;
+        });
+    #[cfg(target_os = "macos")]
+    let tray_builder = tray_builder.icon_as_template(true);
+    let _tray = tray_builder.build(app)?;
 
     TRAY_ICON_VISIBLE.store(true, Ordering::SeqCst);
     Ok(())
@@ -7236,6 +7268,7 @@ fn main() {
                 .build(),
         )
         .on_window_event(|window, event| {
+            #[cfg(target_os = "linux")]
             if let tauri::WindowEvent::ThemeChanged(theme) = event {
                 let config = config::get();
                 if config.theme_mode == "system" {

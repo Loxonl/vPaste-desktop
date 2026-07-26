@@ -113,6 +113,7 @@ const DEVELOPER_MODE_ARG: &str = "--dev-mode";
 const PREVIEW_WINDOW_WIDTH: f64 = 760.0;
 const PREVIEW_WINDOW_HEIGHT: f64 = 560.0;
 const PREVIEW_IMAGE_MIN_WIDTH: f64 = 420.0;
+const ROUNDED_WINDOW_RADIUS: f64 = 12.0;
 
 fn developer_mode_enabled_for_args<I, S>(args: I, debug_build: bool) -> bool
 where
@@ -891,6 +892,69 @@ mod clipboard_window_animation_tests {
 }
 
 #[cfg(target_os = "windows")]
+fn apply_windows_rounded_window_region(
+    window: &tauri::WebviewWindow,
+    radius: f64,
+) -> Result<(), String> {
+    use std::ffi::c_void;
+
+    type Hwnd = *mut c_void;
+    type Hrgn = *mut c_void;
+
+    #[link(name = "gdi32")]
+    extern "system" {
+        fn CreateRoundRectRgn(
+            left: i32,
+            top: i32,
+            right: i32,
+            bottom: i32,
+            width_ellipse: i32,
+            height_ellipse: i32,
+        ) -> Hrgn;
+        fn DeleteObject(object: Hrgn) -> i32;
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetWindowRgn(hwnd: Hwnd, region: Hrgn, redraw: i32) -> i32;
+    }
+
+    let size = window.outer_size().map_err(|err| err.to_string())?;
+    if size.width == 0 || size.height == 0 {
+        return Ok(());
+    }
+    let scale_factor = window.scale_factor().map_err(|err| err.to_string())?;
+    let diameter = (radius * 2_f64 * scale_factor).round().max(1_f64) as i32;
+    let width = i32::try_from(size.width).map_err(|_| "window width exceeds i32".to_string())?;
+    let height = i32::try_from(size.height).map_err(|_| "window height exceeds i32".to_string())?;
+    let hwnd = window.hwnd().map_err(|err| err.to_string())?;
+
+    let region = unsafe {
+        CreateRoundRectRgn(
+            0,
+            0,
+            width.saturating_add(1),
+            height.saturating_add(1),
+            diameter,
+            diameter,
+        )
+    };
+    if region.is_null() {
+        return Err("CreateRoundRectRgn failed".to_string());
+    }
+
+    // Windows owns the region after a successful SetWindowRgn call.
+    if unsafe { SetWindowRgn(hwnd.0 as Hwnd, region, 1) } == 0 {
+        unsafe {
+            let _ = DeleteObject(region);
+        }
+        return Err("SetWindowRgn failed".to_string());
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 fn is_native_window_foreground(window: &tauri::WebviewWindow, _context: &str) -> bool {
     use std::ffi::c_void;
 
@@ -1445,6 +1509,8 @@ fn complete_onboarding(app: tauri::AppHandle) -> Result<(), String> {
 
 fn get_or_create_preview_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
     if let Some(window) = app.get_webview_window("clipboardPreview") {
+        #[cfg(target_os = "windows")]
+        apply_windows_rounded_window_region(&window, ROUNDED_WINDOW_RADIUS)?;
         return Ok(window);
     }
 
@@ -1453,7 +1519,8 @@ fn get_or_create_preview_window(app: &tauri::AppHandle) -> Result<tauri::Webview
         .visible(false)
         .focused(false)
         .decorations(false)
-        .transparent(false)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
         .skip_taskbar(true)
         .always_on_top(true)
         .resizable(true)
@@ -1461,6 +1528,10 @@ fn get_or_create_preview_window(app: &tauri::AppHandle) -> Result<tauri::Webview
         .build()
         .inspect(|window| {
             apply_vpaste_window_icon(window);
+            #[cfg(target_os = "windows")]
+            if let Err(err) = apply_windows_rounded_window_region(window, ROUNDED_WINDOW_RADIUS) {
+                error!("Failed to round preview window: {}", err);
+            }
             #[cfg(target_os = "macos")]
             set_macos_window_level(window, 102); // Above NSPopUpMenuWindowLevel
         })
@@ -1989,6 +2060,8 @@ fn show_preview_window(
             height: size.height,
         }))
         .map_err(|err| err.to_string())?;
+    #[cfg(target_os = "windows")]
+    apply_windows_rounded_window_region(&window, ROUNDED_WINDOW_RADIUS)?;
     let position = preview_position_avoiding_clipboard(&app, bounds, size);
     window
         .set_position(tauri::Position::Logical(position))
@@ -2245,19 +2318,64 @@ fn open_tab_editor_window(
 #[tauri::command]
 fn open_emoji_picker_window(
     app: tauri::AppHandle,
-    x: f64,
-    y: f64,
+    anchor_left: f64,
+    anchor_top: f64,
+    anchor_right: f64,
     payload: String,
 ) -> Result<(), String> {
+    const PICKER_WIDTH: f64 = 262_f64;
+    const PICKER_HEIGHT: f64 = 148_f64;
+    const PICKER_GAP: f64 = 5_f64;
+    const SCREEN_MARGIN: f64 = 8_f64;
+
+    let editor = app
+        .get_webview_window("tabEditor")
+        .ok_or_else(|| "tab editor window not found".to_string())?;
     let window = app
         .get_webview_window("emojiPicker")
         .ok_or_else(|| "emoji picker window not found".to_string())?;
+
+    let editor_position = editor.outer_position().map_err(|err| err.to_string())?;
+    let scale_factor = editor.scale_factor().map_err(|err| err.to_string())?;
+    let picker_width = PICKER_WIDTH * scale_factor;
+    let picker_height = PICKER_HEIGHT * scale_factor;
+    let gap = PICKER_GAP * scale_factor;
+    let margin = SCREEN_MARGIN * scale_factor;
+    let button_left = editor_position.x as f64 + anchor_left * scale_factor;
+    let button_top = editor_position.y as f64 + anchor_top * scale_factor;
+    let button_right = editor_position.x as f64 + anchor_right * scale_factor;
+
+    let monitor = editor
+        .current_monitor()
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "tab editor monitor not found".to_string())?;
+    let monitor_position = monitor.position();
+    let monitor_size = monitor.size();
+    let min_x = monitor_position.x as f64 + margin;
+    let min_y = monitor_position.y as f64 + margin;
+    let max_x = monitor_position.x as f64 + monitor_size.width as f64 - picker_width - margin;
+    let max_y = monitor_position.y as f64 + monitor_size.height as f64 - picker_height - margin;
+
+    let left_x = button_left - picker_width - gap;
+    let right_x = button_right + gap;
+    let x = if left_x >= min_x {
+        left_x
+    } else if right_x <= max_x {
+        right_x
+    } else {
+        button_left.clamp(min_x, max_x.max(min_x))
+    };
+    let y = button_top.clamp(min_y, max_y.max(min_y));
+
     let _ = window.set_size(tauri::Size::Logical(LogicalSize {
-        width: 262_f64,
-        height: 148_f64,
+        width: PICKER_WIDTH,
+        height: PICKER_HEIGHT,
     }));
     window
-        .set_position(tauri::Position::Logical(LogicalPosition { x, y }))
+        .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+            x: x.round() as i32,
+            y: y.round() as i32,
+        }))
         .map_err(|err| err.to_string())?;
     window.show().map_err(|err| err.to_string())?;
     let _ = activate_native_window(&window, "emoji picker open");
@@ -7268,6 +7386,16 @@ fn main() {
                 .build(),
         )
         .on_window_event(|window, event| {
+            #[cfg(target_os = "windows")]
+            if let tauri::WindowEvent::Resized(_) = event {
+                if matches!(window.label(), "config" | "clipboardPreview") {
+                    if let Err(err) =
+                        apply_windows_rounded_window_region(window, ROUNDED_WINDOW_RADIUS)
+                    {
+                        error!("Failed to update rounded window region: {}", err);
+                    }
+                }
+            }
             #[cfg(target_os = "linux")]
             if let tauri::WindowEvent::ThemeChanged(theme) = event {
                 let config = config::get();
@@ -7478,11 +7606,18 @@ fn main() {
                 {
                     use window_vibrancy::apply_acrylic;
                     let _ = apply_acrylic(&config_window, Some((232, 235, 229, 30)));
+                    if let Err(err) =
+                        apply_windows_rounded_window_region(&config_window, ROUNDED_WINDOW_RADIUS)
+                    {
+                        error!("Failed to round config window: {}", err);
+                    }
                 }
                 #[cfg(target_os = "macos")]
                 {
                     let window_clone = config_window.clone();
                     let _ = config_window.run_on_main_thread(move || {
+                        use cocoa::base::id;
+                        use objc::{msg_send, sel, sel_impl};
                         use window_vibrancy::{
                             apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState,
                         };
@@ -7490,9 +7625,17 @@ fn main() {
                             &window_clone,
                             NSVisualEffectMaterial::Sidebar,
                             Some(NSVisualEffectState::Active),
-                            None,
+                            Some(ROUNDED_WINDOW_RADIUS),
                         ) {
                             error!("apply_vibrancy error for config: {:?}", e);
+                        }
+                        if let Ok(ns_window) = window_clone.ns_window() {
+                            unsafe {
+                                if !ns_window.is_null() {
+                                    let ns_window = ns_window as id;
+                                    let _: () = msg_send![ns_window, invalidateShadow];
+                                }
+                            }
                         }
                     });
                 }
@@ -7606,7 +7749,8 @@ fn main() {
                         .visible(false)
                         .focused(false)
                         .decorations(false)
-                        .background_color(tauri::window::Color(250, 250, 248, 255))
+                        .transparent(true)
+                        .background_color(tauri::window::Color(0, 0, 0, 0))
                         .skip_taskbar(true)
                         .always_on_top(true)
                         .resizable(false)

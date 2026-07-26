@@ -1446,6 +1446,9 @@ body {
 .card-preview-rich * {
   max-width: none;
   box-sizing: border-box;
+  pointer-events: none !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
 }
 
 .card-preview-rich > *:first-child {

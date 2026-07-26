@@ -791,12 +791,27 @@ function sanitizeRichHtml(html: string): string {
         node.textContent = (node.textContent || "")
             .replace(/mso-pattern\s*:[^;{}]+;?/gi, "");
     });
+    document.querySelectorAll("form").forEach(node => {
+        node.replaceWith(...Array.from(node.childNodes));
+    });
     applyRichClassStyles(document);
+    document.querySelectorAll("style").forEach(node => node.remove());
     document.querySelectorAll<HTMLElement>("*").forEach(element => {
         Array.from(element.attributes).forEach(attribute => {
             const name = attribute.name.toLowerCase();
             const value = attribute.value.trim().toLowerCase();
-            if (name.startsWith("on") || name === "srcdoc" || value.startsWith("javascript:")) {
+            const tag = element.tagName.toLowerCase();
+            if (
+                name.startsWith("on")
+                || ["srcdoc", "contenteditable", "tabindex", "autofocus", "draggable", "accesskey", "popover", "autoplay"].includes(name)
+                || value.startsWith("javascript:")
+            ) {
+                element.removeAttribute(attribute.name);
+            }
+            if (
+                (["a", "area"].includes(tag) && ["href", "xlink:href", "target", "download", "ping"].includes(name))
+                || name === "formaction"
+            ) {
                 element.removeAttribute(attribute.name);
             }
             if (name === "style" && /url\s*\(/i.test(attribute.value)) {
@@ -1065,6 +1080,10 @@ function AutoScrollPreview({
         const element = ref.current;
         if (!element) return;
 
+        if (html !== undefined) {
+            element.setAttribute("inert", "");
+        }
+
         let frame = 0;
         let timeout = 0;
         let cancelled = false;
@@ -1072,6 +1091,9 @@ function AutoScrollPreview({
             cancelled = true;
             window.cancelAnimationFrame(frame);
             window.clearTimeout(timeout);
+            if (html !== undefined) {
+                element.removeAttribute("inert");
+            }
         };
 
         if (!active) {

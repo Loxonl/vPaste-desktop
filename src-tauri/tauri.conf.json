@@ -66,6 +66,8 @@
         "focus": false,
         "skipTaskbar": true,
         "decorations": false,
+        "transparent": true,
+        "backgroundColor": [0, 0, 0, 0],
         "hiddenTitle": true,
         "alwaysOnTop": true,
         "titleBarStyle": "Overlay",

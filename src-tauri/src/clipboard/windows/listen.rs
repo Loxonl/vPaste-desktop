@@ -630,7 +630,14 @@ fn foreground_app_source() -> Option<AppSource> {
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .ok()
-        .and_then(|cache| cache.get(&exe_key).cloned())
+        .and_then(|cache| {
+            cache
+                .get(&exe_key)
+                .filter(|source| {
+                    source.icon_path.is_empty() || PathBuf::from(&source.icon_path).is_file()
+                })
+                .cloned()
+        })
     {
         return Some(cached);
     }

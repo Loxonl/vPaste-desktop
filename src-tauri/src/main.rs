@@ -3285,15 +3285,68 @@ fn ensure_runtime_storage_dirs() -> Result<(), String> {
 fn migrate_runtime_dir_out_of_history(name: &str, remove_after_copy: bool) {
     let source = PathBuf::from(history_storage_dir()).join(name);
     let target = PathBuf::from(app_runtime_dir(&[name]));
-    if !source.exists() {
-        return;
-    }
-    if let Err(err) = copy_dir_contents_recursive(&source, &target) {
+    if let Err(err) = migrate_runtime_dir(&source, &target, remove_after_copy) {
         error!("migrate runtime dir {} failed: {}", name, err);
-        return;
     }
+}
+
+fn migrate_runtime_dir(
+    source: &Path,
+    target: &Path,
+    remove_after_copy: bool,
+) -> Result<(), String> {
+    if !source.exists() || paths_resolve_to_same_location(source, target) {
+        return Ok(());
+    }
+    copy_dir_contents_recursive(source, target)?;
     if remove_after_copy {
-        let _ = fs::remove_dir_all(&source);
+        fs::remove_dir_all(source).map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+fn paths_resolve_to_same_location(source: &Path, target: &Path) -> bool {
+    if source == target {
+        return true;
+    }
+    let Ok(source) = fs::canonicalize(source) else {
+        return false;
+    };
+    let Ok(target) = fs::canonicalize(target) else {
+        return false;
+    };
+    source == target
+}
+
+#[cfg(test)]
+mod runtime_dir_migration_tests {
+    use super::*;
+
+    #[test]
+    fn same_runtime_directory_is_not_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime_dir = root.path().join("app_icons");
+        fs::create_dir_all(&runtime_dir).unwrap();
+        let icon = runtime_dir.join("source.png");
+        fs::write(&icon, b"icon").unwrap();
+
+        migrate_runtime_dir(&runtime_dir, &runtime_dir, true).unwrap();
+
+        assert!(icon.exists());
+    }
+
+    #[test]
+    fn separate_history_directory_is_copied_then_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("history").join("app_icons");
+        let target = root.path().join("runtime").join("app_icons");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("source.png"), b"icon").unwrap();
+
+        migrate_runtime_dir(&source, &target, true).unwrap();
+
+        assert_eq!(fs::read(target.join("source.png")).unwrap(), b"icon");
+        assert!(!source.exists());
     }
 }
 
@@ -3303,6 +3356,10 @@ fn migrate_runtime_dirs_out_of_history() {
     migrate_runtime_dir_out_of_history("app_icons", true);
     for cache in ["search", "file_previews", "image_clipboard_cache"] {
         let path = PathBuf::from(history_storage_dir()).join(cache);
+        let runtime_path = PathBuf::from(app_runtime_dir(&[cache]));
+        if paths_resolve_to_same_location(&path, &runtime_path) {
+            continue;
+        }
         if path.exists() {
             let _ = fs::remove_dir_all(path);
         }

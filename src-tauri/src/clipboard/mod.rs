@@ -154,6 +154,7 @@ pub fn migrate_history_encryption() -> Result<(), String> {
         } else {
             app_icon_path
         };
+        let next_app_icon_path = prefer_jumbo_app_icon(next_app_icon_path);
         conn.execute(
             "
             update clipboard
@@ -235,12 +236,8 @@ fn convert_item(row: &Row) -> Result<Item, Error> {
         _ => {}
     }
     let app_source: String = row.get("app_source").unwrap_or_default();
-    let app_icon_path = if is_vpaste_source(&app_source) {
-        vpaste_source_icon_path()
-            .unwrap_or_else(|| prefer_jumbo_app_icon(row.get("app_icon_path").unwrap_or_default()))
-    } else {
-        prefer_jumbo_app_icon(row.get("app_icon_path").unwrap_or_default())
-    };
+    let app_icon_path =
+        resolve_app_icon_path(&app_source, row.get("app_icon_path").unwrap_or_default());
     let stored_title_color: String = row.get("title_color")?;
     let title_color = app_icon_dominant_color(&app_icon_path).unwrap_or(stored_title_color);
 
@@ -314,6 +311,14 @@ fn tag_names_from_filter(filter: &SearchFilter) -> Vec<String> {
 
 fn is_vpaste_source(app_source: &str) -> bool {
     app_source.to_ascii_lowercase().contains("vpaste")
+}
+
+fn resolve_app_icon_path(app_source: &str, stored_icon_path: String) -> String {
+    if is_vpaste_source(app_source) {
+        vpaste_source_icon_path().unwrap_or_else(|| prefer_jumbo_app_icon(stored_icon_path))
+    } else {
+        prefer_jumbo_app_icon(stored_icon_path)
+    }
 }
 
 pub fn vpaste_source_icon_path() -> Option<String> {
@@ -427,6 +432,17 @@ fn prefer_jumbo_app_icon(icon_path: String) -> String {
     }
 
     String::new()
+}
+
+#[test]
+fn missing_app_icon_path_is_not_exposed() {
+    let root = tempfile::tempdir().unwrap();
+    let missing = root.path().join("missing-macos.png");
+
+    assert_eq!(
+        resolve_app_icon_path("Missing App", missing.to_string_lossy().to_string()),
+        ""
+    );
 }
 
 #[test]
@@ -1017,7 +1033,9 @@ pub fn recent_app_source_options(days: u64) -> Result<Vec<AppSourceOption>, Stri
         .map_err(|err| err.to_string())?;
     let mut options = Vec::new();
     for row in rows {
-        options.push(row.map_err(|err| err.to_string())?);
+        let mut option = row.map_err(|err| err.to_string())?;
+        option.icon_path = resolve_app_icon_path(&option.source, option.icon_path);
+        options.push(option);
     }
     Ok(options)
 }

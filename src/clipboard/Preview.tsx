@@ -86,6 +86,31 @@ function payloadRichHtml(payload: PreviewPayload): string {
     return payload.rich_html || payload.richHtml || "";
 }
 
+function disableDocumentNavigation(html: string): string {
+    if (!html.trim()) return "";
+    const parsed = new DOMParser().parseFromString(html, "text/html");
+    parsed.querySelectorAll("meta[http-equiv]").forEach(node => {
+        if (node.getAttribute("http-equiv")?.trim().toLowerCase() === "refresh") {
+            node.remove();
+        }
+    });
+    parsed.querySelectorAll("base").forEach(node => node.removeAttribute("target"));
+    parsed.querySelectorAll("a, area").forEach(node => {
+        ["href", "xlink:href", "target", "download", "ping"].forEach(name => {
+            node.removeAttribute(name);
+        });
+        node.setAttribute("aria-disabled", "true");
+    });
+    parsed.querySelectorAll("[formaction]").forEach(node => {
+        node.removeAttribute("formaction");
+    });
+    parsed.querySelectorAll("form").forEach(node => {
+        node.replaceWith(...Array.from(node.childNodes));
+    });
+    parsed.querySelectorAll("iframe, frame, object, embed").forEach(node => node.remove());
+    return `<!doctype html>${parsed.documentElement.outerHTML}`;
+}
+
 function normalizeRichPreviewStyle(element: HTMLElement) {
     const style = element.getAttribute("style");
     if (!style) return;
@@ -174,11 +199,21 @@ function sanitizeRichHtml(html: string): string {
         node.textContent = (node.textContent || "")
             .replace(/mso-pattern\s*:[^;{}]+;?/gi, "");
     });
+    parsed.querySelectorAll("form").forEach(node => {
+        node.replaceWith(...Array.from(node.childNodes));
+    });
     parsed.querySelectorAll<HTMLElement>("*").forEach(element => {
         Array.from(element.attributes).forEach(attribute => {
             const name = attribute.name.toLowerCase();
             const value = attribute.value.trim().toLowerCase();
+            const tag = element.tagName.toLowerCase();
             if (name.startsWith("on") || name === "srcdoc" || value.startsWith("javascript:")) {
+                element.removeAttribute(attribute.name);
+            }
+            if (
+                (["a", "area"].includes(tag) && ["href", "xlink:href", "target", "download", "ping"].includes(name))
+                || name === "formaction"
+            ) {
                 element.removeAttribute(attribute.name);
             }
             if (name === "style" && /url\s*\(/i.test(attribute.value)) {
@@ -217,6 +252,10 @@ function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: string,
     const type = payloadType(payload);
     const linkUrl = type === ItemType.Link ? normalizeLinkUrl(payload.content.split("|||")[0]) : "";
     const richHtml = useMemo(() => sanitizeRichHtml(payloadRichHtml(payload)), [payload]);
+    const linkPreviewHtml = useMemo(
+        () => linkDocument ? disableDocumentNavigation(linkDocument.html) : "",
+        [linkDocument],
+    );
     const text = useMemo(() => {
         if (type === ItemType.Link) return linkUrl;
         return payloadTextContent(payload) || payload.content;
@@ -365,10 +404,10 @@ function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: string,
                 {linkDocument ? (
                     <iframe
                         className="preview-link-frame"
-                        srcDoc={linkDocument.html}
+                        srcDoc={linkPreviewHtml}
                         title={linkDocument.url}
                         referrerPolicy="no-referrer-when-downgrade"
-                        sandbox="allow-forms allow-popups allow-downloads"
+                        sandbox=""
                     />
                 ) : (
                     <div className="preview-link-loading">

@@ -12,8 +12,15 @@ import Config from "./config/Config.tsx";
 import TrayMenu from "./tray/TrayMenu.tsx";
 import "./theme.css";
 import { installThemeSync } from "./theme.ts";
+import AppThemeProvider from "./ui/AppThemeProvider.tsx";
 
-info(`Rendering app, path: ${window.location.pathname}`);
+const UiLab = import.meta.env.DEV
+    ? React.lazy(() => import("./ui/UiLab.tsx"))
+    : null;
+
+if ("__TAURI_INTERNALS__" in window) {
+    void info(`Rendering app, path: ${window.location.pathname}`);
+}
 installThemeSync();
 
 function isEditableTarget(target: EventTarget | null) {
@@ -57,19 +64,24 @@ installDesktopInteractionGuards();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
-        <Router>
-            <Routes>
-                <Route path="/clipboard" element={<Clipboard />} />
-                <Route path="/clipboard/preview" element={<Preview />} />
-                <Route path="/emoji-picker" element={<EmojiPicker />} />
-                <Route path="/tab-editor" element={<TabEditor />} />
-                <Route path="/onboarding-permission" element={<OnboardingPermissionWindow />} />
-                <Route path="/paste-fallback-notice" element={<PasteFallbackNotice />} />
-                <Route path="/config" element={<Config />} />
-                <Route path="/tray-menu" element={<TrayMenu />} />
-                <Route path="/" element={<Clipboard />} />
-                <Route path="*" element={<Clipboard />} />
-            </Routes>
-        </Router>
+        <AppThemeProvider>
+            <Router>
+                <React.Suspense fallback={null}>
+                    <Routes>
+                        <Route path="/clipboard" element={<Clipboard />} />
+                        <Route path="/clipboard/preview" element={<Preview />} />
+                        <Route path="/emoji-picker" element={<EmojiPicker />} />
+                        <Route path="/tab-editor" element={<TabEditor />} />
+                        <Route path="/onboarding-permission" element={<OnboardingPermissionWindow />} />
+                        <Route path="/paste-fallback-notice" element={<PasteFallbackNotice />} />
+                        <Route path="/config" element={<Config />} />
+                        <Route path="/tray-menu" element={<TrayMenu />} />
+                        {UiLab ? <Route path="/__ui-lab" element={<UiLab />} /> : null}
+                        <Route path="/" element={<Clipboard />} />
+                        <Route path="*" element={<Clipboard />} />
+                    </Routes>
+                </React.Suspense>
+            </Router>
+        </AppThemeProvider>
     </React.StrictMode>,
 );

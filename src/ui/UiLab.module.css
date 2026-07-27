@@ -1,0 +1,91 @@
+.page {
+  min-height: 100vh;
+  box-sizing: border-box;
+  padding: var(--ui-space-6);
+  color: var(--ui-text);
+  background: var(--ui-bg);
+  font-family: var(--ui-font-family);
+}
+
+.header {
+  max-width: 920px;
+  margin: 0 auto var(--ui-space-6);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ui-space-4);
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.header p {
+  margin: var(--ui-space-1) 0 0;
+  color: var(--ui-text-muted);
+  font-size: 13px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--ui-space-2);
+}
+
+.grid {
+  width: min(920px, 100%);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ui-space-4);
+}
+
+.panel {
+  display: grid;
+  align-content: start;
+  gap: var(--ui-space-3);
+}
+
+.panel h2 {
+  margin: 0;
+  color: var(--ui-text-strong);
+  font-size: 14px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-space-2);
+}
+
+.field {
+  width: min(220px, 100%);
+}
+
+.settingsPreview {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: var(--ui-space-4);
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: var(--ui-space-4);
+  }
+
+  .header,
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .header {
+    flex-direction: column;
+  }
+
+  .toolbar {
+    justify-content: flex-start;
+  }
+}

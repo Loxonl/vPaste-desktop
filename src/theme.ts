@@ -8,17 +8,21 @@ export type ResolvedTheme = "light" | "dark";
 const THEME_ATTRIBUTE = "data-theme";
 const THEME_MODE_ATTRIBUTE = "data-theme-mode";
 const THEME_STORAGE_KEY = "vpaste.themeMode";
-const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+const mediaQuery = typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-color-scheme: dark)")
+    : null;
+const themeListeners = new Set<() => void>();
 let currentMode: ThemeMode = "system";
 let previewMode: ResolvedTheme | null = null;
 let isSyncingFromConfig = false;
+let themeSyncInstalled = false;
 
 function normalizeThemeMode(value: unknown): ThemeMode {
     return value === "light" || value === "dark" || value === "system" ? value : "system";
 }
 
 function resolvedTheme(mode: ThemeMode): ResolvedTheme {
-    return mode === "system" ? (mediaQuery.matches ? "dark" : "light") : mode;
+    return mode === "system" ? (mediaQuery?.matches ? "dark" : "light") : mode;
 }
 
 function renderTheme() {
@@ -28,6 +32,7 @@ function renderTheme() {
     document.documentElement.setAttribute(THEME_MODE_ATTRIBUTE, mode);
     document.body?.setAttribute(THEME_ATTRIBUTE, theme);
     document.body?.setAttribute(THEME_MODE_ATTRIBUTE, mode);
+    themeListeners.forEach(listener => listener());
 }
 
 export function applyThemeMode(mode: ThemeMode) {
@@ -51,6 +56,11 @@ export function getThemePreview(): ResolvedTheme | null {
 
 export function getResolvedTheme(): ResolvedTheme {
     return previewMode || resolvedTheme(currentMode);
+}
+
+export function subscribeResolvedTheme(listener: () => void) {
+    themeListeners.add(listener);
+    return () => themeListeners.delete(listener);
 }
 
 function applyStoredThemeMode() {
@@ -81,10 +91,12 @@ export async function loadAndApplyTheme() {
 }
 
 export function installThemeSync() {
+    if (themeSyncInstalled) return;
+    themeSyncInstalled = true;
     applyStoredThemeMode();
     void loadAndApplyTheme();
 
-    mediaQuery.addEventListener("change", () => {
+    mediaQuery?.addEventListener("change", () => {
         if (currentMode === "system") {
             applyThemeMode("system");
         }

@@ -1,0 +1,121 @@
+:root {
+  color-scheme: light;
+  --ui-accent: #1e92ee;
+  --ui-accent-strong: #0b73d7;
+  --ui-accent-soft: rgba(30, 146, 238, 0.12);
+  --ui-danger: #d93025;
+  --ui-danger-soft: rgba(217, 48, 37, 0.10);
+  --ui-warning: #8a5208;
+  --ui-warning-soft: rgba(255, 184, 72, 0.16);
+  --ui-success: #16734b;
+  --ui-success-soft: rgba(36, 176, 112, 0.10);
+
+  --ui-bg: #f6f6f4;
+  --ui-surface: rgba(255, 255, 255, 0.88);
+  --ui-surface-solid: #ffffff;
+  --ui-surface-muted: rgba(245, 247, 250, 0.72);
+  --ui-surface-hover: rgba(31, 42, 54, 0.075);
+  --ui-text: #1f242b;
+  --ui-text-strong: #121820;
+  --ui-text-muted: #7f7f7f;
+  --ui-border: rgba(26, 35, 46, 0.09);
+  --ui-border-strong: rgba(26, 35, 46, 0.16);
+  --ui-shadow: 0 12px 32px rgba(35, 43, 54, 0.12);
+  --ui-shadow-card: 0 8px 24px rgba(35, 43, 54, 0.045), 0 1px 2px rgba(35, 43, 54, 0.035);
+  --ui-backdrop: rgba(238, 240, 235, 0.64);
+
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-6: 24px;
+  --ui-control-compact: 28px;
+  --ui-control-height: 32px;
+  --ui-settings-row-height: 52px;
+  --ui-radius-control: 8px;
+  --ui-radius-surface: 14px;
+  --ui-radius-pill: 999px;
+  --ui-focus-ring: 0 0 0 3px rgba(30, 146, 238, 0.24);
+  --ui-font-family: "Segoe UI Variable", "Segoe UI", -apple-system, BlinkMacSystemFont, "Microsoft YaHei UI", Arial, sans-serif;
+
+  /* Compatibility aliases consumed by existing pages during migration. */
+  --theme-accent: var(--ui-accent);
+  --theme-bg: var(--ui-bg);
+  --theme-bg-elevated: var(--ui-surface);
+  --theme-bg-muted: var(--ui-surface-muted);
+  --theme-text: var(--ui-text);
+  --theme-text-strong: var(--ui-text-strong);
+  --theme-muted: var(--ui-text-muted);
+  --theme-border: var(--ui-border);
+  --theme-shadow: var(--ui-shadow);
+  --theme-backdrop: rgba(238, 240, 235, 0.08);
+  --settings-bg: rgba(244, 245, 244, 0.82);
+  --settings-sidebar-bg: rgba(244, 245, 244, 0.14);
+  --settings-title: #15191f;
+  --settings-section-title: var(--ui-text);
+  --settings-text: var(--ui-text);
+  --settings-muted: var(--ui-text-muted);
+  --settings-card-bg: rgba(255, 255, 255, 0.72);
+  --settings-about-bg: rgba(255, 255, 255, 0.94);
+  --settings-card-shadow: var(--ui-shadow-card);
+  --settings-input-bg: rgba(255, 255, 255, 0.70);
+  --settings-input-border: #e1e5ea;
+  --settings-sidebar-text: #404852;
+  --settings-sidebar-selected-text: #111820;
+  --settings-sidebar-selected-bg: rgba(32, 43, 54, 0.10);
+  --settings-sidebar-hover-bg: rgba(30, 42, 54, 0.075);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ui-accent: #4aa8ff;
+  --ui-accent-strong: #7cbcff;
+  --ui-accent-soft: rgba(74, 168, 255, 0.16);
+  --ui-danger: #ff7168;
+  --ui-danger-soft: rgba(255, 113, 104, 0.14);
+  --ui-warning: #ffd18a;
+  --ui-warning-soft: rgba(255, 184, 72, 0.16);
+  --ui-success: #65d9a0;
+  --ui-success-soft: rgba(54, 201, 135, 0.14);
+
+  --ui-bg: #0f1012;
+  --ui-surface: rgba(34, 34, 34, 0.90);
+  --ui-surface-solid: #222222;
+  --ui-surface-muted: rgba(42, 42, 42, 0.78);
+  --ui-surface-hover: rgba(255, 255, 255, 0.10);
+  --ui-text: #f2f3f5;
+  --ui-text-strong: #ffffff;
+  --ui-text-muted: #a9adb3;
+  --ui-border: rgba(255, 255, 255, 0.11);
+  --ui-border-strong: rgba(255, 255, 255, 0.18);
+  --ui-shadow: 0 18px 46px rgba(0, 0, 0, 0.42);
+  --ui-shadow-card: 0 14px 38px rgba(0, 0, 0, 0.34), inset 0 0 0 1px rgba(255, 255, 255, 0.045);
+  --ui-backdrop: rgba(8, 8, 9, 0.62);
+  --ui-focus-ring: 0 0 0 3px rgba(74, 168, 255, 0.30);
+
+  --theme-accent: var(--ui-accent);
+  --theme-bg: var(--ui-bg);
+  --theme-bg-elevated: var(--ui-surface);
+  --theme-bg-muted: var(--ui-surface-muted);
+  --theme-text: var(--ui-text);
+  --theme-text-strong: var(--ui-text-strong);
+  --theme-muted: var(--ui-text-muted);
+  --theme-border: var(--ui-border);
+  --theme-shadow: var(--ui-shadow);
+  --theme-backdrop: rgba(8, 8, 9, 0.62);
+  --settings-bg: rgba(14, 15, 16, 0.96);
+  --settings-sidebar-bg: rgba(72, 72, 72, 0.92);
+  --settings-title: #f5f6f7;
+  --settings-section-title: #e8eaed;
+  --settings-text: #f1f2f4;
+  --settings-muted: var(--ui-text-muted);
+  --settings-card-bg: rgba(35, 35, 35, 0.96);
+  --settings-about-bg: rgba(35, 35, 35, 0.96);
+  --settings-card-shadow: var(--ui-shadow-card);
+  --settings-input-bg: rgba(26, 26, 26, 0.92);
+  --settings-input-border: var(--ui-border);
+  --settings-sidebar-text: #f1f2f4;
+  --settings-sidebar-selected-text: #ffffff;
+  --settings-sidebar-selected-bg: rgba(255, 255, 255, 0.14);
+  --settings-sidebar-hover-bg: rgba(255, 255, 255, 0.10);
+}

@@ -112,7 +112,6 @@ export default function AboutSettings({ bridge, config, dir: _dir, t, onSave }: 
                             </div>
                         </div>
                         <Switch
-                            size="small"
                             checked={!updateState.portable && updateState.feedEnabled && config.update_check_enabled}
                             disabled={updateState.portable || !updateState.feedEnabled}
                             onChange={handleAutomaticCheckChange}

@@ -49,6 +49,7 @@ test.describe("UI lab", () => {
 
         await expect(selectedOption).toHaveCSS("border-radius", "0px");
         await expect(selectedOption).toHaveCSS("box-shadow", "none");
+        await expect(selectedOption).toHaveCSS("outline-style", "none");
         await expect(page.locator(".MuiMenu-paper")).toHaveCSS("border-radius", "8px");
 
         await expect(page).toHaveScreenshot("ui-lab-select-open.png", {

@@ -280,7 +280,8 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                 styleOverrides: {
                     paper: {
                         marginTop: "var(--ui-space-1)",
-                        overflow: "hidden",
+                        overflowX: "hidden",
+                        overflowY: "auto",
                         backgroundColor: "var(--ui-surface-solid)",
                         border: "1px solid var(--ui-border-strong)",
                         borderRadius: "var(--ui-radius-control)",
@@ -309,6 +310,7 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                         "&.Mui-focusVisible": {
                             backgroundColor: "var(--ui-surface-hover)",
                             boxShadow: "none",
+                            outline: "none",
                         },
                         "&.Mui-selected": {
                             backgroundColor: "var(--ui-accent-soft)",
@@ -322,6 +324,7 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                                     ? "rgba(74, 168, 255, 0.24)"
                                     : "rgba(30, 146, 238, 0.18)",
                                 boxShadow: "none",
+                                outline: "none",
                             },
                         },
                     },

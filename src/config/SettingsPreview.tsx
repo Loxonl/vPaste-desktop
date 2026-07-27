@@ -69,8 +69,24 @@ function createPreviewBridge(): SettingsBridge {
                 break;
             case "list_recent_app_source_options":
                 result = [
-                    { source: "Code.exe", display_name: "Visual Studio Code", icon_path: null },
-                    { source: "chrome.exe", display_name: "Google Chrome", icon_path: null },
+                    { source: "Code.exe", icon_path: null },
+                    { source: "chrome.exe", icon_path: null },
+                    { source: "msedge.exe", icon_path: null },
+                    { source: "firefox.exe", icon_path: null },
+                    { source: "explorer.exe", icon_path: null },
+                    { source: "winword.exe", icon_path: null },
+                    { source: "excel.exe", icon_path: null },
+                    { source: "powerpnt.exe", icon_path: null },
+                    { source: "notion.exe", icon_path: null },
+                    { source: "obsidian.exe", icon_path: null },
+                    { source: "wechat.exe", icon_path: null },
+                    { source: "dingtalk.exe", icon_path: null },
+                    { source: "feishu.exe", icon_path: null },
+                    { source: "slack.exe", icon_path: null },
+                    { source: "teams.exe", icon_path: null },
+                    { source: "telegram.exe", icon_path: null },
+                    { source: "discord.exe", icon_path: null },
+                    { source: "idea64.exe", icon_path: null },
                 ];
                 break;
             case "estimate_storage_cleanup":

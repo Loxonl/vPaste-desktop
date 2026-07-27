@@ -2,20 +2,25 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import { info } from "@tauri-apps/plugin-log";
-import Clipboard from "./clipboard/Clipboard.tsx";
-import EmojiPicker from "./clipboard/EmojiPicker.tsx";
-import Preview from "./clipboard/Preview.tsx";
-import TabEditor from "./clipboard/TabEditor.tsx";
-import OnboardingPermissionWindow from "./clipboard/OnboardingPermissionWindow.tsx";
-import PasteFallbackNotice from "./clipboard/PasteFallbackNotice.tsx";
-import Config from "./config/Config.tsx";
-import TrayMenu from "./tray/TrayMenu.tsx";
 import "./theme.css";
 import { installThemeSync } from "./theme.ts";
 import AppThemeProvider from "./ui/AppThemeProvider.tsx";
+import RouteFallback from "./ui/RouteFallback.tsx";
+
+const Clipboard = React.lazy(() => import("./clipboard/Clipboard.tsx"));
+const EmojiPicker = React.lazy(() => import("./clipboard/EmojiPicker.tsx"));
+const Preview = React.lazy(() => import("./clipboard/Preview.tsx"));
+const TabEditor = React.lazy(() => import("./clipboard/TabEditor.tsx"));
+const OnboardingPermissionWindow = React.lazy(() => import("./clipboard/OnboardingPermissionWindow.tsx"));
+const PasteFallbackNotice = React.lazy(() => import("./clipboard/PasteFallbackNotice.tsx"));
+const Config = React.lazy(() => import("./config/Config.tsx"));
+const TrayMenu = React.lazy(() => import("./tray/TrayMenu.tsx"));
 
 const UiLab = import.meta.env.DEV
     ? React.lazy(() => import("./ui/UiLab.tsx"))
+    : null;
+const SettingsPreview = import.meta.env.DEV
+    ? React.lazy(() => import("./config/SettingsPreview.tsx"))
     : null;
 
 if ("__TAURI_INTERNALS__" in window) {
@@ -66,7 +71,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
         <AppThemeProvider>
             <Router>
-                <React.Suspense fallback={null}>
+                <React.Suspense fallback={<RouteFallback />}>
                     <Routes>
                         <Route path="/clipboard" element={<Clipboard />} />
                         <Route path="/clipboard/preview" element={<Preview />} />
@@ -77,6 +82,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
                         <Route path="/config" element={<Config />} />
                         <Route path="/tray-menu" element={<TrayMenu />} />
                         {UiLab ? <Route path="/__ui-lab" element={<UiLab />} /> : null}
+                        {SettingsPreview ? <Route path="/__settings-preview" element={<SettingsPreview />} /> : null}
                         <Route path="/" element={<Clipboard />} />
                         <Route path="*" element={<Clipboard />} />
                     </Routes>

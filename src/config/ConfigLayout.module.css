@@ -1,0 +1,248 @@
+.container {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100vh;
+  color: var(--settings-text);
+  background:
+    linear-gradient(
+      90deg,
+      var(--settings-sidebar-bg) 0,
+      var(--settings-sidebar-bg) 148px,
+      var(--settings-bg) 148px,
+      var(--settings-bg) 100%
+    ),
+    var(--settings-bg);
+  -webkit-app-region: no-drag;
+}
+
+.dragRegion {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 2;
+  height: 74px;
+}
+
+.windowControls {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  -webkit-app-region: no-drag;
+}
+
+.windowControl {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  border-radius: 50%;
+  background: #dedfdf;
+}
+
+.windowControl.close {
+  border-color: rgba(154, 22, 17, 0.32);
+  background: #ff6159;
+}
+
+.windowControl:hover {
+  filter: brightness(0.98);
+}
+
+.windowControl:disabled {
+  cursor: default;
+  opacity: 1;
+  border-color: rgba(0, 0, 0, 0.14);
+  background: #dedfdf;
+}
+
+.windowControl b {
+  position: relative;
+  display: block;
+  opacity: 0;
+}
+
+.windowControls:hover .windowControl b {
+  opacity: 1;
+}
+
+.windowControl.close b {
+  width: 8px;
+  height: 8px;
+}
+
+.windowControl.close b::before,
+.windowControl.close b::after {
+  position: absolute;
+  top: 3.5px;
+  left: 0;
+  width: 8px;
+  height: 1.2px;
+  border-radius: 1px;
+  background: rgba(87, 17, 14, 0.82);
+  content: "";
+}
+
+.windowControl.close b::before {
+  transform: rotate(45deg);
+}
+
+.windowControl.close b::after {
+  transform: rotate(-45deg);
+}
+
+.windowsWindowControls {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 4;
+  display: flex;
+  -webkit-app-region: no-drag;
+}
+
+.windowsWindowClose {
+  display: inline-grid;
+  place-items: center;
+  width: 46px;
+  height: var(--ui-control-height);
+  padding: 0;
+  border: 0;
+  color: color-mix(in srgb, var(--settings-text) 78%, transparent);
+  background: transparent;
+  font: inherit;
+  cursor: default;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.windowsControlsHoverReady .windowsWindowClose:hover {
+  color: #ffffff;
+  background: #d92f25;
+}
+
+.windowsControlsHoverReady .windowsWindowClose:active {
+  background: #b8261f;
+}
+
+.windowsWindowClose:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: -2px;
+}
+
+.sidebar {
+  z-index: 3;
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 148px;
+  flex-direction: column;
+  width: 148px;
+  padding: 78px var(--ui-space-2) 0;
+  overflow: hidden;
+  background: var(--settings-sidebar-bg);
+  box-shadow: inset -1px 0 var(--theme-border);
+  backdrop-filter: blur(28px) saturate(1.14);
+  -webkit-backdrop-filter: blur(28px) saturate(1.14);
+}
+
+.sidebarDragRegion {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 148px;
+  height: 52px;
+}
+
+.contentArea {
+  z-index: 1;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  height: 100vh;
+  padding: 0;
+  overflow: hidden;
+  background: var(--settings-bg);
+  -webkit-app-region: no-drag;
+}
+
+.contentTitleBar {
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 76px;
+  align-items: flex-end;
+  padding: 0 var(--ui-space-6) 17px;
+}
+
+.contentScroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+
+.contentInner {
+  box-sizing: border-box;
+  padding: 0 var(--ui-space-6) 52px;
+}
+
+.blockingOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  padding: var(--ui-space-6);
+  background: var(--ui-backdrop);
+  backdrop-filter: blur(14px) saturate(1.08);
+  -webkit-backdrop-filter: blur(14px) saturate(1.08);
+  -webkit-app-region: no-drag;
+}
+
+.blockingDialog {
+  box-sizing: border-box;
+  width: min(380px, 100%);
+  padding: 22px var(--ui-space-6) 20px;
+  color: var(--settings-text);
+  text-align: center;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-surface);
+  box-shadow: var(--ui-shadow);
+}
+
+.blockingSpinner {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 13px;
+  color: var(--ui-accent-strong);
+}
+
+.blockingTitle {
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.blockingDescription {
+  margin-top: 7px;
+  color: var(--settings-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.blockingProgress {
+  margin-top: 18px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .windowsWindowClose {
+    transition: none;
+  }
+}

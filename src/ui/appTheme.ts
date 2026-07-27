@@ -136,14 +136,69 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                 defaultProps: {
                     size: "small",
                 },
+                styleOverrides: {
+                    root: {
+                        width: 34,
+                        height: 20,
+                        padding: 0,
+                    },
+                    switchBase: {
+                        padding: 2,
+                        transitionDuration: "160ms",
+                        "&.Mui-checked": {
+                            transform: "translateX(14px)",
+                            color: "#ffffff",
+                            "& + .MuiSwitch-track": {
+                                backgroundColor: "var(--ui-accent)",
+                                opacity: 1,
+                            },
+                        },
+                    },
+                    thumb: {
+                        width: 16,
+                        height: 16,
+                        boxShadow: "0 1px 4px rgba(31, 42, 55, 0.20)",
+                    },
+                    track: {
+                        borderRadius: "var(--ui-radius-pill)",
+                        backgroundColor: dark ? "#656a72" : "#aeb4bc",
+                        opacity: 1,
+                    },
+                },
+            },
+            MuiTabs: {
+                styleOverrides: {
+                    flexContainer: {
+                        gap: "var(--ui-space-1)",
+                    },
+                },
             },
             MuiTab: {
                 styleOverrides: {
                     root: {
                         minHeight: 40,
+                        width: "100%",
+                        maxWidth: "100%",
+                        minWidth: 0,
+                        justifyContent: "flex-start",
                         borderRadius: "var(--ui-radius-control)",
+                        paddingInline: 12,
                         textTransform: "none",
-                        fontSize: 14,
+                        fontSize: 15,
+                        fontWeight: 420,
+                        color: "var(--settings-sidebar-text)",
+                        transition: "background-color 140ms ease, color 140ms ease",
+                        "&.Mui-selected": {
+                            color: "var(--settings-sidebar-selected-text)",
+                            backgroundColor: "var(--settings-sidebar-selected-bg)",
+                        },
+                        "&:hover": {
+                            backgroundColor: "var(--settings-sidebar-hover-bg)",
+                        },
+                        "& .MuiTab-iconWrapper": {
+                            marginRight: 10,
+                            color: "inherit",
+                        },
                     },
                 },
             },
@@ -154,6 +209,58 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                     },
                     rounded: {
                         borderRadius: "var(--ui-radius-surface)",
+                    },
+                },
+            },
+            MuiList: {
+                styleOverrides: {
+                    root: {
+                        overflow: "hidden",
+                        padding: 0,
+                        background: "var(--settings-card-bg)",
+                        border: "1px solid var(--ui-border)",
+                        borderRadius: "var(--ui-radius-surface)",
+                        boxShadow: "var(--settings-card-shadow)",
+                    },
+                },
+            },
+            MuiListItem: {
+                styleOverrides: {
+                    root: {
+                        minHeight: "var(--ui-settings-row-height)",
+                        padding: "var(--ui-space-2) var(--ui-space-4)",
+                    },
+                },
+            },
+            MuiListItemText: {
+                styleOverrides: {
+                    primary: {
+                        color: "var(--settings-text)",
+                        fontSize: 14,
+                        fontWeight: 400,
+                        lineHeight: 1.35,
+                    },
+                    secondary: {
+                        marginTop: 2,
+                        color: "var(--settings-muted)",
+                        fontSize: 12,
+                        fontWeight: 350,
+                        lineHeight: 1.35,
+                    },
+                },
+            },
+            MuiTypography: {
+                styleOverrides: {
+                    h5: {
+                        color: "var(--settings-title)",
+                        fontSize: 24,
+                        fontWeight: 650,
+                        lineHeight: 1.16,
+                    },
+                    subtitle2: {
+                        color: "var(--settings-section-title)",
+                        fontSize: 13,
+                        fontWeight: 500,
                     },
                 },
             },
@@ -178,9 +285,11 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                     root: {
                         height: 5,
                         borderRadius: "var(--ui-radius-pill)",
+                        backgroundColor: "var(--ui-accent-soft)",
                     },
                     bar: {
                         borderRadius: "var(--ui-radius-pill)",
+                        backgroundColor: "var(--ui-accent-strong)",
                     },
                 },
             },

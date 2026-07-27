@@ -1,6 +1,6 @@
 [package]
 name = "vpaste-desktop"
-version = "1.5.0"
+version = "1.6.0"
 authors = ["Lox"]
 edition = "2021"
 rust-version = "1.91.1"
@@ -28,6 +28,7 @@ tauri-plugin-dialog = "=2.7.1"
 tauri-plugin-autostart = "=2.5.1"
 tauri-plugin-updater = "=2.10.1"
 tauri-plugin-single-instance = "=2.4.3"
+tauri-plugin-notification = "=2.3.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.22.0"

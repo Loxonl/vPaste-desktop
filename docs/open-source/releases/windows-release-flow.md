@@ -1,6 +1,8 @@
 # Windows Release Flow
 
-Windows x64 is an official release target. The complete build definition is public in `.github/workflows/release.yml`; only certificates and private keys remain outside the repository.
+Windows x64 is built with Inno Setup 6.7.3. The source installer definition and release script are public; signing keys remain outside the repository.
+
+Maintainers should follow the complete [Windows Packaging Runbook](windows-packaging-runbook.md) for version preparation, reproducible builds, artifact validation, signing order, Draft Release review, and failure recovery.
 
 ## Local package
 
@@ -11,32 +13,23 @@ npm ci
 npm run build:windows
 ```
 
-This creates a standard Tauri NSIS current-user installer under `src-tauri/target/release/bundle/nsis/`. The local override disables updater artifact generation, so no updater private key is needed. The result is not an official signed release.
+Outputs under `src-tauri/target/release/bundle/windows/`:
 
-## Official package
-
-Pushing a matching `v<version>` tag starts the Release workflow. It:
-
-1. Confirms the versions in npm, Cargo, and Tauri metadata match the tag.
-2. Reinstalls dependencies from lockfiles and reruns the public checks.
-3. Imports the base64-encoded PFX from the protected `release` environment.
-4. Builds the standard Tauri NSIS installer for `x86_64-pc-windows-msvc`.
-5. Applies Windows Authenticode signing and timestamps the installer.
-6. Creates the Tauri updater signature and adds the Windows entry to `latest.json`.
-7. Verifies Authenticode, generates SHA-256 checksums, and records build provenance.
-8. Uploads everything to a draft GitHub Release for manual smoke testing.
-
-Windows code signing and Tauri updater signing are separate. Authenticode establishes Windows publisher trust; the updater signature lets the installed app verify an update package.
-
-## Expected assets
-
-- `vPaste_<version>_windows_x86_64-setup.exe`
-- Matching `.exe.sig`
-- Shared `latest.json`
+- `vPaste_<version>_windows_x64_setup.exe`
+- `vPaste_<version>_windows_x64_portable.zip`
 - `SHA256SUMS.txt`
-- `THIRD_PARTY_LICENSES.json`
-- `SBOM.cdx.json`
-- `LICENSE`
-- GitHub-generated source `.zip` and `.tar.gz`
+- a validated WinGet singleton manifest for later manual submission
 
-The public build intentionally uses Tauri's reproducible NSIS path. No private installer shell or patched binary payload is part of the release contract.
+The script pins Inno Setup 6.7.3, downloads the matching official Simplified Chinese translation from an immutable source tag, verifies its SHA-256, compiles the installer, and rejects installer overhead above 2 MiB relative to the Portable ZIP.
+
+## Updater package
+
+`npm run build:windows:signed-updater` signs the final Inno EXE with the local updater key and writes `latest.windows.json` for the debug-only local update feed. It does not enable the public feed in the app and is not a public release command.
+
+Authenticode and updater signing are separate. Authenticode establishes Windows publisher trust; minisign prevents the app from installing modified updater bytes. Authenticode must happen before the final updater signature and checksum.
+
+## Draft Release
+
+Run `.github/workflows/release.yml` manually with the exact version and full source SHA. Build jobs are read-only. Only the final job has `contents: write`, and it can only create or update a Draft Release. The workflow does not push code, create branches, or open pull requests.
+
+Private-stage drafts leave the public updater feed disabled and are marked unsigned. The workflow intentionally exposes no public-feed switch until Authenticode/SignPath, Apple notarization, and step-scoped protected secrets are integrated. WinGet submission remains a separate manual review after the GitHub Release is public.

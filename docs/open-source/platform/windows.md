@@ -7,7 +7,7 @@ Windows is the primary implemented and tested platform.
 ## Implemented Capabilities
 
 - Tauri 2 Windows desktop app.
-- NSIS installer and Tauri updater artifacts.
+- Inno Setup current-user installer, Portable ZIP, and Tauri updater artifacts.
 - Global shortcut to open the main panel.
 - Bottom floating main panel with keyboard navigation.
 - Custom tray menu in Chinese/English language flow.
@@ -29,7 +29,7 @@ Windows is the primary implemented and tested platform.
 - Some Office, OneNote, browser, QQ/WeChat, and GIF clipboard combinations need real-app regression testing after clipboard changes.
 - Link preview depends on public site metadata and may fall back to the default link icon.
 - Updater signature verifies package integrity, but Windows SmartScreen trust still depends on code signing reputation.
-- The default NSIS installer is a traditional Win32 wizard, not a modern installer UI.
+- Unsigned private-stage installers show Unknown publisher until Authenticode signing is enabled.
 
 ## Windows Clipboard Notes
 

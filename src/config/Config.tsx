@@ -21,6 +21,7 @@ import { DEFAULT_LANGUAGE, useLanguage } from "../lang";
 import { formatShortcutLabel, getModifierDisplayLabel, isMacPlatform } from "../shortcutDisplay";
 import { applyThemeMode, type ThemeMode } from "../theme";
 import { type AppSourceOption, displayAppSource } from "../clipboard/appSource";
+import { useAppUpdateState, type UpdateState } from "../update";
 
 // Icons
 import TuneIcon from '@mui/icons-material/Tune'; // For General/Common
@@ -33,6 +34,9 @@ import AutoDeleteOutlinedIcon from '@mui/icons-material/AutoDeleteOutlined';
 import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined';
 import GitHubIcon from '@mui/icons-material/GitHub';
 import LaunchOutlinedIcon from '@mui/icons-material/LaunchOutlined';
+import ScheduleOutlinedIcon from '@mui/icons-material/ScheduleOutlined';
+import UpdateRoundedIcon from '@mui/icons-material/UpdateRounded';
+import AccessTimeOutlinedIcon from '@mui/icons-material/AccessTimeOutlined';
 import CloseIcon from '@mui/icons-material/Close';
 
 interface Shortcutkey {
@@ -109,17 +113,6 @@ interface HistoryArchiveProgressPayload {
     total_files: number;
     processed_bytes: number;
     total_bytes: number;
-}
-
-interface UpdateInfo {
-    current_version: string;
-    version: string;
-    date?: string | null;
-    body?: string | null;
-}
-
-interface AppVersionInfo {
-    version: string;
 }
 
 type PermissionId = 'background' | 'paste';
@@ -573,6 +566,7 @@ interface SettingsProps {
 
 function GeneralSettings({ config, languages, t, onSave }: SettingsProps & { languages: LanguageOption[] }) {
     const [permissionStatus, setPermissionStatus] = React.useState<PermissionStatus | null>(null);
+    const { state: updateState } = useAppUpdateState();
     const languageChoices = languages.some(language => language.value === config.multilingual)
         ? languages
         : [{ value: config.multilingual, label: config.multilingual }, ...languages];
@@ -664,8 +658,17 @@ function GeneralSettings({ config, languages, t, onSave }: SettingsProps & { lan
                 </Typography>
                 <List sx={LIST_SX}>
                     <ListItem sx={LIST_ITEM_SX}>
-                        <ListItemText primary={t("settings.startup")} primaryTypographyProps={PRIMARY_TEXT_PROPS} />
-                        <QQSwitch checked={config.startup} onChange={handleStartupChange} />
+                        <ListItemText
+                            primary={t("settings.startup")}
+                            secondary={updateState.portable ? t("settings.startupPortable") : undefined}
+                            primaryTypographyProps={PRIMARY_TEXT_PROPS}
+                            secondaryTypographyProps={SECONDARY_TEXT_PROPS}
+                        />
+                        <QQSwitch
+                            checked={!updateState.portable && config.startup}
+                            disabled={updateState.portable}
+                            onChange={handleStartupChange}
+                        />
                     </ListItem>
                     <Divider component="li" />
                     <ListItem sx={LIST_ITEM_SX}>
@@ -1587,52 +1590,53 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
     );
 }
 
-function AboutSettings({ dir: _dir, t }: SettingsProps & { dir: string }) {
-    const [checking, setChecking] = React.useState(false);
-    const [appVersion, setAppVersion] = React.useState<string | null>(null);
-    const [updateMessage, setUpdateMessage] = React.useState<{ kind: 'success' | 'error' | 'info', text: string } | null>(null);
-
-    React.useEffect(() => {
-        invoke<AppVersionInfo>("get_app_version")
-            .then(info => setAppVersion(info.version))
-            .catch(e => error(`Failed to load app version: ${e}`));
-    }, []);
+function AboutSettings({ config, dir: _dir, t, onSave }: SettingsProps & { dir: string }) {
+    const { state: updateState, check, prepare, schedule } = useAppUpdateState();
+    const [checkedManually, setCheckedManually] = React.useState(false);
+    const updateBusy = updateState.status === "checking"
+        || updateState.status === "downloading"
+        || updateState.status === "installing";
 
     const openExternal = (url: string) => {
         void invoke("open_url_in_browser", { url }).catch(e => error(`Failed to open external link: ${e}`));
     };
 
-    const releaseUrlForVersion = (version: string) => {
-        const normalized = version.startsWith("v") ? version : `v${version}`;
-        return `${APP_CHANGELOG_URL}/tag/${encodeURIComponent(normalized)}`;
-    };
-
     const handleCheckUpdate = async () => {
         try {
-            setChecking(true);
-            setUpdateMessage(null);
-            const result = await invoke<UpdateInfo | null>("check_for_app_update");
-            if (result?.current_version) {
-                setAppVersion(result.current_version);
-            }
-            if (!result) {
-                setUpdateMessage({ kind: 'info', text: t("settings.updateLatest") });
-                return;
-            }
-
-            setUpdateMessage({ kind: 'success', text: t("settings.updateAvailable", { version: result.version }) });
-            if (window.confirm(t("settings.updateOpenReleasePrompt", { version: result.version }))) {
-                openExternal(releaseUrlForVersion(result.version));
-            }
+            setCheckedManually(true);
+            await check();
         } catch (e) {
             error(`Failed to check update: ${e}`);
-            setUpdateMessage({ kind: 'error', text: t("settings.updateCheckFailed", { error: String(e) }) });
-        } finally {
-            setChecking(false);
         }
     };
 
-    const displayVersion = appVersion || t("settings.versionUnknown");
+    const handlePrepareUpdate = async () => {
+        try {
+            await prepare();
+        } catch (e) {
+            error(`Failed to prepare update: ${e}`);
+        }
+    };
+
+    const handleScheduleUpdate = async (timing: "immediate" | "onQuit" | "later") => {
+        try {
+            await schedule(timing);
+        } catch (e) {
+            error(`Failed to schedule update: ${e}`);
+        }
+    };
+
+    const handleAutomaticCheckChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        void onSave({ ...config, update_check_enabled: event.target.checked })
+            .catch(e => error(`Failed to change automatic update setting: ${e}`));
+    };
+
+    const displayVersion = updateState.currentVersion || t("settings.versionUnknown");
+    const statusText = updateStatusText(updateState, checkedManually, t);
+    const progressValue = updateState.totalBytes && updateState.totalBytes > 0
+        ? Math.min(100, (updateState.downloadedBytes / updateState.totalBytes) * 100)
+        : undefined;
+    const updatePrepared = updateState.status === "ready" || updateState.status === "deferred";
 
     return (
         <Stack spacing={2.25} sx={PAGE_STACK_SX}>
@@ -1655,18 +1659,81 @@ function AboutSettings({ dir: _dir, t }: SettingsProps & { dir: string }) {
                             variant="contained"
                             color="inherit"
                             size="small"
-                            disabled={checking}
+                            disabled={updateBusy || !updateState.feedEnabled}
                             onClick={handleCheckUpdate}
                             sx={{ textTransform: 'none', boxShadow: 'none', flex: '0 0 auto', borderRadius: '999px', minHeight: 26, px: 1.35, fontSize: 12, fontWeight: 650, bgcolor: 'rgba(31, 36, 43, 0.08)', color: '#26303a', '&:hover': { bgcolor: 'rgba(31, 36, 43, 0.12)' } }}
                         >
-                            {checking ? t("settings.updateChecking") : t("settings.updateCheck")}
+                            {updateState.status === "checking" ? t("settings.updateChecking") : t("settings.updateCheck")}
                         </Button>
                     </div>
-                    {updateMessage && (
-                        <div className={`about-update-status ${updateMessage.kind === 'error' ? 'error' : updateMessage.kind === 'success' ? 'success' : 'working'}`}>
-                            {updateMessage.text}
+                </div>
+            </Box>
+            <Box>
+                <Typography variant="subtitle2" sx={SECTION_TITLE_SX}>
+                    {t("settings.about.updateSection")}
+                </Typography>
+                <div className="about-update-panel">
+                    <div className="about-update-panel__header">
+                        <div>
+                            <div className="about-update-panel__title">{t("settings.updateTitle")}</div>
+                            <div className="about-update-panel__desc">
+                                {updateState.portable
+                                    ? t("settings.updatePortableDesc")
+                                    : !updateState.feedEnabled
+                                        ? t("settings.updateDisabled")
+                                        : t("settings.updateAutoCheckDesc")}
+                            </div>
+                        </div>
+                        <Switch
+                            size="small"
+                            checked={!updateState.portable && updateState.feedEnabled && config.update_check_enabled}
+                            disabled={updateState.portable || !updateState.feedEnabled}
+                            onChange={handleAutomaticCheckChange}
+                            inputProps={{ 'aria-label': t("settings.updateAutoCheck") }}
+                        />
+                    </div>
+                    {statusText && (
+                        <div className={`about-update-status ${updateState.status === 'failed' ? 'error' : updateState.status === 'ready' ? 'success' : 'working'}`}>
+                            {statusText}
                         </div>
                     )}
+                    {updateState.status === "downloading" && (
+                        <LinearProgress
+                            className="about-update-progress"
+                            variant={progressValue === undefined ? "indeterminate" : "determinate"}
+                            value={progressValue}
+                        />
+                    )}
+                    <div className="about-update-actions">
+                        {updateState.status === "available" && (
+                            <Button size="small" variant="contained" startIcon={<FileDownloadIcon />} onClick={() => void handlePrepareUpdate()}>
+                                {t("settings.updateDownload")}
+                            </Button>
+                        )}
+                        {updateState.status === "manualDownload" && (
+                            <Button size="small" variant="contained" startIcon={<LaunchOutlinedIcon />} onClick={() => openExternal(updateState.releaseUrl)}>
+                                {t("settings.updateOpenRelease")}
+                            </Button>
+                        )}
+                        {updatePrepared && (
+                            <>
+                                <Button size="small" variant="contained" startIcon={<UpdateRoundedIcon />} onClick={() => void handleScheduleUpdate("immediate")}>
+                                    {t("settings.updateInstallNow")}
+                                </Button>
+                                <Button size="small" variant="outlined" startIcon={<ScheduleOutlinedIcon />} onClick={() => void handleScheduleUpdate("onQuit")}>
+                                    {t("settings.updateOnQuit")}
+                                </Button>
+                                <Button size="small" variant="text" startIcon={<AccessTimeOutlinedIcon />} onClick={() => void handleScheduleUpdate("later")}>
+                                    {t("settings.updateLater")}
+                                </Button>
+                            </>
+                        )}
+                        {updateState.status === "failed" && updateState.feedEnabled && (
+                            <Button size="small" variant="outlined" startIcon={<UpdateRoundedIcon />} onClick={() => void handleCheckUpdate()}>
+                                {t("settings.updateRetry")}
+                            </Button>
+                        )}
+                    </div>
                 </div>
             </Box>
             <Box>
@@ -1694,4 +1761,42 @@ function AboutSettings({ dir: _dir, t }: SettingsProps & { dir: string }) {
             </Box>
         </Stack>
     )
+}
+
+function updateStatusText(state: UpdateState, checkedManually: boolean, t: TFunction): string {
+    const version = state.availableVersion || "";
+    switch (state.status) {
+        case "disabled":
+            return t("settings.updateDisabled");
+        case "checking":
+            return t("settings.updateChecking");
+        case "available":
+            return t("settings.updateAvailable", { version });
+        case "manualDownload":
+            return t("settings.updatePortable", { version });
+        case "downloading":
+            return state.totalBytes
+                ? t("settings.updateProgress", {
+                    downloaded: formatUpdateBytes(state.downloadedBytes),
+                    total: formatUpdateBytes(state.totalBytes),
+                })
+                : t("settings.updateProgressUnknown", { downloaded: formatUpdateBytes(state.downloadedBytes) });
+        case "ready":
+            return state.installTiming === "onQuit"
+                ? t("settings.updateScheduled", { version })
+                : t("settings.updateReady", { version });
+        case "deferred":
+            return t("settings.updateDeferred", { version });
+        case "installing":
+            return t("settings.updateInstalling");
+        case "failed":
+            return t("settings.updateCheckFailed", { error: state.error || t("common.unknown") });
+        case "idle":
+            return checkedManually ? t("settings.updateLatest") : "";
+    }
+}
+
+function formatUpdateBytes(bytes: number): string {
+    if (bytes < 1024 * 1024) return `${Math.max(0, bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

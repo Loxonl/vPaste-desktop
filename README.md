@@ -34,6 +34,7 @@ Do not paste secrets, passwords, tokens, private messages, or sensitive clipboar
 - Node.js 24.11.1 and npm 11.
 - Rust 1.91.1.
 - Platform requirements for Tauri 2 development on Windows or macOS.
+- Inno Setup 6.7.3 for Windows installer builds.
 
 ## Development
 
@@ -86,7 +87,7 @@ Pop-Location
 Create a local installer without updater signing:
 
 ```powershell
-# Windows x64 NSIS
+# Windows x64 Inno Setup installer and Portable ZIP
 npm run build:windows
 
 # macOS DMG (run on macOS)
@@ -97,15 +98,14 @@ Local packages are for development and are not official signed releases.
 
 ## Releases
 
-Pushing a version tag such as `v1.5.0` runs the public release workflow and creates a draft GitHub Release containing:
+The `Build draft release` workflow is started manually with an exact version and source commit SHA. It creates a draft GitHub Release containing:
 
-- Windows x64 NSIS installer.
-- macOS DMGs and updater packages for Apple silicon and Intel.
-- Tauri updater signatures and `latest.json`.
-- SHA-256 checksums, a CycloneDX SBOM, dependency-license inventory, and build provenance attestations.
+- Windows x64 Inno Setup installer and Portable ZIP.
+- Unsigned macOS DMGs for Apple silicon and Intel.
+- SHA-256 checksums, a CycloneDX SBOM, and dependency-license inventory.
 - GitHub-generated source archives plus the GPL license.
 
-Official packages must pass Windows Authenticode signing and Apple Developer ID signing/notarization; a maintainer reviews installation and update smoke tests before publishing the draft. See the [release checklist](docs/open-source/releases/release-checklist.md).
+Private-stage drafts are explicitly marked unsigned and do not contain updater manifests or enable the public updater feed. Public Stable packages must pass Windows Authenticode signing and Apple Developer ID signing/notarization before updater signatures and `latest.json` are generated; a maintainer reviews installation and update smoke tests before publishing the draft. See the [release checklist](docs/open-source/releases/release-checklist.md).
 
 ## Contributing
 

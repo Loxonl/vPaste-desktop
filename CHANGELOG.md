@@ -4,11 +4,28 @@ All notable public changes to vPaste Desktop will be documented in this file.
 
 ## Unreleased
 
-- Added reproducible, signed draft GitHub Releases for Windows x64 and macOS Apple silicon/Intel.
-- Added updater metadata, checksums, CycloneDX SBOM, dependency-license inventory, provenance attestations, dependency review, and CodeQL workflows.
-- Removed the privileged `workflow_run` checkout pattern and pinned GitHub Actions to immutable commits.
-- Replaced the GSAP tutorial animation dependency with the browser-native Web Animations API to keep the GPL dependency boundary unambiguous.
-- Moved the frontend build toolchain to Vite 7 after Vite 8's Rolldown default introduced a runtime module-interop regression with the current MUI integration.
+## 1.6.0 - 2026-07-24
+
+### Added
+
+- Added an in-window cross-platform tutorial with clearer Windows and macOS permission guidance.
+- Added a development-only tutorial preview mode for platform, language, and theme testing.
+- Added a compact Inno Setup installer, a true Portable ZIP, and session-aware update controls for Windows.
+
+### Changed
+
+- Refined onboarding timing, permission visuals, tray menus, native panel animation, and clipboard history scrolling.
+- Refreshed the desktop logo and tray assets.
+- Replaced the GSAP tutorial animation dependency with the browser-native Web Animations API.
+- Moved the frontend build toolchain to Vite 7 for compatibility with the current MUI integration.
+- Added a manual, source-pinned Draft Release workflow for unsigned private-stage Windows and macOS packages.
+
+### Fixed
+
+- Fixed Windows clipboard image restoration, stale text during image paste, and the settings close button.
+- Fixed search pagination so older matching clipboard records remain discoverable.
+- Fixed cleanup of shared clipboard preview assets.
+- Fixed macOS background authorization, autostart state, tray placement, panel behavior, and paste fallback notices.
 
 ## Initial clean open-source baseline
 

@@ -18,6 +18,7 @@ import AppleIcon from "@mui/icons-material/Apple";
 import WindowOutlinedIcon from "@mui/icons-material/WindowOutlined";
 import LightModeRoundedIcon from "@mui/icons-material/LightModeRounded";
 import DarkModeRoundedIcon from "@mui/icons-material/DarkModeRounded";
+import SystemUpdateAltOutlinedIcon from "@mui/icons-material/SystemUpdateAltOutlined";
 import AddIcon from "@mui/icons-material/Add";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
@@ -25,6 +26,7 @@ import StarBorderOutlinedIcon from "@mui/icons-material/StarBorderOutlined";
 import TutorialOverlay, { TutorialFilterId, TutorialFilterTab, TutorialPermission, TutorialPermissionId, TutorialPlatform } from "./TutorialOverlay.tsx";
 import brandLogo from "../assets/vpaste-logo-master.svg";
 import { getResolvedTheme, getThemePreview, setThemePreview, type ResolvedTheme } from "../theme";
+import { updateReady, useAppUpdateState } from "../update";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const DEFAULT_PASTE_AS_TEXT_SHORTCUT = "Shift+Enter";
@@ -1733,6 +1735,7 @@ const ClipboardCard = React.memo(ClipboardCardComponent, (prev, next) => (
 
 export default function Clipboard() {
     const { t, languageCode, setPreviewLanguageCode } = useLanguage();
+    const { state: updateState } = useAppUpdateState();
     const [selected, setSelected] = useState<String>("");
     const [searchWord, setSearchWord] = useState<String>("");
     const [searchOpen, setSearchOpen] = useState<boolean>(false);
@@ -3783,6 +3786,15 @@ export default function Clipboard() {
         }
     };
 
+    const openUpdateSettings = async () => {
+        try {
+            await hideCurrentWindowWithAnimation();
+            await invoke('open_config_window', { target: 'about' });
+        } catch (e) {
+            error(`Failed to open update settings: ${e}`);
+        }
+    };
+
     const openTutorialFromDebug = (platform: TutorialPlatform) => {
         void startTutorial(platform);
     };
@@ -4112,6 +4124,14 @@ export default function Clipboard() {
                     </button>
                 </div>
             </div>
+
+            {!tutorialActive && updateReady(updateState) && (
+                <button className="app-update-banner" type="button" onClick={() => void openUpdateSettings()}>
+                    <SystemUpdateAltOutlinedIcon fontSize="inherit" />
+                    <span>{t("clipboard.updateAvailable", { version: updateState.availableVersion || "" })}</span>
+                    <strong>{t("clipboard.updateOpenSettings")}</strong>
+                </button>
+            )}
 
             {/* Cards Grid */}
             <div

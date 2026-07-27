@@ -192,13 +192,28 @@ fn path() -> String {
 }
 
 pub fn save(config: Config) {
-    // Update cache
-    if let Ok(mut cache) = CACHE.write() {
-        *cache = Some(config.clone());
+    let mut cache = CACHE.write().unwrap();
+    *cache = Some(config.clone());
+    write_to_disk(&config);
+}
+
+pub fn update<F>(mutate: F) -> Config
+where
+    F: FnOnce(&mut Config),
+{
+    let initialized = CACHE.read().unwrap().is_some();
+    if !initialized {
+        get();
     }
+    let mut cache = CACHE.write().unwrap();
+    let config = cache.as_mut().expect("config cache must be initialized");
+    mutate(config);
+    write_to_disk(config);
+    config.clone()
+}
 
-    let config_json = serde_json::to_string_pretty(&config).unwrap();
-
+fn write_to_disk(config: &Config) {
+    let config_json = serde_json::to_string_pretty(config).unwrap();
     File::create(path())
         .unwrap()
         .write_all(config_json.as_bytes())

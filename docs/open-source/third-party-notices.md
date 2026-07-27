@@ -24,8 +24,8 @@ The current lockfile resolves these direct npm dependencies:
 | `@tauri-apps/plugin-dialog` | 2.7.1 | MIT OR Apache-2.0 | runtime |
 | `@tauri-apps/plugin-global-shortcut` | 2.3.1 | MIT OR Apache-2.0 | runtime |
 | `@tauri-apps/plugin-log` | 2.8.0 | MIT OR Apache-2.0 | runtime |
+| `@tauri-apps/plugin-notification` | 2.3.3 | MIT OR Apache-2.0 | runtime |
 | `@tauri-apps/plugin-process` | 2.3.1 | MIT OR Apache-2.0 | runtime |
-| `@tauri-apps/plugin-updater` | 2.10.1 | MIT OR Apache-2.0 | runtime |
 | `react` | 18.3.1 | MIT | runtime |
 | `react-dom` | 18.3.1 | MIT | runtime |
 | `react-router-dom` | 6.30.4 | MIT | runtime |
@@ -55,6 +55,12 @@ Notable attribution or license-selection items from the current locked dependenc
 | `webpki-root-certs` | CDLA-Permissive-2.0 | Include CDLA-Permissive-2.0 attribution. |
 | `clipboard-win` | BSL-1.0 | Windows clipboard dependency; include Boost Software License attribution. |
 | `libfuzzer-sys` | (MIT OR Apache-2.0) AND NCSA | Include NCSA attribution if the crate remains in the locked graph. |
+
+## Installer Tooling
+
+Windows packages are compiled with Inno Setup 6.7.3. Its bundled `license.txt` grants use for any purpose, including commercial applications, subject to preservation and origin requirements. The official project also requests commercial users to purchase a commercial license, and the unregistered compiler identifies builds as non-commercial; commercial vPaste releases must clear that gate before publishing.
+
+The Simplified Chinese Inno messages are downloaded from the official `jrsoftware/issrc` `is-6_7_3` tag during the build and accepted only when SHA-256 equals `7d544b9bb1d142cfa11f2e5d3cc8abe2e55f8e066c5124e3772675aa236e1278`. The translation file credits its maintainer in the source comments retained by the build cache.
 
 ## Release Maintainer Checklist
 

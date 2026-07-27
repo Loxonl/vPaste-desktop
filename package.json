@@ -1,7 +1,7 @@
 {
   "name": "vpaste-desktop",
   "private": true,
-  "version": "1.5.0",
+  "version": "1.6.0",
   "license": "GPL-3.0-only",
   "repository": {
     "type": "git",
@@ -21,7 +21,8 @@
     "dev:app": "powershell -ExecutionPolicy Bypass -File ./scripts/run-dev-app.ps1",
     "dev:debug": "node ./scripts/run-dev-debug.mjs",
     "build": "tsc && vite build",
-    "build:windows": "tauri build --bundles nsis --config src-tauri/tauri.local.conf.json",
+    "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-windows-release.ps1",
+    "build:windows:signed-updater": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-windows-release.ps1 -SignUpdater",
     "build:macos": "tauri build --bundles dmg --config src-tauri/tauri.local.conf.json",
     "build:macos-release": "bash ./scripts/build-macos-release.sh",
     "check:licenses": "node scripts/check-third-party-licenses.mjs",
@@ -39,8 +40,8 @@
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-global-shortcut": "^2.3.1",
     "@tauri-apps/plugin-log": "^2.8.0",
+    "@tauri-apps/plugin-notification": "2.3.3",
     "@tauri-apps/plugin-process": "^2.3.1",
-    "@tauri-apps/plugin-updater": "^2.10.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "6.30.4"

@@ -8,7 +8,7 @@
 }
 
 .header {
-  max-width: 920px;
+  max-width: 1080px;
   margin: 0 auto var(--ui-space-6);
   display: flex;
   align-items: flex-start;
@@ -35,7 +35,7 @@
 }
 
 .grid {
-  width: min(920px, 100%);
+  width: min(1080px, 100%);
   margin: 0 auto;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -54,6 +54,10 @@
   font-size: 14px;
 }
 
+.widePanel {
+  grid-column: 1 / -1;
+}
+
 .row {
   display: flex;
   flex-wrap: wrap;
@@ -61,8 +65,108 @@
   gap: var(--ui-space-2);
 }
 
-.field {
-  width: min(220px, 100%);
+.stateMatrix {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--ui-space-2) var(--ui-space-3);
+}
+
+.stateLabel {
+  color: var(--ui-text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.toggleGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  gap: var(--ui-space-1) var(--ui-space-4);
+}
+
+.fieldGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: start;
+  gap: var(--ui-space-3);
+}
+
+.controlSample {
+  min-width: 0;
+  display: grid;
+  gap: var(--ui-space-1);
+}
+
+.controlSample > span,
+.progressStack > span,
+.progressItem > span {
+  color: var(--ui-text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.controlSample > :last-child {
+  min-width: 0;
+}
+
+.feedbackGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  align-items: stretch;
+  gap: var(--ui-space-4);
+}
+
+.tabsDemo {
+  min-height: 132px;
+  display: grid;
+  grid-template-columns: 156px minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-surface-muted);
+}
+
+.tabsDemo > :first-child {
+  padding: var(--ui-space-2);
+  border-right: 1px solid var(--ui-border);
+}
+
+.tabPanel {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: var(--ui-space-1);
+  padding: var(--ui-space-4);
+}
+
+.tabPanel strong {
+  color: var(--ui-text-strong);
+  font-size: 14px;
+}
+
+.tabPanel span {
+  color: var(--ui-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.feedbackActions {
+  display: grid;
+  align-content: space-between;
+  gap: var(--ui-space-4);
+}
+
+.progressStack {
+  display: grid;
+  gap: var(--ui-space-2);
+}
+
+.progressItem {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--ui-space-2);
 }
 
 .settingsPreview {
@@ -87,5 +191,26 @@
 
   .toolbar {
     justify-content: flex-start;
+  }
+
+  .widePanel,
+  .settingsPreview {
+    grid-column: 1;
+  }
+
+  .fieldGrid,
+  .feedbackGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 460px) {
+  .stateMatrix,
+  .toggleGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .tabsDemo {
+    grid-template-columns: 124px minmax(0, 1fr);
   }
 }

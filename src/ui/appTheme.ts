@@ -73,6 +73,7 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                     root: {
                         "&.Mui-focusVisible": {
                             boxShadow: "var(--ui-focus-ring)",
+                            outline: "none",
                         },
                     },
                 },
@@ -88,6 +89,10 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                         borderRadius: "var(--ui-radius-control)",
                         paddingInline: 12,
                         lineHeight: 1.2,
+                        "&.Mui-focusVisible": {
+                            boxShadow: "var(--ui-focus-ring)",
+                            outline: "none",
+                        },
                     },
                     sizeSmall: {
                         minHeight: "var(--ui-control-compact)",
@@ -119,6 +124,9 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                         background: "var(--settings-input-bg)",
                         "&.Mui-focused": {
                             boxShadow: "var(--ui-focus-ring)",
+                        },
+                        "&.Mui-error.Mui-focused": {
+                            boxShadow: "var(--ui-danger-focus-ring)",
                         },
                     },
                     input: {
@@ -179,6 +187,9 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                 },
             },
             MuiTabs: {
+                defaultProps: {
+                    selectionFollowsFocus: true,
+                },
                 styleOverrides: {
                     flexContainer: {
                         gap: "var(--ui-space-1)",

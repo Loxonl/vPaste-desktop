@@ -36,6 +36,7 @@
   --ui-radius-surface: 14px;
   --ui-radius-pill: 999px;
   --ui-focus-ring: 0 0 0 3px rgba(30, 146, 238, 0.24);
+  --ui-danger-focus-ring: 0 0 0 3px rgba(217, 48, 37, 0.18);
   --ui-font-family: "Segoe UI Variable", "Segoe UI", -apple-system, BlinkMacSystemFont, "Microsoft YaHei UI", Arial, sans-serif;
 
   /* Compatibility aliases consumed by existing pages during migration. */
@@ -92,6 +93,7 @@
   --ui-shadow-card: 0 14px 38px rgba(0, 0, 0, 0.34), inset 0 0 0 1px rgba(255, 255, 255, 0.045);
   --ui-backdrop: rgba(8, 8, 9, 0.62);
   --ui-focus-ring: 0 0 0 3px rgba(74, 168, 255, 0.30);
+  --ui-danger-focus-ring: 0 0 0 3px rgba(255, 113, 104, 0.24);
 
   --theme-accent: var(--ui-accent);
   --theme-bg: var(--ui-bg);

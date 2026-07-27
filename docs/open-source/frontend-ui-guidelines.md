@@ -20,6 +20,23 @@ Use `sx` only for a one-off layout relationship such as flex sizing, alignment, 
 - Use native buttons only for custom surfaces such as clipboard cards; they still need a visible focus state, a minimum 24×24 px target, disabled styling, and an accessible name.
 - Use semantic status components or text as well as color for success, warning, and error states.
 
+## Interaction State Contract
+
+Every shared control must define and test the states that are relevant to it. A default-state screenshot alone is not sufficient.
+
+| Component | Required visual states | Required behavior |
+| --- | --- | --- |
+| Button | default, hover, keyboard focus, disabled, destructive, loading | Enter/Space activation; loading and disabled controls cannot trigger duplicate actions |
+| TextField | default, keyboard focus, error with text guidance, read-only, disabled | visible label; errors use `aria-invalid` and associated helper text |
+| Select/Menu | default, open, selected, hover, keyboard focus, disabled, long value, long list | Arrow-key selection; Escape closes; focus returns to the trigger; long menus scroll to their final item |
+| Switch/Checkbox | on/off or checked/unchecked, keyboard focus, disabled | associated label; Space toggles; the interactive target is at least 24×24 px |
+| Tabs | selected, hover, keyboard focus, disabled | arrow keys move between enabled tabs and update the selected panel |
+| Dialog | open and action states | focus is contained while open; Escape closes; focus returns to the trigger |
+| Tooltip | pointer hover and keyboard focus | supplemental text only; essential information must remain available without the tooltip |
+| Progress | determinate and indeterminate | an accessible name describes the operation; status is not communicated by animation alone |
+
+Use a single focus indicator per component. MUI controls use the shared theme focus ring; native controls use the global `:focus-visible` outline. Menu items use a clearly differentiated focus background because an outer ring is clipped by the menu surface.
+
 ## Themes and Density
 
 The supported modes are `system`, `light`, and `dark`. Existing `data-theme` behavior must remain compatible. The default density is compact without becoming difficult to click:
@@ -35,7 +52,7 @@ All motion must respect `prefers-reduced-motion`. Icon-only buttons require an `
 
 ## Development and Review
 
-Run the component inventory in development at `/__ui-lab`. The route does not exist in production builds. The settings-only preview at `/__settings-preview` uses an in-memory bridge so screenshots do not require Tauri.
+Run the component inventory in development at `/__ui-lab`. It is the reference for component dimensions and interaction states in Chinese and English, light and dark themes. The route does not exist in production builds. The settings-only preview at `/__settings-preview` uses an in-memory bridge so screenshots do not require Tauri.
 
 Before opening a UI pull request:
 

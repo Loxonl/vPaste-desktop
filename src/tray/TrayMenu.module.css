@@ -4,7 +4,7 @@ body {
     padding: 0;
     overflow: hidden;
     background: transparent;
-    font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", Arial, sans-serif;
+    font-family: var(--ui-font-family);
     -webkit-font-smoothing: antialiased;
 }
 

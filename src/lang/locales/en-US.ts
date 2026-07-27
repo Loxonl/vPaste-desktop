@@ -10,6 +10,7 @@ const enUS: LanguagePack = {
         "common.choose": "Choose",
         "common.modify": "Modify",
         "common.cleanup": "Clean",
+        "common.close": "Close",
         "common.file": "File",
         "common.files": "Files",
         "common.folder": "Folder",

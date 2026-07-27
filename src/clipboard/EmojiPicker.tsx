@@ -5,7 +5,7 @@ import { error } from "@tauri-apps/plugin-log";
 import { useLanguage } from "../lang";
 import { loadAndApplyTheme } from "../theme";
 import { NAME_PREFIX_EMOJIS } from "./nameEmoji";
-import "./EmojiPicker.css";
+import styles from "./EmojiPicker.module.css";
 
 type EmojiPickerPayload = {
     selectedEmoji?: string;
@@ -74,11 +74,11 @@ export default function EmojiPicker() {
     };
 
     return (
-        <div className="emoji-picker-window" role="menu" onContextMenu={event => event.preventDefault()}>
+        <div className={styles["emoji-picker-window"]} role="menu" onContextMenu={event => event.preventDefault()}>
             <button
                 type="button"
                 role="menuitem"
-                className={`emoji-clear-option ${!selectedEmoji ? "selected" : ""}`}
+                className={[styles["emoji-clear-option"], !selectedEmoji ? styles.selected : ""].join(" ")}
                 onMouseDown={event => {
                     event.preventDefault();
                     chooseEmoji("");
@@ -86,13 +86,13 @@ export default function EmojiPicker() {
             >
                 {t("tabs.emojiNone")}
             </button>
-            <div className="emoji-grid">
+            <div className={styles["emoji-grid"]}>
                 {NAME_PREFIX_EMOJIS.map(emoji => (
                     <button
                         key={emoji}
                         type="button"
                         role="menuitem"
-                        className={`emoji-option ${selectedEmoji === emoji ? "selected" : ""}`}
+                        className={[styles["emoji-option"], selectedEmoji === emoji ? styles.selected : ""].join(" ")}
                         title={emoji}
                         aria-label={`${t("tabs.emojiPrefix")} ${emoji}`}
                         onMouseDown={event => {

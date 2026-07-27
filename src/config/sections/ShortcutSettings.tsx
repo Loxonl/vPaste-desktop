@@ -3,6 +3,8 @@ import { Box, Divider, List, ListItem, ListItemText, Stack, Switch, Typography }
 import { error } from "@tauri-apps/plugin-log";
 import { formatShortcutLabel, getModifierDisplayLabel, isMacPlatform } from "../../shortcutDisplay";
 import type { SettingsSectionProps, Shortcutkey, ShortcutRegistrationInfo, StorageMigrationInfo, TFunction } from "../settingsTypes";
+import { classes } from "../../ui/classNames";
+import styles from "../Config.module.css";
 
 function normalizeShortcutForPolicy(value: string) {
     return value
@@ -120,9 +122,9 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
     };
 
     return (
-        <Stack spacing={2.15} className="settings-page-stack">
+        <Stack spacing={2.15} className={classes(styles, "settings-page-stack")}>
             <Box>
-                <Typography variant="subtitle2" className="settings-section-title">
+                <Typography variant="subtitle2" className={classes(styles, "settings-section-title")}>
                     {t("settings.shortcuts.global")}
                 </Typography>
                 <List>
@@ -139,7 +141,7 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
                 </List>
             </Box>
             <Box>
-                <Typography variant="subtitle2" className="settings-section-title">
+                <Typography variant="subtitle2" className={classes(styles, "settings-section-title")}>
                     {t("settings.shortcuts.mainWindow")}
                 </Typography>
                 <List>
@@ -204,7 +206,7 @@ function FixedShortcutItem({ label, secondary, value }: { label: string, seconda
                 primary={label}
                 secondary={secondary}
             />
-            <span className="shortcut-static">{value}</span>
+            <span className={classes(styles, "shortcut-static")}>{value}</span>
         </ListItem>
     );
 }
@@ -302,10 +304,10 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
             <ListItemText
                 primary={label}
             />
-            <div className="shortcut-control">
+            <div className={classes(styles, "shortcut-control")}>
                 <button
                     ref={recorderRef}
-                    className={`shortcut-recorder ${recording ? "recording" : ""} ${value ? "" : "empty"} ${errorMessage ? "has-error" : ""}`}
+                    className={classes(styles, `shortcut-recorder ${recording ? "recording" : ""} ${value ? "" : "empty"} ${errorMessage ? "has-error" : ""}`)}
                     type="button"
                     onClick={startRecording}
                     onKeyDown={recording ? handleKeyDown : undefined}
@@ -317,9 +319,8 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
                 >
                     {recording ? t("settings.shortcut.recording") : formatShortcutLabel(value) || t("settings.shortcut.clickToSet")}
                 </button>
-                {errorMessage && <span className="shortcut-error-text">{errorMessage}</span>}
+                {errorMessage && <span className={classes(styles, "shortcut-error-text")}>{errorMessage}</span>}
             </div>
         </ListItem>
     );
 }
-

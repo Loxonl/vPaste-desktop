@@ -6,6 +6,8 @@ import FileUploadIcon from "@mui/icons-material/FileUploadOutlined";
 import { error } from "@tauri-apps/plugin-log";
 import { displayAppSource, type AppSourceOption } from "../../clipboard/appSource";
 import type { HistoryArchiveInfo, HistoryArchiveProgressPayload, SettingsBlockingOperation, SettingsSectionProps, StorageCleanupInfo, StoragePaths, TFunction } from "../settingsTypes";
+import { classes } from "../../ui/classNames";
+import styles from "../Config.module.css";
 
 export default function DataSettings({ bridge, config, storagePaths, t, onSave, onBlockingOperationChange }: SettingsSectionProps & { storagePaths: StoragePaths | null, onBlockingOperationChange: (operation: SettingsBlockingOperation | null) => void }) {
     const [storageDirDraft, setStorageDirDraft] = React.useState(config.storage_dir || "");
@@ -229,15 +231,15 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
 
     const renderPrivacyAppIcon = (source: string, iconPath?: string) => {
         if (iconPath) {
-            return <img className="privacy-app-option-icon" src={bridge.convertFileSrc(iconPath)} alt="" />;
+            return <img className={classes(styles, "privacy-app-option-icon")} src={bridge.convertFileSrc(iconPath)} alt="" />;
         }
-        return <span className="privacy-app-option-icon placeholder">{displayAppSource(source, t).slice(0, 1).toUpperCase()}</span>;
+        return <span className={classes(styles, "privacy-app-option-icon placeholder")}>{displayAppSource(source, t).slice(0, 1).toUpperCase()}</span>;
     };
 
     return (
-        <Stack spacing={2.15} className="settings-page-stack">
+        <Stack spacing={2.15} className={classes(styles, "settings-page-stack")}>
             <Box>
-                <Typography variant="subtitle2" className="settings-section-title">
+                <Typography variant="subtitle2" className={classes(styles, "settings-section-title")}>
                     {t("settings.section.dataSecurity")}
                 </Typography>
                 <List>
@@ -248,17 +250,17 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                 secondary={t("settings.privacyApps.desc")}
                             />
                             {ignoredAppSources.length > 0 ? (
-                                <div className="privacy-app-list">
+                                <div className={classes(styles, "privacy-app-list")}>
                                     {ignoredAppSources.map(source => {
                                         const option = recentAppSourceMap.get(source);
                                         return (
-                                            <div className="privacy-app-chip" key={source} title={source}>
+                                            <div className={classes(styles, "privacy-app-chip")} key={source} title={source}>
                                                 {option?.icon_path ? (
-                                                    <img className="privacy-app-option-icon" src={bridge.convertFileSrc(option.icon_path)} alt="" />
+                                                    <img className={classes(styles, "privacy-app-option-icon")} src={bridge.convertFileSrc(option.icon_path)} alt="" />
                                                 ) : (
-                                                    <span className="privacy-app-option-icon placeholder">{displayAppSource(source, t).slice(0, 1).toUpperCase()}</span>
+                                                    <span className={classes(styles, "privacy-app-option-icon placeholder")}>{displayAppSource(source, t).slice(0, 1).toUpperCase()}</span>
                                                 )}
-                                                <span className="privacy-app-chip__text">
+                                                <span className={classes(styles, "privacy-app-chip__text")}>
                                                     <strong>{displayAppSource(source, t)}</strong>
                                                     <small>{source}</small>
                                                 </span>
@@ -270,7 +272,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                     })}
                                 </div>
                             ) : (
-                                <div className="privacy-app-empty">{t("settings.privacyApps.empty")}</div>
+                                <div className={classes(styles, "privacy-app-empty")}>{t("settings.privacyApps.empty")}</div>
                             )}
                             <Stack direction="row" spacing={1} alignItems="center">
                                 <Select
@@ -286,13 +288,13 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                     <MenuItem value="" disabled>{t("settings.privacyApps.selectPlaceholder")}</MenuItem>
                                     {privacyAppOptions.map(option => (
                                         <MenuItem key={option.source} value={option.source}>
-                                            <span className="privacy-app-option">
+                                            <span className={classes(styles, "privacy-app-option")}>
                                                 {renderPrivacyAppIcon(option.source, option.icon_path)}
                                                 <span>{displayAppSource(option.source, t)}</span>
                                             </span>
                                         </MenuItem>
                                     ))}
-                                    <MenuItem disabled className="privacy-app-menu-hint">
+                                    <MenuItem disabled className={classes(styles, "privacy-app-menu-hint")}>
                                         {t("settings.privacyApps.help")}
                                     </MenuItem>
                                 </Select>
@@ -315,7 +317,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                 </List>
             </Box>
             <Box>
-                <Typography variant="subtitle2" className="settings-section-title">
+                <Typography variant="subtitle2" className={classes(styles, "settings-section-title")}>
                     {t("settings.section.history")}
                 </Typography>
                 <List>
@@ -332,13 +334,13 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                     size="small"
                                     fullWidth
                                     InputProps={{ readOnly: true }}
-                                    inputProps={{ className: "storage-path-input" }}
+                                    inputProps={{ className: styles["storage-path-input"] }}
                                     disabled={historyWorking}
                                 />
                                 <Button disabled={historyWorking} variant="contained" color="inherit" size="small" onClick={handleChooseStorageDir} sx={{ flex: '0 0 auto' }}>{t("common.modify")}</Button>
                             </Stack>
                             {(historyWorkingArea === 'storage' || historyMessage) && (
-                                <div className={`storage-migration-status ${historyMessage?.kind || 'working'}`}>
+                                <div className={classes(styles, `storage-migration-status ${historyMessage?.kind || 'working'}`)}>
                                     {historyWorkingArea === 'storage' && <CircularProgress size={14} thickness={5} />}
                                     <span>{historyWorkingArea === 'storage' ? t("settings.historyWorking") : historyMessage?.text}</span>
                                 </div>
@@ -390,41 +392,41 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                 </List>
             </Box>
             <Box>
-                <Typography variant="subtitle2" className="settings-section-title">
+                <Typography variant="subtitle2" className={classes(styles, "settings-section-title")}>
                     {t("settings.historyTransfer")}
                 </Typography>
-                <div className="history-transfer-panel">
-                    <div className="history-transfer-grid">
+                <div className={classes(styles, "history-transfer-panel")}>
+                    <div className={classes(styles, "history-transfer-grid")}>
                         <button
-                            className="history-transfer-card"
+                            className={classes(styles, "history-transfer-card")}
                             type="button"
                             disabled={historyWorking || cleanupWorking}
                             onClick={handleImportHistory}
                         >
-                            <FileUploadIcon className="history-transfer-card__icon" fontSize="large" />
-                            <span className="history-transfer-card__title">{t("settings.importHistory")}</span>
-                            <span className="history-transfer-card__desc">{t("settings.importHistory.desc")}</span>
+                            <FileUploadIcon className={classes(styles, "history-transfer-card__icon")} fontSize="large" />
+                            <span className={classes(styles, "history-transfer-card__title")}>{t("settings.importHistory")}</span>
+                            <span className={classes(styles, "history-transfer-card__desc")}>{t("settings.importHistory.desc")}</span>
                         </button>
                         <button
-                            className="history-transfer-card"
+                            className={classes(styles, "history-transfer-card")}
                             type="button"
                             disabled={historyWorking || cleanupWorking}
                             onClick={handleExportHistory}
                         >
-                            <FileDownloadIcon className="history-transfer-card__icon" fontSize="large" />
-                            <span className="history-transfer-card__title">{t("settings.exportHistory")}</span>
-                            <span className="history-transfer-card__desc">{t("settings.exportHistory.desc")}</span>
+                            <FileDownloadIcon className={classes(styles, "history-transfer-card__icon")} fontSize="large" />
+                            <span className={classes(styles, "history-transfer-card__title")}>{t("settings.exportHistory")}</span>
+                            <span className={classes(styles, "history-transfer-card__desc")}>{t("settings.exportHistory.desc")}</span>
                         </button>
                     </div>
                     {(transferWorking || transferMessage) && (
-                        <div className={`history-transfer-progress ${transferMessage?.kind || 'working'}`}>
-                            <div className="history-transfer-progress__line">
+                        <div className={classes(styles, `history-transfer-progress ${transferMessage?.kind || 'working'}`)}>
+                            <div className={classes(styles, "history-transfer-progress__line")}>
                                 {transferWorking && <CircularProgress size={14} thickness={5} />}
                                 <span>{transferWorking ? transferWorkingText : transferMessage?.text}</span>
                             </div>
                             {transferWorking && (
                                 <LinearProgress
-                                    className="history-transfer-progress__bar"
+                                    className={classes(styles, "history-transfer-progress__bar")}
                                     variant={transferProgressValue != null ? "determinate" : "indeterminate"}
                                     value={transferProgressValue ?? undefined}
                                 />

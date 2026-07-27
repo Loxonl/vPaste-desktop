@@ -5,7 +5,7 @@
   padding: 0;
   overflow: hidden;
   background: transparent;
-  font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+  font-family: var(--ui-font-family);
   color: #202423;
   user-select: none;
 }

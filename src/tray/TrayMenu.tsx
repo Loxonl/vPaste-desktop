@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
 import { useLanguage } from "../lang";
 import { updateReady, useAppUpdateState } from "../update";
-import "./TrayMenu.css";
+import styles from "./TrayMenu.module.css";
 
 type TrayAction = "show_main_panel" | "open_config_window" | "quit_app";
 type PauseChangedPayload = { paused: boolean };
@@ -104,27 +104,27 @@ export default function TrayMenu() {
     };
 
     return (
-        <div ref={menuRef} className={`tray-menu-frame ${isMacOS ? "macos" : ""}`}>
-            <div className="tray-menu-shell">
+        <div ref={menuRef} className={[styles["tray-menu-frame"], isMacOS ? styles.macos : ""].join(" ")}>
+            <div className={styles["tray-menu-shell"]}>
                 <button
                     type="button"
-                    className={`tray-status-card ${paused ? "paused" : "recording"}`}
+                    className={[styles["tray-status-card"], styles[paused ? "paused" : "recording"]].join(" ")}
                     onClick={() => void togglePause()}
                     disabled={toggleWorking}
                     aria-pressed={paused}
                 >
-                    <span className="tray-status-indicator" />
-                    <span className="tray-status-copy">
+                    <span className={styles["tray-status-indicator"]} />
+                    <span className={styles["tray-status-copy"]}>
                         {t(paused ? "tray.resumeHistory" : "tray.pauseHistory")}
                     </span>
-                    <span className="tray-status-state">
+                    <span className={styles["tray-status-state"]}>
                         {t(paused ? "tray.historyPausedShort" : "tray.historyRecordingShort")}
                     </span>
                 </button>
                 {updateReady(updateState) && (
                     <button
                         type="button"
-                        className="tray-menu-item update-ready"
+                        className={`${styles["tray-menu-item"]} ${styles["update-ready"]}`}
                         onClick={() => void openUpdateSettings()}
                     >
                         <span>{t("tray.updateReady")}</span>
@@ -135,7 +135,7 @@ export default function TrayMenu() {
                     <button
                         key={item.action}
                         type="button"
-                        className="tray-menu-item"
+                        className={styles["tray-menu-item"]}
                         onClick={() => void runAction(item.action)}
                     >
                         {t(item.labelKey)}

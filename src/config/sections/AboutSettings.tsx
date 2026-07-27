@@ -11,6 +11,8 @@ import { error } from "@tauri-apps/plugin-log";
 import aboutLogo from "../../assets/vpaste-app-icon.png";
 import { useAppUpdateState, type UpdateState } from "../../update";
 import type { SettingsSectionProps, TFunction } from "../settingsTypes";
+import { classes } from "../../ui/classNames";
+import styles from "../Config.module.css";
 
 const APP_REPOSITORY_URL = "https://github.com/Loxonl/vPaste-desktop";
 const APP_CHANGELOG_URL = `${APP_REPOSITORY_URL}/releases`;
@@ -64,20 +66,20 @@ export default function AboutSettings({ bridge, config, dir: _dir, t, onSave }: 
     const updatePrepared = updateState.status === "ready" || updateState.status === "deferred";
 
     return (
-        <Stack spacing={2.25} className="settings-page-stack">
-            <Box className="about-hero">
-                <div className="about-logo-tile">
+        <Stack spacing={2.25} className={classes(styles, "settings-page-stack")}>
+            <Box className={classes(styles, "about-hero")}>
+                <div className={classes(styles, "about-logo-tile")}>
                     <img src={aboutLogo} alt="vPaste" />
                 </div>
-                <div className="about-copy">
-                    <Typography variant="h5" className="about-product-title">
+                <div className={classes(styles, "about-copy")}>
+                    <Typography variant="h5" className={classes(styles, "about-product-title")}>
                         vPaste
                     </Typography>
-                    <Typography variant="body2" className="about-product-subtitle">
+                    <Typography variant="body2" className={classes(styles, "about-product-subtitle")}>
                         {t("settings.about.subtitle")}
                     </Typography>
-                    <div className="about-version-actions">
-                        <span className="about-version-pill">
+                    <div className={classes(styles, "about-version-actions")}>
+                        <span className={classes(styles, "about-version-pill")}>
                             {t("common.version", { version: displayVersion })}
                         </span>
                         <Button
@@ -94,14 +96,14 @@ export default function AboutSettings({ bridge, config, dir: _dir, t, onSave }: 
                 </div>
             </Box>
             <Box>
-                <Typography variant="subtitle2" className="settings-section-title">
+                <Typography variant="subtitle2" className={classes(styles, "settings-section-title")}>
                     {t("settings.about.updateSection")}
                 </Typography>
-                <div className="about-update-panel">
-                    <div className="about-update-panel__header">
+                <div className={classes(styles, "about-update-panel")}>
+                    <div className={classes(styles, "about-update-panel__header")}>
                         <div>
-                            <div className="about-update-panel__title">{t("settings.updateTitle")}</div>
-                            <div className="about-update-panel__desc">
+                            <div className={classes(styles, "about-update-panel__title")}>{t("settings.updateTitle")}</div>
+                            <div className={classes(styles, "about-update-panel__desc")}>
                                 {updateState.portable
                                     ? t("settings.updatePortableDesc")
                                     : !updateState.feedEnabled
@@ -118,18 +120,18 @@ export default function AboutSettings({ bridge, config, dir: _dir, t, onSave }: 
                         />
                     </div>
                     {statusText && (
-                        <div className={`about-update-status ${updateState.status === 'failed' ? 'error' : updateState.status === 'ready' ? 'success' : 'working'}`}>
+                        <div className={classes(styles, `about-update-status ${updateState.status === 'failed' ? 'error' : updateState.status === 'ready' ? 'success' : 'working'}`)}>
                             {statusText}
                         </div>
                     )}
                     {updateState.status === "downloading" && (
                         <LinearProgress
-                            className="about-update-progress"
+                            className={classes(styles, "about-update-progress")}
                             variant={progressValue === undefined ? "indeterminate" : "determinate"}
                             value={progressValue}
                         />
                     )}
-                    <div className="about-update-actions">
+                    <div className={classes(styles, "about-update-actions")}>
                         {updateState.status === "available" && (
                             <Button size="small" variant="contained" startIcon={<FileDownloadIcon />} onClick={() => void handlePrepareUpdate()}>
                                 {t("settings.updateDownload")}
@@ -162,25 +164,25 @@ export default function AboutSettings({ bridge, config, dir: _dir, t, onSave }: 
                 </div>
             </Box>
             <Box>
-                <Typography variant="subtitle2" className="settings-section-title">
+                <Typography variant="subtitle2" className={classes(styles, "settings-section-title")}>
                     {t("settings.about.linksSection")}
                 </Typography>
-                <div className="about-link-grid">
-                    <button className="about-link-card" type="button" onClick={() => openExternal(APP_CHANGELOG_URL)}>
-                        <span className="about-link-card__icon"><ArticleOutlinedIcon fontSize="small" /></span>
-                        <span className="about-link-card__body">
-                            <span className="about-link-card__title">{t("settings.about.changelog")}</span>
-                            <span className="about-link-card__desc">{t("settings.about.changelog.desc")}</span>
+                <div className={classes(styles, "about-link-grid")}>
+                    <button className={classes(styles, "about-link-card")} type="button" onClick={() => openExternal(APP_CHANGELOG_URL)}>
+                        <span className={classes(styles, "about-link-card__icon")}><ArticleOutlinedIcon fontSize="small" /></span>
+                        <span className={classes(styles, "about-link-card__body")}>
+                            <span className={classes(styles, "about-link-card__title")}>{t("settings.about.changelog")}</span>
+                            <span className={classes(styles, "about-link-card__desc")}>{t("settings.about.changelog.desc")}</span>
                         </span>
-                        <LaunchOutlinedIcon className="about-link-card__launch" fontSize="small" />
+                        <LaunchOutlinedIcon className={classes(styles, "about-link-card__launch")} fontSize="small" />
                     </button>
-                    <button className="about-link-card" type="button" onClick={() => openExternal(APP_REPOSITORY_URL)}>
-                        <span className="about-link-card__icon"><GitHubIcon fontSize="small" /></span>
-                        <span className="about-link-card__body">
-                            <span className="about-link-card__title">{t("settings.about.github")}</span>
-                            <span className="about-link-card__desc">Loxonl/vPaste-desktop</span>
+                    <button className={classes(styles, "about-link-card")} type="button" onClick={() => openExternal(APP_REPOSITORY_URL)}>
+                        <span className={classes(styles, "about-link-card__icon")}><GitHubIcon fontSize="small" /></span>
+                        <span className={classes(styles, "about-link-card__body")}>
+                            <span className={classes(styles, "about-link-card__title")}>{t("settings.about.github")}</span>
+                            <span className={classes(styles, "about-link-card__desc")}>Loxonl/vPaste-desktop</span>
                         </span>
-                        <LaunchOutlinedIcon className="about-link-card__launch" fontSize="small" />
+                        <LaunchOutlinedIcon className={classes(styles, "about-link-card__launch")} fontSize="small" />
                     </button>
                 </div>
             </Box>

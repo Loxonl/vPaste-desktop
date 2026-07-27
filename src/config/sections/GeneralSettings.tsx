@@ -5,6 +5,8 @@ import { isMacPlatform } from "../../shortcutDisplay";
 import type { ThemeMode } from "../../theme";
 import { useAppUpdateState } from "../../update";
 import type { LanguageOption, PermissionId, PermissionStatus, SettingsSectionProps } from "../settingsTypes";
+import { classes } from "../../ui/classNames";
+import styles from "../Config.module.css";
 
 const PENDING_PERMISSION_WINDOW_KEY = "vpaste.pendingOnboardingPermission.v1";
 
@@ -95,9 +97,9 @@ export default function GeneralSettings({ bridge, config, languages, t, onSave }
     };
 
     return (
-        <Stack spacing={2.15} className="settings-page-stack">
+        <Stack spacing={2.15} className={classes(styles, "settings-page-stack")}>
             <Box>
-                <Typography variant="subtitle2" className="settings-section-title">
+                <Typography variant="subtitle2" className={classes(styles, "settings-section-title")}>
                     {t("settings.section.system")}
                 </Typography>
                 <List>
@@ -163,11 +165,11 @@ export default function GeneralSettings({ bridge, config, languages, t, onSave }
                                     />
                                     <button
                                         type="button"
-                                        className={`permission-status-button ${done ? 'enabled' : 'required'}`}
+                                        className={classes(styles, `permission-status-button ${done ? 'enabled' : 'required'}`)}
                                         disabled={permissionStatus === null || done}
                                         onClick={() => openPermissionGuide(permission)}
                                     >
-                                        <span className="permission-status-dot" aria-hidden="true" />
+                                        <span className={classes(styles, "permission-status-dot")} aria-hidden="true" />
                                         {label}
                                     </button>
                                 </ListItem>
@@ -185,7 +187,7 @@ export default function GeneralSettings({ bridge, config, languages, t, onSave }
             </Box>
 
             <Box>
-                <Typography variant="subtitle2" className="settings-section-title">
+                <Typography variant="subtitle2" className={classes(styles, "settings-section-title")}>
                     {t("settings.section.personalization")}
                 </Typography>
                 <List>

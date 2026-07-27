@@ -55,6 +55,9 @@
 
 .control {
   flex: 0 0 auto;
+  min-height: var(--ui-control-compact);
+  display: flex;
+  align-items: center;
 }
 
 @media (max-width: 560px) {

@@ -133,20 +133,20 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                 },
             },
             MuiSwitch: {
-                defaultProps: {
-                    size: "small",
-                },
                 styleOverrides: {
                     root: {
-                        width: 34,
-                        height: 20,
+                        width: 40,
+                        height: 24,
                         padding: 0,
                     },
                     switchBase: {
                         padding: 2,
                         transitionDuration: "160ms",
+                        "&:hover": {
+                            backgroundColor: "transparent",
+                        },
                         "&.Mui-checked": {
-                            transform: "translateX(14px)",
+                            transform: "translateX(16px)",
                             color: "#ffffff",
                             "& + .MuiSwitch-track": {
                                 backgroundColor: "var(--ui-accent)",
@@ -155,14 +155,26 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                         },
                     },
                     thumb: {
-                        width: 16,
-                        height: 16,
+                        width: 20,
+                        height: 20,
                         boxShadow: "0 1px 4px rgba(31, 42, 55, 0.20)",
                     },
                     track: {
                         borderRadius: "var(--ui-radius-pill)",
                         backgroundColor: dark ? "#656a72" : "#aeb4bc",
                         opacity: 1,
+                    },
+                },
+            },
+            MuiFormControlLabel: {
+                styleOverrides: {
+                    root: {
+                        gap: "var(--ui-space-2)",
+                        marginLeft: 0,
+                        marginRight: 0,
+                    },
+                    label: {
+                        fontSize: 13,
                     },
                 },
             },
@@ -264,12 +276,54 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                     },
                 },
             },
+            MuiMenu: {
+                styleOverrides: {
+                    paper: {
+                        marginTop: "var(--ui-space-1)",
+                        overflow: "hidden",
+                        backgroundColor: "var(--ui-surface-solid)",
+                        border: "1px solid var(--ui-border-strong)",
+                        borderRadius: "var(--ui-radius-control)",
+                        boxShadow: "var(--ui-shadow)",
+                    },
+                    list: {
+                        padding: 0,
+                        overflow: "hidden",
+                        background: "transparent",
+                        border: 0,
+                        borderRadius: 0,
+                        boxShadow: "none",
+                    },
+                },
+            },
             MuiMenuItem: {
                 styleOverrides: {
                     root: {
                         minHeight: "var(--ui-control-height)",
-                        borderRadius: 6,
+                        borderRadius: 0,
                         fontSize: 13,
+                        transition: "background-color 120ms ease",
+                        "&:hover": {
+                            backgroundColor: "var(--ui-surface-hover)",
+                        },
+                        "&.Mui-focusVisible": {
+                            backgroundColor: "var(--ui-surface-hover)",
+                            boxShadow: "none",
+                        },
+                        "&.Mui-selected": {
+                            backgroundColor: "var(--ui-accent-soft)",
+                            "&:hover": {
+                                backgroundColor: dark
+                                    ? "rgba(74, 168, 255, 0.24)"
+                                    : "rgba(30, 146, 238, 0.18)",
+                            },
+                            "&.Mui-focusVisible": {
+                                backgroundColor: dark
+                                    ? "rgba(74, 168, 255, 0.24)"
+                                    : "rgba(30, 146, 238, 0.18)",
+                                boxShadow: "none",
+                            },
+                        },
                     },
                 },
             },

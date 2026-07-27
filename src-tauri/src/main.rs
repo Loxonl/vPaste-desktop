@@ -96,6 +96,7 @@ static LAST_FOREGROUND_APP_PID: Mutex<Option<i32>> = Mutex::new(None);
 #[cfg(test)]
 pub static TEST_APP_DATA_LOCK: Mutex<()> = Mutex::new(());
 const CLIPBOARD_WINDOW_HEIGHT: f64 = 302.0;
+const CLIPBOARD_WINDOW_SHADOW: bool = cfg!(target_os = "windows");
 const CLIPBOARD_SHOW_ANIMATION_MS: u64 = 170;
 const CLIPBOARD_HIDE_ANIMATION_MS: u64 = 140;
 const CLIPBOARD_ANIMATION_FRAME_MS: u64 = 8;
@@ -7337,7 +7338,7 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
         .decorations(false)
         .resizable(false)
         .maximizable(false)
-        .shadow(false)
+        .shadow(CLIPBOARD_WINDOW_SHADOW)
         .transparent(true)
         .background_color(tauri::window::Color(0, 0, 0, 0))
         .skip_taskbar(true)
@@ -7360,7 +7361,7 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
 
     let clipboard_window = clipboard_window.build()?;
     let _ = clipboard_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-    let _ = clipboard_window.set_shadow(false);
+    let _ = clipboard_window.set_shadow(CLIPBOARD_WINDOW_SHADOW);
     apply_vpaste_window_icon(&clipboard_window);
 
     #[cfg(target_os = "macos")]

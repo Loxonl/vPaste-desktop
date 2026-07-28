@@ -1,0 +1,185 @@
+import { createRef } from "react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+    ClipboardHeaderActions,
+    ClipboardTabBar,
+    ClipboardUpdateBanner,
+} from "../../../src/clipboard/ClipboardHeader";
+import { type DynamicTabEntry } from "../../../src/clipboard/customTabs";
+
+const t = (key: string) => key;
+
+afterEach(cleanup);
+
+const dynamicTabs: DynamicTabEntry[] = [
+    {
+        kind: "filter",
+        id: "filter-1",
+        tab: {
+            id: "filter-1",
+            name: "Images",
+            filter: {
+                itemType: "Image",
+                appSource: "",
+                appSources: [],
+                favorite: "any",
+                relativeAmount: "",
+                relativeUnit: "day",
+            },
+        },
+    },
+    {
+        kind: "record",
+        id: "record:7",
+        tag: { id: 7, name: "Work" },
+    },
+];
+
+describe("clipboard header", () => {
+    it("forwards tab selection, editing, context menu, drag, drop, and add events", async () => {
+        const user = userEvent.setup();
+        const onSelectTab = vi.fn();
+        const onEditTab = vi.fn();
+        const onOpenContextMenu = vi.fn();
+        const onDragStart = vi.fn();
+        const onDragEnd = vi.fn();
+        const onDrop = vi.fn();
+        const onAdd = vi.fn();
+
+        render(
+            <ClipboardTabBar
+                activeTab="filter-1"
+                dynamicTabs={dynamicTabs}
+                draggingTabId=""
+                tutorialActive={false}
+                altHintsVisible
+                addButtonRef={createRef<HTMLButtonElement>()}
+                t={t}
+                onSelectTab={onSelectTab}
+                onBlockedNavigation={vi.fn()}
+                onEditTab={onEditTab}
+                onOpenContextMenu={onOpenContextMenu}
+                onDragStart={onDragStart}
+                onDragEnd={onDragEnd}
+                onDrop={onDrop}
+                onAdd={onAdd}
+            />,
+        );
+
+        await user.click(screen.getByRole("button", { name: /tabs\.all/ }));
+        await user.dblClick(screen.getByRole("button", { name: "Images" }));
+        fireEvent.contextMenu(screen.getByRole("button", { name: "Work" }), {
+            clientX: 120,
+            clientY: 240,
+        });
+        fireEvent.dragStart(screen.getByRole("button", { name: "Images" }));
+        fireEvent.dragEnd(screen.getByRole("button", { name: "Images" }));
+        fireEvent.drop(screen.getByRole("button", { name: "Work" }));
+        fireEvent.click(screen.getByRole("button", { name: "tabs.add" }), {
+            clientX: 300,
+            clientY: 80,
+        });
+
+        expect(onSelectTab).toHaveBeenCalledWith("all");
+        expect(onEditTab).toHaveBeenCalledWith(dynamicTabs[0], expect.any(HTMLButtonElement));
+        expect(onOpenContextMenu).toHaveBeenCalledWith(dynamicTabs[1], 120, 240);
+        expect(onDragStart).toHaveBeenCalledWith("filter-1");
+        expect(onDragEnd).toHaveBeenCalledOnce();
+        expect(onDrop).toHaveBeenCalledWith("record:7");
+        expect(onAdd).toHaveBeenCalledWith(300, 80);
+    });
+
+    it("blocks tab navigation and hides mutable actions during the tutorial", async () => {
+        const user = userEvent.setup();
+        const onBlockedNavigation = vi.fn();
+        const onSelectTab = vi.fn();
+        const onOpenContextMenu = vi.fn();
+
+        render(
+            <ClipboardTabBar
+                activeTab="all"
+                dynamicTabs={dynamicTabs}
+                draggingTabId=""
+                tutorialActive
+                altHintsVisible={false}
+                addButtonRef={createRef<HTMLButtonElement>()}
+                t={t}
+                onSelectTab={onSelectTab}
+                onBlockedNavigation={onBlockedNavigation}
+                onEditTab={vi.fn()}
+                onOpenContextMenu={onOpenContextMenu}
+                onDragStart={vi.fn()}
+                onDragEnd={vi.fn()}
+                onDrop={vi.fn()}
+                onAdd={vi.fn()}
+            />,
+        );
+
+        await user.click(screen.getByRole("button", { name: "Images" }));
+        fireEvent.contextMenu(screen.getByRole("button", { name: "Work" }));
+
+        expect(onBlockedNavigation).toHaveBeenCalledTimes(2);
+        expect(onSelectTab).not.toHaveBeenCalled();
+        expect(onOpenContextMenu).not.toHaveBeenCalled();
+        expect(screen.queryByRole("button", { name: "tabs.add" })).not.toBeInTheDocument();
+    });
+
+    it("keeps permission, debug, UI-lab, and settings actions explicit", async () => {
+        const user = userEvent.setup();
+        const callbacks = {
+            onOpenPermissionCenter: vi.fn(),
+            onOpenTutorial: vi.fn(),
+            onToggleLanguage: vi.fn(),
+            onToggleTheme: vi.fn(),
+            onOpenUiLab: vi.fn(),
+            onOpenSettings: vi.fn(),
+        };
+
+        render(
+            <ClipboardHeaderActions
+                isMac
+                tutorialActive={false}
+                tutorialPlatform="windows"
+                permissionIncomplete
+                developerMode
+                showDeveloperToolbar
+                languageCode="Chinese"
+                developerTheme="dark"
+                t={t}
+                {...callbacks}
+            />,
+        );
+
+        await user.click(screen.getByRole("button", { name: "clipboard.permissionsIncomplete" }));
+        await user.click(screen.getByRole("button", { name: "tutorial.debug.windows" }));
+        await user.click(screen.getByRole("button", { name: "tutorial.debug.language" }));
+        await user.click(screen.getByRole("button", { name: "tutorial.debug.theme.dark" }));
+        await user.click(screen.getByRole("button", { name: "tutorial.debug.uiLab" }));
+        await user.click(screen.getByRole("button", { name: "common.settings" }));
+
+        expect(callbacks.onOpenPermissionCenter).toHaveBeenCalledOnce();
+        expect(callbacks.onOpenTutorial).toHaveBeenCalledWith("windows");
+        expect(callbacks.onToggleLanguage).toHaveBeenCalledOnce();
+        expect(callbacks.onToggleTheme).toHaveBeenCalledOnce();
+        expect(callbacks.onOpenUiLab).toHaveBeenCalledOnce();
+        expect(callbacks.onOpenSettings).toHaveBeenCalledOnce();
+    });
+
+    it("renders the update text and forwards its action", async () => {
+        const user = userEvent.setup();
+        const onOpen = vi.fn();
+        render(
+            <ClipboardUpdateBanner
+                version="2.0.0"
+                t={t}
+                onOpen={onOpen}
+            />,
+        );
+
+        expect(screen.getByText("clipboard.updateAvailable")).toBeInTheDocument();
+        await user.click(screen.getByRole("button"));
+        expect(onOpen).toHaveBeenCalledOnce();
+    });
+});

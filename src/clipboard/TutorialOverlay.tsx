@@ -5,26 +5,23 @@ import backgroundVisual from "../assets/tutorial/permission-background.svg";
 import pasteVisual from "../assets/tutorial/permission-paste.svg";
 import shortcutVisual from "../assets/tutorial/shortcut-popover.svg";
 import styles from "./TutorialOverlay.module.css";
+import type {
+    TutorialFilterId,
+    TutorialFilterTab,
+    TutorialPermission,
+    TutorialPermissionId,
+    TutorialPlatform,
+} from "./clipboardTutorial";
+
+export type {
+    TutorialFilterId,
+    TutorialFilterTab,
+    TutorialPermission,
+    TutorialPermissionId,
+    TutorialPlatform,
+} from "./clipboardTutorial";
 
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
-
-export type TutorialPermissionId = "background" | "paste";
-export type TutorialFilterId = "text" | "image" | "link" | "color" | "file";
-export type TutorialPlatform = "windows" | "mac";
-
-export type TutorialPermission = {
-    id: TutorialPermissionId;
-    title: string;
-    description: string;
-    done: boolean;
-    actionLabel: string;
-};
-
-export type TutorialFilterTab = {
-    id: TutorialFilterId;
-    name: string;
-    enabled: boolean;
-};
 
 type TutorialOverlayProps = {
     t: TFunction;

@@ -8,31 +8,25 @@ import { useLanguage } from "../lang";
 import { type AppSourceOption, compactAppSourceName, displayAppSource } from "./appSource";
 import { loadAndApplyTheme } from "../theme";
 import { applyNameEmoji, selectedNameEmoji } from "./nameEmoji";
+import type { ItemTag } from "./Item";
+import {
+    PENDING_ITEM_TAGS_CHANGED_KEY,
+    type ItemTagsChangedPayload,
+} from "./clipboardTags";
+import {
+    DEFAULT_CUSTOM_FILTER,
+    loadCustomTabs,
+    normalizeAppSources,
+    normalizeCustomTabs,
+    recordTagTabId,
+    saveCustomTabs as saveCustomTabsToStorage,
+    type CustomTab,
+    type DateUnit,
+    type FavoriteFilter,
+} from "./customTabs";
 
-type FavoriteFilter = "any" | "yes" | "no";
-type DateUnit = "minute" | "hour" | "day" | "week" | "month";
 type TabEditorMode = "add" | "edit";
 type TagKind = "filter" | "record";
-
-type CustomTabFilter = {
-    itemType: string;
-    appSource: string;
-    appSources: string[];
-    favorite: FavoriteFilter;
-    relativeAmount: string;
-    relativeUnit: DateUnit;
-};
-
-type CustomTab = {
-    id: string;
-    name: string;
-    filter: CustomTabFilter;
-};
-
-type ItemTag = {
-    id: number;
-    name: string;
-};
 
 type TabEditorPayload = {
     mode: TabEditorMode;
@@ -43,63 +37,15 @@ type TabEditorPayload = {
     languageCode?: string;
 };
 
-const CUSTOM_TABS_STORAGE_KEY = "vpaste.customTabs.v1";
 const PENDING_TAB_EDITOR_PAYLOAD_KEY = "vpaste.pendingTabEditorPayload";
-const PENDING_ITEM_TAGS_CHANGED_KEY = "vpaste.pendingItemTagsChangedPayload";
 const PENDING_EMOJI_PICKER_PAYLOAD_KEY = "vpaste.pendingEmojiPickerPayload";
 const PENDING_EMOJI_SELECTION_KEY = "vpaste.pendingEmojiSelection";
 const TAB_EDITOR_WIDTH = 286;
 const WINDOW_SURFACE_GUTTER = 8;
 const MIN_TAG_EDITOR_HEIGHT = 154;
 const MAX_TAG_EDITOR_HEIGHT = 520;
-const RECORD_TAG_TAB_PREFIX = "record:";
-const DEFAULT_CUSTOM_FILTER: CustomTabFilter = {
-    itemType: "",
-    appSource: "",
-    appSources: [],
-    favorite: "any",
-    relativeAmount: "",
-    relativeUnit: "day",
-};
-function recordTagTabId(id: number): string {
-    return `${RECORD_TAG_TAB_PREFIX}${id}`;
-}
-
-function loadCustomTabs(): CustomTab[] {
-    return normalizeCustomTabs(localStorage.getItem(CUSTOM_TABS_STORAGE_KEY));
-}
-
-function normalizeAppSources(filter: Partial<CustomTabFilter> & { appSource?: unknown; appSources?: unknown }): string[] {
-    if (Array.isArray(filter.appSources)) {
-        return filter.appSources.filter(source => typeof source === "string" && source.trim()).map(source => source.trim());
-    }
-    return typeof filter.appSource === "string" && filter.appSource.trim() ? [filter.appSource.trim()] : [];
-}
-
-function normalizeCustomTabs(raw: unknown): CustomTab[] {
-    try {
-        if (!raw) return [];
-        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-        return Array.isArray(parsed)
-            ? parsed
-                .filter(tab => typeof tab?.id === "string" && typeof tab?.name === "string")
-                .map(tab => {
-                    const filter = { ...DEFAULT_CUSTOM_FILTER, ...(tab.filter || {}) };
-                    const { tagName: _legacyRecordTagName, ...filterWithoutRecordTag } = filter as typeof DEFAULT_CUSTOM_FILTER & { tagName?: unknown };
-                    return {
-                        id: tab.id,
-                        name: tab.name,
-                        filter: { ...filterWithoutRecordTag, appSources: normalizeAppSources(filter) },
-                    };
-                })
-            : [];
-    } catch {
-        return [];
-    }
-}
-
-function saveCustomTabs(tabs: CustomTab[]) {
-    localStorage.setItem(CUSTOM_TABS_STORAGE_KEY, JSON.stringify(tabs));
+function persistCustomTabs(tabs: CustomTab[]) {
+    saveCustomTabsToStorage(tabs);
     void invoke('save_custom_tabs', { tabs })
         .catch(e => error(`Failed to persist custom tabs: ${e}`));
 }
@@ -349,7 +295,7 @@ export default function TabEditor() {
                     ? await invoke<ItemTag>('rename_item_tag', { id: recordTagId, name })
                     : await invoke<ItemTag>('create_item_tag', { name });
                 const activeId = mode === "add" ? recordTagTabId(tag.id) : undefined;
-                const payload = { activeId, tag };
+                const payload: ItemTagsChangedPayload = { activeId, tag };
                 localStorage.setItem(PENDING_ITEM_TAGS_CHANGED_KEY, JSON.stringify(payload));
                 try {
                     await emit("item-tags-changed", payload);
@@ -392,7 +338,7 @@ export default function TabEditor() {
             }];
         }
         const payload = { activeId, tabs: nextTabs };
-        saveCustomTabs(nextTabs);
+        persistCustomTabs(nextTabs);
         void emitTo("clipboard", "custom-tabs-changed", payload)
             .catch(e => error(`Failed to notify custom tabs changed: ${e}`));
         void invoke("apply_custom_tabs_from_editor", { payload })

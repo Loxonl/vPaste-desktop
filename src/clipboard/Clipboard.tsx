@@ -1,71 +1,107 @@
-// @ts-ignore
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
-import { desktopDir, downloadDir } from "@tauri-apps/api/path";
+import { invoke } from "@tauri-apps/api/core";
 import { error } from "@tauri-apps/plugin-log";
-import { listen } from "@tauri-apps/api/event";
 import { Item, ItemTag, ItemType } from "./Item.ts";
-import { formatRelativeTime, useLanguage } from "../lang";
+import { useLanguage } from "../lang";
 import { formatShortcutLabel, isMacPlatform } from "../shortcutDisplay";
-import FolderCopyOutlinedIcon from "@mui/icons-material/FolderCopyOutlined";
-import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
-import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import SearchIcon from "@mui/icons-material/Search";
-import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
-import DashboardCustomizeOutlinedIcon from "@mui/icons-material/DashboardCustomizeOutlined";
-import AppleIcon from "@mui/icons-material/Apple";
-import WindowOutlinedIcon from "@mui/icons-material/WindowOutlined";
-import LightModeRoundedIcon from "@mui/icons-material/LightModeRounded";
-import DarkModeRoundedIcon from "@mui/icons-material/DarkModeRounded";
-import SystemUpdateAltOutlinedIcon from "@mui/icons-material/SystemUpdateAltOutlined";
-import AddIcon from "@mui/icons-material/Add";
-import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
-import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
-import StarBorderOutlinedIcon from "@mui/icons-material/StarBorderOutlined";
-import TutorialOverlay, { TutorialFilterId, TutorialFilterTab, TutorialPermission, TutorialPermissionId, TutorialPlatform } from "./TutorialOverlay.tsx";
+import TutorialOverlay from "./TutorialOverlay.tsx";
 import appIcon from "../../src-tauri/icons/source/vpaste-app-icon-1024.png";
-import { getResolvedTheme, getThemePreview, setThemePreview, type ResolvedTheme } from "../theme";
+import { getResolvedTheme, setThemePreview, type ResolvedTheme } from "../theme";
 import { updateReady, useAppUpdateState } from "../update";
+import {
+    arraysEqual,
+    customTabFilterPayload,
+    loadCustomTabs,
+    loadTabOrder,
+    mergeTagSearchFilter,
+    normalizeCustomTabs,
+    orderedDynamicTabs,
+    parseTagSearch,
+    recordTagIdFromTab,
+    recordTagTabId,
+    saveCustomTabs,
+    saveTabOrder,
+    type CustomTab,
+} from "./customTabs";
+import { fetchSearchPage } from "./searchPagination";
+import ClipboardCard from "./ClipboardCard";
+import {
+    parseLinkContent,
+} from "./itemPresentation";
+import {
+    CONTEXT_MENU_GAP,
+    CONTEXT_MENU_PADDING,
+    CONTEXT_MENU_ROW_HEIGHT,
+    CONTEXT_MENU_WIDTH,
+    CONTEXT_SUBMENU_WIDTH,
+    TAB_CONTEXT_MENU_WIDTH,
+    VIEWPORT_MARGIN,
+    clampToViewport,
+    contextMenuHeight,
+    floatingPositionFromClick,
+    screenAnchoredPositionFromClick,
+    screenFloatingPositionFromAnchor,
+} from "./floatingPosition";
+import {
+    ClipboardContextMenus,
+    DeleteConfirmDialog,
+    TabContextMenu,
+    TagCreateChoicePopover,
+    type ColorCopyOption,
+    type ContextMenuState,
+    type TabContextMenuState,
+    type TagCreateChoiceState,
+} from "./ClipboardOverlays";
+import {
+    ClipboardHeaderActions,
+    ClipboardTabBar,
+    ClipboardUpdateBanner,
+} from "./ClipboardHeader";
+import { clipboardKeyDownAction } from "./clipboardKeyboard";
+import { buildClipboardContextMenuOptions } from "./clipboardContextMenu";
+import {
+    useClipboardLifecycleSubscriptions,
+} from "./useClipboardLifecycleSubscriptions";
+import { useClipboardListInteractions } from "./useClipboardListInteractions";
+import { useClipboardAltHints } from "./useClipboardAltHints";
+import {
+    loadClipboardBehaviorConfig,
+    resolveClipboardShowPreferences,
+} from "./clipboardBehavior";
+import {
+    DEFAULT_MAIN_SHORTCUT,
+    DEFAULT_PASTE_AS_TEXT_SHORTCUT,
+} from "../config/shortcutDefaults";
+import {
+    buildTutorialFilterTabs,
+    buildTutorialPermissions,
+    tutorialFilterTabId,
+    updateTutorialFilterTabs,
+    type TutorialFilterId,
+    type TutorialPermissionStatus,
+    type TutorialPlatform,
+} from "./clipboardTutorial";
+import { createClipboardTutorialRuntime } from "./clipboardTutorialRuntime";
+import {
+    PENDING_ITEM_TAGS_CHANGED_KEY,
+    assignItemTag,
+    parseItemTagsChangedPayload,
+    removeItemTag,
+    removeRecordTagFromItems,
+    updateItemTagsForPage,
+    updateRecordTagInItems,
+    upsertItemTag,
+    type ItemTagsChangedPayload,
+} from "./clipboardTags";
+import { createClipboardItemActions } from "./clipboardItemActions";
+import { createClipboardPasteRuntime } from "./clipboardPasteRuntime";
+import { createClipboardPreviewRuntime } from "./clipboardPreviewRuntime";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
-const DEFAULT_PASTE_AS_TEXT_SHORTCUT = "Shift+Enter";
 const HISTORY_PAGE_LIMIT = 36;
-const HISTORY_DATA_URL_CACHE_LIMIT = 80;
-const ACTIVE_IMAGE_LOAD_DELAY_MS = 140;
-const WHEEL_LINE_DELTA_PX = 40;
-const WHEEL_MOUSE_TIME_CONSTANT_MS = 60;
-const WHEEL_PRECISION_TIME_CONSTANT_MS = 24;
-const WHEEL_SCROLL_IDLE_MS = 100;
-const WHEEL_SCROLL_STOP_EPSILON_PX = 0.35;
-const WHEEL_SCROLL_MAX_FRAME_MS = 34;
-const IMAGE_EXPORT_DIR_KEY = "vpaste.imageExportDir.v1";
-const PENDING_ITEM_TAGS_CHANGED_KEY = "vpaste.pendingItemTagsChangedPayload";
-const PENDING_PERMISSION_WINDOW_KEY = "vpaste.pendingOnboardingPermission.v1";
-const historyDataUrlCache = new Map<string, string>();
-const historyPreviewSrcCache = new Map<string, string>();
-const historyOriginalSrcCache = new Map<string, string>();
-const historyImageMetadataCache = new Map<string, HistoryImageMetadata>();
-
-type HistoryImageMetadata = {
-    width: number;
-    height: number;
-    isGif: boolean;
-};
-
-function normalizeWheelDelta(event: WheelEvent, pageSize: number): { delta: number; rawDelta: number } {
-    const rawDelta = Math.abs(event.deltaY) > Math.abs(event.deltaX)
-        ? event.deltaY
-        : event.deltaX;
-    const multiplier = event.deltaMode === WheelEvent.DOM_DELTA_LINE
-        ? WHEEL_LINE_DELTA_PX
-        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
-            ? Math.max(1, pageSize)
-            : 1;
-    return { delta: rawDelta * multiplier, rawDelta };
-}
 
 type ToastKind = 'info' | 'warning' | 'error';
 
@@ -77,49 +113,6 @@ type ToastState = {
     onAction?: () => void;
 } | null;
 
-type FilePreviewInfo = {
-    kind: 'single-preview' | 'single-icon' | 'single-folder' | 'multiple' | 'pdf-preview' | 'text-preview';
-    paths: string[];
-    exists: boolean;
-    missing_paths: string[];
-    display_path: string;
-    secondary_text: string;
-    extension: string;
-    preview_path: string;
-    image_width?: number | null;
-    image_height?: number | null;
-};
-
-type DominantColor = {
-    color: string;
-    textColor: string;
-};
-
-type ClipboardBehaviorConfig = {
-    display_tray_icon?: boolean;
-    onboarding_completed?: boolean;
-    retain_search_history?: boolean;
-    retain_last_position?: boolean;
-    retain_tab_position?: boolean;
-    link_auto_preview?: boolean;
-    quick_input_enabled?: boolean;
-    tab_quick_select_enabled?: boolean;
-    shortcut_keys?: {
-        main_window?: string | null;
-        paste_into_plain_text?: string | null;
-    };
-};
-
-type PasteAccessibilityPermissionStatus = {
-    granted: boolean;
-    needs_settings: boolean;
-};
-
-type TutorialPermissionStatus = {
-    background: { done: boolean; needs_settings: boolean; error?: string | null };
-    paste: { done: boolean; needs_settings: boolean; error?: string | null };
-};
-
 type LinkPreviewUpdate = {
     url: string;
     title: string;
@@ -127,455 +120,18 @@ type LinkPreviewUpdate = {
     image_kind?: string;
 };
 
-function normalizeShortcutKey(key: string): string {
-    const normalized = key.toLowerCase();
-    if (normalized === "control") return "ctrl";
-    if (normalized === "cmd" || normalized === "command" || normalized === "meta") return "meta";
-    if (normalized === "return") return "enter";
-    if (normalized === "escape") return "esc";
-    return normalized;
-}
-
-function matchesKeyboardShortcut(event: KeyboardEvent, shortcut?: string | null): boolean {
-    const parts = (shortcut || "").split("+").map(part => normalizeShortcutKey(part.trim())).filter(Boolean);
-    if (parts.length === 0) return false;
-
-    const key = normalizeShortcutKey(event.key);
-    const expectedKey = parts[parts.length - 1];
-    const modifiers = new Set(parts.slice(0, -1));
-    return key === expectedKey
-        && event.ctrlKey === modifiers.has("ctrl")
-        && event.metaKey === modifiers.has("meta")
-        && event.altKey === modifiers.has("alt")
-        && event.shiftKey === modifiers.has("shift");
-}
-
-function isTextInputTarget(target: EventTarget | null): boolean {
-    return target instanceof HTMLInputElement
-        || target instanceof HTMLTextAreaElement
-        || target instanceof HTMLSelectElement
-        || (target instanceof HTMLElement && target.isContentEditable);
-}
-
-type QuickInputAction =
-    | { kind: "tab"; tabId: "all" | "favorite" }
-    | { kind: "item"; index: number };
-
-function quickInputAction(event: KeyboardEvent): QuickInputAction | null {
-    if (isMacPlatform()) {
-        if (event.code === "KeyA") return { kind: "tab", tabId: "all" };
-        if (event.code === "KeyF") return { kind: "tab", tabId: "favorite" };
-
-        const digitCode = /^Digit([1-9])$/.exec(event.code);
-        if (digitCode) return { kind: "item", index: Number(digitCode[1]) - 1 };
-
-        return null;
-    }
-
-    const key = event.key.toLowerCase();
-    if (key === "a") return { kind: "tab", tabId: "all" };
-    if (key === "f") return { kind: "tab", tabId: "favorite" };
-    if (/^[1-9]$/.test(key)) return { kind: "item", index: Number(key) - 1 };
-
-    return null;
-}
-
-async function loadHistoryDataUrl(path: string): Promise<string> {
-    if (!path) return "";
-    const cached = historyDataUrlCache.get(path);
-    if (cached) return cached;
-
-    let src: string;
-    try {
-        src = await invoke<string>("history_file_data_url", { path });
-    } catch {
-        src = convertFileSrc(path);
-    }
-
-    historyDataUrlCache.set(path, src);
-    if (historyDataUrlCache.size > HISTORY_DATA_URL_CACHE_LIMIT) {
-        const oldestKey = historyDataUrlCache.keys().next().value;
-        if (oldestKey) {
-            historyDataUrlCache.delete(oldestKey);
-        }
-    }
-    return src;
-}
-
-async function loadHistoryPreviewSrc(path: string): Promise<string> {
-    if (!path) return "";
-    const cached = historyPreviewSrcCache.get(path);
-    if (cached) return cached;
-
-    let src: string;
-    try {
-        const assetPath = await invoke<string>("history_image_card_preview_asset_path", { path });
-        src = convertFileSrc(assetPath);
-    } catch {
-        src = await loadHistoryDataUrl(path);
-    }
-
-    historyPreviewSrcCache.set(path, src);
-    if (historyPreviewSrcCache.size > HISTORY_DATA_URL_CACHE_LIMIT) {
-        const oldestKey = historyPreviewSrcCache.keys().next().value;
-        if (oldestKey) {
-            historyPreviewSrcCache.delete(oldestKey);
-        }
-    }
-    return src;
-}
-
-async function loadHistoryOriginalSrc(path: string): Promise<string> {
-    if (!path) return "";
-    const cached = historyOriginalSrcCache.get(path);
-    if (cached) return cached;
-
-    let src: string;
-    try {
-        const assetPath = await invoke<string>("history_file_preview_asset_path", { path });
-        src = convertFileSrc(assetPath);
-    } catch {
-        src = await loadHistoryDataUrl(path);
-    }
-
-    historyOriginalSrcCache.set(path, src);
-    if (historyOriginalSrcCache.size > HISTORY_DATA_URL_CACHE_LIMIT) {
-        const oldestKey = historyOriginalSrcCache.keys().next().value;
-        if (oldestKey) {
-            historyOriginalSrcCache.delete(oldestKey);
-        }
-    }
-    return src;
-}
-
-async function loadHistoryImageMetadata(path: string): Promise<HistoryImageMetadata> {
-    const cached = historyImageMetadataCache.get(path);
-    if (cached) return cached;
-
-    const metadata = await invoke<HistoryImageMetadata>("history_image_metadata", { path });
-    historyImageMetadataCache.set(path, metadata);
-    if (historyImageMetadataCache.size > HISTORY_DATA_URL_CACHE_LIMIT) {
-        const oldestKey = historyImageMetadataCache.keys().next().value;
-        if (oldestKey) {
-            historyImageMetadataCache.delete(oldestKey);
-        }
-    }
-    return metadata;
-}
-
-type ColorCopyOption = {
-    format: string;
-    value: string;
-};
-
-type ContextMenuState = {
-    item: Item;
-    x: number;
-    y: number;
-    originX: number;
-    originY: number;
-    submenuSide: "left" | "right";
-    itemTags: ItemTag[];
-    colorOptions: ColorCopyOption[];
-} | null;
-
-type ContextMenuOption = {
-    label: string;
-    action?: () => void | Promise<void>;
-    children?: ContextMenuOption[];
-    danger?: boolean;
-};
-
-type TabContextMenuState = {
-    kind: "filter";
-    tab: CustomTab;
-    x: number;
-    y: number;
-    originX: number;
-    originY: number;
-} | {
-    kind: "record";
-    tag: ItemTag;
-    x: number;
-    y: number;
-    originX: number;
-    originY: number;
-} | null;
-
-type PreviewNavigationPayload = {
-    direction?: number;
-    key?: string;
-};
-
-type TFunction = (key: string, params?: Record<string, string | number>) => string;
-
-type FavoriteFilter = "any" | "yes" | "no";
-type DateUnit = "minute" | "hour" | "day" | "week" | "month";
-
-type CustomTabFilter = {
-    itemType: string;
-    appSource: string;
-    appSources: string[];
-    favorite: FavoriteFilter;
-    relativeAmount: string;
-    relativeUnit: DateUnit;
-};
-
-type CustomTab = {
-    id: string;
-    name: string;
-    filter: CustomTabFilter;
-};
-
-type DynamicTabEntry = {
-    kind: "filter";
-    id: string;
-    tab: CustomTab;
-} | {
-    kind: "record";
-    id: string;
-    tag: ItemTag;
-};
-
 type TabEditorMode = "add" | "edit";
 type TagEditorKind = "filter" | "record";
-type ItemTagsChangedPayload = {
-    activeId?: string;
-    tag?: ItemTag;
-};
-type TagCreateChoiceState = {
-    x: number;
-    y: number;
-    originX: number;
-    originY: number;
-} | null;
-const RECORD_TAG_TAB_PREFIX = "record:";
 const TAB_EDITOR_WIDTH = 286;
 const FILTER_TAG_EDITOR_HEIGHT = 398;
 const RECORD_TAG_EDITOR_HEIGHT = 178;
 const TAG_CREATE_CHOICE_WIDTH = 252;
 const TAG_CREATE_CHOICE_HEIGHT = 142;
 
-const CUSTOM_TABS_STORAGE_KEY = "vpaste.customTabs.v1";
-const TAB_ORDER_STORAGE_KEY = "vpaste.tabOrder.v1";
-const DEFAULT_CUSTOM_FILTER: CustomTabFilter = {
-    itemType: "",
-    appSource: "",
-    appSources: [],
-    favorite: "any",
-    relativeAmount: "",
-    relativeUnit: "day",
-};
-const DEFAULT_MAIN_SHORTCUT = "Alt+V";
-const TUTORIAL_FILTER_TABS: Array<{ id: TutorialFilterId; emoji: string; titleKey: string; itemType: ItemType }> = [
-    { id: "text", emoji: "📝", titleKey: "type.text", itemType: ItemType.Text },
-    { id: "image", emoji: "🖼️", titleKey: "type.image", itemType: ItemType.Image },
-    { id: "link", emoji: "🔗", titleKey: "type.link", itemType: ItemType.Link },
-    { id: "color", emoji: "🎨", titleKey: "type.color", itemType: ItemType.Color },
-    { id: "file", emoji: "📁", titleKey: "type.file", itemType: ItemType.File },
-];
-
-function tutorialFilterTabId(id: TutorialFilterId): string {
-    return `tutorial-filter-${id}`;
-}
-
-function normalizeAppSources(filter: Partial<CustomTabFilter> & { appSource?: unknown; appSources?: unknown }): string[] {
-    if (Array.isArray(filter.appSources)) {
-        return filter.appSources.filter(source => typeof source === "string" && source.trim()).map(source => source.trim());
-    }
-    return typeof filter.appSource === "string" && filter.appSource.trim() ? [filter.appSource.trim()] : [];
-}
-
-function loadCustomTabs(): CustomTab[] {
-    return normalizeCustomTabs(localStorage.getItem(CUSTOM_TABS_STORAGE_KEY));
-}
-
-function normalizeStringArray(raw: unknown): string[] {
-    try {
-        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-        return Array.isArray(parsed)
-            ? parsed.filter(value => typeof value === "string" && value.trim()).map(value => value.trim())
-            : [];
-    } catch {
-        return [];
-    }
-}
-
-function loadTabOrder(): string[] {
-    return normalizeStringArray(localStorage.getItem(TAB_ORDER_STORAGE_KEY));
-}
-
-function saveTabOrder(order: string[]) {
-    localStorage.setItem(TAB_ORDER_STORAGE_KEY, JSON.stringify(order));
-}
-
-function normalizeCustomTabs(raw: unknown): CustomTab[] {
-    try {
-        if (!raw) return [];
-        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-        return Array.isArray(parsed)
-            ? parsed
-                .filter(tab => typeof tab?.id === "string" && typeof tab?.name === "string")
-                .map(tab => {
-                    const filter = { ...DEFAULT_CUSTOM_FILTER, ...(tab.filter || {}) };
-                    const { tagName: _legacyRecordTagName, ...filterWithoutRecordTag } = filter as typeof DEFAULT_CUSTOM_FILTER & { tagName?: unknown };
-                    return {
-                        id: tab.id,
-                        name: tab.name,
-                        filter: { ...filterWithoutRecordTag, appSources: normalizeAppSources(filter) },
-                    };
-                })
-            : [];
-    } catch {
-        return [];
-    }
-}
-
-function saveCustomTabs(tabs: CustomTab[]) {
-    localStorage.setItem(CUSTOM_TABS_STORAGE_KEY, JSON.stringify(tabs));
-}
-
 function persistCustomTabs(tabs: CustomTab[]) {
     saveCustomTabs(tabs);
     void invoke('save_custom_tabs', { tabs })
         .catch(e => error(`Failed to persist custom tabs: ${e}`));
-}
-
-function customTabFilterPayload(tab: CustomTab): string {
-    const filter = tab.filter;
-    const payload: Record<string, string | number | boolean | string[]> = { mode: "custom" };
-    if (filter.itemType) payload.item_type = filter.itemType;
-    const appSources = normalizeAppSources(filter);
-    if (appSources.length > 0) payload.app_sources = appSources;
-    if (filter.favorite === "yes") payload.favorite = true;
-    if (filter.favorite === "no") payload.favorite = false;
-    const amount = Number(filter.relativeAmount);
-    if (Number.isFinite(amount) && amount > 0) {
-        payload.relative_amount = amount;
-        payload.relative_unit = filter.relativeUnit;
-    }
-    return `__filter:${JSON.stringify(payload)}`;
-}
-
-function recordTagTabId(id: number): string {
-    return `${RECORD_TAG_TAB_PREFIX}${id}`;
-}
-
-function recordTagIdFromTab(tabId: string): number | null {
-    if (!tabId.startsWith(RECORD_TAG_TAB_PREFIX)) return null;
-    const id = Number(tabId.slice(RECORD_TAG_TAB_PREFIX.length));
-    return Number.isInteger(id) && id > 0 ? id : null;
-}
-
-function orderedDynamicTabs(customTabs: CustomTab[], itemTags: ItemTag[], order: string[]): DynamicTabEntry[] {
-    const defaultEntries: DynamicTabEntry[] = [
-        ...customTabs.map(tab => ({ kind: "filter" as const, id: tab.id, tab })),
-        ...itemTags.map(tag => ({ kind: "record" as const, id: recordTagTabId(tag.id), tag })),
-    ];
-    const entryMap = new Map(defaultEntries.map(entry => [entry.id, entry]));
-    const seen = new Set<string>();
-    const ids = [
-        ...order.filter(id => {
-            if (seen.has(id) || !entryMap.has(id)) return false;
-            seen.add(id);
-            return true;
-        }),
-        ...defaultEntries.map(entry => entry.id).filter(id => !seen.has(id)),
-    ];
-    return ids.map(id => entryMap.get(id)).filter((entry): entry is DynamicTabEntry => Boolean(entry));
-}
-
-function arraysEqual(left: string[], right: string[]): boolean {
-    return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function parseTagSearch(value: string): { keywords: string; tagNames: string[] } {
-    const tagNames: string[] = [];
-    const keywords = value
-        .replace(/(?:^|\s)tag:("[^"]+"|\S+)/gi, (_match, raw: string) => {
-            const name = raw.startsWith('"') && raw.endsWith('"')
-                ? raw.slice(1, -1)
-                : raw;
-            const trimmed = name.trim();
-            if (trimmed && !tagNames.some(tag => tag.toLowerCase() === trimmed.toLowerCase())) {
-                tagNames.push(trimmed);
-            }
-            return " ";
-        })
-        .replace(/\s+/g, " ")
-        .trim();
-    return { keywords, tagNames };
-}
-
-function mergeTagSearchFilter(label: string, tagNames: string[]): string {
-    if (tagNames.length === 0) return label;
-    const payload: Record<string, unknown> = label.startsWith("__filter:")
-        ? JSON.parse(label.slice("__filter:".length))
-        : label === "__favorite"
-            ? { mode: "favorite", favorite: true }
-            : { mode: "all" };
-    const existing = Array.isArray(payload.tag_names)
-        ? payload.tag_names.filter(name => typeof name === "string")
-        : [];
-    payload.tag_names = [...existing, ...tagNames].filter((name, index, list) =>
-        list.findIndex(candidate => String(candidate).toLowerCase() === String(name).toLowerCase()) === index
-    );
-    return `__filter:${JSON.stringify(payload)}`;
-}
-
-const CONTEXT_MENU_WIDTH = 188;
-const CONTEXT_SUBMENU_WIDTH = 312;
-const TAB_CONTEXT_MENU_WIDTH = 126;
-const CONTEXT_MENU_PADDING = 5;
-const CONTEXT_MENU_ROW_HEIGHT = 34;
-const CONTEXT_MENU_GAP = 6;
-const VIEWPORT_MARGIN = 8;
-
-function clampToViewport(value: number, size: number, viewportSize: number): number {
-    return Math.max(VIEWPORT_MARGIN, Math.min(value, viewportSize - size - VIEWPORT_MARGIN));
-}
-
-function contextMenuHeight(rowCount: number): number {
-    return CONTEXT_MENU_PADDING * 2 + Math.max(1, rowCount) * CONTEXT_MENU_ROW_HEIGHT;
-}
-
-function floatingPositionFromClick(clientX: number, clientY: number, width: number, height: number) {
-    return {
-        x: clampToViewport(clientX + CONTEXT_MENU_GAP, width, window.innerWidth),
-        y: clampToViewport(clientY - height - CONTEXT_MENU_GAP, height, window.innerHeight),
-    };
-}
-
-function clampToScreen(value: number, size: number, min: number, maxSize: number): number {
-    return Math.max(min + VIEWPORT_MARGIN, Math.min(value, min + maxSize - size - VIEWPORT_MARGIN));
-}
-
-function screenFloatingPositionFromClick(clientX: number, clientY: number, width: number, height: number) {
-    const screenBounds = window.screen as Screen & { availLeft?: number; availTop?: number };
-    const availLeft = screenBounds.availLeft ?? 0;
-    const availTop = screenBounds.availTop ?? 0;
-    return {
-        x: clampToScreen(window.screenX + clientX + CONTEXT_MENU_GAP, width, availLeft, window.screen.availWidth),
-        y: clampToScreen(window.screenY + clientY - height - CONTEXT_MENU_GAP, height, availTop, window.screen.availHeight),
-    };
-}
-
-function screenAnchoredPositionFromClick(clientX: number, clientY: number, width: number, height: number) {
-    const screenBounds = window.screen as Screen & { availLeft?: number; availTop?: number };
-    const availLeft = screenBounds.availLeft ?? 0;
-    const availTop = screenBounds.availTop ?? 0;
-    return {
-        x: clampToScreen(window.screenX + clientX + CONTEXT_MENU_GAP, width, availLeft, window.screen.availWidth),
-        y: clampToScreen(window.screenY + clientY - height, height, availTop, window.screen.availHeight),
-    };
-}
-
-function screenFloatingPositionFromAnchor(anchor: HTMLElement | null | undefined, width: number, height: number) {
-    const rect = anchor?.getBoundingClientRect();
-    if (!rect) {
-        return screenFloatingPositionFromClick(window.innerWidth - width - VIEWPORT_MARGIN, VIEWPORT_MARGIN, width, height);
-    }
-    return screenAnchoredPositionFromClick(rect.right, rect.bottom, width, height);
 }
 
 class ClipboardPage {
@@ -587,1172 +143,6 @@ class ClipboardPage {
         this.consumed = consumed;
     }
 }
-
-type SearchPagePayload = {
-    list: any[];
-    consumed: number;
-    hasMore: boolean;
-    nextId: number;
-    nextTime: number;
-};
-
-type SearchPageResult = {
-    items: Item[];
-    consumed: number;
-    hasMore: boolean;
-};
-
-
-// Helper function to get type label
-function getTypeLabel(type: ItemType, t: TFunction): string {
-    switch (type) {
-        case ItemType.Text: return t("type.text");
-        case ItemType.Image: return t("type.image");
-        case ItemType.TextFile: return t("type.text");
-        case ItemType.Link: return t("type.link");
-        case ItemType.Color: return t("type.color");
-        case ItemType.File: return t("type.file");
-        default: return t("type.text");
-    }
-}
-
-function getBackendTypeLabel(type: ItemType): string {
-    switch (type) {
-        case ItemType.Text: return "Text";
-        case ItemType.Image: return "Image";
-        case ItemType.TextFile: return "Text";
-        case ItemType.Link: return "Link";
-        case ItemType.Color: return "Color";
-        case ItemType.File: return "File";
-        default: return "Text";
-    }
-}
-
-// Helper function to get type class
-function getTypeClass(type: ItemType): string {
-    switch (type) {
-        case ItemType.Text: return "type-text";
-        case ItemType.Image: return "type-image";
-        case ItemType.TextFile: return "type-text";
-        case ItemType.Link: return "type-link";
-        case ItemType.Color: return "type-color";
-        case ItemType.File: return "type-file";
-        default: return "type-text";
-    }
-}
-
-function getTypeAccentColor(type: ItemType): string {
-    switch (type) {
-        case ItemType.Text: return "#4CAF50";
-        case ItemType.Image: return "#FF9800";
-        case ItemType.TextFile: return "#4CAF50";
-        case ItemType.Link: return "#2f6fed";
-        case ItemType.Color: return "#2196F3";
-        case ItemType.File: return "#00BCD4";
-        default: return "#4CAF50";
-    }
-}
-
-const APP_ICON_HEADER_ACCENT_COLOR = "#637083";
-
-function getFormatTagColor(type: ItemType, headerColor: DominantColor | null, hasAppIcon: boolean): string {
-    if (headerColor) return headerColor.color;
-    if (hasAppIcon) return APP_ICON_HEADER_ACCENT_COLOR;
-    return getTypeAccentColor(type);
-}
-
-function compactPath(path: string, maxLength: number = 28): string {
-    const normalized = path.replace(/\\/g, "/");
-    if (normalized.length <= maxLength) return normalized;
-    return `...${normalized.slice(-(maxLength - 3))}`;
-}
-
-function parseFilePaths(content: string): string[] {
-    try {
-        const paths = JSON.parse(content);
-        return Array.isArray(paths) ? paths.filter(path => typeof path === "string") : [];
-    } catch {
-        return [];
-    }
-}
-
-function isImagePath(path: string): boolean {
-    return /\.(png|jpe?g|gif|webp|bmp|ico|tiff?|svg)$/i.test(path);
-}
-
-function isGifPath(path: string): boolean {
-    return /\.gif(?:[?#].*)?$/i.test(path.trim());
-}
-
-function isSingleImageFileItem(item: Item): boolean {
-    if (item.getType() !== ItemType.File) return false;
-    const paths = parseFilePaths(item.getContent());
-    return paths.length === 1 && isImagePath(paths[0]);
-}
-
-function itemHasGifFormat(item: Item): boolean {
-    if (item.getType() === ItemType.Image) {
-        return isGifPath(item.getContent()) || isGifPath(item.getPreviewContent());
-    }
-    if (item.getType() === ItemType.File) {
-        const paths = parseFilePaths(item.getContent());
-        if (paths.length === 1) return isGifPath(paths[0]);
-    }
-    return false;
-}
-
-function imageExportSourcePath(item: Item): string {
-    if (item.getType() === ItemType.Image) {
-        return item.getPreviewContent();
-    }
-    if (item.getType() === ItemType.File) {
-        const paths = parseFilePaths(item.getContent());
-        if (paths.length === 1 && isImagePath(paths[0])) {
-            return paths[0];
-        }
-    }
-    return "";
-}
-
-function joinPath(base: string, name: string): string {
-    if (!base) return name;
-    const separator = base.lastIndexOf("\\") > base.lastIndexOf("/") ? "\\" : "/";
-    return `${base.replace(/[\\/]+$/, "")}${separator}${name}`;
-}
-
-function dirName(path: string): string {
-    const index = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
-    return index >= 0 ? path.slice(0, index) : "";
-}
-
-function isTextLikeItem(item: Item): boolean {
-    return [ItemType.Text, ItemType.TextFile, ItemType.Link].includes(item.getType());
-}
-
-function dominantColorFromImage(image: HTMLImageElement): DominantColor | null {
-    const canvas = document.createElement("canvas");
-    const size = 24;
-    canvas.width = size;
-    canvas.height = size;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) return null;
-
-    try {
-        context.drawImage(image, 0, 0, size, size);
-        const data = context.getImageData(0, 0, size, size).data;
-        const buckets = new Map<string, { r: number, g: number, b: number, weight: number }>();
-        for (let i = 0; i < data.length; i += 4) {
-            const alpha = data[i + 3];
-            if (alpha < 40) continue;
-            const red = data[i];
-            const green = data[i + 1];
-            const blue = data[i + 2];
-            if (red > 245 && green > 245 && blue > 245) continue;
-            if (red < 18 && green < 18 && blue < 18) continue;
-            const max = Math.max(red, green, blue);
-            const min = Math.min(red, green, blue);
-            const saturation = max === 0 ? 0 : (max - min) / max;
-            const weight = alpha / 255;
-            const colorWeight = weight * (0.45 + saturation * 1.4);
-            const key = `${Math.round(red / 24)},${Math.round(green / 24)},${Math.round(blue / 24)}`;
-            const bucket = buckets.get(key) || { r: 0, g: 0, b: 0, weight: 0 };
-            bucket.r += red * colorWeight;
-            bucket.g += green * colorWeight;
-            bucket.b += blue * colorWeight;
-            bucket.weight += colorWeight;
-            buckets.set(key, bucket);
-        }
-        const dominant = Array.from(buckets.values()).sort((a, b) => b.weight - a.weight)[0];
-        if (!dominant || dominant.weight <= 0) return null;
-        const r = Math.round(dominant.r / dominant.weight);
-        const g = Math.round(dominant.g / dominant.weight);
-        const b = Math.round(dominant.b / dominant.weight);
-        const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-        return {
-            color: `rgb(${r}, ${g}, ${b})`,
-            textColor: luminance > 0.62 ? "#1f2933" : "#fff",
-        };
-    } catch {
-        return null;
-    }
-}
-
-function textColorForBackground(color: string): string {
-    const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
-    if (!match) return "#fff";
-    const red = Number(match[1]);
-    const green = Number(match[2]);
-    const blue = Number(match[3]);
-    const luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255;
-    return luminance > 0.62 ? "#1f2933" : "#fff";
-}
-
-function sanitizeRichHtml(html: string): string {
-    if (!html.trim()) return "";
-    const document = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
-    document.querySelectorAll("script, iframe, object, embed, link, meta, base").forEach(node => node.remove());
-    document.querySelectorAll("style").forEach(node => {
-        node.textContent = (node.textContent || "")
-            .replace(/mso-pattern\s*:[^;{}]+;?/gi, "");
-    });
-    document.querySelectorAll("form").forEach(node => {
-        node.replaceWith(...Array.from(node.childNodes));
-    });
-    applyRichClassStyles(document);
-    document.querySelectorAll("style").forEach(node => node.remove());
-    document.querySelectorAll<HTMLElement>("*").forEach(element => {
-        Array.from(element.attributes).forEach(attribute => {
-            const name = attribute.name.toLowerCase();
-            const value = attribute.value.trim().toLowerCase();
-            const tag = element.tagName.toLowerCase();
-            if (
-                name.startsWith("on")
-                || ["srcdoc", "contenteditable", "tabindex", "autofocus", "draggable", "accesskey", "popover", "autoplay"].includes(name)
-                || value.startsWith("javascript:")
-            ) {
-                element.removeAttribute(attribute.name);
-            }
-            if (
-                (["a", "area"].includes(tag) && ["href", "xlink:href", "target", "download", "ping"].includes(name))
-                || name === "formaction"
-            ) {
-                element.removeAttribute(attribute.name);
-            }
-            if (name === "style" && /url\s*\(/i.test(attribute.value)) {
-                element.removeAttribute(attribute.name);
-            }
-        });
-        normalizeRichPreviewStyle(element);
-    });
-    const root = document.body.firstElementChild;
-    if (root) {
-        unwrapSingleLeadingLayoutContainers(root);
-        trimLeadingEmptyRichBlocks(root);
-    }
-    return document.body.firstElementChild?.innerHTML || "";
-}
-
-function normalizeRichPreviewStyle(element: HTMLElement) {
-    const style = element.getAttribute("style");
-    if (!style) return;
-        const nextStyle = style
-        .split(";")
-        .map(rule => rule.trim())
-        .filter(Boolean)
-        .filter(rule => {
-            const [rawName, ...rawValue] = rule.split(":");
-            const name = rawName.trim().toLowerCase();
-            const value = rawValue.join(":").trim().toLowerCase();
-            if (name === "width" && value.endsWith("in")) return false;
-            if (name === "min-width" && value.endsWith("in")) return false;
-            if (name === "max-width" && value.endsWith("in")) return false;
-            if (name === "width" && value.endsWith("pt")) return false;
-            if (name === "width" && value.endsWith("px") && Number.parseFloat(value) > 160) return false;
-            if (name === "margin-left" && value.endsWith("in")) return false;
-            if (name === "margin-right" && value.endsWith("in")) return false;
-            if (name === "text-indent" && value.startsWith("-")) return false;
-            if (name === "border-width" && value.includes("%")) return false;
-            return true;
-        })
-        .join("; ");
-    if (nextStyle) {
-        element.setAttribute("style", nextStyle);
-    } else {
-        element.removeAttribute("style");
-    }
-}
-
-function extractRichClassStyles(document: Document): Map<string, string[]> {
-    const classStyles = new Map<string, string[]>();
-    document.querySelectorAll("style").forEach(styleNode => {
-        const css = styleNode.textContent || "";
-        const classRuleRegex = /\.([A-Za-z0-9_-]+)\s*\{([^}]*)\}/g;
-        let match: RegExpExecArray | null;
-        while ((match = classRuleRegex.exec(css)) !== null) {
-            const className = match[1];
-            const rules = match[2]
-                .split(";")
-                .map(rule => rule.trim())
-                .filter(Boolean)
-                .filter(rule => {
-                    const [rawName, ...rawValue] = rule.split(":");
-                    const name = rawName.trim().toLowerCase();
-                    const value = rawValue.join(":").trim();
-                    if (!name || !value || /url\s*\(/i.test(value)) return false;
-                    return [
-                        "background",
-                        "background-color",
-                        "color",
-                        "font-weight",
-                        "font-style",
-                        "text-decoration",
-                        "text-align",
-                        "vertical-align",
-                        "border",
-                        "border-top",
-                        "border-right",
-                        "border-bottom",
-                        "border-left",
-                    ].includes(name);
-                });
-            if (rules.length > 0) {
-                classStyles.set(className, rules);
-            }
-        }
-    });
-    return classStyles;
-}
-
-function applyRichClassStyles(document: Document) {
-    const classStyles = extractRichClassStyles(document);
-    if (classStyles.size === 0) return;
-
-    document.querySelectorAll<HTMLElement>("[class]").forEach(element => {
-        const existingStyle = element.getAttribute("style") || "";
-        const existingNames = new Set(
-            existingStyle
-                .split(";")
-                .map(rule => rule.split(":")[0]?.trim().toLowerCase())
-                .filter(Boolean)
-        );
-        const nextRules: string[] = [];
-        element.classList.forEach(className => {
-            classStyles.get(className)?.forEach(rule => {
-                const name = rule.split(":")[0]?.trim().toLowerCase();
-                if (name && !existingNames.has(name)) {
-                    existingNames.add(name);
-                    nextRules.push(rule);
-                }
-            });
-        });
-        if (nextRules.length > 0) {
-            element.setAttribute(
-                "style",
-                [existingStyle.trim().replace(/;$/, ""), ...nextRules].filter(Boolean).join("; ")
-            );
-        }
-    });
-}
-
-function isEmptyLeadingRichBlock(element: Element): boolean {
-    const tag = element.tagName.toLowerCase();
-    if (!["p", "div", "span"].includes(tag)) return false;
-    if (element.querySelector("img,svg,table,canvas,video")) return false;
-    return (element.textContent || "").replace(/\u00a0/g, "").trim().length === 0;
-}
-
-function unwrapSingleLeadingLayoutContainers(container: Element) {
-    let current = container.firstElementChild;
-    while (current && current.tagName.toLowerCase() === "div") {
-        const children = Array.from(current.children).filter(child => child.tagName.toLowerCase() !== "style");
-        const text = (current.textContent || "").replace(/\u00a0/g, "").trim();
-        const style = (current.getAttribute("style") || "").toLowerCase();
-        const layoutOnly = !text && children.length === 1 && /direction|width|margin-left|border-width/.test(style);
-        if (!layoutOnly) break;
-        const child = children[0];
-        current.replaceWith(child);
-        current = child;
-    }
-}
-
-function trimLeadingEmptyRichBlocks(container: Element) {
-    let changed = true;
-    while (changed) {
-        changed = false;
-        const firstContentChild = Array.from(container.children)
-            .find(child => child.tagName.toLowerCase() !== "style");
-        if (!firstContentChild) return;
-
-        if (isEmptyLeadingRichBlock(firstContentChild)) {
-            firstContentChild.remove();
-            changed = true;
-            continue;
-        }
-
-        const tag = firstContentChild.tagName.toLowerCase();
-        if (["div", "section", "article", "blockquote", "ul", "ol"].includes(tag)) {
-            const before = firstContentChild.innerHTML;
-            trimLeadingEmptyRichBlocks(firstContentChild);
-            if (before !== firstContentChild.innerHTML) {
-                changed = true;
-            }
-            if (isEmptyLeadingRichBlock(firstContentChild)) {
-                firstContentChild.remove();
-                changed = true;
-            }
-        }
-    }
-}
-
-function richHtmlHasVisibleContent(html: string): boolean {
-    if (!html.trim()) return false;
-    const document = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
-    const root = document.body.firstElementChild;
-    if (!root) return false;
-    const cloned = root.cloneNode(true) as HTMLElement;
-    cloned.querySelectorAll("style").forEach(node => node.remove());
-    return Boolean(cloned.textContent?.trim())
-        || Boolean(cloned.querySelector("table,img,svg,canvas,video"));
-}
-
-function searchTerms(query: string): string[] {
-    const value = query.trim();
-    if (!value) return [];
-    const terms = value.includes(" ")
-        ? value.split(/\s+/)
-        : [value];
-    return Array.from(new Set(terms.filter(Boolean)))
-        .sort((a, b) => b.length - a.length)
-        .slice(0, 8);
-}
-
-function highlightRegex(query: string): RegExp | null {
-    const terms = searchTerms(query);
-    if (terms.length === 0) return null;
-    const escaped = terms.map(term => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    return new RegExp(`(${escaped.join("|")})`, "gi");
-}
-
-function HighlightedText({ text, query }: { text: string; query: string }) {
-    const regex = highlightRegex(query);
-    if (!regex) return <>{text}</>;
-    const parts = text.split(regex);
-    return (
-        <>
-            {parts.map((part, index) => (
-                (() => {
-                    regex.lastIndex = 0;
-                    return regex.test(part);
-                })()
-                    ? <mark className={classes(styles, "search-highlight")} key={`${part}-${index}`}>{part}</mark>
-                    : <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>
-            ))}
-        </>
-    );
-}
-
-function highlightRichHtml(html: string, query: string): string {
-    const regex = highlightRegex(query);
-    if (!regex || !html.trim()) return html;
-    const document = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
-    const root = document.body.firstElementChild;
-    if (!root) return html;
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    const nodes: Text[] = [];
-    let current = walker.nextNode();
-    while (current) {
-        if (current.textContent?.trim()) nodes.push(current as Text);
-        current = walker.nextNode();
-    }
-    nodes.forEach(node => {
-        const text = node.textContent || "";
-        regex.lastIndex = 0;
-        if (!regex.test(text)) return;
-        regex.lastIndex = 0;
-        const fragment = document.createDocumentFragment();
-        text.split(regex).forEach(part => {
-            if (!part) return;
-            regex.lastIndex = 0;
-            if (regex.test(part)) {
-                const mark = document.createElement("mark");
-                mark.className = styles["search-highlight"];
-                mark.textContent = part;
-                fragment.appendChild(mark);
-            } else {
-                fragment.appendChild(document.createTextNode(part));
-            }
-        });
-        node.replaceWith(fragment);
-    });
-    return root.innerHTML;
-}
-
-function AutoScrollPreview({
-    active,
-    className,
-    html,
-    children,
-}: {
-    active: boolean;
-    className: string;
-    html?: string;
-    children?: React.ReactNode;
-}) {
-    const ref = useRef<HTMLDivElement>(null);
-
-    useEffect(() => {
-        const element = ref.current;
-        if (!element) return;
-
-        if (html !== undefined) {
-            element.setAttribute("inert", "");
-        }
-
-        let frame = 0;
-        let timeout = 0;
-        let cancelled = false;
-        const cleanup = () => {
-            cancelled = true;
-            window.cancelAnimationFrame(frame);
-            window.clearTimeout(timeout);
-            if (html !== undefined) {
-                element.removeAttribute("inert");
-            }
-        };
-
-        if (!active) {
-            element.scrollTo({ top: 0, behavior: "smooth" });
-            return cleanup;
-        }
-
-        const maxScroll = element.scrollHeight - element.clientHeight;
-        if (maxScroll <= 8) return cleanup;
-
-        const start = () => {
-            const startTime = performance.now();
-            const duration = Math.min(8500, Math.max(1500, maxScroll * 12));
-            const animate = (now: number) => {
-                if (cancelled) return;
-                const progress = Math.min(1, (now - startTime) / duration);
-                element.scrollTop = maxScroll * progress;
-                if (progress < 1) {
-                    frame = window.requestAnimationFrame(animate);
-                } else {
-                    timeout = window.setTimeout(() => {
-                        if (cancelled) return;
-                        element.scrollTo({ top: 0, behavior: "smooth" });
-                        timeout = window.setTimeout(() => {
-                            if (!cancelled) start();
-                        }, 1100);
-                    }, 900);
-                }
-            };
-            frame = window.requestAnimationFrame(animate);
-        };
-
-        timeout = window.setTimeout(start, 320);
-        return cleanup;
-    }, [active, html, children]);
-
-    if (html !== undefined) {
-        return <div ref={ref} className={className} dangerouslySetInnerHTML={{ __html: html }} />;
-    }
-    return <div ref={ref} className={className}>{children}</div>;
-}
-
-function itemFromPayload(i: any): Item {
-    return new Item(
-        i.id,
-        i.hash,
-        i.itemType,
-        i.content,
-        i.time,
-        i.titleColor,
-        i.previewContent,
-        i.textContent,
-        i.label,
-        i.appSource,
-        i.appIconPath,
-        i.richHtml,
-        Array.isArray(i.tags) ? i.tags : [],
-    );
-}
-
-async function fetchSearchPage(
-    keywords: string,
-    label: string,
-    lastId: number,
-    lastTime: number,
-    limit: number,
-    isCurrent: () => boolean,
-): Promise<SearchPageResult | null> {
-    const items: Item[] = [];
-    let consumed = 0;
-    let hasMore = true;
-    let cursorId = lastId;
-    let cursorTime = lastTime;
-
-    while (items.length < limit && hasMore) {
-        if (!isCurrent()) return null;
-        const res = await invoke<string>('search', {
-            keywords,
-            lastId: cursorId,
-            lastTime: cursorTime,
-            limit: limit - items.length,
-            label,
-        });
-        if (!isCurrent()) return null;
-
-        const page = JSON.parse(res) as SearchPagePayload;
-        items.push(...page.list.map(itemFromPayload));
-        consumed += page.consumed;
-        hasMore = page.hasMore;
-        if (!hasMore || items.length >= limit) break;
-        if ((page.nextId === 0 && page.nextTime === 0)
-            || (page.nextId === cursorId && page.nextTime === cursorTime)) {
-            hasMore = false;
-            break;
-        }
-        cursorId = page.nextId;
-        cursorTime = page.nextTime;
-    }
-
-    return { items, consumed, hasMore };
-}
-
-export function ImagePreview({ item, active, refreshKey, t, onGifFormatChange }: { item: Item, active: boolean, refreshKey: number, t: TFunction, onGifFormatChange: (isGif: boolean) => void }) {
-    const [naturalSize, setNaturalSize] = useState<{ width: number, height: number } | null>(null);
-    const [stageSize, setStageSize] = useState<{ width: number, height: number }>({ width: 0, height: 0 });
-    const [imageSrc, setImageSrc] = useState("");
-    const [isVisible, setIsVisible] = useState(false);
-    const stageRef = useRef<HTMLDivElement>(null);
-    const fallbackAttemptedRef = useRef(false);
-    const sourcePath = item.getContent();
-    const previewPath = item.getPreviewContent() || sourcePath;
-    const width = naturalSize?.width || 0;
-    const height = naturalSize?.height || 0;
-    const stageWidth = stageSize.width;
-    const stageHeight = stageSize.height;
-    const smallImage = width > 0 && height > 0 && width < 100 && height < 100;
-    const realSizeImage = width >= 100 && height >= 100 && width <= stageWidth && height <= stageHeight;
-    const imageStyle: React.CSSProperties = realSizeImage
-        ? { width: `${width}px`, height: `${height}px` }
-        : smallImage
-            ? { width: `${width}px`, height: `${height}px` }
-            : { maxWidth: '100%', maxHeight: '100%' };
-
-    useEffect(() => {
-        const stage = stageRef.current;
-        if (!stage) return;
-
-        const updateStageSize = () => {
-            setStageSize({
-                width: stage.clientWidth,
-                height: stage.clientHeight,
-            });
-        };
-        updateStageSize();
-
-        const resizeObserver = new ResizeObserver(updateStageSize);
-        resizeObserver.observe(stage);
-        return () => resizeObserver.disconnect();
-    }, []);
-
-    useEffect(() => {
-        const stage = stageRef.current;
-        if (!stage) return;
-
-        const observer = new IntersectionObserver(([entry]) => {
-            setIsVisible(entry.isIntersecting);
-        }, {
-            root: stage.closest(`.${styles["cards-container"]}`),
-            rootMargin: '0px 420px',
-            threshold: 0.25,
-        });
-        observer.observe(stage);
-        return () => observer.disconnect();
-    }, [item.getHash()]);
-
-    useEffect(() => {
-        setImageSrc("");
-        const cachedMetadata = historyImageMetadataCache.get(sourcePath);
-        setNaturalSize(cachedMetadata ? { width: cachedMetadata.width, height: cachedMetadata.height } : null);
-        onGifFormatChange(itemHasGifFormat(item));
-    }, [item, sourcePath, onGifFormatChange]);
-
-    useEffect(() => {
-        fallbackAttemptedRef.current = false;
-    }, [item.getHash(), refreshKey]);
-
-    useEffect(() => {
-        if (!isVisible) return;
-
-        let cancelled = false;
-        let timeout = 0;
-        if (!sourcePath) return;
-
-        const load = (gif: boolean) => {
-            const loader = gif && active ? loadHistoryOriginalSrc : loadHistoryPreviewSrc;
-            loader(gif && active ? sourcePath : previewPath)
-                .then(src => {
-                    if (!cancelled && !fallbackAttemptedRef.current) setImageSrc(src);
-                });
-        };
-
-        const loadWithGifState = (gif: boolean) => {
-            if (!cancelled) onGifFormatChange(gif);
-            if (active) {
-                timeout = window.setTimeout(() => load(gif), ACTIVE_IMAGE_LOAD_DELAY_MS);
-            } else {
-                load(gif);
-            }
-        };
-
-        void loadHistoryImageMetadata(sourcePath)
-            .then(metadata => {
-                if (!cancelled) {
-                    setNaturalSize({ width: metadata.width, height: metadata.height });
-                }
-                loadWithGifState(metadata.isGif);
-            })
-            .catch(() => loadWithGifState(false));
-
-        return () => {
-            cancelled = true;
-            window.clearTimeout(timeout);
-        };
-    }, [item.getHash(), sourcePath, previewPath, isVisible, active, refreshKey, onGifFormatChange]);
-
-    const recoverImageSource = () => {
-        if (!sourcePath || fallbackAttemptedRef.current) return;
-        fallbackAttemptedRef.current = true;
-        historyPreviewSrcCache.delete(previewPath);
-        historyOriginalSrcCache.delete(sourcePath);
-        historyDataUrlCache.delete(sourcePath);
-        void invoke<string>("history_file_data_url", { path: sourcePath })
-            .then(setImageSrc)
-            .catch(e => error(`Failed to recover history image preview: ${e}`));
-    };
-
-    return (
-        <div className={classes(styles, "image-preview")}>
-            <div className={classes(styles, "image-preview-stage")} ref={stageRef}>
-                {imageSrc && (
-                    <img
-                        key={`${isVisible ? refreshKey : 0}:${imageSrc}`}
-                        src={imageSrc}
-                        alt=""
-                        draggable={false}
-                        decoding="async"
-                        className={classes(styles, "image-preview-img")}
-                        style={imageStyle}
-                        onError={recoverImageSource}
-                    />
-                )}
-                {naturalSize && (
-                    <div className={classes(styles, "image-resolution")}>
-                        {`${naturalSize.width} x ${naturalSize.height}`}
-                    </div>
-                )}
-            </div>
-            {item.getTextContent() && (
-                <div className={classes(styles, "mixed-content-badge")}>{t("clipboard.mixedText")}</div>
-            )}
-        </div>
-    );
-}
-
-function FilePreview({ item, refreshKey, searchQuery, t }: { item: Item, refreshKey: number, searchQuery: string, t: TFunction }) {
-    const [previewInfo, setPreviewInfo] = useState<FilePreviewInfo | null>(null);
-    const [isVisible, setIsVisible] = useState(false);
-    const [imageSize, setImageSize] = useState<{ width: number, height: number } | null>(null);
-    const [previewSrc, setPreviewSrc] = useState("");
-    const previewRef = useRef<HTMLDivElement>(null);
-    const fallbackPaths = parseFilePaths(item.getContent());
-    const firstPath = previewInfo?.display_path || fallbackPaths[0] || item.getContent();
-    const extension = previewInfo?.extension || (firstPath.split(".").pop() || "FILE").toUpperCase();
-    const isGifFile = extension.toLowerCase() === "gif";
-    const isMultiple = previewInfo?.kind === "multiple" || fallbackPaths.length > 1;
-    const isInvalid = previewInfo ? !previewInfo.exists : false;
-    const displayedImageSize = previewInfo?.image_width && previewInfo?.image_height
-        ? { width: previewInfo.image_width, height: previewInfo.image_height }
-        : imageSize;
-    const fileImageStyle: React.CSSProperties | undefined = displayedImageSize
-        ? { width: `${displayedImageSize.width}px`, height: `${displayedImageSize.height}px` }
-        : undefined;
-
-    useEffect(() => {
-        const element = previewRef.current;
-        if (!element) return;
-
-        const observer = new IntersectionObserver(([entry]) => {
-            setIsVisible(entry.isIntersecting);
-        }, {
-            root: element.closest(`.${styles["cards-container"]}`),
-            threshold: 0.35,
-        });
-        observer.observe(element);
-        return () => observer.disconnect();
-    }, [item.getHash()]);
-
-    useEffect(() => {
-        if (!isVisible) return;
-
-        let cancelled = false;
-        void invoke<FilePreviewInfo>("file_preview_info", { content: item.getContent() })
-            .then(info => {
-                if (!cancelled) setPreviewInfo(info);
-            })
-            .catch(e => {
-                error(`Failed to load file preview info: ${e}`);
-                if (!cancelled) {
-                    setPreviewInfo({
-                        kind: fallbackPaths.length > 1 ? "multiple" : "single-icon",
-                        paths: fallbackPaths,
-                        exists: true,
-                        missing_paths: [],
-                        display_path: firstPath,
-                        secondary_text: fallbackPaths.length > 1 ? t("clipboard.multipleFiles") : "",
-                        extension,
-                        preview_path: "",
-                        image_width: null,
-                        image_height: null,
-                    });
-                }
-            });
-
-        return () => {
-            cancelled = true;
-        };
-    }, [item.getHash(), isVisible, refreshKey]);
-
-    useEffect(() => {
-        setImageSize(null);
-        setPreviewSrc("");
-        let cancelled = false;
-        if (previewInfo?.preview_path) {
-            const loader = isGifFile ? loadHistoryOriginalSrc : loadHistoryPreviewSrc;
-            loader(previewInfo.preview_path)
-                .then(src => {
-                    if (!cancelled) setPreviewSrc(src);
-                });
-        }
-        return () => {
-            cancelled = true;
-        };
-    }, [item.getHash(), previewInfo?.preview_path, isGifFile]);
-
-    return (
-        <div className={classes(styles, `file-preview ${isInvalid ? 'invalid' : ''}`)} ref={previewRef}>
-            <div className={classes(styles, "file-preview-stage")}>
-                {previewInfo?.kind === "single-preview" && previewInfo.preview_path ? (
-                    <>
-                        <img
-                            key={previewSrc}
-                            className={classes(styles, "file-preview-image")}
-                            src={previewSrc}
-                            draggable={false}
-                            alt=""
-                            style={fileImageStyle}
-                            onLoad={(event) => {
-                                setImageSize({
-                                    width: event.currentTarget.naturalWidth,
-                                    height: event.currentTarget.naturalHeight,
-                                });
-                            }}
-                        />
-                        {displayedImageSize && (
-                            <div className={classes(styles, "image-resolution file-image-resolution")}>
-                                {`${displayedImageSize.width} x ${displayedImageSize.height}`}
-                            </div>
-                        )}
-                    </>
-                ) : isMultiple || previewInfo?.kind === "single-folder" ? (
-                    <div className={classes(styles, "file-preview-icon multiple")}>
-                        <FolderCopyOutlinedIcon />
-                    </div>
-                ) : (
-                    <div className={classes(styles, "file-preview-icon single")}>
-                        <InsertDriveFileOutlinedIcon />
-                        <span className={classes(styles, "file-extension")}>{extension}</span>
-                    </div>
-                )}
-                {isInvalid && (
-                    <div className={classes(styles, "file-invalid-badge")}>
-                        <WarningAmberOutlinedIcon />
-                    </div>
-                )}
-            </div>
-            <div className={classes(styles, "file-paths")}>
-                <div className={classes(styles, "file-path-line")} title={firstPath}>
-                    <HighlightedText text={compactPath(firstPath)} query={searchQuery} />
-                </div>
-                {isMultiple && (
-                    <div className={classes(styles, "file-path-line secondary")}>
-                        <HighlightedText text={previewInfo?.secondary_text || t("clipboard.multipleFiles")} query={searchQuery} />
-                    </div>
-                )}
-            </div>
-        </div>
-    );
-}
-
-function parseLinkContent(content: string): { url: string; imagePath: string; title: string; imageKind: string } {
-    const [url = "", imagePath = "", title = "", imageKind = ""] = content.split("|||");
-    return { url, imagePath, title, imageKind };
-}
-
-function linkHost(url: string): string {
-    try {
-        return new URL(url).host;
-    } catch {
-        return url;
-    }
-}
-
-function LinkPreview({ item, searchQuery }: { item: Item, searchQuery: string }) {
-    const { url, imagePath, title, imageKind } = parseLinkContent(item.getContent());
-    const [imageFailed, setImageFailed] = useState(false);
-    const [imageSrc, setImageSrc] = useState("");
-    const [imageNaturalSize, setImageNaturalSize] = useState<{ width: number; height: number } | null>(null);
-    const showImage = Boolean(imagePath) && Boolean(imageSrc) && !imageFailed;
-    const displayTitle = title || linkHost(url);
-    const isSmallImage = imageKind === "icon"
-        || Boolean(imageNaturalSize && Math.max(imageNaturalSize.width, imageNaturalSize.height) <= 96);
-
-    useEffect(() => {
-        setImageFailed(false);
-        setImageNaturalSize(null);
-        let cancelled = false;
-        setImageSrc("");
-        if (imagePath) {
-            loadHistoryPreviewSrc(imagePath)
-                .then(src => {
-                    if (!cancelled) setImageSrc(src);
-                });
-        }
-        return () => {
-            cancelled = true;
-        };
-    }, [item.getHash(), imagePath]);
-
-    return (
-        <div className={classes(styles, "link-preview")}>
-            <div className={classes(styles, `link-preview-media ${showImage ? '' : 'fallback'} ${isSmallImage ? 'icon' : ''}`)}>
-                {showImage ? (
-                    <img
-                        src={imageSrc}
-                        alt=""
-                        draggable={false}
-                        onLoad={event => {
-                            const image = event.currentTarget;
-                            setImageNaturalSize({
-                                width: image.naturalWidth,
-                                height: image.naturalHeight,
-                            });
-                        }}
-                        onError={() => setImageFailed(true)}
-                    />
-                ) : (
-                    <LinkOutlinedIcon />
-                )}
-            </div>
-            <div className={classes(styles, "link-preview-text")}>
-                <div className={classes(styles, "link-preview-title")} title={displayTitle}>
-                    <HighlightedText text={displayTitle} query={searchQuery} />
-                </div>
-                <div className={classes(styles, "link-preview-url")} title={url}>
-                    <HighlightedText text={url} query={searchQuery} />
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function RichTextPreview({ item, active, searchQuery }: { item: Item; active: boolean; searchQuery: string }) {
-    const html = sanitizeRichHtml(item.getRichHtml());
-    if (!richHtmlHasVisibleContent(html)) {
-        return (
-            <AutoScrollPreview active={active} className={classes(styles, "card-preview-text")}>
-                <HighlightedText text={item.getContent().trimStart()} query={searchQuery} />
-            </AutoScrollPreview>
-        );
-    }
-    return (
-        <AutoScrollPreview
-            active={active}
-            className={classes(styles, "card-preview-rich")}
-            html={highlightRichHtml(html, searchQuery)}
-        />
-    );
-}
-
-// Card Component
-function ClipboardCardComponent({ item, selected, simulatedHover, refreshKey, imageRefreshKey, searchQuery, shortcutHint, mediaPlaybackReady, t, onContextMenu }: {
-    item: Item,
-    selected: boolean,
-    simulatedHover: boolean,
-    refreshKey: number,
-    imageRefreshKey: number,
-    searchQuery: string,
-    shortcutHint?: string,
-    mediaPlaybackReady: boolean,
-    t: TFunction,
-    onContextMenu: (item: Item, x: number, y: number) => void
-}) {
-    const dragStateRef = useRef<{ x: number, y: number, dragging: boolean } | null>(null);
-    const visualType = isSingleImageFileItem(item) ? ItemType.Image : item.getType();
-    const typeLabel = getTypeLabel(visualType, t);
-    const typeClass = getTypeClass(visualType);
-    const timestamp = formatRelativeTime(item.getTime(), t);
-    const itemTagList = item.getTags();
-    const [isGifFormat, setIsGifFormat] = useState(false);
-    const formatTags = [
-        item.isRichText() ? { key: "rich", label: t("clipboard.richFormat") } : null,
-        isGifFormat ? { key: "gif", label: t("clipboard.gifFormat") } : null,
-    ].filter((tag): tag is { key: string; label: string } => Boolean(tag));
-    const initialHeaderColor = item.getTitleColor()
-        ? { color: item.getTitleColor() as string, textColor: textColorForBackground(item.getTitleColor() as string) }
-        : null;
-    const [headerColor, setHeaderColor] = useState<DominantColor | null>(initialHeaderColor);
-    const appIconPath = item.getAppIconPath();
-    const appIconSrc = appIconPath ? convertFileSrc(appIconPath) : "";
-    const formatTagColor = getFormatTagColor(visualType, headerColor, Boolean(appIconSrc));
-    const [hovered, setHovered] = useState(false);
-    const isMacosAppIcon = appIconPath.endsWith("-macos.png");
-    const previewActive = selected || hovered || simulatedHover;
-    const updateGifFormat = useCallback((gif: boolean) => {
-        setIsGifFormat(gif);
-    }, []);
-
-    useEffect(() => {
-        setHeaderColor(item.getTitleColor()
-            ? { color: item.getTitleColor() as string, textColor: textColorForBackground(item.getTitleColor() as string) }
-            : null);
-    }, [item.getHash(), item.getTitleColor()]);
-
-    return (
-        <div
-            className={classes(styles, `clipboard-card ${selected ? 'selected' : ''} ${simulatedHover ? 'simulated-hover' : ''}`)}
-            data-hash={item.getHash() as string}
-            tabIndex={-1}
-            draggable={false}
-            onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
-            onMouseDown={(event) => {
-                if (item.getType() === ItemType.Image && event.button === 0) {
-                    dragStateRef.current = {
-                        x: event.clientX,
-                        y: event.clientY,
-                        dragging: false,
-                    };
-                }
-            }}
-            onMouseMove={(event) => {
-                const dragState = dragStateRef.current;
-                if (!dragState || dragState.dragging || item.getType() !== ItemType.Image) return;
-                if ((event.buttons & 1) !== 1) {
-                    dragStateRef.current = null;
-                    return;
-                }
-
-                const deltaX = event.clientX - dragState.x;
-                const deltaY = event.clientY - dragState.y;
-                const distance = Math.hypot(deltaX, deltaY);
-                if (distance < 6) return;
-                if (Math.abs(deltaX) > Math.abs(deltaY)) return;
-
-                event.preventDefault();
-                dragState.dragging = true;
-                void invoke('native_drag_file', { path: item.getPreviewContent() })
-                    .catch(e => error(`Native image drag failed: ${e}`))
-                    .finally(() => {
-                        dragStateRef.current = null;
-                    });
-            }}
-            onMouseUp={() => {
-                if (dragStateRef.current && !dragStateRef.current.dragging) {
-                    dragStateRef.current = null;
-                }
-            }}
-            onContextMenu={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onContextMenu(item, event.clientX, event.clientY);
-            }}
-        >
-            {itemTagList.length > 0 && (
-                <div className={classes(styles, `card-item-tags ${itemTagList.length > 2 ? 'scrolling' : ''}`)} title={itemTagList.map(tag => tag.name).join(", ")}>
-                    <div className={classes(styles, "card-item-tags-track")}>
-                        {(itemTagList.length > 2 ? [...itemTagList, ...itemTagList] : itemTagList).map((tag, index) => (
-                            <span key={`${tag.id}-${index}`} className={classes(styles, "card-item-tag")}>
-                                {tag.name}
-                            </span>
-                        ))}
-                    </div>
-                </div>
-            )}
-            <div
-                className={classes(styles, `card-header ${typeClass} ${appIconSrc ? 'with-app-icon' : ''}`)}
-                style={headerColor
-                    ? { background: headerColor.color, color: headerColor.textColor }
-                    : appIconSrc
-                        ? { background: "linear-gradient(135deg, #747c87, #565e68)", color: "#fff" }
-                        : undefined}
-            >
-                <div className={classes(styles, "card-title-block")}>
-                    <span className={classes(styles, "card-title-row")}>
-                        <span className={classes(styles, "card-title")}>{typeLabel}</span>
-                        {formatTags.map(tag => (
-                            <span
-                                key={tag.key}
-                                className={classes(styles, `card-format-tag ${tag.key}-format-tag`)}
-                                style={{ color: formatTagColor }}
-                            >
-                                {tag.label}
-                            </span>
-                        ))}
-                    </span>
-                    <span className={classes(styles, "card-timestamp")}>{timestamp}</span>
-                </div>
-                <span className={classes(styles, "card-meta")}>
-                    {item.isFavorite() && <span className={classes(styles, "favorite-icon")} title={t("clipboard.favorite")}>★</span>}
-                </span>
-                {appIconSrc && (
-                    <div className={classes(styles, `app-icon-crop ${isMacosAppIcon ? 'macos-app-icon-crop' : ''}`)} title={t("clipboard.source", { source: item.getAppSource() || t("clipboard.unknownApp") })}>
-                        <img
-                            className={classes(styles, `app-header-icon ${isMacosAppIcon ? 'macos-app-icon' : ''}`)}
-                            src={appIconSrc}
-                            alt=""
-                            onLoad={(event) => {
-                                if (item.getTitleColor()) return;
-                                const color = dominantColorFromImage(event.currentTarget);
-                                if (color) setHeaderColor(color);
-                            }}
-                        />
-                    </div>
-                )}
-            </div>
-            <div className={classes(styles, "card-content")}>
-                {item.getType() === ItemType.Image ? (
-                    <ImagePreview item={item} active={previewActive && mediaPlaybackReady} refreshKey={imageRefreshKey} t={t} onGifFormatChange={updateGifFormat} />
-                ) : item.getType() === ItemType.Color ? (
-                    <div className={classes(styles, "card-preview-color")} style={{ background: item.getContent() }}>
-                        <span className={classes(styles, "color-value")}>
-                            <HighlightedText text={item.getContent()} query={searchQuery} />
-                        </span>
-                    </div>
-                ) : item.getType() === ItemType.Link ? (
-                    <LinkPreview item={item} searchQuery={searchQuery} />
-                ) : item.getType() === ItemType.File ? (
-                    <FilePreview item={item} refreshKey={refreshKey} searchQuery={searchQuery} t={t} />
-                ) : item.isRichText() ? (
-                    <RichTextPreview item={item} active={previewActive} searchQuery={searchQuery} />
-                ) : (
-                    <AutoScrollPreview active={previewActive} className={classes(styles, "card-preview-text")}>
-                        <HighlightedText
-                            text={(item.getType() === ItemType.TextFile ? item.getPreviewContent() : item.getContent()).trimStart()}
-                            query={searchQuery}
-                        />
-                    </AutoScrollPreview>
-                )}
-                {shortcutHint && <div className={classes(styles, "alt-card-hint")}>{shortcutHint}</div>}
-            </div>
-        </div>
-    );
-}
-
-const ClipboardCard = React.memo(ClipboardCardComponent, (prev, next) => (
-    prev.item === next.item
-    && prev.selected === next.selected
-    && prev.simulatedHover === next.simulatedHover
-    && prev.refreshKey === next.refreshKey
-    && prev.imageRefreshKey === next.imageRefreshKey
-    && prev.searchQuery === next.searchQuery
-    && prev.shortcutHint === next.shortcutHint
-    && prev.mediaPlaybackReady === next.mediaPlaybackReady
-    && prev.t === next.t
-));
 
 export default function Clipboard() {
     const { t, languageCode, setPreviewLanguageCode } = useLanguage();
@@ -1766,7 +156,6 @@ export default function Clipboard() {
     const [draggingTabId, setDraggingTabId] = useState<string>("");
     const [toast, setToast] = useState<ToastState>(null);
     const [fileRefreshKey, setFileRefreshKey] = useState(0);
-    const [imageRefreshKey, setImageRefreshKey] = useState(0);
     const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
     const [contextMenuIndex, setContextMenuIndex] = useState(0);
     const [tabContextMenu, setTabContextMenu] = useState<TabContextMenuState>(null);
@@ -1776,7 +165,6 @@ export default function Clipboard() {
     const [itemTags, setItemTags] = useState<ItemTag[]>([]);
     const [hasMoreHistory, setHasMoreHistory] = useState(true);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
-    const [altHintsVisible, setAltHintsVisible] = useState(false);
     const [simulatedHoverHash, setSimulatedHoverHash] = useState("");
     const [tutorialActive, setTutorialActive] = useState(false);
     const [tutorialRunId, setTutorialRunId] = useState(0);
@@ -1807,37 +195,14 @@ export default function Clipboard() {
     const searchInputRef = useRef<HTMLInputElement>(null);
     const addTabButtonRef = useRef<HTMLButtonElement>(null);
     const toastTimerRef = useRef<number | null>(null);
-    const altHintTimerRef = useRef<number | null>(null);
     const scrollRefreshTimerRef = useRef<number | null>(null);
     const imagePrewarmTimerRef = useRef<number | null>(null);
     const loadMoreCheckFrameRef = useRef<number | null>(null);
-    const wheelScrollingRef = useRef(false);
-    const wheelScrollIdleTimerRef = useRef<number | null>(null);
-    const wheelScrollStateRef = useRef({
-        target: 0,
-        frame: null as number | null,
-        lastFrameTime: null as number | null,
-        lastEventTime: 0,
-        timeConstant: WHEEL_MOUSE_TIME_CONSTANT_MS,
-    });
-    const cardsWheelHandlerRef = useRef<(event: WheelEvent) => void>(() => undefined);
     const searchDebounceTimerRef = useRef<number | null>(null);
     const searchRequestSeqRef = useRef(0);
     const lastHistoryFetchRef = useRef<{ keywords: string; tab: string } | null>(null);
-    const dragScrollRef = useRef<{
-        active: boolean;
-        moved: boolean;
-        cancelActivation: boolean;
-        targetHash: string;
-        startX: number;
-        startY: number;
-        lastX: number;
-        lastTime: number;
-        velocity: number;
-        pendingDelta: number;
-        frame: number | null;
-    } | null>(null);
-    const suppressClickAfterDragRef = useRef(false);
+    const maybeLoadMoreHistoryRef = useRef<(force?: boolean) => void>(() => undefined);
+    const refreshHistoryRef = useRef<() => void>(() => undefined);
     const searchWordRef = useRef("");
     const activeTabRef = useRef("all");
     const tutorialActiveRef = useRef(false);
@@ -1855,6 +220,13 @@ export default function Clipboard() {
     const pendingRecordTagAssignTargetRef = useRef<Item | null>(null);
     const previewRequestSeqRef = useRef(0);
     const activateClipboardCardRef = useRef<(hash: string, plainText: boolean) => void>(() => { });
+    const {
+        clearTimer: clearAltHintTimer,
+        hide: hideAltHints,
+        showWhilePressed: showAltHintsWhilePressed,
+        syncFromNative: syncAltHintsFromNative,
+        visible: altHintsVisible,
+    } = useClipboardAltHints(quickInputEnabledRef);
     const dynamicTabs = useMemo(
         () => orderedDynamicTabs(customTabs, itemTags, tabOrder),
         [customTabs, itemTags, tabOrder],
@@ -1869,58 +241,29 @@ export default function Clipboard() {
         openClipboardContextMenuRef.current(item, clientX, clientY);
     }, []);
 
-    const clearAltHintTimer = () => {
-        if (altHintTimerRef.current !== null) {
-            window.clearTimeout(altHintTimerRef.current);
-            altHintTimerRef.current = null;
-        }
-    };
-
-    const hideAltHints = () => {
-        clearAltHintTimer();
-        setAltHintsVisible(false);
-    };
-
-    const pollAltKeyState = () => {
-        clearAltHintTimer();
-        altHintTimerRef.current = window.setTimeout(() => {
-            void invoke<boolean>('is_alt_key_pressed')
-                .then(pressed => {
-                    altHintTimerRef.current = null;
-                    if (pressed && quickInputEnabledRef.current) {
-                        setAltHintsVisible(true);
-                        pollAltKeyState();
-                    } else {
-                        setAltHintsVisible(false);
-                    }
-                })
-                .catch(e => {
-                    altHintTimerRef.current = null;
-                    error(`Failed to read Alt key state: ${e}`);
-                });
-        }, 40);
-    };
-
-    const showAltHintsWhilePressed = () => {
-        if (!quickInputEnabledRef.current) {
-            hideAltHints();
-            return;
-        }
-        setAltHintsVisible(true);
-        pollAltKeyState();
-    };
-
-    const syncAltHintsFromNative = () => {
-        void invoke<boolean>('is_alt_key_pressed')
-            .then(pressed => {
-                if (pressed && quickInputEnabledRef.current) {
-                    showAltHintsWhilePressed();
-                } else {
-                    hideAltHints();
-                }
-            })
-            .catch(e => error(`Failed to sync Alt key state: ${e}`));
-    };
+    const {
+        clearClickSuppression: clearCardsClickSuppression,
+        finishPointerDrag: finishCardsPointerDrag,
+        handleClickCapture: handleCardsClickCapture,
+        handlePointerDown: handleCardsPointerDown,
+        handlePointerMove: handleCardsPointerMove,
+        resetPointerState: resetCardsPointerState,
+        stopWheelScroll,
+    } = useClipboardListInteractions({
+        containerRef: cardsContainerRef,
+        tutorialActive,
+        draggingClassName: styles.dragging,
+        wheelScrollingClassName: styles["wheel-scrolling"],
+        cardSelector: `.${styles["clipboard-card"]}`,
+        contextMenuSelector: `.${styles["context-menu"]}`,
+        onActivateCard: activateClipboardCard,
+        onLoadMore: force => maybeLoadMoreHistoryRef.current(force),
+        onPointerStart: () => setContextMenu(null),
+        onWheelStart: () => {
+            setContextMenu(null);
+            setTabContextMenu(null);
+        },
+    });
 
     const switchToTabWithShortcut = (tabId: string) => {
         setContextMenu(null);
@@ -2100,12 +443,12 @@ export default function Clipboard() {
         const hash = item.getHash() as string;
         const activeRecordTagId = recordTagIdFromTab(activeTabRef.current);
         setPage(page => {
-            let nextList = page.list.map(candidate =>
-                candidate.getHash() === hash ? candidate.withTags(nextTags) : candidate
+            const nextList = updateItemTagsForPage(
+                page.list,
+                hash,
+                nextTags,
+                activeRecordTagId,
             );
-            if (activeRecordTagId !== null && !nextTags.some(tag => tag.id === activeRecordTagId)) {
-                nextList = nextList.filter(candidate => candidate.getHash() !== hash);
-            }
             pageListRef.current = nextList;
             return new ClipboardPage(nextList, page.consumed);
         });
@@ -2113,10 +456,7 @@ export default function Clipboard() {
 
     const removeRecordTagFromPageItems = (tagId: number) => {
         setPage(page => {
-            const nextList = page.list.map(item => {
-                const nextTags = item.getTags().filter(tag => tag.id !== tagId);
-                return nextTags.length === item.getTags().length ? item : item.withTags(nextTags);
-            });
+            const nextList = removeRecordTagFromItems(page.list, tagId);
             pageListRef.current = nextList;
             return new ClipboardPage(nextList, page.consumed);
         });
@@ -2124,12 +464,7 @@ export default function Clipboard() {
 
     const updateRecordTagOnPageItems = (updatedTag: ItemTag) => {
         setPage(page => {
-            const nextList = page.list.map(item => {
-                const nextTags = item.getTags().map(tag => tag.id === updatedTag.id ? updatedTag : tag);
-                return nextTags.some((tag, index) => tag !== item.getTags()[index])
-                    ? item.withTags(nextTags)
-                    : item;
-            });
+            const nextList = updateRecordTagInItems(page.list, updatedTag);
             pageListRef.current = nextList;
             return new ClipboardPage(nextList, page.consumed);
         });
@@ -2141,7 +476,7 @@ export default function Clipboard() {
         if (!target) return;
         try {
             await invoke('assign_item_tag', { hash: target.getHash(), tagId: tag.id });
-            updateItemTagsInPage(target, [...target.getTags().filter(candidate => candidate.id !== tag.id), tag]);
+            updateItemTagsInPage(target, assignItemTag(target.getTags(), tag));
             showToast(t("tags.createdAndAssigned", { name: tag.name }));
         } catch (e) {
             showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
@@ -2149,14 +484,10 @@ export default function Clipboard() {
     };
 
     const applyItemTagsChanged = (payload: ItemTagsChangedPayload | null | undefined) => {
-        if (payload?.tag) {
-            setItemTags(tags => {
-                const exists = tags.some(tag => tag.id === payload.tag?.id);
-                return exists
-                    ? tags.map(tag => tag.id === payload.tag?.id ? payload.tag as ItemTag : tag)
-                    : [...tags, payload.tag as ItemTag];
-            });
-            updateRecordTagOnPageItems(payload.tag);
+        const updatedTag = payload?.tag;
+        if (updatedTag) {
+            setItemTags(tags => upsertItemTag(tags, updatedTag));
+            updateRecordTagOnPageItems(updatedTag);
         }
         void loadItemTags();
         if (payload?.activeId) {
@@ -2164,8 +495,8 @@ export default function Clipboard() {
             activeTabRef.current = payload.activeId;
             setActiveTab(payload.activeId);
         }
-        if (payload?.tag) {
-            void assignPendingRecordTagToItem(payload.tag);
+        if (updatedTag) {
+            void assignPendingRecordTagToItem(updatedTag);
         }
     };
 
@@ -2174,7 +505,7 @@ export default function Clipboard() {
         if (!raw) return;
         localStorage.removeItem(PENDING_ITEM_TAGS_CHANGED_KEY);
         try {
-            applyItemTagsChanged(JSON.parse(raw) as ItemTagsChangedPayload);
+            applyItemTagsChanged(parseItemTagsChangedPayload(raw));
         } catch (e) {
             error(`Failed to consume pending item tag change: ${e}`);
             void loadItemTags();
@@ -2185,7 +516,7 @@ export default function Clipboard() {
         try {
             await invoke('delete_item_tag', { id: tag.id });
             removeTabOrderId(recordTagTabId(tag.id));
-            setItemTags(tags => tags.filter(candidate => candidate.id !== tag.id));
+            setItemTags(tags => removeItemTag(tags, tag.id));
             removeRecordTagFromPageItems(tag.id);
             if (activeTabRef.current === recordTagTabId(tag.id)) {
                 activeTabRef.current = "all";
@@ -2200,98 +531,47 @@ export default function Clipboard() {
         }
     };
 
-    const checkPasteAccessibilityPermission = async (): Promise<boolean> => {
-        try {
-            const status = await invoke<PasteAccessibilityPermissionStatus>('check_paste_accessibility_permission');
-            return status.granted;
-        } catch (e) {
-            error(`Failed to check Accessibility permission: ${e}`);
-            return false;
-        }
-    };
-
-    const loadBehaviorConfig = async (): Promise<ClipboardBehaviorConfig> => {
-        try {
-            const config = JSON.parse(await invoke<string>('get_config'));
-            return config as ClipboardBehaviorConfig;
-        } catch (e) {
-            error(`Failed to load clipboard behavior config: ${e}`);
-            return {};
-        }
-    };
-
-    const refreshTutorialPermissionStatus = async (): Promise<TutorialPermissionStatus | null> => {
-        try {
-            const status = await invoke<TutorialPermissionStatus>('get_onboarding_permission_status');
-            setTutorialPermissionStatus(status);
-            return status;
-        } catch (e) {
-            error(`Failed to refresh tutorial permission status: ${e}`);
-            return null;
-        }
-    };
-
-    const refreshTutorialConfig = async () => {
-        const config = await loadBehaviorConfig();
-        setMainShortcut(config.shortcut_keys?.main_window || DEFAULT_MAIN_SHORTCUT);
-        return config;
-    };
-
-    const startTutorial = async (platform: TutorialPlatform = isMacPlatform() ? "mac" : "windows") => {
-        setContextMenu(null);
-        setTabContextMenu(null);
-        setTagCreateChoice(null);
-        setDeleteConfirmTab(null);
-        setDeleteConfirmRecordTag(null);
-        setSearchWord("");
-        setSearchOpen(false);
-        hideAltHints();
-        activeTabRef.current = "all";
-        setActiveTab("all");
-        suppressClickAfterDragRef.current = false;
-        setTutorialPlatform(platform);
-        setTutorialRunId(id => id + 1);
-        setTutorialActive(true);
-        void refreshTutorialConfig();
-        if (platform === "mac") {
-            setTutorialPermissionStatus(null);
-            void refreshTutorialPermissionStatus();
-        }
-    };
-
-    const handleTutorialPermissionAction = async (id: TutorialPermissionId) => {
-        try {
-            const themePreview = getThemePreview();
-            const payload = { permission: id, languageCode, themePreview };
-            localStorage.setItem(PENDING_PERMISSION_WINDOW_KEY, JSON.stringify(payload));
-            await hideCurrentWindowWithAnimation();
-            await invoke("open_onboarding_permission_window", payload);
-        } catch (e) {
-            showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
-        }
-    };
-
-    const makeTutorialFilterTab = (id: TutorialFilterId): CustomTab | null => {
-        const meta = TUTORIAL_FILTER_TABS.find(tab => tab.id === id);
-        if (!meta) return null;
-        return {
-            id: tutorialFilterTabId(id),
-            name: `${meta.emoji} ${t(meta.titleKey)}`,
-            filter: { ...DEFAULT_CUSTOM_FILTER, itemType: meta.itemType },
-        };
-    };
+    const {
+        complete: completeTutorial,
+        initialize: initializeTutorial,
+        markCompleted: markTutorialCompleted,
+        openPermission: handleTutorialPermissionAction,
+        refreshPermissionStatus: refreshTutorialPermissionStatus,
+        start: startTutorial,
+    } = createClipboardTutorialRuntime({
+        incrementRunId: () => setTutorialRunId(id => id + 1),
+        isActive: () => tutorialActiveRef.current,
+        languageCode,
+        onActionError: actionError => {
+            showToast(
+                t("clipboard.actionFailed", { error: String(actionError) }),
+                "error",
+            );
+        },
+        onBeforeStart: () => {
+            setContextMenu(null);
+            setTabContextMenu(null);
+            setTagCreateChoice(null);
+            setDeleteConfirmTab(null);
+            setDeleteConfirmRecordTag(null);
+            setSearchWord("");
+            setSearchOpen(false);
+            hideAltHints();
+            activeTabRef.current = "all";
+            setActiveTab("all");
+            clearCardsClickSuppression();
+        },
+        onComplete: () => refreshHistoryRef.current(),
+        onHideWindow: hideCurrentWindowWithAnimation,
+        setActive: setTutorialActive,
+        setMainShortcut,
+        setPermissionStatus: setTutorialPermissionStatus,
+        setPlatform: setTutorialPlatform,
+    });
 
     const handleTutorialFilterToggle = (id: TutorialFilterId, enabled: boolean) => {
         const tabId = tutorialFilterTabId(id);
-        const tab = makeTutorialFilterTab(id);
-        if (!tab) return;
-
-        setCustomTabs(tabs => {
-            const exists = tabs.some(candidate => candidate.id === tabId);
-            if (enabled && !exists) return [...tabs, tab];
-            if (!enabled && exists) return tabs.filter(candidate => candidate.id !== tabId);
-            return tabs;
-        });
+        setCustomTabs(tabs => updateTutorialFilterTabs(tabs, id, enabled, t));
 
         if (enabled) {
             appendTabOrderId(tabId);
@@ -2304,15 +584,6 @@ export default function Clipboard() {
         }
     };
 
-    const completeTutorial = async () => {
-        try {
-            await invoke("complete_onboarding");
-            setTutorialActive(false);
-            void fetchHistory();
-        } catch (e) {
-            showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
-        }
-    };
     const tabLabelForBackend = (tabId: string): string => {
         if (tabId === "favorite") return "__favorite";
         if (tabId === "all") return "__all";
@@ -2403,49 +674,6 @@ export default function Clipboard() {
             setFileRefreshKey(key => key + 1);
             scrollRefreshTimerRef.current = null;
         }, delay);
-    };
-
-    const stopDragInertia = () => {
-        if (dragScrollRef.current?.frame !== null && dragScrollRef.current?.frame !== undefined) {
-            window.cancelAnimationFrame(dragScrollRef.current.frame);
-        }
-        if (dragScrollRef.current) {
-            dragScrollRef.current.frame = null;
-        }
-    };
-
-    const deactivateWheelScrolling = () => {
-        wheelScrollIdleTimerRef.current = null;
-        wheelScrollingRef.current = false;
-        cardsContainerRef.current?.classList.remove(styles["wheel-scrolling"]);
-    };
-
-    const scheduleWheelScrollIdle = () => {
-        if (wheelScrollIdleTimerRef.current !== null) {
-            window.clearTimeout(wheelScrollIdleTimerRef.current);
-        }
-        const elapsed = performance.now() - wheelScrollStateRef.current.lastEventTime;
-        wheelScrollIdleTimerRef.current = window.setTimeout(
-            deactivateWheelScrolling,
-            Math.max(0, WHEEL_SCROLL_IDLE_MS - elapsed),
-        );
-    };
-
-    const stopWheelScroll = () => {
-        const state = wheelScrollStateRef.current;
-        if (state.frame !== null) {
-            window.cancelAnimationFrame(state.frame);
-            state.frame = null;
-        }
-        if (wheelScrollIdleTimerRef.current !== null) {
-            window.clearTimeout(wheelScrollIdleTimerRef.current);
-            wheelScrollIdleTimerRef.current = null;
-        }
-        state.lastFrameTime = null;
-        state.target = cardsContainerRef.current?.scrollLeft ?? state.target;
-        if (wheelScrollingRef.current) {
-            deactivateWheelScrolling();
-        }
     };
 
     const scrollCardIntoView = (index: number, behavior: ScrollBehavior = 'auto') => {
@@ -2664,34 +892,41 @@ export default function Clipboard() {
             runLoadMoreHistoryCheck();
         });
     };
+    maybeLoadMoreHistoryRef.current = maybeLoadMoreHistory;
 
     const fetchHistory = async () => {
         await fetchHistoryWith(searchWordRef.current, activeTabRef.current);
     };
+    refreshHistoryRef.current = () => {
+        void fetchHistory();
+    };
 
     const applyShowPreferences = async () => {
-        const config = await loadBehaviorConfig();
-        pasteAsTextShortcutRef.current = config.shortcut_keys?.paste_into_plain_text || DEFAULT_PASTE_AS_TEXT_SHORTCUT;
-        quickInputEnabledRef.current = config.quick_input_enabled !== false;
+        const config = await loadClipboardBehaviorConfig();
+        const preferences = resolveClipboardShowPreferences(
+            config,
+            searchWordRef.current,
+            activeTabRef.current,
+        );
+        pasteAsTextShortcutRef.current = preferences.pasteAsTextShortcut;
+        quickInputEnabledRef.current = preferences.quickInputEnabled;
         if (!quickInputEnabledRef.current) {
             hideAltHints();
         }
-        tabQuickSelectEnabledRef.current = config.tab_quick_select_enabled !== false;
-        linkAutoPreviewRef.current = config.link_auto_preview !== false;
-        const nextSearchWord = config.retain_search_history ? searchWordRef.current : "";
-        const nextActiveTab = config.retain_tab_position ? activeTabRef.current : "all";
+        tabQuickSelectEnabledRef.current = preferences.tabQuickSelectEnabled;
+        linkAutoPreviewRef.current = preferences.linkAutoPreview;
 
-        if (!config.retain_search_history) {
+        if (!preferences.retainSearchHistory) {
             setSearchWord("");
             setSearchOpen(false);
         }
 
-        if (!config.retain_tab_position) {
+        if (!preferences.retainTabPosition) {
             activeTabRef.current = "all";
             setActiveTab("all");
         }
 
-        if (!config.retain_last_position) {
+        if (!preferences.retainLastPosition) {
             if (cardsContainerRef.current) {
                 cardsContainerRef.current.scrollLeft = 0;
             }
@@ -2702,168 +937,135 @@ export default function Clipboard() {
 
         const cachedFetch = lastHistoryFetchRef.current;
         if (
-            cachedFetch?.keywords === nextSearchWord
-            && cachedFetch?.tab === nextActiveTab
+            cachedFetch?.keywords === preferences.searchWord
+            && cachedFetch?.tab === preferences.activeTab
             && pageListRef.current.length > 0
         ) {
             return;
         }
 
-        await fetchHistoryWith(nextSearchWord, nextActiveTab, { selectFirst: !config.retain_last_position });
+        await fetchHistoryWith(
+            preferences.searchWord,
+            preferences.activeTab,
+            { selectFirst: !preferences.retainLastPosition },
+        );
     };
 
-    const resetCardsPointerState = () => {
-        stopWheelScroll();
-        const dragState = dragScrollRef.current;
-        if (dragState?.frame !== null && dragState?.frame !== undefined) {
-            window.cancelAnimationFrame(dragState.frame);
-        }
-        dragScrollRef.current = null;
-        suppressClickAfterDragRef.current = false;
-        cardsContainerRef.current?.classList.remove(styles.dragging);
-    };
-
-    useEffect(() => {
-        const unlistenShow = listen<{ x: number, y: number } | null>('window-show', event => {
-            resetCardsPointerState();
-            selectFirstLoadedItem(true);
-            void applyShowPreferences();
-            if (event.payload) {
-                window.requestAnimationFrame(() => {
-                    const card = document.elementFromPoint(event.payload!.x, event.payload!.y)?.closest<HTMLElement>(`.${styles["clipboard-card"]}`);
-                    setSimulatedHoverHash(card?.dataset.hash || "");
-                });
-            } else {
-                setSimulatedHoverHash("");
-            }
-            syncAltHintsFromNative();
-            window.setTimeout(syncAltHintsFromNative, 70);
-            window.setTimeout(syncAltHintsFromNative, 160);
-            scheduleFileRefresh(CLIPBOARD_SHOW_REFRESH_DELAY_MS);
-            setAnimationState('entering');
-        });
-
-        const unlistenShowComplete = listen('window-show-complete', () => {
-            setAnimationState('entered');
-            setImageRefreshKey(key => key + 1);
-        });
-
-        const unlistenHide = listen('window-hide', () => {
-            resetCardsPointerState();
-            searchRequestSeqRef.current += 1;
-            if (scrollRefreshTimerRef.current !== null) {
-                window.clearTimeout(scrollRefreshTimerRef.current);
-                scrollRefreshTimerRef.current = null;
-            }
-            if (imagePrewarmTimerRef.current !== null) {
-                window.clearTimeout(imagePrewarmTimerRef.current);
-                imagePrewarmTimerRef.current = null;
-            }
-            if (loadMoreCheckFrameRef.current !== null) {
-                window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
-                loadMoreCheckFrameRef.current = null;
-            }
-            hideAltHints();
-            setAnimationState('exiting');
-        });
-
-        const unlistenHidden = listen('window-hidden', () => {
-            setAnimationState('hidden');
-        });
-
-        const unlistenClipboard = listen<string>('listen_new_clipboard', (_) => {
-            void fetchHistory();
-        });
-
-        const unlistenTutorialStarted = listen('tutorial-started', () => {
-            void startTutorial();
-        });
-
-        const unlistenTutorialCompleted = listen('tutorial-completed', () => {
-            setTutorialActive(false);
-        });
-
-        const unlistenPermissionStatusChanged = listen('onboarding-permission-status-changed', () => {
-            void refreshTutorialPermissionStatus();
-        });
-
-        const unlistenCustomTabs = listen<{ activeId?: string, tabs?: CustomTab[] } | string>('custom-tabs-changed', event => {
-            const payload = typeof event.payload === "string"
-                ? JSON.parse(event.payload || "{}") as { activeId?: string, tabs?: CustomTab[] }
-                : event.payload;
-            const tabs = Array.isArray(payload?.tabs) ? payload.tabs : loadCustomTabs();
-            persistCustomTabs(tabs);
-            setCustomTabs(tabs);
-            if (payload?.activeId) {
-                appendTabOrderId(payload.activeId);
-                activeTabRef.current = payload.activeId;
-                setActiveTab(payload.activeId);
-            }
-            void fetchHistoryWith(searchWordRef.current, activeTabRef.current);
-        });
-
-        const unlistenItemTags = listen<ItemTagsChangedPayload | string>('item-tags-changed', event => {
-            const payload = typeof event.payload === "string"
-                ? JSON.parse(event.payload || "{}") as ItemTagsChangedPayload
-                : event.payload;
-            localStorage.removeItem(PENDING_ITEM_TAGS_CHANGED_KEY);
-            applyItemTagsChanged(payload);
-        });
-
-        const unlistenPreviewNavigation = listen<PreviewNavigationPayload>('preview-navigate-selection', event => {
-            if (event.payload?.key === "Tab" && !tabQuickSelectEnabledRef.current) return;
-            const direction = event.payload?.direction === -1 ? -1 : 1;
-            navigateSelectedCard(direction);
-        });
-
-        const handleWindowBlur = () => {
-            setContextMenu(null);
-            setTabContextMenu(null);
-            window.setTimeout(() => {
-                void invoke('hide_clipboard_if_inactive').catch(e => error(`Failed to hide inactive clipboard window: ${e}`));
-            }, 60);
-        };
-        const closeContextMenu = () => {
-            setContextMenu(null);
-            setTabContextMenu(null);
-            setTagCreateChoice(null);
-        };
-        const handleWindowFocus = () => {
-            consumePendingItemTagsChanged();
-            if (isMacPlatform()) {
-                void refreshTutorialPermissionStatus();
-            }
-        };
-        const handleVisibilityChange = () => {
-            if (document.visibilityState === 'visible' && isMacPlatform()) {
-                void refreshTutorialPermissionStatus();
-            }
-        };
-        const handleStorage = (event: StorageEvent) => {
-            if (event.key === PENDING_ITEM_TAGS_CHANGED_KEY && event.newValue) {
-                consumePendingItemTagsChanged();
-            }
-        };
-        const clearSimulatedHover = () => setSimulatedHoverHash("");
-        window.addEventListener('mousemove', clearSimulatedHover, { capture: true });
-        window.addEventListener('focus', handleWindowFocus);
-        document.addEventListener('visibilitychange', handleVisibilityChange);
-        window.addEventListener('storage', handleStorage);
-        window.addEventListener('blur', handleWindowBlur);
-        window.addEventListener('click', closeContextMenu);
-        window.addEventListener('resize', closeContextMenu);
-        if (isMacPlatform()) {
-            void refreshTutorialPermissionStatus();
-        }
-        void loadBehaviorConfig()
-            .then(config => {
-                if (config.onboarding_completed === false && !tutorialActiveRef.current) {
-                    void startTutorial();
+    useClipboardLifecycleSubscriptions({
+        tauri: {
+            onWindowShow: payload => {
+                resetCardsPointerState();
+                selectFirstLoadedItem(true);
+                void applyShowPreferences();
+                if (payload) {
+                    window.requestAnimationFrame(() => {
+                        const card = document
+                            .elementFromPoint(payload.x, payload.y)
+                            ?.closest<HTMLElement>(`.${styles["clipboard-card"]}`);
+                        setSimulatedHoverHash(card?.dataset.hash || "");
+                    });
+                } else {
+                    setSimulatedHoverHash("");
                 }
-            })
-            .catch(e => error(`Failed to check tutorial state: ${e}`));
-        return () => {
-            stopDragInertia();
+                syncAltHintsFromNative();
+                window.setTimeout(syncAltHintsFromNative, 70);
+                window.setTimeout(syncAltHintsFromNative, 160);
+                scheduleFileRefresh(CLIPBOARD_SHOW_REFRESH_DELAY_MS);
+                setAnimationState("entering");
+            },
+            onWindowShowComplete: () => {
+                setAnimationState("entered");
+                setFileRefreshKey(key => key + 1);
+            },
+            onWindowHide: () => {
+                resetCardsPointerState();
+                searchRequestSeqRef.current += 1;
+                if (scrollRefreshTimerRef.current !== null) {
+                    window.clearTimeout(scrollRefreshTimerRef.current);
+                    scrollRefreshTimerRef.current = null;
+                }
+                if (imagePrewarmTimerRef.current !== null) {
+                    window.clearTimeout(imagePrewarmTimerRef.current);
+                    imagePrewarmTimerRef.current = null;
+                }
+                if (loadMoreCheckFrameRef.current !== null) {
+                    window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
+                    loadMoreCheckFrameRef.current = null;
+                }
+                hideAltHints();
+                setAnimationState("exiting");
+            },
+            onWindowHidden: () => {
+                setAnimationState("hidden");
+            },
+            onClipboardChanged: () => {
+                void fetchHistory();
+            },
+            onTutorialStarted: () => {
+                void startTutorial();
+            },
+            onTutorialCompleted: () => {
+                markTutorialCompleted();
+            },
+            onPermissionStatusChanged: () => {
+                void refreshTutorialPermissionStatus();
+            },
+            onCustomTabsChanged: payload => {
+                const tabs = Array.isArray(payload.tabs) ? payload.tabs : loadCustomTabs();
+                persistCustomTabs(tabs);
+                setCustomTabs(tabs);
+                if (payload.activeId) {
+                    appendTabOrderId(payload.activeId);
+                    activeTabRef.current = payload.activeId;
+                    setActiveTab(payload.activeId);
+                }
+                void fetchHistoryWith(searchWordRef.current, activeTabRef.current);
+            },
+            onItemTagsChanged: payload => {
+                localStorage.removeItem(PENDING_ITEM_TAGS_CHANGED_KEY);
+                applyItemTagsChanged(payload);
+            },
+            onPreviewNavigation: payload => {
+                if (payload.key === "Tab" && !tabQuickSelectEnabledRef.current) return;
+                navigateSelectedCard(payload.direction === -1 ? -1 : 1);
+            },
+        },
+        browser: {
+            onMouseMove: () => setSimulatedHoverHash(""),
+            onFocus: () => {
+                consumePendingItemTagsChanged();
+                if (isMacPlatform()) {
+                    void refreshTutorialPermissionStatus();
+                }
+            },
+            onVisibilityChange: () => {
+                if (document.visibilityState === "visible" && isMacPlatform()) {
+                    void refreshTutorialPermissionStatus();
+                }
+            },
+            onStorage: event => {
+                if (event.key === PENDING_ITEM_TAGS_CHANGED_KEY && event.newValue) {
+                    consumePendingItemTagsChanged();
+                }
+            },
+            onBlur: () => {
+                setContextMenu(null);
+                setTabContextMenu(null);
+                window.setTimeout(() => {
+                    void invoke("hide_clipboard_if_inactive")
+                        .catch(e => error(`Failed to hide inactive clipboard window: ${e}`));
+                }, 60);
+            },
+            onDismissMenus: () => {
+                setContextMenu(null);
+                setTabContextMenu(null);
+                setTagCreateChoice(null);
+            },
+        },
+        onMount: () => {
+            initializeTutorial();
+        },
+        onBeforeCleanup: () => {
             if (toastTimerRef.current !== null) {
                 window.clearTimeout(toastTimerRef.current);
             }
@@ -2873,42 +1075,19 @@ export default function Clipboard() {
             if (imagePrewarmTimerRef.current !== null) {
                 window.clearTimeout(imagePrewarmTimerRef.current);
             }
-            if (wheelScrollStateRef.current.frame !== null) {
-                window.cancelAnimationFrame(wheelScrollStateRef.current.frame);
-                wheelScrollStateRef.current.frame = null;
-            }
             if (loadMoreCheckFrameRef.current !== null) {
                 window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
                 loadMoreCheckFrameRef.current = null;
-            }
-            if (wheelScrollIdleTimerRef.current !== null) {
-                window.clearTimeout(wheelScrollIdleTimerRef.current);
-                wheelScrollIdleTimerRef.current = null;
             }
             if (searchDebounceTimerRef.current !== null) {
                 window.clearTimeout(searchDebounceTimerRef.current);
             }
             clearAltHintTimer();
-            unlistenShow.then(f => f()).catch(e => error(`Failed to unlisten show: ${e}`));
-            unlistenShowComplete.then(f => f()).catch(e => error(`Failed to unlisten show completion: ${e}`));
-            unlistenHide.then(f => f()).catch(e => error(`Failed to unlisten hide: ${e}`));
-            unlistenHidden.then(f => f()).catch(e => error(`Failed to unlisten hidden: ${e}`));
-            unlistenClipboard.then(f => f()).catch(e => error(`Failed to unlisten clipboard: ${e}`));
-            unlistenCustomTabs.then(f => f()).catch(e => error(`Failed to unlisten custom tabs: ${e}`));
-            unlistenItemTags.then(f => f()).catch(e => error(`Failed to unlisten item tags: ${e}`));
-            unlistenPreviewNavigation.then(f => f()).catch(e => error(`Failed to unlisten preview navigation: ${e}`));
-            unlistenTutorialStarted.then(f => f()).catch(e => error(`Failed to unlisten tutorial start: ${e}`));
-            unlistenTutorialCompleted.then(f => f()).catch(e => error(`Failed to unlisten tutorial complete: ${e}`));
-            unlistenPermissionStatusChanged.then(f => f()).catch(e => error(`Failed to unlisten onboarding permission status: ${e}`));
-            window.removeEventListener('mousemove', clearSimulatedHover, { capture: true });
-            window.removeEventListener('focus', handleWindowFocus);
-            document.removeEventListener('visibilitychange', handleVisibilityChange);
-            window.removeEventListener('storage', handleStorage);
-            window.removeEventListener('blur', handleWindowBlur);
-            window.removeEventListener('click', closeContextMenu);
-            window.removeEventListener('resize', closeContextMenu);
-        };
-    }, []);
+        },
+        onUnlistenError: (label, unlistenError) => {
+            error(`Failed to unlisten ${label}: ${unlistenError}`);
+        },
+    });
 
     useEffect(() => {
         if (searchDebounceTimerRef.current !== null) {
@@ -2934,168 +1113,119 @@ export default function Clipboard() {
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Alt') {
-                event.preventDefault();
+            const action = clipboardKeyDownAction(event, {
+                contextMenuOpen: contextMenu !== null,
+                isMac: isMacPlatform(),
+                pasteAsTextShortcut: pasteAsTextShortcutRef.current,
+                quickInputEnabled: quickInputEnabledRef.current,
+                searchHasText: Boolean(searchWord),
+                searchInput: searchInputRef.current,
+                searchOpen,
+                tabQuickSelectEnabled: tabQuickSelectEnabledRef.current,
+            });
+            if (!action) return;
+
+            event.preventDefault();
+            if ("stopPropagation" in action && action.stopPropagation) {
                 event.stopPropagation();
-                if (quickInputEnabledRef.current) {
-                    showAltHintsWhilePressed();
-                }
-                return;
             }
 
-            const targetIsTextInput = isTextInputTarget(event.target);
-            const allowQuickInputInSearch = event.target === searchInputRef.current;
-            if (
-                quickInputEnabledRef.current
-                && event.altKey
-                && !event.ctrlKey
-                && !event.metaKey
-                && (!targetIsTextInput || allowQuickInputInSearch)
-            ) {
-                const action = quickInputAction(event);
-                if (action?.kind === "tab") {
-                    event.preventDefault();
+            switch (action.type) {
+                case "alt-press":
+                    if (action.showHints) {
+                        showAltHintsWhilePressed();
+                    }
+                    return;
+                case "quick-tab":
                     switchToTabWithShortcut(action.tabId);
                     return;
-                }
-                if (action?.kind === "item") {
-                    event.preventDefault();
+                case "quick-item":
                     activateItemShortcut(action.index);
                     return;
-                }
-            }
-
-            if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
-                event.preventDefault();
-                focusSearchInput();
-                return;
-            }
-
-            if (targetIsTextInput) {
-                if (event.key === 'Enter' && event.target === searchInputRef.current) {
-                    event.preventDefault();
-                    event.stopPropagation();
+                case "focus-search":
+                    focusSearchInput();
+                    return;
+                case "submit-search": {
                     const firstHash = pageListRef.current[0]?.getHash() as string | undefined;
                     if (firstHash) {
                         void clickClipboardItem(firstHash, false);
                     }
                     return;
                 }
-                if (event.key === 'Escape' && searchOpen) {
-                    event.preventDefault();
-                    if (searchWord) {
+                case "dismiss-search":
+                    if (action.clear) {
                         setSearchWord("");
                     } else {
                         setSearchOpen(false);
                     }
-                }
-                return;
-            }
-
-            if (contextMenu) {
-                const options = buildContextMenuOptions(contextMenu.item, contextMenu.itemTags, contextMenu.colorOptions);
-                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-                    event.preventDefault();
+                    return;
+                case "move-context-menu-selection": {
+                    if (!contextMenu) return;
+                    const options = buildContextMenuOptions(
+                        contextMenu.item,
+                        contextMenu.itemTags,
+                        contextMenu.colorOptions,
+                    );
                     setContextMenuIndex(index => {
                         if (options.length === 0) return 0;
-                        const direction = event.key === 'ArrowDown' ? 1 : -1;
-                        return (index + direction + options.length) % options.length;
+                        return (index + action.direction + options.length) % options.length;
                     });
                     return;
                 }
-
-                if (event.key === 'Enter') {
-                    event.preventDefault();
+                case "activate-context-menu-option": {
+                    if (!contextMenu) return;
+                    const options = buildContextMenuOptions(
+                        contextMenu.item,
+                        contextMenu.itemTags,
+                        contextMenu.colorOptions,
+                    );
                     const option = options[Math.max(0, Math.min(contextMenuIndex, options.length - 1))];
                     if (option?.action) {
                         void option.action();
                     }
                     return;
                 }
-
-                if (event.key === 'Escape') {
-                    event.preventDefault();
+                case "close-context-menu":
                     setContextMenu(null);
                     return;
-                }
-            }
-
-            if (event.key === 'Escape' && searchOpen) {
-                event.preventDefault();
-                if (searchWord) {
-                    setSearchWord("");
-                } else {
-                    setSearchOpen(false);
-                }
-                return;
-            }
-
-            if (event.key === 'Escape') {
-                event.preventDefault();
-                setContextMenu(null);
-                void hideCurrentWindowWithAnimation();
-                return;
-            }
-
-            if (tabQuickSelectEnabledRef.current && event.key === 'Tab') {
-                event.preventDefault();
-                setContextMenu(null);
-                const direction = event.shiftKey ? -1 : 1;
-                navigateSelectedCard(direction);
-                return;
-            }
-
-            if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
-                event.preventDefault();
-                setContextMenu(null);
-                const direction = event.key === 'ArrowRight' ? 1 : -1;
-                navigateSelectedCard(direction);
-                return;
-            }
-
-            if (event.key === 'ArrowDown') {
-                event.preventDefault();
-                openSelectedContextMenu();
-                return;
-            }
-
-            if (event.key === ' ' || event.key === 'Spacebar') {
-                event.preventDefault();
-                setContextMenu(null);
-                invoke<boolean>('is_preview_window_visible')
-                    .then(visible => {
-                        if (visible) {
-                            previewRequestSeqRef.current += 1;
-                            return invoke('hide_preview_window');
-                        }
-                        const selectedItem = pageListRef.current.find(item => item.getHash() === selectedRef.current)
-                            || pageListRef.current[0];
+                case "hide-window":
+                    setContextMenu(null);
+                    void hideCurrentWindowWithAnimation();
+                    return;
+                case "navigate-selection":
+                    setContextMenu(null);
+                    navigateSelectedCard(action.direction);
+                    return;
+                case "open-selected-context-menu":
+                    openSelectedContextMenu();
+                    return;
+                case "toggle-preview":
+                    setContextMenu(null);
+                    togglePreview(
+                        pageListRef.current.find(
+                            item => item.getHash() === selectedRef.current,
+                        ) || pageListRef.current[0],
+                    );
+                    return;
+                case "paste-selected":
+                    setContextMenu(null);
+                    if (action.plainText) {
+                        const selectedItem = pageListRef.current.find(
+                            item => item.getHash() === selectedRef.current,
+                        ) || pageListRef.current[0];
                         if (selectedItem) {
-                            return openPreviewItem(selectedItem);
+                            void clickClipboardItem(selectedItem.getHash(), true);
                         }
-                    })
-                    .catch(e => error(`Failed to toggle preview: ${e}`));
-                return;
-            }
-
-            if (matchesKeyboardShortcut(event, pasteAsTextShortcutRef.current)) {
-                event.preventDefault();
-                setContextMenu(null);
-                const selectedItem = pageListRef.current.find(item => item.getHash() === selectedRef.current)
-                    || pageListRef.current[0];
-                if (selectedItem) {
-                    void clickClipboardItem(selectedItem.getHash(), true);
-                }
-                return;
-            }
-
-            if (event.key === 'Enter') {
-                event.preventDefault();
-                setContextMenu(null);
-                const selectedHash = selectedRef.current || (pageListRef.current[0]?.getHash() as string | undefined);
-                if (selectedHash) {
-                    void clickClipboardItem(selectedHash, false);
-                }
+                        return;
+                    }
+                    {
+                        const selectedHash = selectedRef.current
+                            || (pageListRef.current[0]?.getHash() as string | undefined);
+                        if (selectedHash) {
+                            void clickClipboardItem(selectedHash, false);
+                        }
+                    }
+                    return;
             }
         };
 
@@ -3124,109 +1254,24 @@ export default function Clipboard() {
         setSearchWord(event.target.value);
     };
 
-    const waitForQuickInputModifierRelease = async (triggerKey: string, timeoutMs: number = 3000): Promise<boolean> => {
-        const started = Date.now();
-        while (Date.now() - started < timeoutMs) {
-            try {
-                const pressed = await invoke<boolean>('is_quick_input_modifier_pressed', { triggerKey });
-                if (!pressed) return true;
-            } catch (e) {
-                error(`Failed to wait for quick input modifier release: ${e}`);
-                return false;
-            }
-            await new Promise(resolve => window.setTimeout(resolve, 16));
-        }
-        return false;
-    };
-
-    const finishCopyWithoutAutoPaste = async () => {
-        await invoke('show_paste_fallback_notice')
-            .catch(e => error(`Failed to show paste fallback notice: ${e}`));
-        try {
-            await hideCurrentWindowWithAnimation();
-        } finally {
-            await invoke('restore_foreground_app')
-                .catch(e => error(`Failed to restore foreground app: ${e}`));
-        }
-    };
-
-    const clickClipboardItem = async (hash: string, plainText: boolean = false, restoreAlt: boolean = false, triggerKey: string = "") => {
-        const hasPermission = await checkPasteAccessibilityPermission();
-        const item = pageListRef.current.find(i => i.getHash() === hash);
-        if (item) {
+    const {
+        pasteItem: clickClipboardItem,
+        pastePlainTextItem,
+    } = createClipboardPasteRuntime({
+        closeContextMenu: () => setContextMenu(null),
+        getItems: () => pageListRef.current,
+        hideWindow: hideCurrentWindowWithAnimation,
+        refreshHistory: fetchHistory,
+        selectItem: hash => {
             selectedRef.current = hash;
             setSelected(hash);
-            let content = item.getContent();
-            let itemType = getBackendTypeLabel(item.getType());
-            if (plainText && item.getTextContent()) {
-                content = item.getTextContent();
-                itemType = "Text";
-            } else if (item.getType() === ItemType.TextFile) {
-                content = await invoke<string>('plain_text_content', { hash: item.getHash() });
-                itemType = "Text";
-            } else if (item.getType() === ItemType.Link) {
-                content = content.split('|||')[0];
-            } else if (item.getType() === ItemType.File) {
-                const missingPaths = await invoke<string[]>('validate_file_item', { content });
-                if (missingPaths.length > 0) {
-                    const message = missingPaths.length === 1
-                        ? t("clipboard.sourceMissingOne", { path: compactPath(missingPaths[0], 46) })
-                        : t("clipboard.sourceMissingMany", { path: compactPath(missingPaths[0], 42) });
-                    showToast(message, 'warning');
-                    return;
-                }
-            }
-
-            try {
-                const copyHash = plainText ? null : hash;
-                if (restoreAlt) {
-                    await waitForQuickInputModifierRelease(triggerKey);
-                }
-                if (itemType === "Image" && hasPermission) {
-                    const hidePromise = hideCurrentWindowWithAnimation();
-                    await invoke('copy', { item: content, itemType, hash: copyHash });
-                    await hidePromise;
-                } else {
-                    await invoke('copy', { item: content, itemType, hash: copyHash });
-                    if (hasPermission) {
-                        await hideCurrentWindowWithAnimation();
-                    }
-                }
-                if (!hasPermission) {
-                    await finishCopyWithoutAutoPaste();
-                    return;
-                }
-                await invoke('paste', { hash, restoreAlt, triggerKey });
-                await fetchHistoryWith(searchWordRef.current, activeTabRef.current);
-            } catch (e) {
-                error(`Failed to copy/paste: ${e}`);
-                showToast(t("clipboard.actionFailed", { error: String(e) }), 'error');
-            }
-        }
-    };
+        },
+        showToast,
+        t,
+    });
 
     activateClipboardCardRef.current = (hash: string, plainText: boolean) => {
         void clickClipboardItem(hash, plainText);
-    };
-
-    const pastePlainTextItem = async (item: Item) => {
-        const hasPermission = await checkPasteAccessibilityPermission();
-        setContextMenu(null);
-        selectedRef.current = item.getHash() as string;
-        setSelected(item.getHash());
-        try {
-            const text = await invoke<string>('plain_text_content', { hash: item.getHash() });
-            await invoke('copy', { item: text, itemType: 'Text', hash: null });
-            if (!hasPermission) {
-                await finishCopyWithoutAutoPaste();
-                return;
-            }
-            await hideCurrentWindowWithAnimation();
-            await invoke<unknown>('paste', { hash: item.getHash(), triggerKey: "" });
-        } catch (e) {
-            error(`Failed to paste plain text: ${e}`);
-            showToast(t("clipboard.actionFailed", { error: String(e) }), 'error');
-        }
     };
 
     const openContextMenu = async (item: Item, clientX: number, clientY: number) => {
@@ -3275,53 +1320,20 @@ export default function Clipboard() {
         }
     };
 
-    const openPreviewItem = async (item: Item, requestSeq: number = ++previewRequestSeqRef.current) => {
-        setContextMenu(null);
-        if (item.getType() === ItemType.File) {
-            try {
-                const info = await invoke<FilePreviewInfo>("file_preview_info", { content: item.getContent() });
-                if (requestSeq !== previewRequestSeqRef.current) return;
-                const previewableFile = (info.kind === "single-preview" && !!info.preview_path)
-                    || info.kind === "pdf-preview"
-                    || info.kind === "text-preview";
-                const simpleFileInfo = info.kind === "multiple" || info.kind === "single-folder" || info.kind === "single-icon";
-                if (!previewableFile && !simpleFileInfo) {
-                    showToast(t("clipboard.previewUnsupported"), 'warning');
-                    return;
-                }
-            } catch (e) {
-                error(`Failed to prepare file preview: ${e}`);
-                showToast(t("clipboard.previewUnsupported"), 'warning');
-                return;
-            }
-        }
-        if (requestSeq !== previewRequestSeqRef.current) return;
-        selectedRef.current = item.getHash() as string;
-        setSelected(item.getHash());
-        try {
-            await invoke('show_preview_window', {
-                itemType: item.getType(),
-                content: item.getContent(),
-                previewContent: item.getPreviewContent(),
-                textContent: item.getTextContent(),
-                richHtml: item.getRichHtml(),
-                appSource: item.getAppSource(),
-            });
-        } catch (e) {
-            error(`Failed to open preview: ${e}`);
-            showToast(t("clipboard.previewFailed", { error: String(e) }), 'error');
-        }
-    };
-
-    const refreshPreviewIfVisible = (item: Item) => {
-        const requestSeq = ++previewRequestSeqRef.current;
-        void invoke<boolean>('is_preview_window_visible')
-            .then(visible => {
-                if (!visible || requestSeq !== previewRequestSeqRef.current) return;
-                return openPreviewItem(item, requestSeq);
-            })
-            .catch(e => error(`Failed to refresh preview after selection: ${e}`));
-    };
+    const {
+        openPreviewItem,
+        refreshPreviewIfVisible,
+        togglePreview,
+    } = createClipboardPreviewRuntime({
+        closeContextMenu: () => setContextMenu(null),
+        requestSequence: previewRequestSeqRef,
+        selectItem: hash => {
+            selectedRef.current = hash;
+            setSelected(hash);
+        },
+        showToast,
+        t,
+    });
 
     const navigateSelectedCard = (direction: number) => {
         const list = pageListRef.current;
@@ -3333,491 +1345,79 @@ export default function Clipboard() {
         }
     };
 
-    const toggleFavorite = async (item: Item) => {
-        setContextMenu(null);
-        const favorite = !item.isFavorite();
-        try {
-            await invoke('set_item_favorite', { hash: item.getHash(), favorite });
-            showToast(favorite ? t("clipboard.favoriteAdded") : t("clipboard.favoriteRemoved"));
-            await fetchHistory();
-        } catch (e) {
-            error(`Failed to update favorite: ${e}`);
-            showToast(t("clipboard.actionFailed", { error: String(e) }), 'error');
-        }
-    };
-
-    const assignExistingTag = async (item: Item, tag: ItemTag) => {
-        setContextMenu(null);
-        try {
-            await invoke('assign_item_tag', { hash: item.getHash(), tagId: tag.id });
-            updateItemTagsInPage(item, [...item.getTags().filter(candidate => candidate.id !== tag.id), tag]);
-            showToast(t("tags.assigned", { name: tag.name }));
-        } catch (e) {
-            showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
-        }
-    };
-
-    const removeAllAssignedTags = async (item: Item) => {
-        setContextMenu(null);
-        try {
-            await Promise.all(item.getTags().map(tag =>
-                invoke('remove_item_tag', { hash: item.getHash(), tagId: tag.id })
-            ));
-            updateItemTagsInPage(item, []);
-            showToast(t("tags.removedAll"));
-        } catch (e) {
-            showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
-        }
-    };
-
-    const removeAssignedTag = async (item: Item, tag: ItemTag) => {
-        setContextMenu(null);
-        try {
-            await invoke('remove_item_tag', { hash: item.getHash(), tagId: tag.id });
-            updateItemTagsInPage(item, item.getTags().filter(candidate => candidate.id !== tag.id));
-            showToast(t("tags.removed", { name: tag.name }));
-        } catch (e) {
-            showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
-        }
-    };
-
-    const deleteClipboardItem = async (item: Item) => {
-        setContextMenu(null);
+    const removeDeletedItemFromPage = (item: Item) => {
         const hash = item.getHash() as string;
-        try {
-            await invoke('delete_clipboard_item', { hash });
-            const currentList = pageListRef.current;
-            const deletedIndex = currentList.findIndex(candidate => candidate.getHash() === hash);
-            const nextList = currentList.filter(candidate => candidate.getHash() !== hash);
-            pageListRef.current = nextList;
-            setPage(new ClipboardPage(nextList, clipboardPage.consumed));
-            if (selectedRef.current === hash) {
-                const nextIndex = Math.max(0, Math.min(deletedIndex, nextList.length - 1));
-                const nextHash = nextList[nextIndex]?.getHash() as string | undefined;
-                selectedRef.current = nextHash || "";
-                setSelected(nextHash || "");
-                if (nextHash) {
-                    window.requestAnimationFrame(() => scrollCardIntoView(nextIndex));
-                }
+        const currentList = pageListRef.current;
+        const deletedIndex = currentList.findIndex(
+            candidate => candidate.getHash() === hash,
+        );
+        const nextList = currentList.filter(
+            candidate => candidate.getHash() !== hash,
+        );
+        pageListRef.current = nextList;
+        setPage(page => new ClipboardPage(nextList, page.consumed));
+        if (selectedRef.current === hash) {
+            const nextIndex = Math.max(
+                0,
+                Math.min(deletedIndex, nextList.length - 1),
+            );
+            const nextHash = nextList[nextIndex]?.getHash() as
+                | string
+                | undefined;
+            selectedRef.current = nextHash || "";
+            setSelected(nextHash || "");
+            if (nextHash) {
+                window.requestAnimationFrame(() => {
+                    scrollCardIntoView(nextIndex);
+                });
             }
-            showToast(t("clipboard.recordDeleted"));
-        } catch (e) {
-            error(`Failed to delete clipboard item: ${e}`);
-            showToast(t("clipboard.deleteFailed", { error: String(e) }), 'error');
         }
     };
 
-    const exportImageItem = async (item: Item) => {
-        setContextMenu(null);
-        const sourcePath = imageExportSourcePath(item);
-        if (!sourcePath) {
-            showToast(t("clipboard.actionFailed", { error: t("clipboard.exportImageNoSource") }), "error");
-            return;
-        }
-
-        try {
-            const cachedDir = localStorage.getItem(IMAGE_EXPORT_DIR_KEY) || "";
-            const fallbackDir = isMacPlatform() ? await downloadDir() : await desktopDir();
-            const defaultDir = cachedDir || fallbackDir;
-            const defaultPath = joinPath(defaultDir, `vpaste-image-${Date.now()}.png`);
-            await invoke("set_clipboard_blur_hide_suppressed", { suppressed: true })
-                .catch(e => error(`Failed to suppress clipboard blur hide: ${e}`));
-            const targetPath = await save({
-                defaultPath,
-                filters: [
-                    { name: "PNG Image", extensions: ["png"] },
-                    { name: "JPEG Image", extensions: ["jpg", "jpeg"] },
-                    { name: "WebP Image", extensions: ["webp"] },
-                    { name: "Bitmap Image", extensions: ["bmp"] },
-                ],
-            }).finally(() => {
-                void invoke("set_clipboard_blur_hide_suppressed", { suppressed: false })
-                    .catch(e => error(`Failed to restore clipboard blur hide: ${e}`));
-            });
-            if (!targetPath) return;
-
-            await invoke("export_image_item", { sourcePath, targetPath });
-            const nextDir = dirName(targetPath);
-            if (nextDir) {
-                localStorage.setItem(IMAGE_EXPORT_DIR_KEY, nextDir);
-            }
-            try {
-                await invoke("reveal_file_in_folder", { path: targetPath });
-            } catch (revealError) {
-                error(`Failed to reveal exported image file: ${revealError}`);
-                showToast(t("clipboard.actionFailed", { error: String(revealError) }), "error");
-                return;
-            }
-            await hideCurrentWindowWithAnimation();
-            showToast(t("clipboard.imageExported"));
-        } catch (e) {
-            error(`Failed to export image item: ${e}`);
-            showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
-        }
-    };
-
-    const openContainingFolder = async (item: Item) => {
-        setContextMenu(null);
-        try {
-            await invoke('open_containing_folder', { content: item.getContent() });
-        } catch (e) {
-            error(`Failed to open containing folder: ${e}`);
-            showToast(t("clipboard.actionFailed", { error: String(e) }), 'error');
-        }
-    };
-
-    const copyContainingFolderPath = async (item: Item) => {
-        setContextMenu(null);
-        try {
-            const path = await invoke<string>('containing_folder_path', { content: item.getContent() });
-            await invoke('copy', { item: path, itemType: 'Text', hash: null });
-            await invoke('record_text_history', { content: path });
-            await fetchHistory();
-            showToast(t("clipboard.folderCopied"));
-        } catch (e) {
-            error(`Failed to copy containing folder path: ${e}`);
-            showToast(t("clipboard.actionFailed", { error: String(e) }), 'error');
-        }
-    };
-
-    const copyColorValue = async (value: string) => {
-        setContextMenu(null);
-        try {
-            await invoke('copy', { item: value, itemType: 'Text', hash: null });
-            await invoke('record_text_history', { content: value });
-            await fetchHistory();
-            showToast(t("clipboard.colorCopied", { value }));
-        } catch (e) {
-            error(`Failed to copy converted color: ${e}`);
-            showToast(t("clipboard.actionFailed", { error: String(e) }), 'error');
-        }
-    };
+    const {
+        assignExistingTag,
+        copyColorValue,
+        copyContainingFolderPath,
+        deleteClipboardItem,
+        exportImageItem,
+        openContainingFolder,
+        removeAllAssignedTags,
+        removeAssignedTag,
+        toggleFavorite,
+    } = createClipboardItemActions({
+        closeContextMenu: () => setContextMenu(null),
+        hideWindow: hideCurrentWindowWithAnimation,
+        onDelete: removeDeletedItemFromPage,
+        refreshHistory: fetchHistory,
+        showToast,
+        t,
+        updateItemTags: updateItemTagsInPage,
+    });
 
     const buildContextMenuOptions = (
         item: Item,
         currentItemTags: ItemTag[] = itemTags,
         colorOptions: ColorCopyOption[] = [],
-    ): ContextMenuOption[] => {
-        const assignedTagIds = new Set(item.getTags().map(tag => tag.id));
-        const currentTagIds = new Set(currentItemTags.map(tag => tag.id));
-        const assignableTags = currentItemTags.filter(tag => !assignedTagIds.has(tag.id));
-        const assignedTags = item.getTags().filter(tag => currentTagIds.has(tag.id));
-        const options: ContextMenuOption[] = [
-            { label: t("menu.preview"), action: () => openPreviewItem(item) },
-            { label: item.isFavorite() ? t("menu.removeFavorite") : t("menu.addFavorite"), action: () => toggleFavorite(item) },
-        ];
-        options.push(currentItemTags.length === 0
-            ? {
-                label: t("menu.addRecordTag"),
-                action: () => openRecordTagCreateEditorForItem(item),
-            }
-            : {
-                label: t("menu.addRecordTag"),
-                children: [
-                    { label: t("tags.createRecord"), action: () => openRecordTagCreateEditorForItem(item) },
-                    ...(assignableTags.length > 0
-                        ? assignableTags.map(tag => ({
-                            label: tag.name,
-                            action: () => assignExistingTag(item, tag),
-                        }))
-                        : [{ label: t("tags.noAssignable"), action: () => undefined }]),
-                ],
-            });
-        if (assignedTags.length > 0) {
-            options.push({
-                label: t("menu.removeRecordTag"),
-                children: [
-                    { label: t("menu.removeAllTags"), action: () => removeAllAssignedTags(item), danger: true },
-                    ...assignedTags.map(tag => ({
-                        label: tag.name,
-                        action: () => removeAssignedTag(item, tag),
-                    })),
-                ],
-            });
-        }
-
-        if (imageExportSourcePath(item)) {
-            options.push({ label: t("menu.exportImage"), action: () => exportImageItem(item) });
-        }
-
-        if (item.getType() === ItemType.File) {
-            options.push(
-                { label: t("menu.openContainingFolder"), action: () => openContainingFolder(item) },
-                { label: t("menu.copyContainingFolder"), action: () => copyContainingFolderPath(item) },
-            );
-        }
-
-        if (item.getType() === ItemType.Color) {
-            options.push({
-                label: t("menu.convertColor"),
-                children: colorOptions.length > 0
-                    ? colorOptions.map(option => ({
-                        label: `${option.format} ${option.value}`,
-                        action: () => copyColorValue(option.value),
-                    }))
-                    : [{ label: t("clipboard.colorUnsupported"), action: () => undefined }],
-            });
-        }
-
-        if (isTextLikeItem(item)) {
-            options.push({ label: t("menu.pastePlainText"), action: () => pastePlainTextItem(item) });
-        }
-
-        options.push({ label: t("menu.deleteRecord"), action: () => deleteClipboardItem(item) });
-
-        return options;
-    };
-
-    const startDragInertia = (initialVelocity: number) => {
-        const container = cardsContainerRef.current;
-        if (!container) return;
-        let velocity = Math.max(-42, Math.min(42, initialVelocity));
-        const startedAt = performance.now();
-
-        const step = (now: number) => {
-            if (Math.abs(velocity) < 0.45 || now - startedAt > 260) {
-                stopDragInertia();
-                maybeLoadMoreHistory(true);
-                return;
-            }
-
-            container.scrollLeft += velocity;
-            velocity *= 0.84;
-            maybeLoadMoreHistory();
-            if (dragScrollRef.current) {
-                dragScrollRef.current.frame = window.requestAnimationFrame(step);
-            }
-        };
-
-        if (Math.abs(velocity) >= 0.45) {
-            dragScrollRef.current = {
-                active: false,
-                moved: false,
-                cancelActivation: false,
-                targetHash: "",
-                startX: 0,
-                startY: 0,
-                lastX: 0,
-                lastTime: performance.now(),
-                velocity,
-                pendingDelta: 0,
-                frame: window.requestAnimationFrame(step),
-            };
-        }
-    };
-
-    const handleCardsPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-        if (!event.isPrimary) return;
-        stopWheelScroll();
-        stopDragInertia();
-        if (event.button !== 0 || isTextInputTarget(event.target)) return;
-        const target = event.target as HTMLElement;
-        if (target.closest('button') || target.closest(`.${styles["context-menu"]}`)) return;
-        const targetCard = target.closest<HTMLElement>(`.${styles["clipboard-card"]}`);
-
-        setContextMenu(null);
-        event.currentTarget.setPointerCapture(event.pointerId);
-        dragScrollRef.current = {
-            active: true,
-            moved: false,
-            cancelActivation: false,
-            targetHash: targetCard?.dataset.hash || "",
-            startX: event.clientX,
-            startY: event.clientY,
-            lastX: event.clientX,
-            lastTime: performance.now(),
-            velocity: 0,
-            pendingDelta: 0,
-            frame: null,
-        };
-    };
-
-    const handleCardsPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-        const state = dragScrollRef.current;
-        const container = cardsContainerRef.current;
-        if (!state?.active || !container) return;
-
-        const deltaX = event.clientX - state.lastX;
-        const totalX = event.clientX - state.startX;
-        const totalY = event.clientY - state.startY;
-        if (!state.moved && Math.hypot(totalX, totalY) < 5) return;
-        if (!state.moved && Math.abs(totalX) < Math.abs(totalY)) {
-            state.cancelActivation = true;
-            return;
-        }
-
-        event.preventDefault();
-        state.moved = true;
-        suppressClickAfterDragRef.current = true;
-        container.classList.add(styles.dragging);
-
-        const now = performance.now();
-        const elapsed = Math.max(8, now - state.lastTime);
-        state.pendingDelta -= deltaX;
-        state.velocity = (-deltaX / elapsed) * 16;
-        state.lastX = event.clientX;
-        state.lastTime = now;
-
-        if (state.frame === null) {
-            state.frame = window.requestAnimationFrame(() => {
-                const nextState = dragScrollRef.current;
-                const nextContainer = cardsContainerRef.current;
-                if (!nextState || !nextContainer) return;
-                nextState.frame = null;
-                if (nextState.pendingDelta === 0) return;
-                nextContainer.scrollLeft += nextState.pendingDelta;
-                nextState.pendingDelta = 0;
-                maybeLoadMoreHistory();
-            });
-        }
-    };
-
-    const finishCardsPointerDrag = (event: React.PointerEvent<HTMLDivElement>) => {
-        const state = dragScrollRef.current;
-        const container = cardsContainerRef.current;
-        if (!state?.active) return;
-
-        container?.classList.remove(styles.dragging);
-        if (state.frame !== null) {
-            window.cancelAnimationFrame(state.frame);
-            state.frame = null;
-        }
-        dragScrollRef.current = null;
-        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-        }
-        if (event.type === 'pointerup' && !state.moved && !state.cancelActivation && state.targetHash) {
-            event.preventDefault();
-            window.getSelection()?.removeAllRanges();
-            activateClipboardCard(state.targetHash, event.shiftKey);
-            return;
-        }
-        if (state.moved) {
-            event.preventDefault();
-            if (state.pendingDelta !== 0 && container) {
-                container.scrollLeft += state.pendingDelta;
-                state.pendingDelta = 0;
-                maybeLoadMoreHistory();
-            }
-            startDragInertia(state.velocity);
-            window.setTimeout(() => {
-                suppressClickAfterDragRef.current = false;
-            }, 120);
-        }
-    };
-
-    const startWheelScrollAnimation = () => {
-        const state = wheelScrollStateRef.current;
-        if (state.frame !== null) return;
-
-        const step = (timestamp: number) => {
-            const nextContainer = cardsContainerRef.current;
-            if (!nextContainer) {
-                state.frame = null;
-                state.lastFrameTime = null;
-                scheduleWheelScrollIdle();
-                return;
-            }
-
-            const elapsed = state.lastFrameTime === null
-                ? 1000 / 60
-                : Math.min(WHEEL_SCROLL_MAX_FRAME_MS, Math.max(0, timestamp - state.lastFrameTime));
-            state.lastFrameTime = timestamp;
-            const remaining = state.target - nextContainer.scrollLeft;
-
-            if (Math.abs(remaining) <= WHEEL_SCROLL_STOP_EPSILON_PX) {
-                nextContainer.scrollLeft = state.target;
-                state.frame = null;
-                state.lastFrameTime = null;
-                maybeLoadMoreHistory(true);
-                scheduleWheelScrollIdle();
-                return;
-            }
-
-            const progress = 1 - Math.exp(-elapsed / state.timeConstant);
-            nextContainer.scrollLeft += remaining * progress;
-            maybeLoadMoreHistory();
-            state.frame = window.requestAnimationFrame(step);
-        };
-
-        state.frame = window.requestAnimationFrame(step);
-    };
-
-    const handleCardsWheel = (event: WheelEvent) => {
-        if (tutorialActiveRef.current || event.ctrlKey) return;
-
-        setContextMenu(null);
-        setTabContextMenu(null);
-        const container = cardsContainerRef.current;
-        if (!container) return;
-
-        const { delta: scrollAmount, rawDelta } = normalizeWheelDelta(event, container.clientWidth);
-        if (scrollAmount === 0) return;
-
-        const maxScroll = Math.max(0, container.scrollWidth - container.clientWidth);
-        if (maxScroll === 0) return;
-
-        event.preventDefault();
-        if (wheelScrollIdleTimerRef.current !== null) {
-            window.clearTimeout(wheelScrollIdleTimerRef.current);
-            wheelScrollIdleTimerRef.current = null;
-        }
-        if (!wheelScrollingRef.current) {
-            wheelScrollingRef.current = true;
-            container.classList.add(styles["wheel-scrolling"]);
-        }
-
-        const state = wheelScrollStateRef.current;
-        const now = performance.now();
-        const eventInterval = now - state.lastEventTime;
-        state.lastEventTime = now;
-
-        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-            if (state.frame !== null) {
-                window.cancelAnimationFrame(state.frame);
-                state.frame = null;
-            }
-            state.lastFrameTime = null;
-            state.target = Math.max(0, Math.min(maxScroll, container.scrollLeft + scrollAmount));
-            container.scrollLeft = state.target;
-            maybeLoadMoreHistory(true);
-            scheduleWheelScrollIdle();
-            return;
-        }
-
-        if (state.frame === null) {
-            state.target = container.scrollLeft;
-            state.lastFrameTime = null;
-        }
-        const remaining = state.target - container.scrollLeft;
-        if (remaining !== 0 && Math.sign(remaining) !== Math.sign(scrollAmount)) {
-            state.target = container.scrollLeft;
-        }
-        state.target = Math.max(0, Math.min(maxScroll, state.target + scrollAmount));
-
-        const precisionInput = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL && (
-            Math.abs(rawDelta) < 50
-            || !Number.isInteger(rawDelta)
-            || (eventInterval > 0 && eventInterval < 24 && Math.abs(rawDelta) < 100)
-        );
-        state.timeConstant = precisionInput
-            ? WHEEL_PRECISION_TIME_CONSTANT_MS
-            : WHEEL_MOUSE_TIME_CONSTANT_MS;
-        startWheelScrollAnimation();
-    };
-
-    cardsWheelHandlerRef.current = handleCardsWheel;
-
-    useEffect(() => {
-        const container = cardsContainerRef.current;
-        if (!container) return;
-
-        const handleWheel = (event: WheelEvent) => cardsWheelHandlerRef.current(event);
-        container.addEventListener('wheel', handleWheel, { passive: false });
-        return () => {
-            container.removeEventListener('wheel', handleWheel);
-        };
-    }, []);
+    ) => buildClipboardContextMenuOptions({
+        actions: {
+            onAssignTag: assignExistingTag,
+            onCopyColor: copyColorValue,
+            onCopyContainingFolder: copyContainingFolderPath,
+            onCreateRecordTag: openRecordTagCreateEditorForItem,
+            onDelete: deleteClipboardItem,
+            onExportImage: exportImageItem,
+            onOpenContainingFolder: openContainingFolder,
+            onPastePlainText: pastePlainTextItem,
+            onPreview: openPreviewItem,
+            onRemoveAllTags: removeAllAssignedTags,
+            onRemoveTag: removeAssignedTag,
+            onToggleFavorite: toggleFavorite,
+        },
+        colorOptions,
+        currentItemTags,
+        item,
+        t,
+    });
 
     const openConfigWindow = async () => {
         try {
@@ -3871,27 +1471,11 @@ export default function Clipboard() {
         showToast(t("tutorial.finishFirst"), "info", 2200);
     };
 
-    const tutorialPermissions: TutorialPermission[] = [
-        {
-            id: "background",
-            title: t("tutorial.permission.background"),
-            description: t("tutorial.permission.background.desc"),
-            done: tutorialPermissionStatus?.background.done === true,
-            actionLabel: t("tutorial.permission.enable"),
-        },
-        {
-            id: "paste",
-            title: t("tutorial.permission.paste"),
-            description: t("tutorial.permission.paste.desc"),
-            done: tutorialPermissionStatus?.paste.done === true,
-            actionLabel: t("tutorial.permission.openSettings"),
-        },
-    ];
-    const tutorialFilters: TutorialFilterTab[] = TUTORIAL_FILTER_TABS.map(filter => ({
-        id: filter.id,
-        name: `${filter.emoji} ${t(filter.titleKey)}`,
-        enabled: customTabs.some(tab => tab.id === tutorialFilterTabId(filter.id)),
-    }));
+    const tutorialPermissions = buildTutorialPermissions(
+        tutorialPermissionStatus,
+        t,
+    );
+    const tutorialFilters = buildTutorialFilterTabs(customTabs, t);
     const tutorialShortcutText = formatShortcutLabel(mainShortcut, tutorialPlatform === "mac");
 
     const contextMenuOptions = contextMenu
@@ -3975,225 +1559,82 @@ export default function Clipboard() {
                         )}
                     </div>
                 )}
-                <div className={classes(styles, "header-tabs")} onDragOver={event => event.preventDefault()}>
-                    <button
-                        type="button"
-                        className={classes(styles, `tab-item fixed ${activeTab === "all" ? 'active' : ''}`)}
-                        onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab("all")}
-                    >
-                        <AppsOutlinedIcon className={classes(styles, "tab-icon tab-icon-all")} fontSize="inherit" />
-                        <span className={classes(styles, "tab-label")}>{t("tabs.all")}</span>
-                        {altHintsVisible && <span className={classes(styles, "alt-tab-hint")}>A</span>}
-                    </button>
-                    <button
-                        type="button"
-                        className={classes(styles, `tab-item fixed ${activeTab === "favorite" ? 'active' : ''}`)}
-                        onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab("favorite")}
-                    >
-                        <StarBorderOutlinedIcon className={classes(styles, "tab-icon tab-icon-favorite")} fontSize="inherit" />
-                        <span className={classes(styles, "tab-label")}>{t("tabs.favorite")}</span>
-                        {altHintsVisible && <span className={classes(styles, "alt-tab-hint")}>F</span>}
-                    </button>
-                    {dynamicTabs.map(entry => {
+                <ClipboardTabBar
+                    activeTab={activeTab}
+                    dynamicTabs={dynamicTabs}
+                    draggingTabId={draggingTabId}
+                    tutorialActive={tutorialActive}
+                    altHintsVisible={altHintsVisible}
+                    addButtonRef={addTabButtonRef}
+                    t={t}
+                    onSelectTab={setActiveTab}
+                    onBlockedNavigation={blockTutorialNavigation}
+                    onEditTab={(entry, anchor) => {
                         if (entry.kind === "filter") {
-                            const tab = entry.tab;
-                            return (
-                                <button
-                                    key={entry.id}
-                                    type="button"
-                                    className={classes(styles, `tab-item custom ${tutorialActive ? 'tutorial-locked' : ''} ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`)}
-                                    draggable={!tutorialActive}
-                                    onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab(entry.id)}
-                                    onDoubleClick={tutorialActive ? undefined : event => openEditTabEditor(tab, event.currentTarget)}
-                                    onContextMenu={event => {
-                                        event.preventDefault();
-                                        event.stopPropagation();
-                                        if (tutorialActive) {
-                                            blockTutorialNavigation();
-                                            return;
-                                        }
-                                        setContextMenu(null);
-                                        const position = floatingPositionFromClick(
-                                            event.clientX,
-                                            event.clientY,
-                                            TAB_CONTEXT_MENU_WIDTH,
-                                            contextMenuHeight(2),
-                                        );
-                                        setTabContextMenu({
-                                            kind: "filter",
-                                            tab,
-                                            x: position.x,
-                                            y: position.y,
-                                            originX: event.clientX,
-                                            originY: event.clientY,
-                                        });
-                                    }}
-                                    onDragStart={() => {
-                                        if (!tutorialActive) setDraggingTabId(entry.id);
-                                    }}
-                                    onDragEnd={() => setDraggingTabId("")}
-                                    onDrop={event => {
-                                        event.preventDefault();
-                                        handleTabDrop(entry.id);
-                                    }}
-                                >
-                                    <span className={classes(styles, "tab-label")}>{tab.name}</span>
-                                </button>
-                            );
+                            openEditTabEditor(entry.tab, anchor);
+                        } else {
+                            openEditRecordTagEditor(entry.tag, anchor);
                         }
-                        const tag = entry.tag;
-                        return (
-                            <button
-                                key={entry.id}
-                                type="button"
-                                className={classes(styles, `tab-item record ${tutorialActive ? 'tutorial-locked' : ''} ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`)}
-                                draggable={!tutorialActive}
-                                onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab(entry.id)}
-                                onDoubleClick={tutorialActive ? undefined : event => openEditRecordTagEditor(tag, event.currentTarget)}
-                                onContextMenu={event => {
-                                    event.preventDefault();
-                                    event.stopPropagation();
-                                    if (tutorialActive) {
-                                        blockTutorialNavigation();
-                                        return;
-                                    }
-                                    setContextMenu(null);
-                                    const position = floatingPositionFromClick(
-                                        event.clientX,
-                                        event.clientY,
-                                        TAB_CONTEXT_MENU_WIDTH,
-                                        contextMenuHeight(2),
-                                    );
-                                    setTabContextMenu({
-                                        kind: "record",
-                                        tag,
-                                        x: position.x,
-                                        y: position.y,
-                                        originX: event.clientX,
-                                        originY: event.clientY,
-                                    });
-                                }}
-                                onDragStart={() => {
-                                    if (!tutorialActive) setDraggingTabId(entry.id);
-                                }}
-                                onDragEnd={() => setDraggingTabId("")}
-                                onDrop={event => {
-                                    event.preventDefault();
-                                    handleTabDrop(entry.id);
-                                }}
-                            >
-                                <span className={classes(styles, "tab-label")}>{tag.name}</span>
-                            </button>
+                    }}
+                    onOpenContextMenu={(entry, clientX, clientY) => {
+                        setContextMenu(null);
+                        const position = floatingPositionFromClick(
+                            clientX,
+                            clientY,
+                            TAB_CONTEXT_MENU_WIDTH,
+                            contextMenuHeight(2),
                         );
-                    })}
-                    {!tutorialActive && (
-                        <button
-                            ref={addTabButtonRef}
-                            type="button"
-                            className={classes(styles, "tab-add-button")}
-                            title={t("tabs.add")}
-                            aria-label={t("tabs.add")}
-                            onClick={event => {
-                                event.stopPropagation();
-                                openTagCreateChoice(event.clientX, event.clientY);
-                            }}
-                        >
-                            <AddIcon fontSize="small" />
-                        </button>
+                        setTabContextMenu(entry.kind === "filter"
+                            ? {
+                                kind: "filter",
+                                tab: entry.tab,
+                                x: position.x,
+                                y: position.y,
+                                originX: clientX,
+                                originY: clientY,
+                            }
+                            : {
+                                kind: "record",
+                                tag: entry.tag,
+                                x: position.x,
+                                y: position.y,
+                                originX: clientX,
+                                originY: clientY,
+                            });
+                    }}
+                    onDragStart={setDraggingTabId}
+                    onDragEnd={() => setDraggingTabId("")}
+                    onDrop={handleTabDrop}
+                    onAdd={openTagCreateChoice}
+                />
+                <ClipboardHeaderActions
+                    isMac={isMacPlatform()}
+                    tutorialActive={tutorialActive}
+                    tutorialPlatform={tutorialPlatform}
+                    permissionIncomplete={Boolean(
+                        tutorialPermissionStatus
+                        && (!tutorialPermissionStatus.background.done || !tutorialPermissionStatus.paste.done)
                     )}
-                </div>
-                <div className={classes(styles, "header-actions")}>
-                    {isMacPlatform()
-                        && !tutorialActive
-                        && tutorialPermissionStatus !== null
-                        && (!tutorialPermissionStatus.background.done || !tutorialPermissionStatus.paste.done) && (
-                        <button
-                            type="button"
-                            className={classes(styles, "permission-summary-banner")}
-                            onClick={openPermissionCenter}
-                        >
-                            <WarningAmberOutlinedIcon fontSize="inherit" />
-                            <span>{t("clipboard.permissionsIncomplete")}</span>
-                        </button>
-                    )}
-                    {import.meta.env.DEV && developerMode && (
-                        <div className={classes(styles, "developer-toolbar")} aria-label={t("tutorial.debug.tools")}>
-                            <span className={classes(styles, "developer-toolbar-badge")} aria-hidden="true">DEV</span>
-                            <button
-                                type="button"
-                                className={classes(styles, `settings-button developer-toolbar-button${tutorialActive && tutorialPlatform === "windows" ? " is-active" : ""}`)}
-                                title={t("tutorial.debug.windows")}
-                                aria-label={t("tutorial.debug.windows")}
-                                aria-pressed={tutorialActive && tutorialPlatform === "windows"}
-                                onClick={() => openTutorialFromDebug("windows")}
-                            >
-                                <WindowOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
-                                <span>Win</span>
-                            </button>
-                            <button
-                                type="button"
-                                className={classes(styles, `settings-button developer-toolbar-button${tutorialActive && tutorialPlatform === "mac" ? " is-active" : ""}`)}
-                                title={t("tutorial.debug.mac")}
-                                aria-label={t("tutorial.debug.mac")}
-                                aria-pressed={tutorialActive && tutorialPlatform === "mac"}
-                                onClick={() => openTutorialFromDebug("mac")}
-                            >
-                                <AppleIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
-                                <span>Mac</span>
-                            </button>
-                            <span className={classes(styles, "developer-toolbar-divider")} aria-hidden="true" />
-                            <button
-                                type="button"
-                                className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}
-                                title={t("tutorial.debug.language")}
-                                aria-label={t("tutorial.debug.language")}
-                                onClick={toggleDeveloperLanguage}
-                            >
-                                <span>{languageCode === "Chinese" ? "中" : "EN"}</span>
-                            </button>
-                            <button
-                                type="button"
-                                className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}
-                                title={t(developerTheme === "dark" ? "tutorial.debug.theme.dark" : "tutorial.debug.theme.light")}
-                                aria-label={t(developerTheme === "dark" ? "tutorial.debug.theme.dark" : "tutorial.debug.theme.light")}
-                                aria-pressed={developerTheme === "dark"}
-                                onClick={toggleDeveloperTheme}
-                            >
-                                {developerTheme === "dark"
-                                    ? <DarkModeRoundedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
-                                    : <LightModeRoundedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />}
-                            </button>
-                        </div>
-                    )}
-                    {developerMode && (
-                        <button
-                            type="button"
-                            className={classes(styles, "settings-button")}
-                            title={t("tutorial.debug.uiLab")}
-                            aria-label={t("tutorial.debug.uiLab")}
-                            onClick={openUiLab}
-                        >
-                            <DashboardCustomizeOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
-                        </button>
-                    )}
-                    <button
-                        type="button"
-                        className={classes(styles, "settings-button")}
-                        title={t("common.settings")}
-                        aria-label={t("common.settings")}
-                        onClick={tutorialActive ? blockTutorialNavigation : openConfigWindow}
-                    >
-                        <SettingsOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
-                    </button>
-                </div>
+                    developerMode={developerMode}
+                    showDeveloperToolbar={import.meta.env.DEV && developerMode}
+                    languageCode={languageCode}
+                    developerTheme={developerTheme}
+                    t={t}
+                    onOpenPermissionCenter={openPermissionCenter}
+                    onOpenTutorial={openTutorialFromDebug}
+                    onToggleLanguage={toggleDeveloperLanguage}
+                    onToggleTheme={toggleDeveloperTheme}
+                    onOpenUiLab={openUiLab}
+                    onOpenSettings={tutorialActive ? blockTutorialNavigation : openConfigWindow}
+                />
             </div>
 
             {!tutorialActive && updateReady(updateState) && (
-                <button className={classes(styles, "app-update-banner")} type="button" onClick={() => void openUpdateSettings()}>
-                    <SystemUpdateAltOutlinedIcon fontSize="inherit" />
-                    <span>{t("clipboard.updateAvailable", { version: updateState.availableVersion || "" })}</span>
-                    <strong>{t("clipboard.updateOpenSettings")}</strong>
-                </button>
+                <ClipboardUpdateBanner
+                    version={updateState.availableVersion || ""}
+                    t={t}
+                    onOpen={() => void openUpdateSettings()}
+                />
             )}
 
             {/* Cards Grid */}
@@ -4218,13 +1659,7 @@ export default function Clipboard() {
                 onLostPointerCapture={(event) => {
                     if (!tutorialActive) finishCardsPointerDrag(event);
                 }}
-                onClickCapture={(event) => {
-                    if (suppressClickAfterDragRef.current) {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        suppressClickAfterDragRef.current = false;
-                    }
-                }}
+                onClickCapture={handleCardsClickCapture}
             >
                 {tutorialActive ? (
                     <TutorialOverlay
@@ -4248,7 +1683,6 @@ export default function Clipboard() {
                                 selected={selected === item.getHash()}
                                 simulatedHover={simulatedHoverHash === item.getHash()}
                                 refreshKey={fileRefreshKey}
-                                imageRefreshKey={imageRefreshKey}
                                 searchQuery={searchWord as string}
                                 shortcutHint={altHintsVisible && index < 9 ? String(index + 1) : undefined}
                                 mediaPlaybackReady={animationState === 'entered'}
@@ -4263,170 +1697,67 @@ export default function Clipboard() {
                 )}
             </div>
             {tagCreateChoice && (
-                <div
-                    className={classes(styles, "tag-create-choice-popover")}
-                    style={{ left: tagCreateChoice.x, top: tagCreateChoice.y }}
-                    onClick={event => event.stopPropagation()}
-                    onMouseDown={event => event.stopPropagation()}
-                >
-                    <button
-                        type="button"
-                        onClick={() => {
-                            const { originX, originY } = tagCreateChoice;
-                            setTagCreateChoice(null);
-                            openTabEditorWindowAt("add", "filter", undefined, undefined, originX, originY);
-                        }}
-                    >
-                        <strong>{t("tabs.filterTag")}</strong>
-                        <span>{t("tabs.filterTagDesc")}</span>
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => {
-                            const { originX, originY } = tagCreateChoice;
-                            setTagCreateChoice(null);
-                            openTabEditorWindowAt("add", "record", undefined, undefined, originX, originY);
-                        }}
-                    >
-                        <strong>{t("tabs.recordTag")}</strong>
-                        <span>{t("tabs.recordTagDesc")}</span>
-                    </button>
-                </div>
+                <TagCreateChoicePopover
+                    state={tagCreateChoice}
+                    t={t}
+                    onSelect={(kind, originX, originY) => {
+                        setTagCreateChoice(null);
+                        openTabEditorWindowAt("add", kind, undefined, undefined, originX, originY);
+                    }}
+                />
             )}
             {contextMenu && (
-                <div
-                    className={classes(styles, "context-menu")}
-                    style={{ left: contextMenu.x, top: contextMenu.y }}
-                    role="menu"
-                    onClick={(event) => event.stopPropagation()}
-                    onMouseDown={(event) => event.stopPropagation()}
-                >
-                    {contextMenuOptions.map((option, index) => (
-                        <button
-                            key={option.label}
-                            type="button"
-                            role="menuitem"
-                            className={classes(styles, `${index === contextMenuIndex ? 'selected' : ''} ${option.children ? 'has-submenu' : ''} ${option.danger ? 'danger' : ''}`)}
-                            onMouseEnter={() => setContextMenuIndex(index)}
-                            onClick={() => {
-                                if (option.action) void option.action();
-                            }}
-                        >
-                            {option.label}
-                            {option.children && <span className={classes(styles, "context-menu-chevron")}>›</span>}
-                        </button>
-                    ))}
-                </div>
-            )}
-            {contextMenu && selectedSubmenuOptions.length > 0 && (
-                <div
-                    className={classes(styles, "context-submenu")}
-                    style={{ left: submenuLeft, top: submenuTop }}
-                    role="menu"
-                    onClick={(event) => event.stopPropagation()}
-                    onMouseDown={(event) => event.stopPropagation()}
-                >
-                    {selectedSubmenuOptions.map(option => (
-                        <button
-                            key={option.label}
-                            type="button"
-                            role="menuitem"
-                            title={option.label}
-                            className={classes(styles, option.danger ? 'danger' : '')}
-                            onClick={() => {
-                                if (option.action) void option.action();
-                            }}
-                        >
-                            {option.label}
-                        </button>
-                    ))}
-                </div>
+                <ClipboardContextMenus
+                    state={contextMenu}
+                    options={contextMenuOptions}
+                    selectedIndex={contextMenuIndex}
+                    submenuOptions={selectedSubmenuOptions}
+                    submenuLeft={submenuLeft}
+                    submenuTop={submenuTop}
+                    onSelectedIndexChange={setContextMenuIndex}
+                />
             )}
             {tabContextMenu && (
-                <div
-                    className={classes(styles, "tab-context-menu")}
-                    style={{ left: tabContextMenu.x, top: tabContextMenu.y }}
-                    role="menu"
-                    onClick={event => event.stopPropagation()}
-                    onMouseDown={event => event.stopPropagation()}
-                    onContextMenu={event => event.preventDefault()}
-                >
-                    <button
-                        type="button"
-                        role="menuitem"
-                        onClick={event => {
-                            event.stopPropagation();
-                            if (tabContextMenu.kind === "record") {
-                                openTabEditorWindowAt("edit", "record", undefined, tabContextMenu.tag, tabContextMenu.originX, tabContextMenu.originY);
-                            } else {
-                                openTabEditorWindowAt("edit", "filter", tabContextMenu.tab, undefined, tabContextMenu.originX, tabContextMenu.originY);
-                            }
-                            setTabContextMenu(null);
-                        }}
-                    >
-                        {t("tabs.edit")}
-                    </button>
-                    <button
-                        type="button"
-                        role="menuitem"
-                        className={classes(styles, "danger")}
-                        onClick={event => {
-                            event.stopPropagation();
-                            if (tabContextMenu.kind === "record") {
-                                setDeleteConfirmRecordTag(tabContextMenu.tag);
-                            } else {
-                                setDeleteConfirmTab(tabContextMenu.tab);
-                            }
-                            setTabContextMenu(null);
-                        }}
-                    >
-                        {t("tabs.delete")}
-                    </button>
-                </div>
+                <TabContextMenu
+                    state={tabContextMenu}
+                    t={t}
+                    onEdit={state => {
+                        if (state.kind === "record") {
+                            openTabEditorWindowAt("edit", "record", undefined, state.tag, state.originX, state.originY);
+                        } else {
+                            openTabEditorWindowAt("edit", "filter", state.tab, undefined, state.originX, state.originY);
+                        }
+                        setTabContextMenu(null);
+                    }}
+                    onDelete={state => {
+                        if (state.kind === "record") {
+                            setDeleteConfirmRecordTag(state.tag);
+                        } else {
+                            setDeleteConfirmTab(state.tab);
+                        }
+                        setTabContextMenu(null);
+                    }}
+                />
             )}
             {deleteConfirmTab && (
-                <div
-                    className={classes(styles, "tab-confirm-backdrop")}
-                    onClick={() => setDeleteConfirmTab(null)}
-                >
-                    <div
-                        className={classes(styles, "tab-confirm-dialog")}
-                        onClick={event => event.stopPropagation()}
-                    >
-                        <strong>{t("tabs.deleteConfirmTitle")}</strong>
-                        <p>{t("tabs.deleteConfirmDesc", { name: deleteConfirmTab.name })}</p>
-                        <div className={classes(styles, "tab-confirm-actions")}>
-                            <button type="button" onClick={() => setDeleteConfirmTab(null)}>
-                                {t("tabs.cancel")}
-                            </button>
-                            <button type="button" className={classes(styles, "danger")} onClick={() => deleteCustomTab(deleteConfirmTab)}>
-                                {t("tabs.delete")}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <DeleteConfirmDialog
+                    title={t("tabs.deleteConfirmTitle")}
+                    description={t("tabs.deleteConfirmDesc", { name: deleteConfirmTab.name })}
+                    cancelLabel={t("tabs.cancel")}
+                    confirmLabel={t("tabs.delete")}
+                    onCancel={() => setDeleteConfirmTab(null)}
+                    onConfirm={() => deleteCustomTab(deleteConfirmTab)}
+                />
             )}
             {deleteConfirmRecordTag && (
-                <div
-                    className={classes(styles, "tab-confirm-backdrop")}
-                    onClick={() => setDeleteConfirmRecordTag(null)}
-                >
-                    <div
-                        className={classes(styles, "tab-confirm-dialog")}
-                        onClick={event => event.stopPropagation()}
-                    >
-                        <strong>{t("tabs.deleteConfirmTitle")}</strong>
-                        <p>{t("tags.deleteConfirm", { name: deleteConfirmRecordTag.name })}</p>
-                        <div className={classes(styles, "tab-confirm-actions")}>
-                            <button type="button" onClick={() => setDeleteConfirmRecordTag(null)}>
-                                {t("tabs.cancel")}
-                            </button>
-                            <button type="button" className={classes(styles, "danger")} onClick={() => void deleteRecordTag(deleteConfirmRecordTag)}>
-                                {t("tabs.delete")}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <DeleteConfirmDialog
+                    title={t("tabs.deleteConfirmTitle")}
+                    description={t("tags.deleteConfirm", { name: deleteConfirmRecordTag.name })}
+                    cancelLabel={t("tabs.cancel")}
+                    confirmLabel={t("tabs.delete")}
+                    onCancel={() => setDeleteConfirmRecordTag(null)}
+                    onConfirm={() => void deleteRecordTag(deleteConfirmRecordTag)}
+                />
             )}
         </div>
     );

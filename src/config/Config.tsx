@@ -190,11 +190,12 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
     };
 
     const isSettingsBlocked = blockingOperation !== null;
+    const nativeWindowsSurface = "__TAURI_INTERNALS__" in window && !isMacPlatform();
 
     return (
         <>
             <div
-                className={`${layout.container} ${windowsControlsHoverReady ? layout.windowsControlsHoverReady : ""}`}
+                className={`${layout.container} ${nativeWindowsSurface ? layout.nativeWindowsSurface : ""} ${windowsControlsHoverReady ? layout.windowsControlsHoverReady : ""}`}
                 data-testid="settings-root"
                 onMouseMoveCapture={() => {
                     if (!windowsControlsHoverReady) {

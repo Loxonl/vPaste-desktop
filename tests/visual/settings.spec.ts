@@ -71,4 +71,28 @@ test.describe("settings preview", () => {
         await expect(page.getByText("版本与更新")).toHaveCount(0);
         await expect(page).toHaveScreenshot("settings-about-switch.png");
     });
+
+    test("Tab support switch stays centered in the shortcut key column", async ({ page }) => {
+        await page.setViewportSize({ width: 720, height: 700 });
+        await page.goto("/__settings-preview?theme=light&lang=zh-CN");
+        await page.getByRole("tab").nth(2).click();
+
+        const valueColumns = page.locator("[class*='shortcut-static']");
+        await expect(valueColumns).toHaveCount(6);
+        const columnBoxes = await valueColumns.evaluateAll(elements => elements.map(element => {
+            const box = element.getBoundingClientRect();
+            return { center: box.left + box.width / 2 };
+        }));
+        const referenceCenter = columnBoxes[0].center;
+        for (const box of columnBoxes) {
+            expect(Math.abs(box.center - referenceCenter)).toBeLessThan(1);
+        }
+
+        const tabSwitch = page.getByRole("checkbox", { name: "增加Tab键支持" });
+        await expect(tabSwitch).toBeVisible();
+        const switchBox = await valueColumns.nth(1).locator(".MuiSwitch-root").boundingBox();
+        expect(switchBox).not.toBeNull();
+        expect(Math.abs(switchBox!.x + switchBox!.width / 2 - referenceCenter)).toBeLessThan(1);
+        await expect(page).toHaveScreenshot("settings-shortcuts-aligned.png");
+    });
 });

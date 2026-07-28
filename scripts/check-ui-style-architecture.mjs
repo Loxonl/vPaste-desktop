@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 
 const root = process.cwd();
@@ -66,7 +66,7 @@ if (Object.keys(dependencies).some(name => name === "tailwindcss" || name.starts
 
 const mainRustPath = join(root, "src-tauri", "src", "main.rs");
 const mainRust = readFileSync(mainRustPath, "utf8");
-for (const label of ["config", "clipboardPreview", "trayMenu", "emojiPicker", "tabEditor"]) {
+for (const label of ["clipboardPreview", "trayMenu", "emojiPicker", "tabEditor"]) {
     const builder = mainRust.match(
         new RegExp(`WebviewWindowBuilder::new\\([\\s\\S]{0,300}?"${label}"[\\s\\S]{0,3000}?\\.build\\(`),
     )?.[0];
@@ -77,8 +77,28 @@ for (const label of ["config", "clipboardPreview", "trayMenu", "emojiPicker", "t
     }
 }
 
-if (!mainRust.match(/#\[cfg\(target_os = "windows"\)\][\s\S]{0,120}include_bytes!\("\.\.\/icons\/tray-icon\.png"\)/)) {
-    errors.push("src-tauri/src/main.rs: Windows must keep the colored tray-icon.png asset");
+const configBuilder = mainRust.match(
+    /WebviewWindowBuilder::new\([\s\S]{0,300}?"config"[\s\S]{0,3000}?\.build\(/,
+)?.[0];
+if (!configBuilder?.includes(".transparent(true)") || !configBuilder.includes(".shadow(true)")) {
+    errors.push("src-tauri/src/main.rs: Windows settings must retain its native window shadow");
+}
+
+if (!mainRust.includes('include_bytes!(concat!(env!("OUT_DIR"), "/vpaste-tray.rgba"))')) {
+    errors.push("src-tauri/src/main.rs: tray icons must use the SVG-derived build mask");
+}
+
+for (const legacyPath of [
+    "public/favicon.png",
+    "src/assets/vpaste-app-icon.png",
+    "src-tauri/icons/logo-borderless.png",
+    "src-tauri/icons/tray-icon.png",
+    "src-tauri/icons/tray-icon-light.png",
+    "src-tauri/icons/tray-icon-dark.png",
+]) {
+    if (existsSync(join(root, legacyPath))) {
+        errors.push(`${legacyPath}: remove legacy or duplicate icon asset`);
+    }
 }
 
 if (errors.length > 0) {

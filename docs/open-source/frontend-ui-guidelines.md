@@ -51,7 +51,7 @@ The supported modes are `system`, `light`, and `dark`. Existing `data-theme` beh
 
 All motion must respect `prefers-reduced-motion`. Icon-only buttons require an `aria-label`. Keyboard focus must remain visible.
 
-Transparent auxiliary Tauri windows must keep `html`, `body`, and `#root` transparent. Disable the native window shadow when the window surface draws its own rounded border or shadow; otherwise Windows can add a rectangular non-client border around the CSS surface. Keep platform tray roles separate: Windows uses the colored tray asset, macOS uses a monochrome template asset, and Linux selects its explicit light/dark variant.
+Transparent auxiliary Tauri windows must keep `html`, `body`, and `#root` transparent. Disable the native window shadow when the window surface draws its own rounded border or shadow; otherwise Windows can add a rectangular non-client border around the CSS surface. The resizable Windows settings window is the exception: it uses a native DWM shadow with the DWM border suppressed and delegates outer clipping to Windows. Keep platform tray roles separate: Windows and Linux color the shared tray SVG mask with the vPaste accent, while macOS installs the same mask as a monochrome template image.
 
 ## Development and Review
 

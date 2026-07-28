@@ -328,7 +328,7 @@ pub fn vpaste_source_icon_path() -> Option<String> {
     if !icon_path.exists() {
         fs::write(
             &icon_path,
-            include_bytes!("../../icons/logo-borderless.png"),
+            include_bytes!("../../icons/source/vpaste-app-icon-1024.png"),
         )
         .ok()?;
     }

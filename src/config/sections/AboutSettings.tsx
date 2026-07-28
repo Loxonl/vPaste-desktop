@@ -4,7 +4,7 @@ import ArticleOutlinedIcon from "@mui/icons-material/ArticleOutlined";
 import GitHubIcon from "@mui/icons-material/GitHub";
 import LaunchOutlinedIcon from "@mui/icons-material/LaunchOutlined";
 import { error } from "@tauri-apps/plugin-log";
-import aboutLogo from "../../assets/vpaste-app-icon.png";
+import aboutLogo from "../../../src-tauri/icons/source/vpaste-app-icon-1024.png";
 import { useAppUpdateState, type UpdateState } from "../../update";
 import type { SettingsSectionProps, TFunction } from "../settingsTypes";
 import { classes } from "../../ui/classNames";

@@ -6,9 +6,9 @@
 | `../../../src/assets/vpaste-logo-master.svg` | Blue gradient mark on a transparent background | Brand marks displayed without an icon background |
 | `vpaste-tray.svg` | Monochrome `currentColor` mark on a transparent background | Tray and status icons that need light/dark color variants |
 
-Generated runtime assets keep these roles separate:
+Generated bundle assets keep these roles separate:
 
-- `icon.*`, the favicon, and the frontend app-icon PNG use the primary application-icon style.
-- On macOS, `tray-icon-light.png` is installed as a native template image, so macOS automatically renders it black or white for the current menu bar appearance.
-- On Linux, `tray-icon-light.png` and `tray-icon-dark.png` provide explicit black and white theme variants.
-- `tray-icon.png` preserves the existing Windows tray artwork and behavior.
+- `icon.*` bundle files are generated from `vpaste-app-icon-1024.png`; frontend branded surfaces and the favicon import the same source directly.
+- The build script rasterizes `vpaste-tray.svg` as an alpha mask. Windows and Linux color that mask with the vPaste accent.
+- On macOS, the same mask is installed as a native template image, so macOS automatically renders it black or white for the current menu bar appearance.
+- Do not add separate tray PNG sources or duplicate frontend app-icon PNGs.

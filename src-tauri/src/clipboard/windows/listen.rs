@@ -864,7 +864,7 @@ fn extract_process_icon_png(exe_path: &Path) -> Option<String> {
         if !icon_path.exists() {
             fs::write(
                 &icon_path,
-                include_bytes!("../../../icons/logo-borderless.png"),
+                include_bytes!("../../../icons/source/vpaste-app-icon-1024.png"),
             )
             .ok()?;
         }

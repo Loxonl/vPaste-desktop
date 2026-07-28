@@ -19,6 +19,7 @@ strip = true
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+resvg = { version = "0.47.0", default-features = false }
 
 [dependencies]
 tauri = { version = "=2.11.2", features = ["macos-private-api", "tray-icon", "protocol-asset", "unstable"] }

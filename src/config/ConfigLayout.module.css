@@ -19,6 +19,10 @@
   -webkit-app-region: no-drag;
 }
 
+.nativeWindowsSurface {
+  border-radius: 0;
+}
+
 .dragRegion {
   position: fixed;
   inset: 0 0 auto;

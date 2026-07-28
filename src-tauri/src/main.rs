@@ -83,8 +83,6 @@ static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static TRAY_MENU_WATCHING: AtomicBool = AtomicBool::new(false);
 static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
-#[cfg(target_os = "linux")]
-static TRAY_ICON_DARK: AtomicBool = AtomicBool::new(false);
 static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
 static PASTE_FALLBACK_NOTICE_GENERATION: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(target_os = "macos", debug_assertions))]
@@ -939,6 +937,59 @@ fn apply_windows_rounded_window_region(
         return Err("SetWindowRgn failed".to_string());
     }
 
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn configure_windows_settings_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    use std::ffi::c_void;
+
+    type Hwnd = *mut c_void;
+
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+    const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWCP_ROUND: u32 = 2;
+    const DWMWA_COLOR_NONE: u32 = 0xffff_fffe;
+
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmSetWindowAttribute(
+            hwnd: Hwnd,
+            attribute: u32,
+            value: *const c_void,
+            value_size: u32,
+        ) -> i32;
+    }
+
+    window.set_shadow(true).map_err(|err| err.to_string())?;
+    let hwnd = window.hwnd().map_err(|err| err.to_string())?;
+    let corner_preference = DWMWCP_ROUND;
+    let border_color = DWMWA_COLOR_NONE;
+    let corner_result = unsafe {
+        DwmSetWindowAttribute(
+            hwnd.0 as Hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            (&corner_preference as *const u32).cast(),
+            std::mem::size_of_val(&corner_preference) as u32,
+        )
+    };
+    let border_result = unsafe {
+        DwmSetWindowAttribute(
+            hwnd.0 as Hwnd,
+            DWMWA_BORDER_COLOR,
+            (&border_color as *const u32).cast(),
+            std::mem::size_of_val(&border_color) as u32,
+        )
+    };
+
+    if corner_result < 0 {
+        apply_windows_rounded_window_region(window, ROUNDED_WINDOW_RADIUS)?;
+    }
+    if border_result < 0 && corner_result >= 0 {
+        return Err(format!(
+            "DwmSetWindowAttribute(DWMWA_BORDER_COLOR) failed: {border_result:#x}"
+        ));
+    }
     Ok(())
 }
 
@@ -7039,66 +7090,56 @@ fn simulate_cmd_c() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn tray_uses_dark_icon(theme_mode: &str, system_dark: bool) -> bool {
-    match theme_mode {
-        "dark" => true,
-        "light" => false,
-        _ => system_dark,
-    }
+const TRAY_ICON_SIZE: u32 = 128;
+#[cfg(not(target_os = "macos"))]
+const TRAY_ACCENT_RGBA: [u8; 4] = [30, 146, 238, 255];
+#[cfg(target_os = "macos")]
+const TRAY_TEMPLATE_RGBA: [u8; 4] = [255, 255, 255, 255];
+const TRAY_ICON_MASK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/vpaste-tray.rgba"));
+
+fn colorize_tray_mask(mask: &[u8], color: [u8; 4]) -> Vec<u8> {
+    mask.chunks_exact(4)
+        .flat_map(|pixel| {
+            let alpha = (u16::from(pixel[3]) * u16::from(color[3]) / 255) as u8;
+            [color[0], color[1], color[2], alpha]
+        })
+        .collect()
 }
 
-#[cfg(all(test, target_os = "linux"))]
-mod tray_theme_tests {
-    use super::tray_uses_dark_icon;
-
-    #[test]
-    fn explicit_theme_mode_controls_tray_icon() {
-        assert!(tray_uses_dark_icon("dark", false));
-        assert!(!tray_uses_dark_icon("light", true));
-    }
-
-    #[test]
-    fn system_and_unknown_modes_follow_system_theme() {
-        assert!(tray_uses_dark_icon("system", true));
-        assert!(!tray_uses_dark_icon("system", false));
-        assert!(tray_uses_dark_icon("unexpected", true));
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn system_uses_dark_theme(app: &tauri::AppHandle) -> bool {
-    app.webview_windows()
-        .values()
-        .find_map(|window| window.theme().ok())
-        .is_some_and(|theme| matches!(theme, tauri::Theme::Dark))
-}
-
-fn build_tray_icon(paused: bool, dark: bool) -> TauriImage<'static> {
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    let _ = dark;
-    #[cfg(target_os = "windows")]
-    let icon_bytes = include_bytes!("../icons/tray-icon.png").as_slice();
-    // macOS treats this monochrome source as a template image and automatically
-    // renders it black or white to match the current menu bar appearance.
+fn build_tray_icon(paused: bool) -> TauriImage<'static> {
     #[cfg(target_os = "macos")]
-    let icon_bytes = include_bytes!("../icons/tray-icon-light.png").as_slice();
-    #[cfg(target_os = "linux")]
-    let icon_bytes = if dark {
-        include_bytes!("../icons/tray-icon-dark.png").as_slice()
-    } else {
-        include_bytes!("../icons/tray-icon-light.png").as_slice()
-    };
-    match image::load_from_memory(icon_bytes) {
-        Ok(image) => {
-            let mut image = image.to_rgba8();
-            if paused {
-                draw_pause_badge(&mut image);
-            }
-            let (width, height) = image.dimensions();
-            TauriImage::new_owned(image.into_raw(), width, height)
-        }
-        Err(_) => TauriImage::new_owned(vec![0, 0, 0, 0], 1, 1),
+    let color = TRAY_TEMPLATE_RGBA;
+    #[cfg(not(target_os = "macos"))]
+    let color = TRAY_ACCENT_RGBA;
+    let pixels = colorize_tray_mask(TRAY_ICON_MASK, color);
+    let mut image =
+        ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(TRAY_ICON_SIZE, TRAY_ICON_SIZE, pixels)
+            .unwrap_or_else(|| ImageBuffer::from_pixel(1, 1, Rgba([0, 0, 0, 0])));
+    if paused {
+        draw_pause_badge(&mut image);
+    }
+    let (width, height) = image.dimensions();
+    TauriImage::new_owned(image.into_raw(), width, height)
+}
+
+#[cfg(test)]
+mod tray_icon_tests {
+    use super::{colorize_tray_mask, TRAY_ICON_MASK, TRAY_ICON_SIZE};
+
+    #[test]
+    fn generated_tray_mask_matches_the_declared_dimensions() {
+        assert_eq!(
+            TRAY_ICON_MASK.len(),
+            (TRAY_ICON_SIZE * TRAY_ICON_SIZE * 4) as usize
+        );
+        assert!(TRAY_ICON_MASK.chunks_exact(4).any(|pixel| pixel[3] > 0));
+    }
+
+    #[test]
+    fn tray_mask_accepts_a_runtime_color() {
+        let pixels = colorize_tray_mask(&[0, 0, 0, 0, 0, 0, 0, 128], [30, 146, 238, 255]);
+
+        assert_eq!(pixels, [30, 146, 238, 0, 30, 146, 238, 128]);
     }
 }
 
@@ -7151,10 +7192,7 @@ fn draw_pause_badge(image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) {
 
 fn update_tray_appearance(app: &tauri::AppHandle, paused: bool) {
     if let Some(tray) = app.tray_by_id(TRAY_ICON_ID) {
-        #[cfg(any(target_os = "windows", target_os = "macos"))]
-        let icon = build_tray_icon(paused, false);
-        #[cfg(target_os = "linux")]
-        let icon = build_tray_icon(paused, TRAY_ICON_DARK.load(Ordering::SeqCst));
+        let icon = build_tray_icon(paused);
         #[cfg(target_os = "macos")]
         let icon_result = tray.set_icon_with_as_template(Some(icon), true);
         #[cfg(not(target_os = "macos"))]
@@ -7169,15 +7207,7 @@ fn update_tray_appearance(app: &tauri::AppHandle, paused: bool) {
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn sync_tray_theme_for_mode(_app: &tauri::AppHandle, _theme_mode: &str) {}
-
-#[cfg(target_os = "linux")]
-fn sync_tray_theme_for_mode(app: &tauri::AppHandle, theme_mode: &str) {
-    let dark = tray_uses_dark_icon(theme_mode, system_uses_dark_theme(app));
-    TRAY_ICON_DARK.store(dark, Ordering::SeqCst);
-    update_tray_appearance(app, CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst));
-}
 
 fn set_clipboard_history_paused_state(app: &tauri::AppHandle, paused: bool) -> bool {
     CLIPBOARD_HISTORY_PAUSED.store(paused, Ordering::SeqCst);
@@ -7264,17 +7294,7 @@ fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
 }
 
 fn install_vpaste_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    #[cfg(target_os = "windows")]
-    let tray_icon = build_tray_icon(CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst), false);
-    #[cfg(target_os = "macos")]
-    let tray_icon = build_tray_icon(CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst), false);
-    #[cfg(target_os = "linux")]
-    let tray_icon = {
-        let config = config::get();
-        let dark = tray_uses_dark_icon(&config.theme_mode, system_uses_dark_theme(app));
-        TRAY_ICON_DARK.store(dark, Ordering::SeqCst);
-        build_tray_icon(CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst), dark)
-    };
+    let tray_icon = build_tray_icon(CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst));
 
     let tray_builder = tauri::tray::TrayIconBuilder::with_id(TRAY_ICON_ID)
         .icon(tray_icon)
@@ -7498,25 +7518,18 @@ fn main() {
                     if let Some(webview_window) =
                         window.app_handle().get_webview_window(window.label())
                     {
-                        if let Err(err) = apply_windows_rounded_window_region(
-                            &webview_window,
-                            ROUNDED_WINDOW_RADIUS,
-                        ) {
+                        let result = if window.label() == "config" {
+                            configure_windows_settings_window(&webview_window)
+                        } else {
+                            apply_windows_rounded_window_region(
+                                &webview_window,
+                                ROUNDED_WINDOW_RADIUS,
+                            )
+                        };
+                        if let Err(err) = result {
                             error!("Failed to update rounded window region: {}", err);
                         }
                     }
-                }
-            }
-            #[cfg(target_os = "linux")]
-            if let tauri::WindowEvent::ThemeChanged(theme) = event {
-                let config = config::get();
-                if config.theme_mode == "system" {
-                    let dark = matches!(*theme, tauri::Theme::Dark);
-                    TRAY_ICON_DARK.store(dark, Ordering::SeqCst);
-                    update_tray_appearance(
-                        window.app_handle(),
-                        CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst),
-                    );
                 }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -7714,7 +7727,7 @@ fn main() {
                         .decorations(false)
                         .transparent(true)
                         .background_color(tauri::window::Color(0, 0, 0, 0))
-                        .shadow(false)
+                        .shadow(true)
                         .inner_size(720_f64, 700_f64)
                         .min_inner_size(640_f64, 520_f64)
                         .always_on_top(false);
@@ -7726,16 +7739,13 @@ fn main() {
                 info!("Attempting to build config window");
                 let config_window = config_window.build().unwrap();
                 let _ = config_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                let _ = config_window.set_shadow(false);
                 apply_vpaste_window_icon(&config_window);
                 #[cfg(target_os = "windows")]
                 {
                     use window_vibrancy::apply_acrylic;
                     let _ = apply_acrylic(&config_window, Some((232, 235, 229, 30)));
-                    if let Err(err) =
-                        apply_windows_rounded_window_region(&config_window, ROUNDED_WINDOW_RADIUS)
-                    {
-                        error!("Failed to round config window: {}", err);
+                    if let Err(err) = configure_windows_settings_window(&config_window) {
+                        error!("Failed to configure config window shadow: {}", err);
                     }
                 }
                 #[cfg(target_os = "macos")]

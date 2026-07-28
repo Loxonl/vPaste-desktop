@@ -18,12 +18,14 @@ body,
   display: flex;
   flex-direction: column;
   color: #20242a;
-  background: transparent;
+  background: rgba(246, 246, 244, 0.88);
+  backdrop-filter: blur(16px) saturate(1.08);
+  -webkit-backdrop-filter: blur(16px) saturate(1.08);
 }
 
 :root[data-theme="dark"] .preview-shell {
   color: var(--theme-text);
-  background: transparent;
+  background: rgba(18, 22, 27, 0.88);
 }
 
 :root[data-theme="dark"] .preview-pin {

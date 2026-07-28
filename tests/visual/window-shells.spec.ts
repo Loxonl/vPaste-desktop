@@ -23,12 +23,12 @@ test.describe("window shells", () => {
         });
     }
 
-    test("preview keeps its unused window area transparent", async ({ page }) => {
+    test("preview keeps a restrained translucent window surface", async ({ page }) => {
         await page.setViewportSize({ width: 640, height: 480 });
         await page.goto("/clipboard/preview");
         await expect(page.locator("[class*='preview-shell']")).toHaveCSS(
             "background-color",
-            "rgba(0, 0, 0, 0)",
+            "rgba(246, 246, 244, 0.88)",
         );
     });
 

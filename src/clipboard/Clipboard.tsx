@@ -38,7 +38,6 @@ import {
     dirName,
     getBackendTypeLabel,
     imageExportSourcePath,
-    isTextLikeItem,
     joinPath,
     parseLinkContent,
     type FilePreviewInfo,
@@ -63,7 +62,6 @@ import {
     TabContextMenu,
     TagCreateChoicePopover,
     type ColorCopyOption,
-    type ContextMenuOption,
     type ContextMenuState,
     type TabContextMenuState,
     type TagCreateChoiceState,
@@ -74,6 +72,7 @@ import {
     ClipboardUpdateBanner,
 } from "./ClipboardHeader";
 import { clipboardKeyDownAction } from "./clipboardKeyboard";
+import { buildClipboardContextMenuOptions } from "./clipboardContextMenu";
 import { useClipboardListInteractions } from "./useClipboardListInteractions";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
@@ -1792,76 +1791,26 @@ export default function Clipboard() {
         item: Item,
         currentItemTags: ItemTag[] = itemTags,
         colorOptions: ColorCopyOption[] = [],
-    ): ContextMenuOption[] => {
-        const assignedTagIds = new Set(item.getTags().map(tag => tag.id));
-        const currentTagIds = new Set(currentItemTags.map(tag => tag.id));
-        const assignableTags = currentItemTags.filter(tag => !assignedTagIds.has(tag.id));
-        const assignedTags = item.getTags().filter(tag => currentTagIds.has(tag.id));
-        const options: ContextMenuOption[] = [
-            { label: t("menu.preview"), action: () => openPreviewItem(item) },
-            { label: item.isFavorite() ? t("menu.removeFavorite") : t("menu.addFavorite"), action: () => toggleFavorite(item) },
-        ];
-        options.push(currentItemTags.length === 0
-            ? {
-                label: t("menu.addRecordTag"),
-                action: () => openRecordTagCreateEditorForItem(item),
-            }
-            : {
-                label: t("menu.addRecordTag"),
-                children: [
-                    { label: t("tags.createRecord"), action: () => openRecordTagCreateEditorForItem(item) },
-                    ...(assignableTags.length > 0
-                        ? assignableTags.map(tag => ({
-                            label: tag.name,
-                            action: () => assignExistingTag(item, tag),
-                        }))
-                        : [{ label: t("tags.noAssignable"), action: () => undefined }]),
-                ],
-            });
-        if (assignedTags.length > 0) {
-            options.push({
-                label: t("menu.removeRecordTag"),
-                children: [
-                    { label: t("menu.removeAllTags"), action: () => removeAllAssignedTags(item), danger: true },
-                    ...assignedTags.map(tag => ({
-                        label: tag.name,
-                        action: () => removeAssignedTag(item, tag),
-                    })),
-                ],
-            });
-        }
-
-        if (imageExportSourcePath(item)) {
-            options.push({ label: t("menu.exportImage"), action: () => exportImageItem(item) });
-        }
-
-        if (item.getType() === ItemType.File) {
-            options.push(
-                { label: t("menu.openContainingFolder"), action: () => openContainingFolder(item) },
-                { label: t("menu.copyContainingFolder"), action: () => copyContainingFolderPath(item) },
-            );
-        }
-
-        if (item.getType() === ItemType.Color) {
-            options.push({
-                label: t("menu.convertColor"),
-                children: colorOptions.length > 0
-                    ? colorOptions.map(option => ({
-                        label: `${option.format} ${option.value}`,
-                        action: () => copyColorValue(option.value),
-                    }))
-                    : [{ label: t("clipboard.colorUnsupported"), action: () => undefined }],
-            });
-        }
-
-        if (isTextLikeItem(item)) {
-            options.push({ label: t("menu.pastePlainText"), action: () => pastePlainTextItem(item) });
-        }
-
-        options.push({ label: t("menu.deleteRecord"), action: () => deleteClipboardItem(item) });
-
-        return options;
-    };
+    ) => buildClipboardContextMenuOptions({
+        actions: {
+            onAssignTag: assignExistingTag,
+            onCopyColor: copyColorValue,
+            onCopyContainingFolder: copyContainingFolderPath,
+            onCreateRecordTag: openRecordTagCreateEditorForItem,
+            onDelete: deleteClipboardItem,
+            onExportImage: exportImageItem,
+            onOpenContainingFolder: openContainingFolder,
+            onPastePlainText: pastePlainTextItem,
+            onPreview: openPreviewItem,
+            onRemoveAllTags: removeAllAssignedTags,
+            onRemoveTag: removeAssignedTag,
+            onToggleFavorite: toggleFavorite,
+        },
+        colorOptions,
+        currentItemTags,
+        item,
+        t,
+    });
 
     const openConfigWindow = async () => {
         try {

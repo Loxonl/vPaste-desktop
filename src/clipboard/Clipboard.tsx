@@ -10,18 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Item, ItemTag, ItemType } from "./Item.ts";
 import { useLanguage } from "../lang";
 import { formatShortcutLabel, isMacPlatform } from "../shortcutDisplay";
-import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import SearchIcon from "@mui/icons-material/Search";
-import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
-import DashboardCustomizeOutlinedIcon from "@mui/icons-material/DashboardCustomizeOutlined";
-import AppleIcon from "@mui/icons-material/Apple";
-import WindowOutlinedIcon from "@mui/icons-material/WindowOutlined";
-import LightModeRoundedIcon from "@mui/icons-material/LightModeRounded";
-import DarkModeRoundedIcon from "@mui/icons-material/DarkModeRounded";
-import SystemUpdateAltOutlinedIcon from "@mui/icons-material/SystemUpdateAltOutlined";
-import AddIcon from "@mui/icons-material/Add";
-import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
-import StarBorderOutlinedIcon from "@mui/icons-material/StarBorderOutlined";
 import TutorialOverlay, { TutorialFilterId, TutorialFilterTab, TutorialPermission, TutorialPermissionId, TutorialPlatform } from "./TutorialOverlay.tsx";
 import appIcon from "../../src-tauri/icons/source/vpaste-app-icon-1024.png";
 import { getResolvedTheme, getThemePreview, setThemePreview, type ResolvedTheme } from "../theme";
@@ -79,6 +68,11 @@ import {
     type TabContextMenuState,
     type TagCreateChoiceState,
 } from "./ClipboardOverlays";
+import {
+    ClipboardHeaderActions,
+    ClipboardTabBar,
+    ClipboardUpdateBanner,
+} from "./ClipboardHeader";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const DEFAULT_PASTE_AS_TEXT_SHORTCUT = "Shift+Enter";
@@ -2445,225 +2439,82 @@ export default function Clipboard() {
                         )}
                     </div>
                 )}
-                <div className={classes(styles, "header-tabs")} onDragOver={event => event.preventDefault()}>
-                    <button
-                        type="button"
-                        className={classes(styles, `tab-item fixed ${activeTab === "all" ? 'active' : ''}`)}
-                        onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab("all")}
-                    >
-                        <AppsOutlinedIcon className={classes(styles, "tab-icon tab-icon-all")} fontSize="inherit" />
-                        <span className={classes(styles, "tab-label")}>{t("tabs.all")}</span>
-                        {altHintsVisible && <span className={classes(styles, "alt-tab-hint")}>A</span>}
-                    </button>
-                    <button
-                        type="button"
-                        className={classes(styles, `tab-item fixed ${activeTab === "favorite" ? 'active' : ''}`)}
-                        onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab("favorite")}
-                    >
-                        <StarBorderOutlinedIcon className={classes(styles, "tab-icon tab-icon-favorite")} fontSize="inherit" />
-                        <span className={classes(styles, "tab-label")}>{t("tabs.favorite")}</span>
-                        {altHintsVisible && <span className={classes(styles, "alt-tab-hint")}>F</span>}
-                    </button>
-                    {dynamicTabs.map(entry => {
+                <ClipboardTabBar
+                    activeTab={activeTab}
+                    dynamicTabs={dynamicTabs}
+                    draggingTabId={draggingTabId}
+                    tutorialActive={tutorialActive}
+                    altHintsVisible={altHintsVisible}
+                    addButtonRef={addTabButtonRef}
+                    t={t}
+                    onSelectTab={setActiveTab}
+                    onBlockedNavigation={blockTutorialNavigation}
+                    onEditTab={(entry, anchor) => {
                         if (entry.kind === "filter") {
-                            const tab = entry.tab;
-                            return (
-                                <button
-                                    key={entry.id}
-                                    type="button"
-                                    className={classes(styles, `tab-item custom ${tutorialActive ? 'tutorial-locked' : ''} ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`)}
-                                    draggable={!tutorialActive}
-                                    onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab(entry.id)}
-                                    onDoubleClick={tutorialActive ? undefined : event => openEditTabEditor(tab, event.currentTarget)}
-                                    onContextMenu={event => {
-                                        event.preventDefault();
-                                        event.stopPropagation();
-                                        if (tutorialActive) {
-                                            blockTutorialNavigation();
-                                            return;
-                                        }
-                                        setContextMenu(null);
-                                        const position = floatingPositionFromClick(
-                                            event.clientX,
-                                            event.clientY,
-                                            TAB_CONTEXT_MENU_WIDTH,
-                                            contextMenuHeight(2),
-                                        );
-                                        setTabContextMenu({
-                                            kind: "filter",
-                                            tab,
-                                            x: position.x,
-                                            y: position.y,
-                                            originX: event.clientX,
-                                            originY: event.clientY,
-                                        });
-                                    }}
-                                    onDragStart={() => {
-                                        if (!tutorialActive) setDraggingTabId(entry.id);
-                                    }}
-                                    onDragEnd={() => setDraggingTabId("")}
-                                    onDrop={event => {
-                                        event.preventDefault();
-                                        handleTabDrop(entry.id);
-                                    }}
-                                >
-                                    <span className={classes(styles, "tab-label")}>{tab.name}</span>
-                                </button>
-                            );
+                            openEditTabEditor(entry.tab, anchor);
+                        } else {
+                            openEditRecordTagEditor(entry.tag, anchor);
                         }
-                        const tag = entry.tag;
-                        return (
-                            <button
-                                key={entry.id}
-                                type="button"
-                                className={classes(styles, `tab-item record ${tutorialActive ? 'tutorial-locked' : ''} ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`)}
-                                draggable={!tutorialActive}
-                                onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab(entry.id)}
-                                onDoubleClick={tutorialActive ? undefined : event => openEditRecordTagEditor(tag, event.currentTarget)}
-                                onContextMenu={event => {
-                                    event.preventDefault();
-                                    event.stopPropagation();
-                                    if (tutorialActive) {
-                                        blockTutorialNavigation();
-                                        return;
-                                    }
-                                    setContextMenu(null);
-                                    const position = floatingPositionFromClick(
-                                        event.clientX,
-                                        event.clientY,
-                                        TAB_CONTEXT_MENU_WIDTH,
-                                        contextMenuHeight(2),
-                                    );
-                                    setTabContextMenu({
-                                        kind: "record",
-                                        tag,
-                                        x: position.x,
-                                        y: position.y,
-                                        originX: event.clientX,
-                                        originY: event.clientY,
-                                    });
-                                }}
-                                onDragStart={() => {
-                                    if (!tutorialActive) setDraggingTabId(entry.id);
-                                }}
-                                onDragEnd={() => setDraggingTabId("")}
-                                onDrop={event => {
-                                    event.preventDefault();
-                                    handleTabDrop(entry.id);
-                                }}
-                            >
-                                <span className={classes(styles, "tab-label")}>{tag.name}</span>
-                            </button>
+                    }}
+                    onOpenContextMenu={(entry, clientX, clientY) => {
+                        setContextMenu(null);
+                        const position = floatingPositionFromClick(
+                            clientX,
+                            clientY,
+                            TAB_CONTEXT_MENU_WIDTH,
+                            contextMenuHeight(2),
                         );
-                    })}
-                    {!tutorialActive && (
-                        <button
-                            ref={addTabButtonRef}
-                            type="button"
-                            className={classes(styles, "tab-add-button")}
-                            title={t("tabs.add")}
-                            aria-label={t("tabs.add")}
-                            onClick={event => {
-                                event.stopPropagation();
-                                openTagCreateChoice(event.clientX, event.clientY);
-                            }}
-                        >
-                            <AddIcon fontSize="small" />
-                        </button>
+                        setTabContextMenu(entry.kind === "filter"
+                            ? {
+                                kind: "filter",
+                                tab: entry.tab,
+                                x: position.x,
+                                y: position.y,
+                                originX: clientX,
+                                originY: clientY,
+                            }
+                            : {
+                                kind: "record",
+                                tag: entry.tag,
+                                x: position.x,
+                                y: position.y,
+                                originX: clientX,
+                                originY: clientY,
+                            });
+                    }}
+                    onDragStart={setDraggingTabId}
+                    onDragEnd={() => setDraggingTabId("")}
+                    onDrop={handleTabDrop}
+                    onAdd={openTagCreateChoice}
+                />
+                <ClipboardHeaderActions
+                    isMac={isMacPlatform()}
+                    tutorialActive={tutorialActive}
+                    tutorialPlatform={tutorialPlatform}
+                    permissionIncomplete={Boolean(
+                        tutorialPermissionStatus
+                        && (!tutorialPermissionStatus.background.done || !tutorialPermissionStatus.paste.done)
                     )}
-                </div>
-                <div className={classes(styles, "header-actions")}>
-                    {isMacPlatform()
-                        && !tutorialActive
-                        && tutorialPermissionStatus !== null
-                        && (!tutorialPermissionStatus.background.done || !tutorialPermissionStatus.paste.done) && (
-                        <button
-                            type="button"
-                            className={classes(styles, "permission-summary-banner")}
-                            onClick={openPermissionCenter}
-                        >
-                            <WarningAmberOutlinedIcon fontSize="inherit" />
-                            <span>{t("clipboard.permissionsIncomplete")}</span>
-                        </button>
-                    )}
-                    {import.meta.env.DEV && developerMode && (
-                        <div className={classes(styles, "developer-toolbar")} aria-label={t("tutorial.debug.tools")}>
-                            <span className={classes(styles, "developer-toolbar-badge")} aria-hidden="true">DEV</span>
-                            <button
-                                type="button"
-                                className={classes(styles, `settings-button developer-toolbar-button${tutorialActive && tutorialPlatform === "windows" ? " is-active" : ""}`)}
-                                title={t("tutorial.debug.windows")}
-                                aria-label={t("tutorial.debug.windows")}
-                                aria-pressed={tutorialActive && tutorialPlatform === "windows"}
-                                onClick={() => openTutorialFromDebug("windows")}
-                            >
-                                <WindowOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
-                                <span>Win</span>
-                            </button>
-                            <button
-                                type="button"
-                                className={classes(styles, `settings-button developer-toolbar-button${tutorialActive && tutorialPlatform === "mac" ? " is-active" : ""}`)}
-                                title={t("tutorial.debug.mac")}
-                                aria-label={t("tutorial.debug.mac")}
-                                aria-pressed={tutorialActive && tutorialPlatform === "mac"}
-                                onClick={() => openTutorialFromDebug("mac")}
-                            >
-                                <AppleIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
-                                <span>Mac</span>
-                            </button>
-                            <span className={classes(styles, "developer-toolbar-divider")} aria-hidden="true" />
-                            <button
-                                type="button"
-                                className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}
-                                title={t("tutorial.debug.language")}
-                                aria-label={t("tutorial.debug.language")}
-                                onClick={toggleDeveloperLanguage}
-                            >
-                                <span>{languageCode === "Chinese" ? "中" : "EN"}</span>
-                            </button>
-                            <button
-                                type="button"
-                                className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}
-                                title={t(developerTheme === "dark" ? "tutorial.debug.theme.dark" : "tutorial.debug.theme.light")}
-                                aria-label={t(developerTheme === "dark" ? "tutorial.debug.theme.dark" : "tutorial.debug.theme.light")}
-                                aria-pressed={developerTheme === "dark"}
-                                onClick={toggleDeveloperTheme}
-                            >
-                                {developerTheme === "dark"
-                                    ? <DarkModeRoundedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
-                                    : <LightModeRoundedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />}
-                            </button>
-                        </div>
-                    )}
-                    {developerMode && (
-                        <button
-                            type="button"
-                            className={classes(styles, "settings-button")}
-                            title={t("tutorial.debug.uiLab")}
-                            aria-label={t("tutorial.debug.uiLab")}
-                            onClick={openUiLab}
-                        >
-                            <DashboardCustomizeOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
-                        </button>
-                    )}
-                    <button
-                        type="button"
-                        className={classes(styles, "settings-button")}
-                        title={t("common.settings")}
-                        aria-label={t("common.settings")}
-                        onClick={tutorialActive ? blockTutorialNavigation : openConfigWindow}
-                    >
-                        <SettingsOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
-                    </button>
-                </div>
+                    developerMode={developerMode}
+                    showDeveloperToolbar={import.meta.env.DEV && developerMode}
+                    languageCode={languageCode}
+                    developerTheme={developerTheme}
+                    t={t}
+                    onOpenPermissionCenter={openPermissionCenter}
+                    onOpenTutorial={openTutorialFromDebug}
+                    onToggleLanguage={toggleDeveloperLanguage}
+                    onToggleTheme={toggleDeveloperTheme}
+                    onOpenUiLab={openUiLab}
+                    onOpenSettings={tutorialActive ? blockTutorialNavigation : openConfigWindow}
+                />
             </div>
 
             {!tutorialActive && updateReady(updateState) && (
-                <button className={classes(styles, "app-update-banner")} type="button" onClick={() => void openUpdateSettings()}>
-                    <SystemUpdateAltOutlinedIcon fontSize="inherit" />
-                    <span>{t("clipboard.updateAvailable", { version: updateState.availableVersion || "" })}</span>
-                    <strong>{t("clipboard.updateOpenSettings")}</strong>
-                </button>
+                <ClipboardUpdateBanner
+                    version={updateState.availableVersion || ""}
+                    t={t}
+                    onOpen={() => void openUpdateSettings()}
+                />
             )}
 
             {/* Cards Grid */}

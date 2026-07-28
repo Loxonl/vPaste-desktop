@@ -2,16 +2,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { desktopDir, downloadDir } from "@tauri-apps/api/path";
 import { error } from "@tauri-apps/plugin-log";
 import { listen } from "@tauri-apps/api/event";
 import { Item, ItemTag, ItemType } from "./Item.ts";
-import { formatRelativeTime, useLanguage } from "../lang";
+import { useLanguage } from "../lang";
 import { formatShortcutLabel, isMacPlatform } from "../shortcutDisplay";
-import FolderCopyOutlinedIcon from "@mui/icons-material/FolderCopyOutlined";
-import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
@@ -22,7 +20,6 @@ import LightModeRoundedIcon from "@mui/icons-material/LightModeRounded";
 import DarkModeRoundedIcon from "@mui/icons-material/DarkModeRounded";
 import SystemUpdateAltOutlinedIcon from "@mui/icons-material/SystemUpdateAltOutlined";
 import AddIcon from "@mui/icons-material/Add";
-import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
 import StarBorderOutlinedIcon from "@mui/icons-material/StarBorderOutlined";
 import TutorialOverlay, { TutorialFilterId, TutorialFilterTab, TutorialPermission, TutorialPermissionId, TutorialPlatform } from "./TutorialOverlay.tsx";
@@ -45,14 +42,22 @@ import {
     saveTabOrder,
     type CustomTab,
 } from "./customTabs";
-import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
 import { fetchSearchPage } from "./searchPagination";
+import ClipboardCard from "./ClipboardCard";
+import {
+    compactPath,
+    dirName,
+    getBackendTypeLabel,
+    imageExportSourcePath,
+    isTextLikeItem,
+    joinPath,
+    parseLinkContent,
+    type FilePreviewInfo,
+} from "./itemPresentation";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const DEFAULT_PASTE_AS_TEXT_SHORTCUT = "Shift+Enter";
 const HISTORY_PAGE_LIMIT = 36;
-const HISTORY_DATA_URL_CACHE_LIMIT = 80;
-const ACTIVE_IMAGE_LOAD_DELAY_MS = 140;
 const WHEEL_LINE_DELTA_PX = 40;
 const WHEEL_MOUSE_TIME_CONSTANT_MS = 60;
 const WHEEL_PRECISION_TIME_CONSTANT_MS = 24;
@@ -62,17 +67,6 @@ const WHEEL_SCROLL_MAX_FRAME_MS = 34;
 const IMAGE_EXPORT_DIR_KEY = "vpaste.imageExportDir.v1";
 const PENDING_ITEM_TAGS_CHANGED_KEY = "vpaste.pendingItemTagsChangedPayload";
 const PENDING_PERMISSION_WINDOW_KEY = "vpaste.pendingOnboardingPermission.v1";
-const historyDataUrlCache = new Map<string, string>();
-const historyPreviewSrcCache = new Map<string, string>();
-const historyOriginalSrcCache = new Map<string, string>();
-const historyImageMetadataCache = new Map<string, HistoryImageMetadata>();
-
-type HistoryImageMetadata = {
-    width: number;
-    height: number;
-    isGif: boolean;
-};
-
 function normalizeWheelDelta(event: WheelEvent, pageSize: number): { delta: number; rawDelta: number } {
     const rawDelta = Math.abs(event.deltaY) > Math.abs(event.deltaX)
         ? event.deltaY
@@ -94,24 +88,6 @@ type ToastState = {
     actionLabel?: string;
     onAction?: () => void;
 } | null;
-
-type FilePreviewInfo = {
-    kind: 'single-preview' | 'single-icon' | 'single-folder' | 'multiple' | 'pdf-preview' | 'text-preview';
-    paths: string[];
-    exists: boolean;
-    missing_paths: string[];
-    display_path: string;
-    secondary_text: string;
-    extension: string;
-    preview_path: string;
-    image_width?: number | null;
-    image_height?: number | null;
-};
-
-type DominantColor = {
-    color: string;
-    textColor: string;
-};
 
 type ClipboardBehaviorConfig = {
     display_tray_icon?: boolean;
@@ -198,89 +174,6 @@ function quickInputAction(event: KeyboardEvent): QuickInputAction | null {
     return null;
 }
 
-async function loadHistoryDataUrl(path: string): Promise<string> {
-    if (!path) return "";
-    const cached = historyDataUrlCache.get(path);
-    if (cached) return cached;
-
-    let src: string;
-    try {
-        src = await invoke<string>("history_file_data_url", { path });
-    } catch {
-        src = convertFileSrc(path);
-    }
-
-    historyDataUrlCache.set(path, src);
-    if (historyDataUrlCache.size > HISTORY_DATA_URL_CACHE_LIMIT) {
-        const oldestKey = historyDataUrlCache.keys().next().value;
-        if (oldestKey) {
-            historyDataUrlCache.delete(oldestKey);
-        }
-    }
-    return src;
-}
-
-async function loadHistoryPreviewSrc(path: string): Promise<string> {
-    if (!path) return "";
-    const cached = historyPreviewSrcCache.get(path);
-    if (cached) return cached;
-
-    let src: string;
-    try {
-        const assetPath = await invoke<string>("history_image_card_preview_asset_path", { path });
-        src = convertFileSrc(assetPath);
-    } catch {
-        src = await loadHistoryDataUrl(path);
-    }
-
-    historyPreviewSrcCache.set(path, src);
-    if (historyPreviewSrcCache.size > HISTORY_DATA_URL_CACHE_LIMIT) {
-        const oldestKey = historyPreviewSrcCache.keys().next().value;
-        if (oldestKey) {
-            historyPreviewSrcCache.delete(oldestKey);
-        }
-    }
-    return src;
-}
-
-async function loadHistoryOriginalSrc(path: string): Promise<string> {
-    if (!path) return "";
-    const cached = historyOriginalSrcCache.get(path);
-    if (cached) return cached;
-
-    let src: string;
-    try {
-        const assetPath = await invoke<string>("history_file_preview_asset_path", { path });
-        src = convertFileSrc(assetPath);
-    } catch {
-        src = await loadHistoryDataUrl(path);
-    }
-
-    historyOriginalSrcCache.set(path, src);
-    if (historyOriginalSrcCache.size > HISTORY_DATA_URL_CACHE_LIMIT) {
-        const oldestKey = historyOriginalSrcCache.keys().next().value;
-        if (oldestKey) {
-            historyOriginalSrcCache.delete(oldestKey);
-        }
-    }
-    return src;
-}
-
-async function loadHistoryImageMetadata(path: string): Promise<HistoryImageMetadata> {
-    const cached = historyImageMetadataCache.get(path);
-    if (cached) return cached;
-
-    const metadata = await invoke<HistoryImageMetadata>("history_image_metadata", { path });
-    historyImageMetadataCache.set(path, metadata);
-    if (historyImageMetadataCache.size > HISTORY_DATA_URL_CACHE_LIMIT) {
-        const oldestKey = historyImageMetadataCache.keys().next().value;
-        if (oldestKey) {
-            historyImageMetadataCache.delete(oldestKey);
-        }
-    }
-    return metadata;
-}
-
 type ColorCopyOption = {
     format: string;
     value: string;
@@ -324,8 +217,6 @@ type PreviewNavigationPayload = {
     direction?: number;
     key?: string;
 };
-
-type TFunction = (key: string, params?: Record<string, string | number>) => string;
 
 type TabEditorMode = "add" | "edit";
 type TagEditorKind = "filter" | "record";
@@ -429,889 +320,6 @@ class ClipboardPage {
     }
 }
 
-// Helper function to get type label
-function getTypeLabel(type: ItemType, t: TFunction): string {
-    switch (type) {
-        case ItemType.Text: return t("type.text");
-        case ItemType.Image: return t("type.image");
-        case ItemType.TextFile: return t("type.text");
-        case ItemType.Link: return t("type.link");
-        case ItemType.Color: return t("type.color");
-        case ItemType.File: return t("type.file");
-        default: return t("type.text");
-    }
-}
-
-function getBackendTypeLabel(type: ItemType): string {
-    switch (type) {
-        case ItemType.Text: return "Text";
-        case ItemType.Image: return "Image";
-        case ItemType.TextFile: return "Text";
-        case ItemType.Link: return "Link";
-        case ItemType.Color: return "Color";
-        case ItemType.File: return "File";
-        default: return "Text";
-    }
-}
-
-// Helper function to get type class
-function getTypeClass(type: ItemType): string {
-    switch (type) {
-        case ItemType.Text: return "type-text";
-        case ItemType.Image: return "type-image";
-        case ItemType.TextFile: return "type-text";
-        case ItemType.Link: return "type-link";
-        case ItemType.Color: return "type-color";
-        case ItemType.File: return "type-file";
-        default: return "type-text";
-    }
-}
-
-function getTypeAccentColor(type: ItemType): string {
-    switch (type) {
-        case ItemType.Text: return "#4CAF50";
-        case ItemType.Image: return "#FF9800";
-        case ItemType.TextFile: return "#4CAF50";
-        case ItemType.Link: return "#2f6fed";
-        case ItemType.Color: return "#2196F3";
-        case ItemType.File: return "#00BCD4";
-        default: return "#4CAF50";
-    }
-}
-
-const APP_ICON_HEADER_ACCENT_COLOR = "#637083";
-
-function getFormatTagColor(type: ItemType, headerColor: DominantColor | null, hasAppIcon: boolean): string {
-    if (headerColor) return headerColor.color;
-    if (hasAppIcon) return APP_ICON_HEADER_ACCENT_COLOR;
-    return getTypeAccentColor(type);
-}
-
-function compactPath(path: string, maxLength: number = 28): string {
-    const normalized = path.replace(/\\/g, "/");
-    if (normalized.length <= maxLength) return normalized;
-    return `...${normalized.slice(-(maxLength - 3))}`;
-}
-
-function parseFilePaths(content: string): string[] {
-    try {
-        const paths = JSON.parse(content);
-        return Array.isArray(paths) ? paths.filter(path => typeof path === "string") : [];
-    } catch {
-        return [];
-    }
-}
-
-function isImagePath(path: string): boolean {
-    return /\.(png|jpe?g|gif|webp|bmp|ico|tiff?|svg)$/i.test(path);
-}
-
-function isGifPath(path: string): boolean {
-    return /\.gif(?:[?#].*)?$/i.test(path.trim());
-}
-
-function isSingleImageFileItem(item: Item): boolean {
-    if (item.getType() !== ItemType.File) return false;
-    const paths = parseFilePaths(item.getContent());
-    return paths.length === 1 && isImagePath(paths[0]);
-}
-
-function itemHasGifFormat(item: Item): boolean {
-    if (item.getType() === ItemType.Image) {
-        return isGifPath(item.getContent()) || isGifPath(item.getPreviewContent());
-    }
-    if (item.getType() === ItemType.File) {
-        const paths = parseFilePaths(item.getContent());
-        if (paths.length === 1) return isGifPath(paths[0]);
-    }
-    return false;
-}
-
-function imageExportSourcePath(item: Item): string {
-    if (item.getType() === ItemType.Image) {
-        return item.getPreviewContent();
-    }
-    if (item.getType() === ItemType.File) {
-        const paths = parseFilePaths(item.getContent());
-        if (paths.length === 1 && isImagePath(paths[0])) {
-            return paths[0];
-        }
-    }
-    return "";
-}
-
-function joinPath(base: string, name: string): string {
-    if (!base) return name;
-    const separator = base.lastIndexOf("\\") > base.lastIndexOf("/") ? "\\" : "/";
-    return `${base.replace(/[\\/]+$/, "")}${separator}${name}`;
-}
-
-function dirName(path: string): string {
-    const index = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
-    return index >= 0 ? path.slice(0, index) : "";
-}
-
-function isTextLikeItem(item: Item): boolean {
-    return [ItemType.Text, ItemType.TextFile, ItemType.Link].includes(item.getType());
-}
-
-function dominantColorFromImage(image: HTMLImageElement): DominantColor | null {
-    const canvas = document.createElement("canvas");
-    const size = 24;
-    canvas.width = size;
-    canvas.height = size;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) return null;
-
-    try {
-        context.drawImage(image, 0, 0, size, size);
-        const data = context.getImageData(0, 0, size, size).data;
-        const buckets = new Map<string, { r: number, g: number, b: number, weight: number }>();
-        for (let i = 0; i < data.length; i += 4) {
-            const alpha = data[i + 3];
-            if (alpha < 40) continue;
-            const red = data[i];
-            const green = data[i + 1];
-            const blue = data[i + 2];
-            if (red > 245 && green > 245 && blue > 245) continue;
-            if (red < 18 && green < 18 && blue < 18) continue;
-            const max = Math.max(red, green, blue);
-            const min = Math.min(red, green, blue);
-            const saturation = max === 0 ? 0 : (max - min) / max;
-            const weight = alpha / 255;
-            const colorWeight = weight * (0.45 + saturation * 1.4);
-            const key = `${Math.round(red / 24)},${Math.round(green / 24)},${Math.round(blue / 24)}`;
-            const bucket = buckets.get(key) || { r: 0, g: 0, b: 0, weight: 0 };
-            bucket.r += red * colorWeight;
-            bucket.g += green * colorWeight;
-            bucket.b += blue * colorWeight;
-            bucket.weight += colorWeight;
-            buckets.set(key, bucket);
-        }
-        const dominant = Array.from(buckets.values()).sort((a, b) => b.weight - a.weight)[0];
-        if (!dominant || dominant.weight <= 0) return null;
-        const r = Math.round(dominant.r / dominant.weight);
-        const g = Math.round(dominant.g / dominant.weight);
-        const b = Math.round(dominant.b / dominant.weight);
-        const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-        return {
-            color: `rgb(${r}, ${g}, ${b})`,
-            textColor: luminance > 0.62 ? "#1f2933" : "#fff",
-        };
-    } catch {
-        return null;
-    }
-}
-
-function textColorForBackground(color: string): string {
-    const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
-    if (!match) return "#fff";
-    const red = Number(match[1]);
-    const green = Number(match[2]);
-    const blue = Number(match[3]);
-    const luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255;
-    return luminance > 0.62 ? "#1f2933" : "#fff";
-}
-
-function searchTerms(query: string): string[] {
-    const value = query.trim();
-    if (!value) return [];
-    const terms = value.includes(" ")
-        ? value.split(/\s+/)
-        : [value];
-    return Array.from(new Set(terms.filter(Boolean)))
-        .sort((a, b) => b.length - a.length)
-        .slice(0, 8);
-}
-
-function highlightRegex(query: string): RegExp | null {
-    const terms = searchTerms(query);
-    if (terms.length === 0) return null;
-    const escaped = terms.map(term => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    return new RegExp(`(${escaped.join("|")})`, "gi");
-}
-
-function HighlightedText({ text, query }: { text: string; query: string }) {
-    const regex = highlightRegex(query);
-    if (!regex) return <>{text}</>;
-    const parts = text.split(regex);
-    return (
-        <>
-            {parts.map((part, index) => (
-                (() => {
-                    regex.lastIndex = 0;
-                    return regex.test(part);
-                })()
-                    ? <mark className={classes(styles, "search-highlight")} key={`${part}-${index}`}>{part}</mark>
-                    : <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>
-            ))}
-        </>
-    );
-}
-
-function highlightRichHtml(html: string, query: string): string {
-    const regex = highlightRegex(query);
-    if (!regex || !html.trim()) return html;
-    const document = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
-    const root = document.body.firstElementChild;
-    if (!root) return html;
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    const nodes: Text[] = [];
-    let current = walker.nextNode();
-    while (current) {
-        if (current.textContent?.trim()) nodes.push(current as Text);
-        current = walker.nextNode();
-    }
-    nodes.forEach(node => {
-        const text = node.textContent || "";
-        regex.lastIndex = 0;
-        if (!regex.test(text)) return;
-        regex.lastIndex = 0;
-        const fragment = document.createDocumentFragment();
-        text.split(regex).forEach(part => {
-            if (!part) return;
-            regex.lastIndex = 0;
-            if (regex.test(part)) {
-                const mark = document.createElement("mark");
-                mark.className = styles["search-highlight"];
-                mark.textContent = part;
-                fragment.appendChild(mark);
-            } else {
-                fragment.appendChild(document.createTextNode(part));
-            }
-        });
-        node.replaceWith(fragment);
-    });
-    return root.innerHTML;
-}
-
-function AutoScrollPreview({
-    active,
-    className,
-    html,
-    children,
-}: {
-    active: boolean;
-    className: string;
-    html?: string;
-    children?: React.ReactNode;
-}) {
-    const ref = useRef<HTMLDivElement>(null);
-
-    useEffect(() => {
-        const element = ref.current;
-        if (!element) return;
-
-        if (html !== undefined) {
-            element.setAttribute("inert", "");
-        }
-
-        let frame = 0;
-        let timeout = 0;
-        let cancelled = false;
-        const cleanup = () => {
-            cancelled = true;
-            window.cancelAnimationFrame(frame);
-            window.clearTimeout(timeout);
-            if (html !== undefined) {
-                element.removeAttribute("inert");
-            }
-        };
-
-        if (!active) {
-            element.scrollTo({ top: 0, behavior: "smooth" });
-            return cleanup;
-        }
-
-        const maxScroll = element.scrollHeight - element.clientHeight;
-        if (maxScroll <= 8) return cleanup;
-
-        const start = () => {
-            const startTime = performance.now();
-            const duration = Math.min(8500, Math.max(1500, maxScroll * 12));
-            const animate = (now: number) => {
-                if (cancelled) return;
-                const progress = Math.min(1, (now - startTime) / duration);
-                element.scrollTop = maxScroll * progress;
-                if (progress < 1) {
-                    frame = window.requestAnimationFrame(animate);
-                } else {
-                    timeout = window.setTimeout(() => {
-                        if (cancelled) return;
-                        element.scrollTo({ top: 0, behavior: "smooth" });
-                        timeout = window.setTimeout(() => {
-                            if (!cancelled) start();
-                        }, 1100);
-                    }, 900);
-                }
-            };
-            frame = window.requestAnimationFrame(animate);
-        };
-
-        timeout = window.setTimeout(start, 320);
-        return cleanup;
-    }, [active, html, children]);
-
-    if (html !== undefined) {
-        return <div ref={ref} className={className} dangerouslySetInnerHTML={{ __html: html }} />;
-    }
-    return <div ref={ref} className={className}>{children}</div>;
-}
-
-function ImagePreview({ item, active, refreshKey, t, onGifFormatChange }: { item: Item, active: boolean, refreshKey: number, t: TFunction, onGifFormatChange: (isGif: boolean) => void }) {
-    const [naturalSize, setNaturalSize] = useState<{ width: number, height: number } | null>(null);
-    const [stageSize, setStageSize] = useState<{ width: number, height: number }>({ width: 0, height: 0 });
-    const [imageSrc, setImageSrc] = useState("");
-    const [isVisible, setIsVisible] = useState(false);
-    const stageRef = useRef<HTMLDivElement>(null);
-    const fallbackAttemptedRef = useRef(false);
-    const sourcePath = item.getContent();
-    const previewPath = item.getPreviewContent() || sourcePath;
-    const width = naturalSize?.width || 0;
-    const height = naturalSize?.height || 0;
-    const stageWidth = stageSize.width;
-    const stageHeight = stageSize.height;
-    const smallImage = width > 0 && height > 0 && width < 100 && height < 100;
-    const realSizeImage = width >= 100 && height >= 100 && width <= stageWidth && height <= stageHeight;
-    const imageStyle: React.CSSProperties = realSizeImage
-        ? { width: `${width}px`, height: `${height}px` }
-        : smallImage
-            ? { width: `${width}px`, height: `${height}px` }
-            : { maxWidth: '100%', maxHeight: '100%' };
-
-    useEffect(() => {
-        const stage = stageRef.current;
-        if (!stage) return;
-
-        const updateStageSize = () => {
-            setStageSize({
-                width: stage.clientWidth,
-                height: stage.clientHeight,
-            });
-        };
-        updateStageSize();
-
-        const resizeObserver = new ResizeObserver(updateStageSize);
-        resizeObserver.observe(stage);
-        return () => resizeObserver.disconnect();
-    }, []);
-
-    useEffect(() => {
-        const stage = stageRef.current;
-        if (!stage) return;
-
-        const observer = new IntersectionObserver(([entry]) => {
-            setIsVisible(entry.isIntersecting);
-        }, {
-            root: stage.closest(`.${styles["cards-container"]}`),
-            rootMargin: '0px 420px',
-            threshold: 0.25,
-        });
-        observer.observe(stage);
-        return () => observer.disconnect();
-    }, [item.getHash()]);
-
-    useEffect(() => {
-        setImageSrc("");
-        const cachedMetadata = historyImageMetadataCache.get(sourcePath);
-        setNaturalSize(cachedMetadata ? { width: cachedMetadata.width, height: cachedMetadata.height } : null);
-        onGifFormatChange(itemHasGifFormat(item));
-    }, [item, sourcePath, onGifFormatChange]);
-
-    useEffect(() => {
-        fallbackAttemptedRef.current = false;
-    }, [item.getHash(), refreshKey]);
-
-    useEffect(() => {
-        if (!isVisible) return;
-
-        let cancelled = false;
-        let timeout = 0;
-        if (!sourcePath) return;
-
-        const load = (gif: boolean) => {
-            const loader = gif && active ? loadHistoryOriginalSrc : loadHistoryPreviewSrc;
-            loader(gif && active ? sourcePath : previewPath)
-                .then(src => {
-                    if (!cancelled && !fallbackAttemptedRef.current) setImageSrc(src);
-                });
-        };
-
-        const loadWithGifState = (gif: boolean) => {
-            if (!cancelled) onGifFormatChange(gif);
-            if (active) {
-                timeout = window.setTimeout(() => load(gif), ACTIVE_IMAGE_LOAD_DELAY_MS);
-            } else {
-                load(gif);
-            }
-        };
-
-        void loadHistoryImageMetadata(sourcePath)
-            .then(metadata => {
-                if (!cancelled) {
-                    setNaturalSize({ width: metadata.width, height: metadata.height });
-                }
-                loadWithGifState(metadata.isGif);
-            })
-            .catch(() => loadWithGifState(false));
-
-        return () => {
-            cancelled = true;
-            window.clearTimeout(timeout);
-        };
-    }, [item.getHash(), sourcePath, previewPath, isVisible, active, refreshKey, onGifFormatChange]);
-
-    const recoverImageSource = () => {
-        if (!sourcePath || fallbackAttemptedRef.current) return;
-        fallbackAttemptedRef.current = true;
-        historyPreviewSrcCache.delete(previewPath);
-        historyOriginalSrcCache.delete(sourcePath);
-        historyDataUrlCache.delete(sourcePath);
-        void invoke<string>("history_file_data_url", { path: sourcePath })
-            .then(setImageSrc)
-            .catch(e => error(`Failed to recover history image preview: ${e}`));
-    };
-
-    return (
-        <div className={classes(styles, "image-preview")}>
-            <div className={classes(styles, "image-preview-stage")} ref={stageRef}>
-                {imageSrc && (
-                    <img
-                        key={`${isVisible ? refreshKey : 0}:${imageSrc}`}
-                        src={imageSrc}
-                        alt=""
-                        draggable={false}
-                        decoding="async"
-                        className={classes(styles, "image-preview-img")}
-                        style={imageStyle}
-                        onError={recoverImageSource}
-                    />
-                )}
-                {naturalSize && (
-                    <div className={classes(styles, "image-resolution")}>
-                        {`${naturalSize.width} x ${naturalSize.height}`}
-                    </div>
-                )}
-            </div>
-            {item.getTextContent() && (
-                <div className={classes(styles, "mixed-content-badge")}>{t("clipboard.mixedText")}</div>
-            )}
-        </div>
-    );
-}
-
-function FilePreview({ item, refreshKey, searchQuery, t }: { item: Item, refreshKey: number, searchQuery: string, t: TFunction }) {
-    const [previewInfo, setPreviewInfo] = useState<FilePreviewInfo | null>(null);
-    const [isVisible, setIsVisible] = useState(false);
-    const [imageSize, setImageSize] = useState<{ width: number, height: number } | null>(null);
-    const [previewSrc, setPreviewSrc] = useState("");
-    const previewRef = useRef<HTMLDivElement>(null);
-    const fallbackPaths = parseFilePaths(item.getContent());
-    const firstPath = previewInfo?.display_path || fallbackPaths[0] || item.getContent();
-    const extension = previewInfo?.extension || (firstPath.split(".").pop() || "FILE").toUpperCase();
-    const isGifFile = extension.toLowerCase() === "gif";
-    const isMultiple = previewInfo?.kind === "multiple" || fallbackPaths.length > 1;
-    const isInvalid = previewInfo ? !previewInfo.exists : false;
-    const displayedImageSize = previewInfo?.image_width && previewInfo?.image_height
-        ? { width: previewInfo.image_width, height: previewInfo.image_height }
-        : imageSize;
-    const fileImageStyle: React.CSSProperties | undefined = displayedImageSize
-        ? { width: `${displayedImageSize.width}px`, height: `${displayedImageSize.height}px` }
-        : undefined;
-
-    useEffect(() => {
-        const element = previewRef.current;
-        if (!element) return;
-
-        const observer = new IntersectionObserver(([entry]) => {
-            setIsVisible(entry.isIntersecting);
-        }, {
-            root: element.closest(`.${styles["cards-container"]}`),
-            threshold: 0.35,
-        });
-        observer.observe(element);
-        return () => observer.disconnect();
-    }, [item.getHash()]);
-
-    useEffect(() => {
-        if (!isVisible) return;
-
-        let cancelled = false;
-        void invoke<FilePreviewInfo>("file_preview_info", { content: item.getContent() })
-            .then(info => {
-                if (!cancelled) setPreviewInfo(info);
-            })
-            .catch(e => {
-                error(`Failed to load file preview info: ${e}`);
-                if (!cancelled) {
-                    setPreviewInfo({
-                        kind: fallbackPaths.length > 1 ? "multiple" : "single-icon",
-                        paths: fallbackPaths,
-                        exists: true,
-                        missing_paths: [],
-                        display_path: firstPath,
-                        secondary_text: fallbackPaths.length > 1 ? t("clipboard.multipleFiles") : "",
-                        extension,
-                        preview_path: "",
-                        image_width: null,
-                        image_height: null,
-                    });
-                }
-            });
-
-        return () => {
-            cancelled = true;
-        };
-    }, [item.getHash(), isVisible, refreshKey]);
-
-    useEffect(() => {
-        setImageSize(null);
-        setPreviewSrc("");
-        let cancelled = false;
-        if (previewInfo?.preview_path) {
-            const loader = isGifFile ? loadHistoryOriginalSrc : loadHistoryPreviewSrc;
-            loader(previewInfo.preview_path)
-                .then(src => {
-                    if (!cancelled) setPreviewSrc(src);
-                });
-        }
-        return () => {
-            cancelled = true;
-        };
-    }, [item.getHash(), previewInfo?.preview_path, isGifFile]);
-
-    return (
-        <div className={classes(styles, `file-preview ${isInvalid ? 'invalid' : ''}`)} ref={previewRef}>
-            <div className={classes(styles, "file-preview-stage")}>
-                {previewInfo?.kind === "single-preview" && previewInfo.preview_path ? (
-                    <>
-                        <img
-                            key={previewSrc}
-                            className={classes(styles, "file-preview-image")}
-                            src={previewSrc}
-                            draggable={false}
-                            alt=""
-                            style={fileImageStyle}
-                            onLoad={(event) => {
-                                setImageSize({
-                                    width: event.currentTarget.naturalWidth,
-                                    height: event.currentTarget.naturalHeight,
-                                });
-                            }}
-                        />
-                        {displayedImageSize && (
-                            <div className={classes(styles, "image-resolution file-image-resolution")}>
-                                {`${displayedImageSize.width} x ${displayedImageSize.height}`}
-                            </div>
-                        )}
-                    </>
-                ) : isMultiple || previewInfo?.kind === "single-folder" ? (
-                    <div className={classes(styles, "file-preview-icon multiple")}>
-                        <FolderCopyOutlinedIcon />
-                    </div>
-                ) : (
-                    <div className={classes(styles, "file-preview-icon single")}>
-                        <InsertDriveFileOutlinedIcon />
-                        <span className={classes(styles, "file-extension")}>{extension}</span>
-                    </div>
-                )}
-                {isInvalid && (
-                    <div className={classes(styles, "file-invalid-badge")}>
-                        <WarningAmberOutlinedIcon />
-                    </div>
-                )}
-            </div>
-            <div className={classes(styles, "file-paths")}>
-                <div className={classes(styles, "file-path-line")} title={firstPath}>
-                    <HighlightedText text={compactPath(firstPath)} query={searchQuery} />
-                </div>
-                {isMultiple && (
-                    <div className={classes(styles, "file-path-line secondary")}>
-                        <HighlightedText text={previewInfo?.secondary_text || t("clipboard.multipleFiles")} query={searchQuery} />
-                    </div>
-                )}
-            </div>
-        </div>
-    );
-}
-
-function parseLinkContent(content: string): { url: string; imagePath: string; title: string; imageKind: string } {
-    const [url = "", imagePath = "", title = "", imageKind = ""] = content.split("|||");
-    return { url, imagePath, title, imageKind };
-}
-
-function linkHost(url: string): string {
-    try {
-        return new URL(url).host;
-    } catch {
-        return url;
-    }
-}
-
-function LinkPreview({ item, searchQuery }: { item: Item, searchQuery: string }) {
-    const { url, imagePath, title, imageKind } = parseLinkContent(item.getContent());
-    const [imageFailed, setImageFailed] = useState(false);
-    const [imageSrc, setImageSrc] = useState("");
-    const [imageNaturalSize, setImageNaturalSize] = useState<{ width: number; height: number } | null>(null);
-    const showImage = Boolean(imagePath) && Boolean(imageSrc) && !imageFailed;
-    const displayTitle = title || linkHost(url);
-    const isSmallImage = imageKind === "icon"
-        || Boolean(imageNaturalSize && Math.max(imageNaturalSize.width, imageNaturalSize.height) <= 96);
-
-    useEffect(() => {
-        setImageFailed(false);
-        setImageNaturalSize(null);
-        let cancelled = false;
-        setImageSrc("");
-        if (imagePath) {
-            loadHistoryPreviewSrc(imagePath)
-                .then(src => {
-                    if (!cancelled) setImageSrc(src);
-                });
-        }
-        return () => {
-            cancelled = true;
-        };
-    }, [item.getHash(), imagePath]);
-
-    return (
-        <div className={classes(styles, "link-preview")}>
-            <div className={classes(styles, `link-preview-media ${showImage ? '' : 'fallback'} ${isSmallImage ? 'icon' : ''}`)}>
-                {showImage ? (
-                    <img
-                        src={imageSrc}
-                        alt=""
-                        draggable={false}
-                        onLoad={event => {
-                            const image = event.currentTarget;
-                            setImageNaturalSize({
-                                width: image.naturalWidth,
-                                height: image.naturalHeight,
-                            });
-                        }}
-                        onError={() => setImageFailed(true)}
-                    />
-                ) : (
-                    <LinkOutlinedIcon />
-                )}
-            </div>
-            <div className={classes(styles, "link-preview-text")}>
-                <div className={classes(styles, "link-preview-title")} title={displayTitle}>
-                    <HighlightedText text={displayTitle} query={searchQuery} />
-                </div>
-                <div className={classes(styles, "link-preview-url")} title={url}>
-                    <HighlightedText text={url} query={searchQuery} />
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function RichTextPreview({ item, active, searchQuery }: { item: Item; active: boolean; searchQuery: string }) {
-    const html = sanitizeRichHtml(item.getRichHtml());
-    if (!richHtmlHasVisibleContent(html)) {
-        return (
-            <AutoScrollPreview active={active} className={classes(styles, "card-preview-text")}>
-                <HighlightedText text={item.getContent().trimStart()} query={searchQuery} />
-            </AutoScrollPreview>
-        );
-    }
-    return (
-        <AutoScrollPreview
-            active={active}
-            className={classes(styles, "card-preview-rich")}
-            html={highlightRichHtml(html, searchQuery)}
-        />
-    );
-}
-
-// Card Component
-function ClipboardCardComponent({ item, selected, simulatedHover, refreshKey, imageRefreshKey, searchQuery, shortcutHint, mediaPlaybackReady, t, onContextMenu }: {
-    item: Item,
-    selected: boolean,
-    simulatedHover: boolean,
-    refreshKey: number,
-    imageRefreshKey: number,
-    searchQuery: string,
-    shortcutHint?: string,
-    mediaPlaybackReady: boolean,
-    t: TFunction,
-    onContextMenu: (item: Item, x: number, y: number) => void
-}) {
-    const dragStateRef = useRef<{ x: number, y: number, dragging: boolean } | null>(null);
-    const visualType = isSingleImageFileItem(item) ? ItemType.Image : item.getType();
-    const typeLabel = getTypeLabel(visualType, t);
-    const typeClass = getTypeClass(visualType);
-    const timestamp = formatRelativeTime(item.getTime(), t);
-    const itemTagList = item.getTags();
-    const [isGifFormat, setIsGifFormat] = useState(false);
-    const formatTags = [
-        item.isRichText() ? { key: "rich", label: t("clipboard.richFormat") } : null,
-        isGifFormat ? { key: "gif", label: t("clipboard.gifFormat") } : null,
-    ].filter((tag): tag is { key: string; label: string } => Boolean(tag));
-    const initialHeaderColor = item.getTitleColor()
-        ? { color: item.getTitleColor() as string, textColor: textColorForBackground(item.getTitleColor() as string) }
-        : null;
-    const [headerColor, setHeaderColor] = useState<DominantColor | null>(initialHeaderColor);
-    const appIconPath = item.getAppIconPath();
-    const appIconSrc = appIconPath ? convertFileSrc(appIconPath) : "";
-    const formatTagColor = getFormatTagColor(visualType, headerColor, Boolean(appIconSrc));
-    const [hovered, setHovered] = useState(false);
-    const isMacosAppIcon = appIconPath.endsWith("-macos.png");
-    const previewActive = selected || hovered || simulatedHover;
-    const updateGifFormat = useCallback((gif: boolean) => {
-        setIsGifFormat(gif);
-    }, []);
-
-    useEffect(() => {
-        setHeaderColor(item.getTitleColor()
-            ? { color: item.getTitleColor() as string, textColor: textColorForBackground(item.getTitleColor() as string) }
-            : null);
-    }, [item.getHash(), item.getTitleColor()]);
-
-    return (
-        <div
-            className={classes(styles, `clipboard-card ${selected ? 'selected' : ''} ${simulatedHover ? 'simulated-hover' : ''}`)}
-            data-hash={item.getHash() as string}
-            tabIndex={-1}
-            draggable={false}
-            onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
-            onMouseDown={(event) => {
-                if (item.getType() === ItemType.Image && event.button === 0) {
-                    dragStateRef.current = {
-                        x: event.clientX,
-                        y: event.clientY,
-                        dragging: false,
-                    };
-                }
-            }}
-            onMouseMove={(event) => {
-                const dragState = dragStateRef.current;
-                if (!dragState || dragState.dragging || item.getType() !== ItemType.Image) return;
-                if ((event.buttons & 1) !== 1) {
-                    dragStateRef.current = null;
-                    return;
-                }
-
-                const deltaX = event.clientX - dragState.x;
-                const deltaY = event.clientY - dragState.y;
-                const distance = Math.hypot(deltaX, deltaY);
-                if (distance < 6) return;
-                if (Math.abs(deltaX) > Math.abs(deltaY)) return;
-
-                event.preventDefault();
-                dragState.dragging = true;
-                void invoke('native_drag_file', { path: item.getPreviewContent() })
-                    .catch(e => error(`Native image drag failed: ${e}`))
-                    .finally(() => {
-                        dragStateRef.current = null;
-                    });
-            }}
-            onMouseUp={() => {
-                if (dragStateRef.current && !dragStateRef.current.dragging) {
-                    dragStateRef.current = null;
-                }
-            }}
-            onContextMenu={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onContextMenu(item, event.clientX, event.clientY);
-            }}
-        >
-            {itemTagList.length > 0 && (
-                <div className={classes(styles, `card-item-tags ${itemTagList.length > 2 ? 'scrolling' : ''}`)} title={itemTagList.map(tag => tag.name).join(", ")}>
-                    <div className={classes(styles, "card-item-tags-track")}>
-                        {(itemTagList.length > 2 ? [...itemTagList, ...itemTagList] : itemTagList).map((tag, index) => (
-                            <span key={`${tag.id}-${index}`} className={classes(styles, "card-item-tag")}>
-                                {tag.name}
-                            </span>
-                        ))}
-                    </div>
-                </div>
-            )}
-            <div
-                className={classes(styles, `card-header ${typeClass} ${appIconSrc ? 'with-app-icon' : ''}`)}
-                style={headerColor
-                    ? { background: headerColor.color, color: headerColor.textColor }
-                    : appIconSrc
-                        ? { background: "linear-gradient(135deg, #747c87, #565e68)", color: "#fff" }
-                        : undefined}
-            >
-                <div className={classes(styles, "card-title-block")}>
-                    <span className={classes(styles, "card-title-row")}>
-                        <span className={classes(styles, "card-title")}>{typeLabel}</span>
-                        {formatTags.map(tag => (
-                            <span
-                                key={tag.key}
-                                className={classes(styles, `card-format-tag ${tag.key}-format-tag`)}
-                                style={{ color: formatTagColor }}
-                            >
-                                {tag.label}
-                            </span>
-                        ))}
-                    </span>
-                    <span className={classes(styles, "card-timestamp")}>{timestamp}</span>
-                </div>
-                <span className={classes(styles, "card-meta")}>
-                    {item.isFavorite() && <span className={classes(styles, "favorite-icon")} title={t("clipboard.favorite")}>★</span>}
-                </span>
-                {appIconSrc && (
-                    <div className={classes(styles, `app-icon-crop ${isMacosAppIcon ? 'macos-app-icon-crop' : ''}`)} title={t("clipboard.source", { source: item.getAppSource() || t("clipboard.unknownApp") })}>
-                        <img
-                            className={classes(styles, `app-header-icon ${isMacosAppIcon ? 'macos-app-icon' : ''}`)}
-                            src={appIconSrc}
-                            alt=""
-                            onLoad={(event) => {
-                                if (item.getTitleColor()) return;
-                                const color = dominantColorFromImage(event.currentTarget);
-                                if (color) setHeaderColor(color);
-                            }}
-                        />
-                    </div>
-                )}
-            </div>
-            <div className={classes(styles, "card-content")}>
-                {item.getType() === ItemType.Image ? (
-                    <ImagePreview item={item} active={previewActive && mediaPlaybackReady} refreshKey={imageRefreshKey} t={t} onGifFormatChange={updateGifFormat} />
-                ) : item.getType() === ItemType.Color ? (
-                    <div className={classes(styles, "card-preview-color")} style={{ background: item.getContent() }}>
-                        <span className={classes(styles, "color-value")}>
-                            <HighlightedText text={item.getContent()} query={searchQuery} />
-                        </span>
-                    </div>
-                ) : item.getType() === ItemType.Link ? (
-                    <LinkPreview item={item} searchQuery={searchQuery} />
-                ) : item.getType() === ItemType.File ? (
-                    <FilePreview item={item} refreshKey={refreshKey} searchQuery={searchQuery} t={t} />
-                ) : item.isRichText() ? (
-                    <RichTextPreview item={item} active={previewActive} searchQuery={searchQuery} />
-                ) : (
-                    <AutoScrollPreview active={previewActive} className={classes(styles, "card-preview-text")}>
-                        <HighlightedText
-                            text={(item.getType() === ItemType.TextFile ? item.getPreviewContent() : item.getContent()).trimStart()}
-                            query={searchQuery}
-                        />
-                    </AutoScrollPreview>
-                )}
-                {shortcutHint && <div className={classes(styles, "alt-card-hint")}>{shortcutHint}</div>}
-            </div>
-        </div>
-    );
-}
-
-const ClipboardCard = React.memo(ClipboardCardComponent, (prev, next) => (
-    prev.item === next.item
-    && prev.selected === next.selected
-    && prev.simulatedHover === next.simulatedHover
-    && prev.refreshKey === next.refreshKey
-    && prev.imageRefreshKey === next.imageRefreshKey
-    && prev.searchQuery === next.searchQuery
-    && prev.shortcutHint === next.shortcutHint
-    && prev.mediaPlaybackReady === next.mediaPlaybackReady
-    && prev.t === next.t
-));
-
 export default function Clipboard() {
     const { t, languageCode, setPreviewLanguageCode } = useLanguage();
     const { state: updateState } = useAppUpdateState();
@@ -1324,7 +332,6 @@ export default function Clipboard() {
     const [draggingTabId, setDraggingTabId] = useState<string>("");
     const [toast, setToast] = useState<ToastState>(null);
     const [fileRefreshKey, setFileRefreshKey] = useState(0);
-    const [imageRefreshKey, setImageRefreshKey] = useState(0);
     const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
     const [contextMenuIndex, setContextMenuIndex] = useState(0);
     const [tabContextMenu, setTabContextMenu] = useState<TabContextMenuState>(null);
@@ -1368,7 +375,7 @@ export default function Clipboard() {
     const altHintTimerRef = useRef<number | null>(null);
     const scrollRefreshTimerRef = useRef<number | null>(null);
     const imagePrewarmTimerRef = useRef<number | null>(null);
-    const loadMoreCheckFrameRef = useRef<number | null>(null);
+    const lastLoadMoreCheckRef = useRef(0);
     const wheelScrollingRef = useRef(false);
     const wheelScrollIdleTimerRef = useRef<number | null>(null);
     const wheelScrollStateRef = useRef({
@@ -2198,29 +1205,18 @@ export default function Clipboard() {
         }
     };
 
-    const runLoadMoreHistoryCheck = () => {
+    const maybeLoadMoreHistory = (force: boolean = false) => {
+        const now = performance.now();
+        if (!force && now - lastLoadMoreCheckRef.current < 120) {
+            return;
+        }
+        lastLoadMoreCheckRef.current = now;
         const container = cardsContainerRef.current;
         if (!container) return;
         const distanceToEnd = container.scrollWidth - container.scrollLeft - container.clientWidth;
         if (distanceToEnd < 360) {
             void loadMoreHistory();
         }
-    };
-
-    const maybeLoadMoreHistory = (force: boolean = false) => {
-        if (force) {
-            if (loadMoreCheckFrameRef.current !== null) {
-                window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
-                loadMoreCheckFrameRef.current = null;
-            }
-            runLoadMoreHistoryCheck();
-            return;
-        }
-        if (loadMoreCheckFrameRef.current !== null) return;
-        loadMoreCheckFrameRef.current = window.requestAnimationFrame(() => {
-            loadMoreCheckFrameRef.current = null;
-            runLoadMoreHistoryCheck();
-        });
     };
 
     const fetchHistory = async () => {
@@ -2303,7 +1299,6 @@ export default function Clipboard() {
 
         const unlistenShowComplete = listen('window-show-complete', () => {
             setAnimationState('entered');
-            setImageRefreshKey(key => key + 1);
         });
 
         const unlistenHide = listen('window-hide', () => {
@@ -2316,10 +1311,6 @@ export default function Clipboard() {
             if (imagePrewarmTimerRef.current !== null) {
                 window.clearTimeout(imagePrewarmTimerRef.current);
                 imagePrewarmTimerRef.current = null;
-            }
-            if (loadMoreCheckFrameRef.current !== null) {
-                window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
-                loadMoreCheckFrameRef.current = null;
             }
             hideAltHints();
             setAnimationState('exiting');
@@ -2434,10 +1425,6 @@ export default function Clipboard() {
             if (wheelScrollStateRef.current.frame !== null) {
                 window.cancelAnimationFrame(wheelScrollStateRef.current.frame);
                 wheelScrollStateRef.current.frame = null;
-            }
-            if (loadMoreCheckFrameRef.current !== null) {
-                window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
-                loadMoreCheckFrameRef.current = null;
             }
             if (wheelScrollIdleTimerRef.current !== null) {
                 window.clearTimeout(wheelScrollIdleTimerRef.current);
@@ -3287,7 +2274,7 @@ export default function Clipboard() {
                 nextContainer.scrollLeft = state.target;
                 state.frame = null;
                 state.lastFrameTime = null;
-                maybeLoadMoreHistory(true);
+                maybeLoadMoreHistory();
                 scheduleWheelScrollIdle();
                 return;
             }
@@ -3338,7 +2325,7 @@ export default function Clipboard() {
             state.lastFrameTime = null;
             state.target = Math.max(0, Math.min(maxScroll, container.scrollLeft + scrollAmount));
             container.scrollLeft = state.target;
-            maybeLoadMoreHistory(true);
+            maybeLoadMoreHistory();
             scheduleWheelScrollIdle();
             return;
         }
@@ -3806,7 +2793,6 @@ export default function Clipboard() {
                                 selected={selected === item.getHash()}
                                 simulatedHover={simulatedHoverHash === item.getHash()}
                                 refreshKey={fileRefreshKey}
-                                imageRefreshKey={imageRefreshKey}
                                 searchQuery={searchWord as string}
                                 shortcutHint={altHintsVisible && index < 9 ? String(index + 1) : undefined}
                                 mediaPlaybackReady={animationState === 'entered'}

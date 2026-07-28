@@ -6,7 +6,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { desktopDir, downloadDir } from "@tauri-apps/api/path";
 import { error } from "@tauri-apps/plugin-log";
-import { listen } from "@tauri-apps/api/event";
 import { Item, ItemTag, ItemType } from "./Item.ts";
 import { useLanguage } from "../lang";
 import { formatShortcutLabel, isMacPlatform } from "../shortcutDisplay";
@@ -73,6 +72,10 @@ import {
 } from "./ClipboardHeader";
 import { clipboardKeyDownAction } from "./clipboardKeyboard";
 import { buildClipboardContextMenuOptions } from "./clipboardContextMenu";
+import {
+    useClipboardLifecycleSubscriptions,
+    type ItemTagsChangedPayload,
+} from "./useClipboardLifecycleSubscriptions";
 import { useClipboardListInteractions } from "./useClipboardListInteractions";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
@@ -124,17 +127,8 @@ type LinkPreviewUpdate = {
     image_kind?: string;
 };
 
-type PreviewNavigationPayload = {
-    direction?: number;
-    key?: string;
-};
-
 type TabEditorMode = "add" | "edit";
 type TagEditorKind = "filter" | "record";
-type ItemTagsChangedPayload = {
-    activeId?: string;
-    tag?: ItemTag;
-};
 const TAB_EDITOR_WIDTH = 286;
 const FILTER_TAG_EDITOR_HEIGHT = 398;
 const RECORD_TAG_EDITOR_HEIGHT = 178;
@@ -1075,141 +1069,125 @@ export default function Clipboard() {
         await fetchHistoryWith(nextSearchWord, nextActiveTab, { selectFirst: !config.retain_last_position });
     };
 
-    useEffect(() => {
-        const unlistenShow = listen<{ x: number, y: number } | null>('window-show', event => {
-            resetCardsPointerState();
-            selectFirstLoadedItem(true);
-            void applyShowPreferences();
-            if (event.payload) {
-                window.requestAnimationFrame(() => {
-                    const card = document.elementFromPoint(event.payload!.x, event.payload!.y)?.closest<HTMLElement>(`.${styles["clipboard-card"]}`);
-                    setSimulatedHoverHash(card?.dataset.hash || "");
-                });
-            } else {
-                setSimulatedHoverHash("");
-            }
-            syncAltHintsFromNative();
-            window.setTimeout(syncAltHintsFromNative, 70);
-            window.setTimeout(syncAltHintsFromNative, 160);
-            scheduleFileRefresh(CLIPBOARD_SHOW_REFRESH_DELAY_MS);
-            setAnimationState('entering');
-        });
-
-        const unlistenShowComplete = listen('window-show-complete', () => {
-            setAnimationState('entered');
-        });
-
-        const unlistenHide = listen('window-hide', () => {
-            resetCardsPointerState();
-            searchRequestSeqRef.current += 1;
-            if (scrollRefreshTimerRef.current !== null) {
-                window.clearTimeout(scrollRefreshTimerRef.current);
-                scrollRefreshTimerRef.current = null;
-            }
-            if (imagePrewarmTimerRef.current !== null) {
-                window.clearTimeout(imagePrewarmTimerRef.current);
-                imagePrewarmTimerRef.current = null;
-            }
-            hideAltHints();
-            setAnimationState('exiting');
-        });
-
-        const unlistenHidden = listen('window-hidden', () => {
-            setAnimationState('hidden');
-        });
-
-        const unlistenClipboard = listen<string>('listen_new_clipboard', (_) => {
-            void fetchHistory();
-        });
-
-        const unlistenTutorialStarted = listen('tutorial-started', () => {
-            void startTutorial();
-        });
-
-        const unlistenTutorialCompleted = listen('tutorial-completed', () => {
-            setTutorialActive(false);
-        });
-
-        const unlistenPermissionStatusChanged = listen('onboarding-permission-status-changed', () => {
-            void refreshTutorialPermissionStatus();
-        });
-
-        const unlistenCustomTabs = listen<{ activeId?: string, tabs?: CustomTab[] } | string>('custom-tabs-changed', event => {
-            const payload = typeof event.payload === "string"
-                ? JSON.parse(event.payload || "{}") as { activeId?: string, tabs?: CustomTab[] }
-                : event.payload;
-            const tabs = Array.isArray(payload?.tabs) ? payload.tabs : loadCustomTabs();
-            persistCustomTabs(tabs);
-            setCustomTabs(tabs);
-            if (payload?.activeId) {
-                appendTabOrderId(payload.activeId);
-                activeTabRef.current = payload.activeId;
-                setActiveTab(payload.activeId);
-            }
-            void fetchHistoryWith(searchWordRef.current, activeTabRef.current);
-        });
-
-        const unlistenItemTags = listen<ItemTagsChangedPayload | string>('item-tags-changed', event => {
-            const payload = typeof event.payload === "string"
-                ? JSON.parse(event.payload || "{}") as ItemTagsChangedPayload
-                : event.payload;
-            localStorage.removeItem(PENDING_ITEM_TAGS_CHANGED_KEY);
-            applyItemTagsChanged(payload);
-        });
-
-        const unlistenPreviewNavigation = listen<PreviewNavigationPayload>('preview-navigate-selection', event => {
-            if (event.payload?.key === "Tab" && !tabQuickSelectEnabledRef.current) return;
-            const direction = event.payload?.direction === -1 ? -1 : 1;
-            navigateSelectedCard(direction);
-        });
-
-        const handleWindowBlur = () => {
-            setContextMenu(null);
-            setTabContextMenu(null);
-            window.setTimeout(() => {
-                void invoke('hide_clipboard_if_inactive').catch(e => error(`Failed to hide inactive clipboard window: ${e}`));
-            }, 60);
-        };
-        const closeContextMenu = () => {
-            setContextMenu(null);
-            setTabContextMenu(null);
-            setTagCreateChoice(null);
-        };
-        const handleWindowFocus = () => {
-            consumePendingItemTagsChanged();
+    useClipboardLifecycleSubscriptions({
+        tauri: {
+            onWindowShow: payload => {
+                resetCardsPointerState();
+                selectFirstLoadedItem(true);
+                void applyShowPreferences();
+                if (payload) {
+                    window.requestAnimationFrame(() => {
+                        const card = document
+                            .elementFromPoint(payload.x, payload.y)
+                            ?.closest<HTMLElement>(`.${styles["clipboard-card"]}`);
+                        setSimulatedHoverHash(card?.dataset.hash || "");
+                    });
+                } else {
+                    setSimulatedHoverHash("");
+                }
+                syncAltHintsFromNative();
+                window.setTimeout(syncAltHintsFromNative, 70);
+                window.setTimeout(syncAltHintsFromNative, 160);
+                scheduleFileRefresh(CLIPBOARD_SHOW_REFRESH_DELAY_MS);
+                setAnimationState("entering");
+            },
+            onWindowShowComplete: () => {
+                setAnimationState("entered");
+            },
+            onWindowHide: () => {
+                resetCardsPointerState();
+                searchRequestSeqRef.current += 1;
+                if (scrollRefreshTimerRef.current !== null) {
+                    window.clearTimeout(scrollRefreshTimerRef.current);
+                    scrollRefreshTimerRef.current = null;
+                }
+                if (imagePrewarmTimerRef.current !== null) {
+                    window.clearTimeout(imagePrewarmTimerRef.current);
+                    imagePrewarmTimerRef.current = null;
+                }
+                hideAltHints();
+                setAnimationState("exiting");
+            },
+            onWindowHidden: () => {
+                setAnimationState("hidden");
+            },
+            onClipboardChanged: () => {
+                void fetchHistory();
+            },
+            onTutorialStarted: () => {
+                void startTutorial();
+            },
+            onTutorialCompleted: () => {
+                setTutorialActive(false);
+            },
+            onPermissionStatusChanged: () => {
+                void refreshTutorialPermissionStatus();
+            },
+            onCustomTabsChanged: payload => {
+                const tabs = Array.isArray(payload.tabs) ? payload.tabs : loadCustomTabs();
+                persistCustomTabs(tabs);
+                setCustomTabs(tabs);
+                if (payload.activeId) {
+                    appendTabOrderId(payload.activeId);
+                    activeTabRef.current = payload.activeId;
+                    setActiveTab(payload.activeId);
+                }
+                void fetchHistoryWith(searchWordRef.current, activeTabRef.current);
+            },
+            onItemTagsChanged: payload => {
+                localStorage.removeItem(PENDING_ITEM_TAGS_CHANGED_KEY);
+                applyItemTagsChanged(payload);
+            },
+            onPreviewNavigation: payload => {
+                if (payload.key === "Tab" && !tabQuickSelectEnabledRef.current) return;
+                navigateSelectedCard(payload.direction === -1 ? -1 : 1);
+            },
+        },
+        browser: {
+            onMouseMove: () => setSimulatedHoverHash(""),
+            onFocus: () => {
+                consumePendingItemTagsChanged();
+                if (isMacPlatform()) {
+                    void refreshTutorialPermissionStatus();
+                }
+            },
+            onVisibilityChange: () => {
+                if (document.visibilityState === "visible" && isMacPlatform()) {
+                    void refreshTutorialPermissionStatus();
+                }
+            },
+            onStorage: event => {
+                if (event.key === PENDING_ITEM_TAGS_CHANGED_KEY && event.newValue) {
+                    consumePendingItemTagsChanged();
+                }
+            },
+            onBlur: () => {
+                setContextMenu(null);
+                setTabContextMenu(null);
+                window.setTimeout(() => {
+                    void invoke("hide_clipboard_if_inactive")
+                        .catch(e => error(`Failed to hide inactive clipboard window: ${e}`));
+                }, 60);
+            },
+            onDismissMenus: () => {
+                setContextMenu(null);
+                setTabContextMenu(null);
+                setTagCreateChoice(null);
+            },
+        },
+        onMount: () => {
             if (isMacPlatform()) {
                 void refreshTutorialPermissionStatus();
             }
-        };
-        const handleVisibilityChange = () => {
-            if (document.visibilityState === 'visible' && isMacPlatform()) {
-                void refreshTutorialPermissionStatus();
-            }
-        };
-        const handleStorage = (event: StorageEvent) => {
-            if (event.key === PENDING_ITEM_TAGS_CHANGED_KEY && event.newValue) {
-                consumePendingItemTagsChanged();
-            }
-        };
-        const clearSimulatedHover = () => setSimulatedHoverHash("");
-        window.addEventListener('mousemove', clearSimulatedHover, { capture: true });
-        window.addEventListener('focus', handleWindowFocus);
-        document.addEventListener('visibilitychange', handleVisibilityChange);
-        window.addEventListener('storage', handleStorage);
-        window.addEventListener('blur', handleWindowBlur);
-        window.addEventListener('click', closeContextMenu);
-        window.addEventListener('resize', closeContextMenu);
-        if (isMacPlatform()) {
-            void refreshTutorialPermissionStatus();
-        }
-        void loadBehaviorConfig()
-            .then(config => {
-                if (config.onboarding_completed === false && !tutorialActiveRef.current) {
-                    void startTutorial();
-                }
-            })
-            .catch(e => error(`Failed to check tutorial state: ${e}`));
-        return () => {
+            void loadBehaviorConfig()
+                .then(config => {
+                    if (config.onboarding_completed === false && !tutorialActiveRef.current) {
+                        void startTutorial();
+                    }
+                })
+                .catch(e => error(`Failed to check tutorial state: ${e}`));
+        },
+        onBeforeCleanup: () => {
             if (toastTimerRef.current !== null) {
                 window.clearTimeout(toastTimerRef.current);
             }
@@ -1223,26 +1201,11 @@ export default function Clipboard() {
                 window.clearTimeout(searchDebounceTimerRef.current);
             }
             clearAltHintTimer();
-            unlistenShow.then(f => f()).catch(e => error(`Failed to unlisten show: ${e}`));
-            unlistenShowComplete.then(f => f()).catch(e => error(`Failed to unlisten show completion: ${e}`));
-            unlistenHide.then(f => f()).catch(e => error(`Failed to unlisten hide: ${e}`));
-            unlistenHidden.then(f => f()).catch(e => error(`Failed to unlisten hidden: ${e}`));
-            unlistenClipboard.then(f => f()).catch(e => error(`Failed to unlisten clipboard: ${e}`));
-            unlistenCustomTabs.then(f => f()).catch(e => error(`Failed to unlisten custom tabs: ${e}`));
-            unlistenItemTags.then(f => f()).catch(e => error(`Failed to unlisten item tags: ${e}`));
-            unlistenPreviewNavigation.then(f => f()).catch(e => error(`Failed to unlisten preview navigation: ${e}`));
-            unlistenTutorialStarted.then(f => f()).catch(e => error(`Failed to unlisten tutorial start: ${e}`));
-            unlistenTutorialCompleted.then(f => f()).catch(e => error(`Failed to unlisten tutorial complete: ${e}`));
-            unlistenPermissionStatusChanged.then(f => f()).catch(e => error(`Failed to unlisten onboarding permission status: ${e}`));
-            window.removeEventListener('mousemove', clearSimulatedHover, { capture: true });
-            window.removeEventListener('focus', handleWindowFocus);
-            document.removeEventListener('visibilitychange', handleVisibilityChange);
-            window.removeEventListener('storage', handleStorage);
-            window.removeEventListener('blur', handleWindowBlur);
-            window.removeEventListener('click', closeContextMenu);
-            window.removeEventListener('resize', closeContextMenu);
-        };
-    }, []);
+        },
+        onUnlistenError: (label, unlistenError) => {
+            error(`Failed to unlisten ${label}: ${unlistenError}`);
+        },
+    });
 
     useEffect(() => {
         if (searchDebounceTimerRef.current !== null) {

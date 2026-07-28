@@ -73,30 +73,28 @@ import {
     ClipboardTabBar,
     ClipboardUpdateBanner,
 } from "./ClipboardHeader";
+import {
+    WHEEL_MOUSE_TIME_CONSTANT_MS,
+    WHEEL_SCROLL_IDLE_MS,
+    WHEEL_SCROLL_MAX_FRAME_MS,
+    clampDragVelocity,
+    isTextInputTarget,
+    matchesKeyboardShortcut,
+    nextWheelScrollTarget,
+    normalizeWheelDelta,
+    pointerDragIntent,
+    pointerDragVelocity,
+    quickInputAction,
+    wheelAnimationFrame,
+    wheelTimeConstant,
+} from "./clipboardInteractions";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const DEFAULT_PASTE_AS_TEXT_SHORTCUT = "Shift+Enter";
 const HISTORY_PAGE_LIMIT = 36;
-const WHEEL_LINE_DELTA_PX = 40;
-const WHEEL_MOUSE_TIME_CONSTANT_MS = 60;
-const WHEEL_PRECISION_TIME_CONSTANT_MS = 24;
-const WHEEL_SCROLL_IDLE_MS = 100;
-const WHEEL_SCROLL_STOP_EPSILON_PX = 0.35;
-const WHEEL_SCROLL_MAX_FRAME_MS = 34;
 const IMAGE_EXPORT_DIR_KEY = "vpaste.imageExportDir.v1";
 const PENDING_ITEM_TAGS_CHANGED_KEY = "vpaste.pendingItemTagsChangedPayload";
 const PENDING_PERMISSION_WINDOW_KEY = "vpaste.pendingOnboardingPermission.v1";
-function normalizeWheelDelta(event: WheelEvent, pageSize: number): { delta: number; rawDelta: number } {
-    const rawDelta = Math.abs(event.deltaY) > Math.abs(event.deltaX)
-        ? event.deltaY
-        : event.deltaX;
-    const multiplier = event.deltaMode === WheelEvent.DOM_DELTA_LINE
-        ? WHEEL_LINE_DELTA_PX
-        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
-            ? Math.max(1, pageSize)
-            : 1;
-    return { delta: rawDelta * multiplier, rawDelta };
-}
 
 type ToastKind = 'info' | 'warning' | 'error';
 
@@ -139,59 +137,6 @@ type LinkPreviewUpdate = {
     image_path: string;
     image_kind?: string;
 };
-
-function normalizeShortcutKey(key: string): string {
-    const normalized = key.toLowerCase();
-    if (normalized === "control") return "ctrl";
-    if (normalized === "cmd" || normalized === "command" || normalized === "meta") return "meta";
-    if (normalized === "return") return "enter";
-    if (normalized === "escape") return "esc";
-    return normalized;
-}
-
-function matchesKeyboardShortcut(event: KeyboardEvent, shortcut?: string | null): boolean {
-    const parts = (shortcut || "").split("+").map(part => normalizeShortcutKey(part.trim())).filter(Boolean);
-    if (parts.length === 0) return false;
-
-    const key = normalizeShortcutKey(event.key);
-    const expectedKey = parts[parts.length - 1];
-    const modifiers = new Set(parts.slice(0, -1));
-    return key === expectedKey
-        && event.ctrlKey === modifiers.has("ctrl")
-        && event.metaKey === modifiers.has("meta")
-        && event.altKey === modifiers.has("alt")
-        && event.shiftKey === modifiers.has("shift");
-}
-
-function isTextInputTarget(target: EventTarget | null): boolean {
-    return target instanceof HTMLInputElement
-        || target instanceof HTMLTextAreaElement
-        || target instanceof HTMLSelectElement
-        || (target instanceof HTMLElement && target.isContentEditable);
-}
-
-type QuickInputAction =
-    | { kind: "tab"; tabId: "all" | "favorite" }
-    | { kind: "item"; index: number };
-
-function quickInputAction(event: KeyboardEvent): QuickInputAction | null {
-    if (isMacPlatform()) {
-        if (event.code === "KeyA") return { kind: "tab", tabId: "all" };
-        if (event.code === "KeyF") return { kind: "tab", tabId: "favorite" };
-
-        const digitCode = /^Digit([1-9])$/.exec(event.code);
-        if (digitCode) return { kind: "item", index: Number(digitCode[1]) - 1 };
-
-        return null;
-    }
-
-    const key = event.key.toLowerCase();
-    if (key === "a") return { kind: "tab", tabId: "all" };
-    if (key === "f") return { kind: "tab", tabId: "favorite" };
-    if (/^[1-9]$/.test(key)) return { kind: "item", index: Number(key) - 1 };
-
-    return null;
-}
 
 type PreviewNavigationPayload = {
     direction?: number;
@@ -1416,7 +1361,7 @@ export default function Clipboard() {
                 && !event.metaKey
                 && (!targetIsTextInput || allowQuickInputInSearch)
             ) {
-                const action = quickInputAction(event);
+                const action = quickInputAction(event, isMacPlatform());
                 if (action?.kind === "tab") {
                     event.preventDefault();
                     switchToTabWithShortcut(action.tabId);
@@ -2035,7 +1980,7 @@ export default function Clipboard() {
     const startDragInertia = (initialVelocity: number) => {
         const container = cardsContainerRef.current;
         if (!container) return;
-        let velocity = Math.max(-42, Math.min(42, initialVelocity));
+        let velocity = clampDragVelocity(initialVelocity);
         const startedAt = performance.now();
 
         const step = (now: number) => {
@@ -2102,12 +2047,13 @@ export default function Clipboard() {
         if (!state?.active || !container) return;
 
         const deltaX = event.clientX - state.lastX;
-        const totalX = event.clientX - state.startX;
-        const totalY = event.clientY - state.startY;
-        if (!state.moved && Math.hypot(totalX, totalY) < 5) return;
-        if (!state.moved && Math.abs(totalX) < Math.abs(totalY)) {
-            state.cancelActivation = true;
-            return;
+        if (!state.moved) {
+            const intent = pointerDragIntent(state.startX, state.startY, event.clientX, event.clientY);
+            if (intent === "pending") return;
+            if (intent === "vertical") {
+                state.cancelActivation = true;
+                return;
+            }
         }
 
         event.preventDefault();
@@ -2116,9 +2062,8 @@ export default function Clipboard() {
         container.classList.add(styles.dragging);
 
         const now = performance.now();
-        const elapsed = Math.max(8, now - state.lastTime);
         state.pendingDelta -= deltaX;
-        state.velocity = (-deltaX / elapsed) * 16;
+        state.velocity = pointerDragVelocity(deltaX, now - state.lastTime);
         state.lastX = event.clientX;
         state.lastTime = now;
 
@@ -2187,10 +2132,15 @@ export default function Clipboard() {
                 ? 1000 / 60
                 : Math.min(WHEEL_SCROLL_MAX_FRAME_MS, Math.max(0, timestamp - state.lastFrameTime));
             state.lastFrameTime = timestamp;
-            const remaining = state.target - nextContainer.scrollLeft;
+            const frame = wheelAnimationFrame(
+                nextContainer.scrollLeft,
+                state.target,
+                elapsed,
+                state.timeConstant,
+            );
+            nextContainer.scrollLeft = frame.scrollLeft;
 
-            if (Math.abs(remaining) <= WHEEL_SCROLL_STOP_EPSILON_PX) {
-                nextContainer.scrollLeft = state.target;
+            if (frame.complete) {
                 state.frame = null;
                 state.lastFrameTime = null;
                 maybeLoadMoreHistory();
@@ -2198,8 +2148,6 @@ export default function Clipboard() {
                 return;
             }
 
-            const progress = 1 - Math.exp(-elapsed / state.timeConstant);
-            nextContainer.scrollLeft += remaining * progress;
             maybeLoadMoreHistory();
             state.frame = window.requestAnimationFrame(step);
         };
@@ -2253,20 +2201,13 @@ export default function Clipboard() {
             state.target = container.scrollLeft;
             state.lastFrameTime = null;
         }
-        const remaining = state.target - container.scrollLeft;
-        if (remaining !== 0 && Math.sign(remaining) !== Math.sign(scrollAmount)) {
-            state.target = container.scrollLeft;
-        }
-        state.target = Math.max(0, Math.min(maxScroll, state.target + scrollAmount));
-
-        const precisionInput = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL && (
-            Math.abs(rawDelta) < 50
-            || !Number.isInteger(rawDelta)
-            || (eventInterval > 0 && eventInterval < 24 && Math.abs(rawDelta) < 100)
+        state.target = nextWheelScrollTarget(
+            state.target,
+            container.scrollLeft,
+            scrollAmount,
+            maxScroll,
         );
-        state.timeConstant = precisionInput
-            ? WHEEL_PRECISION_TIME_CONSTANT_MS
-            : WHEEL_MOUSE_TIME_CONSTANT_MS;
+        state.timeConstant = wheelTimeConstant(rawDelta, event.deltaMode, eventInterval);
         startWheelScrollAnimation();
     };
 

@@ -274,6 +274,7 @@ export default function TabEditor() {
             anchorLeft: rect.left,
             anchorTop: rect.top,
             anchorRight: rect.right,
+            anchorBottom: rect.bottom,
             payload: JSON.stringify(payload),
         })
             .catch(e => {

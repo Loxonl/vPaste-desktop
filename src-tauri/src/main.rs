@@ -1512,9 +1512,12 @@ fn get_or_create_preview_window(app: &tauri::AppHandle) -> Result<tauri::Webview
         .skip_taskbar(true)
         .always_on_top(true)
         .resizable(true)
+        .shadow(false)
         .inner_size(PREVIEW_WINDOW_WIDTH, PREVIEW_WINDOW_HEIGHT)
         .build()
         .inspect(|window| {
+            let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+            let _ = window.set_shadow(false);
             apply_vpaste_window_icon(window);
             #[cfg(target_os = "windows")]
             if let Err(err) = apply_windows_rounded_window_region(window, ROUNDED_WINDOW_RADIUS) {
@@ -2273,7 +2276,10 @@ fn resize_tray_menu(window: tauri::WebviewWindow, width: u32, height: u32) -> Re
             width: width as f64,
             height: height as f64,
         }))
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+    #[cfg(target_os = "windows")]
+    apply_windows_rounded_window_region(&window, ROUNDED_WINDOW_RADIUS)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2303,12 +2309,36 @@ fn open_tab_editor_window(
         .map_err(|err| err.to_string())
 }
 
+fn popup_position_above_or_below(
+    anchor: (f64, f64, f64, f64),
+    popup_size: (f64, f64),
+    gap: f64,
+    bounds: (f64, f64, f64, f64),
+) -> (f64, f64) {
+    let (anchor_left, anchor_top, anchor_right, anchor_bottom) = anchor;
+    let (popup_width, popup_height) = popup_size;
+    let (min_x, min_y, max_x, max_y) = bounds;
+    let anchor_center_x = (anchor_left + anchor_right) / 2_f64;
+    let x = (anchor_center_x - popup_width / 2_f64).clamp(min_x, max_x.max(min_x));
+    let above_y = anchor_top - popup_height - gap;
+    let below_y = anchor_bottom + gap;
+    let y = if above_y >= min_y {
+        above_y
+    } else if below_y <= max_y {
+        below_y
+    } else {
+        above_y.clamp(min_y, max_y.max(min_y))
+    };
+    (x, y)
+}
+
 #[tauri::command]
 fn open_emoji_picker_window(
     app: tauri::AppHandle,
     anchor_left: f64,
     anchor_top: f64,
     anchor_right: f64,
+    anchor_bottom: f64,
     payload: String,
 ) -> Result<(), String> {
     const PICKER_WIDTH: f64 = 262_f64;
@@ -2332,6 +2362,7 @@ fn open_emoji_picker_window(
     let button_left = editor_position.x as f64 + anchor_left * scale_factor;
     let button_top = editor_position.y as f64 + anchor_top * scale_factor;
     let button_right = editor_position.x as f64 + anchor_right * scale_factor;
+    let button_bottom = editor_position.y as f64 + anchor_bottom * scale_factor;
 
     let monitor = editor
         .current_monitor()
@@ -2344,16 +2375,12 @@ fn open_emoji_picker_window(
     let max_x = monitor_position.x as f64 + monitor_size.width as f64 - picker_width - margin;
     let max_y = monitor_position.y as f64 + monitor_size.height as f64 - picker_height - margin;
 
-    let left_x = button_left - picker_width - gap;
-    let right_x = button_right + gap;
-    let x = if left_x >= min_x {
-        left_x
-    } else if right_x <= max_x {
-        right_x
-    } else {
-        button_left.clamp(min_x, max_x.max(min_x))
-    };
-    let y = button_top.clamp(min_y, max_y.max(min_y));
+    let (x, y) = popup_position_above_or_below(
+        (button_left, button_top, button_right, button_bottom),
+        (picker_width, picker_height),
+        gap,
+        (min_x, min_y, max_x, max_y),
+    );
 
     let _ = window.set_size(tauri::Size::Logical(LogicalSize {
         width: PICKER_WIDTH,
@@ -2371,6 +2398,47 @@ fn open_emoji_picker_window(
     window
         .emit("emoji-picker-open", payload)
         .map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+mod popup_position_tests {
+    use super::popup_position_above_or_below;
+
+    #[test]
+    fn places_popup_above_the_anchor_when_space_is_available() {
+        let position = popup_position_above_or_below(
+            (200.0, 300.0, 240.0, 332.0),
+            (100.0, 80.0),
+            5.0,
+            (8.0, 8.0, 892.0, 712.0),
+        );
+
+        assert_eq!(position, (170.0, 215.0));
+    }
+
+    #[test]
+    fn falls_back_below_the_anchor_near_the_top_edge() {
+        let position = popup_position_above_or_below(
+            (200.0, 40.0, 240.0, 72.0),
+            (100.0, 80.0),
+            5.0,
+            (8.0, 8.0, 892.0, 712.0),
+        );
+
+        assert_eq!(position, (170.0, 77.0));
+    }
+
+    #[test]
+    fn keeps_popup_inside_the_horizontal_monitor_bounds() {
+        let position = popup_position_above_or_below(
+            (6.0, 300.0, 38.0, 332.0),
+            (100.0, 80.0),
+            5.0,
+            (8.0, 8.0, 892.0, 712.0),
+        );
+
+        assert_eq!(position, (8.0, 215.0));
+    }
 }
 
 #[tauri::command]
@@ -7426,7 +7494,7 @@ fn main() {
         .on_window_event(|window, event| {
             #[cfg(target_os = "windows")]
             if let tauri::WindowEvent::Resized(_) = event {
-                if matches!(window.label(), "config" | "clipboardPreview") {
+                if matches!(window.label(), "config" | "clipboardPreview" | "trayMenu") {
                     if let Some(webview_window) =
                         window.app_handle().get_webview_window(window.label())
                     {
@@ -7646,6 +7714,7 @@ fn main() {
                         .decorations(false)
                         .transparent(true)
                         .background_color(tauri::window::Color(0, 0, 0, 0))
+                        .shadow(false)
                         .inner_size(720_f64, 700_f64)
                         .min_inner_size(640_f64, 520_f64)
                         .always_on_top(false);
@@ -7657,6 +7726,7 @@ fn main() {
                 info!("Attempting to build config window");
                 let config_window = config_window.build().unwrap();
                 let _ = config_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                let _ = config_window.set_shadow(false);
                 apply_vpaste_window_icon(&config_window);
                 #[cfg(target_os = "windows")]
                 {
@@ -7765,17 +7835,25 @@ fn main() {
                         .focused(false)
                         .decorations(false)
                         .transparent(true)
+                        .background_color(tauri::window::Color(0, 0, 0, 0))
                         .skip_taskbar(true)
                         .always_on_top(true)
                         .resizable(false)
+                        .shadow(false)
                         .inner_size(TRAY_MENU_WIDTH as f64, TRAY_MENU_HEIGHT as f64);
                 let tray_menu_window = tray_menu_window.build().unwrap();
+                let _ =
+                    tray_menu_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                let _ = tray_menu_window.set_shadow(false);
                 apply_vpaste_window_icon(&tray_menu_window);
+                #[cfg(target_os = "windows")]
+                if let Err(err) =
+                    apply_windows_rounded_window_region(&tray_menu_window, ROUNDED_WINDOW_RADIUS)
+                {
+                    error!("Failed to round tray menu window: {}", err);
+                }
                 #[cfg(target_os = "macos")]
                 {
-                    let _ = tray_menu_window
-                        .set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                    let _ = tray_menu_window.set_shadow(false);
                     set_macos_window_level(&tray_menu_window, 101);
                     configure_macos_transparent_window(&tray_menu_window);
                 }
@@ -7791,8 +7869,12 @@ fn main() {
                         .skip_taskbar(true)
                         .always_on_top(true)
                         .resizable(false)
+                        .shadow(false)
                         .inner_size(262_f64, 148_f64);
                 let emoji_picker_window = emoji_picker_window.build().unwrap();
+                let _ = emoji_picker_window
+                    .set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                let _ = emoji_picker_window.set_shadow(false);
                 apply_vpaste_window_icon(&emoji_picker_window);
                 #[cfg(target_os = "macos")]
                 {
@@ -7810,8 +7892,12 @@ fn main() {
                         .skip_taskbar(true)
                         .always_on_top(true)
                         .resizable(false)
+                        .shadow(false)
                         .inner_size(286_f64, 400_f64);
                 let tab_editor_window = tab_editor_window.build().unwrap();
+                let _ =
+                    tab_editor_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                let _ = tab_editor_window.set_shadow(false);
                 apply_vpaste_window_icon(&tab_editor_window);
                 #[cfg(target_os = "macos")]
                 {

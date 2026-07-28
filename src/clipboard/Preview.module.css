@@ -18,12 +18,12 @@ body,
   display: flex;
   flex-direction: column;
   color: #20242a;
-  background: #f6f6f4;
+  background: transparent;
 }
 
 :root[data-theme="dark"] .preview-shell {
   color: var(--theme-text);
-  background: #12161b;
+  background: transparent;
 }
 
 :root[data-theme="dark"] .preview-pin {
@@ -115,7 +115,7 @@ body,
   flex: 1;
   min-height: 0;
   box-sizing: border-box;
-  padding: 20px;
+  padding: 8px;
   display: flex;
   align-items: center;
   justify-content: center;

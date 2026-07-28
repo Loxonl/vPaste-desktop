@@ -1,12 +1,8 @@
 import * as React from "react";
-import { Box, Button, LinearProgress, Stack, Switch, Typography } from "@mui/material";
-import AccessTimeOutlinedIcon from "@mui/icons-material/AccessTimeOutlined";
+import { Box, Button, Stack, Typography } from "@mui/material";
 import ArticleOutlinedIcon from "@mui/icons-material/ArticleOutlined";
-import FileDownloadIcon from "@mui/icons-material/FileDownloadOutlined";
 import GitHubIcon from "@mui/icons-material/GitHub";
 import LaunchOutlinedIcon from "@mui/icons-material/LaunchOutlined";
-import ScheduleOutlinedIcon from "@mui/icons-material/ScheduleOutlined";
-import UpdateRoundedIcon from "@mui/icons-material/UpdateRounded";
 import { error } from "@tauri-apps/plugin-log";
 import aboutLogo from "../../assets/vpaste-app-icon.png";
 import { useAppUpdateState, type UpdateState } from "../../update";
@@ -17,8 +13,8 @@ import styles from "../Config.module.css";
 const APP_REPOSITORY_URL = "https://github.com/Loxonl/vPaste-desktop";
 const APP_CHANGELOG_URL = `${APP_REPOSITORY_URL}/releases`;
 
-export default function AboutSettings({ bridge, config, dir: _dir, t, onSave }: SettingsSectionProps & { dir: string }) {
-    const { state: updateState, check, prepare, schedule } = useAppUpdateState(bridge);
+export default function AboutSettings({ bridge, t }: SettingsSectionProps & { dir: string }) {
+    const { state: updateState, check } = useAppUpdateState(bridge);
     const [checkedManually, setCheckedManually] = React.useState(false);
     const updateBusy = updateState.status === "checking"
         || updateState.status === "downloading"
@@ -31,39 +27,22 @@ export default function AboutSettings({ bridge, config, dir: _dir, t, onSave }: 
     const handleCheckUpdate = async () => {
         try {
             setCheckedManually(true);
-            await check();
+            const next = await check();
+            if (
+                (next.status === "available" || next.status === "manualDownload")
+                && window.confirm(t("settings.updateOpenReleasePrompt", {
+                    version: next.availableVersion || "",
+                }))
+            ) {
+                openExternal(next.releaseUrl);
+            }
         } catch (e) {
             error(`Failed to check update: ${e}`);
         }
     };
 
-    const handlePrepareUpdate = async () => {
-        try {
-            await prepare();
-        } catch (e) {
-            error(`Failed to prepare update: ${e}`);
-        }
-    };
-
-    const handleScheduleUpdate = async (timing: "immediate" | "onQuit" | "later") => {
-        try {
-            await schedule(timing);
-        } catch (e) {
-            error(`Failed to schedule update: ${e}`);
-        }
-    };
-
-    const handleAutomaticCheckChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-        void onSave({ ...config, update_check_enabled: event.target.checked })
-            .catch(e => error(`Failed to change automatic update setting: ${e}`));
-    };
-
     const displayVersion = updateState.currentVersion || t("settings.versionUnknown");
     const statusText = updateStatusText(updateState, checkedManually, t);
-    const progressValue = updateState.totalBytes && updateState.totalBytes > 0
-        ? Math.min(100, (updateState.downloadedBytes / updateState.totalBytes) * 100)
-        : undefined;
-    const updatePrepared = updateState.status === "ready" || updateState.status === "deferred";
 
     return (
         <Stack spacing={2.25} className={classes(styles, "settings-page-stack")}>
@@ -93,73 +72,11 @@ export default function AboutSettings({ bridge, config, dir: _dir, t, onSave }: 
                             {updateState.status === "checking" ? t("settings.updateChecking") : t("settings.updateCheck")}
                         </Button>
                     </div>
-                </div>
-            </Box>
-            <Box>
-                <Typography variant="subtitle2" className={classes(styles, "settings-section-title")}>
-                    {t("settings.about.updateSection")}
-                </Typography>
-                <div className={classes(styles, "about-update-panel")}>
-                    <div className={classes(styles, "about-update-panel__header")}>
-                        <div>
-                            <div className={classes(styles, "about-update-panel__title")}>{t("settings.updateTitle")}</div>
-                            <div className={classes(styles, "about-update-panel__desc")}>
-                                {updateState.portable
-                                    ? t("settings.updatePortableDesc")
-                                    : !updateState.feedEnabled
-                                        ? t("settings.updateDisabled")
-                                        : t("settings.updateAutoCheckDesc")}
-                            </div>
-                        </div>
-                        <Switch
-                            checked={!updateState.portable && updateState.feedEnabled && config.update_check_enabled}
-                            disabled={updateState.portable || !updateState.feedEnabled}
-                            onChange={handleAutomaticCheckChange}
-                            inputProps={{ 'aria-label': t("settings.updateAutoCheck") }}
-                        />
-                    </div>
                     {statusText && (
-                        <div className={classes(styles, `about-update-status ${updateState.status === 'failed' ? 'error' : updateState.status === 'ready' ? 'success' : 'working'}`)}>
+                        <div className={classes(styles, `about-update-status ${updateState.status === 'failed' ? 'error' : updateState.status === 'available' || updateState.status === 'manualDownload' ? 'success' : 'working'}`)}>
                             {statusText}
                         </div>
                     )}
-                    {updateState.status === "downloading" && (
-                        <LinearProgress
-                            className={classes(styles, "about-update-progress")}
-                            variant={progressValue === undefined ? "indeterminate" : "determinate"}
-                            value={progressValue}
-                        />
-                    )}
-                    <div className={classes(styles, "about-update-actions")}>
-                        {updateState.status === "available" && (
-                            <Button size="small" variant="contained" startIcon={<FileDownloadIcon />} onClick={() => void handlePrepareUpdate()}>
-                                {t("settings.updateDownload")}
-                            </Button>
-                        )}
-                        {updateState.status === "manualDownload" && (
-                            <Button size="small" variant="contained" startIcon={<LaunchOutlinedIcon />} onClick={() => openExternal(updateState.releaseUrl)}>
-                                {t("settings.updateOpenRelease")}
-                            </Button>
-                        )}
-                        {updatePrepared && (
-                            <>
-                                <Button size="small" variant="contained" startIcon={<UpdateRoundedIcon />} onClick={() => void handleScheduleUpdate("immediate")}>
-                                    {t("settings.updateInstallNow")}
-                                </Button>
-                                <Button size="small" variant="outlined" startIcon={<ScheduleOutlinedIcon />} onClick={() => void handleScheduleUpdate("onQuit")}>
-                                    {t("settings.updateOnQuit")}
-                                </Button>
-                                <Button size="small" variant="text" startIcon={<AccessTimeOutlinedIcon />} onClick={() => void handleScheduleUpdate("later")}>
-                                    {t("settings.updateLater")}
-                                </Button>
-                            </>
-                        )}
-                        {updateState.status === "failed" && updateState.feedEnabled && (
-                            <Button size="small" variant="outlined" startIcon={<UpdateRoundedIcon />} onClick={() => void handleCheckUpdate()}>
-                                {t("settings.updateRetry")}
-                            </Button>
-                        )}
-                    </div>
                 </div>
             </Box>
             <Box>

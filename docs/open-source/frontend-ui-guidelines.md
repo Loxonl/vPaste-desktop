@@ -10,6 +10,7 @@ vPaste uses React 18 and MUI 5 as its component system. Tailwind is intentionall
 - Put window or feature layout in a colocated `*.module.css` file.
 - Keep `src/theme.css` limited to token loading, root behavior, theme synchronization support, focus visibility, and reduced-motion protection.
 - Do not target `.Mui...` from page styles. If a MUI control needs a shared visual change, update the theme.
+- When DOM code looks up a CSS Module class with `closest`, `querySelector`, or a direct `className` assignment, use the imported module value rather than the unscoped source class name.
 
 Use `sx` only for a one-off layout relationship such as flex sizing, alignment, or a calculated width. Do not put colors, font sizes, radii, shadows, or control heights in `sx`.
 
@@ -49,6 +50,8 @@ The supported modes are `system`, `light`, and `dark`. Existing `data-theme` beh
 - spacing scale: 4 / 8 / 12 / 16 / 24 px
 
 All motion must respect `prefers-reduced-motion`. Icon-only buttons require an `aria-label`. Keyboard focus must remain visible.
+
+Transparent auxiliary Tauri windows must keep `html`, `body`, and `#root` transparent. Disable the native window shadow when the window surface draws its own rounded border or shadow; otherwise Windows can add a rectangular non-client border around the CSS surface. Keep platform tray roles separate: Windows uses the colored tray asset, macOS uses a monochrome template asset, and Linux selects its explicit light/dark variant.
 
 ## Development and Review
 

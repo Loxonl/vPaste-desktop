@@ -195,6 +195,7 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
         <>
             <div
                 className={`${layout.container} ${windowsControlsHoverReady ? layout.windowsControlsHoverReady : ""}`}
+                data-testid="settings-root"
                 onMouseMoveCapture={() => {
                     if (!windowsControlsHoverReady) {
                         setWindowsControlsHoverReady(true);

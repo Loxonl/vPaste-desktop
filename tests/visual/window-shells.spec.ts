@@ -16,9 +16,21 @@ test.describe("window shells", () => {
             await page.setViewportSize({ width: window.width, height: window.height });
             await page.goto(window.path);
             await expect(page.locator(window.ready).first()).toBeVisible();
+            await expect(page.locator("html")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+            await expect(page.locator("body")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+            await expect(page.locator("#root")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
             await expect(page).toHaveScreenshot(`${window.name}-shell.png`);
         });
     }
+
+    test("preview keeps its unused window area transparent", async ({ page }) => {
+        await page.setViewportSize({ width: 640, height: 480 });
+        await page.goto("/clipboard/preview");
+        await expect(page.locator("[class*='preview-shell']")).toHaveCSS(
+            "background-color",
+            "rgba(0, 0, 0, 0)",
+        );
+    });
 
     test("developer mode opens the UI lab in the external browser", async ({ page }) => {
         await page.addInitScript(() => {

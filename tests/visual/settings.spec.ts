@@ -16,6 +16,8 @@ test.describe("settings preview", () => {
             const tabs = page.getByRole("tab");
             await expect(tabs).toHaveCount(4);
             await expect(page.locator("html")).toHaveAttribute("data-theme", variant.theme);
+            await expect(page.getByTestId("settings-root")).toHaveCSS("border-radius", "12px");
+            await expect(page.getByTestId("settings-root")).toHaveCSS("overflow", "hidden");
 
             if (variant.tab !== 0) {
                 await tabs.nth(variant.tab).click();
@@ -25,7 +27,7 @@ test.describe("settings preview", () => {
         });
     }
 
-    test("select focus, long-menu scrolling, and switch geometry remain consistent", async ({ page }) => {
+    test("select focus, long-menu scrolling, and compact about layout remain consistent", async ({ page }) => {
         await page.setViewportSize({ width: 720, height: 700 });
         await page.goto("/__settings-preview?theme=light&lang=zh-CN");
 
@@ -64,12 +66,9 @@ test.describe("settings preview", () => {
         await page.keyboard.press("Escape");
 
         await tabs.nth(3).click();
-        const aboutSwitch = page.locator(".MuiSwitch-root").first();
-        const aboutThumb = aboutSwitch.locator(".MuiSwitch-thumb");
-        await expect(aboutSwitch).toHaveCSS("width", "40px");
-        await expect(aboutSwitch).toHaveCSS("height", "24px");
-        await expect(aboutThumb).toHaveCSS("width", "20px");
-        await expect(aboutThumb).toHaveCSS("height", "20px");
+        await expect(page.getByRole("button", { name: "检查更新" })).toBeVisible();
+        await expect(page.getByText("版本 1.6.0")).toBeVisible();
+        await expect(page.getByText("版本与更新")).toHaveCount(0);
         await expect(page).toHaveScreenshot("settings-about-switch.png");
     });
 });

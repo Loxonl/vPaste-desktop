@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
 import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
-import brandLogo from "../assets/vpaste-logo-master.svg";
+import appIcon from "../assets/vpaste-app-icon.png";
 import authorizeTips from "../assets/tutorial/authorize-tips.png";
 import backgroundAuthorizeTips from "../assets/tutorial/background-authorize-tips.png";
 import { useLanguage } from "../lang";
@@ -174,7 +174,7 @@ export default function OnboardingPermissionWindow() {
                     <CloseRoundedIcon />
                 </button>
                 <div className={styles["tutorial-guide-copy"]}>
-                    <span className={styles["tutorial-guide-logo"]}><img src={brandLogo} alt="vPaste" /></span>
+                    <span className={styles["tutorial-guide-logo"]}><img src={appIcon} alt="vPaste" /></span>
                     <div>
                         <h1 id="tutorial-guide-title">{t(`tutorial.permission.guide.${permission}.title`)}</h1>
                         <p id="tutorial-guide-description">{t(`tutorial.permission.guide.${permission}.desc`)}</p>

@@ -4,7 +4,7 @@
   display: grid;
   place-items: center;
   color: var(--ui-text-muted);
-  background: var(--ui-bg);
+  background: transparent;
   font-family: var(--ui-font-family);
   font-size: 13px;
 }

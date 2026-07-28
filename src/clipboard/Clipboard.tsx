@@ -1200,12 +1200,15 @@ async function fetchSearchPage(
     return { items, consumed, hasMore };
 }
 
-function ImagePreview({ item, active, t, onGifFormatChange }: { item: Item, active: boolean, t: TFunction, onGifFormatChange: (isGif: boolean) => void }) {
+export function ImagePreview({ item, active, refreshKey, t, onGifFormatChange }: { item: Item, active: boolean, refreshKey: number, t: TFunction, onGifFormatChange: (isGif: boolean) => void }) {
     const [naturalSize, setNaturalSize] = useState<{ width: number, height: number } | null>(null);
     const [stageSize, setStageSize] = useState<{ width: number, height: number }>({ width: 0, height: 0 });
     const [imageSrc, setImageSrc] = useState("");
     const [isVisible, setIsVisible] = useState(false);
     const stageRef = useRef<HTMLDivElement>(null);
+    const fallbackAttemptedRef = useRef(false);
+    const sourcePath = item.getContent();
+    const previewPath = item.getPreviewContent() || sourcePath;
     const width = naturalSize?.width || 0;
     const height = naturalSize?.height || 0;
     const stageWidth = stageSize.width;
@@ -1252,26 +1255,27 @@ function ImagePreview({ item, active, t, onGifFormatChange }: { item: Item, acti
 
     useEffect(() => {
         setImageSrc("");
-        const sourcePath = item.getContent();
         const cachedMetadata = historyImageMetadataCache.get(sourcePath);
         setNaturalSize(cachedMetadata ? { width: cachedMetadata.width, height: cachedMetadata.height } : null);
         onGifFormatChange(itemHasGifFormat(item));
-    }, [item, onGifFormatChange]);
+    }, [item, sourcePath, onGifFormatChange]);
+
+    useEffect(() => {
+        fallbackAttemptedRef.current = false;
+    }, [item.getHash(), refreshKey]);
 
     useEffect(() => {
         if (!isVisible) return;
 
         let cancelled = false;
         let timeout = 0;
-        const sourcePath = item.getContent();
-        const previewPath = item.getPreviewContent() || sourcePath;
         if (!sourcePath) return;
 
         const load = (gif: boolean) => {
             const loader = gif && active ? loadHistoryOriginalSrc : loadHistoryPreviewSrc;
             loader(gif && active ? sourcePath : previewPath)
                 .then(src => {
-                    if (!cancelled) setImageSrc(src);
+                    if (!cancelled && !fallbackAttemptedRef.current) setImageSrc(src);
                 });
         };
 
@@ -1297,21 +1301,34 @@ function ImagePreview({ item, active, t, onGifFormatChange }: { item: Item, acti
             cancelled = true;
             window.clearTimeout(timeout);
         };
-    }, [item.getHash(), item.getContent(), item.getPreviewContent(), isVisible, active, onGifFormatChange]);
+    }, [item.getHash(), sourcePath, previewPath, isVisible, active, refreshKey, onGifFormatChange]);
+
+    const recoverImageSource = () => {
+        if (!sourcePath || fallbackAttemptedRef.current) return;
+        fallbackAttemptedRef.current = true;
+        historyPreviewSrcCache.delete(previewPath);
+        historyOriginalSrcCache.delete(sourcePath);
+        historyDataUrlCache.delete(sourcePath);
+        void invoke<string>("history_file_data_url", { path: sourcePath })
+            .then(setImageSrc)
+            .catch(e => error(`Failed to recover history image preview: ${e}`));
+    };
 
     return (
         <div className={classes(styles, "image-preview")}>
             <div className={classes(styles, "image-preview-stage")} ref={stageRef}>
-                <img
-                    key={imageSrc}
-                    src={imageSrc}
-                    alt=""
-                    draggable={false}
-                    loading="lazy"
-                    decoding="async"
-                    className={classes(styles, "image-preview-img")}
-                    style={imageStyle}
-                />
+                {imageSrc && (
+                    <img
+                        key={`${isVisible ? refreshKey : 0}:${imageSrc}`}
+                        src={imageSrc}
+                        alt=""
+                        draggable={false}
+                        decoding="async"
+                        className={classes(styles, "image-preview-img")}
+                        style={imageStyle}
+                        onError={recoverImageSource}
+                    />
+                )}
                 {naturalSize && (
                     <div className={classes(styles, "image-resolution")}>
                         {`${naturalSize.width} x ${naturalSize.height}`}
@@ -1551,11 +1568,12 @@ function RichTextPreview({ item, active, searchQuery }: { item: Item; active: bo
 }
 
 // Card Component
-function ClipboardCardComponent({ item, selected, simulatedHover, refreshKey, searchQuery, shortcutHint, mediaPlaybackReady, t, onContextMenu }: {
+function ClipboardCardComponent({ item, selected, simulatedHover, refreshKey, imageRefreshKey, searchQuery, shortcutHint, mediaPlaybackReady, t, onContextMenu }: {
     item: Item,
     selected: boolean,
     simulatedHover: boolean,
     refreshKey: number,
+    imageRefreshKey: number,
     searchQuery: string,
     shortcutHint?: string,
     mediaPlaybackReady: boolean,
@@ -1697,7 +1715,7 @@ function ClipboardCardComponent({ item, selected, simulatedHover, refreshKey, se
             </div>
             <div className={classes(styles, "card-content")}>
                 {item.getType() === ItemType.Image ? (
-                    <ImagePreview item={item} active={previewActive && mediaPlaybackReady} t={t} onGifFormatChange={updateGifFormat} />
+                    <ImagePreview item={item} active={previewActive && mediaPlaybackReady} refreshKey={imageRefreshKey} t={t} onGifFormatChange={updateGifFormat} />
                 ) : item.getType() === ItemType.Color ? (
                     <div className={classes(styles, "card-preview-color")} style={{ background: item.getContent() }}>
                         <span className={classes(styles, "color-value")}>
@@ -1729,6 +1747,7 @@ const ClipboardCard = React.memo(ClipboardCardComponent, (prev, next) => (
     && prev.selected === next.selected
     && prev.simulatedHover === next.simulatedHover
     && prev.refreshKey === next.refreshKey
+    && prev.imageRefreshKey === next.imageRefreshKey
     && prev.searchQuery === next.searchQuery
     && prev.shortcutHint === next.shortcutHint
     && prev.mediaPlaybackReady === next.mediaPlaybackReady
@@ -1747,6 +1766,7 @@ export default function Clipboard() {
     const [draggingTabId, setDraggingTabId] = useState<string>("");
     const [toast, setToast] = useState<ToastState>(null);
     const [fileRefreshKey, setFileRefreshKey] = useState(0);
+    const [imageRefreshKey, setImageRefreshKey] = useState(0);
     const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
     const [contextMenuIndex, setContextMenuIndex] = useState(0);
     const [tabContextMenu, setTabContextMenu] = useState<TabContextMenuState>(null);
@@ -1790,7 +1810,7 @@ export default function Clipboard() {
     const altHintTimerRef = useRef<number | null>(null);
     const scrollRefreshTimerRef = useRef<number | null>(null);
     const imagePrewarmTimerRef = useRef<number | null>(null);
-    const lastLoadMoreCheckRef = useRef(0);
+    const loadMoreCheckFrameRef = useRef<number | null>(null);
     const wheelScrollingRef = useRef(false);
     const wheelScrollIdleTimerRef = useRef<number | null>(null);
     const wheelScrollStateRef = useRef({
@@ -2620,18 +2640,29 @@ export default function Clipboard() {
         }
     };
 
-    const maybeLoadMoreHistory = (force: boolean = false) => {
-        const now = performance.now();
-        if (!force && now - lastLoadMoreCheckRef.current < 120) {
-            return;
-        }
-        lastLoadMoreCheckRef.current = now;
+    const runLoadMoreHistoryCheck = () => {
         const container = cardsContainerRef.current;
         if (!container) return;
         const distanceToEnd = container.scrollWidth - container.scrollLeft - container.clientWidth;
         if (distanceToEnd < 360) {
             void loadMoreHistory();
         }
+    };
+
+    const maybeLoadMoreHistory = (force: boolean = false) => {
+        if (force) {
+            if (loadMoreCheckFrameRef.current !== null) {
+                window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
+                loadMoreCheckFrameRef.current = null;
+            }
+            runLoadMoreHistoryCheck();
+            return;
+        }
+        if (loadMoreCheckFrameRef.current !== null) return;
+        loadMoreCheckFrameRef.current = window.requestAnimationFrame(() => {
+            loadMoreCheckFrameRef.current = null;
+            runLoadMoreHistoryCheck();
+        });
     };
 
     const fetchHistory = async () => {
@@ -2714,6 +2745,7 @@ export default function Clipboard() {
 
         const unlistenShowComplete = listen('window-show-complete', () => {
             setAnimationState('entered');
+            setImageRefreshKey(key => key + 1);
         });
 
         const unlistenHide = listen('window-hide', () => {
@@ -2726,6 +2758,10 @@ export default function Clipboard() {
             if (imagePrewarmTimerRef.current !== null) {
                 window.clearTimeout(imagePrewarmTimerRef.current);
                 imagePrewarmTimerRef.current = null;
+            }
+            if (loadMoreCheckFrameRef.current !== null) {
+                window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
+                loadMoreCheckFrameRef.current = null;
             }
             hideAltHints();
             setAnimationState('exiting');
@@ -2840,6 +2876,10 @@ export default function Clipboard() {
             if (wheelScrollStateRef.current.frame !== null) {
                 window.cancelAnimationFrame(wheelScrollStateRef.current.frame);
                 wheelScrollStateRef.current.frame = null;
+            }
+            if (loadMoreCheckFrameRef.current !== null) {
+                window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
+                loadMoreCheckFrameRef.current = null;
             }
             if (wheelScrollIdleTimerRef.current !== null) {
                 window.clearTimeout(wheelScrollIdleTimerRef.current);
@@ -3689,7 +3729,7 @@ export default function Clipboard() {
                 nextContainer.scrollLeft = state.target;
                 state.frame = null;
                 state.lastFrameTime = null;
-                maybeLoadMoreHistory();
+                maybeLoadMoreHistory(true);
                 scheduleWheelScrollIdle();
                 return;
             }
@@ -3740,7 +3780,7 @@ export default function Clipboard() {
             state.lastFrameTime = null;
             state.target = Math.max(0, Math.min(maxScroll, container.scrollLeft + scrollAmount));
             container.scrollLeft = state.target;
-            maybeLoadMoreHistory();
+            maybeLoadMoreHistory(true);
             scheduleWheelScrollIdle();
             return;
         }
@@ -4208,6 +4248,7 @@ export default function Clipboard() {
                                 selected={selected === item.getHash()}
                                 simulatedHover={simulatedHoverHash === item.getHash()}
                                 refreshKey={fileRefreshKey}
+                                imageRefreshKey={imageRefreshKey}
                                 searchQuery={searchWord as string}
                                 shortcutHint={altHintsVisible && index < 9 ? String(index + 1) : undefined}
                                 mediaPlaybackReady={animationState === 'entered'}

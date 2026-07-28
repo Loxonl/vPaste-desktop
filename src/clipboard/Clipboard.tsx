@@ -54,6 +54,31 @@ import {
     parseLinkContent,
     type FilePreviewInfo,
 } from "./itemPresentation";
+import {
+    CONTEXT_MENU_GAP,
+    CONTEXT_MENU_PADDING,
+    CONTEXT_MENU_ROW_HEIGHT,
+    CONTEXT_MENU_WIDTH,
+    CONTEXT_SUBMENU_WIDTH,
+    TAB_CONTEXT_MENU_WIDTH,
+    VIEWPORT_MARGIN,
+    clampToViewport,
+    contextMenuHeight,
+    floatingPositionFromClick,
+    screenAnchoredPositionFromClick,
+    screenFloatingPositionFromAnchor,
+} from "./floatingPosition";
+import {
+    ClipboardContextMenus,
+    DeleteConfirmDialog,
+    TabContextMenu,
+    TagCreateChoicePopover,
+    type ColorCopyOption,
+    type ContextMenuOption,
+    type ContextMenuState,
+    type TabContextMenuState,
+    type TagCreateChoiceState,
+} from "./ClipboardOverlays";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const DEFAULT_PASTE_AS_TEXT_SHORTCUT = "Shift+Enter";
@@ -174,45 +199,6 @@ function quickInputAction(event: KeyboardEvent): QuickInputAction | null {
     return null;
 }
 
-type ColorCopyOption = {
-    format: string;
-    value: string;
-};
-
-type ContextMenuState = {
-    item: Item;
-    x: number;
-    y: number;
-    originX: number;
-    originY: number;
-    submenuSide: "left" | "right";
-    itemTags: ItemTag[];
-    colorOptions: ColorCopyOption[];
-} | null;
-
-type ContextMenuOption = {
-    label: string;
-    action?: () => void | Promise<void>;
-    children?: ContextMenuOption[];
-    danger?: boolean;
-};
-
-type TabContextMenuState = {
-    kind: "filter";
-    tab: CustomTab;
-    x: number;
-    y: number;
-    originX: number;
-    originY: number;
-} | {
-    kind: "record";
-    tag: ItemTag;
-    x: number;
-    y: number;
-    originX: number;
-    originY: number;
-} | null;
-
 type PreviewNavigationPayload = {
     direction?: number;
     key?: string;
@@ -224,12 +210,6 @@ type ItemTagsChangedPayload = {
     activeId?: string;
     tag?: ItemTag;
 };
-type TagCreateChoiceState = {
-    x: number;
-    y: number;
-    originX: number;
-    originY: number;
-} | null;
 const TAB_EDITOR_WIDTH = 286;
 const FILTER_TAG_EDITOR_HEIGHT = 398;
 const RECORD_TAG_EDITOR_HEIGHT = 178;
@@ -253,61 +233,6 @@ function persistCustomTabs(tabs: CustomTab[]) {
     saveCustomTabs(tabs);
     void invoke('save_custom_tabs', { tabs })
         .catch(e => error(`Failed to persist custom tabs: ${e}`));
-}
-
-const CONTEXT_MENU_WIDTH = 188;
-const CONTEXT_SUBMENU_WIDTH = 312;
-const TAB_CONTEXT_MENU_WIDTH = 126;
-const CONTEXT_MENU_PADDING = 5;
-const CONTEXT_MENU_ROW_HEIGHT = 34;
-const CONTEXT_MENU_GAP = 6;
-const VIEWPORT_MARGIN = 8;
-
-function clampToViewport(value: number, size: number, viewportSize: number): number {
-    return Math.max(VIEWPORT_MARGIN, Math.min(value, viewportSize - size - VIEWPORT_MARGIN));
-}
-
-function contextMenuHeight(rowCount: number): number {
-    return CONTEXT_MENU_PADDING * 2 + Math.max(1, rowCount) * CONTEXT_MENU_ROW_HEIGHT;
-}
-
-function floatingPositionFromClick(clientX: number, clientY: number, width: number, height: number) {
-    return {
-        x: clampToViewport(clientX + CONTEXT_MENU_GAP, width, window.innerWidth),
-        y: clampToViewport(clientY - height - CONTEXT_MENU_GAP, height, window.innerHeight),
-    };
-}
-
-function clampToScreen(value: number, size: number, min: number, maxSize: number): number {
-    return Math.max(min + VIEWPORT_MARGIN, Math.min(value, min + maxSize - size - VIEWPORT_MARGIN));
-}
-
-function screenFloatingPositionFromClick(clientX: number, clientY: number, width: number, height: number) {
-    const screenBounds = window.screen as Screen & { availLeft?: number; availTop?: number };
-    const availLeft = screenBounds.availLeft ?? 0;
-    const availTop = screenBounds.availTop ?? 0;
-    return {
-        x: clampToScreen(window.screenX + clientX + CONTEXT_MENU_GAP, width, availLeft, window.screen.availWidth),
-        y: clampToScreen(window.screenY + clientY - height - CONTEXT_MENU_GAP, height, availTop, window.screen.availHeight),
-    };
-}
-
-function screenAnchoredPositionFromClick(clientX: number, clientY: number, width: number, height: number) {
-    const screenBounds = window.screen as Screen & { availLeft?: number; availTop?: number };
-    const availLeft = screenBounds.availLeft ?? 0;
-    const availTop = screenBounds.availTop ?? 0;
-    return {
-        x: clampToScreen(window.screenX + clientX + CONTEXT_MENU_GAP, width, availLeft, window.screen.availWidth),
-        y: clampToScreen(window.screenY + clientY - height, height, availTop, window.screen.availHeight),
-    };
-}
-
-function screenFloatingPositionFromAnchor(anchor: HTMLElement | null | undefined, width: number, height: number) {
-    const rect = anchor?.getBoundingClientRect();
-    if (!rect) {
-        return screenFloatingPositionFromClick(window.innerWidth - width - VIEWPORT_MARGIN, VIEWPORT_MARGIN, width, height);
-    }
-    return screenAnchoredPositionFromClick(rect.right, rect.bottom, width, height);
 }
 
 class ClipboardPage {
@@ -2807,170 +2732,67 @@ export default function Clipboard() {
                 )}
             </div>
             {tagCreateChoice && (
-                <div
-                    className={classes(styles, "tag-create-choice-popover")}
-                    style={{ left: tagCreateChoice.x, top: tagCreateChoice.y }}
-                    onClick={event => event.stopPropagation()}
-                    onMouseDown={event => event.stopPropagation()}
-                >
-                    <button
-                        type="button"
-                        onClick={() => {
-                            const { originX, originY } = tagCreateChoice;
-                            setTagCreateChoice(null);
-                            openTabEditorWindowAt("add", "filter", undefined, undefined, originX, originY);
-                        }}
-                    >
-                        <strong>{t("tabs.filterTag")}</strong>
-                        <span>{t("tabs.filterTagDesc")}</span>
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => {
-                            const { originX, originY } = tagCreateChoice;
-                            setTagCreateChoice(null);
-                            openTabEditorWindowAt("add", "record", undefined, undefined, originX, originY);
-                        }}
-                    >
-                        <strong>{t("tabs.recordTag")}</strong>
-                        <span>{t("tabs.recordTagDesc")}</span>
-                    </button>
-                </div>
+                <TagCreateChoicePopover
+                    state={tagCreateChoice}
+                    t={t}
+                    onSelect={(kind, originX, originY) => {
+                        setTagCreateChoice(null);
+                        openTabEditorWindowAt("add", kind, undefined, undefined, originX, originY);
+                    }}
+                />
             )}
             {contextMenu && (
-                <div
-                    className={classes(styles, "context-menu")}
-                    style={{ left: contextMenu.x, top: contextMenu.y }}
-                    role="menu"
-                    onClick={(event) => event.stopPropagation()}
-                    onMouseDown={(event) => event.stopPropagation()}
-                >
-                    {contextMenuOptions.map((option, index) => (
-                        <button
-                            key={option.label}
-                            type="button"
-                            role="menuitem"
-                            className={classes(styles, `${index === contextMenuIndex ? 'selected' : ''} ${option.children ? 'has-submenu' : ''} ${option.danger ? 'danger' : ''}`)}
-                            onMouseEnter={() => setContextMenuIndex(index)}
-                            onClick={() => {
-                                if (option.action) void option.action();
-                            }}
-                        >
-                            {option.label}
-                            {option.children && <span className={classes(styles, "context-menu-chevron")}>›</span>}
-                        </button>
-                    ))}
-                </div>
-            )}
-            {contextMenu && selectedSubmenuOptions.length > 0 && (
-                <div
-                    className={classes(styles, "context-submenu")}
-                    style={{ left: submenuLeft, top: submenuTop }}
-                    role="menu"
-                    onClick={(event) => event.stopPropagation()}
-                    onMouseDown={(event) => event.stopPropagation()}
-                >
-                    {selectedSubmenuOptions.map(option => (
-                        <button
-                            key={option.label}
-                            type="button"
-                            role="menuitem"
-                            title={option.label}
-                            className={classes(styles, option.danger ? 'danger' : '')}
-                            onClick={() => {
-                                if (option.action) void option.action();
-                            }}
-                        >
-                            {option.label}
-                        </button>
-                    ))}
-                </div>
+                <ClipboardContextMenus
+                    state={contextMenu}
+                    options={contextMenuOptions}
+                    selectedIndex={contextMenuIndex}
+                    submenuOptions={selectedSubmenuOptions}
+                    submenuLeft={submenuLeft}
+                    submenuTop={submenuTop}
+                    onSelectedIndexChange={setContextMenuIndex}
+                />
             )}
             {tabContextMenu && (
-                <div
-                    className={classes(styles, "tab-context-menu")}
-                    style={{ left: tabContextMenu.x, top: tabContextMenu.y }}
-                    role="menu"
-                    onClick={event => event.stopPropagation()}
-                    onMouseDown={event => event.stopPropagation()}
-                    onContextMenu={event => event.preventDefault()}
-                >
-                    <button
-                        type="button"
-                        role="menuitem"
-                        onClick={event => {
-                            event.stopPropagation();
-                            if (tabContextMenu.kind === "record") {
-                                openTabEditorWindowAt("edit", "record", undefined, tabContextMenu.tag, tabContextMenu.originX, tabContextMenu.originY);
-                            } else {
-                                openTabEditorWindowAt("edit", "filter", tabContextMenu.tab, undefined, tabContextMenu.originX, tabContextMenu.originY);
-                            }
-                            setTabContextMenu(null);
-                        }}
-                    >
-                        {t("tabs.edit")}
-                    </button>
-                    <button
-                        type="button"
-                        role="menuitem"
-                        className={classes(styles, "danger")}
-                        onClick={event => {
-                            event.stopPropagation();
-                            if (tabContextMenu.kind === "record") {
-                                setDeleteConfirmRecordTag(tabContextMenu.tag);
-                            } else {
-                                setDeleteConfirmTab(tabContextMenu.tab);
-                            }
-                            setTabContextMenu(null);
-                        }}
-                    >
-                        {t("tabs.delete")}
-                    </button>
-                </div>
+                <TabContextMenu
+                    state={tabContextMenu}
+                    t={t}
+                    onEdit={state => {
+                        if (state.kind === "record") {
+                            openTabEditorWindowAt("edit", "record", undefined, state.tag, state.originX, state.originY);
+                        } else {
+                            openTabEditorWindowAt("edit", "filter", state.tab, undefined, state.originX, state.originY);
+                        }
+                        setTabContextMenu(null);
+                    }}
+                    onDelete={state => {
+                        if (state.kind === "record") {
+                            setDeleteConfirmRecordTag(state.tag);
+                        } else {
+                            setDeleteConfirmTab(state.tab);
+                        }
+                        setTabContextMenu(null);
+                    }}
+                />
             )}
             {deleteConfirmTab && (
-                <div
-                    className={classes(styles, "tab-confirm-backdrop")}
-                    onClick={() => setDeleteConfirmTab(null)}
-                >
-                    <div
-                        className={classes(styles, "tab-confirm-dialog")}
-                        onClick={event => event.stopPropagation()}
-                    >
-                        <strong>{t("tabs.deleteConfirmTitle")}</strong>
-                        <p>{t("tabs.deleteConfirmDesc", { name: deleteConfirmTab.name })}</p>
-                        <div className={classes(styles, "tab-confirm-actions")}>
-                            <button type="button" onClick={() => setDeleteConfirmTab(null)}>
-                                {t("tabs.cancel")}
-                            </button>
-                            <button type="button" className={classes(styles, "danger")} onClick={() => deleteCustomTab(deleteConfirmTab)}>
-                                {t("tabs.delete")}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <DeleteConfirmDialog
+                    title={t("tabs.deleteConfirmTitle")}
+                    description={t("tabs.deleteConfirmDesc", { name: deleteConfirmTab.name })}
+                    cancelLabel={t("tabs.cancel")}
+                    confirmLabel={t("tabs.delete")}
+                    onCancel={() => setDeleteConfirmTab(null)}
+                    onConfirm={() => deleteCustomTab(deleteConfirmTab)}
+                />
             )}
             {deleteConfirmRecordTag && (
-                <div
-                    className={classes(styles, "tab-confirm-backdrop")}
-                    onClick={() => setDeleteConfirmRecordTag(null)}
-                >
-                    <div
-                        className={classes(styles, "tab-confirm-dialog")}
-                        onClick={event => event.stopPropagation()}
-                    >
-                        <strong>{t("tabs.deleteConfirmTitle")}</strong>
-                        <p>{t("tags.deleteConfirm", { name: deleteConfirmRecordTag.name })}</p>
-                        <div className={classes(styles, "tab-confirm-actions")}>
-                            <button type="button" onClick={() => setDeleteConfirmRecordTag(null)}>
-                                {t("tabs.cancel")}
-                            </button>
-                            <button type="button" className={classes(styles, "danger")} onClick={() => void deleteRecordTag(deleteConfirmRecordTag)}>
-                                {t("tabs.delete")}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <DeleteConfirmDialog
+                    title={t("tabs.deleteConfirmTitle")}
+                    description={t("tags.deleteConfirm", { name: deleteConfirmRecordTag.name })}
+                    cancelLabel={t("tabs.cancel")}
+                    confirmLabel={t("tabs.delete")}
+                    onCancel={() => setDeleteConfirmRecordTag(null)}
+                    onConfirm={() => void deleteRecordTag(deleteConfirmRecordTag)}
+                />
             )}
         </div>
     );

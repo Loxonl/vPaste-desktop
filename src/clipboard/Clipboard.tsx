@@ -46,6 +46,7 @@ import {
     type CustomTab,
 } from "./customTabs";
 import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
+import { fetchSearchPage } from "./searchPagination";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const DEFAULT_PASTE_AS_TEXT_SHORTCUT = "Shift+Enter";
@@ -428,21 +429,6 @@ class ClipboardPage {
     }
 }
 
-type SearchPagePayload = {
-    list: any[];
-    consumed: number;
-    hasMore: boolean;
-    nextId: number;
-    nextTime: number;
-};
-
-type SearchPageResult = {
-    items: Item[];
-    consumed: number;
-    hasMore: boolean;
-};
-
-
 // Helper function to get type label
 function getTypeLabel(type: ItemType, t: TFunction): string {
     switch (type) {
@@ -772,67 +758,7 @@ function AutoScrollPreview({
     return <div ref={ref} className={className}>{children}</div>;
 }
 
-function itemFromPayload(i: any): Item {
-    return new Item(
-        i.id,
-        i.hash,
-        i.itemType,
-        i.content,
-        i.time,
-        i.titleColor,
-        i.previewContent,
-        i.textContent,
-        i.label,
-        i.appSource,
-        i.appIconPath,
-        i.richHtml,
-        Array.isArray(i.tags) ? i.tags : [],
-    );
-}
-
-async function fetchSearchPage(
-    keywords: string,
-    label: string,
-    lastId: number,
-    lastTime: number,
-    limit: number,
-    isCurrent: () => boolean,
-): Promise<SearchPageResult | null> {
-    const items: Item[] = [];
-    let consumed = 0;
-    let hasMore = true;
-    let cursorId = lastId;
-    let cursorTime = lastTime;
-
-    while (items.length < limit && hasMore) {
-        if (!isCurrent()) return null;
-        const res = await invoke<string>('search', {
-            keywords,
-            lastId: cursorId,
-            lastTime: cursorTime,
-            limit: limit - items.length,
-            label,
-        });
-        if (!isCurrent()) return null;
-
-        const page = JSON.parse(res) as SearchPagePayload;
-        items.push(...page.list.map(itemFromPayload));
-        consumed += page.consumed;
-        hasMore = page.hasMore;
-        if (!hasMore || items.length >= limit) break;
-        if ((page.nextId === 0 && page.nextTime === 0)
-            || (page.nextId === cursorId && page.nextTime === cursorTime)) {
-            hasMore = false;
-            break;
-        }
-        cursorId = page.nextId;
-        cursorTime = page.nextTime;
-    }
-
-    return { items, consumed, hasMore };
-}
-
-export function ImagePreview({ item, active, refreshKey, t, onGifFormatChange }: { item: Item, active: boolean, refreshKey: number, t: TFunction, onGifFormatChange: (isGif: boolean) => void }) {
+function ImagePreview({ item, active, refreshKey, t, onGifFormatChange }: { item: Item, active: boolean, refreshKey: number, t: TFunction, onGifFormatChange: (isGif: boolean) => void }) {
     const [naturalSize, setNaturalSize] = useState<{ width: number, height: number } | null>(null);
     const [stageSize, setStageSize] = useState<{ width: number, height: number }>({ width: 0, height: 0 });
     const [imageSrc, setImageSrc] = useState("");

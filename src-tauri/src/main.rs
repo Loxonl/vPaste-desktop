@@ -26,7 +26,6 @@ use serde::{Deserialize, Serialize};
 use tauri::image::Image as TauriImage;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_updater::UpdaterExt;
 
 #[cfg(target_os = "macos")]
 use tauri::utils::TitleBarStyle;
@@ -49,8 +48,11 @@ use crate::clipboard::macos::listen;
 use crate::clipboard::windows::listen;
 use crate::config::Config;
 
+mod app_updater;
 mod clipboard;
 mod config;
+mod maintenance;
+mod runtime_mode;
 mod search;
 mod secure_store;
 
@@ -360,24 +362,9 @@ struct HistoryArchiveProgressState {
     total_bytes: u64,
 }
 
-#[derive(Clone, Serialize)]
-struct UpdateInfo {
-    current_version: String,
-    version: String,
-    date: Option<String>,
-    body: Option<String>,
-}
-
 #[derive(Serialize)]
 struct AppVersionInfo {
     version: String,
-}
-
-#[derive(Clone, Serialize)]
-struct UpdateProgressPayload {
-    stage: String,
-    chunk_length: Option<u64>,
-    content_length: Option<u64>,
 }
 
 fn screen_bounds(window: &tauri::WebviewWindow) -> ScreenBounds {
@@ -2421,6 +2408,13 @@ fn apply_custom_tabs_from_editor(
 
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
+    if let Err(err) = app_updater::install_on_explicit_quit(&app) {
+        error!(
+            "failed to start the scheduled update while quitting: {}",
+            err
+        );
+        return;
+    }
     app.exit(0);
 }
 
@@ -4868,77 +4862,6 @@ fn refresh_stored_autostart_from_system(app: &tauri::AppHandle) -> Result<bool, 
     Ok(actual_startup)
 }
 
-#[tauri::command]
-async fn check_for_app_update(app: tauri::AppHandle) -> Result<Option<UpdateInfo>, String> {
-    let Some(update) = app
-        .updater()
-        .map_err(|err| err.to_string())?
-        .check()
-        .await
-        .map_err(|err| err.to_string())?
-    else {
-        return Ok(None);
-    };
-
-    Ok(Some(UpdateInfo {
-        current_version: update.current_version.to_string(),
-        version: update.version.to_string(),
-        date: update.date.map(|date| date.to_string()),
-        body: update.body,
-    }))
-}
-
-#[tauri::command]
-async fn install_app_update(app: tauri::AppHandle) -> Result<(), String> {
-    let Some(update) = app
-        .updater()
-        .map_err(|err| err.to_string())?
-        .check()
-        .await
-        .map_err(|err| err.to_string())?
-    else {
-        return Err("当前没有可安装的更新".to_string());
-    };
-
-    let progress_app = app.clone();
-    let install_app = app.clone();
-    update
-        .download_and_install(
-            move |chunk_length, content_length| {
-                let payload = UpdateProgressPayload {
-                    stage: if content_length.is_some() {
-                        "started".to_string()
-                    } else {
-                        "progress".to_string()
-                    },
-                    chunk_length: Some(chunk_length as u64),
-                    content_length,
-                };
-                let _ = progress_app.emit("update-download-progress", payload);
-            },
-            move || {
-                let _ = install_app.emit(
-                    "update-download-progress",
-                    UpdateProgressPayload {
-                        stage: "finished".to_string(),
-                        chunk_length: None,
-                        content_length: None,
-                    },
-                );
-                let _ = install_app.emit(
-                    "update-install-state",
-                    UpdateProgressPayload {
-                        stage: "installing".to_string(),
-                        chunk_length: None,
-                        content_length: None,
-                    },
-                );
-            },
-        )
-        .await
-        .map_err(|err| err.to_string())
-}
-
 fn shortcut_policy_parts(shortcut: &str) -> Vec<String> {
     shortcut
         .split('+')
@@ -5582,8 +5505,11 @@ fn cleanup_legacy_autostart_entries() {}
 
 #[tauri::command]
 fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigrationInfo, String> {
-    let config_struct: Config =
+    let mut config_struct: Config =
         serde_json::from_str(&config).map_err(|err| format!("配置格式无效，无法保存：{}", err))?;
+    if runtime_mode::is_portable() {
+        config_struct.startup = false;
+    }
     validate_shortcut_config(&config_struct)?;
 
     let previous_config = config::get();
@@ -5604,25 +5530,32 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
         config_struct.shortcut_keys.main_window.as_deref(),
         "唤起主窗口",
     )?;
+    let automatic_updates_enabled = config_struct.update_check_enabled;
     let next_language = config_struct.multilingual.clone();
     let next_theme_mode = config_struct.theme_mode.clone();
 
     let registration_info =
         sync_main_window_shortcut(&app, previous_main_shortcut, next_main_shortcut)?;
-    let actual_startup = check_autostart_enabled(&app)?;
-    if actual_startup != config_struct.startup {
-        let enabled = sync_autostart(&app, config_struct.startup)?;
-        if enabled != config_struct.startup {
-            return Err(if config_struct.startup {
-                "无法注册开机启动项，开关已保持关闭".to_string()
-            } else {
-                "无法移除开机启动项，开关状态未保存".to_string()
-            });
+    if !runtime_mode::is_portable() {
+        let actual_startup = check_autostart_enabled(&app)?;
+        if actual_startup != config_struct.startup {
+            let enabled = sync_autostart(&app, config_struct.startup)?;
+            if enabled != config_struct.startup {
+                return Err(if config_struct.startup {
+                    "无法注册开机启动项，开关已保持关闭".to_string()
+                } else {
+                    "无法移除开机启动项，开关状态未保存".to_string()
+                });
+            }
         }
     }
     sync_tray_visibility(&app, config_struct.display_tray_icon)?;
 
-    config::save(config_struct);
+    config::update(|current| {
+        config_struct.last_update_check_at = current.last_update_check_at.clone();
+        *current = config_struct;
+    });
+    app_updater::set_automatic_updates_enabled(automatic_updates_enabled);
     sync_tray_theme_for_mode(&app, &next_theme_mode);
     let _ = app.emit("language-changed", next_language);
     let _ = app.emit("theme-changed", next_theme_mode);
@@ -7391,7 +7324,49 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
     Ok(clipboard_window)
 }
 
+#[cfg(target_os = "windows")]
+fn show_startup_error(message: &str) {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+    let message = message
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let title = "vPaste\0".encode_utf16().collect::<Vec<_>>();
+    unsafe {
+        MessageBoxW(
+            HWND(0),
+            PCWSTR(message.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_startup_error(message: &str) {
+    eprintln!("{message}");
+}
+
 fn main() {
+    match maintenance::try_handle_maintenance_command() {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(err) => {
+            eprintln!("vPaste maintenance command failed: {err}");
+            std::process::exit(1);
+        }
+    }
+    let installer_exit_requested = maintenance::installer_exit_requested();
+
+    if let Err(err) = runtime_mode::configure_webview_data_directory() {
+        let message = format!("vPaste portable mode could not start:\n\n{err}");
+        show_startup_error(&message);
+        std::process::exit(1);
+    }
+
     // env_logger::Builder::new()
     //     .filter_level(LevelFilter::Info) // 设置全局最小日志级别为 Info
     //     .init();
@@ -7411,7 +7386,11 @@ fn main() {
     let context = tauri::generate_context!();
     info!("running vPaste");
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if maintenance::installer_exit_requested_for_args(&args) {
+                app.exit(0);
+                return;
+            }
             if let Some(window) = app.get_webview_window("onboardingPermission") {
                 let _ = window.hide();
             }
@@ -7421,6 +7400,7 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
@@ -7447,10 +7427,15 @@ fn main() {
             #[cfg(target_os = "windows")]
             if let tauri::WindowEvent::Resized(_) = event {
                 if matches!(window.label(), "config" | "clipboardPreview") {
-                    if let Err(err) =
-                        apply_windows_rounded_window_region(window, ROUNDED_WINDOW_RADIUS)
+                    if let Some(webview_window) =
+                        window.app_handle().get_webview_window(window.label())
                     {
-                        error!("Failed to update rounded window region: {}", err);
+                        if let Err(err) = apply_windows_rounded_window_region(
+                            &webview_window,
+                            ROUNDED_WINDOW_RADIUS,
+                        ) {
+                            error!("Failed to update rounded window region: {}", err);
+                        }
                     }
                 }
             }
@@ -7566,8 +7551,14 @@ fn main() {
                 }
             }
         })
-        .setup(|app| {
-            let app_local_data_dir: PathBuf = app.path().app_local_data_dir().unwrap();
+        .setup(move |app| {
+            if installer_exit_requested {
+                app.handle().exit(0);
+                return Ok(());
+            }
+            let default_app_data_dir: PathBuf = app.path().app_local_data_dir().unwrap();
+            let app_local_data_dir = runtime_mode::initialize(default_app_data_dir)
+                .map_err(|err| io::Error::new(io::ErrorKind::PermissionDenied, err))?;
             if !app_local_data_dir.exists() {
                 match fs::create_dir_all(&app_local_data_dir) {
                     Ok(_) => info!("目录已成功创建: {:?}", app_local_data_dir),
@@ -7583,6 +7574,7 @@ fn main() {
             );
             info!("app_path: {:?}", &app_data_dir);
             *GLOBAL_APP_DATA_DIR.lock().unwrap() = app_data_dir;
+            app_updater::start_background_checks(app.handle().clone());
             install_vpaste_tray(app.handle())?;
 
             // Register user-facing entry points before heavier startup maintenance.
@@ -7590,10 +7582,16 @@ fn main() {
             if let Err(err) = refresh_stored_autostart_from_system(app.handle()) {
                 error!("Failed to refresh autostart status at startup: {}", err);
             }
-            let config = config::get();
+            let mut config = config::get();
+            if runtime_mode::is_portable() && config.startup {
+                config.startup = false;
+                config::save(config.clone());
+            }
             #[cfg(not(target_os = "macos"))]
-            if let Err(err) = sync_autostart(app.handle(), config.startup) {
-                error!("Failed to sync autostart at startup: {}", err);
+            if !runtime_mode::is_portable() {
+                if let Err(err) = sync_autostart(app.handle(), config.startup) {
+                    error!("Failed to sync autostart at startup: {}", err);
+                }
             }
             if let Err(err) = sync_tray_visibility(app.handle(), config.display_tray_icon) {
                 error!("Failed to sync tray visibility at startup: {}", err);
@@ -7872,8 +7870,10 @@ fn main() {
             get_clipboard_history_paused,
             set_clipboard_history_paused,
             toggle_clipboard_history_paused,
-            check_for_app_update,
-            install_app_update,
+            app_updater::get_update_state,
+            app_updater::check_for_app_update,
+            app_updater::prepare_app_update,
+            app_updater::schedule_app_update,
             get_app_version,
             begin_main_shortcut_recording,
             end_main_shortcut_recording,

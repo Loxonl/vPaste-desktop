@@ -34,6 +34,6 @@
     "global-shortcut:default",
     "dialog:default",
     "dialog:allow-message",
-    "updater:default"
+    "notification:default"
   ]
 }

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
 import { useLanguage } from "../lang";
+import { updateReady, useAppUpdateState } from "../update";
 import "./TrayMenu.css";
 
 type TrayAction = "show_main_panel" | "open_config_window" | "quit_app";
@@ -20,6 +21,7 @@ const items: Array<{ labelKey: string; action: TrayAction }> = [
 
 export default function TrayMenu() {
     const { t } = useLanguage();
+    const { state: updateState } = useAppUpdateState();
     const [paused, setPaused] = React.useState(false);
     const [toggleWorking, setToggleWorking] = React.useState(false);
     const menuRef = React.useRef<HTMLDivElement | null>(null);
@@ -39,7 +41,7 @@ export default function TrayMenu() {
 
     React.useEffect(() => {
         resizeToContent();
-    }, [paused, resizeToContent]);
+    }, [paused, updateState.status, updateState.installTiming, resizeToContent]);
 
     React.useEffect(() => {
         void invoke<boolean>("get_clipboard_history_paused")
@@ -92,6 +94,15 @@ export default function TrayMenu() {
         }
     };
 
+    const openUpdateSettings = async () => {
+        try {
+            await invoke("open_config_window", { target: "about" });
+            await invoke("hide_tray_menu");
+        } catch (e) {
+            error(`Failed to open update settings: ${e}`);
+        }
+    };
+
     return (
         <div ref={menuRef} className={`tray-menu-frame ${isMacOS ? "macos" : ""}`}>
             <div className="tray-menu-shell">
@@ -110,6 +121,16 @@ export default function TrayMenu() {
                         {t(paused ? "tray.historyPausedShort" : "tray.historyRecordingShort")}
                     </span>
                 </button>
+                {updateReady(updateState) && (
+                    <button
+                        type="button"
+                        className="tray-menu-item update-ready"
+                        onClick={() => void openUpdateSettings()}
+                    >
+                        <span>{t("tray.updateReady")}</span>
+                        <strong>{updateState.availableVersion}</strong>
+                    </button>
+                )}
                 {items.map(item => (
                     <button
                         key={item.action}

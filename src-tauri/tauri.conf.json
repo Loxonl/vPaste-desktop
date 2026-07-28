@@ -16,21 +16,6 @@
       "icons/icon.icns",
       "icons/icon.png"
     ],
-    "windows": {
-      "nsis": {
-        "installerIcon": "icons/icon.ico",
-        "uninstallerIcon": "icons/icon.ico",
-        "installerHooks": "installer-assets/nsis-hooks.nsh",
-        "installMode": "currentUser",
-        "compression": "zlib",
-        "languages": [
-          "SimpChinese",
-          "English"
-        ],
-        "displayLanguageSelector": false,
-        "startMenuFolder": "vPaste"
-      }
-    },
     "macOS": {
       "infoPlist": "Info.plist",
       "minimumSystemVersion": "11.0",
@@ -41,7 +26,7 @@
   },
   "productName": "vPaste",
   "mainBinaryName": "vPaste",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "identifier": "com.loxonl.vpaste",
   "plugins": {
     "updater": {

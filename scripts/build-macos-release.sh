@@ -164,16 +164,16 @@ if [[ -z "${OUTPUT_PATH}" ]]; then
 fi
 
 manifest_args=(
-  scripts/generate-macos-updater-manifest.mjs
+  scripts/generate-updater-manifest.mjs
   --base-url "${BASE_URL}"
   --version "${VERSION}"
   --artifact "${updater_artifact}"
   --signature "${signature}"
-  --platform-keys "${platform_keys}"
+  --platforms "${platform_keys}"
   --output "${OUTPUT_PATH}"
 )
 if [[ -n "${NOTES_PATH}" ]]; then
-  manifest_args+=(--notes-path "${NOTES_PATH}")
+  manifest_args+=(--notes "${NOTES_PATH}")
 fi
 
 node "${manifest_args[@]}"

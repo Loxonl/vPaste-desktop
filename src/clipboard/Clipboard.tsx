@@ -3,8 +3,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
 import { invoke } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
-import { desktopDir, downloadDir } from "@tauri-apps/api/path";
 import { error } from "@tauri-apps/plugin-log";
 import { Item, ItemTag, ItemType } from "./Item.ts";
 import { useLanguage } from "../lang";
@@ -33,10 +31,7 @@ import { fetchSearchPage } from "./searchPagination";
 import ClipboardCard from "./ClipboardCard";
 import {
     compactPath,
-    dirName,
     getBackendTypeLabel,
-    imageExportSourcePath,
-    joinPath,
     parseLinkContent,
     type FilePreviewInfo,
 } from "./itemPresentation";
@@ -105,10 +100,10 @@ import {
     upsertItemTag,
     type ItemTagsChangedPayload,
 } from "./clipboardTags";
+import { createClipboardItemActions } from "./clipboardItemActions";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const HISTORY_PAGE_LIMIT = 36;
-const IMAGE_EXPORT_DIR_KEY = "vpaste.imageExportDir.v1";
 
 type ToastKind = 'info' | 'warning' | 'error';
 
@@ -1474,165 +1469,54 @@ export default function Clipboard() {
         }
     };
 
-    const toggleFavorite = async (item: Item) => {
-        setContextMenu(null);
-        const favorite = !item.isFavorite();
-        try {
-            await invoke('set_item_favorite', { hash: item.getHash(), favorite });
-            showToast(favorite ? t("clipboard.favoriteAdded") : t("clipboard.favoriteRemoved"));
-            await fetchHistory();
-        } catch (e) {
-            error(`Failed to update favorite: ${e}`);
-            showToast(t("clipboard.actionFailed", { error: String(e) }), 'error');
-        }
-    };
-
-    const assignExistingTag = async (item: Item, tag: ItemTag) => {
-        setContextMenu(null);
-        try {
-            await invoke('assign_item_tag', { hash: item.getHash(), tagId: tag.id });
-            updateItemTagsInPage(item, assignItemTag(item.getTags(), tag));
-            showToast(t("tags.assigned", { name: tag.name }));
-        } catch (e) {
-            showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
-        }
-    };
-
-    const removeAllAssignedTags = async (item: Item) => {
-        setContextMenu(null);
-        try {
-            await Promise.all(item.getTags().map(tag =>
-                invoke('remove_item_tag', { hash: item.getHash(), tagId: tag.id })
-            ));
-            updateItemTagsInPage(item, []);
-            showToast(t("tags.removedAll"));
-        } catch (e) {
-            showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
-        }
-    };
-
-    const removeAssignedTag = async (item: Item, tag: ItemTag) => {
-        setContextMenu(null);
-        try {
-            await invoke('remove_item_tag', { hash: item.getHash(), tagId: tag.id });
-            updateItemTagsInPage(item, removeItemTag(item.getTags(), tag.id));
-            showToast(t("tags.removed", { name: tag.name }));
-        } catch (e) {
-            showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
-        }
-    };
-
-    const deleteClipboardItem = async (item: Item) => {
-        setContextMenu(null);
+    const removeDeletedItemFromPage = (item: Item) => {
         const hash = item.getHash() as string;
-        try {
-            await invoke('delete_clipboard_item', { hash });
-            const currentList = pageListRef.current;
-            const deletedIndex = currentList.findIndex(candidate => candidate.getHash() === hash);
-            const nextList = currentList.filter(candidate => candidate.getHash() !== hash);
-            pageListRef.current = nextList;
-            setPage(new ClipboardPage(nextList, clipboardPage.consumed));
-            if (selectedRef.current === hash) {
-                const nextIndex = Math.max(0, Math.min(deletedIndex, nextList.length - 1));
-                const nextHash = nextList[nextIndex]?.getHash() as string | undefined;
-                selectedRef.current = nextHash || "";
-                setSelected(nextHash || "");
-                if (nextHash) {
-                    window.requestAnimationFrame(() => scrollCardIntoView(nextIndex));
-                }
+        const currentList = pageListRef.current;
+        const deletedIndex = currentList.findIndex(
+            candidate => candidate.getHash() === hash,
+        );
+        const nextList = currentList.filter(
+            candidate => candidate.getHash() !== hash,
+        );
+        pageListRef.current = nextList;
+        setPage(page => new ClipboardPage(nextList, page.consumed));
+        if (selectedRef.current === hash) {
+            const nextIndex = Math.max(
+                0,
+                Math.min(deletedIndex, nextList.length - 1),
+            );
+            const nextHash = nextList[nextIndex]?.getHash() as
+                | string
+                | undefined;
+            selectedRef.current = nextHash || "";
+            setSelected(nextHash || "");
+            if (nextHash) {
+                window.requestAnimationFrame(() => {
+                    scrollCardIntoView(nextIndex);
+                });
             }
-            showToast(t("clipboard.recordDeleted"));
-        } catch (e) {
-            error(`Failed to delete clipboard item: ${e}`);
-            showToast(t("clipboard.deleteFailed", { error: String(e) }), 'error');
         }
     };
 
-    const exportImageItem = async (item: Item) => {
-        setContextMenu(null);
-        const sourcePath = imageExportSourcePath(item);
-        if (!sourcePath) {
-            showToast(t("clipboard.actionFailed", { error: t("clipboard.exportImageNoSource") }), "error");
-            return;
-        }
-
-        try {
-            const cachedDir = localStorage.getItem(IMAGE_EXPORT_DIR_KEY) || "";
-            const fallbackDir = isMacPlatform() ? await downloadDir() : await desktopDir();
-            const defaultDir = cachedDir || fallbackDir;
-            const defaultPath = joinPath(defaultDir, `vpaste-image-${Date.now()}.png`);
-            await invoke("set_clipboard_blur_hide_suppressed", { suppressed: true })
-                .catch(e => error(`Failed to suppress clipboard blur hide: ${e}`));
-            const targetPath = await save({
-                defaultPath,
-                filters: [
-                    { name: "PNG Image", extensions: ["png"] },
-                    { name: "JPEG Image", extensions: ["jpg", "jpeg"] },
-                    { name: "WebP Image", extensions: ["webp"] },
-                    { name: "Bitmap Image", extensions: ["bmp"] },
-                ],
-            }).finally(() => {
-                void invoke("set_clipboard_blur_hide_suppressed", { suppressed: false })
-                    .catch(e => error(`Failed to restore clipboard blur hide: ${e}`));
-            });
-            if (!targetPath) return;
-
-            await invoke("export_image_item", { sourcePath, targetPath });
-            const nextDir = dirName(targetPath);
-            if (nextDir) {
-                localStorage.setItem(IMAGE_EXPORT_DIR_KEY, nextDir);
-            }
-            try {
-                await invoke("reveal_file_in_folder", { path: targetPath });
-            } catch (revealError) {
-                error(`Failed to reveal exported image file: ${revealError}`);
-                showToast(t("clipboard.actionFailed", { error: String(revealError) }), "error");
-                return;
-            }
-            await hideCurrentWindowWithAnimation();
-            showToast(t("clipboard.imageExported"));
-        } catch (e) {
-            error(`Failed to export image item: ${e}`);
-            showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
-        }
-    };
-
-    const openContainingFolder = async (item: Item) => {
-        setContextMenu(null);
-        try {
-            await invoke('open_containing_folder', { content: item.getContent() });
-        } catch (e) {
-            error(`Failed to open containing folder: ${e}`);
-            showToast(t("clipboard.actionFailed", { error: String(e) }), 'error');
-        }
-    };
-
-    const copyContainingFolderPath = async (item: Item) => {
-        setContextMenu(null);
-        try {
-            const path = await invoke<string>('containing_folder_path', { content: item.getContent() });
-            await invoke('copy', { item: path, itemType: 'Text', hash: null });
-            await invoke('record_text_history', { content: path });
-            await fetchHistory();
-            showToast(t("clipboard.folderCopied"));
-        } catch (e) {
-            error(`Failed to copy containing folder path: ${e}`);
-            showToast(t("clipboard.actionFailed", { error: String(e) }), 'error');
-        }
-    };
-
-    const copyColorValue = async (value: string) => {
-        setContextMenu(null);
-        try {
-            await invoke('copy', { item: value, itemType: 'Text', hash: null });
-            await invoke('record_text_history', { content: value });
-            await fetchHistory();
-            showToast(t("clipboard.colorCopied", { value }));
-        } catch (e) {
-            error(`Failed to copy converted color: ${e}`);
-            showToast(t("clipboard.actionFailed", { error: String(e) }), 'error');
-        }
-    };
+    const {
+        assignExistingTag,
+        copyColorValue,
+        copyContainingFolderPath,
+        deleteClipboardItem,
+        exportImageItem,
+        openContainingFolder,
+        removeAllAssignedTags,
+        removeAssignedTag,
+        toggleFavorite,
+    } = createClipboardItemActions({
+        closeContextMenu: () => setContextMenu(null),
+        hideWindow: hideCurrentWindowWithAnimation,
+        onDelete: removeDeletedItemFromPage,
+        refreshHistory: fetchHistory,
+        showToast,
+        t,
+        updateItemTags: updateItemTagsInPage,
+    });
 
     const buildContextMenuOptions = (
         item: Item,

@@ -1,4 +1,3 @@
-// @ts-ignore
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";

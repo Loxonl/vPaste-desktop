@@ -31,7 +31,6 @@ import { fetchSearchPage } from "./searchPagination";
 import ClipboardCard from "./ClipboardCard";
 import {
     parseLinkContent,
-    type FilePreviewInfo,
 } from "./itemPresentation";
 import {
     CONTEXT_MENU_GAP,
@@ -100,6 +99,7 @@ import {
 } from "./clipboardTags";
 import { createClipboardItemActions } from "./clipboardItemActions";
 import { createClipboardPasteRuntime } from "./clipboardPasteRuntime";
+import { createClipboardPreviewRuntime } from "./clipboardPreviewRuntime";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const HISTORY_PAGE_LIMIT = 36;
@@ -1182,20 +1182,11 @@ export default function Clipboard() {
                     return;
                 case "toggle-preview":
                     setContextMenu(null);
-                    invoke<boolean>('is_preview_window_visible')
-                        .then(visible => {
-                            if (visible) {
-                                previewRequestSeqRef.current += 1;
-                                return invoke('hide_preview_window');
-                            }
-                            const selectedItem = pageListRef.current.find(
-                                item => item.getHash() === selectedRef.current,
-                            ) || pageListRef.current[0];
-                            if (selectedItem) {
-                                return openPreviewItem(selectedItem);
-                            }
-                        })
-                        .catch(e => error(`Failed to toggle preview: ${e}`));
+                    togglePreview(
+                        pageListRef.current.find(
+                            item => item.getHash() === selectedRef.current,
+                        ) || pageListRef.current[0],
+                    );
                     return;
                 case "paste-selected":
                     setContextMenu(null);
@@ -1310,53 +1301,20 @@ export default function Clipboard() {
         }
     };
 
-    const openPreviewItem = async (item: Item, requestSeq: number = ++previewRequestSeqRef.current) => {
-        setContextMenu(null);
-        if (item.getType() === ItemType.File) {
-            try {
-                const info = await invoke<FilePreviewInfo>("file_preview_info", { content: item.getContent() });
-                if (requestSeq !== previewRequestSeqRef.current) return;
-                const previewableFile = (info.kind === "single-preview" && !!info.preview_path)
-                    || info.kind === "pdf-preview"
-                    || info.kind === "text-preview";
-                const simpleFileInfo = info.kind === "multiple" || info.kind === "single-folder" || info.kind === "single-icon";
-                if (!previewableFile && !simpleFileInfo) {
-                    showToast(t("clipboard.previewUnsupported"), 'warning');
-                    return;
-                }
-            } catch (e) {
-                error(`Failed to prepare file preview: ${e}`);
-                showToast(t("clipboard.previewUnsupported"), 'warning');
-                return;
-            }
-        }
-        if (requestSeq !== previewRequestSeqRef.current) return;
-        selectedRef.current = item.getHash() as string;
-        setSelected(item.getHash());
-        try {
-            await invoke('show_preview_window', {
-                itemType: item.getType(),
-                content: item.getContent(),
-                previewContent: item.getPreviewContent(),
-                textContent: item.getTextContent(),
-                richHtml: item.getRichHtml(),
-                appSource: item.getAppSource(),
-            });
-        } catch (e) {
-            error(`Failed to open preview: ${e}`);
-            showToast(t("clipboard.previewFailed", { error: String(e) }), 'error');
-        }
-    };
-
-    const refreshPreviewIfVisible = (item: Item) => {
-        const requestSeq = ++previewRequestSeqRef.current;
-        void invoke<boolean>('is_preview_window_visible')
-            .then(visible => {
-                if (!visible || requestSeq !== previewRequestSeqRef.current) return;
-                return openPreviewItem(item, requestSeq);
-            })
-            .catch(e => error(`Failed to refresh preview after selection: ${e}`));
-    };
+    const {
+        openPreviewItem,
+        refreshPreviewIfVisible,
+        togglePreview,
+    } = createClipboardPreviewRuntime({
+        closeContextMenu: () => setContextMenu(null),
+        requestSequence: previewRequestSeqRef,
+        selectItem: hash => {
+            selectedRef.current = hash;
+            setSelected(hash);
+        },
+        showToast,
+        t,
+    });
 
     const navigateSelectedCard = (direction: number) => {
         const list = pageListRef.current;

@@ -74,35 +74,37 @@ export default function EmojiPicker() {
     };
 
     return (
-        <div className={styles["emoji-picker-window"]} role="menu" onContextMenu={event => event.preventDefault()}>
-            <button
-                type="button"
-                role="menuitem"
-                className={[styles["emoji-clear-option"], !selectedEmoji ? styles.selected : ""].join(" ")}
-                onMouseDown={event => {
-                    event.preventDefault();
-                    chooseEmoji("");
-                }}
-            >
-                {t("tabs.emojiNone")}
-            </button>
-            <div className={styles["emoji-grid"]}>
-                {NAME_PREFIX_EMOJIS.map(emoji => (
-                    <button
-                        key={emoji}
-                        type="button"
-                        role="menuitem"
-                        className={[styles["emoji-option"], selectedEmoji === emoji ? styles.selected : ""].join(" ")}
-                        title={emoji}
-                        aria-label={`${t("tabs.emojiPrefix")} ${emoji}`}
-                        onMouseDown={event => {
-                            event.preventDefault();
-                            chooseEmoji(emoji);
-                        }}
-                    >
-                        {emoji}
-                    </button>
-                ))}
+        <div className={styles["emoji-picker-frame"]} onContextMenu={event => event.preventDefault()}>
+            <div className={styles["emoji-picker-window"]} role="menu">
+                <button
+                    type="button"
+                    role="menuitem"
+                    className={[styles["emoji-clear-option"], !selectedEmoji ? styles.selected : ""].join(" ")}
+                    onMouseDown={event => {
+                        event.preventDefault();
+                        chooseEmoji("");
+                    }}
+                >
+                    {t("tabs.emojiNone")}
+                </button>
+                <div className={styles["emoji-grid"]}>
+                    {NAME_PREFIX_EMOJIS.map(emoji => (
+                        <button
+                            key={emoji}
+                            type="button"
+                            role="menuitem"
+                            className={[styles["emoji-option"], selectedEmoji === emoji ? styles.selected : ""].join(" ")}
+                            title={emoji}
+                            aria-label={`${t("tabs.emojiPrefix")} ${emoji}`}
+                            onMouseDown={event => {
+                                event.preventDefault();
+                                chooseEmoji(emoji);
+                            }}
+                        >
+                            {emoji}
+                        </button>
+                    ))}
+                </div>
             </div>
         </div>
     );

@@ -95,4 +95,25 @@ test.describe("settings preview", () => {
         expect(Math.abs(switchBox!.x + switchBox!.width / 2 - referenceCenter)).toBeLessThan(1);
         await expect(page).toHaveScreenshot("settings-shortcuts-aligned.png");
     });
+
+    test("Windows settings use one inset rounded surface and CSS shadow", async ({ page }) => {
+        await page.setViewportSize({ width: 720, height: 700 });
+        await page.goto("/__settings-preview?theme=light&lang=zh-CN&platform=windows");
+        await page.addStyleTag({
+            content: "html, body, #root { background: #20242a !important; }",
+        });
+
+        const settingsRoot = page.getByTestId("settings-root");
+        await expect(settingsRoot).toHaveCSS("border-radius", "12px");
+        await expect(settingsRoot).toHaveCSS("background-color", "rgb(246, 246, 244)");
+        await expect(settingsRoot).not.toHaveCSS("box-shadow", "none");
+        await expect(settingsRoot).toHaveCSS("width", "704px");
+        await expect(settingsRoot).toHaveCSS("height", "684px");
+
+        const rootBox = await settingsRoot.boundingBox();
+        expect(rootBox).not.toBeNull();
+        expect(rootBox!.x).toBe(8);
+        expect(rootBox!.y).toBe(8);
+        await expect(page).toHaveScreenshot("settings-windows-single-surface.png");
+    });
 });

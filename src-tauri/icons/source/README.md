@@ -15,6 +15,6 @@ Approved source fingerprints:
 Generated bundle assets keep these roles separate:
 
 - `icon.*` bundle files are generated from `vpaste-app-icon-1024.png`; frontend branded surfaces and the favicon import the same source directly.
-- The build script rasterizes `vpaste-tray.svg` as an alpha mask. Windows and Linux color that mask with the vPaste accent.
+- The build script rasterizes `vpaste-tray.svg` as a centered `1.1×` alpha mask. Windows and Linux color that mask with the vPaste accent.
 - On macOS, the same mask is installed as a native template image, so macOS automatically renders it black or white for the current menu bar appearance.
 - Do not add separate tray PNG sources or duplicate frontend app-icon PNGs.

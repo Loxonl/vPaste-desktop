@@ -105,8 +105,13 @@ const PASTE_FALLBACK_NOTICE_WIDTH: f64 = 560.0;
 const PASTE_FALLBACK_NOTICE_HEIGHT: f64 = 76.0;
 const PASTE_FALLBACK_NOTICE_TOP_INSET: f64 = 18.0;
 const PASTE_FALLBACK_NOTICE_DURATION_MS: u64 = 4_000;
-const TRAY_MENU_WIDTH: i32 = 200;
+const AUXILIARY_WINDOW_GUTTER: f64 = 8.0;
+const TRAY_MENU_WIDTH: i32 = 216;
 const TRAY_MENU_HEIGHT: i32 = 184;
+const TAB_EDITOR_CONTENT_WIDTH: f64 = 286.0;
+const TAB_EDITOR_DEFAULT_CONTENT_HEIGHT: f64 = 400.0;
+const EMOJI_PICKER_CONTENT_WIDTH: f64 = 262.0;
+const EMOJI_PICKER_CONTENT_HEIGHT: f64 = 148.0;
 #[cfg(not(target_os = "macos"))]
 const TRAY_MENU_CURSOR_GAP: i32 = 8;
 const TRAY_ICON_ID: &str = "vpaste-tray";
@@ -938,12 +943,6 @@ fn apply_windows_rounded_window_region(
     }
 
     Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn configure_windows_settings_window(window: &tauri::WebviewWindow) -> Result<(), String> {
-    window.set_shadow(true).map_err(|err| err.to_string())?;
-    apply_windows_rounded_window_region(window, ROUNDED_WINDOW_RADIUS)
 }
 
 #[cfg(target_os = "windows")]
@@ -2280,10 +2279,7 @@ fn resize_tray_menu(window: tauri::WebviewWindow, width: u32, height: u32) -> Re
             width: width as f64,
             height: height as f64,
         }))
-        .map_err(|err| err.to_string())?;
-    #[cfg(target_os = "windows")]
-    apply_windows_rounded_window_region(&window, ROUNDED_WINDOW_RADIUS)?;
-    Ok(())
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -2298,12 +2294,17 @@ fn open_tab_editor_window(
     let window = app
         .get_webview_window("tabEditor")
         .ok_or_else(|| "tab editor window not found".to_string())?;
+    let content_width = width.unwrap_or(TAB_EDITOR_CONTENT_WIDTH);
+    let content_height = height.unwrap_or(TAB_EDITOR_DEFAULT_CONTENT_HEIGHT);
     let _ = window.set_size(tauri::Size::Logical(LogicalSize {
-        width: width.unwrap_or(286_f64),
-        height: height.unwrap_or(400_f64),
+        width: content_width + AUXILIARY_WINDOW_GUTTER * 2.0,
+        height: content_height + AUXILIARY_WINDOW_GUTTER * 2.0,
     }));
     window
-        .set_position(tauri::Position::Logical(LogicalPosition { x, y }))
+        .set_position(tauri::Position::Logical(LogicalPosition {
+            x: x - AUXILIARY_WINDOW_GUTTER,
+            y: y - AUXILIARY_WINDOW_GUTTER,
+        }))
         .map_err(|err| err.to_string())?;
     window.show().map_err(|err| err.to_string())?;
     let _ = activate_native_window(&window, "tab editor open");
@@ -2345,8 +2346,6 @@ fn open_emoji_picker_window(
     anchor_bottom: f64,
     payload: String,
 ) -> Result<(), String> {
-    const PICKER_WIDTH: f64 = 262_f64;
-    const PICKER_HEIGHT: f64 = 148_f64;
     const PICKER_GAP: f64 = 5_f64;
     const SCREEN_MARGIN: f64 = 8_f64;
 
@@ -2359,8 +2358,9 @@ fn open_emoji_picker_window(
 
     let editor_position = editor.outer_position().map_err(|err| err.to_string())?;
     let scale_factor = editor.scale_factor().map_err(|err| err.to_string())?;
-    let picker_width = PICKER_WIDTH * scale_factor;
-    let picker_height = PICKER_HEIGHT * scale_factor;
+    let picker_width = EMOJI_PICKER_CONTENT_WIDTH * scale_factor;
+    let picker_height = EMOJI_PICKER_CONTENT_HEIGHT * scale_factor;
+    let window_gutter = AUXILIARY_WINDOW_GUTTER * scale_factor;
     let gap = PICKER_GAP * scale_factor;
     let margin = SCREEN_MARGIN * scale_factor;
     let button_left = editor_position.x as f64 + anchor_left * scale_factor;
@@ -2387,13 +2387,13 @@ fn open_emoji_picker_window(
     );
 
     let _ = window.set_size(tauri::Size::Logical(LogicalSize {
-        width: PICKER_WIDTH,
-        height: PICKER_HEIGHT,
+        width: EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
+        height: EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
     }));
     window
         .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-            x: x.round() as i32,
-            y: y.round() as i32,
+            x: (x - window_gutter).round() as i32,
+            y: (y - window_gutter).round() as i32,
         }))
         .map_err(|err| err.to_string())?;
     window.show().map_err(|err| err.to_string())?;
@@ -7044,7 +7044,9 @@ fn simulate_cmd_c() -> Result<(), String> {
 }
 
 const TRAY_ICON_SIZE: u32 = 128;
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+const TRAY_ACCENT_RGBA: [u8; 4] = [11, 134, 255, 255];
+#[cfg(target_os = "linux")]
 const TRAY_ACCENT_RGBA: [u8; 4] = [30, 146, 238, 255];
 #[cfg(target_os = "macos")]
 const TRAY_TEMPLATE_RGBA: [u8; 4] = [255, 255, 255, 255];
@@ -7086,13 +7088,27 @@ mod tray_icon_tests {
             (TRAY_ICON_SIZE * TRAY_ICON_SIZE * 4) as usize
         );
         assert!(TRAY_ICON_MASK.chunks_exact(4).any(|pixel| pixel[3] > 0));
+
+        let mut bounds = (TRAY_ICON_SIZE, TRAY_ICON_SIZE, 0, 0);
+        for (index, pixel) in TRAY_ICON_MASK.chunks_exact(4).enumerate() {
+            if pixel[3] == 0 {
+                continue;
+            }
+            let x = index as u32 % TRAY_ICON_SIZE;
+            let y = index as u32 / TRAY_ICON_SIZE;
+            bounds.0 = bounds.0.min(x);
+            bounds.1 = bounds.1.min(y);
+            bounds.2 = bounds.2.max(x);
+            bounds.3 = bounds.3.max(y);
+        }
+        assert_eq!(bounds, (21, 5, 105, 122));
     }
 
     #[test]
     fn tray_mask_accepts_a_runtime_color() {
-        let pixels = colorize_tray_mask(&[0, 0, 0, 0, 0, 0, 0, 128], [30, 146, 238, 255]);
+        let pixels = colorize_tray_mask(&[0, 0, 0, 0, 0, 0, 0, 128], [11, 134, 255, 255]);
 
-        assert_eq!(pixels, [30, 146, 238, 0, 30, 146, 238, 128]);
+        assert_eq!(pixels, [11, 134, 255, 0, 11, 134, 255, 128]);
     }
 }
 
@@ -7467,19 +7483,14 @@ fn main() {
         .on_window_event(|window, event| {
             #[cfg(target_os = "windows")]
             if let tauri::WindowEvent::Resized(_) = event {
-                if matches!(window.label(), "config" | "clipboardPreview" | "trayMenu") {
+                if window.label() == "clipboardPreview" {
                     if let Some(webview_window) =
                         window.app_handle().get_webview_window(window.label())
                     {
-                        let result = if window.label() == "config" {
-                            configure_windows_settings_window(&webview_window)
-                        } else {
-                            apply_windows_rounded_window_region(
-                                &webview_window,
-                                ROUNDED_WINDOW_RADIUS,
-                            )
-                        };
-                        if let Err(err) = result {
+                        if let Err(err) = apply_windows_rounded_window_region(
+                            &webview_window,
+                            ROUNDED_WINDOW_RADIUS,
+                        ) {
                             error!("Failed to update rounded window region: {}", err);
                         }
                     }
@@ -7680,10 +7691,11 @@ fn main() {
                         .decorations(false)
                         .transparent(true)
                         .background_color(tauri::window::Color(0, 0, 0, 0))
-                        .shadow(true)
                         .inner_size(720_f64, 700_f64)
                         .min_inner_size(640_f64, 520_f64)
                         .always_on_top(false);
+                #[cfg(target_os = "windows")]
+                let config_window = config_window.shadow(false);
                 #[cfg(target_os = "macos")]
                 let config_window = config_window
                     .hidden_title(true)
@@ -7695,11 +7707,7 @@ fn main() {
                 apply_vpaste_window_icon(&config_window);
                 #[cfg(target_os = "windows")]
                 {
-                    use window_vibrancy::apply_acrylic;
-                    let _ = apply_acrylic(&config_window, Some((232, 235, 229, 30)));
-                    if let Err(err) = configure_windows_settings_window(&config_window) {
-                        error!("Failed to configure config window shadow: {}", err);
-                    }
+                    let _ = config_window.set_shadow(false);
                 }
                 #[cfg(target_os = "macos")]
                 {
@@ -7809,12 +7817,6 @@ fn main() {
                     tray_menu_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
                 let _ = tray_menu_window.set_shadow(false);
                 apply_vpaste_window_icon(&tray_menu_window);
-                #[cfg(target_os = "windows")]
-                if let Err(err) =
-                    apply_windows_rounded_window_region(&tray_menu_window, ROUNDED_WINDOW_RADIUS)
-                {
-                    error!("Failed to round tray menu window: {}", err);
-                }
                 #[cfg(target_os = "macos")]
                 {
                     set_macos_window_level(&tray_menu_window, 101);
@@ -7833,7 +7835,10 @@ fn main() {
                         .always_on_top(true)
                         .resizable(false)
                         .shadow(false)
-                        .inner_size(262_f64, 148_f64);
+                        .inner_size(
+                            EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
+                            EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+                        );
                 let emoji_picker_window = emoji_picker_window.build().unwrap();
                 let _ = emoji_picker_window
                     .set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
@@ -7856,7 +7861,10 @@ fn main() {
                         .always_on_top(true)
                         .resizable(false)
                         .shadow(false)
-                        .inner_size(286_f64, 400_f64);
+                        .inner_size(
+                            TAB_EDITOR_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
+                            TAB_EDITOR_DEFAULT_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+                        );
                 let tab_editor_window = tab_editor_window.build().unwrap();
                 let _ =
                     tab_editor_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));

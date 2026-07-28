@@ -67,6 +67,8 @@ if (Object.keys(dependencies).some(name => name === "tailwindcss" || name.starts
 
 const mainRustPath = join(root, "src-tauri", "src", "main.rs");
 const mainRust = readFileSync(mainRustPath, "utf8");
+const buildRust = readFileSync(join(root, "src-tauri", "build.rs"), "utf8");
+const uiTokens = readFileSync(join(root, "src", "ui", "tokens.css"), "utf8");
 for (const label of ["clipboardPreview", "trayMenu", "emojiPicker", "tabEditor"]) {
     const builder = mainRust.match(
         new RegExp(`WebviewWindowBuilder::new\\([\\s\\S]{0,300}?"${label}"[\\s\\S]{0,3000}?\\.build\\(`),
@@ -81,13 +83,24 @@ for (const label of ["clipboardPreview", "trayMenu", "emojiPicker", "tabEditor"]
 const configBuilder = mainRust.match(
     /WebviewWindowBuilder::new\([\s\S]{0,300}?"config"[\s\S]{0,3000}?\.build\(/,
 )?.[0];
-if (!configBuilder?.includes(".transparent(true)") || !configBuilder.includes(".shadow(true)")) {
-    errors.push("src-tauri/src/main.rs: Windows settings must retain its native window shadow");
+if (!configBuilder?.includes(".transparent(true)") || !configBuilder.includes(".shadow(false)")) {
+    errors.push("src-tauri/src/main.rs: Windows settings must disable the conflicting native shadow");
 }
-if (!mainRust.match(
-    /fn configure_windows_settings_window\([\s\S]{0,500}?set_shadow\(true\)[\s\S]{0,500}?apply_windows_rounded_window_region/,
+if (mainRust.match(
+    /apply_acrylic\(&config_window|apply_windows_rounded_window_region\(&(config_window|tray_menu_window)/,
 )) {
-    errors.push("src-tauri/src/main.rs: Windows settings must combine native shadow with rounded region clipping");
+    errors.push("src-tauri/src/main.rs: CSS-owned window surfaces must not add a second native rounded surface");
+}
+if (!buildRust.includes("const TRAY_ICON_SCALE: f32 = 1.1;")) {
+    errors.push("src-tauri/build.rs: tray SVG mask must retain the approved 1.1x centered scale");
+}
+if (!mainRust.includes("const TRAY_ACCENT_RGBA: [u8; 4] = [11, 134, 255, 255];")) {
+    errors.push("src-tauri/src/main.rs: Windows tray must use the logo gradient middle stop #0B86FF");
+}
+for (const token of ["--ui-radius-window: 12px", "--ui-window-shadow: 0 2px 6px"]) {
+    if (!uiTokens.includes(token)) {
+        errors.push(`src/ui/tokens.css: missing shared auxiliary-window token "${token}"`);
+    }
 }
 
 if (!mainRust.includes('include_bytes!(concat!(env!("OUT_DIR"), "/vpaste-tray.rgba"))')) {

@@ -1,6 +1,7 @@
 use std::{env, fs, path::PathBuf};
 
 const TRAY_ICON_SIZE: u32 = 128;
+const TRAY_ICON_SCALE: f32 = 1.1;
 
 fn generate_tray_icon_mask() {
     let source_path = "icons/source/vpaste-tray.svg";
@@ -12,10 +13,12 @@ fn generate_tray_icon_mask() {
     let mut pixmap = resvg::tiny_skia::Pixmap::new(TRAY_ICON_SIZE, TRAY_ICON_SIZE)
         .expect("allocate tray pixmap");
     let tree_size = tree.size();
-    let transform = resvg::tiny_skia::Transform::from_scale(
-        TRAY_ICON_SIZE as f32 / tree_size.width(),
-        TRAY_ICON_SIZE as f32 / tree_size.height(),
-    );
+    let scale_x = TRAY_ICON_SIZE as f32 / tree_size.width() * TRAY_ICON_SCALE;
+    let scale_y = TRAY_ICON_SIZE as f32 / tree_size.height() * TRAY_ICON_SCALE;
+    let translate_x = (TRAY_ICON_SIZE as f32 - tree_size.width() * scale_x) / 2.0;
+    let translate_y = (TRAY_ICON_SIZE as f32 - tree_size.height() * scale_y) / 2.0;
+    let transform =
+        resvg::tiny_skia::Transform::from_row(scale_x, 0.0, 0.0, scale_y, translate_x, translate_y);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
     let output_path =

@@ -190,7 +190,10 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
     };
 
     const isSettingsBlocked = blockingOperation !== null;
-    const nativeWindowsSurface = "__TAURI_INTERNALS__" in window && !isMacPlatform();
+    const nativeWindowsPreview = import.meta.env.DEV
+        && new URLSearchParams(window.location.search).get("platform") === "windows";
+    const nativeWindowsSurface = nativeWindowsPreview
+        || ("__TAURI_INTERNALS__" in window && !isMacPlatform());
 
     return (
         <>

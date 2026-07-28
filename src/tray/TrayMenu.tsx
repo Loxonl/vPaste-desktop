@@ -9,7 +9,8 @@ import styles from "./TrayMenu.module.css";
 type TrayAction = "show_main_panel" | "open_config_window" | "quit_app";
 type PauseChangedPayload = { paused: boolean };
 
-const TRAY_MENU_WIDTH = 200;
+const TRAY_MENU_CONTENT_WIDTH = 200;
+const WINDOW_SURFACE_GUTTER = 8;
 const MACOS_TRAY_MENU_GUTTER_X = 10;
 const isMacOS = navigator.userAgent.toLowerCase().includes("macintosh");
 
@@ -31,8 +32,8 @@ export default function TrayMenu() {
             const height = Math.ceil(menuRef.current?.getBoundingClientRect().height ?? 0);
             if (height > 0) {
                 const width = isMacOS
-                    ? TRAY_MENU_WIDTH + MACOS_TRAY_MENU_GUTTER_X * 2
-                    : TRAY_MENU_WIDTH;
+                    ? TRAY_MENU_CONTENT_WIDTH + MACOS_TRAY_MENU_GUTTER_X * 2
+                    : TRAY_MENU_CONTENT_WIDTH + WINDOW_SURFACE_GUTTER * 2;
                 void invoke("resize_tray_menu", { width, height })
                     .catch(e => error(`Failed to resize tray menu: ${e}`));
             }

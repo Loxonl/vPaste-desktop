@@ -51,7 +51,7 @@ The supported modes are `system`, `light`, and `dark`. Existing `data-theme` beh
 
 All motion must respect `prefers-reduced-motion`. Icon-only buttons require an `aria-label`. Keyboard focus must remain visible.
 
-Transparent auxiliary Tauri windows must keep `html`, `body`, and `#root` transparent. Disable the native window shadow when the window surface draws its own rounded border or shadow; otherwise Windows can add a rectangular non-client border around the CSS surface. The resizable Windows settings window is the exception: it keeps the native undecorated-window shadow and reapplies a rounded Win32 window region after resizing. Keep platform tray roles separate: Windows and Linux color the approved tray SVG mask with the vPaste accent, while macOS installs the same mask as a monochrome template image.
+Transparent auxiliary Tauri windows must keep `html`, `body`, and `#root` transparent. Disable the native window shadow when the window surface draws its own rounded border or shadow; otherwise Windows can add a rectangular non-client border around the CSS surface. Settings, tray, emoji, tag-editor, and notice surfaces use an 8px transparent gutter around one CSS-owned 12px radius, one-pixel edge, and narrow window shadow. Keep platform tray roles separate: Windows colors the approved tray SVG mask with the logo gradient's `#0B86FF` middle stop, Linux uses the shared UI accent, and macOS installs the same mask as a monochrome template image. The runtime mask centers the approved tray SVG at `1.1×` scale without modifying the source file.
 
 ## Development and Review
 

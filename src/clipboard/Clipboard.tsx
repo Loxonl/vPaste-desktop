@@ -29,6 +29,22 @@ import TutorialOverlay, { TutorialFilterId, TutorialFilterTab, TutorialPermissio
 import appIcon from "../../src-tauri/icons/source/vpaste-app-icon-1024.png";
 import { getResolvedTheme, getThemePreview, setThemePreview, type ResolvedTheme } from "../theme";
 import { updateReady, useAppUpdateState } from "../update";
+import {
+    arraysEqual,
+    customTabFilterPayload,
+    DEFAULT_CUSTOM_FILTER,
+    loadCustomTabs,
+    loadTabOrder,
+    mergeTagSearchFilter,
+    normalizeCustomTabs,
+    orderedDynamicTabs,
+    parseTagSearch,
+    recordTagIdFromTab,
+    recordTagTabId,
+    saveCustomTabs,
+    saveTabOrder,
+    type CustomTab,
+} from "./customTabs";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const DEFAULT_PASTE_AS_TEXT_SHORTCUT = "Shift+Enter";
@@ -309,34 +325,6 @@ type PreviewNavigationPayload = {
 
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
 
-type FavoriteFilter = "any" | "yes" | "no";
-type DateUnit = "minute" | "hour" | "day" | "week" | "month";
-
-type CustomTabFilter = {
-    itemType: string;
-    appSource: string;
-    appSources: string[];
-    favorite: FavoriteFilter;
-    relativeAmount: string;
-    relativeUnit: DateUnit;
-};
-
-type CustomTab = {
-    id: string;
-    name: string;
-    filter: CustomTabFilter;
-};
-
-type DynamicTabEntry = {
-    kind: "filter";
-    id: string;
-    tab: CustomTab;
-} | {
-    kind: "record";
-    id: string;
-    tag: ItemTag;
-};
-
 type TabEditorMode = "add" | "edit";
 type TagEditorKind = "filter" | "record";
 type ItemTagsChangedPayload = {
@@ -349,23 +337,12 @@ type TagCreateChoiceState = {
     originX: number;
     originY: number;
 } | null;
-const RECORD_TAG_TAB_PREFIX = "record:";
 const TAB_EDITOR_WIDTH = 286;
 const FILTER_TAG_EDITOR_HEIGHT = 398;
 const RECORD_TAG_EDITOR_HEIGHT = 178;
 const TAG_CREATE_CHOICE_WIDTH = 252;
 const TAG_CREATE_CHOICE_HEIGHT = 142;
 
-const CUSTOM_TABS_STORAGE_KEY = "vpaste.customTabs.v1";
-const TAB_ORDER_STORAGE_KEY = "vpaste.tabOrder.v1";
-const DEFAULT_CUSTOM_FILTER: CustomTabFilter = {
-    itemType: "",
-    appSource: "",
-    appSources: [],
-    favorite: "any",
-    relativeAmount: "",
-    relativeUnit: "day",
-};
 const DEFAULT_MAIN_SHORTCUT = "Alt+V";
 const TUTORIAL_FILTER_TABS: Array<{ id: TutorialFilterId; emoji: string; titleKey: string; itemType: ItemType }> = [
     { id: "text", emoji: "📝", titleKey: "type.text", itemType: ItemType.Text },
@@ -379,148 +356,10 @@ function tutorialFilterTabId(id: TutorialFilterId): string {
     return `tutorial-filter-${id}`;
 }
 
-function normalizeAppSources(filter: Partial<CustomTabFilter> & { appSource?: unknown; appSources?: unknown }): string[] {
-    if (Array.isArray(filter.appSources)) {
-        return filter.appSources.filter(source => typeof source === "string" && source.trim()).map(source => source.trim());
-    }
-    return typeof filter.appSource === "string" && filter.appSource.trim() ? [filter.appSource.trim()] : [];
-}
-
-function loadCustomTabs(): CustomTab[] {
-    return normalizeCustomTabs(localStorage.getItem(CUSTOM_TABS_STORAGE_KEY));
-}
-
-function normalizeStringArray(raw: unknown): string[] {
-    try {
-        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-        return Array.isArray(parsed)
-            ? parsed.filter(value => typeof value === "string" && value.trim()).map(value => value.trim())
-            : [];
-    } catch {
-        return [];
-    }
-}
-
-function loadTabOrder(): string[] {
-    return normalizeStringArray(localStorage.getItem(TAB_ORDER_STORAGE_KEY));
-}
-
-function saveTabOrder(order: string[]) {
-    localStorage.setItem(TAB_ORDER_STORAGE_KEY, JSON.stringify(order));
-}
-
-function normalizeCustomTabs(raw: unknown): CustomTab[] {
-    try {
-        if (!raw) return [];
-        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-        return Array.isArray(parsed)
-            ? parsed
-                .filter(tab => typeof tab?.id === "string" && typeof tab?.name === "string")
-                .map(tab => {
-                    const filter = { ...DEFAULT_CUSTOM_FILTER, ...(tab.filter || {}) };
-                    const { tagName: _legacyRecordTagName, ...filterWithoutRecordTag } = filter as typeof DEFAULT_CUSTOM_FILTER & { tagName?: unknown };
-                    return {
-                        id: tab.id,
-                        name: tab.name,
-                        filter: { ...filterWithoutRecordTag, appSources: normalizeAppSources(filter) },
-                    };
-                })
-            : [];
-    } catch {
-        return [];
-    }
-}
-
-function saveCustomTabs(tabs: CustomTab[]) {
-    localStorage.setItem(CUSTOM_TABS_STORAGE_KEY, JSON.stringify(tabs));
-}
-
 function persistCustomTabs(tabs: CustomTab[]) {
     saveCustomTabs(tabs);
     void invoke('save_custom_tabs', { tabs })
         .catch(e => error(`Failed to persist custom tabs: ${e}`));
-}
-
-function customTabFilterPayload(tab: CustomTab): string {
-    const filter = tab.filter;
-    const payload: Record<string, string | number | boolean | string[]> = { mode: "custom" };
-    if (filter.itemType) payload.item_type = filter.itemType;
-    const appSources = normalizeAppSources(filter);
-    if (appSources.length > 0) payload.app_sources = appSources;
-    if (filter.favorite === "yes") payload.favorite = true;
-    if (filter.favorite === "no") payload.favorite = false;
-    const amount = Number(filter.relativeAmount);
-    if (Number.isFinite(amount) && amount > 0) {
-        payload.relative_amount = amount;
-        payload.relative_unit = filter.relativeUnit;
-    }
-    return `__filter:${JSON.stringify(payload)}`;
-}
-
-function recordTagTabId(id: number): string {
-    return `${RECORD_TAG_TAB_PREFIX}${id}`;
-}
-
-function recordTagIdFromTab(tabId: string): number | null {
-    if (!tabId.startsWith(RECORD_TAG_TAB_PREFIX)) return null;
-    const id = Number(tabId.slice(RECORD_TAG_TAB_PREFIX.length));
-    return Number.isInteger(id) && id > 0 ? id : null;
-}
-
-function orderedDynamicTabs(customTabs: CustomTab[], itemTags: ItemTag[], order: string[]): DynamicTabEntry[] {
-    const defaultEntries: DynamicTabEntry[] = [
-        ...customTabs.map(tab => ({ kind: "filter" as const, id: tab.id, tab })),
-        ...itemTags.map(tag => ({ kind: "record" as const, id: recordTagTabId(tag.id), tag })),
-    ];
-    const entryMap = new Map(defaultEntries.map(entry => [entry.id, entry]));
-    const seen = new Set<string>();
-    const ids = [
-        ...order.filter(id => {
-            if (seen.has(id) || !entryMap.has(id)) return false;
-            seen.add(id);
-            return true;
-        }),
-        ...defaultEntries.map(entry => entry.id).filter(id => !seen.has(id)),
-    ];
-    return ids.map(id => entryMap.get(id)).filter((entry): entry is DynamicTabEntry => Boolean(entry));
-}
-
-function arraysEqual(left: string[], right: string[]): boolean {
-    return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function parseTagSearch(value: string): { keywords: string; tagNames: string[] } {
-    const tagNames: string[] = [];
-    const keywords = value
-        .replace(/(?:^|\s)tag:("[^"]+"|\S+)/gi, (_match, raw: string) => {
-            const name = raw.startsWith('"') && raw.endsWith('"')
-                ? raw.slice(1, -1)
-                : raw;
-            const trimmed = name.trim();
-            if (trimmed && !tagNames.some(tag => tag.toLowerCase() === trimmed.toLowerCase())) {
-                tagNames.push(trimmed);
-            }
-            return " ";
-        })
-        .replace(/\s+/g, " ")
-        .trim();
-    return { keywords, tagNames };
-}
-
-function mergeTagSearchFilter(label: string, tagNames: string[]): string {
-    if (tagNames.length === 0) return label;
-    const payload: Record<string, unknown> = label.startsWith("__filter:")
-        ? JSON.parse(label.slice("__filter:".length))
-        : label === "__favorite"
-            ? { mode: "favorite", favorite: true }
-            : { mode: "all" };
-    const existing = Array.isArray(payload.tag_names)
-        ? payload.tag_names.filter(name => typeof name === "string")
-        : [];
-    payload.tag_names = [...existing, ...tagNames].filter((name, index, list) =>
-        list.findIndex(candidate => String(candidate).toLowerCase() === String(name).toLowerCase()) === index
-    );
-    return `__filter:${JSON.stringify(payload)}`;
 }
 
 const CONTEXT_MENU_WIDTH = 188;

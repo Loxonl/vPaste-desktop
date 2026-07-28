@@ -1,7 +1,7 @@
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Item, ItemType } from "../../../src/clipboard/Item";
-import { ImagePreview } from "../../../src/clipboard/Clipboard";
+import { ImagePreview } from "../../../src/clipboard/ClipboardCardPreview";
 
 const { invokeMock } = vi.hoisted(() => ({
     invokeMock: vi.fn(),

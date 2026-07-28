@@ -298,7 +298,7 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
             if (frame.complete) {
                 state.frame = null;
                 state.lastFrameTime = null;
-                optionsRef.current.onLoadMore();
+                optionsRef.current.onLoadMore(true);
                 scheduleWheelScrollIdle();
                 return;
             }
@@ -346,7 +346,7 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
             state.lastFrameTime = null;
             state.target = Math.max(0, Math.min(maxScroll, container.scrollLeft + scrollAmount));
             container.scrollLeft = state.target;
-            optionsRef.current.onLoadMore();
+            optionsRef.current.onLoadMore(true);
             scheduleWheelScrollIdle();
             return;
         }

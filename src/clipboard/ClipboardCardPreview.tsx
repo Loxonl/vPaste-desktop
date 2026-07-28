@@ -271,14 +271,16 @@ function AutoScrollPreview({
     return <div ref={ref} className={className}>{children}</div>;
 }
 
-function ImagePreview({
+export function ImagePreview({
     item,
     active,
+    refreshKey,
     t,
     onGifFormatChange,
 }: {
     item: Item;
     active: boolean;
+    refreshKey: number;
     t: TFunction;
     onGifFormatChange: (isGif: boolean) => void;
 }) {
@@ -287,6 +289,9 @@ function ImagePreview({
     const [imageSrc, setImageSrc] = useState("");
     const [isVisible, setIsVisible] = useState(false);
     const stageRef = useRef<HTMLDivElement>(null);
+    const fallbackAttemptedRef = useRef(false);
+    const sourcePath = item.getContent();
+    const previewPath = item.getPreviewContent() || sourcePath;
     const width = naturalSize?.width || 0;
     const height = naturalSize?.height || 0;
     const stageWidth = stageSize.width;
@@ -333,26 +338,27 @@ function ImagePreview({
 
     useEffect(() => {
         setImageSrc("");
-        const sourcePath = item.getContent();
         const cachedMetadata = historyImageMetadataCache.get(sourcePath);
         setNaturalSize(cachedMetadata ? { width: cachedMetadata.width, height: cachedMetadata.height } : null);
         onGifFormatChange(itemHasGifFormat(item));
-    }, [item, onGifFormatChange]);
+    }, [item, sourcePath, onGifFormatChange]);
+
+    useEffect(() => {
+        fallbackAttemptedRef.current = false;
+    }, [item.getHash(), refreshKey]);
 
     useEffect(() => {
         if (!isVisible) return;
 
         let cancelled = false;
         let timeout = 0;
-        const sourcePath = item.getContent();
-        const previewPath = item.getPreviewContent() || sourcePath;
         if (!sourcePath) return;
 
         const load = (gif: boolean) => {
             const loader = gif && active ? loadHistoryOriginalSrc : loadHistoryPreviewSrc;
             loader(gif && active ? sourcePath : previewPath)
                 .then(src => {
-                    if (!cancelled) setImageSrc(src);
+                    if (!cancelled && !fallbackAttemptedRef.current) setImageSrc(src);
                 });
         };
 
@@ -378,21 +384,34 @@ function ImagePreview({
             cancelled = true;
             window.clearTimeout(timeout);
         };
-    }, [item.getHash(), item.getContent(), item.getPreviewContent(), isVisible, active, onGifFormatChange]);
+    }, [item.getHash(), sourcePath, previewPath, isVisible, active, refreshKey, onGifFormatChange]);
+
+    const recoverImageSource = () => {
+        if (!sourcePath || fallbackAttemptedRef.current) return;
+        fallbackAttemptedRef.current = true;
+        historyPreviewSrcCache.delete(previewPath);
+        historyOriginalSrcCache.delete(sourcePath);
+        historyDataUrlCache.delete(sourcePath);
+        void invoke<string>("history_file_data_url", { path: sourcePath })
+            .then(setImageSrc)
+            .catch(e => error(`Failed to recover history image preview: ${e}`));
+    };
 
     return (
         <div className={classes(styles, "image-preview")}>
             <div className={classes(styles, "image-preview-stage")} ref={stageRef}>
-                <img
-                    key={imageSrc}
-                    src={imageSrc}
-                    alt=""
-                    draggable={false}
-                    loading="lazy"
-                    decoding="async"
-                    className={classes(styles, "image-preview-img")}
-                    style={imageStyle}
-                />
+                {imageSrc && (
+                    <img
+                        key={`${isVisible ? refreshKey : 0}:${imageSrc}`}
+                        src={imageSrc}
+                        alt=""
+                        draggable={false}
+                        decoding="async"
+                        className={classes(styles, "image-preview-img")}
+                        style={imageStyle}
+                        onError={recoverImageSource}
+                    />
+                )}
                 {naturalSize && (
                     <div className={classes(styles, "image-resolution")}>
                         {`${naturalSize.width} x ${naturalSize.height}`}
@@ -650,6 +669,7 @@ export default function ClipboardCardPreview({
             <ImagePreview
                 item={item}
                 active={active && mediaPlaybackReady}
+                refreshKey={refreshKey}
                 t={t}
                 onGifFormatChange={onGifFormatChange}
             />

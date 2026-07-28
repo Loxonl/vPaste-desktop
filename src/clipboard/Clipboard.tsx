@@ -197,7 +197,7 @@ export default function Clipboard() {
     const toastTimerRef = useRef<number | null>(null);
     const scrollRefreshTimerRef = useRef<number | null>(null);
     const imagePrewarmTimerRef = useRef<number | null>(null);
-    const lastLoadMoreCheckRef = useRef(0);
+    const loadMoreCheckFrameRef = useRef<number | null>(null);
     const searchDebounceTimerRef = useRef<number | null>(null);
     const searchRequestSeqRef = useRef(0);
     const lastHistoryFetchRef = useRef<{ keywords: string; tab: string } | null>(null);
@@ -868,18 +868,29 @@ export default function Clipboard() {
         }
     };
 
-    const maybeLoadMoreHistory = (force: boolean = false) => {
-        const now = performance.now();
-        if (!force && now - lastLoadMoreCheckRef.current < 120) {
-            return;
-        }
-        lastLoadMoreCheckRef.current = now;
+    const runLoadMoreHistoryCheck = () => {
         const container = cardsContainerRef.current;
         if (!container) return;
         const distanceToEnd = container.scrollWidth - container.scrollLeft - container.clientWidth;
         if (distanceToEnd < 360) {
             void loadMoreHistory();
         }
+    };
+
+    const maybeLoadMoreHistory = (force: boolean = false) => {
+        if (force) {
+            if (loadMoreCheckFrameRef.current !== null) {
+                window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
+                loadMoreCheckFrameRef.current = null;
+            }
+            runLoadMoreHistoryCheck();
+            return;
+        }
+        if (loadMoreCheckFrameRef.current !== null) return;
+        loadMoreCheckFrameRef.current = window.requestAnimationFrame(() => {
+            loadMoreCheckFrameRef.current = null;
+            runLoadMoreHistoryCheck();
+        });
     };
     maybeLoadMoreHistoryRef.current = maybeLoadMoreHistory;
 
@@ -964,6 +975,7 @@ export default function Clipboard() {
             },
             onWindowShowComplete: () => {
                 setAnimationState("entered");
+                setFileRefreshKey(key => key + 1);
             },
             onWindowHide: () => {
                 resetCardsPointerState();
@@ -975,6 +987,10 @@ export default function Clipboard() {
                 if (imagePrewarmTimerRef.current !== null) {
                     window.clearTimeout(imagePrewarmTimerRef.current);
                     imagePrewarmTimerRef.current = null;
+                }
+                if (loadMoreCheckFrameRef.current !== null) {
+                    window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
+                    loadMoreCheckFrameRef.current = null;
                 }
                 hideAltHints();
                 setAnimationState("exiting");
@@ -1058,6 +1074,10 @@ export default function Clipboard() {
             }
             if (imagePrewarmTimerRef.current !== null) {
                 window.clearTimeout(imagePrewarmTimerRef.current);
+            }
+            if (loadMoreCheckFrameRef.current !== null) {
+                window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
+                loadMoreCheckFrameRef.current = null;
             }
             if (searchDebounceTimerRef.current !== null) {
                 window.clearTimeout(searchDebounceTimerRef.current);

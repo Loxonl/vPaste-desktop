@@ -77,6 +77,7 @@ import {
     type ItemTagsChangedPayload,
 } from "./useClipboardLifecycleSubscriptions";
 import { useClipboardListInteractions } from "./useClipboardListInteractions";
+import { useClipboardAltHints } from "./useClipboardAltHints";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const DEFAULT_PASTE_AS_TEXT_SHORTCUT = "Shift+Enter";
@@ -185,7 +186,6 @@ export default function Clipboard() {
     const [itemTags, setItemTags] = useState<ItemTag[]>([]);
     const [hasMoreHistory, setHasMoreHistory] = useState(true);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
-    const [altHintsVisible, setAltHintsVisible] = useState(false);
     const [simulatedHoverHash, setSimulatedHoverHash] = useState("");
     const [tutorialActive, setTutorialActive] = useState(false);
     const [tutorialRunId, setTutorialRunId] = useState(0);
@@ -216,7 +216,6 @@ export default function Clipboard() {
     const searchInputRef = useRef<HTMLInputElement>(null);
     const addTabButtonRef = useRef<HTMLButtonElement>(null);
     const toastTimerRef = useRef<number | null>(null);
-    const altHintTimerRef = useRef<number | null>(null);
     const scrollRefreshTimerRef = useRef<number | null>(null);
     const imagePrewarmTimerRef = useRef<number | null>(null);
     const lastLoadMoreCheckRef = useRef(0);
@@ -241,6 +240,13 @@ export default function Clipboard() {
     const pendingRecordTagAssignTargetRef = useRef<Item | null>(null);
     const previewRequestSeqRef = useRef(0);
     const activateClipboardCardRef = useRef<(hash: string, plainText: boolean) => void>(() => { });
+    const {
+        clearTimer: clearAltHintTimer,
+        hide: hideAltHints,
+        showWhilePressed: showAltHintsWhilePressed,
+        syncFromNative: syncAltHintsFromNative,
+        visible: altHintsVisible,
+    } = useClipboardAltHints(quickInputEnabledRef);
     const dynamicTabs = useMemo(
         () => orderedDynamicTabs(customTabs, itemTags, tabOrder),
         [customTabs, itemTags, tabOrder],
@@ -278,59 +284,6 @@ export default function Clipboard() {
             setTabContextMenu(null);
         },
     });
-
-    const clearAltHintTimer = () => {
-        if (altHintTimerRef.current !== null) {
-            window.clearTimeout(altHintTimerRef.current);
-            altHintTimerRef.current = null;
-        }
-    };
-
-    const hideAltHints = () => {
-        clearAltHintTimer();
-        setAltHintsVisible(false);
-    };
-
-    const pollAltKeyState = () => {
-        clearAltHintTimer();
-        altHintTimerRef.current = window.setTimeout(() => {
-            void invoke<boolean>('is_alt_key_pressed')
-                .then(pressed => {
-                    altHintTimerRef.current = null;
-                    if (pressed && quickInputEnabledRef.current) {
-                        setAltHintsVisible(true);
-                        pollAltKeyState();
-                    } else {
-                        setAltHintsVisible(false);
-                    }
-                })
-                .catch(e => {
-                    altHintTimerRef.current = null;
-                    error(`Failed to read Alt key state: ${e}`);
-                });
-        }, 40);
-    };
-
-    const showAltHintsWhilePressed = () => {
-        if (!quickInputEnabledRef.current) {
-            hideAltHints();
-            return;
-        }
-        setAltHintsVisible(true);
-        pollAltKeyState();
-    };
-
-    const syncAltHintsFromNative = () => {
-        void invoke<boolean>('is_alt_key_pressed')
-            .then(pressed => {
-                if (pressed && quickInputEnabledRef.current) {
-                    showAltHintsWhilePressed();
-                } else {
-                    hideAltHints();
-                }
-            })
-            .catch(e => error(`Failed to sync Alt key state: ${e}`));
-    };
 
     const switchToTabWithShortcut = (tabId: string) => {
         setContextMenu(null);

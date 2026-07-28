@@ -63,6 +63,8 @@ Before opening a UI pull request:
 npm run check:ui
 ```
 
+The full command includes Playwright visual tests and is intended for local review. To conserve hosted-runner quota, GitHub Actions runs only the style-architecture check, production build, and unit tests. Visual baselines must be checked locally before submitting UI changes.
+
 Screenshot changes are review artifacts, not automatic updates. Regenerate them with `npm run test:visual:update`, inspect every changed image, and commit only intentional changes.
 
 Do not combine a React or MUI major-version upgrade with visual migration work. Do not edit Windows installer files as part of frontend UI work.

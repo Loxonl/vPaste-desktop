@@ -78,9 +78,17 @@ import {
 } from "./useClipboardLifecycleSubscriptions";
 import { useClipboardListInteractions } from "./useClipboardListInteractions";
 import { useClipboardAltHints } from "./useClipboardAltHints";
+import {
+    loadClipboardBehaviorConfig,
+    mainShortcutFromConfig,
+    resolveClipboardShowPreferences,
+} from "./clipboardBehavior";
+import {
+    DEFAULT_MAIN_SHORTCUT,
+    DEFAULT_PASTE_AS_TEXT_SHORTCUT,
+} from "../config/shortcutDefaults";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
-const DEFAULT_PASTE_AS_TEXT_SHORTCUT = "Shift+Enter";
 const HISTORY_PAGE_LIMIT = 36;
 const IMAGE_EXPORT_DIR_KEY = "vpaste.imageExportDir.v1";
 const PENDING_ITEM_TAGS_CHANGED_KEY = "vpaste.pendingItemTagsChangedPayload";
@@ -95,21 +103,6 @@ type ToastState = {
     actionLabel?: string;
     onAction?: () => void;
 } | null;
-
-type ClipboardBehaviorConfig = {
-    display_tray_icon?: boolean;
-    onboarding_completed?: boolean;
-    retain_search_history?: boolean;
-    retain_last_position?: boolean;
-    retain_tab_position?: boolean;
-    link_auto_preview?: boolean;
-    quick_input_enabled?: boolean;
-    tab_quick_select_enabled?: boolean;
-    shortcut_keys?: {
-        main_window?: string | null;
-        paste_into_plain_text?: string | null;
-    };
-};
 
 type PasteAccessibilityPermissionStatus = {
     granted: boolean;
@@ -136,7 +129,6 @@ const RECORD_TAG_EDITOR_HEIGHT = 178;
 const TAG_CREATE_CHOICE_WIDTH = 252;
 const TAG_CREATE_CHOICE_HEIGHT = 142;
 
-const DEFAULT_MAIN_SHORTCUT = "Alt+V";
 const TUTORIAL_FILTER_TABS: Array<{ id: TutorialFilterId; emoji: string; titleKey: string; itemType: ItemType }> = [
     { id: "text", emoji: "📝", titleKey: "type.text", itemType: ItemType.Text },
     { id: "image", emoji: "🖼️", titleKey: "type.image", itemType: ItemType.Image },
@@ -573,16 +565,6 @@ export default function Clipboard() {
         }
     };
 
-    const loadBehaviorConfig = async (): Promise<ClipboardBehaviorConfig> => {
-        try {
-            const config = JSON.parse(await invoke<string>('get_config'));
-            return config as ClipboardBehaviorConfig;
-        } catch (e) {
-            error(`Failed to load clipboard behavior config: ${e}`);
-            return {};
-        }
-    };
-
     const refreshTutorialPermissionStatus = async (): Promise<TutorialPermissionStatus | null> => {
         try {
             const status = await invoke<TutorialPermissionStatus>('get_onboarding_permission_status');
@@ -595,8 +577,8 @@ export default function Clipboard() {
     };
 
     const refreshTutorialConfig = async () => {
-        const config = await loadBehaviorConfig();
-        setMainShortcut(config.shortcut_keys?.main_window || DEFAULT_MAIN_SHORTCUT);
+        const config = await loadClipboardBehaviorConfig();
+        setMainShortcut(mainShortcutFromConfig(config));
         return config;
     };
 
@@ -980,28 +962,31 @@ export default function Clipboard() {
     };
 
     const applyShowPreferences = async () => {
-        const config = await loadBehaviorConfig();
-        pasteAsTextShortcutRef.current = config.shortcut_keys?.paste_into_plain_text || DEFAULT_PASTE_AS_TEXT_SHORTCUT;
-        quickInputEnabledRef.current = config.quick_input_enabled !== false;
+        const config = await loadClipboardBehaviorConfig();
+        const preferences = resolveClipboardShowPreferences(
+            config,
+            searchWordRef.current,
+            activeTabRef.current,
+        );
+        pasteAsTextShortcutRef.current = preferences.pasteAsTextShortcut;
+        quickInputEnabledRef.current = preferences.quickInputEnabled;
         if (!quickInputEnabledRef.current) {
             hideAltHints();
         }
-        tabQuickSelectEnabledRef.current = config.tab_quick_select_enabled !== false;
-        linkAutoPreviewRef.current = config.link_auto_preview !== false;
-        const nextSearchWord = config.retain_search_history ? searchWordRef.current : "";
-        const nextActiveTab = config.retain_tab_position ? activeTabRef.current : "all";
+        tabQuickSelectEnabledRef.current = preferences.tabQuickSelectEnabled;
+        linkAutoPreviewRef.current = preferences.linkAutoPreview;
 
-        if (!config.retain_search_history) {
+        if (!preferences.retainSearchHistory) {
             setSearchWord("");
             setSearchOpen(false);
         }
 
-        if (!config.retain_tab_position) {
+        if (!preferences.retainTabPosition) {
             activeTabRef.current = "all";
             setActiveTab("all");
         }
 
-        if (!config.retain_last_position) {
+        if (!preferences.retainLastPosition) {
             if (cardsContainerRef.current) {
                 cardsContainerRef.current.scrollLeft = 0;
             }
@@ -1012,14 +997,18 @@ export default function Clipboard() {
 
         const cachedFetch = lastHistoryFetchRef.current;
         if (
-            cachedFetch?.keywords === nextSearchWord
-            && cachedFetch?.tab === nextActiveTab
+            cachedFetch?.keywords === preferences.searchWord
+            && cachedFetch?.tab === preferences.activeTab
             && pageListRef.current.length > 0
         ) {
             return;
         }
 
-        await fetchHistoryWith(nextSearchWord, nextActiveTab, { selectFirst: !config.retain_last_position });
+        await fetchHistoryWith(
+            preferences.searchWord,
+            preferences.activeTab,
+            { selectFirst: !preferences.retainLastPosition },
+        );
     };
 
     useClipboardLifecycleSubscriptions({
@@ -1132,7 +1121,7 @@ export default function Clipboard() {
             if (isMacPlatform()) {
                 void refreshTutorialPermissionStatus();
             }
-            void loadBehaviorConfig()
+            void loadClipboardBehaviorConfig()
                 .then(config => {
                     if (config.onboarding_completed === false && !tutorialActiveRef.current) {
                         void startTutorial();

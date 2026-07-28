@@ -10,14 +10,13 @@ import { Item, ItemTag, ItemType } from "./Item.ts";
 import { useLanguage } from "../lang";
 import { formatShortcutLabel, isMacPlatform } from "../shortcutDisplay";
 import SearchIcon from "@mui/icons-material/Search";
-import TutorialOverlay, { TutorialFilterId, TutorialFilterTab, TutorialPermission, TutorialPermissionId, TutorialPlatform } from "./TutorialOverlay.tsx";
+import TutorialOverlay from "./TutorialOverlay.tsx";
 import appIcon from "../../src-tauri/icons/source/vpaste-app-icon-1024.png";
 import { getResolvedTheme, getThemePreview, setThemePreview, type ResolvedTheme } from "../theme";
 import { updateReady, useAppUpdateState } from "../update";
 import {
     arraysEqual,
     customTabFilterPayload,
-    DEFAULT_CUSTOM_FILTER,
     loadCustomTabs,
     loadTabOrder,
     mergeTagSearchFilter,
@@ -87,6 +86,16 @@ import {
     DEFAULT_MAIN_SHORTCUT,
     DEFAULT_PASTE_AS_TEXT_SHORTCUT,
 } from "../config/shortcutDefaults";
+import {
+    buildTutorialFilterTabs,
+    buildTutorialPermissions,
+    tutorialFilterTabId,
+    updateTutorialFilterTabs,
+    type TutorialFilterId,
+    type TutorialPermissionId,
+    type TutorialPermissionStatus,
+    type TutorialPlatform,
+} from "./clipboardTutorial";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const HISTORY_PAGE_LIMIT = 36;
@@ -109,11 +118,6 @@ type PasteAccessibilityPermissionStatus = {
     needs_settings: boolean;
 };
 
-type TutorialPermissionStatus = {
-    background: { done: boolean; needs_settings: boolean; error?: string | null };
-    paste: { done: boolean; needs_settings: boolean; error?: string | null };
-};
-
 type LinkPreviewUpdate = {
     url: string;
     title: string;
@@ -128,18 +132,6 @@ const FILTER_TAG_EDITOR_HEIGHT = 398;
 const RECORD_TAG_EDITOR_HEIGHT = 178;
 const TAG_CREATE_CHOICE_WIDTH = 252;
 const TAG_CREATE_CHOICE_HEIGHT = 142;
-
-const TUTORIAL_FILTER_TABS: Array<{ id: TutorialFilterId; emoji: string; titleKey: string; itemType: ItemType }> = [
-    { id: "text", emoji: "📝", titleKey: "type.text", itemType: ItemType.Text },
-    { id: "image", emoji: "🖼️", titleKey: "type.image", itemType: ItemType.Image },
-    { id: "link", emoji: "🔗", titleKey: "type.link", itemType: ItemType.Link },
-    { id: "color", emoji: "🎨", titleKey: "type.color", itemType: ItemType.Color },
-    { id: "file", emoji: "📁", titleKey: "type.file", itemType: ItemType.File },
-];
-
-function tutorialFilterTabId(id: TutorialFilterId): string {
-    return `tutorial-filter-${id}`;
-}
 
 function persistCustomTabs(tabs: CustomTab[]) {
     saveCustomTabs(tabs);
@@ -616,27 +608,9 @@ export default function Clipboard() {
         }
     };
 
-    const makeTutorialFilterTab = (id: TutorialFilterId): CustomTab | null => {
-        const meta = TUTORIAL_FILTER_TABS.find(tab => tab.id === id);
-        if (!meta) return null;
-        return {
-            id: tutorialFilterTabId(id),
-            name: `${meta.emoji} ${t(meta.titleKey)}`,
-            filter: { ...DEFAULT_CUSTOM_FILTER, itemType: meta.itemType },
-        };
-    };
-
     const handleTutorialFilterToggle = (id: TutorialFilterId, enabled: boolean) => {
         const tabId = tutorialFilterTabId(id);
-        const tab = makeTutorialFilterTab(id);
-        if (!tab) return;
-
-        setCustomTabs(tabs => {
-            const exists = tabs.some(candidate => candidate.id === tabId);
-            if (enabled && !exists) return [...tabs, tab];
-            if (!enabled && exists) return tabs.filter(candidate => candidate.id !== tabId);
-            return tabs;
-        });
+        setCustomTabs(tabs => updateTutorialFilterTabs(tabs, id, enabled, t));
 
         if (enabled) {
             appendTabOrderId(tabId);
@@ -1769,27 +1743,11 @@ export default function Clipboard() {
         showToast(t("tutorial.finishFirst"), "info", 2200);
     };
 
-    const tutorialPermissions: TutorialPermission[] = [
-        {
-            id: "background",
-            title: t("tutorial.permission.background"),
-            description: t("tutorial.permission.background.desc"),
-            done: tutorialPermissionStatus?.background.done === true,
-            actionLabel: t("tutorial.permission.enable"),
-        },
-        {
-            id: "paste",
-            title: t("tutorial.permission.paste"),
-            description: t("tutorial.permission.paste.desc"),
-            done: tutorialPermissionStatus?.paste.done === true,
-            actionLabel: t("tutorial.permission.openSettings"),
-        },
-    ];
-    const tutorialFilters: TutorialFilterTab[] = TUTORIAL_FILTER_TABS.map(filter => ({
-        id: filter.id,
-        name: `${filter.emoji} ${t(filter.titleKey)}`,
-        enabled: customTabs.some(tab => tab.id === tutorialFilterTabId(filter.id)),
-    }));
+    const tutorialPermissions = buildTutorialPermissions(
+        tutorialPermissionStatus,
+        t,
+    );
+    const tutorialFilters = buildTutorialFilterTabs(customTabs, t);
     const tutorialShortcutText = formatShortcutLabel(mainShortcut, tutorialPlatform === "mac");
 
     const contextMenuOptions = contextMenu

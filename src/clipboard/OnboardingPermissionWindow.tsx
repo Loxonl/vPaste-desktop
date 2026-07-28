@@ -9,7 +9,10 @@ import authorizeTips from "../assets/tutorial/authorize-tips.png";
 import backgroundAuthorizeTips from "../assets/tutorial/background-authorize-tips.png";
 import { useLanguage } from "../lang";
 import { loadAndApplyTheme, setThemePreview, type ResolvedTheme } from "../theme";
-import type { TutorialPermissionId } from "./TutorialOverlay";
+import {
+    PENDING_PERMISSION_WINDOW_KEY,
+    type TutorialPermissionId,
+} from "./clipboardTutorial";
 import styles from "./TutorialOverlay.module.css";
 
 type PermissionWindowPayload = {
@@ -24,8 +27,6 @@ type PermissionStatus = {
 };
 
 type PermissionItemStatus = { done: boolean; needs_settings?: boolean };
-
-const PENDING_PERMISSION_WINDOW_KEY = "vpaste.pendingOnboardingPermission.v1";
 
 function isPermissionId(value: unknown): value is TutorialPermissionId {
     return value === "background" || value === "paste";

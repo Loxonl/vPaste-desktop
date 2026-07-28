@@ -12,7 +12,7 @@ import { formatShortcutLabel, isMacPlatform } from "../shortcutDisplay";
 import SearchIcon from "@mui/icons-material/Search";
 import TutorialOverlay from "./TutorialOverlay.tsx";
 import appIcon from "../../src-tauri/icons/source/vpaste-app-icon-1024.png";
-import { getResolvedTheme, getThemePreview, setThemePreview, type ResolvedTheme } from "../theme";
+import { getResolvedTheme, setThemePreview, type ResolvedTheme } from "../theme";
 import { updateReady, useAppUpdateState } from "../update";
 import {
     arraysEqual,
@@ -79,7 +79,6 @@ import { useClipboardListInteractions } from "./useClipboardListInteractions";
 import { useClipboardAltHints } from "./useClipboardAltHints";
 import {
     loadClipboardBehaviorConfig,
-    mainShortcutFromConfig,
     resolveClipboardShowPreferences,
 } from "./clipboardBehavior";
 import {
@@ -92,16 +91,15 @@ import {
     tutorialFilterTabId,
     updateTutorialFilterTabs,
     type TutorialFilterId,
-    type TutorialPermissionId,
     type TutorialPermissionStatus,
     type TutorialPlatform,
 } from "./clipboardTutorial";
+import { createClipboardTutorialRuntime } from "./clipboardTutorialRuntime";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const HISTORY_PAGE_LIMIT = 36;
 const IMAGE_EXPORT_DIR_KEY = "vpaste.imageExportDir.v1";
 const PENDING_ITEM_TAGS_CHANGED_KEY = "vpaste.pendingItemTagsChangedPayload";
-const PENDING_PERMISSION_WINDOW_KEY = "vpaste.pendingOnboardingPermission.v1";
 
 type ToastKind = 'info' | 'warning' | 'error';
 
@@ -207,6 +205,7 @@ export default function Clipboard() {
     const searchRequestSeqRef = useRef(0);
     const lastHistoryFetchRef = useRef<{ keywords: string; tab: string } | null>(null);
     const maybeLoadMoreHistoryRef = useRef<(force?: boolean) => void>(() => undefined);
+    const refreshHistoryRef = useRef<() => void>(() => undefined);
     const searchWordRef = useRef("");
     const activeTabRef = useRef("all");
     const tutorialActiveRef = useRef(false);
@@ -557,56 +556,43 @@ export default function Clipboard() {
         }
     };
 
-    const refreshTutorialPermissionStatus = async (): Promise<TutorialPermissionStatus | null> => {
-        try {
-            const status = await invoke<TutorialPermissionStatus>('get_onboarding_permission_status');
-            setTutorialPermissionStatus(status);
-            return status;
-        } catch (e) {
-            error(`Failed to refresh tutorial permission status: ${e}`);
-            return null;
-        }
-    };
-
-    const refreshTutorialConfig = async () => {
-        const config = await loadClipboardBehaviorConfig();
-        setMainShortcut(mainShortcutFromConfig(config));
-        return config;
-    };
-
-    const startTutorial = async (platform: TutorialPlatform = isMacPlatform() ? "mac" : "windows") => {
-        setContextMenu(null);
-        setTabContextMenu(null);
-        setTagCreateChoice(null);
-        setDeleteConfirmTab(null);
-        setDeleteConfirmRecordTag(null);
-        setSearchWord("");
-        setSearchOpen(false);
-        hideAltHints();
-        activeTabRef.current = "all";
-        setActiveTab("all");
-        clearCardsClickSuppression();
-        setTutorialPlatform(platform);
-        setTutorialRunId(id => id + 1);
-        setTutorialActive(true);
-        void refreshTutorialConfig();
-        if (platform === "mac") {
-            setTutorialPermissionStatus(null);
-            void refreshTutorialPermissionStatus();
-        }
-    };
-
-    const handleTutorialPermissionAction = async (id: TutorialPermissionId) => {
-        try {
-            const themePreview = getThemePreview();
-            const payload = { permission: id, languageCode, themePreview };
-            localStorage.setItem(PENDING_PERMISSION_WINDOW_KEY, JSON.stringify(payload));
-            await hideCurrentWindowWithAnimation();
-            await invoke("open_onboarding_permission_window", payload);
-        } catch (e) {
-            showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
-        }
-    };
+    const {
+        complete: completeTutorial,
+        initialize: initializeTutorial,
+        markCompleted: markTutorialCompleted,
+        openPermission: handleTutorialPermissionAction,
+        refreshPermissionStatus: refreshTutorialPermissionStatus,
+        start: startTutorial,
+    } = createClipboardTutorialRuntime({
+        incrementRunId: () => setTutorialRunId(id => id + 1),
+        isActive: () => tutorialActiveRef.current,
+        languageCode,
+        onActionError: actionError => {
+            showToast(
+                t("clipboard.actionFailed", { error: String(actionError) }),
+                "error",
+            );
+        },
+        onBeforeStart: () => {
+            setContextMenu(null);
+            setTabContextMenu(null);
+            setTagCreateChoice(null);
+            setDeleteConfirmTab(null);
+            setDeleteConfirmRecordTag(null);
+            setSearchWord("");
+            setSearchOpen(false);
+            hideAltHints();
+            activeTabRef.current = "all";
+            setActiveTab("all");
+            clearCardsClickSuppression();
+        },
+        onComplete: () => refreshHistoryRef.current(),
+        onHideWindow: hideCurrentWindowWithAnimation,
+        setActive: setTutorialActive,
+        setMainShortcut,
+        setPermissionStatus: setTutorialPermissionStatus,
+        setPlatform: setTutorialPlatform,
+    });
 
     const handleTutorialFilterToggle = (id: TutorialFilterId, enabled: boolean) => {
         const tabId = tutorialFilterTabId(id);
@@ -623,15 +609,6 @@ export default function Clipboard() {
         }
     };
 
-    const completeTutorial = async () => {
-        try {
-            await invoke("complete_onboarding");
-            setTutorialActive(false);
-            void fetchHistory();
-        } catch (e) {
-            showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
-        }
-    };
     const tabLabelForBackend = (tabId: string): string => {
         if (tabId === "favorite") return "__favorite";
         if (tabId === "all") return "__all";
@@ -934,6 +911,9 @@ export default function Clipboard() {
     const fetchHistory = async () => {
         await fetchHistoryWith(searchWordRef.current, activeTabRef.current);
     };
+    refreshHistoryRef.current = () => {
+        void fetchHistory();
+    };
 
     const applyShowPreferences = async () => {
         const config = await loadClipboardBehaviorConfig();
@@ -1034,7 +1014,7 @@ export default function Clipboard() {
                 void startTutorial();
             },
             onTutorialCompleted: () => {
-                setTutorialActive(false);
+                markTutorialCompleted();
             },
             onPermissionStatusChanged: () => {
                 void refreshTutorialPermissionStatus();
@@ -1092,16 +1072,7 @@ export default function Clipboard() {
             },
         },
         onMount: () => {
-            if (isMacPlatform()) {
-                void refreshTutorialPermissionStatus();
-            }
-            void loadClipboardBehaviorConfig()
-                .then(config => {
-                    if (config.onboarding_completed === false && !tutorialActiveRef.current) {
-                        void startTutorial();
-                    }
-                })
-                .catch(e => error(`Failed to check tutorial state: ${e}`));
+            initializeTutorial();
         },
         onBeforeCleanup: () => {
             if (toastTimerRef.current !== null) {

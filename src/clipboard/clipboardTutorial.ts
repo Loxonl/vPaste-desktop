@@ -32,6 +32,9 @@ export type TutorialFilterTab = {
     enabled: boolean;
 };
 
+export const PENDING_PERMISSION_WINDOW_KEY =
+    "vpaste.pendingOnboardingPermission.v1";
+
 export const TUTORIAL_FILTER_DEFINITIONS: Array<{
     id: TutorialFilterId;
     emoji: string;

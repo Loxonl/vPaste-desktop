@@ -71,6 +71,8 @@ lazy_static! {
 static CLIPBOARD_VISIBLE: AtomicBool = AtomicBool::new(false);
 static CLIPBOARD_HIDING: AtomicBool = AtomicBool::new(false);
 static CLIPBOARD_WINDOW_TRANSITION_LOCK: Mutex<()> = Mutex::new(());
+static IMAGE_PREVIEW_CACHE_PUBLISH_LOCK: Mutex<()> = Mutex::new(());
+static IMAGE_PREVIEW_CACHE_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 pub(crate) static CLIPBOARD_IGNORE_NEXT_CHANGE: AtomicBool = AtomicBool::new(false);
 pub(crate) static CLIPBOARD_HISTORY_PAUSED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
@@ -6189,6 +6191,61 @@ fn image_data_url(path: &str) -> Result<String, String> {
     ))
 }
 
+fn plain_cache_file_matches_bytes(path: &Path, bytes: &[u8]) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.len() == bytes.len() as u64)
+        .unwrap_or(false)
+        && matches!(secure_store::is_encrypted_file(path), Ok(false))
+}
+
+fn valid_png_cache_file(path: &Path) -> bool {
+    matches!(secure_store::is_encrypted_file(path), Ok(false))
+        && image::image_dimensions(path).is_ok()
+}
+
+fn publish_image_cache_file(
+    cache_path: &Path,
+    bytes: &[u8],
+    is_current: impl Fn(&Path) -> bool,
+) -> Result<(), String> {
+    let parent = cache_path
+        .parent()
+        .ok_or_else(|| "image cache path has no parent".to_string())?;
+    fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    let temp_id = IMAGE_PREVIEW_CACHE_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+    let file_name = cache_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("image-cache");
+    let temp_path = parent.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        temp_id
+    ));
+    if let Err(err) = fs::write(&temp_path, bytes) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err.to_string());
+    }
+
+    let publish_result = (|| {
+        let _guard = IMAGE_PREVIEW_CACHE_PUBLISH_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if is_current(cache_path) {
+            Ok(())
+        } else {
+            if cache_path.exists() {
+                fs::remove_file(cache_path).map_err(|err| err.to_string())?;
+            }
+            fs::rename(&temp_path, cache_path).map_err(|err| err.to_string())
+        }
+    })();
+    if temp_path.exists() {
+        let _ = fs::remove_file(temp_path);
+    }
+    publish_result
+}
+
 fn image_preview_asset_path(path: &str) -> Result<String, String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -6196,13 +6253,16 @@ fn image_preview_asset_path(path: &str) -> Result<String, String> {
     let bytes = secure_store::read_file(path)?;
     let extension = image_extension_from_bytes(&bytes);
     let mut hasher = DefaultHasher::new();
+    "preview-asset-v2".hash(&mut hasher);
     path.hash(&mut hasher);
     bytes.len().hash(&mut hasher);
     let cache_dir = PathBuf::from(app_runtime_dir(&["image_preview_cache"]));
     fs::create_dir_all(&cache_dir).map_err(|err| err.to_string())?;
     let cache_path = cache_dir.join(format!("{:x}.{}", hasher.finish(), extension));
-    if !cache_path.exists() {
-        fs::write(&cache_path, bytes).map_err(|err| err.to_string())?;
+    if !plain_cache_file_matches_bytes(&cache_path, &bytes) {
+        publish_image_cache_file(&cache_path, &bytes, |candidate| {
+            plain_cache_file_matches_bytes(candidate, &bytes)
+        })?;
     }
     Ok(cache_path.to_string_lossy().to_string())
 }
@@ -6291,7 +6351,7 @@ fn image_thumbnail_preview_asset_path(
     let cache_dir = PathBuf::from(app_runtime_dir(&["image_preview_cache"]));
     fs::create_dir_all(&cache_dir).map_err(|err| err.to_string())?;
     let cache_path = cache_dir.join(format!("{:x}.png", hasher.finish()));
-    if cache_path.exists() {
+    if valid_png_cache_file(&cache_path) {
         return Ok(cache_path.to_string_lossy().to_string());
     }
 
@@ -6301,7 +6361,7 @@ fn image_thumbnail_preview_asset_path(
     thumb
         .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
         .map_err(|err| format!("encode card preview failed: {err}"))?;
-    fs::write(&cache_path, png).map_err(|err| err.to_string())?;
+    publish_image_cache_file(&cache_path, &png, valid_png_cache_file)?;
     Ok(cache_path.to_string_lossy().to_string())
 }
 
@@ -6392,7 +6452,7 @@ fn release_quick_input_keys(_trigger_key: Option<&str>) {}
 
 fn image_card_preview_asset_path(path: &str) -> Result<String, String> {
     let bytes = secure_store::read_file(path)?;
-    image_thumbnail_preview_asset_path(path, &bytes, "card-preview-v3")
+    image_thumbnail_preview_asset_path(path, &bytes, "card-preview-v4")
         .or_else(|_| image_preview_asset_path(path))
 }
 
@@ -6428,6 +6488,37 @@ mod image_cache_tests {
         assert_eq!(cached.width, 9);
         assert_eq!(cached.height, 8);
         assert!(cached.is_gif);
+    }
+
+    #[test]
+    fn image_preview_caches_replace_unrenderable_files() {
+        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(app_data.path().to_string_lossy().to_string());
+
+        let source_path = app_data.path().join("source.png");
+        let image = image::RgbaImage::from_pixel(12, 8, image::Rgba([12, 34, 56, 255]));
+        let mut png = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        secure_store::write_file(&source_path, &png).unwrap();
+        let source = source_path.to_string_lossy().to_string();
+
+        let preview_path = PathBuf::from(image_preview_asset_path(&source).unwrap());
+        secure_store::write_file(&preview_path, b"encrypted cache").unwrap();
+        let repaired_preview = PathBuf::from(image_preview_asset_path(&source).unwrap());
+        assert_eq!(preview_path, repaired_preview);
+        assert!(!secure_store::is_encrypted_file(&repaired_preview).unwrap());
+        assert_eq!(fs::read(&repaired_preview).unwrap(), png);
+
+        let card_path = PathBuf::from(image_card_preview_asset_path(&source).unwrap());
+        fs::write(&card_path, b"truncated png").unwrap();
+        let repaired_card = PathBuf::from(image_card_preview_asset_path(&source).unwrap());
+        assert_eq!(card_path, repaired_card);
+        let (width, height) = image::image_dimensions(&repaired_card).unwrap();
+        assert!(width > 0);
+        assert!(height > 0);
     }
 }
 

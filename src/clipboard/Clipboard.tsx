@@ -30,8 +30,6 @@ import {
 import { fetchSearchPage } from "./searchPagination";
 import ClipboardCard from "./ClipboardCard";
 import {
-    compactPath,
-    getBackendTypeLabel,
     parseLinkContent,
     type FilePreviewInfo,
 } from "./itemPresentation";
@@ -101,6 +99,7 @@ import {
     type ItemTagsChangedPayload,
 } from "./clipboardTags";
 import { createClipboardItemActions } from "./clipboardItemActions";
+import { createClipboardPasteRuntime } from "./clipboardPasteRuntime";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const HISTORY_PAGE_LIMIT = 36;
@@ -114,11 +113,6 @@ type ToastState = {
     actionLabel?: string;
     onAction?: () => void;
 } | null;
-
-type PasteAccessibilityPermissionStatus = {
-    granted: boolean;
-    needs_settings: boolean;
-};
 
 type LinkPreviewUpdate = {
     url: string;
@@ -535,16 +529,6 @@ export default function Clipboard() {
             showToast(t("tags.deleted", { name: tag.name }));
         } catch (e) {
             showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
-        }
-    };
-
-    const checkPasteAccessibilityPermission = async (): Promise<boolean> => {
-        try {
-            const status = await invoke<PasteAccessibilityPermissionStatus>('check_paste_accessibility_permission');
-            return status.granted;
-        } catch (e) {
-            error(`Failed to check Accessibility permission: ${e}`);
-            return false;
         }
     };
 
@@ -1260,109 +1244,24 @@ export default function Clipboard() {
         setSearchWord(event.target.value);
     };
 
-    const waitForQuickInputModifierRelease = async (triggerKey: string, timeoutMs: number = 3000): Promise<boolean> => {
-        const started = Date.now();
-        while (Date.now() - started < timeoutMs) {
-            try {
-                const pressed = await invoke<boolean>('is_quick_input_modifier_pressed', { triggerKey });
-                if (!pressed) return true;
-            } catch (e) {
-                error(`Failed to wait for quick input modifier release: ${e}`);
-                return false;
-            }
-            await new Promise(resolve => window.setTimeout(resolve, 16));
-        }
-        return false;
-    };
-
-    const finishCopyWithoutAutoPaste = async () => {
-        await invoke('show_paste_fallback_notice')
-            .catch(e => error(`Failed to show paste fallback notice: ${e}`));
-        try {
-            await hideCurrentWindowWithAnimation();
-        } finally {
-            await invoke('restore_foreground_app')
-                .catch(e => error(`Failed to restore foreground app: ${e}`));
-        }
-    };
-
-    const clickClipboardItem = async (hash: string, plainText: boolean = false, restoreAlt: boolean = false, triggerKey: string = "") => {
-        const hasPermission = await checkPasteAccessibilityPermission();
-        const item = pageListRef.current.find(i => i.getHash() === hash);
-        if (item) {
+    const {
+        pasteItem: clickClipboardItem,
+        pastePlainTextItem,
+    } = createClipboardPasteRuntime({
+        closeContextMenu: () => setContextMenu(null),
+        getItems: () => pageListRef.current,
+        hideWindow: hideCurrentWindowWithAnimation,
+        refreshHistory: fetchHistory,
+        selectItem: hash => {
             selectedRef.current = hash;
             setSelected(hash);
-            let content = item.getContent();
-            let itemType = getBackendTypeLabel(item.getType());
-            if (plainText && item.getTextContent()) {
-                content = item.getTextContent();
-                itemType = "Text";
-            } else if (item.getType() === ItemType.TextFile) {
-                content = await invoke<string>('plain_text_content', { hash: item.getHash() });
-                itemType = "Text";
-            } else if (item.getType() === ItemType.Link) {
-                content = content.split('|||')[0];
-            } else if (item.getType() === ItemType.File) {
-                const missingPaths = await invoke<string[]>('validate_file_item', { content });
-                if (missingPaths.length > 0) {
-                    const message = missingPaths.length === 1
-                        ? t("clipboard.sourceMissingOne", { path: compactPath(missingPaths[0], 46) })
-                        : t("clipboard.sourceMissingMany", { path: compactPath(missingPaths[0], 42) });
-                    showToast(message, 'warning');
-                    return;
-                }
-            }
-
-            try {
-                const copyHash = plainText ? null : hash;
-                if (restoreAlt) {
-                    await waitForQuickInputModifierRelease(triggerKey);
-                }
-                if (itemType === "Image" && hasPermission) {
-                    const hidePromise = hideCurrentWindowWithAnimation();
-                    await invoke('copy', { item: content, itemType, hash: copyHash });
-                    await hidePromise;
-                } else {
-                    await invoke('copy', { item: content, itemType, hash: copyHash });
-                    if (hasPermission) {
-                        await hideCurrentWindowWithAnimation();
-                    }
-                }
-                if (!hasPermission) {
-                    await finishCopyWithoutAutoPaste();
-                    return;
-                }
-                await invoke('paste', { hash, restoreAlt, triggerKey });
-                await fetchHistoryWith(searchWordRef.current, activeTabRef.current);
-            } catch (e) {
-                error(`Failed to copy/paste: ${e}`);
-                showToast(t("clipboard.actionFailed", { error: String(e) }), 'error');
-            }
-        }
-    };
+        },
+        showToast,
+        t,
+    });
 
     activateClipboardCardRef.current = (hash: string, plainText: boolean) => {
         void clickClipboardItem(hash, plainText);
-    };
-
-    const pastePlainTextItem = async (item: Item) => {
-        const hasPermission = await checkPasteAccessibilityPermission();
-        setContextMenu(null);
-        selectedRef.current = item.getHash() as string;
-        setSelected(item.getHash());
-        try {
-            const text = await invoke<string>('plain_text_content', { hash: item.getHash() });
-            await invoke('copy', { item: text, itemType: 'Text', hash: null });
-            if (!hasPermission) {
-                await finishCopyWithoutAutoPaste();
-                return;
-            }
-            await hideCurrentWindowWithAnimation();
-            await invoke<unknown>('paste', { hash: item.getHash(), triggerKey: "" });
-        } catch (e) {
-            error(`Failed to paste plain text: ${e}`);
-            showToast(t("clipboard.actionFailed", { error: String(e) }), 'error');
-        }
     };
 
     const openContextMenu = async (item: Item, clientX: number, clientY: number) => {

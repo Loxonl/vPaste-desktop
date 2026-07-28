@@ -49,6 +49,7 @@ const PENDING_ITEM_TAGS_CHANGED_KEY = "vpaste.pendingItemTagsChangedPayload";
 const PENDING_EMOJI_PICKER_PAYLOAD_KEY = "vpaste.pendingEmojiPickerPayload";
 const PENDING_EMOJI_SELECTION_KEY = "vpaste.pendingEmojiSelection";
 const TAB_EDITOR_WIDTH = 286;
+const WINDOW_SURFACE_GUTTER = 8;
 const MIN_TAG_EDITOR_HEIGHT = 154;
 const MAX_TAG_EDITOR_HEIGHT = 520;
 const RECORD_TAG_TAB_PREFIX = "record:";
@@ -231,7 +232,10 @@ export default function TabEditor() {
             if (!panel) return;
             const maxHeight = Math.min(MAX_TAG_EDITOR_HEIGHT, Math.max(MIN_TAG_EDITOR_HEIGHT, window.screen.availHeight - 24));
             const height = Math.ceil(Math.max(MIN_TAG_EDITOR_HEIGHT, Math.min(panel.offsetHeight, maxHeight)));
-            void invoke('set_window_size', { width: TAB_EDITOR_WIDTH, height })
+            void invoke('set_window_size', {
+                width: TAB_EDITOR_WIDTH + WINDOW_SURFACE_GUTTER * 2,
+                height: height + WINDOW_SURFACE_GUTTER * 2,
+            })
                 .catch(e => error(`Failed to resize tab editor: ${e}`));
         };
         const frame = window.requestAnimationFrame(resizeToContent);
@@ -274,6 +278,7 @@ export default function TabEditor() {
             anchorLeft: rect.left,
             anchorTop: rect.top,
             anchorRight: rect.right,
+            anchorBottom: rect.bottom,
             payload: JSON.stringify(payload),
         })
             .catch(e => {

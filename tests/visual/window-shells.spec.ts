@@ -1,11 +1,11 @@
 import { expect, test } from "@playwright/test";
 
 const windows = [
-    { name: "tray", path: "/tray-menu", width: 220, height: 320, ready: "[class*='tray-menu-shell']" },
-    { name: "emoji", path: "/emoji-picker", width: 360, height: 260, ready: "[role='menu']" },
-    { name: "paste-notice", path: "/paste-fallback-notice", width: 560, height: 90, ready: "[role='status']" },
+    { name: "tray", path: "/tray-menu", width: 216, height: 184, ready: "[class*='tray-menu-shell']" },
+    { name: "emoji", path: "/emoji-picker", width: 278, height: 164, ready: "[role='menu']" },
+    { name: "paste-notice", path: "/paste-fallback-notice", width: 560, height: 76, ready: "[role='status']" },
     { name: "preview", path: "/clipboard/preview", width: 640, height: 480, ready: "button" },
-    { name: "tab-editor", path: "/tab-editor", width: 520, height: 420, ready: "button" },
+    { name: "tab-editor", path: "/tab-editor", width: 302, height: 416, ready: "button" },
     { name: "permission", path: "/onboarding-permission?permission=background", width: 720, height: 560, ready: "button" },
     { name: "clipboard", path: "/clipboard", width: 960, height: 600, ready: "button" },
 ] as const;
@@ -16,9 +16,42 @@ test.describe("window shells", () => {
             await page.setViewportSize({ width: window.width, height: window.height });
             await page.goto(window.path);
             await expect(page.locator(window.ready).first()).toBeVisible();
+            await expect(page.locator("html")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+            await expect(page.locator("body")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+            await expect(page.locator("#root")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
             await expect(page).toHaveScreenshot(`${window.name}-shell.png`);
         });
     }
+
+    test("preview keeps a restrained translucent window surface", async ({ page }) => {
+        await page.setViewportSize({ width: 640, height: 480 });
+        await page.goto("/clipboard/preview");
+        await expect(page.locator("[class*='preview-shell']")).toHaveCSS(
+            "background-color",
+            "rgba(246, 246, 244, 0.88)",
+        );
+    });
+
+    test("auxiliary popups share one inset rounded surface", async ({ page }) => {
+        const cases = [
+            { path: "/tray-menu", width: 216, height: 184, surface: "[class*='tray-menu-shell']" },
+            { path: "/emoji-picker", width: 278, height: 164, surface: "[role='menu']" },
+            { path: "/tab-editor", width: 302, height: 416, surface: "[class*='tab-editor-panel']" },
+            { path: "/paste-fallback-notice", width: 560, height: 76, surface: "[role='status']" },
+        ];
+
+        for (const popup of cases) {
+            await page.setViewportSize({ width: popup.width, height: popup.height });
+            await page.goto(popup.path);
+            const surface = page.locator(popup.surface).first();
+            await expect(surface).toHaveCSS("border-radius", "12px");
+            await expect(surface).not.toHaveCSS("box-shadow", "none");
+            const box = await surface.boundingBox();
+            expect(box).not.toBeNull();
+            expect(box!.x).toBeGreaterThanOrEqual(8);
+            expect(box!.y).toBeGreaterThanOrEqual(8);
+        }
+    });
 
     test("developer mode opens the UI lab in the external browser", async ({ page }) => {
         await page.addInitScript(() => {

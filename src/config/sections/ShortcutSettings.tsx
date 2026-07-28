@@ -150,19 +150,18 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
                         value={t("settings.shortcuts.key.arrowsHorizontal")}
                     />
                     <Divider component="li" />
-                    <ListItem
-                        secondaryAction={
-                            <Switch
-                                checked={config.tab_quick_select_enabled}
-                                onChange={handleTabQuickSelectChange}
-                            />
-                        }
-                        sx={{ pl: 4 }}
-                    >
+                    <ListItem sx={{ alignItems: 'center' }}>
                         <ListItemText
                             primary={t("settings.tabQuickSelectSupport")}
                             secondary={t("settings.tabQuickSelect.desc")}
                         />
+                        <span className={classes(styles, "shortcut-static")}>
+                            <Switch
+                                checked={config.tab_quick_select_enabled}
+                                onChange={handleTabQuickSelectChange}
+                                inputProps={{ "aria-label": t("settings.tabQuickSelectSupport") }}
+                            />
+                        </span>
                     </ListItem>
                     <Divider component="li" />
                     <FixedShortcutItem

@@ -26,7 +26,7 @@ import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
 import StarBorderOutlinedIcon from "@mui/icons-material/StarBorderOutlined";
 import TutorialOverlay, { TutorialFilterId, TutorialFilterTab, TutorialPermission, TutorialPermissionId, TutorialPlatform } from "./TutorialOverlay.tsx";
-import brandLogo from "../assets/vpaste-logo-master.svg";
+import appIcon from "../../src-tauri/icons/source/vpaste-app-icon-1024.png";
 import { getResolvedTheme, getThemePreview, setThemePreview, type ResolvedTheme } from "../theme";
 import { updateReady, useAppUpdateState } from "../update";
 
@@ -1055,7 +1055,7 @@ function highlightRichHtml(html: string, query: string): string {
             regex.lastIndex = 0;
             if (regex.test(part)) {
                 const mark = document.createElement("mark");
-                mark.className = "search-highlight";
+                mark.className = styles["search-highlight"];
                 mark.textContent = part;
                 fragment.appendChild(mark);
             } else {
@@ -2699,7 +2699,7 @@ export default function Clipboard() {
             void applyShowPreferences();
             if (event.payload) {
                 window.requestAnimationFrame(() => {
-                    const card = document.elementFromPoint(event.payload!.x, event.payload!.y)?.closest<HTMLElement>('.clipboard-card');
+                    const card = document.elementFromPoint(event.payload!.x, event.payload!.y)?.closest<HTMLElement>(`.${styles["clipboard-card"]}`);
                     setSimulatedHoverHash(card?.dataset.hash || "");
                 });
             } else {
@@ -3573,7 +3573,7 @@ export default function Clipboard() {
         if (event.button !== 0 || isTextInputTarget(event.target)) return;
         const target = event.target as HTMLElement;
         if (target.closest('button') || target.closest(`.${styles["context-menu"]}`)) return;
-        const targetCard = target.closest<HTMLElement>('.clipboard-card');
+        const targetCard = target.closest<HTMLElement>(`.${styles["clipboard-card"]}`);
 
         setContextMenu(null);
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -4190,7 +4190,7 @@ export default function Clipboard() {
                     <TutorialOverlay
                         key={tutorialRunId}
                         t={t}
-                        logoSrc={brandLogo}
+                        logoSrc={appIcon}
                         shortcutText={tutorialShortcutText}
                         platform={tutorialPlatform}
                         permissions={tutorialPermissions}

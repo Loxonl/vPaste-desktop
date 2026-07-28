@@ -2,7 +2,7 @@
   width: 100%;
   min-height: 0;
   box-sizing: border-box;
-  padding: 0;
+  padding: 8px;
   overflow: hidden;
   background: transparent;
   font-family: var(--ui-font-family);
@@ -13,10 +13,6 @@
 :root[data-theme="dark"] .tab-editor-panel {
   color: var(--theme-text);
   background: #1f232a;
-}
-
-:root[data-theme="dark"] .tab-editor-panel {
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
 :root[data-theme="dark"] .tab-editor-header strong,
@@ -47,7 +43,6 @@
 
 :root[data-theme="dark"] .app-source-menu {
   background: rgba(31, 35, 42, 0.98);
-  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.34), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
 :root[data-theme="dark"] .app-source-option:hover {
@@ -71,9 +66,9 @@
   box-sizing: border-box;
   padding: 10px 12px;
   overflow: hidden;
-  border-radius: 12px;
+  border-radius: var(--ui-radius-window);
   background: #fafaf8;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.075);
+  box-shadow: var(--ui-window-shadow);
   animation: tabEditorIn 100ms ease-out forwards;
 }
 
@@ -299,7 +294,7 @@
   overflow-y: auto;
   border-radius: 11px;
   background: rgba(250, 250, 248, 0.98);
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.18), inset 0 0 0 1px rgba(0, 0, 0, 0.06);
+  box-shadow: var(--ui-window-shadow);
 }
 
 .app-source-option {

@@ -83,8 +83,6 @@ static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static TRAY_MENU_WATCHING: AtomicBool = AtomicBool::new(false);
 static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
-#[cfg(target_os = "linux")]
-static TRAY_ICON_DARK: AtomicBool = AtomicBool::new(false);
 static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
 static PASTE_FALLBACK_NOTICE_GENERATION: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(target_os = "macos", debug_assertions))]
@@ -107,8 +105,13 @@ const PASTE_FALLBACK_NOTICE_WIDTH: f64 = 560.0;
 const PASTE_FALLBACK_NOTICE_HEIGHT: f64 = 76.0;
 const PASTE_FALLBACK_NOTICE_TOP_INSET: f64 = 18.0;
 const PASTE_FALLBACK_NOTICE_DURATION_MS: u64 = 4_000;
-const TRAY_MENU_WIDTH: i32 = 200;
+const AUXILIARY_WINDOW_GUTTER: f64 = 8.0;
+const TRAY_MENU_WIDTH: i32 = 216;
 const TRAY_MENU_HEIGHT: i32 = 184;
+const TAB_EDITOR_CONTENT_WIDTH: f64 = 286.0;
+const TAB_EDITOR_DEFAULT_CONTENT_HEIGHT: f64 = 400.0;
+const EMOJI_PICKER_CONTENT_WIDTH: f64 = 262.0;
+const EMOJI_PICKER_CONTENT_HEIGHT: f64 = 148.0;
 #[cfg(not(target_os = "macos"))]
 const TRAY_MENU_CURSOR_GAP: i32 = 8;
 const TRAY_ICON_ID: &str = "vpaste-tray";
@@ -1512,9 +1515,12 @@ fn get_or_create_preview_window(app: &tauri::AppHandle) -> Result<tauri::Webview
         .skip_taskbar(true)
         .always_on_top(true)
         .resizable(true)
+        .shadow(false)
         .inner_size(PREVIEW_WINDOW_WIDTH, PREVIEW_WINDOW_HEIGHT)
         .build()
         .inspect(|window| {
+            let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+            let _ = window.set_shadow(false);
             apply_vpaste_window_icon(window);
             #[cfg(target_os = "windows")]
             if let Err(err) = apply_windows_rounded_window_region(window, ROUNDED_WINDOW_RADIUS) {
@@ -2288,12 +2294,17 @@ fn open_tab_editor_window(
     let window = app
         .get_webview_window("tabEditor")
         .ok_or_else(|| "tab editor window not found".to_string())?;
+    let content_width = width.unwrap_or(TAB_EDITOR_CONTENT_WIDTH);
+    let content_height = height.unwrap_or(TAB_EDITOR_DEFAULT_CONTENT_HEIGHT);
     let _ = window.set_size(tauri::Size::Logical(LogicalSize {
-        width: width.unwrap_or(286_f64),
-        height: height.unwrap_or(400_f64),
+        width: content_width + AUXILIARY_WINDOW_GUTTER * 2.0,
+        height: content_height + AUXILIARY_WINDOW_GUTTER * 2.0,
     }));
     window
-        .set_position(tauri::Position::Logical(LogicalPosition { x, y }))
+        .set_position(tauri::Position::Logical(LogicalPosition {
+            x: x - AUXILIARY_WINDOW_GUTTER,
+            y: y - AUXILIARY_WINDOW_GUTTER,
+        }))
         .map_err(|err| err.to_string())?;
     window.show().map_err(|err| err.to_string())?;
     let _ = activate_native_window(&window, "tab editor open");
@@ -2303,16 +2314,38 @@ fn open_tab_editor_window(
         .map_err(|err| err.to_string())
 }
 
+fn popup_position_above_or_below(
+    anchor: (f64, f64, f64, f64),
+    popup_size: (f64, f64),
+    gap: f64,
+    bounds: (f64, f64, f64, f64),
+) -> (f64, f64) {
+    let (anchor_left, anchor_top, anchor_right, anchor_bottom) = anchor;
+    let (popup_width, popup_height) = popup_size;
+    let (min_x, min_y, max_x, max_y) = bounds;
+    let anchor_center_x = (anchor_left + anchor_right) / 2_f64;
+    let x = (anchor_center_x - popup_width / 2_f64).clamp(min_x, max_x.max(min_x));
+    let above_y = anchor_top - popup_height - gap;
+    let below_y = anchor_bottom + gap;
+    let y = if above_y >= min_y {
+        above_y
+    } else if below_y <= max_y {
+        below_y
+    } else {
+        above_y.clamp(min_y, max_y.max(min_y))
+    };
+    (x, y)
+}
+
 #[tauri::command]
 fn open_emoji_picker_window(
     app: tauri::AppHandle,
     anchor_left: f64,
     anchor_top: f64,
     anchor_right: f64,
+    anchor_bottom: f64,
     payload: String,
 ) -> Result<(), String> {
-    const PICKER_WIDTH: f64 = 262_f64;
-    const PICKER_HEIGHT: f64 = 148_f64;
     const PICKER_GAP: f64 = 5_f64;
     const SCREEN_MARGIN: f64 = 8_f64;
 
@@ -2325,13 +2358,15 @@ fn open_emoji_picker_window(
 
     let editor_position = editor.outer_position().map_err(|err| err.to_string())?;
     let scale_factor = editor.scale_factor().map_err(|err| err.to_string())?;
-    let picker_width = PICKER_WIDTH * scale_factor;
-    let picker_height = PICKER_HEIGHT * scale_factor;
+    let picker_width = EMOJI_PICKER_CONTENT_WIDTH * scale_factor;
+    let picker_height = EMOJI_PICKER_CONTENT_HEIGHT * scale_factor;
+    let window_gutter = AUXILIARY_WINDOW_GUTTER * scale_factor;
     let gap = PICKER_GAP * scale_factor;
     let margin = SCREEN_MARGIN * scale_factor;
     let button_left = editor_position.x as f64 + anchor_left * scale_factor;
     let button_top = editor_position.y as f64 + anchor_top * scale_factor;
     let button_right = editor_position.x as f64 + anchor_right * scale_factor;
+    let button_bottom = editor_position.y as f64 + anchor_bottom * scale_factor;
 
     let monitor = editor
         .current_monitor()
@@ -2344,25 +2379,21 @@ fn open_emoji_picker_window(
     let max_x = monitor_position.x as f64 + monitor_size.width as f64 - picker_width - margin;
     let max_y = monitor_position.y as f64 + monitor_size.height as f64 - picker_height - margin;
 
-    let left_x = button_left - picker_width - gap;
-    let right_x = button_right + gap;
-    let x = if left_x >= min_x {
-        left_x
-    } else if right_x <= max_x {
-        right_x
-    } else {
-        button_left.clamp(min_x, max_x.max(min_x))
-    };
-    let y = button_top.clamp(min_y, max_y.max(min_y));
+    let (x, y) = popup_position_above_or_below(
+        (button_left, button_top, button_right, button_bottom),
+        (picker_width, picker_height),
+        gap,
+        (min_x, min_y, max_x, max_y),
+    );
 
     let _ = window.set_size(tauri::Size::Logical(LogicalSize {
-        width: PICKER_WIDTH,
-        height: PICKER_HEIGHT,
+        width: EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
+        height: EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
     }));
     window
         .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-            x: x.round() as i32,
-            y: y.round() as i32,
+            x: (x - window_gutter).round() as i32,
+            y: (y - window_gutter).round() as i32,
         }))
         .map_err(|err| err.to_string())?;
     window.show().map_err(|err| err.to_string())?;
@@ -2371,6 +2402,47 @@ fn open_emoji_picker_window(
     window
         .emit("emoji-picker-open", payload)
         .map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+mod popup_position_tests {
+    use super::popup_position_above_or_below;
+
+    #[test]
+    fn places_popup_above_the_anchor_when_space_is_available() {
+        let position = popup_position_above_or_below(
+            (200.0, 300.0, 240.0, 332.0),
+            (100.0, 80.0),
+            5.0,
+            (8.0, 8.0, 892.0, 712.0),
+        );
+
+        assert_eq!(position, (170.0, 215.0));
+    }
+
+    #[test]
+    fn falls_back_below_the_anchor_near_the_top_edge() {
+        let position = popup_position_above_or_below(
+            (200.0, 40.0, 240.0, 72.0),
+            (100.0, 80.0),
+            5.0,
+            (8.0, 8.0, 892.0, 712.0),
+        );
+
+        assert_eq!(position, (170.0, 77.0));
+    }
+
+    #[test]
+    fn keeps_popup_inside_the_horizontal_monitor_bounds() {
+        let position = popup_position_above_or_below(
+            (6.0, 300.0, 38.0, 332.0),
+            (100.0, 80.0),
+            5.0,
+            (8.0, 8.0, 892.0, 712.0),
+        );
+
+        assert_eq!(position, (8.0, 215.0));
+    }
 }
 
 #[tauri::command]
@@ -6971,66 +7043,72 @@ fn simulate_cmd_c() -> Result<(), String> {
     Ok(())
 }
 
+const TRAY_ICON_SIZE: u32 = 128;
+#[cfg(target_os = "windows")]
+const TRAY_ACCENT_RGBA: [u8; 4] = [11, 134, 255, 255];
 #[cfg(target_os = "linux")]
-fn tray_uses_dark_icon(theme_mode: &str, system_dark: bool) -> bool {
-    match theme_mode {
-        "dark" => true,
-        "light" => false,
-        _ => system_dark,
-    }
+const TRAY_ACCENT_RGBA: [u8; 4] = [30, 146, 238, 255];
+#[cfg(target_os = "macos")]
+const TRAY_TEMPLATE_RGBA: [u8; 4] = [255, 255, 255, 255];
+const TRAY_ICON_MASK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/vpaste-tray.rgba"));
+
+fn colorize_tray_mask(mask: &[u8], color: [u8; 4]) -> Vec<u8> {
+    mask.chunks_exact(4)
+        .flat_map(|pixel| {
+            let alpha = (u16::from(pixel[3]) * u16::from(color[3]) / 255) as u8;
+            [color[0], color[1], color[2], alpha]
+        })
+        .collect()
 }
 
-#[cfg(all(test, target_os = "linux"))]
-mod tray_theme_tests {
-    use super::tray_uses_dark_icon;
-
-    #[test]
-    fn explicit_theme_mode_controls_tray_icon() {
-        assert!(tray_uses_dark_icon("dark", false));
-        assert!(!tray_uses_dark_icon("light", true));
-    }
-
-    #[test]
-    fn system_and_unknown_modes_follow_system_theme() {
-        assert!(tray_uses_dark_icon("system", true));
-        assert!(!tray_uses_dark_icon("system", false));
-        assert!(tray_uses_dark_icon("unexpected", true));
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn system_uses_dark_theme(app: &tauri::AppHandle) -> bool {
-    app.webview_windows()
-        .values()
-        .find_map(|window| window.theme().ok())
-        .is_some_and(|theme| matches!(theme, tauri::Theme::Dark))
-}
-
-fn build_tray_icon(paused: bool, dark: bool) -> TauriImage<'static> {
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    let _ = dark;
-    #[cfg(target_os = "windows")]
-    let icon_bytes = include_bytes!("../icons/tray-icon.png").as_slice();
-    // macOS treats this monochrome source as a template image and automatically
-    // renders it black or white to match the current menu bar appearance.
+fn build_tray_icon(paused: bool) -> TauriImage<'static> {
     #[cfg(target_os = "macos")]
-    let icon_bytes = include_bytes!("../icons/tray-icon-light.png").as_slice();
-    #[cfg(target_os = "linux")]
-    let icon_bytes = if dark {
-        include_bytes!("../icons/tray-icon-dark.png").as_slice()
-    } else {
-        include_bytes!("../icons/tray-icon-light.png").as_slice()
-    };
-    match image::load_from_memory(icon_bytes) {
-        Ok(image) => {
-            let mut image = image.to_rgba8();
-            if paused {
-                draw_pause_badge(&mut image);
+    let color = TRAY_TEMPLATE_RGBA;
+    #[cfg(not(target_os = "macos"))]
+    let color = TRAY_ACCENT_RGBA;
+    let pixels = colorize_tray_mask(TRAY_ICON_MASK, color);
+    let mut image =
+        ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(TRAY_ICON_SIZE, TRAY_ICON_SIZE, pixels)
+            .unwrap_or_else(|| ImageBuffer::from_pixel(1, 1, Rgba([0, 0, 0, 0])));
+    if paused {
+        draw_pause_badge(&mut image);
+    }
+    let (width, height) = image.dimensions();
+    TauriImage::new_owned(image.into_raw(), width, height)
+}
+
+#[cfg(test)]
+mod tray_icon_tests {
+    use super::{colorize_tray_mask, TRAY_ICON_MASK, TRAY_ICON_SIZE};
+
+    #[test]
+    fn generated_tray_mask_matches_the_declared_dimensions() {
+        assert_eq!(
+            TRAY_ICON_MASK.len(),
+            (TRAY_ICON_SIZE * TRAY_ICON_SIZE * 4) as usize
+        );
+        assert!(TRAY_ICON_MASK.chunks_exact(4).any(|pixel| pixel[3] > 0));
+
+        let mut bounds = (TRAY_ICON_SIZE, TRAY_ICON_SIZE, 0, 0);
+        for (index, pixel) in TRAY_ICON_MASK.chunks_exact(4).enumerate() {
+            if pixel[3] == 0 {
+                continue;
             }
-            let (width, height) = image.dimensions();
-            TauriImage::new_owned(image.into_raw(), width, height)
+            let x = index as u32 % TRAY_ICON_SIZE;
+            let y = index as u32 / TRAY_ICON_SIZE;
+            bounds.0 = bounds.0.min(x);
+            bounds.1 = bounds.1.min(y);
+            bounds.2 = bounds.2.max(x);
+            bounds.3 = bounds.3.max(y);
         }
-        Err(_) => TauriImage::new_owned(vec![0, 0, 0, 0], 1, 1),
+        assert_eq!(bounds, (21, 5, 105, 122));
+    }
+
+    #[test]
+    fn tray_mask_accepts_a_runtime_color() {
+        let pixels = colorize_tray_mask(&[0, 0, 0, 0, 0, 0, 0, 128], [11, 134, 255, 255]);
+
+        assert_eq!(pixels, [11, 134, 255, 0, 11, 134, 255, 128]);
     }
 }
 
@@ -7083,10 +7161,7 @@ fn draw_pause_badge(image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) {
 
 fn update_tray_appearance(app: &tauri::AppHandle, paused: bool) {
     if let Some(tray) = app.tray_by_id(TRAY_ICON_ID) {
-        #[cfg(any(target_os = "windows", target_os = "macos"))]
-        let icon = build_tray_icon(paused, false);
-        #[cfg(target_os = "linux")]
-        let icon = build_tray_icon(paused, TRAY_ICON_DARK.load(Ordering::SeqCst));
+        let icon = build_tray_icon(paused);
         #[cfg(target_os = "macos")]
         let icon_result = tray.set_icon_with_as_template(Some(icon), true);
         #[cfg(not(target_os = "macos"))]
@@ -7101,15 +7176,7 @@ fn update_tray_appearance(app: &tauri::AppHandle, paused: bool) {
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn sync_tray_theme_for_mode(_app: &tauri::AppHandle, _theme_mode: &str) {}
-
-#[cfg(target_os = "linux")]
-fn sync_tray_theme_for_mode(app: &tauri::AppHandle, theme_mode: &str) {
-    let dark = tray_uses_dark_icon(theme_mode, system_uses_dark_theme(app));
-    TRAY_ICON_DARK.store(dark, Ordering::SeqCst);
-    update_tray_appearance(app, CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst));
-}
 
 fn set_clipboard_history_paused_state(app: &tauri::AppHandle, paused: bool) -> bool {
     CLIPBOARD_HISTORY_PAUSED.store(paused, Ordering::SeqCst);
@@ -7196,17 +7263,7 @@ fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
 }
 
 fn install_vpaste_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    #[cfg(target_os = "windows")]
-    let tray_icon = build_tray_icon(CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst), false);
-    #[cfg(target_os = "macos")]
-    let tray_icon = build_tray_icon(CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst), false);
-    #[cfg(target_os = "linux")]
-    let tray_icon = {
-        let config = config::get();
-        let dark = tray_uses_dark_icon(&config.theme_mode, system_uses_dark_theme(app));
-        TRAY_ICON_DARK.store(dark, Ordering::SeqCst);
-        build_tray_icon(CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst), dark)
-    };
+    let tray_icon = build_tray_icon(CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst));
 
     let tray_builder = tauri::tray::TrayIconBuilder::with_id(TRAY_ICON_ID)
         .icon(tray_icon)
@@ -7426,7 +7483,7 @@ fn main() {
         .on_window_event(|window, event| {
             #[cfg(target_os = "windows")]
             if let tauri::WindowEvent::Resized(_) = event {
-                if matches!(window.label(), "config" | "clipboardPreview") {
+                if window.label() == "clipboardPreview" {
                     if let Some(webview_window) =
                         window.app_handle().get_webview_window(window.label())
                     {
@@ -7437,18 +7494,6 @@ fn main() {
                             error!("Failed to update rounded window region: {}", err);
                         }
                     }
-                }
-            }
-            #[cfg(target_os = "linux")]
-            if let tauri::WindowEvent::ThemeChanged(theme) = event {
-                let config = config::get();
-                if config.theme_mode == "system" {
-                    let dark = matches!(*theme, tauri::Theme::Dark);
-                    TRAY_ICON_DARK.store(dark, Ordering::SeqCst);
-                    update_tray_appearance(
-                        window.app_handle(),
-                        CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst),
-                    );
                 }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -7649,6 +7694,8 @@ fn main() {
                         .inner_size(720_f64, 700_f64)
                         .min_inner_size(640_f64, 520_f64)
                         .always_on_top(false);
+                #[cfg(target_os = "windows")]
+                let config_window = config_window.shadow(false);
                 #[cfg(target_os = "macos")]
                 let config_window = config_window
                     .hidden_title(true)
@@ -7660,13 +7707,7 @@ fn main() {
                 apply_vpaste_window_icon(&config_window);
                 #[cfg(target_os = "windows")]
                 {
-                    use window_vibrancy::apply_acrylic;
-                    let _ = apply_acrylic(&config_window, Some((232, 235, 229, 30)));
-                    if let Err(err) =
-                        apply_windows_rounded_window_region(&config_window, ROUNDED_WINDOW_RADIUS)
-                    {
-                        error!("Failed to round config window: {}", err);
-                    }
+                    let _ = config_window.set_shadow(false);
                 }
                 #[cfg(target_os = "macos")]
                 {
@@ -7765,17 +7806,19 @@ fn main() {
                         .focused(false)
                         .decorations(false)
                         .transparent(true)
+                        .background_color(tauri::window::Color(0, 0, 0, 0))
                         .skip_taskbar(true)
                         .always_on_top(true)
                         .resizable(false)
+                        .shadow(false)
                         .inner_size(TRAY_MENU_WIDTH as f64, TRAY_MENU_HEIGHT as f64);
                 let tray_menu_window = tray_menu_window.build().unwrap();
+                let _ =
+                    tray_menu_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                let _ = tray_menu_window.set_shadow(false);
                 apply_vpaste_window_icon(&tray_menu_window);
                 #[cfg(target_os = "macos")]
                 {
-                    let _ = tray_menu_window
-                        .set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                    let _ = tray_menu_window.set_shadow(false);
                     set_macos_window_level(&tray_menu_window, 101);
                     configure_macos_transparent_window(&tray_menu_window);
                 }
@@ -7791,8 +7834,15 @@ fn main() {
                         .skip_taskbar(true)
                         .always_on_top(true)
                         .resizable(false)
-                        .inner_size(262_f64, 148_f64);
+                        .shadow(false)
+                        .inner_size(
+                            EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
+                            EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+                        );
                 let emoji_picker_window = emoji_picker_window.build().unwrap();
+                let _ = emoji_picker_window
+                    .set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                let _ = emoji_picker_window.set_shadow(false);
                 apply_vpaste_window_icon(&emoji_picker_window);
                 #[cfg(target_os = "macos")]
                 {
@@ -7810,8 +7860,15 @@ fn main() {
                         .skip_taskbar(true)
                         .always_on_top(true)
                         .resizable(false)
-                        .inner_size(286_f64, 400_f64);
+                        .shadow(false)
+                        .inner_size(
+                            TAB_EDITOR_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
+                            TAB_EDITOR_DEFAULT_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+                        );
                 let tab_editor_window = tab_editor_window.build().unwrap();
+                let _ =
+                    tab_editor_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+                let _ = tab_editor_window.set_shadow(false);
                 apply_vpaste_window_icon(&tab_editor_window);
                 #[cfg(target_os = "macos")]
                 {

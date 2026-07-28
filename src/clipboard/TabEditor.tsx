@@ -10,6 +10,10 @@ import { loadAndApplyTheme } from "../theme";
 import { applyNameEmoji, selectedNameEmoji } from "./nameEmoji";
 import type { ItemTag } from "./Item";
 import {
+    PENDING_ITEM_TAGS_CHANGED_KEY,
+    type ItemTagsChangedPayload,
+} from "./clipboardTags";
+import {
     DEFAULT_CUSTOM_FILTER,
     loadCustomTabs,
     normalizeAppSources,
@@ -34,7 +38,6 @@ type TabEditorPayload = {
 };
 
 const PENDING_TAB_EDITOR_PAYLOAD_KEY = "vpaste.pendingTabEditorPayload";
-const PENDING_ITEM_TAGS_CHANGED_KEY = "vpaste.pendingItemTagsChangedPayload";
 const PENDING_EMOJI_PICKER_PAYLOAD_KEY = "vpaste.pendingEmojiPickerPayload";
 const PENDING_EMOJI_SELECTION_KEY = "vpaste.pendingEmojiSelection";
 const TAB_EDITOR_WIDTH = 286;
@@ -292,7 +295,7 @@ export default function TabEditor() {
                     ? await invoke<ItemTag>('rename_item_tag', { id: recordTagId, name })
                     : await invoke<ItemTag>('create_item_tag', { name });
                 const activeId = mode === "add" ? recordTagTabId(tag.id) : undefined;
-                const payload = { activeId, tag };
+                const payload: ItemTagsChangedPayload = { activeId, tag };
                 localStorage.setItem(PENDING_ITEM_TAGS_CHANGED_KEY, JSON.stringify(payload));
                 try {
                     await emit("item-tags-changed", payload);

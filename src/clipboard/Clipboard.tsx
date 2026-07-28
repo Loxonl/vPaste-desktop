@@ -73,7 +73,6 @@ import { clipboardKeyDownAction } from "./clipboardKeyboard";
 import { buildClipboardContextMenuOptions } from "./clipboardContextMenu";
 import {
     useClipboardLifecycleSubscriptions,
-    type ItemTagsChangedPayload,
 } from "./useClipboardLifecycleSubscriptions";
 import { useClipboardListInteractions } from "./useClipboardListInteractions";
 import { useClipboardAltHints } from "./useClipboardAltHints";
@@ -95,11 +94,21 @@ import {
     type TutorialPlatform,
 } from "./clipboardTutorial";
 import { createClipboardTutorialRuntime } from "./clipboardTutorialRuntime";
+import {
+    PENDING_ITEM_TAGS_CHANGED_KEY,
+    assignItemTag,
+    parseItemTagsChangedPayload,
+    removeItemTag,
+    removeRecordTagFromItems,
+    updateItemTagsForPage,
+    updateRecordTagInItems,
+    upsertItemTag,
+    type ItemTagsChangedPayload,
+} from "./clipboardTags";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const HISTORY_PAGE_LIMIT = 36;
 const IMAGE_EXPORT_DIR_KEY = "vpaste.imageExportDir.v1";
-const PENDING_ITEM_TAGS_CHANGED_KEY = "vpaste.pendingItemTagsChangedPayload";
 
 type ToastKind = 'info' | 'warning' | 'error';
 
@@ -446,12 +455,12 @@ export default function Clipboard() {
         const hash = item.getHash() as string;
         const activeRecordTagId = recordTagIdFromTab(activeTabRef.current);
         setPage(page => {
-            let nextList = page.list.map(candidate =>
-                candidate.getHash() === hash ? candidate.withTags(nextTags) : candidate
+            const nextList = updateItemTagsForPage(
+                page.list,
+                hash,
+                nextTags,
+                activeRecordTagId,
             );
-            if (activeRecordTagId !== null && !nextTags.some(tag => tag.id === activeRecordTagId)) {
-                nextList = nextList.filter(candidate => candidate.getHash() !== hash);
-            }
             pageListRef.current = nextList;
             return new ClipboardPage(nextList, page.consumed);
         });
@@ -459,10 +468,7 @@ export default function Clipboard() {
 
     const removeRecordTagFromPageItems = (tagId: number) => {
         setPage(page => {
-            const nextList = page.list.map(item => {
-                const nextTags = item.getTags().filter(tag => tag.id !== tagId);
-                return nextTags.length === item.getTags().length ? item : item.withTags(nextTags);
-            });
+            const nextList = removeRecordTagFromItems(page.list, tagId);
             pageListRef.current = nextList;
             return new ClipboardPage(nextList, page.consumed);
         });
@@ -470,12 +476,7 @@ export default function Clipboard() {
 
     const updateRecordTagOnPageItems = (updatedTag: ItemTag) => {
         setPage(page => {
-            const nextList = page.list.map(item => {
-                const nextTags = item.getTags().map(tag => tag.id === updatedTag.id ? updatedTag : tag);
-                return nextTags.some((tag, index) => tag !== item.getTags()[index])
-                    ? item.withTags(nextTags)
-                    : item;
-            });
+            const nextList = updateRecordTagInItems(page.list, updatedTag);
             pageListRef.current = nextList;
             return new ClipboardPage(nextList, page.consumed);
         });
@@ -487,7 +488,7 @@ export default function Clipboard() {
         if (!target) return;
         try {
             await invoke('assign_item_tag', { hash: target.getHash(), tagId: tag.id });
-            updateItemTagsInPage(target, [...target.getTags().filter(candidate => candidate.id !== tag.id), tag]);
+            updateItemTagsInPage(target, assignItemTag(target.getTags(), tag));
             showToast(t("tags.createdAndAssigned", { name: tag.name }));
         } catch (e) {
             showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
@@ -495,14 +496,10 @@ export default function Clipboard() {
     };
 
     const applyItemTagsChanged = (payload: ItemTagsChangedPayload | null | undefined) => {
-        if (payload?.tag) {
-            setItemTags(tags => {
-                const exists = tags.some(tag => tag.id === payload.tag?.id);
-                return exists
-                    ? tags.map(tag => tag.id === payload.tag?.id ? payload.tag as ItemTag : tag)
-                    : [...tags, payload.tag as ItemTag];
-            });
-            updateRecordTagOnPageItems(payload.tag);
+        const updatedTag = payload?.tag;
+        if (updatedTag) {
+            setItemTags(tags => upsertItemTag(tags, updatedTag));
+            updateRecordTagOnPageItems(updatedTag);
         }
         void loadItemTags();
         if (payload?.activeId) {
@@ -510,8 +507,8 @@ export default function Clipboard() {
             activeTabRef.current = payload.activeId;
             setActiveTab(payload.activeId);
         }
-        if (payload?.tag) {
-            void assignPendingRecordTagToItem(payload.tag);
+        if (updatedTag) {
+            void assignPendingRecordTagToItem(updatedTag);
         }
     };
 
@@ -520,7 +517,7 @@ export default function Clipboard() {
         if (!raw) return;
         localStorage.removeItem(PENDING_ITEM_TAGS_CHANGED_KEY);
         try {
-            applyItemTagsChanged(JSON.parse(raw) as ItemTagsChangedPayload);
+            applyItemTagsChanged(parseItemTagsChangedPayload(raw));
         } catch (e) {
             error(`Failed to consume pending item tag change: ${e}`);
             void loadItemTags();
@@ -531,7 +528,7 @@ export default function Clipboard() {
         try {
             await invoke('delete_item_tag', { id: tag.id });
             removeTabOrderId(recordTagTabId(tag.id));
-            setItemTags(tags => tags.filter(candidate => candidate.id !== tag.id));
+            setItemTags(tags => removeItemTag(tags, tag.id));
             removeRecordTagFromPageItems(tag.id);
             if (activeTabRef.current === recordTagTabId(tag.id)) {
                 activeTabRef.current = "all";
@@ -1494,7 +1491,7 @@ export default function Clipboard() {
         setContextMenu(null);
         try {
             await invoke('assign_item_tag', { hash: item.getHash(), tagId: tag.id });
-            updateItemTagsInPage(item, [...item.getTags().filter(candidate => candidate.id !== tag.id), tag]);
+            updateItemTagsInPage(item, assignItemTag(item.getTags(), tag));
             showToast(t("tags.assigned", { name: tag.name }));
         } catch (e) {
             showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
@@ -1518,7 +1515,7 @@ export default function Clipboard() {
         setContextMenu(null);
         try {
             await invoke('remove_item_tag', { hash: item.getHash(), tagId: tag.id });
-            updateItemTagsInPage(item, item.getTags().filter(candidate => candidate.id !== tag.id));
+            updateItemTagsInPage(item, removeItemTag(item.getTags(), tag.id));
             showToast(t("tags.removed", { name: tag.name }));
         } catch (e) {
             showToast(t("clipboard.actionFailed", { error: String(e) }), "error");

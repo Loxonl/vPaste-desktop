@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import type { ItemTag } from "./Item";
 import type { CustomTab } from "./customTabs";
+import type { ItemTagsChangedPayload } from "./clipboardTags";
 
 export type WindowShowPayload = {
     x: number;
@@ -11,11 +11,6 @@ export type WindowShowPayload = {
 export type CustomTabsChangedPayload = {
     activeId?: string;
     tabs?: CustomTab[];
-};
-
-export type ItemTagsChangedPayload = {
-    activeId?: string;
-    tag?: ItemTag;
 };
 
 export type PreviewNavigationPayload = {

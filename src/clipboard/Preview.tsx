@@ -6,7 +6,7 @@ import PushPinIcon from "@mui/icons-material/PushPin";
 import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
 import { ItemType } from "./Item";
 import { useLanguage } from "../lang";
-import "./Preview.css";
+import styles from "./Preview.module.css";
 
 type HistoryImageMetadata = {
     width: number;
@@ -378,7 +378,7 @@ function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: string,
 
     if (type === ItemType.Image) {
         return (
-            <div className="preview-image-stage">
+            <div className={styles["preview-image-stage"]}>
                 <img
                     src={imageSrc}
                     alt=""
@@ -389,7 +389,7 @@ function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: string,
 
     if (type === ItemType.Color) {
         return (
-            <div className="preview-color-stage" style={{ background: payload.content }}>
+            <div className={styles["preview-color-stage"]} style={{ background: payload.content }}>
                 <span>{payload.content}</span>
             </div>
         );
@@ -397,20 +397,20 @@ function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: string,
 
     if (type === ItemType.Link) {
         return (
-            <div className="preview-link-stage">
-                <div className="preview-link-bar" title={linkUrl}>
+            <div className={styles["preview-link-stage"]}>
+                <div className={styles["preview-link-bar"]} title={linkUrl}>
                     <span>{linkUrl}</span>
                 </div>
                 {linkDocument ? (
                     <iframe
-                        className="preview-link-frame"
+                        className={styles["preview-link-frame"]}
                         srcDoc={linkPreviewHtml}
                         title={linkDocument.url}
                         referrerPolicy="no-referrer-when-downgrade"
                         sandbox=""
                     />
                 ) : (
-                    <div className="preview-link-loading">
+                    <div className={styles["preview-link-loading"]}>
                         {linkError || t("preview.generating")}
                     </div>
                 )}
@@ -420,35 +420,35 @@ function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: string,
 
     if (type === ItemType.File) {
         if (fileError) {
-            return <div className="preview-empty">{t("preview.unsupported")}</div>;
+            return <div className={styles["preview-empty"]}>{t("preview.unsupported")}</div>;
         }
         if (!fileInfo) {
-            return <div className="preview-empty">{t("preview.generating")}</div>;
+            return <div className={styles["preview-empty"]}>{t("preview.generating")}</div>;
         }
         const paths = fileInfo.paths.length ? fileInfo.paths : parseFilePaths(payload.content);
         const mainPath = fileInfo.display_path || paths[0] || "";
         if (fileInfo.kind === "pdf-preview") {
             return (
-                <div className="preview-pdf-stage">
+                <div className={styles["preview-pdf-stage"]}>
                     <iframe src={convertFileSrc(mainPath)} title={fileName(mainPath)} />
                 </div>
             );
         }
         if (fileInfo.kind === "text-preview") {
             return (
-                <pre className="preview-text">{fileText || t("preview.readingText")}</pre>
+                <pre className={styles["preview-text"]}>{fileText || t("preview.readingText")}</pre>
             );
         }
         if (fileInfo.kind === "single-preview" && fileInfo.preview_path) {
             return (
-                <div className="preview-file-stage">
-                    <div className="preview-file-image-wrap">
+                <div className={styles["preview-file-stage"]}>
+                    <div className={styles["preview-file-image-wrap"]}>
                         <img
                             src={filePreviewSrc}
                             alt=""
                         />
                     </div>
-                    <div className="preview-file-caption">
+                    <div className={styles["preview-file-caption"]}>
                         <strong>{fileName(mainPath)}</strong>
                         <span>{compactPath(mainPath)}</span>
                     </div>
@@ -456,14 +456,14 @@ function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: string,
             );
         }
         return (
-            <div className="preview-file-info">
-                <div className="preview-file-symbol">
+            <div className={styles["preview-file-info"]}>
+                <div className={styles["preview-file-symbol"]}>
                     {fileInfo.kind === "multiple" ? t("common.files") : fileInfo.kind === "single-folder" ? t("common.dir") : (fileInfo.extension || t("common.file"))}
                 </div>
-                <div className="preview-file-name">{fileName(mainPath) || t("common.file")}</div>
-                <div className="preview-file-path">{compactPath(mainPath)}</div>
-                {fileInfo.kind === "multiple" && <div className="preview-file-note">{t("preview.multipleNote", { count: paths.length })}</div>}
-                {!fileInfo.exists && <div className="preview-file-warning">{t("preview.fileMissing")}</div>}
+                <div className={styles["preview-file-name"]}>{fileName(mainPath) || t("common.file")}</div>
+                <div className={styles["preview-file-path"]}>{compactPath(mainPath)}</div>
+                {fileInfo.kind === "multiple" && <div className={styles["preview-file-note"]}>{t("preview.multipleNote", { count: paths.length })}</div>}
+                {!fileInfo.exists && <div className={styles["preview-file-warning"]}>{t("preview.fileMissing")}</div>}
             </div>
         );
     }
@@ -471,14 +471,14 @@ function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: string,
     if (richHtmlHasVisibleContent(richHtml)) {
         return (
             <div
-                className="preview-rich"
+                className={styles["preview-rich"]}
                 dangerouslySetInnerHTML={{ __html: richHtml }}
             />
         );
     }
 
     return (
-        <pre className="preview-text">{text || t("preview.noText")}</pre>
+        <pre className={styles["preview-text"]}>{text || t("preview.noText")}</pre>
     );
 }
 
@@ -528,17 +528,18 @@ export default function Preview() {
     };
 
     return (
-        <div className="preview-shell">
+        <div className={styles["preview-shell"]}>
             <button
                 type="button"
-                className={`preview-pin ${pinned ? "pinned" : ""}`}
+                className={[styles["preview-pin"], pinned ? styles.pinned : ""].join(" ")}
                 title={pinned ? t("preview.unpin") : t("preview.pin")}
+                aria-label={pinned ? t("preview.unpin") : t("preview.pin")}
                 onClick={togglePinned}
             >
                 {pinned ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
             </button>
-            <div className="preview-content">
-                {payload ? <PreviewBody payload={payload} t={t} /> : <div className="preview-empty">{t("preview.waiting")}</div>}
+            <div className={styles["preview-content"]}>
+                {payload ? <PreviewBody payload={payload} t={t} /> : <div className={styles["preview-empty"]}>{t("preview.waiting")}</div>}
             </div>
         </div>
     );

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import "./TabEditor.css";
+import styles from "./TabEditor.module.css";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import CloseIcon from "@mui/icons-material/Close";
@@ -167,7 +167,7 @@ export default function TabEditor() {
             setRecentAppSources([]);
         }
         window.setTimeout(() => {
-            document.querySelector<HTMLInputElement>(".tab-editor-panel input")?.focus();
+            document.querySelector<HTMLInputElement>(`.${styles["tab-editor-panel"]} input`)?.focus();
         }, 0);
     };
 
@@ -396,24 +396,24 @@ export default function TabEditor() {
     };
 
     return (
-        <div className="tab-editor-window" onContextMenu={event => event.preventDefault()}>
-            <div className="tab-editor-panel" ref={panelRef}>
-                <div className="tab-editor-header">
+        <div className={styles["tab-editor-window"]} onContextMenu={event => event.preventDefault()}>
+            <div className={styles["tab-editor-panel"]} ref={panelRef}>
+                <div className={styles["tab-editor-header"]}>
                     <strong>{tagKind === "record"
                         ? mode === "edit" ? t("tabs.editRecordTag") : t("tabs.addRecordTag")
                         : mode === "edit" ? t("tabs.edit") : t("tabs.add")}</strong>
-                    <button type="button" className="tab-editor-close" onClick={closeWindow}>
+                    <button type="button" className={styles["tab-editor-close"]} aria-label={t("common.close")} onClick={closeWindow}>
                         <CloseIcon fontSize="small" />
                     </button>
                 </div>
                 <label>
                     <span>{t("tabs.name")}</span>
-                    <div className="tab-name-composer">
-                        <div className="emoji-prefix-select">
+                    <div className={styles["tab-name-composer"]}>
+                        <div className={styles["emoji-prefix-select"]}>
                             <button
                                 ref={emojiButtonRef}
                                 type="button"
-                                className={`emoji-prefix-trigger ${selectedEmoji ? 'selected' : ''}`}
+                                className={[styles["emoji-prefix-trigger"], selectedEmoji ? styles.selected : ""].join(" ")}
                                 title={t("tabs.emojiPrefix")}
                                 aria-label={t("tabs.emojiPrefix")}
                                 aria-haspopup="menu"
@@ -431,7 +431,7 @@ export default function TabEditor() {
                     </div>
                 </label>
                 {tagKind === "record" && (
-                    <p className="record-tag-hint">{t("tabs.recordTagHint")}</p>
+                    <p className={styles["record-tag-hint"]}>{t("tabs.recordTagHint")}</p>
                 )}
                 {tagKind === "filter" && (
                     <>
@@ -454,10 +454,10 @@ export default function TabEditor() {
                         </label>
                         <label>
                             <span>{t("tabs.sourceApp")}</span>
-                            <div className="app-source-select">
+                            <div className={styles["app-source-select"]}>
                                 <button
                                     type="button"
-                                    className="app-source-trigger"
+                                    className={styles["app-source-trigger"]}
                                     onClick={toggleAppSourcePicker}
                                 >
                                     {selectedAppSources.length > 0 && (
@@ -465,31 +465,31 @@ export default function TabEditor() {
                                             option.icon_path ? (
                                                 <img key={option.source} src={convertFileSrc(option.icon_path)} alt="" />
                                             ) : (
-                                                <span key={option.source} className="app-source-placeholder-icon" />
+                                                <span key={option.source} className={styles["app-source-placeholder-icon"]} />
                                             )
                                         ))
                                     )}
-                                    <span className="app-source-label">{appSourceSummary()}</span>
+                                    <span className={styles["app-source-label"]}>{appSourceSummary()}</span>
                                 </button>
                                 {appSourceOpen && (
-                                    <div className="app-source-menu">
-                                        <button type="button" className={`app-source-option app-source-option-plain ${selectedAppSources.length === 0 ? 'selected' : ''}`} onClick={clearAppSources}>
+                                    <div className={styles["app-source-menu"]}>
+                                        <button type="button" className={[styles["app-source-option"], styles["app-source-option-plain"], selectedAppSources.length === 0 ? styles.selected : ""].join(" ")} onClick={clearAppSources}>
                                             <span>{t("tabs.any")}</span>
                                         </button>
                                         {recentAppSources.map(option => (
                                             <button
                                                 key={option.source}
                                                 type="button"
-                                                className={`app-source-option ${selectedAppSources.includes(option.source) ? 'selected' : ''}`}
+                                                className={[styles["app-source-option"], selectedAppSources.includes(option.source) ? styles.selected : ""].join(" ")}
                                                 onClick={() => toggleAppSource(option.source)}
                                             >
                                                 {option.icon_path ? (
                                                     <img src={convertFileSrc(option.icon_path)} alt="" />
                                                 ) : (
-                                                    <span className="app-source-placeholder-icon" />
+                                                    <span className={styles["app-source-placeholder-icon"]} />
                                                 )}
-                                                <span className="app-source-option-label">{displayAppSource(option.source, t)}</span>
-                                                {selectedAppSources.includes(option.source) && <span className="app-source-check">✓</span>}
+                                                <span className={styles["app-source-option-label"]}>{displayAppSource(option.source, t)}</span>
+                                                {selectedAppSources.includes(option.source) && <span className={styles["app-source-check"]}>✓</span>}
                                             </button>
                                         ))}
                                     </div>
@@ -510,7 +510,7 @@ export default function TabEditor() {
                                 <option value="no">{t("tabs.notFavorite")}</option>
                             </select>
                         </label>
-                        <div className="tab-editor-row">
+                        <div className={styles["tab-editor-row"]}>
                             <label>
                                 <span>{t("tabs.recent")}</span>
                                 <input
@@ -543,8 +543,8 @@ export default function TabEditor() {
                         </div>
                     </>
                 )}
-                <div className="tab-editor-actions">
-                    <button type="button" className="tab-save-button" onClick={saveDraft}>
+                <div className={styles["tab-editor-actions"]}>
+                    <button type="button" className={styles["tab-save-button"]} onClick={saveDraft}>
                         {t("tabs.save")}
                     </button>
                 </div>

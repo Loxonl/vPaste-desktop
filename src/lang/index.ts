@@ -18,6 +18,13 @@ function detectSystemLanguage(): LanguageCode {
 
 export const DEFAULT_LANGUAGE = detectSystemLanguage();
 
+export interface LanguageBridge {
+    invoke: typeof invoke;
+    listen: typeof listen;
+}
+
+const tauriLanguageBridge: LanguageBridge = { invoke, listen };
+
 type ExternalLanguagePack = {
     code: string;
     name: string;
@@ -64,17 +71,17 @@ export function translateWithPack(
     );
 }
 
-export function useLanguage() {
+export function useLanguage(bridge: LanguageBridge = tauriLanguageBridge) {
     const [configuredLanguageCode, setLanguageCode] = useState(DEFAULT_LANGUAGE);
     const [previewLanguageCode, setPreviewLanguageCode] = useState<LanguageCode | null>(null);
     const [packs, setPacks] = useState<LanguagePack[]>(LANGUAGE_PACKS);
 
     useEffect(() => {
-        const unlistenLanguageChanged = listen<string>("language-changed", event => {
+        const unlistenLanguageChanged = bridge.listen<string>("language-changed", event => {
             setLanguageCode(event.payload || DEFAULT_LANGUAGE);
         });
 
-        invoke<ExternalLanguagePack[]>("list_language_packs")
+        bridge.invoke<ExternalLanguagePack[]>("list_language_packs")
             .then(externalPacks => {
                 const merged = new Map(LANGUAGE_PACKS.map(pack => [pack.code, pack]));
                 externalPacks.map(normalizeExternalPack).forEach(pack => {
@@ -92,7 +99,7 @@ export function useLanguage() {
             })
             .catch(e => error(`Failed to load language packs: ${e}`));
 
-        invoke<string>("get_config")
+        bridge.invoke<string>("get_config")
             .then(config => {
                 const parsed = JSON.parse(config);
                 setLanguageCode(parsed.multilingual || DEFAULT_LANGUAGE);
@@ -102,7 +109,7 @@ export function useLanguage() {
         return () => {
             unlistenLanguageChanged.then(fn => fn()).catch(e => error(`Failed to unlisten language change: ${e}`));
         };
-    }, []);
+    }, [bridge]);
 
     const languageCode = previewLanguageCode || configuredLanguageCode;
     const pack = useMemo(() => getLanguagePack(languageCode, packs), [languageCode, packs]);

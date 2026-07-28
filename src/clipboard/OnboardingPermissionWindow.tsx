@@ -10,7 +10,7 @@ import backgroundAuthorizeTips from "../assets/tutorial/background-authorize-tip
 import { useLanguage } from "../lang";
 import { loadAndApplyTheme, setThemePreview, type ResolvedTheme } from "../theme";
 import type { TutorialPermissionId } from "./TutorialOverlay";
-import "./TutorialOverlay.css";
+import styles from "./TutorialOverlay.module.css";
 
 type PermissionWindowPayload = {
     permission: TutorialPermissionId;
@@ -34,8 +34,8 @@ function isPermissionId(value: unknown): value is TutorialPermissionId {
 function PermissionGuideVisual({ id }: { id: TutorialPermissionId }) {
     const image = id === "background" ? backgroundAuthorizeTips : authorizeTips;
     return (
-        <div className="tutorial-guide-art tutorial-guide-art-permission-image" aria-hidden="true">
-            <img className="tutorial-guide-authorize-tips" src={image} alt="" />
+        <div className={`${styles["tutorial-guide-art"]} ${styles["tutorial-guide-art-permission-image"]}`} aria-hidden="true">
+            <img className={styles["tutorial-guide-authorize-tips"]} src={image} alt="" />
         </div>
     );
 }
@@ -154,37 +154,37 @@ export default function OnboardingPermissionWindow() {
     };
 
     if (!permission) {
-        return <main className="permission-guide-window-root" />;
+        return <main className={styles["permission-guide-window-root"]} />;
     }
 
     return (
-        <main className="permission-guide-window-root">
+        <main className={styles["permission-guide-window-root"]}>
             <section
-                className="tutorial-guide-dialog permission-guide-standalone-dialog"
+                className={`${styles["tutorial-guide-dialog"]} ${styles["permission-guide-standalone-dialog"]}`}
                 aria-labelledby="tutorial-guide-title"
                 aria-describedby="tutorial-guide-description"
             >
                 <button
                     type="button"
-                    className="tutorial-guide-close"
+                    className={styles["tutorial-guide-close"]}
                     aria-label={t("tutorial.permission.guide.close")}
                     disabled={pending}
                     onClick={() => void closeWindow(true)}
                 >
                     <CloseRoundedIcon />
                 </button>
-                <div className="tutorial-guide-copy">
-                    <span className="tutorial-guide-logo"><img src={brandLogo} alt="vPaste" /></span>
+                <div className={styles["tutorial-guide-copy"]}>
+                    <span className={styles["tutorial-guide-logo"]}><img src={brandLogo} alt="vPaste" /></span>
                     <div>
                         <h1 id="tutorial-guide-title">{t(`tutorial.permission.guide.${permission}.title`)}</h1>
                         <p id="tutorial-guide-description">{t(`tutorial.permission.guide.${permission}.desc`)}</p>
                     </div>
                 </div>
                 <PermissionGuideVisual id={permission} />
-                <div className="tutorial-guide-actions">
+                <div className={styles["tutorial-guide-actions"]}>
                     <button
                         type="button"
-                        className="tutorial-guide-primary"
+                        className={styles["tutorial-guide-primary"]}
                         disabled={pending}
                         onClick={() => void runAction()}
                     >
@@ -195,13 +195,13 @@ export default function OnboardingPermissionWindow() {
                     </button>
                     <button
                         type="button"
-                        className="tutorial-guide-later"
+                        className={styles["tutorial-guide-later"]}
                         disabled={pending}
                         onClick={() => void closeWindow(true)}
                     >
                         {t("tutorial.permission.guide.notNow")}
                     </button>
-                    {actionError && <p className="permission-guide-error" role="alert">{actionError}</p>}
+                    {actionError && <p className={styles["permission-guide-error"]} role="alert">{actionError}</p>}
                 </div>
             </section>
         </main>

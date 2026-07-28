@@ -4,7 +4,7 @@ import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
 import backgroundVisual from "../assets/tutorial/permission-background.svg";
 import pasteVisual from "../assets/tutorial/permission-paste.svg";
 import shortcutVisual from "../assets/tutorial/shortcut-popover.svg";
-import "./TutorialOverlay.css";
+import styles from "./TutorialOverlay.module.css";
 
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
 
@@ -42,6 +42,10 @@ const permissionVisuals: Record<TutorialPermissionId, string> = {
     background: backgroundVisual,
     paste: pasteVisual,
 };
+
+function classSelector(name: string, descendant = "") {
+    return `.${styles[name]}${descendant}`;
+}
 
 type StepShellProps = {
     index: number;
@@ -106,7 +110,7 @@ export default function TutorialOverlay({
             const revealOffset = WELCOME_REVEAL_MS / welcomeDuration;
             const exitOffset = (WELCOME_REVEAL_MS + WELCOME_HOLD_MS) / welcomeDuration;
             if (!reduceMotion) {
-                animate(".tutorial-welcome", [
+                animate(classSelector("tutorial-welcome", ""), [
                     {
                         transform: "translate3d(64px, 0, 0) scale(.965)",
                         opacity: 0,
@@ -121,72 +125,72 @@ export default function TutorialOverlay({
                     },
                     { transform: "translate3d(-120%, 0, 0) scale(1)", opacity: 0 },
                 ], { duration: welcomeDuration, easing: "linear" });
-                animate(".tutorial-welcome-orbit", [
+                animate(classSelector("tutorial-welcome-orbit", ""), [
                     { transform: "rotate(-5deg) scale(.96) translateY(0)" },
                     { transform: "rotate(1deg) scale(1.015) translateY(0)", offset: .72 },
                     { transform: "rotate(0) scale(1) translateY(0)" },
                 ], { duration: 560, delay: 30, easing: "cubic-bezier(.22,1,.36,1)" });
-                animate(".tutorial-welcome-logo", [
+                animate(classSelector("tutorial-welcome-logo", ""), [
                     { transform: "rotate(-7deg) scale(.84)", opacity: 0 },
                     { transform: "rotate(1deg) scale(1.025)", opacity: 1, offset: .78 },
                     { transform: "rotate(0) scale(1)", opacity: 1 },
                 ], { duration: 520, delay: 50, easing: "cubic-bezier(.22,1,.36,1)" });
-                animate(".tutorial-welcome-word", [
+                animate(classSelector("tutorial-welcome-word", ""), [
                     { transform: "translateY(24px) rotateX(-24deg)", opacity: 0 },
                     { transform: "translateY(0) rotateX(0)", opacity: 1 },
                 ], { duration: 420, delay: 180, easing: "cubic-bezier(.16,1,.3,1)" }, 55);
-                animate(".tutorial-welcome-accent", [
+                animate(classSelector("tutorial-welcome-accent", ""), [
                     { transform: "scaleX(0)" },
                     { transform: "scaleX(1)" },
                 ], { duration: 320, delay: 360, easing: "cubic-bezier(.16,1,.3,1)" });
             }
             stepTimer = window.setTimeout(() => setStep(hasPermissionStep ? 1 : 2), welcomeDuration);
         } else if (!reduceMotion) {
-            animate(".tutorial-panel", [
+            animate(classSelector("tutorial-panel", ""), [
                 { transform: "perspective(900px) translateX(84px) rotateY(-4deg)", opacity: 0 },
                 { transform: "perspective(900px) translateX(0) rotateY(0)", opacity: 1 },
             ], { duration: 520, easing: "cubic-bezier(.16,1,.3,1)" });
-            animate(".tutorial-step-copy", [
+            animate(classSelector("tutorial-step-copy", ""), [
                 { transform: "translateX(-24px)", opacity: 0 },
                 { transform: "translateX(0)", opacity: 1 },
             ], { duration: 420, delay: 80, easing: "cubic-bezier(.16,1,.3,1)" });
-            animate(".tutorial-actions", [
+            animate(classSelector("tutorial-actions", ""), [
                 { transform: "translateX(28px)", opacity: 0 },
                 { transform: "translateX(0)", opacity: 1 },
             ], { duration: 400, delay: 100, easing: "cubic-bezier(.34,1.56,.64,1)" });
-            animate(".tutorial-primary", [
+            animate(classSelector("tutorial-primary", ""), [
                 { transform: "scale(.82)" },
                 { transform: "scale(1)" },
             ], { duration: 420, delay: 180, easing: "cubic-bezier(.34,1.56,.64,1)" });
 
             if (step === 1) {
-                animate(".tutorial-permission-card", [
+                animate(classSelector("tutorial-permission-card", ""), [
                     { transform: "perspective(700px) translateY(34px) rotateY(-9deg) scale(.94)", opacity: 0 },
                     { transform: "perspective(700px) translateY(0) rotateY(0) scale(1)", opacity: 1 },
                 ], { duration: 520, delay: 160, easing: "cubic-bezier(.34,1.56,.64,1)" }, 75);
-                animate(".tutorial-card-visual img", [
+                animate(classSelector("tutorial-card-visual", " img"), [
                     { transform: "translateY(9px) scale(1.16)" },
                     { transform: "translateY(0) scale(1)" },
                 ], { duration: 560, delay: 260, easing: "cubic-bezier(.16,1,.3,1)" }, 60);
-                animate(".tutorial-status-pill", [
+                animate(classSelector("tutorial-status-pill", ""), [
                     { transform: "translateY(-8px) scale(.72)", opacity: 0 },
                     { transform: "translateY(0) scale(1)", opacity: 1 },
                 ], { duration: 340, delay: 330, easing: "cubic-bezier(.34,1.56,.64,1)" }, 50);
             } else if (step === 2) {
-                animate(".tutorial-toggle", [
+                animate(classSelector("tutorial-toggle", ""), [
                     { transform: "translateY(28px) rotate(-2.5deg) scale(.9)", opacity: 0 },
                     { transform: "translateY(0) rotate(0) scale(1)", opacity: 1 },
                 ], { duration: 460, delay: 160, easing: "cubic-bezier(.34,1.56,.64,1)" }, 65);
             } else if (step === 3) {
-                animate(".tutorial-shortcut-art", [
+                animate(classSelector("tutorial-shortcut-art", ""), [
                     { transform: "translateX(-36px) rotate(-2deg)", opacity: 0 },
                     { transform: "translateX(0) rotate(0)", opacity: 1 },
                 ], { duration: 550, delay: 160, easing: "cubic-bezier(.16,1,.3,1)" });
-                animate(".tutorial-shortcut-keycap", [
+                animate(classSelector("tutorial-shortcut-keycap", ""), [
                     { transform: "translateX(42px) scale(.82)", opacity: 0 },
                     { transform: "translateX(0) scale(1)", opacity: 1 },
                 ], { duration: 520, delay: 240, easing: "cubic-bezier(.34,1.56,.64,1)" });
-                animate(".tutorial-shortcut-keycap strong", [
+                animate(classSelector("tutorial-shortcut-keycap", " strong"), [
                     { transform: "scale(1)" },
                     { transform: "scale(1.06)", offset: .5 },
                     { transform: "scale(1)" },
@@ -224,7 +228,7 @@ export default function TutorialOverlay({
                 { transform: "translateY(0) scale(1)" },
             ], { duration: 620, delay, easing: "cubic-bezier(.34,1.56,.64,1)" }));
 
-            const status = card.querySelector<HTMLElement>(".tutorial-status-pill");
+            const status = card.querySelector<HTMLElement>(classSelector("tutorial-status-pill"));
             if (status) {
                 animations.push(status.animate([
                     { transform: "scale(.45) rotate(-8deg)", opacity: 0 },
@@ -232,7 +236,7 @@ export default function TutorialOverlay({
                 ], { duration: 420, delay, easing: "cubic-bezier(.34,1.56,.64,1)" }));
             }
 
-            const burst = card.querySelector<HTMLElement>(".tutorial-status-burst");
+            const burst = card.querySelector<HTMLElement>(classSelector("tutorial-status-burst"));
             if (burst) {
                 animations.push(burst.animate([
                     { transform: "scale(.25)", opacity: .75 },
@@ -253,22 +257,22 @@ export default function TutorialOverlay({
         onNext,
         nextLabel = t("tutorial.continue"),
     }: StepShellProps) => (
-        <section className="tutorial-panel">
-            <div className="tutorial-step-copy tutorial-animate-item">
-                <span className="tutorial-step-index">{String(index).padStart(2, "0")}</span>
+        <section className={styles["tutorial-panel"]}>
+            <div className={`${styles["tutorial-step-copy"]} ${styles["tutorial-animate-item"]}`}>
+                <span className={styles["tutorial-step-index"]}>{String(index).padStart(2, "0")}</span>
                 <h2>{title}</h2>
                 <p>{description}</p>
                 {onBack && (
-                    <button type="button" className="tutorial-nav-button tutorial-back-action" onClick={onBack}>
+                    <button type="button" className={`${styles["tutorial-nav-button"]} ${styles["tutorial-back-action"]}`} onClick={onBack}>
                         {t("tutorial.back")}
                     </button>
                 )}
             </div>
-            <div className="tutorial-main tutorial-animate-item">
+            <div className={`${styles["tutorial-main"]} ${styles["tutorial-animate-item"]}`}>
                 {children}
             </div>
-            <div className="tutorial-actions tutorial-animate-item">
-                <button type="button" className="tutorial-nav-button tutorial-primary" onClick={onNext}>
+            <div className={`${styles["tutorial-actions"]} ${styles["tutorial-animate-item"]}`}>
+                <button type="button" className={`${styles["tutorial-nav-button"]} ${styles["tutorial-primary"]}`} onClick={onNext}>
                     {nextLabel}
                 </button>
             </div>
@@ -276,18 +280,18 @@ export default function TutorialOverlay({
     );
 
     return (
-        <div className="tutorial-root" ref={rootRef}>
+        <div className={styles["tutorial-root"]} ref={rootRef}>
             {step === 0 && (
-                <section className="tutorial-welcome" aria-live="polite">
-                    <div className="tutorial-welcome-orbit">
-                        <img className="tutorial-welcome-logo" src={logoSrc} alt="vPaste" />
+                <section className={styles["tutorial-welcome"]} aria-live="polite">
+                    <div className={styles["tutorial-welcome-orbit"]}>
+                        <img className={styles["tutorial-welcome-logo"]} src={logoSrc} alt="vPaste" />
                     </div>
-                    <div className="tutorial-welcome-copy">
+                    <div className={styles["tutorial-welcome-copy"]}>
                         <h1 aria-label={t("tutorial.welcome.title")}>
-                            <span className="tutorial-welcome-word">{t("tutorial.welcome.title")}</span>
+                            <span className={styles["tutorial-welcome-word"]}>{t("tutorial.welcome.title")}</span>
                         </h1>
-                        <p className="tutorial-welcome-word">{t("tutorial.welcome.desc")}</p>
-                        <i className="tutorial-welcome-accent" aria-hidden="true" />
+                        <p className={styles["tutorial-welcome-word"]}>{t("tutorial.welcome.desc")}</p>
+                        <i className={styles["tutorial-welcome-accent"]} aria-hidden="true" />
                     </div>
                 </section>
             )}
@@ -299,30 +303,30 @@ export default function TutorialOverlay({
                     description: t("tutorial.permissions.desc"),
                     onNext: () => setStep(2),
                     children: (
-                    <div className="tutorial-permission-row">
+                    <div className={styles["tutorial-permission-row"]}>
                         {permissions.map(permission => (
                             <article
-                                className={`tutorial-permission-card ${permission.done ? "done" : ""}`}
+                                className={[styles["tutorial-permission-card"], permission.done ? styles.done : ""].join(" ")}
                                 data-permission-id={permission.id}
                                 key={permission.id}
                             >
-                                <div className="tutorial-card-visual">
+                                <div className={styles["tutorial-card-visual"]}>
                                     <img src={permissionVisuals[permission.id]} alt="" aria-hidden="true" />
-                                    <span className="tutorial-card-brand" aria-hidden="true">
+                                    <span className={styles["tutorial-card-brand"]} aria-hidden="true">
                                         <img src={logoSrc} alt="" />
                                     </span>
-                                    <span className={`tutorial-status-pill ${permission.done ? "done" : ""}`}>
-                                        <i className="tutorial-status-burst" aria-hidden="true" />
+                                    <span className={[styles["tutorial-status-pill"], permission.done ? styles.done : ""].join(" ")}>
+                                        <i className={styles["tutorial-status-burst"]} aria-hidden="true" />
                                         {permission.done && <CheckCircleIcon fontSize="inherit" />}
                                         <span>{permission.done ? t("tutorial.permission.ready") : t("tutorial.permission.pending")}</span>
                                     </span>
                                 </div>
-                                <div className="tutorial-card-body">
+                                <div className={styles["tutorial-card-body"]}>
                                     <h3>{permission.title}</h3>
                                     <p>{permission.description}</p>
                                 </div>
                                 {!permission.done && (
-                                    <button type="button" className="tutorial-card-action" onClick={() => void onPermissionAction(permission.id)}>
+                                    <button type="button" className={styles["tutorial-card-action"]} onClick={() => void onPermissionAction(permission.id)}>
                                         <span>{permission.actionLabel}</span>
                                         <ArrowOutwardRoundedIcon fontSize="inherit" />
                                     </button>
@@ -342,9 +346,9 @@ export default function TutorialOverlay({
                     onBack: hasPermissionStep ? () => setStep(1) : undefined,
                     onNext: () => setStep(3),
                     children: (
-                    <div className="tutorial-toggle-grid">
+                    <div className={styles["tutorial-toggle-grid"]}>
                         {filters.map(filter => (
-                            <label className="tutorial-toggle tutorial-orbit-item" key={filter.id}>
+                            <label className={`${styles["tutorial-toggle"]} ${styles["tutorial-orbit-item"]}`} key={filter.id}>
                                 <span>{filter.name}</span>
                                 <input
                                     type="checkbox"
@@ -368,9 +372,9 @@ export default function TutorialOverlay({
                     onNext: onComplete,
                     nextLabel: t("tutorial.finish"),
                     children: (
-                    <div className="tutorial-shortcut-stage">
-                        <img className="tutorial-shortcut-art tutorial-orbit-item" src={shortcutVisual} alt="" aria-hidden="true" />
-                        <div className="tutorial-shortcut-keycap tutorial-orbit-item">
+                    <div className={styles["tutorial-shortcut-stage"]}>
+                        <img className={`${styles["tutorial-shortcut-art"]} ${styles["tutorial-orbit-item"]}`} src={shortcutVisual} alt="" aria-hidden="true" />
+                        <div className={`${styles["tutorial-shortcut-keycap"]} ${styles["tutorial-orbit-item"]}`}>
                             <span>{t("tutorial.shortcut.default")}</span>
                             <strong>{shortcutText}</strong>
                         </div>

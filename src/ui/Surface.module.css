@@ -1,0 +1,11 @@
+.surface {
+  color: var(--ui-text);
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-surface);
+  box-shadow: var(--ui-shadow-card);
+}
+
+.padded {
+  padding: var(--ui-space-4);
+}

@@ -73,11 +73,7 @@ import {
     ClipboardTabBar,
     ClipboardUpdateBanner,
 } from "./ClipboardHeader";
-import {
-    isTextInputTarget,
-    matchesKeyboardShortcut,
-    quickInputAction,
-} from "./clipboardInteractions";
+import { clipboardKeyDownAction } from "./clipboardKeyboard";
 import { useClipboardListInteractions } from "./useClipboardListInteractions";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
@@ -1273,168 +1269,128 @@ export default function Clipboard() {
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Alt') {
-                event.preventDefault();
+            const action = clipboardKeyDownAction(event, {
+                contextMenuOpen: contextMenu !== null,
+                isMac: isMacPlatform(),
+                pasteAsTextShortcut: pasteAsTextShortcutRef.current,
+                quickInputEnabled: quickInputEnabledRef.current,
+                searchHasText: Boolean(searchWord),
+                searchInput: searchInputRef.current,
+                searchOpen,
+                tabQuickSelectEnabled: tabQuickSelectEnabledRef.current,
+            });
+            if (!action) return;
+
+            event.preventDefault();
+            if ("stopPropagation" in action && action.stopPropagation) {
                 event.stopPropagation();
-                if (quickInputEnabledRef.current) {
-                    showAltHintsWhilePressed();
-                }
-                return;
             }
 
-            const targetIsTextInput = isTextInputTarget(event.target);
-            const allowQuickInputInSearch = event.target === searchInputRef.current;
-            if (
-                quickInputEnabledRef.current
-                && event.altKey
-                && !event.ctrlKey
-                && !event.metaKey
-                && (!targetIsTextInput || allowQuickInputInSearch)
-            ) {
-                const action = quickInputAction(event, isMacPlatform());
-                if (action?.kind === "tab") {
-                    event.preventDefault();
+            switch (action.type) {
+                case "alt-press":
+                    if (action.showHints) {
+                        showAltHintsWhilePressed();
+                    }
+                    return;
+                case "quick-tab":
                     switchToTabWithShortcut(action.tabId);
                     return;
-                }
-                if (action?.kind === "item") {
-                    event.preventDefault();
+                case "quick-item":
                     activateItemShortcut(action.index);
                     return;
-                }
-            }
-
-            if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
-                event.preventDefault();
-                focusSearchInput();
-                return;
-            }
-
-            if (targetIsTextInput) {
-                if (event.key === 'Enter' && event.target === searchInputRef.current) {
-                    event.preventDefault();
-                    event.stopPropagation();
+                case "focus-search":
+                    focusSearchInput();
+                    return;
+                case "submit-search": {
                     const firstHash = pageListRef.current[0]?.getHash() as string | undefined;
                     if (firstHash) {
                         void clickClipboardItem(firstHash, false);
                     }
                     return;
                 }
-                if (event.key === 'Escape' && searchOpen) {
-                    event.preventDefault();
-                    if (searchWord) {
+                case "dismiss-search":
+                    if (action.clear) {
                         setSearchWord("");
                     } else {
                         setSearchOpen(false);
                     }
-                }
-                return;
-            }
-
-            if (contextMenu) {
-                const options = buildContextMenuOptions(contextMenu.item, contextMenu.itemTags, contextMenu.colorOptions);
-                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-                    event.preventDefault();
+                    return;
+                case "move-context-menu-selection": {
+                    if (!contextMenu) return;
+                    const options = buildContextMenuOptions(
+                        contextMenu.item,
+                        contextMenu.itemTags,
+                        contextMenu.colorOptions,
+                    );
                     setContextMenuIndex(index => {
                         if (options.length === 0) return 0;
-                        const direction = event.key === 'ArrowDown' ? 1 : -1;
-                        return (index + direction + options.length) % options.length;
+                        return (index + action.direction + options.length) % options.length;
                     });
                     return;
                 }
-
-                if (event.key === 'Enter') {
-                    event.preventDefault();
+                case "activate-context-menu-option": {
+                    if (!contextMenu) return;
+                    const options = buildContextMenuOptions(
+                        contextMenu.item,
+                        contextMenu.itemTags,
+                        contextMenu.colorOptions,
+                    );
                     const option = options[Math.max(0, Math.min(contextMenuIndex, options.length - 1))];
                     if (option?.action) {
                         void option.action();
                     }
                     return;
                 }
-
-                if (event.key === 'Escape') {
-                    event.preventDefault();
+                case "close-context-menu":
                     setContextMenu(null);
                     return;
-                }
-            }
-
-            if (event.key === 'Escape' && searchOpen) {
-                event.preventDefault();
-                if (searchWord) {
-                    setSearchWord("");
-                } else {
-                    setSearchOpen(false);
-                }
-                return;
-            }
-
-            if (event.key === 'Escape') {
-                event.preventDefault();
-                setContextMenu(null);
-                void hideCurrentWindowWithAnimation();
-                return;
-            }
-
-            if (tabQuickSelectEnabledRef.current && event.key === 'Tab') {
-                event.preventDefault();
-                setContextMenu(null);
-                const direction = event.shiftKey ? -1 : 1;
-                navigateSelectedCard(direction);
-                return;
-            }
-
-            if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
-                event.preventDefault();
-                setContextMenu(null);
-                const direction = event.key === 'ArrowRight' ? 1 : -1;
-                navigateSelectedCard(direction);
-                return;
-            }
-
-            if (event.key === 'ArrowDown') {
-                event.preventDefault();
-                openSelectedContextMenu();
-                return;
-            }
-
-            if (event.key === ' ' || event.key === 'Spacebar') {
-                event.preventDefault();
-                setContextMenu(null);
-                invoke<boolean>('is_preview_window_visible')
-                    .then(visible => {
-                        if (visible) {
-                            previewRequestSeqRef.current += 1;
-                            return invoke('hide_preview_window');
-                        }
-                        const selectedItem = pageListRef.current.find(item => item.getHash() === selectedRef.current)
-                            || pageListRef.current[0];
+                case "hide-window":
+                    setContextMenu(null);
+                    void hideCurrentWindowWithAnimation();
+                    return;
+                case "navigate-selection":
+                    setContextMenu(null);
+                    navigateSelectedCard(action.direction);
+                    return;
+                case "open-selected-context-menu":
+                    openSelectedContextMenu();
+                    return;
+                case "toggle-preview":
+                    setContextMenu(null);
+                    invoke<boolean>('is_preview_window_visible')
+                        .then(visible => {
+                            if (visible) {
+                                previewRequestSeqRef.current += 1;
+                                return invoke('hide_preview_window');
+                            }
+                            const selectedItem = pageListRef.current.find(
+                                item => item.getHash() === selectedRef.current,
+                            ) || pageListRef.current[0];
+                            if (selectedItem) {
+                                return openPreviewItem(selectedItem);
+                            }
+                        })
+                        .catch(e => error(`Failed to toggle preview: ${e}`));
+                    return;
+                case "paste-selected":
+                    setContextMenu(null);
+                    if (action.plainText) {
+                        const selectedItem = pageListRef.current.find(
+                            item => item.getHash() === selectedRef.current,
+                        ) || pageListRef.current[0];
                         if (selectedItem) {
-                            return openPreviewItem(selectedItem);
+                            void clickClipboardItem(selectedItem.getHash(), true);
                         }
-                    })
-                    .catch(e => error(`Failed to toggle preview: ${e}`));
-                return;
-            }
-
-            if (matchesKeyboardShortcut(event, pasteAsTextShortcutRef.current)) {
-                event.preventDefault();
-                setContextMenu(null);
-                const selectedItem = pageListRef.current.find(item => item.getHash() === selectedRef.current)
-                    || pageListRef.current[0];
-                if (selectedItem) {
-                    void clickClipboardItem(selectedItem.getHash(), true);
-                }
-                return;
-            }
-
-            if (event.key === 'Enter') {
-                event.preventDefault();
-                setContextMenu(null);
-                const selectedHash = selectedRef.current || (pageListRef.current[0]?.getHash() as string | undefined);
-                if (selectedHash) {
-                    void clickClipboardItem(selectedHash, false);
-                }
+                        return;
+                    }
+                    {
+                        const selectedHash = selectedRef.current
+                            || (pageListRef.current[0]?.getHash() as string | undefined);
+                        if (selectedHash) {
+                            void clickClipboardItem(selectedHash, false);
+                        }
+                    }
+                    return;
             }
         };
 

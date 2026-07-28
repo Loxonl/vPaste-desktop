@@ -30,7 +30,7 @@ body,
     border-radius: 15px;
     color: #24282f;
     background: rgba(255, 255, 255, 0.96);
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    font-family: var(--ui-font-family);
     -webkit-font-smoothing: antialiased;
 }
 

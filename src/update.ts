@@ -45,38 +45,45 @@ const INITIAL_STATE: UpdateState = {
     releaseUrl: "https://github.com/Loxonl/vPaste-desktop/releases",
 };
 
-export function useAppUpdateState() {
+export interface UpdateBridge {
+    invoke: typeof invoke;
+    listen: typeof listen;
+}
+
+const tauriUpdateBridge: UpdateBridge = { invoke, listen };
+
+export function useAppUpdateState(bridge: UpdateBridge = tauriUpdateBridge) {
     const [state, setState] = React.useState<UpdateState>(INITIAL_STATE);
 
     React.useEffect(() => {
-        void invoke<UpdateState>("get_update_state")
+        void bridge.invoke<UpdateState>("get_update_state")
             .then(setState)
             .catch(reason => error(`Failed to load update state: ${reason}`));
-        const unlisten = listen<UpdateState>("app-update-state-changed", event => {
+        const unlisten = bridge.listen<UpdateState>("app-update-state-changed", event => {
             setState(event.payload);
         });
         return () => {
             unlisten.then(stop => stop()).catch(reason => error(`Failed to unlisten update state: ${reason}`));
         };
-    }, []);
+    }, [bridge]);
 
     const check = React.useCallback(async () => {
-        const next = await invoke<UpdateState>("check_for_app_update");
+        const next = await bridge.invoke<UpdateState>("check_for_app_update");
         setState(next);
         return next;
-    }, []);
+    }, [bridge]);
 
     const prepare = React.useCallback(async () => {
-        const next = await invoke<UpdateState>("prepare_app_update");
+        const next = await bridge.invoke<UpdateState>("prepare_app_update");
         setState(next);
         return next;
-    }, []);
+    }, [bridge]);
 
     const schedule = React.useCallback(async (timing: UpdateInstallTiming) => {
-        const next = await invoke<UpdateState>("schedule_app_update", { timing });
+        const next = await bridge.invoke<UpdateState>("schedule_app_update", { timing });
         setState(next);
         return next;
-    }, []);
+    }, [bridge]);
 
     return { state, check, prepare, schedule };
 }

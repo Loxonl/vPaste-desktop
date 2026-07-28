@@ -57,6 +57,9 @@ resource/*.db
 *.AppImage
 *.deb
 *.rpm
+coverage/
+playwright-report/
+test-results/
 # Local AI tool prompts, memory, tasks, journals, and runtime state.
 # Keep these local-only in the public app repo unless explicitly reviewed and force-added.
 .claude/

@@ -10,6 +10,7 @@ const zhCN: LanguagePack = {
         "common.choose": "选择",
         "common.modify": "修改",
         "common.cleanup": "清理",
+        "common.close": "关闭",
         "common.file": "文件",
         "common.files": "文件",
         "common.folder": "文件夹",

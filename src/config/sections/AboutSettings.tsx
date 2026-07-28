@@ -1,0 +1,228 @@
+import * as React from "react";
+import { Box, Button, LinearProgress, Stack, Switch, Typography } from "@mui/material";
+import AccessTimeOutlinedIcon from "@mui/icons-material/AccessTimeOutlined";
+import ArticleOutlinedIcon from "@mui/icons-material/ArticleOutlined";
+import FileDownloadIcon from "@mui/icons-material/FileDownloadOutlined";
+import GitHubIcon from "@mui/icons-material/GitHub";
+import LaunchOutlinedIcon from "@mui/icons-material/LaunchOutlined";
+import ScheduleOutlinedIcon from "@mui/icons-material/ScheduleOutlined";
+import UpdateRoundedIcon from "@mui/icons-material/UpdateRounded";
+import { error } from "@tauri-apps/plugin-log";
+import aboutLogo from "../../assets/vpaste-app-icon.png";
+import { useAppUpdateState, type UpdateState } from "../../update";
+import type { SettingsSectionProps, TFunction } from "../settingsTypes";
+import { classes } from "../../ui/classNames";
+import styles from "../Config.module.css";
+
+const APP_REPOSITORY_URL = "https://github.com/Loxonl/vPaste-desktop";
+const APP_CHANGELOG_URL = `${APP_REPOSITORY_URL}/releases`;
+
+export default function AboutSettings({ bridge, config, dir: _dir, t, onSave }: SettingsSectionProps & { dir: string }) {
+    const { state: updateState, check, prepare, schedule } = useAppUpdateState(bridge);
+    const [checkedManually, setCheckedManually] = React.useState(false);
+    const updateBusy = updateState.status === "checking"
+        || updateState.status === "downloading"
+        || updateState.status === "installing";
+
+    const openExternal = (url: string) => {
+        void bridge.invoke("open_url_in_browser", { url }).catch(e => error(`Failed to open external link: ${e}`));
+    };
+
+    const handleCheckUpdate = async () => {
+        try {
+            setCheckedManually(true);
+            await check();
+        } catch (e) {
+            error(`Failed to check update: ${e}`);
+        }
+    };
+
+    const handlePrepareUpdate = async () => {
+        try {
+            await prepare();
+        } catch (e) {
+            error(`Failed to prepare update: ${e}`);
+        }
+    };
+
+    const handleScheduleUpdate = async (timing: "immediate" | "onQuit" | "later") => {
+        try {
+            await schedule(timing);
+        } catch (e) {
+            error(`Failed to schedule update: ${e}`);
+        }
+    };
+
+    const handleAutomaticCheckChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        void onSave({ ...config, update_check_enabled: event.target.checked })
+            .catch(e => error(`Failed to change automatic update setting: ${e}`));
+    };
+
+    const displayVersion = updateState.currentVersion || t("settings.versionUnknown");
+    const statusText = updateStatusText(updateState, checkedManually, t);
+    const progressValue = updateState.totalBytes && updateState.totalBytes > 0
+        ? Math.min(100, (updateState.downloadedBytes / updateState.totalBytes) * 100)
+        : undefined;
+    const updatePrepared = updateState.status === "ready" || updateState.status === "deferred";
+
+    return (
+        <Stack spacing={2.25} className={classes(styles, "settings-page-stack")}>
+            <Box className={classes(styles, "about-hero")}>
+                <div className={classes(styles, "about-logo-tile")}>
+                    <img src={aboutLogo} alt="vPaste" />
+                </div>
+                <div className={classes(styles, "about-copy")}>
+                    <Typography variant="h5" className={classes(styles, "about-product-title")}>
+                        vPaste
+                    </Typography>
+                    <Typography variant="body2" className={classes(styles, "about-product-subtitle")}>
+                        {t("settings.about.subtitle")}
+                    </Typography>
+                    <div className={classes(styles, "about-version-actions")}>
+                        <span className={classes(styles, "about-version-pill")}>
+                            {t("common.version", { version: displayVersion })}
+                        </span>
+                        <Button
+                            variant="contained"
+                            color="inherit"
+                            size="small"
+                            disabled={updateBusy || !updateState.feedEnabled}
+                            onClick={handleCheckUpdate}
+                            sx={{ flex: '0 0 auto' }}
+                        >
+                            {updateState.status === "checking" ? t("settings.updateChecking") : t("settings.updateCheck")}
+                        </Button>
+                    </div>
+                </div>
+            </Box>
+            <Box>
+                <Typography variant="subtitle2" className={classes(styles, "settings-section-title")}>
+                    {t("settings.about.updateSection")}
+                </Typography>
+                <div className={classes(styles, "about-update-panel")}>
+                    <div className={classes(styles, "about-update-panel__header")}>
+                        <div>
+                            <div className={classes(styles, "about-update-panel__title")}>{t("settings.updateTitle")}</div>
+                            <div className={classes(styles, "about-update-panel__desc")}>
+                                {updateState.portable
+                                    ? t("settings.updatePortableDesc")
+                                    : !updateState.feedEnabled
+                                        ? t("settings.updateDisabled")
+                                        : t("settings.updateAutoCheckDesc")}
+                            </div>
+                        </div>
+                        <Switch
+                            checked={!updateState.portable && updateState.feedEnabled && config.update_check_enabled}
+                            disabled={updateState.portable || !updateState.feedEnabled}
+                            onChange={handleAutomaticCheckChange}
+                            inputProps={{ 'aria-label': t("settings.updateAutoCheck") }}
+                        />
+                    </div>
+                    {statusText && (
+                        <div className={classes(styles, `about-update-status ${updateState.status === 'failed' ? 'error' : updateState.status === 'ready' ? 'success' : 'working'}`)}>
+                            {statusText}
+                        </div>
+                    )}
+                    {updateState.status === "downloading" && (
+                        <LinearProgress
+                            className={classes(styles, "about-update-progress")}
+                            variant={progressValue === undefined ? "indeterminate" : "determinate"}
+                            value={progressValue}
+                        />
+                    )}
+                    <div className={classes(styles, "about-update-actions")}>
+                        {updateState.status === "available" && (
+                            <Button size="small" variant="contained" startIcon={<FileDownloadIcon />} onClick={() => void handlePrepareUpdate()}>
+                                {t("settings.updateDownload")}
+                            </Button>
+                        )}
+                        {updateState.status === "manualDownload" && (
+                            <Button size="small" variant="contained" startIcon={<LaunchOutlinedIcon />} onClick={() => openExternal(updateState.releaseUrl)}>
+                                {t("settings.updateOpenRelease")}
+                            </Button>
+                        )}
+                        {updatePrepared && (
+                            <>
+                                <Button size="small" variant="contained" startIcon={<UpdateRoundedIcon />} onClick={() => void handleScheduleUpdate("immediate")}>
+                                    {t("settings.updateInstallNow")}
+                                </Button>
+                                <Button size="small" variant="outlined" startIcon={<ScheduleOutlinedIcon />} onClick={() => void handleScheduleUpdate("onQuit")}>
+                                    {t("settings.updateOnQuit")}
+                                </Button>
+                                <Button size="small" variant="text" startIcon={<AccessTimeOutlinedIcon />} onClick={() => void handleScheduleUpdate("later")}>
+                                    {t("settings.updateLater")}
+                                </Button>
+                            </>
+                        )}
+                        {updateState.status === "failed" && updateState.feedEnabled && (
+                            <Button size="small" variant="outlined" startIcon={<UpdateRoundedIcon />} onClick={() => void handleCheckUpdate()}>
+                                {t("settings.updateRetry")}
+                            </Button>
+                        )}
+                    </div>
+                </div>
+            </Box>
+            <Box>
+                <Typography variant="subtitle2" className={classes(styles, "settings-section-title")}>
+                    {t("settings.about.linksSection")}
+                </Typography>
+                <div className={classes(styles, "about-link-grid")}>
+                    <button className={classes(styles, "about-link-card")} type="button" onClick={() => openExternal(APP_CHANGELOG_URL)}>
+                        <span className={classes(styles, "about-link-card__icon")}><ArticleOutlinedIcon fontSize="small" /></span>
+                        <span className={classes(styles, "about-link-card__body")}>
+                            <span className={classes(styles, "about-link-card__title")}>{t("settings.about.changelog")}</span>
+                            <span className={classes(styles, "about-link-card__desc")}>{t("settings.about.changelog.desc")}</span>
+                        </span>
+                        <LaunchOutlinedIcon className={classes(styles, "about-link-card__launch")} fontSize="small" />
+                    </button>
+                    <button className={classes(styles, "about-link-card")} type="button" onClick={() => openExternal(APP_REPOSITORY_URL)}>
+                        <span className={classes(styles, "about-link-card__icon")}><GitHubIcon fontSize="small" /></span>
+                        <span className={classes(styles, "about-link-card__body")}>
+                            <span className={classes(styles, "about-link-card__title")}>{t("settings.about.github")}</span>
+                            <span className={classes(styles, "about-link-card__desc")}>Loxonl/vPaste-desktop</span>
+                        </span>
+                        <LaunchOutlinedIcon className={classes(styles, "about-link-card__launch")} fontSize="small" />
+                    </button>
+                </div>
+            </Box>
+        </Stack>
+    )
+}
+
+function updateStatusText(state: UpdateState, checkedManually: boolean, t: TFunction): string {
+    const version = state.availableVersion || "";
+    switch (state.status) {
+        case "disabled":
+            return t("settings.updateDisabled");
+        case "checking":
+            return t("settings.updateChecking");
+        case "available":
+            return t("settings.updateAvailable", { version });
+        case "manualDownload":
+            return t("settings.updatePortable", { version });
+        case "downloading":
+            return state.totalBytes
+                ? t("settings.updateProgress", {
+                    downloaded: formatUpdateBytes(state.downloadedBytes),
+                    total: formatUpdateBytes(state.totalBytes),
+                })
+                : t("settings.updateProgressUnknown", { downloaded: formatUpdateBytes(state.downloadedBytes) });
+        case "ready":
+            return state.installTiming === "onQuit"
+                ? t("settings.updateScheduled", { version })
+                : t("settings.updateReady", { version });
+        case "deferred":
+            return t("settings.updateDeferred", { version });
+        case "installing":
+            return t("settings.updateInstalling");
+        case "failed":
+            return t("settings.updateCheckFailed", { error: state.error || t("common.unknown") });
+        case "idle":
+            return checkedManually ? t("settings.updateLatest") : "";
+    }
+}
+
+function formatUpdateBytes(bytes: number): string {
+    if (bytes < 1024 * 1024) return `${Math.max(0, bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}

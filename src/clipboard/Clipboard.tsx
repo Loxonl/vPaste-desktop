@@ -1,12 +1,13 @@
 // @ts-ignore
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import "./Clipboard.css";
+import styles from "./Clipboard.module.css";
+import { classes } from "../ui/classNames";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { desktopDir, downloadDir } from "@tauri-apps/api/path";
 import { error } from "@tauri-apps/plugin-log";
 import { listen } from "@tauri-apps/api/event";
-import { Item, ItemTag, ItemType } from "./Item.tsx";
+import { Item, ItemTag, ItemType } from "./Item.ts";
 import { formatRelativeTime, useLanguage } from "../lang";
 import { formatShortcutLabel, isMacPlatform } from "../shortcutDisplay";
 import FolderCopyOutlinedIcon from "@mui/icons-material/FolderCopyOutlined";
@@ -1022,7 +1023,7 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
                     regex.lastIndex = 0;
                     return regex.test(part);
                 })()
-                    ? <mark className="search-highlight" key={`${part}-${index}`}>{part}</mark>
+                    ? <mark className={classes(styles, "search-highlight")} key={`${part}-${index}`}>{part}</mark>
                     : <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>
             ))}
         </>
@@ -1240,7 +1241,7 @@ function ImagePreview({ item, active, t, onGifFormatChange }: { item: Item, acti
         const observer = new IntersectionObserver(([entry]) => {
             setIsVisible(entry.isIntersecting);
         }, {
-            root: stage.closest('.cards-container'),
+            root: stage.closest(`.${styles["cards-container"]}`),
             rootMargin: '0px 420px',
             threshold: 0.25,
         });
@@ -1298,8 +1299,8 @@ function ImagePreview({ item, active, t, onGifFormatChange }: { item: Item, acti
     }, [item.getHash(), item.getContent(), item.getPreviewContent(), isVisible, active, onGifFormatChange]);
 
     return (
-        <div className="image-preview">
-            <div className="image-preview-stage" ref={stageRef}>
+        <div className={classes(styles, "image-preview")}>
+            <div className={classes(styles, "image-preview-stage")} ref={stageRef}>
                 <img
                     key={imageSrc}
                     src={imageSrc}
@@ -1307,17 +1308,17 @@ function ImagePreview({ item, active, t, onGifFormatChange }: { item: Item, acti
                     draggable={false}
                     loading="lazy"
                     decoding="async"
-                    className="image-preview-img"
+                    className={classes(styles, "image-preview-img")}
                     style={imageStyle}
                 />
                 {naturalSize && (
-                    <div className="image-resolution">
+                    <div className={classes(styles, "image-resolution")}>
                         {`${naturalSize.width} x ${naturalSize.height}`}
                     </div>
                 )}
             </div>
             {item.getTextContent() && (
-                <div className="mixed-content-badge">{t("clipboard.mixedText")}</div>
+                <div className={classes(styles, "mixed-content-badge")}>{t("clipboard.mixedText")}</div>
             )}
         </div>
     );
@@ -1349,7 +1350,7 @@ function FilePreview({ item, refreshKey, searchQuery, t }: { item: Item, refresh
         const observer = new IntersectionObserver(([entry]) => {
             setIsVisible(entry.isIntersecting);
         }, {
-            root: element.closest('.cards-container'),
+            root: element.closest(`.${styles["cards-container"]}`),
             threshold: 0.35,
         });
         observer.observe(element);
@@ -1404,13 +1405,13 @@ function FilePreview({ item, refreshKey, searchQuery, t }: { item: Item, refresh
     }, [item.getHash(), previewInfo?.preview_path, isGifFile]);
 
     return (
-        <div className={`file-preview ${isInvalid ? 'invalid' : ''}`} ref={previewRef}>
-            <div className="file-preview-stage">
+        <div className={classes(styles, `file-preview ${isInvalid ? 'invalid' : ''}`)} ref={previewRef}>
+            <div className={classes(styles, "file-preview-stage")}>
                 {previewInfo?.kind === "single-preview" && previewInfo.preview_path ? (
                     <>
                         <img
                             key={previewSrc}
-                            className="file-preview-image"
+                            className={classes(styles, "file-preview-image")}
                             src={previewSrc}
                             draggable={false}
                             alt=""
@@ -1423,33 +1424,33 @@ function FilePreview({ item, refreshKey, searchQuery, t }: { item: Item, refresh
                             }}
                         />
                         {displayedImageSize && (
-                            <div className="image-resolution file-image-resolution">
+                            <div className={classes(styles, "image-resolution file-image-resolution")}>
                                 {`${displayedImageSize.width} x ${displayedImageSize.height}`}
                             </div>
                         )}
                     </>
                 ) : isMultiple || previewInfo?.kind === "single-folder" ? (
-                    <div className="file-preview-icon multiple">
+                    <div className={classes(styles, "file-preview-icon multiple")}>
                         <FolderCopyOutlinedIcon />
                     </div>
                 ) : (
-                    <div className="file-preview-icon single">
+                    <div className={classes(styles, "file-preview-icon single")}>
                         <InsertDriveFileOutlinedIcon />
-                        <span className="file-extension">{extension}</span>
+                        <span className={classes(styles, "file-extension")}>{extension}</span>
                     </div>
                 )}
                 {isInvalid && (
-                    <div className="file-invalid-badge">
+                    <div className={classes(styles, "file-invalid-badge")}>
                         <WarningAmberOutlinedIcon />
                     </div>
                 )}
             </div>
-            <div className="file-paths">
-                <div className="file-path-line" title={firstPath}>
+            <div className={classes(styles, "file-paths")}>
+                <div className={classes(styles, "file-path-line")} title={firstPath}>
                     <HighlightedText text={compactPath(firstPath)} query={searchQuery} />
                 </div>
                 {isMultiple && (
-                    <div className="file-path-line secondary">
+                    <div className={classes(styles, "file-path-line secondary")}>
                         <HighlightedText text={previewInfo?.secondary_text || t("clipboard.multipleFiles")} query={searchQuery} />
                     </div>
                 )}
@@ -1498,8 +1499,8 @@ function LinkPreview({ item, searchQuery }: { item: Item, searchQuery: string })
     }, [item.getHash(), imagePath]);
 
     return (
-        <div className="link-preview">
-            <div className={`link-preview-media ${showImage ? '' : 'fallback'} ${isSmallImage ? 'icon' : ''}`}>
+        <div className={classes(styles, "link-preview")}>
+            <div className={classes(styles, `link-preview-media ${showImage ? '' : 'fallback'} ${isSmallImage ? 'icon' : ''}`)}>
                 {showImage ? (
                     <img
                         src={imageSrc}
@@ -1518,11 +1519,11 @@ function LinkPreview({ item, searchQuery }: { item: Item, searchQuery: string })
                     <LinkOutlinedIcon />
                 )}
             </div>
-            <div className="link-preview-text">
-                <div className="link-preview-title" title={displayTitle}>
+            <div className={classes(styles, "link-preview-text")}>
+                <div className={classes(styles, "link-preview-title")} title={displayTitle}>
                     <HighlightedText text={displayTitle} query={searchQuery} />
                 </div>
-                <div className="link-preview-url" title={url}>
+                <div className={classes(styles, "link-preview-url")} title={url}>
                     <HighlightedText text={url} query={searchQuery} />
                 </div>
             </div>
@@ -1534,7 +1535,7 @@ function RichTextPreview({ item, active, searchQuery }: { item: Item; active: bo
     const html = sanitizeRichHtml(item.getRichHtml());
     if (!richHtmlHasVisibleContent(html)) {
         return (
-            <AutoScrollPreview active={active} className="card-preview-text">
+            <AutoScrollPreview active={active} className={classes(styles, "card-preview-text")}>
                 <HighlightedText text={item.getContent().trimStart()} query={searchQuery} />
             </AutoScrollPreview>
         );
@@ -1542,7 +1543,7 @@ function RichTextPreview({ item, active, searchQuery }: { item: Item; active: bo
     return (
         <AutoScrollPreview
             active={active}
-            className="card-preview-rich"
+            className={classes(styles, "card-preview-rich")}
             html={highlightRichHtml(html, searchQuery)}
         />
     );
@@ -1593,7 +1594,7 @@ function ClipboardCardComponent({ item, selected, simulatedHover, refreshKey, se
 
     return (
         <div
-            className={`clipboard-card ${selected ? 'selected' : ''} ${simulatedHover ? 'simulated-hover' : ''}`}
+            className={classes(styles, `clipboard-card ${selected ? 'selected' : ''} ${simulatedHover ? 'simulated-hover' : ''}`)}
             data-hash={item.getHash() as string}
             tabIndex={-1}
             draggable={false}
@@ -1642,10 +1643,10 @@ function ClipboardCardComponent({ item, selected, simulatedHover, refreshKey, se
             }}
         >
             {itemTagList.length > 0 && (
-                <div className={`card-item-tags ${itemTagList.length > 2 ? 'scrolling' : ''}`} title={itemTagList.map(tag => tag.name).join(", ")}>
-                    <div className="card-item-tags-track">
+                <div className={classes(styles, `card-item-tags ${itemTagList.length > 2 ? 'scrolling' : ''}`)} title={itemTagList.map(tag => tag.name).join(", ")}>
+                    <div className={classes(styles, "card-item-tags-track")}>
                         {(itemTagList.length > 2 ? [...itemTagList, ...itemTagList] : itemTagList).map((tag, index) => (
-                            <span key={`${tag.id}-${index}`} className="card-item-tag">
+                            <span key={`${tag.id}-${index}`} className={classes(styles, "card-item-tag")}>
                                 {tag.name}
                             </span>
                         ))}
@@ -1653,35 +1654,35 @@ function ClipboardCardComponent({ item, selected, simulatedHover, refreshKey, se
                 </div>
             )}
             <div
-                className={`card-header ${typeClass} ${appIconSrc ? 'with-app-icon' : ''}`}
+                className={classes(styles, `card-header ${typeClass} ${appIconSrc ? 'with-app-icon' : ''}`)}
                 style={headerColor
                     ? { background: headerColor.color, color: headerColor.textColor }
                     : appIconSrc
                         ? { background: "linear-gradient(135deg, #747c87, #565e68)", color: "#fff" }
                         : undefined}
             >
-                <div className="card-title-block">
-                    <span className="card-title-row">
-                        <span className="card-title">{typeLabel}</span>
+                <div className={classes(styles, "card-title-block")}>
+                    <span className={classes(styles, "card-title-row")}>
+                        <span className={classes(styles, "card-title")}>{typeLabel}</span>
                         {formatTags.map(tag => (
                             <span
                                 key={tag.key}
-                                className={`card-format-tag ${tag.key}-format-tag`}
+                                className={classes(styles, `card-format-tag ${tag.key}-format-tag`)}
                                 style={{ color: formatTagColor }}
                             >
                                 {tag.label}
                             </span>
                         ))}
                     </span>
-                    <span className="card-timestamp">{timestamp}</span>
+                    <span className={classes(styles, "card-timestamp")}>{timestamp}</span>
                 </div>
-                <span className="card-meta">
-                    {item.isFavorite() && <span className="favorite-icon" title={t("clipboard.favorite")}>★</span>}
+                <span className={classes(styles, "card-meta")}>
+                    {item.isFavorite() && <span className={classes(styles, "favorite-icon")} title={t("clipboard.favorite")}>★</span>}
                 </span>
                 {appIconSrc && (
-                    <div className={`app-icon-crop ${isMacosAppIcon ? 'macos-app-icon-crop' : ''}`} title={t("clipboard.source", { source: item.getAppSource() || t("clipboard.unknownApp") })}>
+                    <div className={classes(styles, `app-icon-crop ${isMacosAppIcon ? 'macos-app-icon-crop' : ''}`)} title={t("clipboard.source", { source: item.getAppSource() || t("clipboard.unknownApp") })}>
                         <img
-                            className={`app-header-icon ${isMacosAppIcon ? 'macos-app-icon' : ''}`}
+                            className={classes(styles, `app-header-icon ${isMacosAppIcon ? 'macos-app-icon' : ''}`)}
                             src={appIconSrc}
                             alt=""
                             onLoad={(event) => {
@@ -1693,12 +1694,12 @@ function ClipboardCardComponent({ item, selected, simulatedHover, refreshKey, se
                     </div>
                 )}
             </div>
-            <div className="card-content">
+            <div className={classes(styles, "card-content")}>
                 {item.getType() === ItemType.Image ? (
                     <ImagePreview item={item} active={previewActive && mediaPlaybackReady} t={t} onGifFormatChange={updateGifFormat} />
                 ) : item.getType() === ItemType.Color ? (
-                    <div className="card-preview-color" style={{ background: item.getContent() }}>
-                        <span className="color-value">
+                    <div className={classes(styles, "card-preview-color")} style={{ background: item.getContent() }}>
+                        <span className={classes(styles, "color-value")}>
                             <HighlightedText text={item.getContent()} query={searchQuery} />
                         </span>
                     </div>
@@ -1709,14 +1710,14 @@ function ClipboardCardComponent({ item, selected, simulatedHover, refreshKey, se
                 ) : item.isRichText() ? (
                     <RichTextPreview item={item} active={previewActive} searchQuery={searchQuery} />
                 ) : (
-                    <AutoScrollPreview active={previewActive} className="card-preview-text">
+                    <AutoScrollPreview active={previewActive} className={classes(styles, "card-preview-text")}>
                         <HighlightedText
                             text={(item.getType() === ItemType.TextFile ? item.getPreviewContent() : item.getContent()).trimStart()}
                             query={searchQuery}
                         />
                     </AutoScrollPreview>
                 )}
-                {shortcutHint && <div className="alt-card-hint">{shortcutHint}</div>}
+                {shortcutHint && <div className={classes(styles, "alt-card-hint")}>{shortcutHint}</div>}
             </div>
         </div>
     );
@@ -2395,7 +2396,7 @@ export default function Clipboard() {
     const deactivateWheelScrolling = () => {
         wheelScrollIdleTimerRef.current = null;
         wheelScrollingRef.current = false;
-        cardsContainerRef.current?.classList.remove('wheel-scrolling');
+        cardsContainerRef.current?.classList.remove(styles["wheel-scrolling"]);
     };
 
     const scheduleWheelScrollIdle = () => {
@@ -2429,7 +2430,7 @@ export default function Clipboard() {
     const scrollCardIntoView = (index: number, behavior: ScrollBehavior = 'auto') => {
         stopWheelScroll();
         const container = cardsContainerRef.current;
-        const cards = container?.querySelectorAll<HTMLElement>('.clipboard-card');
+        const cards = container?.querySelectorAll<HTMLElement>(`.${styles["clipboard-card"]}`);
         const card = cards?.item(index);
         if (!container || !card) return;
 
@@ -2687,7 +2688,7 @@ export default function Clipboard() {
         }
         dragScrollRef.current = null;
         suppressClickAfterDragRef.current = false;
-        cardsContainerRef.current?.classList.remove('dragging');
+        cardsContainerRef.current?.classList.remove(styles.dragging);
     };
 
     useEffect(() => {
@@ -3223,7 +3224,7 @@ export default function Clipboard() {
             || pageListRef.current[0];
         if (!item) return;
 
-        const cards = cardsContainerRef.current?.querySelectorAll<HTMLElement>('.clipboard-card');
+        const cards = cardsContainerRef.current?.querySelectorAll<HTMLElement>(`.${styles["clipboard-card"]}`);
         const index = pageListRef.current.findIndex(i => i.getHash() === item.getHash());
         const rect = cards?.item(Math.max(0, index))?.getBoundingClientRect();
         if (rect) {
@@ -3570,7 +3571,7 @@ export default function Clipboard() {
         stopDragInertia();
         if (event.button !== 0 || isTextInputTarget(event.target)) return;
         const target = event.target as HTMLElement;
-        if (target.closest('button') || target.closest('.context-menu')) return;
+        if (target.closest('button') || target.closest(`.${styles["context-menu"]}`)) return;
         const targetCard = target.closest<HTMLElement>('.clipboard-card');
 
         setContextMenu(null);
@@ -3607,7 +3608,7 @@ export default function Clipboard() {
         event.preventDefault();
         state.moved = true;
         suppressClickAfterDragRef.current = true;
-        container.classList.add('dragging');
+        container.classList.add(styles.dragging);
 
         const now = performance.now();
         const elapsed = Math.max(8, now - state.lastTime);
@@ -3635,7 +3636,7 @@ export default function Clipboard() {
         const container = cardsContainerRef.current;
         if (!state?.active) return;
 
-        container?.classList.remove('dragging');
+        container?.classList.remove(styles.dragging);
         if (state.frame !== null) {
             window.cancelAnimationFrame(state.frame);
             state.frame = null;
@@ -3722,7 +3723,7 @@ export default function Clipboard() {
         }
         if (!wheelScrollingRef.current) {
             wheelScrollingRef.current = true;
-            container.classList.add('wheel-scrolling');
+            container.classList.add(styles["wheel-scrolling"]);
         }
 
         const state = wheelScrollStateRef.current;
@@ -3866,18 +3867,18 @@ export default function Clipboard() {
 
     return (
         <div
-            className={`clipboard-container ${animationState}`}
+            className={classes(styles, `clipboard-container ${animationState}`)}
             ref={containerRef}
             tabIndex={-1}
             onContextMenu={event => event.preventDefault()}
         >
             {toast && (
-                <div className={`clipboard-toast ${toast.kind}`} key={toast.id}>
+                <div className={classes(styles, `clipboard-toast ${toast.kind}`)} key={toast.id}>
                     <span>{toast.message}</span>
                     {toast.actionLabel && toast.onAction && (
                         <button
                             type="button"
-                            className="clipboard-toast-action"
+                            className={classes(styles, "clipboard-toast-action")}
                             onClick={(event) => {
                                 event.preventDefault();
                                 event.stopPropagation();
@@ -3895,24 +3896,25 @@ export default function Clipboard() {
                 </div>
             )}
             {/* Header */}
-            <div className="clipboard-header">
+            <div className={classes(styles, "clipboard-header")}>
                 {tutorialActive ? (
-                    <div className="tutorial-header-spacer" />
+                    <div className={classes(styles, "tutorial-header-spacer")} />
                 ) : (
-                    <div className={`search-box ${searchOpen || searchWord ? 'open' : ''}`}>
+                    <div className={classes(styles, `search-box ${searchOpen || searchWord ? 'open' : ''}`)}>
                         <button
                             type="button"
-                            className="search-button"
+                            className={classes(styles, "search-button")}
                             title={t("common.search")}
+                            aria-label={t("common.search")}
                             onClick={focusSearchInput}
                         >
-                            <SearchIcon className="search-icon" fontSize="inherit" />
+                            <SearchIcon className={classes(styles, "search-icon")} fontSize="inherit" />
                         </button>
                         {(searchOpen || searchWord) && (
                             <input
                                 ref={searchInputRef}
                                 type="text"
-                                className="search-input"
+                                className={classes(styles, "search-input")}
                                 placeholder={t("common.search")}
                                 value={searchWord as string}
                                 onChange={handleSearchChange}
@@ -3925,24 +3927,24 @@ export default function Clipboard() {
                         )}
                     </div>
                 )}
-                <div className="header-tabs" onDragOver={event => event.preventDefault()}>
+                <div className={classes(styles, "header-tabs")} onDragOver={event => event.preventDefault()}>
                     <button
                         type="button"
-                        className={`tab-item fixed ${activeTab === "all" ? 'active' : ''}`}
+                        className={classes(styles, `tab-item fixed ${activeTab === "all" ? 'active' : ''}`)}
                         onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab("all")}
                     >
-                        <AppsOutlinedIcon className="tab-icon tab-icon-all" fontSize="inherit" />
-                        <span className="tab-label">{t("tabs.all")}</span>
-                        {altHintsVisible && <span className="alt-tab-hint">A</span>}
+                        <AppsOutlinedIcon className={classes(styles, "tab-icon tab-icon-all")} fontSize="inherit" />
+                        <span className={classes(styles, "tab-label")}>{t("tabs.all")}</span>
+                        {altHintsVisible && <span className={classes(styles, "alt-tab-hint")}>A</span>}
                     </button>
                     <button
                         type="button"
-                        className={`tab-item fixed ${activeTab === "favorite" ? 'active' : ''}`}
+                        className={classes(styles, `tab-item fixed ${activeTab === "favorite" ? 'active' : ''}`)}
                         onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab("favorite")}
                     >
-                        <StarBorderOutlinedIcon className="tab-icon tab-icon-favorite" fontSize="inherit" />
-                        <span className="tab-label">{t("tabs.favorite")}</span>
-                        {altHintsVisible && <span className="alt-tab-hint">F</span>}
+                        <StarBorderOutlinedIcon className={classes(styles, "tab-icon tab-icon-favorite")} fontSize="inherit" />
+                        <span className={classes(styles, "tab-label")}>{t("tabs.favorite")}</span>
+                        {altHintsVisible && <span className={classes(styles, "alt-tab-hint")}>F</span>}
                     </button>
                     {dynamicTabs.map(entry => {
                         if (entry.kind === "filter") {
@@ -3951,7 +3953,7 @@ export default function Clipboard() {
                                 <button
                                     key={entry.id}
                                     type="button"
-                                    className={`tab-item custom ${tutorialActive ? 'tutorial-locked' : ''} ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`}
+                                    className={classes(styles, `tab-item custom ${tutorialActive ? 'tutorial-locked' : ''} ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`)}
                                     draggable={!tutorialActive}
                                     onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab(entry.id)}
                                     onDoubleClick={tutorialActive ? undefined : event => openEditTabEditor(tab, event.currentTarget)}
@@ -3987,7 +3989,7 @@ export default function Clipboard() {
                                         handleTabDrop(entry.id);
                                     }}
                                 >
-                                    <span className="tab-label">{tab.name}</span>
+                                    <span className={classes(styles, "tab-label")}>{tab.name}</span>
                                 </button>
                             );
                         }
@@ -3996,7 +3998,7 @@ export default function Clipboard() {
                             <button
                                 key={entry.id}
                                 type="button"
-                                className={`tab-item record ${tutorialActive ? 'tutorial-locked' : ''} ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`}
+                                className={classes(styles, `tab-item record ${tutorialActive ? 'tutorial-locked' : ''} ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`)}
                                 draggable={!tutorialActive}
                                 onClick={() => tutorialActive ? blockTutorialNavigation() : setActiveTab(entry.id)}
                                 onDoubleClick={tutorialActive ? undefined : event => openEditRecordTagEditor(tag, event.currentTarget)}
@@ -4032,7 +4034,7 @@ export default function Clipboard() {
                                     handleTabDrop(entry.id);
                                 }}
                             >
-                                <span className="tab-label">{tag.name}</span>
+                                <span className={classes(styles, "tab-label")}>{tag.name}</span>
                             </button>
                         );
                     })}
@@ -4040,8 +4042,9 @@ export default function Clipboard() {
                         <button
                             ref={addTabButtonRef}
                             type="button"
-                            className="tab-add-button"
+                            className={classes(styles, "tab-add-button")}
                             title={t("tabs.add")}
+                            aria-label={t("tabs.add")}
                             onClick={event => {
                                 event.stopPropagation();
                                 openTagCreateChoice(event.clientX, event.clientY);
@@ -4051,14 +4054,14 @@ export default function Clipboard() {
                         </button>
                     )}
                 </div>
-                <div className="header-actions">
+                <div className={classes(styles, "header-actions")}>
                     {isMacPlatform()
                         && !tutorialActive
                         && tutorialPermissionStatus !== null
                         && (!tutorialPermissionStatus.background.done || !tutorialPermissionStatus.paste.done) && (
                         <button
                             type="button"
-                            className="permission-summary-banner"
+                            className={classes(styles, "permission-summary-banner")}
                             onClick={openPermissionCenter}
                         >
                             <WarningAmberOutlinedIcon fontSize="inherit" />
@@ -4066,34 +4069,34 @@ export default function Clipboard() {
                         </button>
                     )}
                     {developerMode && (
-                        <div className="developer-toolbar" aria-label={t("tutorial.debug.tools")}>
-                            <span className="developer-toolbar-badge" aria-hidden="true">DEV</span>
+                        <div className={classes(styles, "developer-toolbar")} aria-label={t("tutorial.debug.tools")}>
+                            <span className={classes(styles, "developer-toolbar-badge")} aria-hidden="true">DEV</span>
                             <button
                                 type="button"
-                                className={`settings-button developer-toolbar-button${tutorialActive && tutorialPlatform === "windows" ? " is-active" : ""}`}
+                                className={classes(styles, `settings-button developer-toolbar-button${tutorialActive && tutorialPlatform === "windows" ? " is-active" : ""}`)}
                                 title={t("tutorial.debug.windows")}
                                 aria-label={t("tutorial.debug.windows")}
                                 aria-pressed={tutorialActive && tutorialPlatform === "windows"}
                                 onClick={() => openTutorialFromDebug("windows")}
                             >
-                                <WindowOutlinedIcon className="settings-icon" fontSize="inherit" />
+                                <WindowOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
                                 <span>Win</span>
                             </button>
                             <button
                                 type="button"
-                                className={`settings-button developer-toolbar-button${tutorialActive && tutorialPlatform === "mac" ? " is-active" : ""}`}
+                                className={classes(styles, `settings-button developer-toolbar-button${tutorialActive && tutorialPlatform === "mac" ? " is-active" : ""}`)}
                                 title={t("tutorial.debug.mac")}
                                 aria-label={t("tutorial.debug.mac")}
                                 aria-pressed={tutorialActive && tutorialPlatform === "mac"}
                                 onClick={() => openTutorialFromDebug("mac")}
                             >
-                                <AppleIcon className="settings-icon" fontSize="inherit" />
+                                <AppleIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
                                 <span>Mac</span>
                             </button>
-                            <span className="developer-toolbar-divider" aria-hidden="true" />
+                            <span className={classes(styles, "developer-toolbar-divider")} aria-hidden="true" />
                             <button
                                 type="button"
-                                className="settings-button developer-toolbar-button developer-toolbar-icon-button"
+                                className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}
                                 title={t("tutorial.debug.language")}
                                 aria-label={t("tutorial.debug.language")}
                                 onClick={toggleDeveloperLanguage}
@@ -4102,31 +4105,32 @@ export default function Clipboard() {
                             </button>
                             <button
                                 type="button"
-                                className="settings-button developer-toolbar-button developer-toolbar-icon-button"
+                                className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}
                                 title={t(developerTheme === "dark" ? "tutorial.debug.theme.dark" : "tutorial.debug.theme.light")}
                                 aria-label={t(developerTheme === "dark" ? "tutorial.debug.theme.dark" : "tutorial.debug.theme.light")}
                                 aria-pressed={developerTheme === "dark"}
                                 onClick={toggleDeveloperTheme}
                             >
                                 {developerTheme === "dark"
-                                    ? <DarkModeRoundedIcon className="settings-icon" fontSize="inherit" />
-                                    : <LightModeRoundedIcon className="settings-icon" fontSize="inherit" />}
+                                    ? <DarkModeRoundedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
+                                    : <LightModeRoundedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />}
                             </button>
                         </div>
                     )}
                     <button
                         type="button"
-                        className="settings-button"
+                        className={classes(styles, "settings-button")}
                         title={t("common.settings")}
+                        aria-label={t("common.settings")}
                         onClick={tutorialActive ? blockTutorialNavigation : openConfigWindow}
                     >
-                        <SettingsOutlinedIcon className="settings-icon" fontSize="inherit" />
+                        <SettingsOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
                     </button>
                 </div>
             </div>
 
             {!tutorialActive && updateReady(updateState) && (
-                <button className="app-update-banner" type="button" onClick={() => void openUpdateSettings()}>
+                <button className={classes(styles, "app-update-banner")} type="button" onClick={() => void openUpdateSettings()}>
                     <SystemUpdateAltOutlinedIcon fontSize="inherit" />
                     <span>{t("clipboard.updateAvailable", { version: updateState.availableVersion || "" })}</span>
                     <strong>{t("clipboard.updateOpenSettings")}</strong>
@@ -4135,7 +4139,7 @@ export default function Clipboard() {
 
             {/* Cards Grid */}
             <div
-                className="cards-container"
+                className={classes(styles, "cards-container")}
                 ref={cardsContainerRef}
                 onScroll={() => {
                     if (!tutorialActive) maybeLoadMoreHistory();
@@ -4177,7 +4181,7 @@ export default function Clipboard() {
                         onComplete={completeTutorial}
                     />
                 ) : (
-                    <div className="cards-grid">
+                    <div className={classes(styles, "cards-grid")}>
                         {clipboardPage.list.map((item, index) => (
                             <ClipboardCard
                                 key={item.getHash() as string}
@@ -4193,14 +4197,14 @@ export default function Clipboard() {
                             />
                         ))}
                         {isLoadingMore && (
-                            <div className="history-loading-card">{t("common.loading")}</div>
+                            <div className={classes(styles, "history-loading-card")}>{t("common.loading")}</div>
                         )}
                     </div>
                 )}
             </div>
             {tagCreateChoice && (
                 <div
-                    className="tag-create-choice-popover"
+                    className={classes(styles, "tag-create-choice-popover")}
                     style={{ left: tagCreateChoice.x, top: tagCreateChoice.y }}
                     onClick={event => event.stopPropagation()}
                     onMouseDown={event => event.stopPropagation()}
@@ -4231,7 +4235,7 @@ export default function Clipboard() {
             )}
             {contextMenu && (
                 <div
-                    className="context-menu"
+                    className={classes(styles, "context-menu")}
                     style={{ left: contextMenu.x, top: contextMenu.y }}
                     role="menu"
                     onClick={(event) => event.stopPropagation()}
@@ -4242,21 +4246,21 @@ export default function Clipboard() {
                             key={option.label}
                             type="button"
                             role="menuitem"
-                            className={`${index === contextMenuIndex ? 'selected' : ''} ${option.children ? 'has-submenu' : ''} ${option.danger ? 'danger' : ''}`}
+                            className={classes(styles, `${index === contextMenuIndex ? 'selected' : ''} ${option.children ? 'has-submenu' : ''} ${option.danger ? 'danger' : ''}`)}
                             onMouseEnter={() => setContextMenuIndex(index)}
                             onClick={() => {
                                 if (option.action) void option.action();
                             }}
                         >
                             {option.label}
-                            {option.children && <span className="context-menu-chevron">›</span>}
+                            {option.children && <span className={classes(styles, "context-menu-chevron")}>›</span>}
                         </button>
                     ))}
                 </div>
             )}
             {contextMenu && selectedSubmenuOptions.length > 0 && (
                 <div
-                    className="context-submenu"
+                    className={classes(styles, "context-submenu")}
                     style={{ left: submenuLeft, top: submenuTop }}
                     role="menu"
                     onClick={(event) => event.stopPropagation()}
@@ -4268,7 +4272,7 @@ export default function Clipboard() {
                             type="button"
                             role="menuitem"
                             title={option.label}
-                            className={option.danger ? 'danger' : ''}
+                            className={classes(styles, option.danger ? 'danger' : '')}
                             onClick={() => {
                                 if (option.action) void option.action();
                             }}
@@ -4280,7 +4284,7 @@ export default function Clipboard() {
             )}
             {tabContextMenu && (
                 <div
-                    className="tab-context-menu"
+                    className={classes(styles, "tab-context-menu")}
                     style={{ left: tabContextMenu.x, top: tabContextMenu.y }}
                     role="menu"
                     onClick={event => event.stopPropagation()}
@@ -4305,7 +4309,7 @@ export default function Clipboard() {
                     <button
                         type="button"
                         role="menuitem"
-                        className="danger"
+                        className={classes(styles, "danger")}
                         onClick={event => {
                             event.stopPropagation();
                             if (tabContextMenu.kind === "record") {
@@ -4322,20 +4326,20 @@ export default function Clipboard() {
             )}
             {deleteConfirmTab && (
                 <div
-                    className="tab-confirm-backdrop"
+                    className={classes(styles, "tab-confirm-backdrop")}
                     onClick={() => setDeleteConfirmTab(null)}
                 >
                     <div
-                        className="tab-confirm-dialog"
+                        className={classes(styles, "tab-confirm-dialog")}
                         onClick={event => event.stopPropagation()}
                     >
                         <strong>{t("tabs.deleteConfirmTitle")}</strong>
                         <p>{t("tabs.deleteConfirmDesc", { name: deleteConfirmTab.name })}</p>
-                        <div className="tab-confirm-actions">
+                        <div className={classes(styles, "tab-confirm-actions")}>
                             <button type="button" onClick={() => setDeleteConfirmTab(null)}>
                                 {t("tabs.cancel")}
                             </button>
-                            <button type="button" className="danger" onClick={() => deleteCustomTab(deleteConfirmTab)}>
+                            <button type="button" className={classes(styles, "danger")} onClick={() => deleteCustomTab(deleteConfirmTab)}>
                                 {t("tabs.delete")}
                             </button>
                         </div>
@@ -4344,20 +4348,20 @@ export default function Clipboard() {
             )}
             {deleteConfirmRecordTag && (
                 <div
-                    className="tab-confirm-backdrop"
+                    className={classes(styles, "tab-confirm-backdrop")}
                     onClick={() => setDeleteConfirmRecordTag(null)}
                 >
                     <div
-                        className="tab-confirm-dialog"
+                        className={classes(styles, "tab-confirm-dialog")}
                         onClick={event => event.stopPropagation()}
                     >
                         <strong>{t("tabs.deleteConfirmTitle")}</strong>
                         <p>{t("tags.deleteConfirm", { name: deleteConfirmRecordTag.name })}</p>
-                        <div className="tab-confirm-actions">
+                        <div className={classes(styles, "tab-confirm-actions")}>
                             <button type="button" onClick={() => setDeleteConfirmRecordTag(null)}>
                                 {t("tabs.cancel")}
                             </button>
-                            <button type="button" className="danger" onClick={() => void deleteRecordTag(deleteConfirmRecordTag)}>
+                            <button type="button" className={classes(styles, "danger")} onClick={() => void deleteRecordTag(deleteConfirmRecordTag)}>
                                 {t("tabs.delete")}
                             </button>
                         </div>

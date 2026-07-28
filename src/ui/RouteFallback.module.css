@@ -1,0 +1,10 @@
+.fallback {
+  width: 100vw;
+  height: 100vh;
+  display: grid;
+  place-items: center;
+  color: var(--ui-text-muted);
+  background: var(--ui-bg);
+  font-family: var(--ui-font-family);
+  font-size: 13px;
+}

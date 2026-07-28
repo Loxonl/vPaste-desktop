@@ -41,7 +41,7 @@ Use GitHub GraphQL for unresolved review thread details when `gh pr view` is not
 
 | Change Type | Required Check |
 |---|---|
-| Frontend TypeScript/CSS/UI | `npm run build` |
+| Frontend TypeScript/CSS/UI | `npm run check:ui` |
 | Rust backend/Tauri commands | `cargo check --locked --all-targets --manifest-path src-tauri\Cargo.toml` and `cargo test --locked --all-targets --manifest-path src-tauri\Cargo.toml` |
 | Rust formatting-sensitive changes | `cargo fmt --all --check --manifest-path src-tauri\Cargo.toml` |
 | Clipboard behavior | Relevant cases from `docs/open-source/testing/clipboard-cases.md` |

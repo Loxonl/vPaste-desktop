@@ -19,4 +19,42 @@ test.describe("window shells", () => {
             await expect(page).toHaveScreenshot(`${window.name}-shell.png`);
         });
     }
+
+    test("developer mode opens the UI lab in the external browser", async ({ page }) => {
+        await page.addInitScript(() => {
+            let callbackId = 0;
+            const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+            Object.assign(window, {
+                __uiLabTestCalls: calls,
+                __TAURI_INTERNALS__: {
+                    invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
+                        calls.push({ cmd, args });
+                        if (cmd === "get_developer_mode") return true;
+                        if (cmd === "open_url_in_browser") return null;
+                        throw new Error(`Unhandled test command: ${cmd}`);
+                    },
+                    transformCallback: () => ++callbackId,
+                    unregisterCallback: () => undefined,
+                    convertFileSrc: (value: string) => value,
+                    metadata: {
+                        currentWindow: { label: "clipboard" },
+                        currentWebview: { label: "clipboard" },
+                    },
+                },
+            });
+        });
+
+        await page.goto("/clipboard");
+        const launcher = page.getByRole("button", { name: /component UI lab|组件样板间/i });
+        await expect(launcher).toBeVisible();
+        await launcher.click();
+
+        const expectedUrl = new URL("/__ui-lab", page.url()).toString();
+        await expect.poll(() => page.evaluate(() => {
+            const calls = (window as typeof window & {
+                __uiLabTestCalls?: Array<{ cmd: string; args: { url?: string } }>;
+            }).__uiLabTestCalls;
+            return calls?.find(call => call.cmd === "open_url_in_browser")?.args.url;
+        })).toBe(expectedUrl);
+    });
 });

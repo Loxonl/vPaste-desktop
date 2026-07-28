@@ -365,6 +365,7 @@ const enUS: LanguagePack = {
         "tutorial.debug.tools": "Developer preview tools",
         "tutorial.debug.windows": "Test Windows tutorial",
         "tutorial.debug.mac": "Test macOS tutorial",
+        "tutorial.debug.uiLab": "Open component UI lab in browser",
         "tutorial.debug.language": "Switch tutorial language",
         "tutorial.debug.theme.light": "Light theme preview",
         "tutorial.debug.theme.dark": "Dark theme preview",

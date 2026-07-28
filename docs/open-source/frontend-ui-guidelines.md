@@ -52,7 +52,7 @@ All motion must respect `prefers-reduced-motion`. Icon-only buttons require an `
 
 ## Development and Review
 
-Run the component inventory in development at `/__ui-lab`. It is the reference for component dimensions and interaction states in Chinese and English, light and dark themes. The route does not exist in production builds. The settings-only preview at `/__settings-preview` uses an in-memory bridge so screenshots do not require Tauri.
+Run `npm run dev:debug`, then use the component-lab button beside Settings to open the inventory in the system browser. The direct development URL remains `/__ui-lab`. It is the reference for component dimensions and interaction states in Chinese and English, light and dark themes. The route does not exist in production builds. The settings-only preview at `/__settings-preview` uses an in-memory bridge so screenshots do not require Tauri.
 
 Before opening a UI pull request:
 

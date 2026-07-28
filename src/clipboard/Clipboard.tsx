@@ -15,6 +15,7 @@ import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutl
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
+import DashboardCustomizeOutlinedIcon from "@mui/icons-material/DashboardCustomizeOutlined";
 import AppleIcon from "@mui/icons-material/Apple";
 import WindowOutlinedIcon from "@mui/icons-material/WindowOutlined";
 import LightModeRoundedIcon from "@mui/icons-material/LightModeRounded";
@@ -3796,6 +3797,13 @@ export default function Clipboard() {
         }
     };
 
+    const openUiLab = () => {
+        if (!import.meta.env.DEV) return;
+        const url = new URL("/__ui-lab", window.location.origin).toString();
+        void invoke("open_url_in_browser", { url })
+            .catch(e => error(`Failed to open UI lab: ${e}`));
+    };
+
     const openTutorialFromDebug = (platform: TutorialPlatform) => {
         void startTutorial(platform);
     };
@@ -4068,7 +4076,7 @@ export default function Clipboard() {
                             <span>{t("clipboard.permissionsIncomplete")}</span>
                         </button>
                     )}
-                    {developerMode && (
+                    {import.meta.env.DEV && developerMode && (
                         <div className={classes(styles, "developer-toolbar")} aria-label={t("tutorial.debug.tools")}>
                             <span className={classes(styles, "developer-toolbar-badge")} aria-hidden="true">DEV</span>
                             <button
@@ -4116,6 +4124,17 @@ export default function Clipboard() {
                                     : <LightModeRoundedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />}
                             </button>
                         </div>
+                    )}
+                    {developerMode && (
+                        <button
+                            type="button"
+                            className={classes(styles, "settings-button")}
+                            title={t("tutorial.debug.uiLab")}
+                            aria-label={t("tutorial.debug.uiLab")}
+                            onClick={openUiLab}
+                        >
+                            <DashboardCustomizeOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
+                        </button>
                     )}
                     <button
                         type="button"

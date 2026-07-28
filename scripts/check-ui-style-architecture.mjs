@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { extname, join, relative } from "node:path";
 
 const root = process.cwd();
@@ -83,6 +84,11 @@ const configBuilder = mainRust.match(
 if (!configBuilder?.includes(".transparent(true)") || !configBuilder.includes(".shadow(true)")) {
     errors.push("src-tauri/src/main.rs: Windows settings must retain its native window shadow");
 }
+if (!mainRust.match(
+    /fn configure_windows_settings_window\([\s\S]{0,500}?set_shadow\(true\)[\s\S]{0,500}?apply_windows_rounded_window_region/,
+)) {
+    errors.push("src-tauri/src/main.rs: Windows settings must combine native shadow with rounded region clipping");
+}
 
 if (!mainRust.includes('include_bytes!(concat!(env!("OUT_DIR"), "/vpaste-tray.rgba"))')) {
     errors.push("src-tauri/src/main.rs: tray icons must use the SVG-derived build mask");
@@ -98,6 +104,25 @@ for (const legacyPath of [
 ]) {
     if (existsSync(join(root, legacyPath))) {
         errors.push(`${legacyPath}: remove legacy or duplicate icon asset`);
+    }
+}
+
+const canonicalBrandSources = {
+    "src/assets/vpaste-logo-master.svg": "21c01d4a93ee88837d0d5c43735ec1e294cac887b40bbdb62bd3dd801236fb48",
+    "src-tauri/icons/source/vpaste-tray.svg": "363ec8c8c48609879d2fd35d1c15285896c9177146fe5239c73a17a3e800040e",
+    "src-tauri/icons/source/vpaste-app-icon-1024.png": "d035aba858facc318d2906fabd0ecb8e6117b724c9308ab783b71c79340a93d7",
+};
+for (const [sourcePath, expectedHash] of Object.entries(canonicalBrandSources)) {
+    const absolutePath = join(root, sourcePath);
+    if (!existsSync(absolutePath)) {
+        errors.push(`${sourcePath}: canonical brand source is missing`);
+        continue;
+    }
+    const actualHash = createHash("sha256")
+        .update(readFileSync(absolutePath))
+        .digest("hex");
+    if (actualHash !== expectedHash) {
+        errors.push(`${sourcePath}: canonical brand source does not match the approved asset`);
     }
 }
 

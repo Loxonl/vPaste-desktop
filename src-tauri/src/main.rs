@@ -942,55 +942,8 @@ fn apply_windows_rounded_window_region(
 
 #[cfg(target_os = "windows")]
 fn configure_windows_settings_window(window: &tauri::WebviewWindow) -> Result<(), String> {
-    use std::ffi::c_void;
-
-    type Hwnd = *mut c_void;
-
-    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
-    const DWMWA_BORDER_COLOR: u32 = 34;
-    const DWMWCP_ROUND: u32 = 2;
-    const DWMWA_COLOR_NONE: u32 = 0xffff_fffe;
-
-    #[link(name = "dwmapi")]
-    extern "system" {
-        fn DwmSetWindowAttribute(
-            hwnd: Hwnd,
-            attribute: u32,
-            value: *const c_void,
-            value_size: u32,
-        ) -> i32;
-    }
-
     window.set_shadow(true).map_err(|err| err.to_string())?;
-    let hwnd = window.hwnd().map_err(|err| err.to_string())?;
-    let corner_preference = DWMWCP_ROUND;
-    let border_color = DWMWA_COLOR_NONE;
-    let corner_result = unsafe {
-        DwmSetWindowAttribute(
-            hwnd.0 as Hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            (&corner_preference as *const u32).cast(),
-            std::mem::size_of_val(&corner_preference) as u32,
-        )
-    };
-    let border_result = unsafe {
-        DwmSetWindowAttribute(
-            hwnd.0 as Hwnd,
-            DWMWA_BORDER_COLOR,
-            (&border_color as *const u32).cast(),
-            std::mem::size_of_val(&border_color) as u32,
-        )
-    };
-
-    if corner_result < 0 {
-        apply_windows_rounded_window_region(window, ROUNDED_WINDOW_RADIUS)?;
-    }
-    if border_result < 0 && corner_result >= 0 {
-        return Err(format!(
-            "DwmSetWindowAttribute(DWMWA_BORDER_COLOR) failed: {border_result:#x}"
-        ));
-    }
-    Ok(())
+    apply_windows_rounded_window_region(window, ROUNDED_WINDOW_RADIUS)
 }
 
 #[cfg(target_os = "windows")]

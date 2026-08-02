@@ -6,10 +6,11 @@ Use this checklist together with the detailed [Windows Packaging Runbook](window
 
 1. Create a protected GitHub Environment named `release` with maintainer approval.
 2. Add updater secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` only to that Environment.
-3. Add macOS secrets `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID` when public signing is enabled.
-4. Verify the updater private key matches `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`, and keep an encrypted offline backup.
-5. Keep Actions tokens read-only by default. Only the final Draft Release job may use `contents: write`.
-6. Before commercial use, review the current Inno Setup terms and purchase the requested commercial license so release builds are not marked non-commercial.
+3. Add macOS certificate secrets `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and `APPLE_KEYCHAIN_PASSWORD` when public signing is enabled.
+4. Add App Store Connect secrets `APPLE_API_ISSUER`, `APPLE_API_KEY`, and `APPLE_API_PRIVATE_KEY`; the tag workflow writes the private `.p8` key to the runner temporarily and exposes its path through `APPLE_API_KEY_PATH`.
+5. Verify the updater private key matches `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`, and keep an encrypted offline backup.
+6. Keep Actions tokens read-only by default. Only the final Draft Release job may use `contents: write`.
+7. Before commercial use, review the current Inno Setup terms and purchase the requested commercial license so release builds are not marked non-commercial.
 
 ## Prepare a version
 

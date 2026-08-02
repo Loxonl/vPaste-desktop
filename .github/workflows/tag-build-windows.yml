@@ -1,0 +1,131 @@
+name: Build Windows packages from tag
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tag-windows-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 24.11.1
+  RUST_VERSION: 1.91.1
+  RELEASE_TAG: ${{ github.ref_name }}
+  RELEASE_VERSION: ${{ github.ref_name }}
+
+jobs:
+  package:
+    name: Package Windows (x64)
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Validate tag and release version
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+(-rc\.\d+)?$') {
+            throw "Unsupported release tag: $env:RELEASE_TAG"
+          }
+          "RELEASE_VERSION=$($env:RELEASE_TAG.Substring(1))" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          node scripts/check-release-version.mjs $env:RELEASE_TAG
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Set up Rust and Inno Setup
+        shell: pwsh
+        run: |
+          rustup toolchain install $env:RUST_VERSION --profile minimal
+          rustup default $env:RUST_VERSION
+
+          $innoUrl = 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe'
+          $innoInstaller = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
+          $expectedHash = '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732'
+          Invoke-WebRequest -UseBasicParsing -Uri $innoUrl -OutFile $innoInstaller
+          $actualHash = (Get-FileHash -Algorithm SHA256 $innoInstaller).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+            throw "Inno Setup hash mismatch. Expected $expectedHash, found $actualHash."
+          }
+
+          $install = Start-Process -FilePath $innoInstaller `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-' `
+            -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            throw "Inno Setup installation exited with code $($install.ExitCode)."
+          }
+
+          $compilerCandidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $compiler = $compilerCandidates |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+          if (-not $compiler) {
+            throw 'Inno Setup compiler was not found after installation.'
+          }
+
+          $compilerVersion = (Get-Item -LiteralPath $compiler).VersionInfo.ProductVersion
+          if ($compilerVersion -eq '0.0.0.0') {
+            $uninstaller = Join-Path (Split-Path -Parent $compiler) 'unins000.exe'
+            if (Test-Path -LiteralPath $uninstaller) {
+              $compilerVersion = (Get-Item -LiteralPath $uninstaller).VersionInfo.ProductVersion.Trim()
+            }
+          }
+          if (-not $compilerVersion.StartsWith('6.7.3', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Expected Inno Setup 6.7.3, found $compilerVersion at $compiler."
+          }
+          "INNO_SETUP_COMPILER=$compiler" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows packages
+        run: npm run build:windows
+
+      - name: Stage Windows packages
+        shell: pwsh
+        run: |
+          $source = 'src-tauri/target/release/bundle/windows'
+          $expected = @(
+            "vPaste_$($env:RELEASE_VERSION)_windows_x64_setup.exe",
+            "vPaste_$($env:RELEASE_VERSION)_windows_x64_portable.zip",
+            'SHA256SUMS.txt',
+            'winget/Loxonl.vPaste.yaml'
+          )
+          New-Item -ItemType Directory -Force release-assets | Out-Null
+          foreach ($relativePath in $expected) {
+            $artifact = Join-Path $source $relativePath
+            if (-not (Test-Path -LiteralPath $artifact)) {
+              throw "Expected Windows artifact was not found: $artifact"
+            }
+            $destination = Join-Path 'release-assets' $relativePath
+            New-Item -ItemType Directory -Force (Split-Path -Parent $destination) | Out-Null
+            Copy-Item -LiteralPath $artifact -Destination $destination
+          }
+
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-x64-${{ github.ref_name }}
+          path: release-assets
+          if-no-files-found: error
+          retention-days: 14

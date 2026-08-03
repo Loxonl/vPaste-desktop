@@ -80,8 +80,9 @@ struct SearchFilter {
 }
 
 lazy_static! {
-    static ref APP_ICON_COLOR_CACHE: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
     static ref LINK_PREVIEW_ATTEMPT_CACHE: Mutex<HashMap<String, LinkPreviewAttemptState>> =
+        Mutex::new(HashMap::new());
+    static ref RICH_HTML_CACHE: Mutex<HashMap<String, RichHtmlCacheEntry>> =
         Mutex::new(HashMap::new());
 }
 
@@ -91,18 +92,31 @@ struct LinkPreviewAttemptState {
     failed: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RichHtmlFileStamp {
+    len: u64,
+    modified_nanos: u128,
+}
+
+struct RichHtmlCacheEntry {
+    stamp: RichHtmlFileStamp,
+    html: String,
+}
+
 const LINK_PREVIEW_SUCCESS_COOLDOWN_SECS: u64 = 12 * 60 * 60;
 const LINK_PREVIEW_FAILURE_COOLDOWN_SECS: u64 = 72 * 60 * 60;
 const LINK_PREVIEW_CACHE_RETENTION_SECS: u64 = 96 * 60 * 60;
 const LINK_PREVIEW_HISTORY_WINDOW_MILLIS: u64 = 7 * 24 * 60 * 60 * 1000;
+const SEARCH_SCAN_BATCH_SIZE: usize = 256;
+const RICH_HTML_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 pub fn try_get_by_hash(hash: &String) -> Option<Item> {
-    let row: rusqlite::Result<Item> = db().query_row(
+    let stored: rusqlite::Result<StoredItem> = db().query_row(
         "select * from clipboard where hash = ?1",
         [hash],
-        convert_item,
+        read_stored_item,
     );
-    row.ok()
+    stored.ok().map(materialize_item)
 }
 
 pub fn count_by_hash(hash: &String) -> i64 {
@@ -197,19 +211,47 @@ fn encrypt_files_recursive(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn convert_item(row: &Row) -> Result<Item, Error> {
-    let id: usize = row.get("id")?;
-    let item_type: String = row.get("item_type").unwrap();
-    let hash: String = row.get("hash").unwrap();
-    let mut item_type = ItemType::from_str(item_type.as_str()).unwrap();
-    let mut content: String =
-        secure_store::decrypt_text(&row.get::<_, Option<String>>("content")?.unwrap_or_default());
-    let mut preview_content = secure_store::decrypt_text(
-        &row.get::<_, Option<String>>("preview_content")?
+struct StoredItem {
+    id: usize,
+    item_type: String,
+    hash: String,
+    content: String,
+    preview_content: String,
+    source: String,
+    app_source: String,
+    app_icon_path: String,
+    title_color: String,
+    time: u64,
+    search_index: u8,
+    label: u64,
+}
+
+fn read_stored_item(row: &Row) -> Result<StoredItem, Error> {
+    Ok(StoredItem {
+        id: row.get("id")?,
+        item_type: row.get("item_type")?,
+        hash: row.get("hash")?,
+        content: row.get::<_, Option<String>>("content")?.unwrap_or_default(),
+        preview_content: row
+            .get::<_, Option<String>>("preview_content")?
             .unwrap_or_default(),
-    );
-    let source: String =
-        secure_store::decrypt_text(&row.get::<_, Option<String>>("source")?.unwrap_or_default());
+        source: row.get::<_, Option<String>>("source")?.unwrap_or_default(),
+        app_source: row.get("app_source").unwrap_or_default(),
+        app_icon_path: row.get("app_icon_path").unwrap_or_default(),
+        title_color: row.get("title_color")?,
+        time: row.get("time")?,
+        search_index: row.get("search_index")?,
+        label: row.get("label")?,
+    })
+}
+
+fn materialize_item(stored: StoredItem) -> Item {
+    let id = stored.id;
+    let hash = stored.hash;
+    let mut item_type = ItemType::from_str(stored.item_type.as_str()).unwrap();
+    let mut content = secure_store::decrypt_text(&stored.content);
+    let mut preview_content = secure_store::decrypt_text(&stored.preview_content);
+    let source = secure_store::decrypt_text(&stored.source);
     let rich_html = rich_meta_from_source(&source)
         .and_then(|meta| read_rich_html_fragment(&meta.html_path))
         .unwrap_or_default();
@@ -235,13 +277,9 @@ fn convert_item(row: &Row) -> Result<Item, Error> {
         }
         _ => {}
     }
-    let app_source: String = row.get("app_source").unwrap_or_default();
-    let app_icon_path =
-        resolve_app_icon_path(&app_source, row.get("app_icon_path").unwrap_or_default());
-    let stored_title_color: String = row.get("title_color")?;
-    let title_color = app_icon_dominant_color(&app_icon_path).unwrap_or(stored_title_color);
+    let app_icon_path = resolve_app_icon_path(&stored.app_source, stored.app_icon_path);
 
-    Ok(Item {
+    Item {
         id,
         content,
         preview_content,
@@ -251,16 +289,31 @@ fn convert_item(row: &Row) -> Result<Item, Error> {
             source
         },
         rich_html,
-        app_source,
+        app_source: stored.app_source,
         app_icon_path,
-        title_color,
+        title_color: stored.title_color,
         item_type,
         hash,
-        time: row.get("time")?,
-        search_index: row.get("search_index")?,
-        label: row.get("label")?,
+        time: stored.time,
+        search_index: stored.search_index,
+        label: stored.label,
         tags: tags_for_clipboard_id(id as i64).unwrap_or_default(),
-    })
+    }
+}
+
+fn is_displayable_history_item(item: &Item) -> bool {
+    item.item_type != ItemType::Text
+        || !is_semantically_blank_text(&item.content)
+        || rich_html_has_renderable_image(&item.rich_html)
+}
+
+fn rich_html_has_renderable_image(html: &str) -> bool {
+    let html = html.to_ascii_lowercase();
+    html.contains("data:image/")
+        || html.contains("src=\"http://")
+        || html.contains("src=\"https://")
+        || html.contains("src='http://")
+        || html.contains("src='https://")
 }
 
 fn tags_for_clipboard_id(clipboard_id: i64) -> Result<Vec<ItemTag>, Error> {
@@ -333,72 +386,6 @@ pub fn vpaste_source_icon_path() -> Option<String> {
         .ok()?;
     }
     Some(icon_path.to_string_lossy().to_string())
-}
-
-fn app_icon_dominant_color(icon_path: &str) -> Option<String> {
-    if icon_path.is_empty() {
-        return None;
-    }
-
-    if let Some(color) = APP_ICON_COLOR_CACHE.lock().ok()?.get(icon_path).cloned() {
-        return if color.is_empty() { None } else { Some(color) };
-    }
-
-    let color = calculate_dominant_color(icon_path).unwrap_or_default();
-    if let Ok(mut cache) = APP_ICON_COLOR_CACHE.lock() {
-        cache.insert(icon_path.to_string(), color.clone());
-    }
-    if color.is_empty() {
-        None
-    } else {
-        Some(color)
-    }
-}
-
-fn calculate_dominant_color(icon_path: &str) -> Option<String> {
-    let image = image::open(icon_path).ok()?.to_rgba8();
-    let mut buckets: HashMap<(u8, u8, u8), (f64, f64, f64, f64)> = HashMap::new();
-
-    for pixel in image.pixels() {
-        let [red, green, blue, alpha] = pixel.0;
-        if alpha < 40 {
-            continue;
-        }
-        if red > 245 && green > 245 && blue > 245 {
-            continue;
-        }
-        if red < 18 && green < 18 && blue < 18 {
-            continue;
-        }
-
-        let max = red.max(green).max(blue) as f64;
-        let min = red.min(green).min(blue) as f64;
-        let saturation = if max <= 0.0 { 0.0 } else { (max - min) / max };
-        if saturation < 0.16 {
-            continue;
-        }
-
-        let alpha_weight = alpha as f64 / 255.0;
-        let weight = alpha_weight * (0.25 + saturation * saturation * 3.0);
-        let key = (red / 24, green / 24, blue / 24);
-        let bucket = buckets.entry(key).or_insert((0.0, 0.0, 0.0, 0.0));
-        bucket.0 += red as f64 * weight;
-        bucket.1 += green as f64 * weight;
-        bucket.2 += blue as f64 * weight;
-        bucket.3 += weight;
-    }
-
-    let (_, (red, green, blue, weight)) = buckets
-        .into_iter()
-        .filter(|(_, bucket)| bucket.3 > 0.0)
-        .max_by(|(_, a), (_, b)| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal))?;
-
-    Some(format!(
-        "rgb({}, {}, {})",
-        (red / weight).round() as u8,
-        (green / weight).round() as u8,
-        (blue / weight).round() as u8
-    ))
 }
 
 fn prefer_jumbo_app_icon(icon_path: String) -> String {
@@ -481,42 +468,53 @@ pub fn search(
 
     if keywords.trim().is_empty() {
         let (search_sql, params) = build_filter_query(&filter, last_id, last_time, limit);
-        let conn = db();
-        let prepare = conn.prepare(&search_sql);
-        if prepare.is_err() {
-            return Err(prepare.err().unwrap().to_string());
-        }
-        let mut prepare = prepare.unwrap();
-        let clipboard_iter = prepare
-            .query_map(params_from_iter(params), convert_item)
-            .map_err(|err| err.to_string())?;
-        for item in clipboard_iter {
-            items.push(item.map_err(|err| err.to_string())?);
-        }
-        next_cursor = items.last().map(|item| (item.id as u64, item.time));
-        has_more = items.len() == limit;
+        let stored_items = {
+            let conn = db();
+            let mut statement = conn.prepare(&search_sql).map_err(|err| err.to_string())?;
+            let collected = statement
+                .query_map(params_from_iter(params), read_stored_item)
+                .map_err(|err| err.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|err| err.to_string())?;
+            collected
+        };
+        next_cursor = stored_items.last().map(|item| (item.id as u64, item.time));
+        has_more = stored_items.len() == limit;
+        items.extend(stored_items.into_iter().map(materialize_item));
     } else {
         let mut seen_hashes = HashSet::new();
         let scan_limit = limit.max(5000);
-        let conn = db();
-        let (search_sql, params) = build_filter_query(&filter, last_id, last_time, scan_limit);
-        let mut prepare = conn.prepare(&search_sql).map_err(|err| err.to_string())?;
-        let mut rows = prepare
-            .query(params_from_iter(params))
-            .map_err(|err| err.to_string())?;
         let mut scanned = 0;
-        while let Some(row) = rows.next().map_err(|err| err.to_string())? {
-            scanned += 1;
-            let row_id = row.get::<_, u64>("id").map_err(|err| err.to_string())?;
-            let row_time = row.get::<_, u64>("time").map_err(|err| err.to_string())?;
-            next_cursor = Some((row_id, row_time));
-            if row_matches_keywords(row, keywords)? {
-                let item = convert_item(row).map_err(|err| err.to_string())?;
-                if seen_hashes.insert(item.hash.clone()) {
-                    items.push(item);
+        while scanned < scan_limit && items.len() < limit {
+            let batch_limit = (scan_limit - scanned).min(SEARCH_SCAN_BATCH_SIZE);
+            let (cursor_id, cursor_time) = next_cursor.unwrap_or((last_id, last_time));
+            let (search_sql, params) =
+                build_filter_query(&filter, cursor_id, cursor_time, batch_limit);
+            let stored_items = {
+                let conn = db();
+                let mut statement = conn.prepare(&search_sql).map_err(|err| err.to_string())?;
+                let collected = statement
+                    .query_map(params_from_iter(params), read_stored_item)
+                    .map_err(|err| err.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|err| err.to_string())?;
+                collected
+            };
+            let batch_len = stored_items.len();
+            for stored in stored_items {
+                scanned += 1;
+                next_cursor = Some((stored.id as u64, stored.time));
+                if stored_item_matches_keywords(&stored, keywords) {
+                    let item = materialize_item(stored);
+                    if seen_hashes.insert(item.hash.clone()) {
+                        items.push(item);
+                    }
+                }
+                if items.len() >= limit {
+                    break;
                 }
             }
-            if items.len() >= limit {
+            if batch_len < batch_limit {
                 break;
             }
         }
@@ -525,6 +523,7 @@ pub fn search(
         has_more = items.len() == limit || scanned == scan_limit;
     }
 
+    items.retain(is_displayable_history_item);
     let (next_id, next_time) = next_cursor.unwrap_or((0, 0));
     // let count = conn.query_row("select count(*) from clipboard", [], |row| row.get(0)).expect("count clipoard error");
     Ok(Page {
@@ -536,43 +535,30 @@ pub fn search(
     })
 }
 
-fn row_matches_keywords(row: &Row, keywords: &str) -> Result<bool, String> {
+fn stored_item_matches_keywords(stored: &StoredItem, keywords: &str) -> bool {
     let keyword = keywords.trim().to_ascii_lowercase();
     if keyword.is_empty() {
-        return Ok(true);
+        return true;
     }
 
-    let item_type: String = row.get("item_type").map_err(|err| err.to_string())?;
-    let content = secure_store::decrypt_text(
-        &row.get::<_, Option<String>>("content")
-            .map_err(|err| err.to_string())?
-            .unwrap_or_default(),
-    );
-    let preview_content = secure_store::decrypt_text(
-        &row.get::<_, Option<String>>("preview_content")
-            .map_err(|err| err.to_string())?
-            .unwrap_or_default(),
-    );
-    let source = secure_store::decrypt_text(
-        &row.get::<_, Option<String>>("source")
-            .map_err(|err| err.to_string())?
-            .unwrap_or_default(),
-    );
-    let app_source: String = row.get("app_source").unwrap_or_default();
+    let content = secure_store::decrypt_text(&stored.content);
+    let preview_content = secure_store::decrypt_text(&stored.preview_content);
+    let source = secure_store::decrypt_text(&stored.source);
 
-    if item_type == ItemType::TextFile.to_string() && text_file_contains_keyword(&content, &keyword)
+    if stored.item_type == ItemType::TextFile.to_string()
+        && text_file_contains_keyword(&content, &keyword)
     {
-        return Ok(true);
+        return true;
     }
 
-    Ok([
+    [
         content.as_str(),
         preview_content.as_str(),
         source.as_str(),
-        app_source.as_str(),
+        stored.app_source.as_str(),
     ]
     .iter()
-    .any(|value| value.to_ascii_lowercase().contains(&keyword)))
+    .any(|value| value.to_ascii_lowercase().contains(&keyword))
 }
 
 fn text_file_contains_keyword(path: &str, keyword: &str) -> bool {
@@ -611,33 +597,38 @@ fn append_link_cache_search_results(
     filter: &SearchFilter,
 ) -> Result<(), String> {
     let pattern = format!("%{}%", keywords.trim());
-    let conn = db();
-    let mut statement = conn
-        .prepare(
-            "select * from clipboard
-             where item_type = ?1
-               and content like ?2
-               and (time < ?3 or (time = ?4 and id < ?5))
-             order by time desc, id desc
-             limit ?6",
-        )
-        .map_err(|err| err.to_string())?;
-    let iter = statement
-        .query_map(
-            rusqlite::params![
-                ItemType::Link.to_string(),
-                pattern,
-                last_time as i64,
-                last_time as i64,
-                last_id as i64,
-                limit as i64
-            ],
-            convert_item,
-        )
-        .map_err(|err| err.to_string())?;
+    let stored_items = {
+        let conn = db();
+        let mut statement = conn
+            .prepare(
+                "select * from clipboard
+                 where item_type = ?1
+                   and content like ?2
+                   and (time < ?3 or (time = ?4 and id < ?5))
+                 order by time desc, id desc
+                 limit ?6",
+            )
+            .map_err(|err| err.to_string())?;
+        let collected = statement
+            .query_map(
+                rusqlite::params![
+                    ItemType::Link.to_string(),
+                    pattern,
+                    last_time as i64,
+                    last_time as i64,
+                    last_id as i64,
+                    limit as i64
+                ],
+                read_stored_item,
+            )
+            .map_err(|err| err.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())?;
+        collected
+    };
 
-    for item in iter {
-        let item = item.map_err(|err| err.to_string())?;
+    for stored in stored_items {
+        let item = materialize_item(stored);
         if item_matches_filter(&item, filter) && seen_hashes.insert(item.hash.clone()) {
             items.push(item);
         }
@@ -1204,9 +1195,57 @@ fn inline_local_file_images(html: &str) -> String {
     output
 }
 
+fn rich_html_file_stamp(path: &str) -> Option<RichHtmlFileStamp> {
+    let metadata = fs::metadata(path).ok()?;
+    let modified_nanos = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some(RichHtmlFileStamp {
+        len: metadata.len(),
+        modified_nanos,
+    })
+}
+
+fn cached_rich_html(path: &str, stamp: RichHtmlFileStamp) -> Option<String> {
+    RICH_HTML_CACHE
+        .lock()
+        .ok()?
+        .get(path)
+        .filter(|entry| entry.stamp == stamp)
+        .map(|entry| entry.html.clone())
+}
+
+fn cache_rich_html(path: &str, stamp: RichHtmlFileStamp, html: &str) {
+    if html.len() > RICH_HTML_CACHE_MAX_BYTES {
+        return;
+    }
+    let Ok(mut cache) = RICH_HTML_CACHE.lock() else {
+        return;
+    };
+    let current_bytes = cache.values().map(|entry| entry.html.len()).sum::<usize>();
+    let replaced_bytes = cache.get(path).map(|entry| entry.html.len()).unwrap_or(0);
+    if current_bytes - replaced_bytes + html.len() > RICH_HTML_CACHE_MAX_BYTES {
+        cache.clear();
+    }
+    cache.insert(
+        path.to_string(),
+        RichHtmlCacheEntry {
+            stamp,
+            html: html.to_string(),
+        },
+    );
+}
+
 fn read_rich_html_fragment(path: &str) -> Option<String> {
     if path.is_empty() {
         return None;
+    }
+    let stamp = rich_html_file_stamp(path);
+    if let Some(cached) = stamp.and_then(|stamp| cached_rich_html(path, stamp)) {
+        return Some(cached);
     }
     let bytes = secure_store::read_file(path).ok()?;
     if bytes.is_empty() {
@@ -1236,7 +1275,14 @@ fn read_rich_html_fragment(path: &str) -> Option<String> {
     } else {
         format!("{}\n{}", style_blocks, fragment)
     };
-    Some(html.trim().to_string()).filter(|html| !html.is_empty())
+    let html = html.trim().to_string();
+    if html.is_empty() {
+        return None;
+    }
+    if let Some(stamp) = stamp {
+        cache_rich_html(path, stamp, &html);
+    }
+    Some(html)
 }
 
 pub fn rich_clipboard_meta(hash: &str) -> Option<RichClipboardMeta> {
@@ -1624,6 +1670,12 @@ pub fn calculate_xxhash64(input: &[u8]) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+pub(crate) fn is_semantically_blank_text(content: &str) -> bool {
+    content.chars().all(|character| {
+        character.is_whitespace() || matches!(character, '\0' | '\u{200B}' | '\u{FEFF}')
+    })
+}
+
 fn should_hash_rich_text_by_plain_text(plain_text: &str) -> bool {
     let trimmed = plain_text.trim();
     if trimmed.is_empty() {
@@ -1729,6 +1781,9 @@ pub fn insert_rich_text_from_app(
 }
 
 fn insert_text_from_app_impl(mut content: String, app_source: &str, app_icon_path: &str) {
+    if is_semantically_blank_text(&content) {
+        return;
+    }
     let item_type;
     let hash = calculate_xxhash64(&content.clone().into_bytes());
     let search_content = content.clone();
@@ -2567,6 +2622,94 @@ mod tests {
         let second = rich_text_history_hash("OK", Some(&second_html), None, None);
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn rich_html_cache_keeps_inlined_local_image_after_source_is_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let image_path = root.path().join("excel-temp.png");
+        fs::write(&image_path, include_bytes!("../../icons/32x32.png")).unwrap();
+        let image_url = format!(
+            "file:///{}",
+            image_path.to_string_lossy().replace('\\', "/")
+        );
+        let html = format!(
+            "<html><body><!--StartFragment--><img src=\"{}\"><!--EndFragment--></body></html>",
+            image_url
+        );
+        let rich_path = root.path().join("excel.cf_html");
+        secure_store::write_file(&rich_path, html.as_bytes()).unwrap();
+
+        let first = read_rich_html_fragment(rich_path.to_str().unwrap()).unwrap();
+        assert!(first.contains("data:image/png;base64,"));
+        fs::remove_file(image_path).unwrap();
+
+        let second = read_rich_html_fragment(rich_path.to_str().unwrap()).unwrap();
+        assert_eq!(second, first);
+    }
+
+    #[test]
+    fn only_renderable_rich_images_keep_blank_text_history_visible() {
+        assert!(rich_html_has_renderable_image(
+            r#"<img src="data:image/png;base64,AA==">"#,
+        ));
+        assert!(rich_html_has_renderable_image(
+            r#"<img src='https://example.com/image.png'>"#,
+        ));
+        assert!(!rich_html_has_renderable_image(
+            r#"<img src="file:///C:/Temp/deleted-excel-image.png">"#,
+        ));
+    }
+
+    #[test]
+    fn blank_plain_text_does_not_touch_existing_rich_history_item() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        let config = crate::config::Config {
+            storage_dir: app_data.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        crate::config::save(config);
+        crate::clipboard::db::init();
+
+        let content = "\r\n";
+        let hash = calculate_xxhash64(content.as_bytes());
+        let original_source = "vpaste-rich-v1:{\"html_path\":\"missing.cf_html\"}";
+        db().execute(
+            "insert into clipboard(
+                hash, time, content, preview_content, item_type, search_index, source,
+                app_source, app_icon_path, title_color, icon, label
+             ) values(?1, 1, ?2, '', 'Text', 1, ?3, 'EXCEL', '', '', '', 0)",
+            params![
+                hash,
+                secure_store::encrypt_text(content),
+                secure_store::encrypt_text(original_source),
+            ],
+        )
+        .unwrap();
+
+        insert_text_from_app(content.to_string(), "EXCEL", "");
+
+        let (time, source): (u64, String) = db()
+            .query_row(
+                "select time, source from clipboard where hash = ?1",
+                [&hash],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        secure_store::decrypt_text(&row.get::<_, String>(1)?),
+                    ))
+                },
+            )
+            .unwrap();
+        let visible_items = search("", 0, 0, 10, "__all").unwrap().list;
+        reset_test_storage_config();
+
+        assert_eq!(time, 1);
+        assert_eq!(source, original_source);
+        assert!(visible_items.is_empty());
     }
 
     #[test]

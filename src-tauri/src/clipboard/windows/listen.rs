@@ -38,6 +38,24 @@ struct AppSource {
     icon_path: String,
 }
 
+#[derive(Default)]
+struct ClipboardSequenceDeduper {
+    last_processed: Option<u32>,
+}
+
+impl ClipboardSequenceDeduper {
+    fn should_process(&mut self, sequence: u32) -> bool {
+        if sequence == 0 {
+            return true;
+        }
+        if self.last_processed == Some(sequence) {
+            return false;
+        }
+        self.last_processed = Some(sequence);
+        true
+    }
+}
+
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -74,17 +92,24 @@ pub fn start(window: WebviewWindow) {
                 return;
             }
         };
+        let mut sequence_deduper = ClipboardSequenceDeduper::default();
 
         while matches!(monitor.recv(), Ok(true)) {
             if should_skip_internal_clipboard_change() {
                 info!("skip internal clipboard change");
                 continue;
             }
-            let app_source = foreground_app_source().unwrap_or_default();
             if is_clipboard_history_paused() {
                 info!("skip clipboard history while recording is paused");
                 continue;
             }
+            thread::sleep(Duration::from_millis(CLIPBOARD_SETTLE_DELAY_MS));
+            let sequence = clipboard_sequence_number();
+            if !sequence_deduper.should_process(sequence) {
+                info!("skip duplicate clipboard sequence {}", sequence);
+                continue;
+            }
+            let app_source = clipboard_app_source().unwrap_or_default();
             if is_ignored_app_source(&app_source.name) {
                 info!(
                     "skip clipboard history from ignored app source: {}",
@@ -92,7 +117,6 @@ pub fn start(window: WebviewWindow) {
                 );
                 continue;
             }
-            thread::sleep(Duration::from_millis(CLIPBOARD_SETTLE_DELAY_MS));
             let start = Instant::now();
             if parse_with_retry(&app_source) {
                 info!("clipboard parsed in {}ms", start.elapsed().as_millis());
@@ -171,17 +195,25 @@ fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, S
         }
     }
 
+    if should_ignore_excel_blank_bitmap_phase(
+        &app_source.name,
+        text_content.as_deref(),
+        html.is_some(),
+        rtf.is_some(),
+        png.is_some(),
+    ) {
+        info!("ignore transient blank Excel bitmap payload");
+        return Ok(false);
+    }
+
     if html.is_some() || rtf.is_some() {
         let html_text = rich_preview_text(html.as_deref(), None);
         let rtf_text = rich_preview_text(None, rtf.as_deref());
         let clipboard_text = text_content
             .clone()
-            .filter(|text: &String| !text.is_empty());
-        let plain_text = clipboard_text
-            .clone()
-            .or_else(|| html_text.clone())
-            .or_else(|| rtf_text.clone())
-            .unwrap_or_default();
+            .filter(|text: &String| !text.trim().is_empty());
+        let plain_text =
+            preferred_rich_plain_text(clipboard_text.clone(), html_text.clone(), rtf_text.clone());
         let local_images = html
             .as_deref()
             .map(local_images_from_html)
@@ -200,6 +232,36 @@ fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, S
                 && clipboard_text
                     .as_deref()
                     .is_some_and(|text| !text.trim().is_empty()));
+
+        if should_ignore_empty_rich_content(
+            text_content.as_deref(),
+            html_text.as_deref(),
+            rtf_text.as_deref(),
+            local_images.len(),
+            remote_gif_images.len(),
+            png.is_some(),
+        ) {
+            info!("ignore empty rich clipboard payload");
+            return Ok(false);
+        }
+
+        if should_prefer_bitmap_for_rich_content(text_content.as_deref(), local_images.len()) {
+            if is_format_avail(CF_DIBV5) {
+                return read_bitmap(CF_DIBV5, "CF_DIBV5", None, app_source);
+            }
+            if is_format_avail(CF_DIB) {
+                return read_bitmap(CF_DIB, "CF_DIB", None, app_source);
+            }
+            if let Some(png) = png.as_ref() {
+                clipboard::insert_image_with_text_and_app(
+                    png,
+                    "",
+                    &app_source.name,
+                    &app_source.icon_path,
+                );
+                return Ok(true);
+            }
+        }
 
         if local_images.len() == 1 && !has_meaningful_text {
             let image_bytes = fs::read(&local_images[0])
@@ -227,7 +289,7 @@ fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, S
             }
         }
 
-        if has_meaningful_text || !local_images.is_empty() || rtf.is_some() {
+        if has_meaningful_text || !local_images.is_empty() {
             clipboard::insert_rich_text_from_app(
                 if has_meaningful_text {
                     plain_text
@@ -274,7 +336,7 @@ fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, S
             .map(Ok)
             .unwrap_or_else(|| get_clipboard(formats::Unicode))
             .map_err(|err| format!("read unicode text failed: {:?}", err))?;
-        if text.is_empty() {
+        if !has_visible_text(Some(&text)) {
             return Ok(false);
         }
         if should_retry_file_hint && is_probable_file_clipboard_placeholder(&text) {
@@ -369,16 +431,233 @@ fn rich_preview_text(html: Option<&[u8]>, rtf: Option<&[u8]>) -> Option<String> 
         }
     }
 
-    rtf.map(|bytes| String::from_utf8_lossy(bytes).to_string())
-        .map(|text| {
-            text.replace("\\par", "\n")
-                .replace(['{', '}'], "")
-                .split_whitespace()
-                .take(80)
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .filter(|text| !text.is_empty())
+    rtf.and_then(rtf_plain_text)
+}
+
+fn preferred_rich_plain_text(
+    clipboard_text: Option<String>,
+    html_text: Option<String>,
+    rtf_text: Option<String>,
+) -> String {
+    clipboard_text
+        .filter(|text| !text.trim().is_empty())
+        .or_else(|| html_text.filter(|text| !text.trim().is_empty()))
+        .or_else(|| rtf_text.filter(|text| !text.trim().is_empty()))
+        .unwrap_or_default()
+}
+
+fn has_visible_text(text: Option<&str>) -> bool {
+    text.is_some_and(|text| !clipboard::is_semantically_blank_text(text))
+}
+
+fn should_ignore_excel_blank_bitmap_phase(
+    app_source: &str,
+    clipboard_text: Option<&str>,
+    has_html: bool,
+    has_rtf: bool,
+    has_png: bool,
+) -> bool {
+    app_source.eq_ignore_ascii_case("EXCEL")
+        && clipboard_text.is_none_or(clipboard::is_semantically_blank_text)
+        && !has_html
+        && !has_rtf
+        && !has_png
+}
+
+fn should_ignore_empty_rich_content(
+    clipboard_text: Option<&str>,
+    html_text: Option<&str>,
+    rtf_text: Option<&str>,
+    local_image_count: usize,
+    remote_gif_count: usize,
+    has_png: bool,
+) -> bool {
+    !has_visible_text(clipboard_text)
+        && !has_visible_text(html_text)
+        && !has_visible_text(rtf_text)
+        && local_image_count == 0
+        && remote_gif_count == 0
+        && !has_png
+}
+
+fn should_prefer_bitmap_for_rich_content(
+    clipboard_text: Option<&str>,
+    local_image_count: usize,
+) -> bool {
+    local_image_count > 0 && clipboard_text.is_none_or(|text| text.trim().is_empty())
+}
+
+fn rtf_plain_text(bytes: &[u8]) -> Option<String> {
+    #[derive(Clone, Copy)]
+    struct State {
+        skip_destination: bool,
+        unicode_fallback_len: usize,
+    }
+
+    fn is_destination(word: &str) -> bool {
+        matches!(
+            word,
+            "fonttbl"
+                | "colortbl"
+                | "stylesheet"
+                | "info"
+                | "pict"
+                | "object"
+                | "header"
+                | "footer"
+                | "footnote"
+                | "annotation"
+                | "xmlnstbl"
+                | "generator"
+                | "datastore"
+                | "themedata"
+                | "colorschememapping"
+                | "listtable"
+                | "listoverridetable"
+        )
+    }
+
+    let mut states = vec![State {
+        skip_destination: false,
+        unicode_fallback_len: 1,
+    }];
+    let mut output = String::new();
+    let mut index = 0;
+    let mut unicode_fallback_remaining = 0;
+
+    while index < bytes.len() {
+        if output.len() >= 8 * 1024 {
+            break;
+        }
+        match bytes[index] {
+            b'{' => {
+                states.push(*states.last().unwrap());
+                index += 1;
+            }
+            b'}' => {
+                if states.len() > 1 {
+                    states.pop();
+                }
+                index += 1;
+            }
+            b'\\' => {
+                index += 1;
+                if index >= bytes.len() {
+                    break;
+                }
+                let state = states.last_mut().unwrap();
+                match bytes[index] {
+                    b'\\' | b'{' | b'}' => {
+                        if !state.skip_destination {
+                            if unicode_fallback_remaining > 0 {
+                                unicode_fallback_remaining -= 1;
+                            } else {
+                                output.push(bytes[index] as char);
+                            }
+                        }
+                        index += 1;
+                    }
+                    b'\'' if index + 2 < bytes.len() => {
+                        if !state.skip_destination {
+                            if unicode_fallback_remaining > 0 {
+                                unicode_fallback_remaining -= 1;
+                            } else if let Ok(hex) =
+                                std::str::from_utf8(&bytes[index + 1..index + 3])
+                            {
+                                if let Ok(value) = u8::from_str_radix(hex, 16) {
+                                    output.push(value as char);
+                                }
+                            }
+                        }
+                        index += 3;
+                    }
+                    b'*' => {
+                        state.skip_destination = true;
+                        index += 1;
+                    }
+                    symbol if !symbol.is_ascii_alphabetic() => {
+                        if !state.skip_destination && unicode_fallback_remaining == 0 {
+                            match symbol {
+                                b'~' => output.push(' '),
+                                b'_' => output.push('-'),
+                                _ => {}
+                            }
+                        }
+                        index += 1;
+                    }
+                    _ => {
+                        let word_start = index;
+                        while index < bytes.len() && bytes[index].is_ascii_alphabetic() {
+                            index += 1;
+                        }
+                        let word = std::str::from_utf8(&bytes[word_start..index]).unwrap_or("");
+                        let negative = index < bytes.len() && bytes[index] == b'-';
+                        if negative {
+                            index += 1;
+                        }
+                        let number_start = index;
+                        while index < bytes.len() && bytes[index].is_ascii_digit() {
+                            index += 1;
+                        }
+                        let number = std::str::from_utf8(&bytes[number_start..index])
+                            .ok()
+                            .and_then(|value| value.parse::<i32>().ok())
+                            .map(|value| if negative { -value } else { value });
+                        if index < bytes.len() && bytes[index] == b' ' {
+                            index += 1;
+                        }
+
+                        if is_destination(word) {
+                            state.skip_destination = true;
+                            continue;
+                        }
+                        if state.skip_destination {
+                            continue;
+                        }
+                        match word {
+                            "uc" => {
+                                state.unicode_fallback_len = number.unwrap_or(1).max(0) as usize;
+                            }
+                            "u" => {
+                                if let Some(value) = number {
+                                    let code_point = (value as i16 as u16) as u32;
+                                    if let Some(character) = char::from_u32(code_point) {
+                                        output.push(character);
+                                    }
+                                    unicode_fallback_remaining = state.unicode_fallback_len;
+                                }
+                            }
+                            "par" | "line" => output.push('\n'),
+                            "tab" | "cell" => output.push('\t'),
+                            "emdash" => output.push('—'),
+                            "endash" => output.push('–'),
+                            "bullet" => output.push('•'),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            b'\r' | b'\n' => index += 1,
+            byte => {
+                let state = states.last().unwrap();
+                if !state.skip_destination {
+                    if unicode_fallback_remaining > 0 {
+                        unicode_fallback_remaining -= 1;
+                    } else {
+                        output.push(byte as char);
+                    }
+                }
+                index += 1;
+            }
+        }
+    }
+
+    let normalized = output
+        .split_whitespace()
+        .take(80)
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!normalized.is_empty()).then_some(normalized)
 }
 
 fn local_images_from_html(html: &[u8]) -> Vec<PathBuf> {
@@ -568,7 +847,22 @@ fn read_bitmap(
 }
 
 #[cfg(target_os = "windows")]
-fn foreground_app_source() -> Option<AppSource> {
+fn clipboard_sequence_number() -> u32 {
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetClipboardSequenceNumber() -> u32;
+    }
+
+    unsafe { GetClipboardSequenceNumber() }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn clipboard_sequence_number() -> u32 {
+    0
+}
+
+#[cfg(target_os = "windows")]
+fn clipboard_app_source() -> Option<AppSource> {
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStringExt;
     use std::path::PathBuf;
@@ -580,6 +874,7 @@ fn foreground_app_source() -> Option<AppSource> {
 
     #[link(name = "user32")]
     extern "system" {
+        fn GetClipboardOwner() -> Hwnd;
         fn GetForegroundWindow() -> Hwnd;
         fn GetWindowThreadProcessId(hwnd: Hwnd, process_id: *mut u32) -> u32;
     }
@@ -596,7 +891,12 @@ fn foreground_app_source() -> Option<AppSource> {
         fn CloseHandle(handle: Handle) -> i32;
     }
 
-    let hwnd = unsafe { GetForegroundWindow() };
+    let clipboard_owner = unsafe { GetClipboardOwner() };
+    let hwnd = if clipboard_owner.is_null() {
+        unsafe { GetForegroundWindow() }
+    } else {
+        clipboard_owner
+    };
     if hwnd.is_null() {
         return None;
     }
@@ -663,7 +963,7 @@ fn foreground_app_source() -> Option<AppSource> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn foreground_app_source() -> Option<AppSource> {
+fn clipboard_app_source() -> Option<AppSource> {
     None
 }
 
@@ -1124,4 +1424,129 @@ fn is_vpaste_exe(exe_path: &Path) -> bool {
         .and_then(|name| name.to_str())
         .map(|name| name.to_ascii_lowercase().contains("vpaste"))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        preferred_rich_plain_text, rtf_plain_text, should_ignore_empty_rich_content,
+        should_ignore_excel_blank_bitmap_phase, should_prefer_bitmap_for_rich_content,
+        ClipboardSequenceDeduper,
+    };
+
+    #[test]
+    fn repeated_stable_clipboard_sequence_is_processed_once() {
+        let mut deduper = ClipboardSequenceDeduper::default();
+
+        assert!(deduper.should_process(41));
+        assert!(!deduper.should_process(41));
+        assert!(deduper.should_process(42));
+        assert!(deduper.should_process(0));
+        assert!(deduper.should_process(0));
+    }
+
+    #[test]
+    fn image_only_excel_rich_content_prefers_bitmap_storage() {
+        assert!(should_prefer_bitmap_for_rich_content(None, 2));
+        assert!(should_prefer_bitmap_for_rich_content(Some("\r\n"), 1));
+        assert!(!should_prefer_bitmap_for_rich_content(Some("cell text"), 1));
+        assert!(!should_prefer_bitmap_for_rich_content(None, 0));
+    }
+
+    #[test]
+    fn empty_excel_rich_content_is_ignored_even_when_dib_is_available() {
+        assert!(should_ignore_empty_rich_content(
+            Some("\r\n"),
+            Some("\u{3000}"),
+            None,
+            0,
+            0,
+            false,
+        ));
+        assert!(!should_ignore_empty_rich_content(
+            Some("\r\n"),
+            Some("\u{3000}"),
+            None,
+            1,
+            0,
+            false,
+        ));
+        assert!(!should_ignore_empty_rich_content(
+            Some("cell text"),
+            None,
+            None,
+            0,
+            0,
+            false,
+        ));
+        assert!(!should_ignore_empty_rich_content(
+            None, None, None, 0, 0, true,
+        ));
+    }
+
+    #[test]
+    fn transient_excel_blank_bitmap_phase_is_ignored() {
+        assert!(should_ignore_excel_blank_bitmap_phase(
+            "EXCEL",
+            Some("\r\n"),
+            false,
+            false,
+            false,
+        ));
+        assert!(should_ignore_excel_blank_bitmap_phase(
+            "excel", None, false, false, false,
+        ));
+        assert!(!should_ignore_excel_blank_bitmap_phase(
+            "EXCEL",
+            Some("cell text"),
+            false,
+            false,
+            false,
+        ));
+        assert!(!should_ignore_excel_blank_bitmap_phase(
+            "EXCEL",
+            Some("\r\n"),
+            true,
+            false,
+            false,
+        ));
+        assert!(!should_ignore_excel_blank_bitmap_phase(
+            "PixPin",
+            Some("\r\n"),
+            false,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn blank_clipboard_text_uses_visible_rtf_text() {
+        let rtf = br#"{\rtf1\ansi{\fonttbl{\f0 Arial;}}\uc1\u20320?\u22909?\cell} "#;
+        let visible_rtf = rtf_plain_text(rtf);
+
+        assert_eq!(visible_rtf.as_deref(), Some("你好"));
+        assert_eq!(
+            preferred_rich_plain_text(Some("\r\n".to_string()), None, visible_rtf),
+            "你好"
+        );
+    }
+
+    #[test]
+    fn non_blank_clipboard_text_remains_preferred() {
+        assert_eq!(
+            preferred_rich_plain_text(
+                Some("Excel cell".to_string()),
+                Some("HTML text".to_string()),
+                Some("RTF text".to_string()),
+            ),
+            "Excel cell"
+        );
+    }
+
+    #[test]
+    fn rtf_metadata_without_document_text_is_ignored() {
+        let rtf = br#"{\rtf1\ansi{\fonttbl{\f0 Arial;}}{\*\generator Excel;}}"#;
+
+        assert_eq!(rtf_plain_text(rtf), None);
+    }
 }

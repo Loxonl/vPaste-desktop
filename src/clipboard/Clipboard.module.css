@@ -1314,31 +1314,6 @@ body {
 
 .card-header.with-app-icon {
   padding-right: 58px;
-  background: linear-gradient(135deg, #747c87, #565e68);
-}
-
-.card-header.type-text {
-  background: #4CAF50;
-}
-
-.card-header.type-color {
-  background: #2196F3;
-}
-
-.card-header.type-link {
-  background: linear-gradient(135deg, #2f6fed, #66c2ff);
-}
-
-.card-header.type-image {
-  background: #FF9800;
-}
-
-.card-header.type-file {
-  background: #00BCD4;
-}
-
-.card-header.type-textfile {
-  background: #9C27B0;
 }
 
 .card-title-block {

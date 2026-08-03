@@ -80,6 +80,7 @@ struct SearchFilter {
 }
 
 lazy_static! {
+    static ref APP_ICON_COLOR_CACHE: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
     static ref LINK_PREVIEW_ATTEMPT_CACHE: Mutex<HashMap<String, LinkPreviewAttemptState>> =
         Mutex::new(HashMap::new());
     static ref RICH_HTML_CACHE: Mutex<HashMap<String, RichHtmlCacheEntry>> =
@@ -278,6 +279,7 @@ fn materialize_item(stored: StoredItem) -> Item {
         _ => {}
     }
     let app_icon_path = resolve_app_icon_path(&stored.app_source, stored.app_icon_path);
+    let title_color = app_icon_dominant_color(&app_icon_path).unwrap_or(stored.title_color);
 
     Item {
         id,
@@ -291,7 +293,7 @@ fn materialize_item(stored: StoredItem) -> Item {
         rich_html,
         app_source: stored.app_source,
         app_icon_path,
-        title_color: stored.title_color,
+        title_color,
         item_type,
         hash,
         time: stored.time,
@@ -372,6 +374,72 @@ fn resolve_app_icon_path(app_source: &str, stored_icon_path: String) -> String {
     } else {
         prefer_jumbo_app_icon(stored_icon_path)
     }
+}
+
+fn app_icon_dominant_color(icon_path: &str) -> Option<String> {
+    if icon_path.is_empty() {
+        return None;
+    }
+
+    if let Some(color) = APP_ICON_COLOR_CACHE.lock().ok()?.get(icon_path).cloned() {
+        return if color.is_empty() { None } else { Some(color) };
+    }
+
+    let color = calculate_dominant_color(icon_path).unwrap_or_default();
+    if let Ok(mut cache) = APP_ICON_COLOR_CACHE.lock() {
+        cache.insert(icon_path.to_string(), color.clone());
+    }
+    if color.is_empty() {
+        None
+    } else {
+        Some(color)
+    }
+}
+
+fn calculate_dominant_color(icon_path: &str) -> Option<String> {
+    let image = image::open(icon_path).ok()?.to_rgba8();
+    let mut buckets: HashMap<(u8, u8, u8), (f64, f64, f64, f64)> = HashMap::new();
+
+    for pixel in image.pixels() {
+        let [red, green, blue, alpha] = pixel.0;
+        if alpha < 40 {
+            continue;
+        }
+        if red > 245 && green > 245 && blue > 245 {
+            continue;
+        }
+        if red < 18 && green < 18 && blue < 18 {
+            continue;
+        }
+
+        let max = red.max(green).max(blue) as f64;
+        let min = red.min(green).min(blue) as f64;
+        let saturation = if max <= 0.0 { 0.0 } else { (max - min) / max };
+        if saturation < 0.16 {
+            continue;
+        }
+
+        let alpha_weight = alpha as f64 / 255.0;
+        let weight = alpha_weight * (0.25 + saturation * saturation * 3.0);
+        let key = (red / 24, green / 24, blue / 24);
+        let bucket = buckets.entry(key).or_insert((0.0, 0.0, 0.0, 0.0));
+        bucket.0 += red as f64 * weight;
+        bucket.1 += green as f64 * weight;
+        bucket.2 += blue as f64 * weight;
+        bucket.3 += weight;
+    }
+
+    let (_, (red, green, blue, weight)) = buckets
+        .into_iter()
+        .filter(|(_, bucket)| bucket.3 > 0.0)
+        .max_by(|(_, a), (_, b)| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal))?;
+
+    Some(format!(
+        "rgb({}, {}, {})",
+        (red / weight).round() as u8,
+        (green / weight).round() as u8,
+        (blue / weight).round() as u8
+    ))
 }
 
 pub fn vpaste_source_icon_path() -> Option<String> {
@@ -2659,6 +2727,40 @@ mod tests {
         assert!(!rich_html_has_renderable_image(
             r#"<img src="file:///C:/Temp/deleted-excel-image.png">"#,
         ));
+    }
+
+    #[test]
+    fn materialized_item_uses_app_icon_color_when_stored_color_is_empty() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        let config = crate::config::Config {
+            storage_dir: app_data.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        crate::config::save(config);
+        crate::clipboard::db::init();
+
+        let icon_path = app_data.path().join("source-app.png");
+        fs::write(&icon_path, include_bytes!("../../icons/32x32.png")).unwrap();
+        let item = materialize_item(StoredItem {
+            id: 0,
+            item_type: ItemType::Text.to_string(),
+            hash: "app-icon-color-test".to_string(),
+            content: secure_store::encrypt_text("text"),
+            preview_content: secure_store::encrypt_text("text"),
+            source: secure_store::encrypt_text("text"),
+            app_source: "Test App".to_string(),
+            app_icon_path: icon_path.to_string_lossy().to_string(),
+            title_color: String::new(),
+            time: 1,
+            search_index: 1,
+            label: 0,
+        });
+        reset_test_storage_config();
+
+        assert!(item.title_color.starts_with("rgb("));
     }
 
     #[test]

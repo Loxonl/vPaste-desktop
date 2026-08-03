@@ -6,14 +6,10 @@ import { classes } from "../ui/classNames";
 import { formatRelativeTime } from "../lang";
 import { Item, ItemType } from "./Item";
 import ClipboardCardPreview from "./ClipboardCardPreview";
+import { ensureWhiteTextContrast, WHITE_HEADER_TEXT_COLOR } from "./clipboardHeaderColor";
 import { isSingleImageFileItem } from "./itemPresentation";
 
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
-
-type DominantColor = {
-    color: string;
-    textColor: string;
-};
 
 type ClipboardCardProps = {
     item: Item;
@@ -39,43 +35,53 @@ function getTypeLabel(type: ItemType, t: TFunction): string {
     }
 }
 
-function getTypeClass(type: ItemType): string {
-    switch (type) {
-        case ItemType.Text: return "type-text";
-        case ItemType.Image: return "type-image";
-        case ItemType.TextFile: return "type-text";
-        case ItemType.Link: return "type-link";
-        case ItemType.Color: return "type-color";
-        case ItemType.File: return "type-file";
-        default: return "type-text";
-    }
-}
+const TYPE_HEADER_COLORS: Record<ItemType, string> = {
+    [ItemType.Text]: ensureWhiteTextContrast("#4CAF50"),
+    [ItemType.Image]: ensureWhiteTextContrast("#FF9800"),
+    [ItemType.TextFile]: ensureWhiteTextContrast("#4CAF50"),
+    [ItemType.Link]: ensureWhiteTextContrast("#2f6fed"),
+    [ItemType.Color]: ensureWhiteTextContrast("#2196F3"),
+    [ItemType.File]: ensureWhiteTextContrast("#00BCD4"),
+};
+
+const APP_ICON_HEADER_ACCENT_COLOR = ensureWhiteTextContrast("#637083");
+const APP_ICON_HEADER_BACKGROUND = `linear-gradient(135deg, ${
+    ensureWhiteTextContrast("#747c87")
+}, ${ensureWhiteTextContrast("#565e68")})`;
+const LINK_HEADER_BACKGROUND = `linear-gradient(135deg, ${
+    TYPE_HEADER_COLORS[ItemType.Link]
+}, ${ensureWhiteTextContrast("#66c2ff")})`;
 
 function getTypeAccentColor(type: ItemType): string {
-    switch (type) {
-        case ItemType.Text: return "#4CAF50";
-        case ItemType.Image: return "#FF9800";
-        case ItemType.TextFile: return "#4CAF50";
-        case ItemType.Link: return "#2f6fed";
-        case ItemType.Color: return "#2196F3";
-        case ItemType.File: return "#00BCD4";
-        default: return "#4CAF50";
-    }
+    return TYPE_HEADER_COLORS[type] ?? TYPE_HEADER_COLORS[ItemType.Text];
 }
-
-const APP_ICON_HEADER_ACCENT_COLOR = "#637083";
 
 function getFormatTagColor(
     type: ItemType,
-    headerColor: DominantColor | null,
+    headerColor: string | null,
     hasAppIcon: boolean,
 ): string {
-    if (headerColor) return headerColor.color;
+    if (headerColor) return headerColor;
     if (hasAppIcon) return APP_ICON_HEADER_ACCENT_COLOR;
     return getTypeAccentColor(type);
 }
 
-function dominantColorFromImage(image: HTMLImageElement): DominantColor | null {
+function getHeaderBackground(
+    type: ItemType,
+    headerColor: string | null,
+    hasAppIcon: boolean,
+): string {
+    if (headerColor) return headerColor;
+    if (hasAppIcon) return APP_ICON_HEADER_BACKGROUND;
+    if (type === ItemType.Link) return LINK_HEADER_BACKGROUND;
+    return getTypeAccentColor(type);
+}
+
+function headerColorFromSource(color: string | undefined): string | null {
+    return color ? ensureWhiteTextContrast(color) : null;
+}
+
+function dominantColorFromImage(image: HTMLImageElement): string | null {
     const canvas = document.createElement("canvas");
     const size = 24;
     canvas.width = size;
@@ -113,24 +119,10 @@ function dominantColorFromImage(image: HTMLImageElement): DominantColor | null {
         const r = Math.round(dominant.r / dominant.weight);
         const g = Math.round(dominant.g / dominant.weight);
         const b = Math.round(dominant.b / dominant.weight);
-        const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-        return {
-            color: `rgb(${r}, ${g}, ${b})`,
-            textColor: luminance > 0.62 ? "#1f2933" : "#fff",
-        };
+        return ensureWhiteTextContrast(`rgb(${r}, ${g}, ${b})`);
     } catch {
         return null;
     }
-}
-
-function textColorForBackground(color: string): string {
-    const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
-    if (!match) return "#fff";
-    const red = Number(match[1]);
-    const green = Number(match[2]);
-    const blue = Number(match[3]);
-    const luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255;
-    return luminance > 0.62 ? "#1f2933" : "#fff";
 }
 
 function ClipboardCardComponent({
@@ -147,7 +139,6 @@ function ClipboardCardComponent({
     const dragStateRef = useRef<{ x: number, y: number, dragging: boolean } | null>(null);
     const visualType = isSingleImageFileItem(item) ? ItemType.Image : item.getType();
     const typeLabel = getTypeLabel(visualType, t);
-    const typeClass = getTypeClass(visualType);
     const timestamp = formatRelativeTime(item.getTime(), t);
     const itemTagList = item.getTags();
     const [isGifFormat, setIsGifFormat] = useState(false);
@@ -155,13 +146,12 @@ function ClipboardCardComponent({
         item.isRichText() ? { key: "rich", label: t("clipboard.richFormat") } : null,
         isGifFormat ? { key: "gif", label: t("clipboard.gifFormat") } : null,
     ].filter((tag): tag is { key: string; label: string } => Boolean(tag));
-    const initialHeaderColor = item.getTitleColor()
-        ? { color: item.getTitleColor() as string, textColor: textColorForBackground(item.getTitleColor() as string) }
-        : null;
-    const [headerColor, setHeaderColor] = useState<DominantColor | null>(initialHeaderColor);
+    const initialHeaderColor = headerColorFromSource(item.getTitleColor());
+    const [headerColor, setHeaderColor] = useState<string | null>(initialHeaderColor);
     const appIconPath = item.getAppIconPath();
     const appIconSrc = appIconPath ? convertFileSrc(appIconPath) : "";
     const formatTagColor = getFormatTagColor(visualType, headerColor, Boolean(appIconSrc));
+    const headerBackground = getHeaderBackground(visualType, headerColor, Boolean(appIconSrc));
     const [hovered, setHovered] = useState(false);
     const isMacosAppIcon = appIconPath.endsWith("-macos.png");
     const previewActive = selected || hovered || simulatedHover;
@@ -170,9 +160,7 @@ function ClipboardCardComponent({
     }, []);
 
     useEffect(() => {
-        setHeaderColor(item.getTitleColor()
-            ? { color: item.getTitleColor() as string, textColor: textColorForBackground(item.getTitleColor() as string) }
-            : null);
+        setHeaderColor(headerColorFromSource(item.getTitleColor()));
     }, [item.getHash(), item.getTitleColor()]);
 
     return (
@@ -237,12 +225,8 @@ function ClipboardCardComponent({
                 </div>
             )}
             <div
-                className={classes(styles, `card-header ${typeClass} ${appIconSrc ? 'with-app-icon' : ''}`)}
-                style={headerColor
-                    ? { background: headerColor.color, color: headerColor.textColor }
-                    : appIconSrc
-                        ? { background: "linear-gradient(135deg, #747c87, #565e68)", color: "#fff" }
-                        : undefined}
+                className={classes(styles, `card-header ${appIconSrc ? 'with-app-icon' : ''}`)}
+                style={{ background: headerBackground, color: WHITE_HEADER_TEXT_COLOR }}
             >
                 <div className={classes(styles, "card-title-block")}>
                     <span className={classes(styles, "card-title-row")}>

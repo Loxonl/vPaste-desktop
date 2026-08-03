@@ -1,11 +1,12 @@
 use infer::MatcherType;
 use lazy_static::lazy_static;
-use log::error;
+use log::{error, warn};
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Connection, Result};
 use std::path::Path;
 use std::sync::RwLock;
+use std::time::Duration;
 
 use crate::history_storage_dir;
 use crate::search::engine;
@@ -23,7 +24,18 @@ fn current_db_path() -> String {
 }
 
 fn setup_pool(db_path: &str) -> Result<Pool<SqliteConnectionManager>> {
-    let manager = SqliteConnectionManager::file(db_path);
+    let connection = Connection::open(db_path)?;
+    connection.busy_timeout(Duration::from_secs(5))?;
+    if let Err(err) = connection.pragma_update(None, "journal_mode", "WAL") {
+        warn!(
+            "failed to enable WAL for clipboard database {}; continuing with the current journal mode: {}",
+            db_path, err
+        );
+    }
+    drop(connection);
+
+    let manager = SqliteConnectionManager::file(db_path)
+        .with_init(|connection| connection.busy_timeout(Duration::from_secs(5)));
     let pool = Pool::new(manager).unwrap();
     Ok(pool)
 }
@@ -244,4 +256,36 @@ fn is_single_image_file(content: &str) -> bool {
         .ok()
         .flatten()
         .is_some_and(|mime_type| mime_type.matcher_type() == MatcherType::Image)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::setup_pool;
+    use std::time::Duration;
+
+    #[test]
+    fn pooled_connections_allow_writes_while_a_reader_is_active() {
+        let root = tempfile::tempdir().unwrap();
+        let database_path = root.path().join("clipboard.db");
+        let pool = setup_pool(database_path.to_str().unwrap()).unwrap();
+        let reader = pool.get().unwrap();
+        reader
+            .execute_batch(
+                "create table clipboard_test(id integer primary key, content text);
+                 insert into clipboard_test(content) values('first');",
+            )
+            .unwrap();
+
+        let mut statement = reader
+            .prepare("select content from clipboard_test")
+            .unwrap();
+        let mut rows = statement.query([]).unwrap();
+        assert!(rows.next().unwrap().is_some());
+
+        let writer = pool.get().unwrap();
+        writer.busy_timeout(Duration::from_millis(100)).unwrap();
+        writer
+            .execute("insert into clipboard_test(content) values('second')", [])
+            .expect("an active history reader must not block clipboard writes");
+    }
 }

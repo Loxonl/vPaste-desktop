@@ -34,6 +34,6 @@ For both `aarch64` and `x86_64`:
 - `.app.tar.gz` updater package
 - Matching `.app.tar.gz.sig`
 
-The shared Release also contains `latest.json`, `SHA256SUMS.txt`, `THIRD_PARTY_LICENSES.json`, `SBOM.cdx.json`, `LICENSE`, and GitHub-generated source archives.
+The shared Release also contains `SHA256SUMS.txt`, `THIRD_PARTY_LICENSES.json`, `SBOM.cdx.json`, `LICENSE`, and GitHub-generated source archives. After every platform artifact and signature has passed review, publish the combined manifest to `https://updates.vpaste.app/stable/latest.json` or `https://updates.vpaste.app/rc/latest.json`. The manifest may point to immutable GitHub Release assets; keeping the manifest URL on the vPaste domain avoids coupling installed clients to one download host.
 
 Do not publish a package that requires users to remove quarantine or bypass Gatekeeper. Those commands are only useful when testing a package built locally from trusted source.

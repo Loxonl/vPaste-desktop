@@ -1,14 +1,29 @@
+#[cfg(target_os = "windows")]
 use std::fs;
+#[cfg(target_os = "windows")]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
+#[cfg(target_os = "windows")]
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use lazy_static::lazy_static;
-use log::{error, info};
-use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
+use log::error;
+#[cfg(target_os = "windows")]
+use log::info;
+#[cfg(target_os = "windows")]
+use minisign_verify::{PublicKey, Signature};
+#[cfg(any(target_os = "windows", test))]
+use semver::Version;
+#[cfg(target_os = "windows")]
+use serde::Deserialize;
+use serde::Serialize;
+#[cfg(target_os = "windows")]
+use tauri::Manager;
+use tauri::{AppHandle, Emitter};
+#[cfg(target_os = "windows")]
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::{Update, Updater, UpdaterExt};
 
@@ -16,6 +31,7 @@ use crate::{config, runtime_mode};
 
 const UPDATE_EVENT: &str = "app-update-state-changed";
 const RELEASES_URL: &str = "https://github.com/Loxonl/vPaste-desktop/releases";
+const RC_UPDATE_ENDPOINT: &str = "https://updates.vpaste.app/rc/latest.json";
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(60);
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -28,18 +44,9 @@ pub enum UpdateStatus {
     Available,
     Downloading,
     Ready,
-    Deferred,
     Installing,
     ManualDownload,
     Failed,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum UpdateInstallTiming {
-    Immediate,
-    OnQuit,
-    Later,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -52,7 +59,6 @@ pub struct UpdateState {
     body: Option<String>,
     downloaded_bytes: u64,
     total_bytes: Option<u64>,
-    install_timing: Option<UpdateInstallTiming>,
     error: Option<String>,
     portable: bool,
     feed_enabled: bool,
@@ -69,7 +75,6 @@ impl Default for UpdateState {
             body: None,
             downloaded_bytes: 0,
             total_bytes: None,
-            install_timing: None,
             error: None,
             portable: false,
             feed_enabled: false,
@@ -87,6 +92,15 @@ enum PendingUpdate {
         update: Update,
         bytes: Vec<u8>,
     },
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Deserialize, Serialize)]
+struct PendingWindowsUpdateMetadata {
+    version: String,
+    signature: String,
+    date: Option<String>,
+    body: Option<String>,
 }
 
 lazy_static! {
@@ -115,15 +129,42 @@ impl Drop for CheckGuard {
 }
 
 pub fn initialize(app: &AppHandle) {
-    let mut state = UPDATE_STATE.lock().unwrap();
-    state.current_version = app.package_info().version.to_string();
-    state.portable = runtime_mode::is_portable();
-    state.feed_enabled = update_feed_enabled();
-    state.status = if state.feed_enabled {
-        UpdateStatus::Idle
-    } else {
-        UpdateStatus::Disabled
-    };
+    let feed_enabled = update_feed_enabled();
+    let portable = runtime_mode::is_portable();
+    {
+        let mut state = UPDATE_STATE.lock().unwrap();
+        state.current_version = app.package_info().version.to_string();
+        state.portable = portable;
+        state.feed_enabled = feed_enabled;
+        state.status = if feed_enabled {
+            UpdateStatus::Idle
+        } else {
+            UpdateStatus::Disabled
+        };
+    }
+
+    #[cfg(target_os = "windows")]
+    if feed_enabled && !portable {
+        match restore_pending_windows_update(app) {
+            Ok(Some(metadata)) => {
+                let mut state = UPDATE_STATE.lock().unwrap();
+                state.status = UpdateStatus::Ready;
+                state.available_version = Some(metadata.version);
+                state.date = metadata.date;
+                state.body = metadata.body;
+                state.downloaded_bytes = 0;
+                state.total_bytes = None;
+                state.error = None;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                error!("failed to restore pending Windows update: {err}");
+                let mut state = UPDATE_STATE.lock().unwrap();
+                state.status = UpdateStatus::Failed;
+                state.error = Some(format!("failed to restore downloaded update: {err}"));
+            }
+        }
+    }
 }
 
 pub fn start_background_checks(app: AppHandle) {
@@ -164,6 +205,17 @@ fn build_updater(app: &AppHandle) -> Result<Updater, String> {
         let endpoint = endpoint
             .parse::<tauri::Url>()
             .map_err(|err| format!("invalid debug update endpoint: {err}"))?;
+        return app
+            .updater_builder()
+            .endpoints(vec![endpoint])
+            .map_err(|err| err.to_string())?
+            .build()
+            .map_err(|err| err.to_string());
+    }
+    if option_env!("VPASTE_UPDATE_CHANNEL") == Some("rc") {
+        let endpoint = RC_UPDATE_ENDPOINT
+            .parse::<tauri::Url>()
+            .map_err(|err| format!("invalid RC update endpoint: {err}"))?;
         return app
             .updater_builder()
             .endpoints(vec![endpoint])
@@ -221,7 +273,6 @@ fn set_failed(app: &AppHandle, message: String) -> String {
         let mut state = UPDATE_STATE.lock().unwrap();
         state.status = UpdateStatus::Failed;
         state.error = Some(message.clone());
-        state.install_timing = None;
     }
     emit_state(app);
     message
@@ -278,7 +329,6 @@ async fn check_internal(app: AppHandle, automatic: bool) -> Result<UpdateState, 
         let mut state = UPDATE_STATE.lock().unwrap();
         state.status = UpdateStatus::Checking;
         state.error = None;
-        state.install_timing = None;
     }
     emit_state(&app);
     mark_check_completed();
@@ -322,7 +372,6 @@ fn set_available_update(app: &AppHandle, update: &Update) {
     state.body = update.body.clone();
     state.downloaded_bytes = 0;
     state.total_bytes = None;
-    state.install_timing = None;
     state.error = None;
     drop(state);
     emit_state(app);
@@ -402,7 +451,6 @@ async fn prepare_update(
         let mut state = UPDATE_STATE.lock().unwrap();
         state.status = UpdateStatus::Ready;
         state.available_version = Some(version.clone());
-        state.install_timing = None;
         state.error = None;
     }
     let ready = emit_state(app);
@@ -410,11 +458,129 @@ async fn prepare_update(
     Ok(ready)
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn is_newer_version(current: &str, candidate: &str) -> Result<bool, String> {
+    let current = Version::parse(current)
+        .map_err(|err| format!("invalid current application version {current}: {err}"))?;
+    let candidate = Version::parse(candidate)
+        .map_err(|err| format!("invalid pending update version {candidate}: {err}"))?;
+    Ok(candidate > current)
+}
+
+#[cfg(target_os = "windows")]
+fn pending_windows_metadata_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_local_data_dir()
+        .map_err(|err| err.to_string())?
+        .join("updates")
+        .join("pending.json"))
+}
+
+#[cfg(target_os = "windows")]
+fn pending_windows_installer_path(app: &AppHandle, version: &str) -> Result<PathBuf, String> {
+    Version::parse(version)
+        .map_err(|err| format!("invalid pending update version {version}: {err}"))?;
+    Ok(app
+        .path()
+        .app_local_data_dir()
+        .map_err(|err| err.to_string())?
+        .join("updates")
+        .join(version)
+        .join(format!("vPaste_{version}_windows_x64_setup.exe")))
+}
+
+#[cfg(target_os = "windows")]
+fn updater_public_key(app: &AppHandle) -> Result<&str, String> {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|value| value.get("pubkey"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "the updater public key is not configured".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn decode_updater_text(value: &str, label: &str) -> Result<String, String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|err| format!("invalid base64 in {label}: {err}"))?;
+    String::from_utf8(bytes).map_err(|err| format!("invalid UTF-8 in {label}: {err}"))
+}
+
+#[cfg(target_os = "windows")]
+fn verify_pending_windows_installer(
+    app: &AppHandle,
+    installer_path: &PathBuf,
+    release_signature: &str,
+) -> Result<(), String> {
+    let public_key_text = decode_updater_text(updater_public_key(app)?, "updater public key")?;
+    let signature_text = decode_updater_text(release_signature, "update signature")?;
+    let public_key = PublicKey::decode(&public_key_text)
+        .map_err(|err| format!("invalid updater public key: {err}"))?;
+    let signature = Signature::decode(&signature_text)
+        .map_err(|err| format!("invalid update signature: {err}"))?;
+    let bytes = fs::read(installer_path).map_err(|err| {
+        format!(
+            "failed to read pending installer {}: {err}",
+            installer_path.display()
+        )
+    })?;
+    public_key
+        .verify(&bytes, &signature, true)
+        .map_err(|err| format!("pending installer signature verification failed: {err}"))
+}
+
+#[cfg(target_os = "windows")]
+fn persist_pending_windows_update(
+    app: &AppHandle,
+    metadata: &PendingWindowsUpdateMetadata,
+) -> Result<(), String> {
+    let metadata_path = pending_windows_metadata_path(app)?;
+    let parent = metadata_path
+        .parent()
+        .ok_or_else(|| "pending update metadata has no parent directory".to_string())?;
+    fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    let partial_path = metadata_path.with_extension("json.download");
+    let contents = serde_json::to_vec_pretty(metadata).map_err(|err| err.to_string())?;
+    fs::write(&partial_path, contents).map_err(|err| err.to_string())?;
+    if metadata_path.exists() {
+        fs::remove_file(&metadata_path).map_err(|err| err.to_string())?;
+    }
+    fs::rename(&partial_path, &metadata_path).map_err(|err| err.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn restore_pending_windows_update(
+    app: &AppHandle,
+) -> Result<Option<PendingWindowsUpdateMetadata>, String> {
+    let metadata_path = pending_windows_metadata_path(app)?;
+    if !metadata_path.exists() {
+        return Ok(None);
+    }
+    let metadata: PendingWindowsUpdateMetadata =
+        serde_json::from_slice(&fs::read(&metadata_path).map_err(|err| err.to_string())?)
+            .map_err(|err| format!("invalid pending update metadata: {err}"))?;
+    if !is_newer_version(&app.package_info().version.to_string(), &metadata.version)? {
+        fs::remove_file(&metadata_path).map_err(|err| err.to_string())?;
+        return Ok(None);
+    }
+    let installer_path = pending_windows_installer_path(app, &metadata.version)?;
+    verify_pending_windows_installer(app, &installer_path, &metadata.signature)?;
+    *PENDING_UPDATE.lock().unwrap() = Some(PendingUpdate::Windows {
+        version: metadata.version.clone(),
+        path: installer_path,
+    });
+    Ok(Some(metadata))
+}
+
 #[cfg(target_os = "windows")]
 fn store_pending_update(
     app: &AppHandle,
     version: String,
-    _update: Update,
+    update: Update,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
     let update_dir = app
@@ -431,6 +597,15 @@ fn store_pending_update(
         fs::remove_file(&installer_path).map_err(|err| err.to_string())?;
     }
     fs::rename(&partial_path, &installer_path).map_err(|err| err.to_string())?;
+    persist_pending_windows_update(
+        app,
+        &PendingWindowsUpdateMetadata {
+            version: version.clone(),
+            signature: update.signature,
+            date: update.date.map(|date| date.to_string()),
+            body: update.body,
+        },
+    )?;
     *PENDING_UPDATE.lock().unwrap() = Some(PendingUpdate::Windows {
         version,
         path: installer_path,
@@ -459,12 +634,12 @@ fn show_ready_notification(app: &AppHandle, version: &str) {
     let (title, body) = if language == "Chinese" {
         (
             "vPaste 更新已就绪",
-            format!("版本 {version} 已下载，可随时安装"),
+            format!("版本 {version} 已下载，重启 vPaste 即可完成更新"),
         )
     } else {
         (
             "vPaste update ready",
-            format!("Version {version} is downloaded and ready to install"),
+            format!("Version {version} is downloaded. Restart vPaste to update"),
         )
     };
     if let Err(err) = app.notification().builder().title(title).body(body).show() {
@@ -476,10 +651,7 @@ fn show_ready_notification(app: &AppHandle, version: &str) {
 fn show_ready_notification(_app: &AppHandle, _version: &str) {}
 
 #[tauri::command]
-pub fn schedule_app_update(
-    app: AppHandle,
-    timing: UpdateInstallTiming,
-) -> Result<UpdateState, String> {
+pub fn restart_and_install_app_update(app: AppHandle) -> Result<(), String> {
     if runtime_mode::is_portable() {
         return Err("portable builds must be updated manually".to_string());
     }
@@ -487,65 +659,22 @@ pub fn schedule_app_update(
         return Err("the update has not finished downloading".to_string());
     }
 
-    match timing {
-        UpdateInstallTiming::Immediate => {
-            {
-                let mut state = UPDATE_STATE.lock().unwrap();
-                state.status = UpdateStatus::Installing;
-                state.install_timing = Some(timing);
-            }
-            let state = emit_state(&app);
-            if let Err(err) = install_pending_update(&app) {
-                return Err(set_failed(&app, err));
-            }
-            app.exit(0);
-            Ok(state)
-        }
-        UpdateInstallTiming::OnQuit => {
-            let mut state = UPDATE_STATE.lock().unwrap();
-            state.status = UpdateStatus::Ready;
-            state.install_timing = Some(timing);
-            drop(state);
-            Ok(emit_state(&app))
-        }
-        UpdateInstallTiming::Later => {
-            {
-                let mut state = UPDATE_STATE.lock().unwrap();
-                state.status = UpdateStatus::Deferred;
-                state.install_timing = Some(timing);
-            }
-            let state = emit_state(&app);
-            let reminder_app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(CHECK_INTERVAL).await;
-                let version = {
-                    let mut state = UPDATE_STATE.lock().unwrap();
-                    if state.status != UpdateStatus::Deferred {
-                        return;
-                    }
-                    state.status = UpdateStatus::Ready;
-                    state.install_timing = None;
-                    state.available_version.clone()
-                };
-                emit_state(&reminder_app);
-                if let Some(version) = version {
-                    show_ready_notification(&reminder_app, &version);
-                }
-            });
-            Ok(state)
-        }
+    {
+        let mut state = UPDATE_STATE.lock().unwrap();
+        state.status = UpdateStatus::Installing;
+        state.error = None;
     }
-}
+    emit_state(&app);
+    install_pending_update(&app).map_err(|err| set_failed(&app, err))?;
 
-pub fn install_on_explicit_quit(app: &AppHandle) -> Result<(), String> {
-    let scheduled =
-        UPDATE_STATE.lock().unwrap().install_timing == Some(UpdateInstallTiming::OnQuit);
-    if scheduled {
-        if let Err(err) = install_pending_update(app) {
-            return Err(set_failed(app, err));
-        }
+    #[cfg(target_os = "windows")]
+    {
+        app.exit(0);
+        Ok(())
     }
-    Ok(())
+
+    #[cfg(not(target_os = "windows"))]
+    app.restart()
 }
 
 #[cfg(target_os = "windows")]
@@ -605,7 +734,7 @@ fn install_pending_update(app: &AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        automatic_check_due_at, public_update_feed_enabled, UpdateInstallTiming, UpdateStatus,
+        automatic_check_due_at, is_newer_version, public_update_feed_enabled, UpdateStatus,
     };
     use chrono::{Duration, TimeZone, Utc};
 
@@ -618,9 +747,16 @@ mod tests {
     }
 
     #[test]
-    fn update_enums_use_distinct_states() {
-        assert_ne!(UpdateStatus::Ready, UpdateStatus::Deferred);
-        assert_ne!(UpdateInstallTiming::Immediate, UpdateInstallTiming::OnQuit);
+    fn update_states_distinguish_downloaded_and_installing() {
+        assert_ne!(UpdateStatus::Ready, UpdateStatus::Installing);
+    }
+
+    #[test]
+    fn pending_updates_must_be_newer_semver_versions() {
+        assert!(is_newer_version("1.6.0", "1.7.0").unwrap());
+        assert!(is_newer_version("1.7.0-rc.1", "1.7.0").unwrap());
+        assert!(!is_newer_version("1.7.0", "1.7.0").unwrap());
+        assert!(!is_newer_version("1.7.0", "1.6.0").unwrap());
     }
 
     #[test]

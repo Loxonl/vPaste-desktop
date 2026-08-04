@@ -22,7 +22,6 @@ const previewUpdateState: UpdateState = {
     availableVersion: null,
     downloadedBytes: 0,
     totalBytes: null,
-    installTiming: null,
     error: null,
     portable: false,
     feedEnabled: true,
@@ -95,8 +94,10 @@ function createPreviewBridge(): SettingsBridge {
             case "get_update_state":
             case "check_for_app_update":
             case "prepare_app_update":
-            case "schedule_app_update":
                 result = previewUpdateState;
+                break;
+            case "restart_and_install_app_update":
+                result = null;
                 break;
             default:
                 result = null;

@@ -102,7 +102,7 @@ Local ad-hoc `.app` / `.dmg` packaging is available through `npm run build:macos
 
 ### Updater
 
-The shared GitHub `latest.json` feed contains separate `darwin-aarch64` and `darwin-x86_64` entries. Each points to a signed `.app.tar.gz`; installation behavior must still be smoke-tested on both architectures before a draft Release is published.
+Stable builds use `https://updates.vpaste.app/stable/latest.json`; RC builds use the separate `https://updates.vpaste.app/rc/latest.json`. Each manifest contains separate `darwin-aarch64` and `darwin-x86_64` entries pointing to signed `.app.tar.gz` packages. The app downloads and verifies an available package in the background, then exposes one “Restart to update” action in settings, the main panel, and the menu-bar/tray menu. That action installs the prepared bundle and restarts the app. Installation behavior must still be smoke-tested on both architectures before a public Release is published.
 
 ## Expected Risks
 

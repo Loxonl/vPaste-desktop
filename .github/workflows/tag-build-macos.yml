@@ -52,6 +52,11 @@ jobs:
             exit 1
           fi
           echo "RELEASE_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+          if [[ "$RELEASE_TAG" == *-rc.* ]]; then
+            echo "VPASTE_UPDATE_CHANNEL=rc" >> "$GITHUB_ENV"
+          else
+            echo "VPASTE_UPDATE_CHANNEL=stable" >> "$GITHUB_ENV"
+          fi
           node scripts/check-release-version.mjs "$RELEASE_TAG"
 
       - name: Set up Node.js

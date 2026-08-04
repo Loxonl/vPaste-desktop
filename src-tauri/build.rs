@@ -28,6 +28,7 @@ fn generate_tray_icon_mask() {
 
 fn main() {
     println!("cargo:rerun-if-env-changed=VPASTE_PUBLIC_UPDATE_FEED");
+    println!("cargo:rerun-if-env-changed=VPASTE_UPDATE_CHANNEL");
     generate_tray_icon_mask();
     tauri_build::build()
 }

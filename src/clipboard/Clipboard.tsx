@@ -10,7 +10,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import TutorialOverlay from "./TutorialOverlay.tsx";
 import appIcon from "../../src-tauri/icons/source/vpaste-app-icon-1024.png";
 import { getResolvedTheme, setThemePreview, type ResolvedTheme } from "../theme";
-import { updateReady, useAppUpdateState } from "../update";
+import { restartReady, useAppUpdateState } from "../update";
 import {
     arraysEqual,
     customTabFilterPayload,
@@ -146,7 +146,7 @@ class ClipboardPage {
 
 export default function Clipboard() {
     const { t, languageCode, setPreviewLanguageCode } = useLanguage();
-    const { state: updateState } = useAppUpdateState();
+    const { state: updateState, restartToUpdate } = useAppUpdateState();
     const [selected, setSelected] = useState<String>("");
     const [searchWord, setSearchWord] = useState<String>("");
     const [searchOpen, setSearchOpen] = useState<boolean>(false);
@@ -1428,12 +1428,11 @@ export default function Clipboard() {
         }
     };
 
-    const openUpdateSettings = async () => {
+    const restartForUpdate = async () => {
         try {
-            await hideCurrentWindowWithAnimation();
-            await invoke('open_config_window', { target: 'about' });
+            await restartToUpdate();
         } catch (e) {
-            error(`Failed to open update settings: ${e}`);
+            error(`Failed to restart and install update: ${e}`);
         }
     };
 
@@ -1629,11 +1628,11 @@ export default function Clipboard() {
                 />
             </div>
 
-            {!tutorialActive && updateReady(updateState) && (
+            {!tutorialActive && restartReady(updateState) && (
                 <ClipboardUpdateBanner
                     version={updateState.availableVersion || ""}
                     t={t}
-                    onOpen={() => void openUpdateSettings()}
+                    onRestart={() => void restartForUpdate()}
                 />
             )}
 

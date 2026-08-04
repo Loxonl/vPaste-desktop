@@ -169,17 +169,18 @@ describe("clipboard header", () => {
 
     it("renders the update text and forwards its action", async () => {
         const user = userEvent.setup();
-        const onOpen = vi.fn();
+        const onRestart = vi.fn();
         render(
             <ClipboardUpdateBanner
                 version="2.0.0"
                 t={t}
-                onOpen={onOpen}
+                onRestart={onRestart}
             />,
         );
 
-        expect(screen.getByText("clipboard.updateAvailable")).toBeInTheDocument();
+        expect(screen.getByText("clipboard.updateDownloaded")).toBeInTheDocument();
+        expect(screen.getByText("clipboard.updateRestart")).toBeInTheDocument();
         await user.click(screen.getByRole("button"));
-        expect(onOpen).toHaveBeenCalledOnce();
+        expect(onRestart).toHaveBeenCalledOnce();
     });
 });

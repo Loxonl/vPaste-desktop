@@ -5,7 +5,7 @@ import GitHubIcon from "@mui/icons-material/GitHub";
 import LaunchOutlinedIcon from "@mui/icons-material/LaunchOutlined";
 import { error } from "@tauri-apps/plugin-log";
 import aboutLogo from "../../../src-tauri/icons/source/vpaste-app-icon-1024.png";
-import { useAppUpdateState, type UpdateState } from "../../update";
+import { restartReady, useAppUpdateState, type UpdateState } from "../../update";
 import type { SettingsSectionProps, TFunction } from "../settingsTypes";
 import { classes } from "../../ui/classNames";
 import styles from "../Config.module.css";
@@ -14,7 +14,7 @@ const APP_REPOSITORY_URL = "https://github.com/Loxonl/vPaste-desktop";
 const APP_CHANGELOG_URL = `${APP_REPOSITORY_URL}/releases`;
 
 export default function AboutSettings({ bridge, t }: SettingsSectionProps & { dir: string }) {
-    const { state: updateState, check } = useAppUpdateState(bridge);
+    const { state: updateState, check, prepare, restartToUpdate } = useAppUpdateState(bridge);
     const [checkedManually, setCheckedManually] = React.useState(false);
     const updateBusy = updateState.status === "checking"
         || updateState.status === "downloading"
@@ -28,8 +28,10 @@ export default function AboutSettings({ bridge, t }: SettingsSectionProps & { di
         try {
             setCheckedManually(true);
             const next = await check();
-            if (
-                (next.status === "available" || next.status === "manualDownload")
+            if (next.status === "available" && !next.portable) {
+                await prepare();
+            } else if (
+                next.status === "manualDownload"
                 && window.confirm(t("settings.updateOpenReleasePrompt", {
                     version: next.availableVersion || "",
                 }))
@@ -40,6 +42,32 @@ export default function AboutSettings({ bridge, t }: SettingsSectionProps & { di
             error(`Failed to check update: ${e}`);
         }
     };
+
+    const handleRestartToUpdate = async () => {
+        try {
+            await restartToUpdate();
+        } catch (e) {
+            error(`Failed to restart and install update: ${e}`);
+        }
+    };
+
+    const handlePrimaryUpdateAction = () => {
+        if (restartReady(updateState)) {
+            void handleRestartToUpdate();
+        } else if (updateState.status === "available" && !updateState.portable) {
+            void prepare().catch(e => error(`Failed to download update: ${e}`));
+        } else {
+            void handleCheckUpdate();
+        }
+    };
+
+    const primaryActionText = restartReady(updateState)
+        ? t("settings.updateRestart")
+        : updateState.status === "checking"
+            ? t("settings.updateChecking")
+            : updateState.status === "available" && !updateState.portable
+                ? t("settings.updateDownload")
+                : t("settings.updateCheck");
 
     const displayVersion = updateState.currentVersion || t("settings.versionUnknown");
     const statusText = updateStatusText(updateState, checkedManually, t);
@@ -66,10 +94,10 @@ export default function AboutSettings({ bridge, t }: SettingsSectionProps & { di
                             color="inherit"
                             size="small"
                             disabled={updateBusy || !updateState.feedEnabled}
-                            onClick={handleCheckUpdate}
+                            onClick={handlePrimaryUpdateAction}
                             sx={{ flex: '0 0 auto' }}
                         >
-                            {updateState.status === "checking" ? t("settings.updateChecking") : t("settings.updateCheck")}
+                            {primaryActionText}
                         </Button>
                     </div>
                     {statusText && (
@@ -125,11 +153,7 @@ function updateStatusText(state: UpdateState, checkedManually: boolean, t: TFunc
                 })
                 : t("settings.updateProgressUnknown", { downloaded: formatUpdateBytes(state.downloadedBytes) });
         case "ready":
-            return state.installTiming === "onQuit"
-                ? t("settings.updateScheduled", { version })
-                : t("settings.updateReady", { version });
-        case "deferred":
-            return t("settings.updateDeferred", { version });
+            return t("settings.updateReady", { version });
         case "installing":
             return t("settings.updateInstalling");
         case "failed":

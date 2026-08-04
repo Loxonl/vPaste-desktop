@@ -254,19 +254,19 @@ export function ClipboardHeaderActions({
 type ClipboardUpdateBannerProps = {
     version: string;
     t: TFunction;
-    onOpen: () => void;
+    onRestart: () => void;
 };
 
 export function ClipboardUpdateBanner({
     version,
     t,
-    onOpen,
+    onRestart,
 }: ClipboardUpdateBannerProps) {
     return (
-        <button className={classes(styles, "app-update-banner")} type="button" onClick={onOpen}>
+        <button className={classes(styles, "app-update-banner")} type="button" onClick={onRestart}>
             <SystemUpdateAltOutlinedIcon fontSize="inherit" />
-            <span>{t("clipboard.updateAvailable", { version })}</span>
-            <strong>{t("clipboard.updateOpenSettings")}</strong>
+            <span>{t("clipboard.updateDownloaded", { version })}</span>
+            <strong>{t("clipboard.updateRestart")}</strong>
         </button>
     );
 }

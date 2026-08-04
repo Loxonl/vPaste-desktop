@@ -32,7 +32,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhCMkZBOTA5ODEwMURDMkQKUldRdDNBR0JDYWt2aTl5bG5ON2t4cjJZTkJuUFpkWmwwY2ZhUXBCNWpnSjU4TkxXVWdtTGE4bVUK",
       "endpoints": [
-        "https://github.com/Loxonl/vPaste-desktop/releases/latest/download/latest.json"
+        "https://updates.vpaste.app/stable/latest.json"
       ],
       "windows": {
         "installMode": "passive"

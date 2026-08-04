@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
 import { useLanguage } from "../lang";
-import { updateReady, useAppUpdateState } from "../update";
+import { restartReady, useAppUpdateState } from "../update";
 import styles from "./TrayMenu.module.css";
 
 type TrayAction = "show_main_panel" | "open_config_window" | "quit_app";
@@ -22,7 +22,7 @@ const items: Array<{ labelKey: string; action: TrayAction }> = [
 
 export default function TrayMenu() {
     const { t } = useLanguage();
-    const { state: updateState } = useAppUpdateState();
+    const { state: updateState, restartToUpdate } = useAppUpdateState();
     const [paused, setPaused] = React.useState(false);
     const [toggleWorking, setToggleWorking] = React.useState(false);
     const menuRef = React.useRef<HTMLDivElement | null>(null);
@@ -42,7 +42,7 @@ export default function TrayMenu() {
 
     React.useEffect(() => {
         resizeToContent();
-    }, [paused, updateState.status, updateState.installTiming, resizeToContent]);
+    }, [paused, updateState.status, resizeToContent]);
 
     React.useEffect(() => {
         void invoke<boolean>("get_clipboard_history_paused")
@@ -95,12 +95,11 @@ export default function TrayMenu() {
         }
     };
 
-    const openUpdateSettings = async () => {
+    const restartForUpdate = async () => {
         try {
-            await invoke("open_config_window", { target: "about" });
-            await invoke("hide_tray_menu");
+            await restartToUpdate();
         } catch (e) {
-            error(`Failed to open update settings: ${e}`);
+            error(`Failed to restart and install update: ${e}`);
         }
     };
 
@@ -122,14 +121,14 @@ export default function TrayMenu() {
                         {t(paused ? "tray.historyPausedShort" : "tray.historyRecordingShort")}
                     </span>
                 </button>
-                {updateReady(updateState) && (
+                {restartReady(updateState) && (
                     <button
                         type="button"
                         className={`${styles["tray-menu-item"]} ${styles["update-ready"]}`}
-                        onClick={() => void openUpdateSettings()}
+                        onClick={() => void restartForUpdate()}
                     >
-                        <span>{t("tray.updateReady")}</span>
-                        <strong>{updateState.availableVersion}</strong>
+                        <span>{t("tray.updateReady", { version: updateState.availableVersion || "" })}</span>
+                        <strong>{t("tray.updateRestart")}</strong>
                     </button>
                 )}
                 {items.map(item => (

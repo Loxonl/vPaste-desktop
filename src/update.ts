@@ -10,12 +10,9 @@ export type UpdateStatus =
     | "available"
     | "downloading"
     | "ready"
-    | "deferred"
     | "installing"
     | "manualDownload"
     | "failed";
-
-export type UpdateInstallTiming = "immediate" | "onQuit" | "later";
 
 export interface UpdateState {
     status: UpdateStatus;
@@ -25,7 +22,6 @@ export interface UpdateState {
     body?: string | null;
     downloadedBytes: number;
     totalBytes?: number | null;
-    installTiming?: UpdateInstallTiming | null;
     error?: string | null;
     portable: boolean;
     feedEnabled: boolean;
@@ -38,7 +34,6 @@ const INITIAL_STATE: UpdateState = {
     availableVersion: null,
     downloadedBytes: 0,
     totalBytes: null,
-    installTiming: null,
     error: null,
     portable: false,
     feedEnabled: false,
@@ -79,15 +74,13 @@ export function useAppUpdateState(bridge: UpdateBridge = tauriUpdateBridge) {
         return next;
     }, [bridge]);
 
-    const schedule = React.useCallback(async (timing: UpdateInstallTiming) => {
-        const next = await bridge.invoke<UpdateState>("schedule_app_update", { timing });
-        setState(next);
-        return next;
+    const restartToUpdate = React.useCallback(async () => {
+        await bridge.invoke("restart_and_install_app_update");
     }, [bridge]);
 
-    return { state, check, prepare, schedule };
+    return { state, check, prepare, restartToUpdate };
 }
 
-export function updateReady(state: UpdateState): boolean {
-    return state.status === "ready" && state.installTiming !== "onQuit";
+export function restartReady(state: UpdateState): boolean {
+    return state.status === "ready" && !state.portable;
 }

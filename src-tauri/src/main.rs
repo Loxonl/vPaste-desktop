@@ -2482,13 +2482,6 @@ fn apply_custom_tabs_from_editor(
 
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
-    if let Err(err) = app_updater::install_on_explicit_quit(&app) {
-        error!(
-            "failed to start the scheduled update while quitting: {}",
-            err
-        );
-        return;
-    }
     app.exit(0);
 }
 
@@ -8021,7 +8014,7 @@ fn main() {
             app_updater::get_update_state,
             app_updater::check_for_app_update,
             app_updater::prepare_app_update,
-            app_updater::schedule_app_update,
+            app_updater::restart_and_install_app_update,
             get_app_version,
             begin_main_shortcut_recording,
             end_main_shortcut_recording,

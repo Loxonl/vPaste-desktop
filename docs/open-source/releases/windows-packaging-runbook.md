@@ -27,7 +27,7 @@ The following files define the packaging contract:
 | `scripts/generate-updater-manifest.mjs` | Platform updater manifest |
 | `.github/workflows/release.yml` | Manually approved cross-platform Draft Release |
 | `src-tauri/src/runtime_mode.rs` | Installed versus Portable runtime behavior |
-| `src-tauri/src/app_updater.rs` | Update state, download, verification, and install scheduling |
+| `src-tauri/src/app_updater.rs` | Update state, download, verification, cached recovery, and restart installation |
 
 Do not hand-edit generated files under
 `src-tauri/target/release/bundle/windows/`.
@@ -227,9 +227,9 @@ Set `VPASTE_DEBUG_UPDATE_ENDPOINT` only in a debug build. Validate:
 - bad signature and corrupted bytes
 - interrupted download and retry
 - low disk space and locked executable
-- immediate update
-- update on explicit tray exit
-- defer for 24 hours
+- background download followed by restart-to-update from settings, the main panel, and the tray
+- recovery of the ready state after restarting with a fully downloaded installer
+- rejection of a cached installer with an invalid signature or a non-newer version
 - installer launch failure and recovery
 
 A failed download, signature check, or installer launch must leave the existing

@@ -6,7 +6,11 @@ import { classes } from "../ui/classNames";
 import { formatRelativeTime } from "../lang";
 import { Item, ItemType } from "./Item";
 import ClipboardCardPreview from "./ClipboardCardPreview";
-import { ensureWhiteTextContrast, WHITE_HEADER_TEXT_COLOR } from "./clipboardHeaderColor";
+import {
+    dominantColorFromPixels,
+    ensureWhiteTextContrast,
+    WHITE_HEADER_TEXT_COLOR,
+} from "./clipboardHeaderColor";
 import { isSingleImageFileItem } from "./itemPresentation";
 
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
@@ -92,34 +96,8 @@ function dominantColorFromImage(image: HTMLImageElement): string | null {
     try {
         context.drawImage(image, 0, 0, size, size);
         const data = context.getImageData(0, 0, size, size).data;
-        const buckets = new Map<string, { r: number, g: number, b: number, weight: number }>();
-        for (let i = 0; i < data.length; i += 4) {
-            const alpha = data[i + 3];
-            if (alpha < 40) continue;
-            const red = data[i];
-            const green = data[i + 1];
-            const blue = data[i + 2];
-            if (red > 245 && green > 245 && blue > 245) continue;
-            if (red < 18 && green < 18 && blue < 18) continue;
-            const max = Math.max(red, green, blue);
-            const min = Math.min(red, green, blue);
-            const saturation = max === 0 ? 0 : (max - min) / max;
-            const weight = alpha / 255;
-            const colorWeight = weight * (0.45 + saturation * 1.4);
-            const key = `${Math.round(red / 24)},${Math.round(green / 24)},${Math.round(blue / 24)}`;
-            const bucket = buckets.get(key) || { r: 0, g: 0, b: 0, weight: 0 };
-            bucket.r += red * colorWeight;
-            bucket.g += green * colorWeight;
-            bucket.b += blue * colorWeight;
-            bucket.weight += colorWeight;
-            buckets.set(key, bucket);
-        }
-        const dominant = Array.from(buckets.values()).sort((a, b) => b.weight - a.weight)[0];
-        if (!dominant || dominant.weight <= 0) return null;
-        const r = Math.round(dominant.r / dominant.weight);
-        const g = Math.round(dominant.g / dominant.weight);
-        const b = Math.round(dominant.b / dominant.weight);
-        return ensureWhiteTextContrast(`rgb(${r}, ${g}, ${b})`);
+        const dominant = dominantColorFromPixels(data);
+        return dominant ? ensureWhiteTextContrast(dominant) : null;
     } catch {
         return null;
     }

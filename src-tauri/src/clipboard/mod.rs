@@ -397,14 +397,22 @@ fn app_icon_dominant_color(icon_path: &str) -> Option<String> {
 }
 
 fn calculate_dominant_color(icon_path: &str) -> Option<String> {
+    const MIN_COLOR_SHARE: f64 = 0.05;
+    const MIN_SATURATION: f64 = 0.16;
+    const CLOSE_AREA_RATIO: f64 = 0.8;
+
     let image = image::open(icon_path).ok()?.to_rgba8();
-    let mut buckets: HashMap<(u8, u8, u8), (f64, f64, f64, f64)> = HashMap::new();
+    let mut buckets: HashMap<(u8, u8, u8), (f64, f64, f64, f64, f64)> = HashMap::new();
+    let mut visible_weight = 0.0;
+    let mut color_weight = 0.0;
 
     for pixel in image.pixels() {
         let [red, green, blue, alpha] = pixel.0;
         if alpha < 40 {
             continue;
         }
+        let alpha_weight = alpha as f64 / 255.0;
+        visible_weight += alpha_weight;
         if red > 245 && green > 245 && blue > 245 {
             continue;
         }
@@ -415,30 +423,46 @@ fn calculate_dominant_color(icon_path: &str) -> Option<String> {
         let max = red.max(green).max(blue) as f64;
         let min = red.min(green).min(blue) as f64;
         let saturation = if max <= 0.0 { 0.0 } else { (max - min) / max };
-        if saturation < 0.16 {
+        if saturation < MIN_SATURATION {
             continue;
         }
 
-        let alpha_weight = alpha as f64 / 255.0;
-        let weight = alpha_weight * (0.25 + saturation * saturation * 3.0);
+        color_weight += alpha_weight;
         let key = (red / 24, green / 24, blue / 24);
-        let bucket = buckets.entry(key).or_insert((0.0, 0.0, 0.0, 0.0));
-        bucket.0 += red as f64 * weight;
-        bucket.1 += green as f64 * weight;
-        bucket.2 += blue as f64 * weight;
-        bucket.3 += weight;
+        let bucket = buckets.entry(key).or_insert((0.0, 0.0, 0.0, 0.0, 0.0));
+        bucket.0 += red as f64 * alpha_weight;
+        bucket.1 += green as f64 * alpha_weight;
+        bucket.2 += blue as f64 * alpha_weight;
+        bucket.3 += alpha_weight;
+        bucket.4 += saturation * alpha_weight;
     }
 
-    let (_, (red, green, blue, weight)) = buckets
+    if visible_weight <= 0.0 || color_weight / visible_weight < MIN_COLOR_SHARE {
+        return None;
+    }
+
+    let mut candidates: Vec<_> = buckets
         .into_iter()
         .filter(|(_, bucket)| bucket.3 > 0.0)
-        .max_by(|(_, a), (_, b)| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal))?;
+        .map(|(_, bucket)| bucket)
+        .collect();
+    candidates.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
+
+    let primary = candidates.first()?;
+    let selected = candidates
+        .get(1)
+        .filter(|secondary| {
+            secondary.3 >= primary.3 * CLOSE_AREA_RATIO
+                && secondary.4 / secondary.3 > primary.4 / primary.3
+        })
+        .unwrap_or(primary);
+    let (red, green, blue, population, _) = *selected;
 
     Some(format!(
         "rgb({}, {}, {})",
-        (red / weight).round() as u8,
-        (green / weight).round() as u8,
-        (blue / weight).round() as u8
+        (red / population).round() as u8,
+        (green / population).round() as u8,
+        (blue / population).round() as u8
     ))
 }
 
@@ -2600,6 +2624,13 @@ mod tests {
     use super::*;
     use rusqlite::params;
 
+    fn dominant_color_for_test_image(image: image::RgbaImage) -> Option<String> {
+        let root = tempfile::tempdir().unwrap();
+        let icon_path = root.path().join("app-icon.png");
+        image.save(&icon_path).unwrap();
+        calculate_dominant_color(icon_path.to_str().unwrap())
+    }
+
     fn seed_shared_link_preview(app_data: &tempfile::TempDir, old_time: u64) -> PathBuf {
         *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
             Some(app_data.path().to_string_lossy().to_string());
@@ -2636,6 +2667,62 @@ mod tests {
 
     fn reset_test_storage_config() {
         crate::config::save(crate::config::Config::default());
+    }
+
+    #[test]
+    fn dominant_color_prefers_a_large_representative_area_over_a_small_vivid_accent() {
+        let mut image = image::RgbaImage::from_pixel(40, 40, image::Rgba([210, 210, 210, 255]));
+        for pixel in image.pixels_mut().take(400) {
+            *pixel = image::Rgba([168, 223, 233, 255]);
+        }
+        for pixel in image.pixels_mut().skip(400).take(120) {
+            *pixel = image::Rgba([239, 190, 10, 255]);
+        }
+
+        assert_eq!(
+            dominant_color_for_test_image(image),
+            Some("rgb(168, 223, 233)".to_string())
+        );
+    }
+
+    #[test]
+    fn dominant_color_prefers_saturation_when_the_top_areas_are_within_eighty_percent() {
+        let mut image = image::RgbaImage::from_pixel(40, 40, image::Rgba([210, 210, 210, 255]));
+        for pixel in image.pixels_mut().take(800) {
+            *pixel = image::Rgba([179, 209, 250, 255]);
+        }
+        for pixel in image.pixels_mut().skip(800).take(720) {
+            *pixel = image::Rgba([51, 136, 255, 255]);
+        }
+
+        assert_eq!(
+            dominant_color_for_test_image(image),
+            Some("rgb(51, 136, 255)".to_string())
+        );
+    }
+
+    #[test]
+    fn dominant_color_ignores_a_tiny_accent_on_an_otherwise_neutral_icon() {
+        let mut image = image::RgbaImage::from_pixel(40, 40, image::Rgba([210, 210, 210, 255]));
+        for pixel in image.pixels_mut().take(20) {
+            *pixel = image::Rgba([230, 20, 40, 255]);
+        }
+
+        assert_eq!(dominant_color_for_test_image(image), None);
+    }
+
+    #[test]
+    fn dominant_color_preserves_solid_app_brand_colors() {
+        for (color, expected) in [
+            ([6, 199, 98, 255], "rgb(6, 199, 98)"),
+            ([255, 207, 73, 255], "rgb(255, 207, 73)"),
+        ] {
+            let image = image::RgbaImage::from_pixel(20, 20, image::Rgba(color));
+            assert_eq!(
+                dominant_color_for_test_image(image),
+                Some(expected.to_string())
+            );
+        }
     }
 
     fn seed_search_history(total: usize, content_for_index: impl Fn(usize) -> String) {

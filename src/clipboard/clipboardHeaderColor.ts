@@ -1,5 +1,6 @@
 export const WHITE_HEADER_TEXT_COLOR = "#fff";
-export const MIN_WHITE_TEXT_CONTRAST = 4.5;
+// Preserve recognizable app colors; the header text shadow provides local edge separation.
+export const MIN_WHITE_TEXT_CONTRAST = 1.4;
 
 type RgbColor = {
     red: number;
@@ -7,7 +8,18 @@ type RgbColor = {
     blue: number;
 };
 
+type ColorBucket = {
+    red: number;
+    green: number;
+    blue: number;
+    population: number;
+    saturation: number;
+};
+
 const FALLBACK_HEADER_COLOR: RgbColor = { red: 86, green: 94, blue: 104 };
+const MIN_DOMINANT_COLOR_SHARE = 0.05;
+const MIN_DOMINANT_COLOR_SATURATION = 0.16;
+const CLOSE_DOMINANT_COLOR_AREA_RATIO = 0.8;
 
 function parseColor(color: string): RgbColor | null {
     const hex = color.trim().match(/^#([\da-f]{3}|[\da-f]{6})$/i)?.[1];
@@ -69,6 +81,65 @@ function scaleColor(color: RgbColor, scale: number): RgbColor {
 export function whiteTextContrastRatio(color: string): number | null {
     const parsed = parseColor(color);
     return parsed ? contrastRatioWithWhite(parsed) : null;
+}
+
+export function dominantColorFromPixels(data: ArrayLike<number>): string | null {
+    const buckets = new Map<string, ColorBucket>();
+    let visibleWeight = 0;
+    let colorWeight = 0;
+
+    for (let index = 0; index + 3 < data.length; index += 4) {
+        const red = data[index];
+        const green = data[index + 1];
+        const blue = data[index + 2];
+        const alpha = data[index + 3];
+        if (alpha < 40) continue;
+
+        const alphaWeight = alpha / 255;
+        visibleWeight += alphaWeight;
+        if (red > 245 && green > 245 && blue > 245) continue;
+        if (red < 18 && green < 18 && blue < 18) continue;
+
+        const max = Math.max(red, green, blue);
+        const min = Math.min(red, green, blue);
+        const saturation = max === 0 ? 0 : (max - min) / max;
+        if (saturation < MIN_DOMINANT_COLOR_SATURATION) continue;
+
+        colorWeight += alphaWeight;
+        const key = `${Math.floor(red / 24)},${Math.floor(green / 24)},${Math.floor(blue / 24)}`;
+        const bucket = buckets.get(key) ?? {
+            red: 0,
+            green: 0,
+            blue: 0,
+            population: 0,
+            saturation: 0,
+        };
+        bucket.red += red * alphaWeight;
+        bucket.green += green * alphaWeight;
+        bucket.blue += blue * alphaWeight;
+        bucket.population += alphaWeight;
+        bucket.saturation += saturation * alphaWeight;
+        buckets.set(key, bucket);
+    }
+
+    if (visibleWeight <= 0 || colorWeight / visibleWeight < MIN_DOMINANT_COLOR_SHARE) return null;
+    const candidates = Array.from(buckets.values())
+        .sort((left, right) => right.population - left.population);
+    const primary = candidates[0];
+    if (!primary || primary.population <= 0) return null;
+
+    const secondary = candidates[1];
+    const dominant = secondary
+        && secondary.population >= primary.population * CLOSE_DOMINANT_COLOR_AREA_RATIO
+        && secondary.saturation / secondary.population > primary.saturation / primary.population
+        ? secondary
+        : primary;
+
+    return formatColor({
+        red: dominant.red / dominant.population,
+        green: dominant.green / dominant.population,
+        blue: dominant.blue / dominant.population,
+    });
 }
 
 export function ensureWhiteTextContrast(color: string): string {

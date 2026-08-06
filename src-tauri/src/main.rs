@@ -81,6 +81,9 @@ pub(crate) static CLIPBOARD_IGNORE_CHANGES_UNTIL: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "windows")]
 pub(crate) static CLIPBOARD_INTERNAL_MARKER: Mutex<[u8; 16]> = Mutex::new([0; 16]);
 static CLIPBOARD_WINDOW_GENERATION: AtomicU64 = AtomicU64::new(0);
+static LAST_CLIPBOARD_MONITOR_CENTER: Mutex<Option<(f64, f64)>> = Mutex::new(None);
+#[cfg(target_os = "windows")]
+static CLIPBOARD_RESTORE_FOCUS_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_PINNED: AtomicBool = AtomicBool::new(false);
 static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
@@ -203,6 +206,17 @@ struct ScreenBounds {
     y: f64,
     width: f64,
     height: f64,
+    scale_factor: f64,
+}
+
+#[derive(Clone, Copy)]
+struct ClipboardWindowLayout {
+    x: f64,
+    target_y: f64,
+    hidden_y: f64,
+    width: f64,
+    height: f64,
+    scale_factor: f64,
 }
 
 #[derive(Serialize)]
@@ -390,25 +404,377 @@ struct AppVersionInfo {
     version: String,
 }
 
+fn screen_bounds_from_monitor(monitor: &tauri::Monitor) -> ScreenBounds {
+    let scale_factor = monitor.scale_factor();
+    let position = monitor.position();
+    let size = monitor.size();
+    ScreenBounds {
+        x: position.x as f64 / scale_factor,
+        y: position.y as f64 / scale_factor,
+        width: size.width as f64 / scale_factor,
+        height: size.height as f64 / scale_factor,
+        scale_factor,
+    }
+}
+
+fn default_screen_bounds() -> ScreenBounds {
+    ScreenBounds {
+        x: 0.0,
+        y: 0.0,
+        width: DEFAULT_SCREEN_WIDTH,
+        height: DEFAULT_SCREEN_HEIGHT,
+        scale_factor: 1.0,
+    }
+}
+
+fn select_clipboard_monitor<T>(
+    focused_window_monitor: Option<T>,
+    cursor_monitor: Option<T>,
+    primary_monitor: Option<T>,
+) -> Option<T> {
+    focused_window_monitor
+        .or(cursor_monitor)
+        .or(primary_monitor)
+}
+
+#[cfg(target_os = "windows")]
+fn native_window_monitor(
+    window: &tauri::WebviewWindow,
+    hwnd: windows::Win32::Foundation::HWND,
+) -> Option<tauri::Monitor> {
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    if monitor.0 == 0 {
+        return None;
+    }
+
+    let mut monitor_info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(monitor, &mut monitor_info) }.as_bool() {
+        return None;
+    }
+
+    let monitor_rect = monitor_info.rcMonitor;
+    let center_x = monitor_rect.left as f64 + (monitor_rect.right - monitor_rect.left) as f64 / 2.0;
+    let center_y = monitor_rect.top as f64 + (monitor_rect.bottom - monitor_rect.top) as f64 / 2.0;
+    window
+        .app_handle()
+        .monitor_from_point(center_x, center_y)
+        .ok()
+        .flatten()
+}
+
+#[cfg(target_os = "windows")]
+fn focused_window_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.0 == 0 {
+        return None;
+    }
+    native_window_monitor(window, foreground)
+}
+
+#[cfg(target_os = "windows")]
+fn target_clipboard_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
+    let focused = focused_window_monitor(window);
+    let cursor = cursor_physical_position().and_then(|position| {
+        window
+            .app_handle()
+            .monitor_from_point(position.x as f64, position.y as f64)
+            .ok()
+            .flatten()
+    });
+    let primary = window.primary_monitor().ok().flatten();
+    select_clipboard_monitor(focused, cursor, primary)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn target_clipboard_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
+    window.primary_monitor().ok().flatten()
+}
+
 fn screen_bounds(window: &tauri::WebviewWindow) -> ScreenBounds {
-    if let Ok(Some(monitor)) = window.primary_monitor() {
-        let scale_factor = monitor.scale_factor();
-        let position = monitor.position();
-        let size = monitor.size();
-        let bounds = ScreenBounds {
-            x: position.x as f64 / scale_factor,
-            y: position.y as f64 / scale_factor,
-            width: size.width as f64 / scale_factor,
-            height: size.height as f64 / scale_factor,
-        };
-        bounds
+    window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .as_ref()
+        .map(screen_bounds_from_monitor)
+        .unwrap_or_else(default_screen_bounds)
+}
+
+fn target_clipboard_screen_bounds(window: &tauri::WebviewWindow) -> ScreenBounds {
+    target_clipboard_monitor(window)
+        .as_ref()
+        .map(screen_bounds_from_monitor)
+        .unwrap_or_else(default_screen_bounds)
+}
+
+fn clipboard_window_layout(bounds: ScreenBounds) -> ClipboardWindowLayout {
+    ClipboardWindowLayout {
+        x: bounds.x - CLIPBOARD_HORIZONTAL_BLEED,
+        target_y: bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT,
+        hidden_y: bounds.y + bounds.height,
+        width: bounds.width + CLIPBOARD_HORIZONTAL_BLEED * 2.0,
+        height: CLIPBOARD_WINDOW_HEIGHT,
+        scale_factor: bounds.scale_factor,
+    }
+}
+
+fn clipboard_window_physical_size(layout: ClipboardWindowLayout) -> (u32, u32) {
+    (
+        (layout.width * layout.scale_factor).round() as u32,
+        (layout.height * layout.scale_factor).round() as u32,
+    )
+}
+
+fn should_restore_foreground_after_hide(generation: u64, marked_generation: u64) -> bool {
+    generation != 0 && generation == marked_generation
+}
+
+fn should_reapply_clipboard_size_after_scale_change(label: &str, visible: bool) -> bool {
+    label == "clipboard" && visible
+}
+
+fn centered_window_position_in_work_area(
+    work_area: (i32, i32, u32, u32),
+    logical_window_size: (f64, f64),
+    target_scale_factor: f64,
+) -> (i32, i32) {
+    let (work_x, work_y, work_width, work_height) = work_area;
+    let window_width = (logical_window_size.0 * target_scale_factor).round() as i64;
+    let window_height = (logical_window_size.1 * target_scale_factor).round() as i64;
+    let x = work_x as i64 + (work_width as i64 - window_width).max(0) / 2;
+    let y = work_y as i64 + (work_height as i64 - window_height).max(0) / 2;
+    (x as i32, y as i32)
+}
+
+fn physical_window_center(position: (i32, i32), size: (u32, u32)) -> (f64, f64) {
+    (
+        position.0 as f64 + size.0 as f64 / 2.0,
+        position.1 as f64 + size.1 as f64 / 2.0,
+    )
+}
+
+fn source_window_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = window.hwnd() {
+        let native_hwnd = windows::Win32::Foundation::HWND(hwnd.0 as isize);
+        if let Some(monitor) = native_window_monitor(window, native_hwnd) {
+            return Some(monitor);
+        }
+    }
+
+    let position = window.outer_position().ok()?;
+    let size = window.outer_size().ok()?;
+    let (center_x, center_y) =
+        physical_window_center((position.x, position.y), (size.width, size.height));
+    window.monitor_from_point(center_x, center_y).ok().flatten()
+}
+
+fn remember_clipboard_monitor(window: &tauri::WebviewWindow) {
+    let monitor = source_window_monitor(window)
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| target_clipboard_monitor(window));
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let position = monitor.position();
+    let size = monitor.size();
+    let center = physical_window_center((position.x, position.y), (size.width, size.height));
+    if let Ok(mut stored_center) = LAST_CLIPBOARD_MONITOR_CENTER.lock() {
+        *stored_center = Some(center);
+    }
+}
+
+fn last_clipboard_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
+    let center = *LAST_CLIPBOARD_MONITOR_CENTER.lock().ok()?;
+    let (x, y) = center?;
+    window.monitor_from_point(x, y).ok().flatten()
+}
+
+fn select_auxiliary_monitor<T>(
+    use_last_clipboard_monitor: bool,
+    last_clipboard_monitor: Option<T>,
+    source_monitor: Option<T>,
+    fallback_monitor: Option<T>,
+) -> Option<T> {
+    if use_last_clipboard_monitor {
+        last_clipboard_monitor
+            .or(source_monitor)
+            .or(fallback_monitor)
     } else {
-        ScreenBounds {
+        source_monitor.or(fallback_monitor)
+    }
+}
+
+fn center_window_on_source_monitor(
+    window: &tauri::WebviewWindow,
+    source_window: &tauri::WebviewWindow,
+) -> Result<(), String> {
+    let source_monitor = source_window_monitor(source_window)
+        .or_else(|| source_window.current_monitor().ok().flatten());
+    let use_last_clipboard_monitor =
+        source_window.label() == "clipboard" && !source_window.is_visible().unwrap_or(false);
+    let last_clipboard_monitor = if use_last_clipboard_monitor {
+        last_clipboard_monitor(source_window)
+    } else {
+        None
+    };
+    let Some(monitor) = select_auxiliary_monitor(
+        use_last_clipboard_monitor,
+        last_clipboard_monitor,
+        source_monitor,
+        target_clipboard_monitor(source_window),
+    ) else {
+        return window.center().map_err(|err| err.to_string());
+    };
+    let current_scale_factor = window.scale_factor().map_err(|err| err.to_string())?;
+    let outer_size = window.outer_size().map_err(|err| err.to_string())?;
+    let logical_window_size = (
+        outer_size.width as f64 / current_scale_factor,
+        outer_size.height as f64 / current_scale_factor,
+    );
+    let work_area = monitor.work_area();
+    let (x, y) = centered_window_position_in_work_area(
+        (
+            work_area.position.x,
+            work_area.position.y,
+            work_area.size.width,
+            work_area.size.height,
+        ),
+        logical_window_size,
+        monitor.scale_factor(),
+    );
+    window
+        .set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }))
+        .map_err(|err| err.to_string())
+}
+
+fn clipboard_screen_bounds(
+    app: &tauri::AppHandle,
+    fallback_window: &tauri::WebviewWindow,
+) -> ScreenBounds {
+    app.get_webview_window("clipboard")
+        .as_ref()
+        .map(screen_bounds)
+        .unwrap_or_else(|| screen_bounds(fallback_window))
+}
+
+#[cfg(test)]
+mod clipboard_monitor_selection_tests {
+    use super::{
+        centered_window_position_in_work_area, clipboard_window_layout,
+        clipboard_window_physical_size, physical_window_center, select_auxiliary_monitor,
+        select_clipboard_monitor, should_reapply_clipboard_size_after_scale_change,
+        should_restore_foreground_after_hide, ScreenBounds,
+    };
+
+    #[test]
+    fn focused_window_monitor_takes_priority() {
+        assert_eq!(
+            select_clipboard_monitor(Some("focused"), Some("cursor"), Some("primary")),
+            Some("focused")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_cursor_then_primary_monitor() {
+        assert_eq!(
+            select_clipboard_monitor(None, Some("cursor"), Some("primary")),
+            Some("cursor")
+        );
+        assert_eq!(
+            select_clipboard_monitor(None, None, Some("primary")),
+            Some("primary")
+        );
+    }
+
+    #[test]
+    fn clipboard_layout_fills_and_docks_to_a_scaled_target_screen() {
+        let bounds = ScreenBounds {
             x: 0.0,
             y: 0.0,
-            width: DEFAULT_SCREEN_WIDTH,
-            height: DEFAULT_SCREEN_HEIGHT,
-        }
+            width: 2048.0,
+            height: 1280.0,
+            scale_factor: 1.25,
+        };
+
+        let layout = clipboard_window_layout(bounds);
+
+        assert_eq!(layout.x, -12.0);
+        assert_eq!(layout.width, 2072.0);
+        assert_eq!(layout.target_y, 978.0);
+        assert_eq!(layout.hidden_y, 1280.0);
+        assert_eq!(layout.scale_factor, 1.25);
+        assert_eq!(clipboard_window_physical_size(layout), (2590, 378));
+    }
+
+    #[test]
+    fn only_the_matching_hide_generation_restores_the_previous_foreground() {
+        assert!(should_restore_foreground_after_hide(7, 7));
+        assert!(!should_restore_foreground_after_hide(7, 0));
+        assert!(!should_restore_foreground_after_hide(7, 6));
+    }
+
+    #[test]
+    fn only_a_visible_clipboard_window_reapplies_size_after_a_dpi_change() {
+        assert!(should_reapply_clipboard_size_after_scale_change(
+            "clipboard",
+            true
+        ));
+        assert!(!should_reapply_clipboard_size_after_scale_change(
+            "clipboard",
+            false
+        ));
+        assert!(!should_reapply_clipboard_size_after_scale_change(
+            "clipboardPreview",
+            true
+        ));
+    }
+
+    #[test]
+    fn centers_auxiliary_windows_in_each_monitors_physical_work_area() {
+        assert_eq!(
+            centered_window_position_in_work_area((-3840, 0, 3840, 2088), (720.0, 700.0), 1.5,),
+            (-2460, 519)
+        );
+        assert_eq!(
+            centered_window_position_in_work_area((0, 0, 2560, 1532), (1080.0, 760.0), 1.25),
+            (605, 291)
+        );
+    }
+
+    #[test]
+    fn source_monitor_uses_the_center_of_a_window_that_bleeds_across_a_screen_edge() {
+        assert_eq!(
+            physical_window_center((-7, 1223), (2592, 380)),
+            (1289.0, 1413.0)
+        );
+    }
+
+    #[test]
+    fn hidden_clipboard_uses_its_last_visible_monitor_for_auxiliary_windows() {
+        assert_eq!(
+            select_auxiliary_monitor(true, Some("last-visible"), Some("hidden"), Some("fallback")),
+            Some("last-visible")
+        );
+        assert_eq!(
+            select_auxiliary_monitor(
+                false,
+                Some("last-visible"),
+                Some("source"),
+                Some("fallback")
+            ),
+            Some("source")
+        );
     }
 }
 
@@ -696,6 +1062,14 @@ enum ClipboardWindowAnimation {
     Hide,
 }
 
+#[derive(Clone, Copy)]
+struct ClipboardWindowMotion {
+    x: f64,
+    from_y: f64,
+    to_y: f64,
+    scale_factor: f64,
+}
+
 fn clipboard_window_animation_progress(progress: f64, animation: ClipboardWindowAnimation) -> f64 {
     let progress = progress.clamp(0.0, 1.0);
     match animation {
@@ -704,32 +1078,93 @@ fn clipboard_window_animation_progress(progress: f64, animation: ClipboardWindow
     }
 }
 
-fn current_window_logical_y(window: &tauri::WebviewWindow) -> Option<f64> {
+fn current_window_logical_y(
+    window: &tauri::WebviewWindow,
+    target_scale_factor: f64,
+) -> Option<f64> {
     let position = window.outer_position().ok()?;
-    let scale_factor = window.scale_factor().ok()?;
-    Some(position.y as f64 / scale_factor)
+    Some(position.y as f64 / target_scale_factor)
+}
+
+#[cfg(target_os = "windows")]
+fn set_window_position_for_scale(
+    window: &tauri::WebviewWindow,
+    x: f64,
+    y: f64,
+    scale_factor: f64,
+) -> Result<(), String> {
+    window
+        .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+            x: (x * scale_factor).round() as i32,
+            y: (y * scale_factor).round() as i32,
+        }))
+        .map_err(|err| err.to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_window_position_for_scale(
+    window: &tauri::WebviewWindow,
+    x: f64,
+    y: f64,
+    _scale_factor: f64,
+) -> Result<(), String> {
+    window
+        .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }))
+        .map_err(|err| err.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn set_window_size_for_scale(
+    window: &tauri::WebviewWindow,
+    width: f64,
+    height: f64,
+    scale_factor: f64,
+) -> Result<(), String> {
+    window
+        .set_size(tauri::Size::Physical(tauri::PhysicalSize {
+            width: (width * scale_factor).round() as u32,
+            height: (height * scale_factor).round() as u32,
+        }))
+        .map_err(|err| err.to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_window_size_for_scale(
+    window: &tauri::WebviewWindow,
+    width: f64,
+    height: f64,
+    _scale_factor: f64,
+) -> Result<(), String> {
+    window
+        .set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }))
+        .map_err(|err| err.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn reapply_clipboard_size_after_scale_change(window: &tauri::WebviewWindow, scale_factor: f64) {
+    let bounds = screen_bounds(window);
+    let monitor_physical_width = bounds.width * bounds.scale_factor;
+    let logical_width = monitor_physical_width / scale_factor + CLIPBOARD_HORIZONTAL_BLEED * 2.0;
+    if let Err(err) =
+        set_window_size_for_scale(window, logical_width, CLIPBOARD_WINDOW_HEIGHT, scale_factor)
+    {
+        error!("Failed to reapply clipboard size after DPI change: {}", err);
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
 fn animate_clipboard_window_y(
     window: &tauri::WebviewWindow,
-    x: f64,
-    from_y: f64,
-    to_y: f64,
+    motion: ClipboardWindowMotion,
     duration_ms: u64,
     generation: u64,
     animation: ClipboardWindowAnimation,
 ) -> Result<bool, String> {
-    if system_reduces_motion() || (from_y - to_y).abs() < 0.5 {
+    if system_reduces_motion() || (motion.from_y - motion.to_y).abs() < 0.5 {
         if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
             return Ok(false);
         }
-        window
-            .set_position(tauri::Position::Logical(tauri::LogicalPosition {
-                x,
-                y: to_y,
-            }))
-            .map_err(|err| err.to_string())?;
+        set_window_position_for_scale(window, motion.x, motion.to_y, motion.scale_factor)?;
         return Ok(true);
     }
 
@@ -742,10 +1177,8 @@ fn animate_clipboard_window_y(
 
         let progress = (started.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0);
         let eased = clipboard_window_animation_progress(progress, animation);
-        let y = from_y + (to_y - from_y) * eased;
-        window
-            .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }))
-            .map_err(|err| err.to_string())?;
+        let y = motion.from_y + (motion.to_y - motion.from_y) * eased;
+        set_window_position_for_scale(window, motion.x, y, motion.scale_factor)?;
 
         if progress >= 1.0 {
             return Ok(true);
@@ -781,21 +1214,19 @@ fn set_macos_clipboard_window_position(
 #[cfg(target_os = "macos")]
 fn animate_clipboard_window_y(
     window: &tauri::WebviewWindow,
-    x: f64,
-    from_y: f64,
-    to_y: f64,
+    motion: ClipboardWindowMotion,
     duration_ms: u64,
     generation: u64,
     animation: ClipboardWindowAnimation,
 ) -> Result<bool, String> {
-    if system_reduces_motion() || (from_y - to_y).abs() < 0.5 {
+    if system_reduces_motion() || (motion.from_y - motion.to_y).abs() < 0.5 {
         if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
             return Ok(false);
         }
         window
             .set_position(tauri::Position::Logical(tauri::LogicalPosition {
-                x,
-                y: to_y,
+                x: motion.x,
+                y: motion.to_y,
             }))
             .map_err(|err| err.to_string())?;
         return Ok(true);
@@ -810,8 +1241,8 @@ fn animate_clipboard_window_y(
 
         let progress = (started.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0);
         let eased = clipboard_window_animation_progress(progress, animation);
-        let y = from_y + (to_y - from_y) * eased;
-        set_macos_clipboard_window_position(window, x, y)?;
+        let y = motion.from_y + (motion.to_y - motion.from_y) * eased;
+        set_macos_clipboard_window_position(window, motion.x, y)?;
 
         if progress >= 1.0 {
             return Ok(true);
@@ -824,10 +1255,12 @@ fn animate_clipboard_window_y(
 
 fn finish_hide_window_locked(window: &tauri::WebviewWindow) -> Result<(), String> {
     let bounds = screen_bounds(window);
-    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
-        x: bounds.x - CLIPBOARD_HORIZONTAL_BLEED,
-        y: bounds.y + bounds.height,
-    }));
+    let _ = set_window_position_for_scale(
+        window,
+        bounds.x - CLIPBOARD_HORIZONTAL_BLEED,
+        bounds.y + bounds.height,
+        bounds.scale_factor,
+    );
     window.hide().map_err(|err| err.to_string())?;
     CLIPBOARD_VISIBLE.store(false, Ordering::SeqCst);
     CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
@@ -856,13 +1289,16 @@ fn finish_animated_hide_window(
     let bounds = screen_bounds(window);
     let x = bounds.x - CLIPBOARD_HORIZONTAL_BLEED;
     let target_y = bounds.y + bounds.height;
-    let start_y = current_window_logical_y(window)
+    let start_y = current_window_logical_y(window, bounds.scale_factor)
         .unwrap_or(bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT);
     let animation_result = animate_clipboard_window_y(
         window,
-        x,
-        start_y,
-        target_y,
+        ClipboardWindowMotion {
+            x,
+            from_y: start_y,
+            to_y: target_y,
+            scale_factor: bounds.scale_factor,
+        },
         CLIPBOARD_HIDE_ANIMATION_MS,
         generation,
         ClipboardWindowAnimation::Hide,
@@ -877,7 +1313,10 @@ fn finish_animated_hide_window(
     if let Err(err) = animation_result {
         error!("Failed to animate clipboard window down: {}", err);
     }
-    finish_hide_window_locked(window)
+    finish_hide_window_locked(window)?;
+    drop(_transition);
+    restore_foreground_after_hide(generation);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -987,6 +1426,34 @@ fn is_native_window_foreground(window: &tauri::WebviewWindow, _context: &str) ->
 fn is_native_window_foreground(window: &tauri::WebviewWindow, _context: &str) -> bool {
     window.is_focused().unwrap_or(false)
 }
+
+#[cfg(target_os = "windows")]
+fn mark_foreground_restore_for_hide(window: &tauri::WebviewWindow, generation: u64) {
+    let restore_generation = if is_native_window_foreground(window, "clipboard hide") {
+        generation
+    } else {
+        0
+    };
+    CLIPBOARD_RESTORE_FOCUS_GENERATION.store(restore_generation, Ordering::SeqCst);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn mark_foreground_restore_for_hide(_window: &tauri::WebviewWindow, _generation: u64) {}
+
+#[cfg(target_os = "windows")]
+fn restore_foreground_after_hide(generation: u64) {
+    let marked_generation = CLIPBOARD_RESTORE_FOCUS_GENERATION.load(Ordering::SeqCst);
+    if should_restore_foreground_after_hide(generation, marked_generation)
+        && CLIPBOARD_RESTORE_FOCUS_GENERATION
+            .compare_exchange(generation, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    {
+        restore_foreground_app_before_paste();
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn restore_foreground_after_hide(_generation: u64) {}
 
 #[cfg(target_os = "windows")]
 fn activate_native_window(window: &tauri::WebviewWindow, _context: &str) {
@@ -1134,6 +1601,7 @@ fn focus_clipboard_window(window: &tauri::WebviewWindow, context: &str) {
 }
 
 fn hide_clipboard_window(window: &tauri::WebviewWindow) {
+    remember_clipboard_monitor(window);
     let generation = {
         let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
             .lock()
@@ -1145,6 +1613,7 @@ fn hide_clipboard_window(window: &tauri::WebviewWindow) {
         }
         CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
     };
+    mark_foreground_restore_for_hide(window, generation);
 
     if let Err(err) = window.emit("window-hide", ()) {
         error!("Failed to emit window-hide event: {:?}", err);
@@ -1159,10 +1628,11 @@ fn hide_clipboard_window(window: &tauri::WebviewWindow) {
 }
 
 fn show_clipboard_window(window: &tauri::WebviewWindow) {
-    let bounds = screen_bounds(window);
-    let x = bounds.x - CLIPBOARD_HORIZONTAL_BLEED;
-    let target_y = bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT;
-    let hidden_y = bounds.y + bounds.height;
+    let bounds = target_clipboard_screen_bounds(window);
+    let layout = clipboard_window_layout(bounds);
+    let x = layout.x;
+    let target_y = layout.target_y;
+    let hidden_y = layout.hidden_y;
     let generation;
     let start_y;
 
@@ -1180,19 +1650,14 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
         }
         generation = CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
 
-        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-            width: bounds.width + CLIPBOARD_HORIZONTAL_BLEED * 2.0,
-            height: CLIPBOARD_WINDOW_HEIGHT,
-        }));
         start_y = if was_visible {
-            current_window_logical_y(window).unwrap_or(hidden_y)
+            current_window_logical_y(window, layout.scale_factor).unwrap_or(hidden_y)
         } else {
             hidden_y
         };
-        let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
-            x,
-            y: start_y,
-        }));
+        let _ = set_window_position_for_scale(window, x, start_y, layout.scale_factor);
+        let _ = set_window_size_for_scale(window, layout.width, layout.height, layout.scale_factor);
+        let _ = set_window_position_for_scale(window, x, start_y, layout.scale_factor);
 
         if !was_visible {
             if let Err(err) = window.show() {
@@ -1206,12 +1671,12 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
     }
 
     let cursor = cursor_physical_position().and_then(|cursor| {
-        let scale_factor = window.scale_factor().ok()?;
+        let scale_factor = layout.scale_factor;
         let target_x = (x * scale_factor).round() as i32;
         let target_y = (target_y * scale_factor).round() as i32;
-        let width =
-            ((bounds.width + CLIPBOARD_HORIZONTAL_BLEED * 2.0) * scale_factor).round() as i32;
-        let height = (CLIPBOARD_WINDOW_HEIGHT * scale_factor).round() as i32;
+        let (width, height) = clipboard_window_physical_size(layout);
+        let width = width as i32;
+        let height = height as i32;
         let cursor_x = (cursor.x - target_x) as f64 / scale_factor;
         let cursor_y = (cursor.y - target_y) as f64 / scale_factor;
         if cursor_x >= 0.0
@@ -1234,9 +1699,12 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
     std::thread::spawn(move || {
         match animate_clipboard_window_y(
             &animation_window,
-            x,
-            start_y,
-            target_y,
+            ClipboardWindowMotion {
+                x,
+                from_y: start_y,
+                to_y: target_y,
+                scale_factor: layout.scale_factor,
+            },
             CLIPBOARD_SHOW_ANIMATION_MS,
             generation,
             ClipboardWindowAnimation::Show,
@@ -1248,9 +1716,12 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
             Err(err) => {
                 error!("Failed to animate clipboard window up: {}", err);
                 if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) == generation {
-                    let _ = animation_window.set_position(tauri::Position::Logical(
-                        tauri::LogicalPosition { x, y: target_y },
-                    ));
+                    let _ = set_window_position_for_scale(
+                        &animation_window,
+                        x,
+                        target_y,
+                        layout.scale_factor,
+                    );
                     let _ = animation_window.emit("window-show-complete", ());
                 }
             }
@@ -1260,6 +1731,7 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
 
 #[tauri::command]
 fn begin_hide_clipboard_window(window: tauri::WebviewWindow) -> u64 {
+    remember_clipboard_monitor(&window);
     let generation = {
         let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
             .lock()
@@ -1270,6 +1742,7 @@ fn begin_hide_clipboard_window(window: tauri::WebviewWindow) -> u64 {
         CLIPBOARD_HIDING.store(true, Ordering::SeqCst);
         CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
     };
+    mark_foreground_restore_for_hide(&window, generation);
     let _ = window.emit("window-hide", ());
     generation
 }
@@ -1302,11 +1775,12 @@ fn hide_clipboard_if_inactive(window: tauri::WebviewWindow) {
 }
 
 #[tauri::command]
-fn open_config_window(app: tauri::AppHandle, target: Option<String>) -> Result<(), String> {
+fn open_config_window(
+    app: tauri::AppHandle,
+    source_window: tauri::WebviewWindow,
+    target: Option<String>,
+) -> Result<(), String> {
     info!("Opening config window");
-    if let Some(clipboard_window) = app.get_webview_window("clipboard") {
-        let _ = finish_hide_window(&clipboard_window);
-    }
     let window = app
         .get_webview_window("config")
         .ok_or_else(|| "config window not found".to_string())?;
@@ -1315,7 +1789,10 @@ fn open_config_window(app: tauri::AppHandle, target: Option<String>) -> Result<(
     let _ = window.set_always_on_top(false);
     let _ = window.set_title("vPaste设置");
     apply_vpaste_window_icon(&window);
-    let _ = window.center();
+    center_window_on_source_monitor(&window, &source_window)?;
+    if let Some(clipboard_window) = app.get_webview_window("clipboard") {
+        let _ = finish_hide_window(&clipboard_window);
+    }
     window.show().map_err(|err| err.to_string())?;
     activate_native_window(&window, "config open");
     window.set_focus().map_err(|err| err.to_string())?;
@@ -1325,14 +1802,25 @@ fn open_config_window(app: tauri::AppHandle, target: Option<String>) -> Result<(
 }
 
 #[tauri::command]
-fn open_test_room_window(app: tauri::AppHandle) -> Result<(), String> {
+fn open_test_room_window(
+    app: tauri::AppHandle,
+    source_window: tauri::WebviewWindow,
+) -> Result<(), String> {
     let window = app.get_webview_window("testRoom");
     if let Some(message) = test_room_window_open_error(get_developer_mode(), window.is_some()) {
         return Err(message.to_string());
     }
     let window = window.expect("test room window existence was checked above");
     let _ = window.unminimize();
+    let was_maximized = window.is_maximized().unwrap_or(false);
+    if was_maximized {
+        let _ = window.unmaximize();
+    }
+    center_window_on_source_monitor(&window, &source_window)?;
     window.show().map_err(|err| err.to_string())?;
+    if was_maximized {
+        let _ = window.maximize();
+    }
     activate_native_window(&window, "test room show");
     window.set_focus().map_err(|err| err.to_string())?;
     Ok(())
@@ -1361,9 +1849,13 @@ fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String> {
     let x = bounds.x + (bounds.width - PASTE_FALLBACK_NOTICE_WIDTH) / 2.0;
     let y = bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT + PASTE_FALLBACK_NOTICE_TOP_INSET;
 
-    notice_window
-        .set_position(tauri::Position::Logical(LogicalPosition { x, y }))
-        .map_err(|err| err.to_string())?;
+    set_window_size_for_scale(
+        &notice_window,
+        PASTE_FALLBACK_NOTICE_WIDTH,
+        PASTE_FALLBACK_NOTICE_HEIGHT,
+        bounds.scale_factor,
+    )?;
+    set_window_position_for_scale(&notice_window, x, y, bounds.scale_factor)?;
     let generation = PASTE_FALLBACK_NOTICE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     notice_window.show().map_err(|err| err.to_string())?;
     let app_for_timer = app.clone();
@@ -1520,7 +2012,7 @@ fn open_onboarding_permission_window(
         .get_webview_window("onboardingPermission")
         .ok_or_else(|| "onboarding permission window not found".to_string())?;
     let _ = window.unminimize();
-    let _ = window.center();
+    center_window_on_source_monitor(&window, &source_window)?;
     let _ = window.set_shadow(false);
     window
         .set_always_on_top(true)
@@ -2113,7 +2605,7 @@ fn show_preview_window(
     app_source: String,
 ) -> Result<(), String> {
     let window = get_or_create_preview_window(&app)?;
-    let bounds = screen_bounds(&window);
+    let bounds = clipboard_screen_bounds(&app, &window);
     let source_image_path = if preview_content.is_empty() {
         content.as_str()
     } else {
@@ -2135,18 +2627,11 @@ fn show_preview_window(
     );
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
     PREVIEW_IGNORE_BLUR_UNTIL.store(now_millis().saturating_add(1800), Ordering::SeqCst);
-    window
-        .set_size(tauri::Size::Logical(tauri::LogicalSize {
-            width: size.width,
-            height: size.height,
-        }))
-        .map_err(|err| err.to_string())?;
+    let position = preview_position_avoiding_clipboard(&app, bounds, size);
+    set_window_position_for_scale(&window, position.x, position.y, bounds.scale_factor)?;
+    set_window_size_for_scale(&window, size.width, size.height, bounds.scale_factor)?;
     #[cfg(target_os = "windows")]
     apply_windows_rounded_window_region(&window, ROUNDED_WINDOW_RADIUS)?;
-    let position = preview_position_avoiding_clipboard(&app, bounds, size);
-    window
-        .set_position(tauri::Position::Logical(position))
-        .map_err(|err| err.to_string())?;
     let _ = window.emit("preview-clear", ());
     window
         .emit(
@@ -2182,19 +2667,12 @@ fn resize_preview_image_window(
     let Some(window) = app.get_webview_window("clipboardPreview") else {
         return Ok(());
     };
-    let bounds = screen_bounds(&window);
+    let bounds = clipboard_screen_bounds(&app, &window);
     let preview_bounds = preview_bounds_avoiding_clipboard(&app, bounds);
     let size = preview_size_for_image(width, height, preview_bounds);
-    window
-        .set_size(tauri::Size::Logical(tauri::LogicalSize {
-            width: size.width,
-            height: size.height,
-        }))
-        .map_err(|err| err.to_string())?;
+    set_window_size_for_scale(&window, size.width, size.height, bounds.scale_factor)?;
     let position = preview_position_avoiding_clipboard(&app, bounds, size);
-    window
-        .set_position(tauri::Position::Logical(position))
-        .map_err(|err| err.to_string())
+    set_window_position_for_scale(&window, position.x, position.y, bounds.scale_factor)
 }
 
 #[tauri::command]
@@ -2383,16 +2861,17 @@ fn open_tab_editor_window(
         .ok_or_else(|| "tab editor window not found".to_string())?;
     let content_width = width.unwrap_or(TAB_EDITOR_CONTENT_WIDTH);
     let content_height = height.unwrap_or(TAB_EDITOR_DEFAULT_CONTENT_HEIGHT);
+    let bounds = clipboard_screen_bounds(&app, &window);
     let _ = window.set_size(tauri::Size::Logical(LogicalSize {
         width: content_width + AUXILIARY_WINDOW_GUTTER * 2.0,
         height: content_height + AUXILIARY_WINDOW_GUTTER * 2.0,
     }));
-    window
-        .set_position(tauri::Position::Logical(LogicalPosition {
-            x: x - AUXILIARY_WINDOW_GUTTER,
-            y: y - AUXILIARY_WINDOW_GUTTER,
-        }))
-        .map_err(|err| err.to_string())?;
+    set_window_position_for_scale(
+        &window,
+        x - AUXILIARY_WINDOW_GUTTER,
+        y - AUXILIARY_WINDOW_GUTTER,
+        bounds.scale_factor,
+    )?;
     window.show().map_err(|err| err.to_string())?;
     let _ = activate_native_window(&window, "tab editor open");
     window.set_focus().map_err(|err| err.to_string())?;
@@ -7706,6 +8185,19 @@ fn main() {
                 .build(),
         )
         .on_window_event(|window, event| {
+            #[cfg(target_os = "windows")]
+            if let tauri::WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                if should_reapply_clipboard_size_after_scale_change(
+                    window.label(),
+                    CLIPBOARD_VISIBLE.load(Ordering::SeqCst),
+                ) {
+                    if let Some(webview_window) =
+                        window.app_handle().get_webview_window(window.label())
+                    {
+                        reapply_clipboard_size_after_scale_change(&webview_window, *scale_factor);
+                    }
+                }
+            }
             #[cfg(target_os = "windows")]
             if let tauri::WindowEvent::Resized(_) = event {
                 if window.label() == "clipboardPreview" {

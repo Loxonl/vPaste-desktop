@@ -53,7 +53,7 @@ test.describe("window shells", () => {
         }
     });
 
-    test("developer mode opens the UI lab in the external browser", async ({ page }) => {
+    test("developer mode exposes the UI lab and test room launchers", async ({ page }) => {
         await page.addInitScript(() => {
             let callbackId = 0;
             const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
@@ -63,7 +63,7 @@ test.describe("window shells", () => {
                     invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
                         calls.push({ cmd, args });
                         if (cmd === "get_developer_mode") return true;
-                        if (cmd === "open_url_in_browser") return null;
+                        if (cmd === "open_url_in_browser" || cmd === "open_test_room_window") return null;
                         throw new Error(`Unhandled test command: ${cmd}`);
                     },
                     transformCallback: () => ++callbackId,
@@ -78,7 +78,9 @@ test.describe("window shells", () => {
         });
 
         await page.goto("/clipboard");
-        const launcher = page.getByRole("button", { name: /component UI lab|组件样板间/i });
+        const developerToolbar = page.getByRole("group", { name: /developer preview tools|开发者预览工具/i });
+        await expect(developerToolbar).toBeVisible();
+        const launcher = developerToolbar.getByRole("button", { name: /component UI lab|组件样板间/i });
         await expect(launcher).toBeVisible();
         await launcher.click();
 
@@ -89,5 +91,154 @@ test.describe("window shells", () => {
             }).__uiLabTestCalls;
             return calls?.find(call => call.cmd === "open_url_in_browser")?.args.url;
         })).toBe(expectedUrl);
+
+        const testRoomLauncher = developerToolbar.getByRole("button", { name: /open test room|打开测试间/i });
+        await expect(testRoomLauncher).toBeVisible();
+        await testRoomLauncher.click();
+        await expect.poll(() => page.evaluate(() => {
+            const calls = (window as typeof window & {
+                __uiLabTestCalls?: Array<{ cmd: string }>;
+            }).__uiLabTestCalls;
+            return calls?.some(call => call.cmd === "open_test_room_window");
+        })).toBe(true);
+
+        const hideButton = page.getByRole("button", { name: /hide developer tools|隐藏开发者工具/i });
+        await expect(hideButton).toHaveAttribute("aria-pressed", "true");
+        await hideButton.click();
+        await expect(developerToolbar).toBeHidden();
+        await expect(page.getByRole("button", { name: /settings|设置/i })).toBeVisible();
+        const showButton = page.getByRole("button", { name: /show developer tools|显示开发者工具/i });
+        await expect(showButton).toHaveAttribute("aria-pressed", "false");
+        await expect(showButton).toHaveCSS("opacity", "0");
+        await showButton.hover();
+        await expect(showButton).toHaveCSS("opacity", "0");
+        await showButton.click();
+        await expect(developerToolbar).toBeVisible();
+    });
+
+    test("test room shows grouped cases and persistent sample tabs", async ({ page }) => {
+        await page.addInitScript(() => {
+            let callbackId = 0;
+            const calls: string[] = [];
+            Object.assign(window, {
+                __testRoomCalls: calls,
+                __TAURI_INTERNALS__: {
+                    invoke: async (cmd: string, args?: Record<string, unknown>) => {
+                        calls.push(cmd);
+                        if (cmd === "get_test_room_config") return null;
+                        if (cmd === "save_test_room_config") {
+                            Object.assign(window, { __lastSavedTestRoomConfig: args?.config });
+                            return null;
+                        }
+                        if (cmd === "cleanup_test_room_history") {
+                            return { affectedItems: 5, message: "已清理 5 条测试历史" };
+                        }
+                        if (cmd === "copy_test_room_item_to_clipboard") {
+                            Object.assign(window, { __lastCopiedTestRoomItem: args?.item });
+                            return { affectedItems: 1, message: "已写入当前剪贴板" };
+                        }
+                        throw new Error(`Unhandled test command: ${cmd}`);
+                    },
+                    transformCallback: () => ++callbackId,
+                    unregisterCallback: () => undefined,
+                    convertFileSrc: (value: string) => value,
+                    metadata: {
+                        currentWindow: { label: "testRoom" },
+                        currentWebview: { label: "testRoom" },
+                    },
+                },
+            });
+        });
+
+        await page.setViewportSize({ width: 1080, height: 760 });
+        await page.goto("/__test-room");
+        await expect(page.getByTestId("test-room")).toBeVisible();
+        const casesTab = page.getByRole("tab", { name: "测试用例" });
+        const samplesTab = page.getByRole("tab", { name: "写入样板" });
+        await expect(casesTab).toBeInViewport();
+        await expect(samplesTab).toBeInViewport();
+        await expect(page.getByRole("heading", { name: "vPaste 测试间" })).toHaveCount(0);
+        await expect(page.getByText("Debug 专用的本地测试与样板工具。")).toHaveCount(0);
+        const tabsTop = await page.getByRole("tablist", { name: "测试间功能" }).evaluate(element => (
+            element.getBoundingClientRect().top
+        ));
+        expect(tabsTop).toBeLessThanOrEqual(32);
+        const tabBounds = await page.getByRole("tablist", { name: "测试间功能" }).boundingBox();
+        const cleanupBounds = await page.getByRole("button", { name: "清理测试历史" }).boundingBox();
+        expect(tabBounds?.width).toBeLessThan(320);
+        expect(cleanupBounds?.x).toBeGreaterThan((tabBounds?.x ?? 0) + (tabBounds?.width ?? 0));
+        const pagePadding = await page.getByTestId("test-room").evaluate(element => (
+            Number.parseFloat(getComputedStyle(element).paddingLeft)
+        ));
+        expect(pagePadding).toBeGreaterThanOrEqual(24);
+        await expect(page.getByRole("heading", { name: "文本与富文本" })).toBeVisible();
+        await expect(page.getByText("TC-TEXT-01 · 纯文本写入与读回")).toBeVisible();
+        await expect(page.getByText("TC-FILE-02 · 文本文件写入与读回")).toBeVisible();
+        await expect(page.getByText("TC-EXCEL-01 · Excel 图表与表格")).toBeVisible();
+        await expect(page.getByText("TC-IMAGE-02 · QQ 双图消息")).toBeVisible();
+        await expect(page.getByText("TC-IMAGE-03 · GIF 历史预览")).toBeVisible();
+        await expect(page.locator("article h2").allTextContents()).resolves.toEqual([
+            "文本与富文本",
+            "Excel 与表格",
+            "图片",
+            "链接",
+            "文件",
+            "颜色",
+            "主窗口生命周期",
+            "功能与元数据",
+        ]);
+        page.once("dialog", dialog => dialog.accept());
+        await page.getByRole("button", { name: "清理测试历史" }).click();
+        await expect.poll(() => page.evaluate(() => (
+            window as typeof window & { __testRoomCalls?: string[] }
+        ).__testRoomCalls?.includes("cleanup_test_room_history"))).toBe(true);
+        await expect(page.getByRole("button", { name: "拉起主面板" })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "关闭测试间" })).toHaveCount(0);
+
+        await samplesTab.click();
+        await expect(page.getByRole("region", { name: "写入样板" })).toBeVisible();
+        await expect(page.getByRole("button", { name: /^中文样板/ })).toBeVisible();
+        await expect(page.getByRole("button", { name: /^English Sample/ })).toBeVisible();
+        await expect(page.getByRole("button", { name: "写入当前组" })).toBeVisible();
+        await expect(page.getByRole("button", { name: "清理测试历史" })).toBeVisible();
+        const sampleNames = page.getByRole("textbox", { name: "名称（可留空）" });
+        expect(await sampleNames.evaluateAll(inputs => inputs.filter(input => (
+            input as HTMLInputElement
+        ).value === "").length)).toBe(1);
+        await expect(page.getByRole("button", { name: "写入剪贴板 Image 样板" })).toBeVisible();
+        const copyToClipboard = page.getByRole("button", { name: "写入剪贴板 欢迎文案" });
+        await expect(copyToClipboard).toBeVisible();
+        await copyToClipboard.click();
+        await expect.poll(() => page.evaluate(() => (
+            window as typeof window & { __lastCopiedTestRoomItem?: { name?: string } }
+        ).__lastCopiedTestRoomItem?.name)).toBe("欢迎文案");
+        await expect(page.getByRole("button", { name: "复制 欢迎文案" })).toHaveCount(0);
+        const timeInput = page.getByRole("spinbutton", { name: "距现在 欢迎文案（秒）" });
+        await expect(timeInput).toHaveValue("0");
+        await timeInput.fill("90");
+        await timeInput.blur();
+        await expect.poll(() => page.evaluate(() => {
+            const saved = (window as typeof window & {
+                __lastSavedTestRoomConfig?: { groups?: Array<{ items?: Array<{ name?: string; timeOffsetMs?: number }> }> };
+            }).__lastSavedTestRoomConfig;
+            return saved?.groups?.[0]?.items?.find(item => item.name === "欢迎文案")?.timeOffsetMs;
+        })).toBe(90_000);
+        const excelEditor = page.getByRole("textbox", { name: "编辑 销售概览 内容" });
+        await expect(excelEditor).toBeVisible();
+        await excelEditor.fill("产品\t区域\t销售额\nWorkspace\t华东\t¥138,000");
+        await excelEditor.blur();
+        await expect.poll(() => page.evaluate(() => {
+            const saved = (window as typeof window & {
+                __lastSavedTestRoomConfig?: { groups?: Array<{ items?: Array<{ name?: string; value?: string }> }> };
+            }).__lastSavedTestRoomConfig;
+            return saved?.groups?.[0]?.items?.find(item => item.name === "销售概览")?.value;
+        })).toBe("产品\t区域\t销售额\nWorkspace\t华东\t¥138,000");
+        await expect(page.getByRole("button", { name: "写入全部组" })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "清理当前组" })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "清理全部" })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: /管理分组 中文样板/ })).toBeVisible();
+        await page.getByRole("button", { name: /管理分组 中文样板/ }).click();
+        await expect(page.getByRole("menuitem", { name: "复制分组" })).toBeVisible();
+        await expect(page.getByRole("menuitem", { name: "删除分组" })).toBeVisible();
     });
 });

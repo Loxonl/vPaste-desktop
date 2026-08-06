@@ -1443,6 +1443,12 @@ export default function Clipboard() {
             .catch(e => error(`Failed to open UI lab: ${e}`));
     };
 
+    const openTestRoom = () => {
+        if (!import.meta.env.DEV || !developerMode) return;
+        void invoke("open_test_room_window")
+            .catch(e => error(`Failed to open test room: ${e}`));
+    };
+
     const openTutorialFromDebug = (platform: TutorialPlatform) => {
         void startTutorial(platform);
     };
@@ -1614,7 +1620,6 @@ export default function Clipboard() {
                         tutorialPermissionStatus
                         && (!tutorialPermissionStatus.background.done || !tutorialPermissionStatus.paste.done)
                     )}
-                    developerMode={developerMode}
                     showDeveloperToolbar={import.meta.env.DEV && developerMode}
                     languageCode={languageCode}
                     developerTheme={developerTheme}
@@ -1624,6 +1629,7 @@ export default function Clipboard() {
                     onToggleLanguage={toggleDeveloperLanguage}
                     onToggleTheme={toggleDeveloperTheme}
                     onOpenUiLab={openUiLab}
+                    onOpenTestRoom={openTestRoom}
                     onOpenSettings={tutorialActive ? blockTutorialNavigation : openConfigWindow}
                 />
             </div>

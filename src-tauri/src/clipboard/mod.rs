@@ -368,12 +368,93 @@ fn is_vpaste_source(app_source: &str) -> bool {
     app_source.to_ascii_lowercase().contains("vpaste")
 }
 
+fn bundled_app_source_icon(app_source: &str) -> Option<(&'static str, &'static [u8])> {
+    let source = app_source.trim().to_ascii_lowercase();
+    if source.contains("vpaste") {
+        return Some((
+            "vpaste-source-icon-v5.png",
+            include_bytes!("../../icons/source/vpaste-app-icon-1024.png"),
+        ));
+    }
+    let icon = match source.as_str() {
+        "google chrome" | "chrome" => (
+            "chrome.png",
+            include_bytes!("../../icons/source/app-sources/chrome.png").as_slice(),
+        ),
+        "microsoft edge" | "edge" | "msedge" => (
+            "edge.png",
+            include_bytes!("../../icons/source/app-sources/edge.png").as_slice(),
+        ),
+        "microsoft word" | "word" | "winword" => (
+            "word.png",
+            include_bytes!("../../icons/source/app-sources/word.png").as_slice(),
+        ),
+        "microsoft excel" | "excel" => (
+            "excel.png",
+            include_bytes!("../../icons/source/app-sources/excel.png").as_slice(),
+        ),
+        "microsoft onenote" | "onenote" => (
+            "onenote.png",
+            include_bytes!("../../icons/source/app-sources/onenote.png").as_slice(),
+        ),
+        "figma" => (
+            "figma.png",
+            include_bytes!("../../icons/source/app-sources/figma.png").as_slice(),
+        ),
+        "notepad3" => (
+            "notepad3.png",
+            include_bytes!("../../icons/source/app-sources/notepad3.png").as_slice(),
+        ),
+        "pixpin" => (
+            "pixpin.png",
+            include_bytes!("../../icons/source/app-sources/pixpin.png").as_slice(),
+        ),
+        "obs studio" | "obs" | "obs64" => (
+            "obs.png",
+            include_bytes!("../../icons/source/app-sources/obs.png").as_slice(),
+        ),
+        "tabby" => (
+            "tabby.png",
+            include_bytes!("../../icons/source/app-sources/tabby.png").as_slice(),
+        ),
+        "qq" => (
+            "qq.png",
+            include_bytes!("../../icons/source/app-sources/qq.png").as_slice(),
+        ),
+        "wechat" | "weixin" | "wechatappex" => (
+            "wechat.png",
+            include_bytes!("../../icons/source/app-sources/wechat.png").as_slice(),
+        ),
+        "file explorer" | "explorer" => (
+            "file-explorer.png",
+            include_bytes!("../../icons/source/app-sources/file-explorer.png").as_slice(),
+        ),
+        _ => return None,
+    };
+    Some(icon)
+}
+
+fn bundled_app_source_icon_path(app_source: &str) -> Option<String> {
+    let (file_name, bytes) = bundled_app_source_icon(app_source)?;
+    let cache_dir = PathBuf::from(app_runtime_dir(&["app_icons"]));
+    fs::create_dir_all(&cache_dir).ok()?;
+    let icon_path = cache_dir.join(format!("bundled-{}", file_name));
+    if !icon_path.exists() {
+        fs::write(&icon_path, bytes).ok()?;
+    }
+    Some(icon_path.to_string_lossy().to_string())
+}
+
 fn resolve_app_icon_path(app_source: &str, stored_icon_path: String) -> String {
     if is_vpaste_source(app_source) {
-        vpaste_source_icon_path().unwrap_or_else(|| prefer_jumbo_app_icon(stored_icon_path))
-    } else {
-        prefer_jumbo_app_icon(stored_icon_path)
+        return vpaste_source_icon_path()
+            .unwrap_or_else(|| prefer_jumbo_app_icon(stored_icon_path));
     }
+    let stored_icon_path = prefer_jumbo_app_icon(stored_icon_path);
+    if !stored_icon_path.is_empty() && Path::new(&stored_icon_path).is_file() {
+        return stored_icon_path;
+    }
+    bundled_app_source_icon_path(app_source).unwrap_or(stored_icon_path)
 }
 
 fn app_icon_dominant_color(icon_path: &str) -> Option<String> {
@@ -471,17 +552,7 @@ fn calculate_dominant_color(icon_path: &str) -> Option<String> {
 }
 
 pub fn vpaste_source_icon_path() -> Option<String> {
-    let cache_dir = PathBuf::from(app_runtime_dir(&["app_icons"]));
-    fs::create_dir_all(&cache_dir).ok()?;
-    let icon_path = cache_dir.join("vpaste-source-icon-v3.png");
-    if !icon_path.exists() {
-        fs::write(
-            &icon_path,
-            include_bytes!("../../icons/source/vpaste-app-icon-1024.png"),
-        )
-        .ok()?;
-    }
-    Some(icon_path.to_string_lossy().to_string())
+    bundled_app_source_icon_path("vPaste")
 }
 
 fn prefer_jumbo_app_icon(icon_path: String) -> String {
@@ -1876,6 +1947,43 @@ pub fn insert_rich_text_from_app(
     insert_with_source_and_app(&item, &plain_text, &source, app_source, app_icon_path);
 }
 
+pub(crate) fn insert_test_room_rich_text(
+    hash: String,
+    plain_text: String,
+    html: Vec<u8>,
+    app_source: &str,
+    time: u64,
+) {
+    let meta = RichClipboardMeta {
+        version: 1,
+        html_path: save_rich_format_to_disk(&html, &hash, "html"),
+        rtf_path: String::new(),
+        png_path: String::new(),
+    };
+    let source = format!(
+        "{}{}",
+        RICH_META_PREFIX,
+        serde_json::to_string(&meta).unwrap_or_default()
+    );
+    let item = Item {
+        id: 0,
+        content: plain_text.clone(),
+        preview_content: plain_text.chars().take(50).collect(),
+        text_content: String::new(),
+        rich_html: String::new(),
+        app_source: app_source.to_string(),
+        app_icon_path: String::new(),
+        hash,
+        title_color: String::new(),
+        item_type: ItemType::Text,
+        time,
+        search_index: 1,
+        label: 0,
+        tags: Vec::new(),
+    };
+    insert_with_source_and_app(&item, &plain_text, &source, app_source, "");
+}
+
 fn insert_text_from_app_impl(mut content: String, app_source: &str, app_icon_path: &str) {
     if is_semantically_blank_text(&content) {
         return;
@@ -2897,6 +3005,36 @@ mod tests {
         reset_test_storage_config();
 
         assert!(item.title_color.starts_with("rgb("));
+    }
+
+    #[test]
+    fn test_room_app_sources_have_bundled_cross_platform_icons() {
+        for source in [
+            "Google Chrome",
+            "Microsoft Edge",
+            "Microsoft Word",
+            "Microsoft Excel",
+            "Microsoft OneNote",
+            "Figma",
+            "Notepad3",
+            "PixPin",
+            "OBS Studio",
+            "Tabby",
+            "QQ",
+            "WeChat",
+            "File Explorer",
+            "vPaste",
+        ] {
+            let (name, bytes) = bundled_app_source_icon(source)
+                .unwrap_or_else(|| panic!("missing bundled icon for {source}"));
+            assert!(name.ends_with(".png"));
+            assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+            let icon = image::load_from_memory(bytes)
+                .unwrap_or_else(|err| panic!("invalid bundled icon for {source}: {err}"));
+            assert!(icon.width() > 0 && icon.height() > 0);
+        }
+        assert!(bundled_app_source_icon("Notion").is_none());
+        assert!(bundled_app_source_icon("Cursor").is_none());
     }
 
     #[test]

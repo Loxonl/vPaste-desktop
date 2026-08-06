@@ -964,6 +964,28 @@ body {
   width: 30px;
 }
 
+.settings-button.developer-visibility-button {
+  opacity: 1;
+  transition: opacity 0.16s ease, background-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.settings-button.developer-visibility-button.is-hidden {
+  opacity: 0;
+}
+
+.settings-button.developer-visibility-button.is-hidden:hover {
+  opacity: 0;
+}
+
+.settings-button.developer-visibility-button.is-hidden:focus-visible {
+  opacity: 0.72;
+}
+
+.settings-button.developer-visibility-button:focus-visible {
+  outline: 2px solid rgba(47, 119, 232, 0.75);
+  outline-offset: 1px;
+}
+
 .settings-button.developer-toolbar-button:focus-visible {
   outline: 2px solid rgba(47, 119, 232, 0.75);
   outline-offset: 1px;

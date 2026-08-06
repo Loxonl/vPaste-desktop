@@ -1,4 +1,4 @@
-import { type RefObject } from "react";
+import { type RefObject, useState } from "react";
 import AddIcon from "@mui/icons-material/Add";
 import AppleIcon from "@mui/icons-material/Apple";
 import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
@@ -6,8 +6,10 @@ import DashboardCustomizeOutlinedIcon from "@mui/icons-material/DashboardCustomi
 import DarkModeRoundedIcon from "@mui/icons-material/DarkModeRounded";
 import LightModeRoundedIcon from "@mui/icons-material/LightModeRounded";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
+import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
 import StarBorderOutlinedIcon from "@mui/icons-material/StarBorderOutlined";
 import SystemUpdateAltOutlinedIcon from "@mui/icons-material/SystemUpdateAltOutlined";
+import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import WindowOutlinedIcon from "@mui/icons-material/WindowOutlined";
 import styles from "./Clipboard.module.css";
@@ -136,7 +138,6 @@ type ClipboardHeaderActionsProps = {
     tutorialActive: boolean;
     tutorialPlatform: TutorialPlatform;
     permissionIncomplete: boolean;
-    developerMode: boolean;
     showDeveloperToolbar: boolean;
     languageCode: string;
     developerTheme: "light" | "dark";
@@ -146,6 +147,7 @@ type ClipboardHeaderActionsProps = {
     onToggleLanguage: () => void;
     onToggleTheme: () => void;
     onOpenUiLab: () => void;
+    onOpenTestRoom: () => void;
     onOpenSettings: () => void;
 };
 
@@ -154,7 +156,6 @@ export function ClipboardHeaderActions({
     tutorialActive,
     tutorialPlatform,
     permissionIncomplete,
-    developerMode,
     showDeveloperToolbar,
     languageCode,
     developerTheme,
@@ -164,8 +165,11 @@ export function ClipboardHeaderActions({
     onToggleLanguage,
     onToggleTheme,
     onOpenUiLab,
+    onOpenTestRoom,
     onOpenSettings,
 }: ClipboardHeaderActionsProps) {
+    const [developerToolsVisible, setDeveloperToolsVisible] = useState(true);
+
     return (
         <div className={classes(styles, "header-actions")}>
             {isMac && !tutorialActive && permissionIncomplete && (
@@ -178,8 +182,13 @@ export function ClipboardHeaderActions({
                     <span>{t("clipboard.permissionsIncomplete")}</span>
                 </button>
             )}
-            {showDeveloperToolbar && (
-                <div className={classes(styles, "developer-toolbar")} aria-label={t("tutorial.debug.tools")}>
+            {showDeveloperToolbar && developerToolsVisible && (
+                <div
+                    id="developer-toolbar"
+                    role="group"
+                    className={classes(styles, "developer-toolbar")}
+                    aria-label={t("tutorial.debug.tools")}
+                >
                     <span className={classes(styles, "developer-toolbar-badge")} aria-hidden="true">DEV</span>
                     <button
                         type="button"
@@ -225,17 +234,38 @@ export function ClipboardHeaderActions({
                             ? <DarkModeRoundedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
                             : <LightModeRoundedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />}
                     </button>
+                    <span className={classes(styles, "developer-toolbar-divider")} aria-hidden="true" />
+                    <button
+                        type="button"
+                        className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}
+                        title={t("tutorial.debug.testRoom")}
+                        aria-label={t("tutorial.debug.testRoom")}
+                        onClick={onOpenTestRoom}
+                    >
+                        <ScienceOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
+                    </button>
+                    <button
+                        type="button"
+                        className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}
+                        title={t("tutorial.debug.uiLab")}
+                        aria-label={t("tutorial.debug.uiLab")}
+                        onClick={onOpenUiLab}
+                    >
+                        <DashboardCustomizeOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
+                    </button>
                 </div>
             )}
-            {developerMode && (
+            {showDeveloperToolbar && (
                 <button
                     type="button"
-                    className={classes(styles, "settings-button")}
-                    title={t("tutorial.debug.uiLab")}
-                    aria-label={t("tutorial.debug.uiLab")}
-                    onClick={onOpenUiLab}
+                    className={classes(styles, `settings-button developer-visibility-button${developerToolsVisible ? "" : " is-hidden"}`)}
+                    title={t(developerToolsVisible ? "tutorial.debug.hideTools" : "tutorial.debug.showTools")}
+                    aria-label={t(developerToolsVisible ? "tutorial.debug.hideTools" : "tutorial.debug.showTools")}
+                    aria-pressed={developerToolsVisible}
+                    aria-controls="developer-toolbar"
+                    onClick={() => setDeveloperToolsVisible(visible => !visible)}
                 >
-                    <DashboardCustomizeOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
+                    <VisibilityOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
                 </button>
             )}
             <button

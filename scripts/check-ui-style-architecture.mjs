@@ -123,7 +123,7 @@ for (const legacyPath of [
 const canonicalBrandSources = {
     "src/assets/vpaste-logo-master.svg": "21c01d4a93ee88837d0d5c43735ec1e294cac887b40bbdb62bd3dd801236fb48",
     "src-tauri/icons/source/vpaste-tray.svg": "363ec8c8c48609879d2fd35d1c15285896c9177146fe5239c73a17a3e800040e",
-    "src-tauri/icons/source/vpaste-app-icon-1024.png": "d035aba858facc318d2906fabd0ecb8e6117b724c9308ab783b71c79340a93d7",
+    "src-tauri/icons/source/vpaste-app-icon-1024.png": "9a1ab9280e1d45032b20257b11dcc41e6e300c54982445cec80c0888fb00b9d8",
 };
 for (const [sourcePath, expectedHash] of Object.entries(canonicalBrandSources)) {
     const absolutePath = join(root, sourcePath);

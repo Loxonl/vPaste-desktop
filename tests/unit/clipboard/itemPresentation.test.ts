@@ -87,7 +87,7 @@ describe("clipboard item presentation helpers", () => {
     });
 
     it("parses the existing tab-separated link preview payload", () => {
-        expect(parseLinkContent("https://example.com|||C:\\preview.png|||Example|||image"))
+        expect(parseLinkContent("https://example.com|||C:\\preview.png|||Example|||image|||2026-08-06"))
             .toEqual({
                 url: "https://example.com",
                 imagePath: "C:\\preview.png",

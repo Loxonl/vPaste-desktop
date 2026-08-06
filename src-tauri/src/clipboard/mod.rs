@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose, Engine as _};
-use chrono::Utc;
+use chrono::{Local, Utc};
 use lazy_static::lazy_static;
 use log::{error, info};
 use rusqlite::types::Value;
@@ -1706,8 +1706,8 @@ pub fn insert_with_source_and_app(
                     app_source = case when ?2 <> '' then ?2 else app_source end,
                     app_icon_path = case when ?3 <> '' then ?3 else app_icon_path end,
                     source = case when ?5 = 'Image' then ?4 when ?4 <> '' then ?4 else source end,
-                    content = ?7,
-                    preview_content = ?8
+                    content = case when ?5 = 'Link' then content else ?7 end,
+                    preview_content = case when ?5 = 'Link' then preview_content else ?8 end
               where hash = ?6",
             rusqlite::params![
                 item.time.to_string(),
@@ -2492,6 +2492,15 @@ fn link_record_cached_image_kind(record: &LinkPreviewRecord) -> String {
         .unwrap_or_default()
 }
 
+fn link_record_cached_refresh_day(record: &LinkPreviewRecord) -> String {
+    record
+        .content
+        .split("|||")
+        .nth(4)
+        .map(|value| value.to_string())
+        .unwrap_or_default()
+}
+
 fn cached_link_image_is_usable(path: &str) -> bool {
     if path.trim().is_empty() {
         return false;
@@ -2522,9 +2531,18 @@ fn cached_link_image_is_usable(path: &str) -> bool {
         })
 }
 
+fn link_preview_is_fresh_for_day(record: &LinkPreviewRecord, local_day: &str) -> bool {
+    if local_day.is_empty() || link_record_cached_refresh_day(record) != local_day {
+        return false;
+    }
+    link_record_cached_image_kind(record) == "default-icon"
+        || cached_link_image_is_usable(&link_record_cached_image_path(record))
+}
+
 pub fn refresh_link_previews(urls: Vec<String>) -> Result<Vec<LinkPreviewUpdate>, String> {
     let mut updates = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let local_day = Local::now().format("%Y-%m-%d").to_string();
     for raw_url in urls.into_iter().take(10) {
         let url = raw_url.trim().to_string();
         if url.is_empty() || !seen.insert(url.clone()) || !is_previewable_domain_link(&url) {
@@ -2541,9 +2559,15 @@ pub fn refresh_link_previews(urls: Vec<String>) -> Result<Vec<LinkPreviewUpdate>
         let cached_image_kind = link_record_cached_image_kind(&record);
         let has_legacy_generated_icon =
             cached_image_kind == "generated-icon" || cached_image_kind == "brand-icon";
-        if !has_legacy_generated_icon && should_skip_link_preview_refresh(&url) {
-            if cached_image_kind == "default-icon"
-                || cached_link_image_is_usable(&cached_image_path)
+        let cached_refresh_day = link_record_cached_refresh_day(&record);
+        if !has_legacy_generated_icon {
+            if link_preview_is_fresh_for_day(&record, &local_day) {
+                continue;
+            }
+            if cached_refresh_day.is_empty()
+                && should_skip_link_preview_refresh(&url)
+                && (cached_image_kind == "default-icon"
+                    || cached_link_image_is_usable(&cached_image_path))
             {
                 continue;
             }
@@ -2568,8 +2592,8 @@ pub fn refresh_link_previews(urls: Vec<String>) -> Result<Vec<LinkPreviewUpdate>
         }
 
         let next_content = format!(
-            "{}|||{}|||{}|||{}",
-            url, sanitized_image_path, sanitized_title, sanitized_image_kind
+            "{}|||{}|||{}|||{}|||{}",
+            url, sanitized_image_path, sanitized_title, sanitized_image_kind, local_day
         );
         if record.content == next_content {
             continue;
@@ -2924,6 +2948,73 @@ mod tests {
         assert_eq!(time, 1);
         assert_eq!(source, original_source);
         assert!(visible_items.is_empty());
+    }
+
+    #[test]
+    fn repeated_link_copy_preserves_cached_preview_content() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        let config = crate::config::Config {
+            storage_dir: app_data.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        crate::config::save(config);
+        crate::clipboard::db::init();
+
+        let url = "https://example.com/article";
+        let hash = calculate_xxhash64(url.as_bytes());
+        insert_text_from_app(url.to_string(), "Browser", "");
+        let cached_content =
+            format!("{url}|||C:\\preview.png|||Example article|||preview|||2026-08-06");
+        db().execute(
+            "update clipboard set content = ?1, preview_content = ?1 where hash = ?2",
+            params![secure_store::encrypt_text(&cached_content), hash],
+        )
+        .unwrap();
+
+        insert_text_from_app(url.to_string(), "Browser", "");
+
+        let stored_content: String = db()
+            .query_row(
+                "select content from clipboard where hash = ?1",
+                [&hash],
+                |row| row.get(0),
+            )
+            .map(|content: String| secure_store::decrypt_text(&content))
+            .unwrap();
+        reset_test_storage_config();
+
+        assert_eq!(stored_content, cached_content);
+    }
+
+    #[test]
+    fn link_preview_cache_is_fresh_only_on_its_recorded_local_day() {
+        let root = tempfile::tempdir().unwrap();
+        let image_path = root.path().join("preview.png");
+        fs::write(&image_path, include_bytes!("../../icons/32x32.png")).unwrap();
+        let record = LinkPreviewRecord {
+            id: 1,
+            hash: "link-preview-day".to_string(),
+            time: 1,
+            content: format!(
+                "https://example.com|||{}|||Example|||preview|||2026-08-06",
+                image_path.display()
+            ),
+        };
+
+        assert!(link_preview_is_fresh_for_day(&record, "2026-08-06"));
+        assert!(!link_preview_is_fresh_for_day(&record, "2026-08-07"));
+
+        let no_image_record = LinkPreviewRecord {
+            content: "https://example.com||||||Example|||default-icon|||2026-08-06".to_string(),
+            ..record
+        };
+        assert!(link_preview_is_fresh_for_day(
+            &no_image_record,
+            "2026-08-06"
+        ));
     }
 
     #[test]

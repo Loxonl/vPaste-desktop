@@ -444,18 +444,22 @@ fn calculate_dominant_color(icon_path: &str) -> Option<String> {
     let mut candidates: Vec<_> = buckets
         .into_iter()
         .filter(|(_, bucket)| bucket.3 > 0.0)
-        .map(|(_, bucket)| bucket)
         .collect();
-    candidates.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
+    let largest_population = candidates
+        .iter()
+        .map(|(_, bucket)| bucket.3)
+        .max_by(f64::total_cmp)?;
+    candidates.retain(|(_, bucket)| bucket.3 >= largest_population * CLOSE_AREA_RATIO);
+    candidates.sort_by(|(left_key, left), (right_key, right)| {
+        let left_saturation = left.4 / left.3;
+        let right_saturation = right.4 / right.3;
+        right_saturation
+            .total_cmp(&left_saturation)
+            .then_with(|| right.3.total_cmp(&left.3))
+            .then_with(|| left_key.cmp(right_key))
+    });
 
-    let primary = candidates.first()?;
-    let selected = candidates
-        .get(1)
-        .filter(|secondary| {
-            secondary.3 >= primary.3 * CLOSE_AREA_RATIO
-                && secondary.4 / secondary.3 > primary.4 / primary.3
-        })
-        .unwrap_or(primary);
+    let (_, selected) = candidates.first()?;
     let (red, green, blue, population, _) = *selected;
 
     Some(format!(
@@ -2699,6 +2703,27 @@ mod tests {
             dominant_color_for_test_image(image),
             Some("rgb(51, 136, 255)".to_string())
         );
+    }
+
+    #[test]
+    fn dominant_color_is_stable_when_multiple_top_areas_are_equal() {
+        let mut image = image::RgbaImage::from_pixel(40, 40, image::Rgba([210, 210, 210, 255]));
+        for pixel in image.pixels_mut().take(400) {
+            *pixel = image::Rgba([135, 79, 255, 255]);
+        }
+        for pixel in image.pixels_mut().skip(400).take(400) {
+            *pixel = image::Rgba([255, 114, 55, 255]);
+        }
+        for pixel in image.pixels_mut().skip(800).take(400) {
+            *pixel = image::Rgba([255, 55, 55, 255]);
+        }
+
+        for _ in 0..64 {
+            assert_eq!(
+                dominant_color_for_test_image(image.clone()),
+                Some("rgb(255, 55, 55)".to_string())
+            );
+        }
     }
 
     #[test]

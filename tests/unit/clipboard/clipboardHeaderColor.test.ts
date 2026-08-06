@@ -33,6 +33,17 @@ describe("clipboard header colors", () => {
         expect(dominantColorFromPixels(data)).toBe("rgb(51, 136, 255)");
     });
 
+    it("uses a stable tie-breaker across all equal-area candidates", () => {
+        const data = pixels(
+            { color: [135, 79, 255, 255], count: 400 },
+            { color: [255, 114, 55, 255], count: 400 },
+            { color: [255, 55, 55, 255], count: 400 },
+            { color: [210, 210, 210, 255], count: 400 },
+        );
+
+        expect(dominantColorFromPixels(data)).toBe("rgb(255, 55, 55)");
+    });
+
     it("ignores a tiny accent on an otherwise neutral icon", () => {
         const data = pixels(
             { color: [230, 20, 40, 255], count: 20 },

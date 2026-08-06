@@ -2626,6 +2626,36 @@ fn containing_folder_path(content: String) -> Result<String, String> {
         .to_string())
 }
 
+#[cfg(target_os = "windows")]
+fn open_folder_with_default_handler(folder: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let folder = folder
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            None,
+            PCWSTR(folder.as_ptr()),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    let result_code = result.0 as isize;
+    if result_code > 32 {
+        Ok(())
+    } else {
+        Err(format!("系统文件夹处理器返回错误码：{}", result_code))
+    }
+}
+
 #[tauri::command]
 fn open_containing_folder(content: String) -> Result<(), String> {
     let folder = containing_folder_from_file_content(&content)?;
@@ -2634,30 +2664,30 @@ fn open_containing_folder(content: String) -> Result<(), String> {
     }
 
     #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = std::process::Command::new("explorer.exe");
-        command.arg(&folder);
-        command
-    };
+    {
+        open_folder_with_default_handler(&folder)
+            .map_err(|err| format!("打开所在路径失败：{}", err))
+    }
 
     #[cfg(target_os = "macos")]
-    let mut command = {
+    {
         let mut command = std::process::Command::new("open");
         command.arg(&folder);
         command
-    };
+            .spawn()
+            .map(|_| ())
+            .map_err(|err| format!("打开所在路径失败：{}", err))
+    }
 
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-    let mut command = {
+    {
         let mut command = std::process::Command::new("xdg-open");
         command.arg(&folder);
         command
-    };
-
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|err| format!("打开所在路径失败：{}", err))
+            .spawn()
+            .map(|_| ())
+            .map_err(|err| format!("打开所在路径失败：{}", err))
+    }
 }
 
 #[tauri::command]

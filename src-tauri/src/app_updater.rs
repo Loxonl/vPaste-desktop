@@ -31,7 +31,7 @@ use crate::{config, runtime_mode};
 
 const UPDATE_EVENT: &str = "app-update-state-changed";
 const RELEASES_URL: &str = "https://github.com/Loxonl/vPaste-desktop/releases";
-const RC_UPDATE_ENDPOINT: &str = "https://updates.vpaste.app/rc/latest.json";
+const RC_UPDATE_ENDPOINT: &str = "https://vpaste.app/download/rc/latest.json";
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(60);
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 

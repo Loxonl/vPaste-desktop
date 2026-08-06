@@ -211,8 +211,7 @@ record.
 
 ## Update validation
 
-Public update delivery remains disabled while packages are unsigned and the
-repository is private. Never embed a GitHub token in the client.
+Private Draft Releases keep public update delivery disabled. Public tag releases enable the updater feed only in `.github/workflows/tag-release.yml`, after protected environment approval. Never embed a GitHub token in the client; the final workflow job uses `VPASTE_WEBSITE_RELEASE_TOKEN` only on the runner to commit `download/stable/latest.json` or `download/rc/latest.json` to `Loxonl/vPaste-website`. The GitHub Release stays draft until that website commit succeeds.
 
 For a debug-only local signed feed:
 
@@ -267,16 +266,15 @@ The GitHub Actions workflow is intentionally manual:
 8. Review the SBOM, dependency inventory, licenses, and release notes.
 9. Publish manually only after the checklist is complete.
 
-The workflow must not use `workflow_run` or `pull_request_target`, push code,
-create branches, or open Bot pull requests. Build jobs are read-only; only the
-final Draft Release job receives `contents: write`.
+The public tag workflow must not use `workflow_run` or `pull_request_target`, create Bot pull requests, or publish a manifest before every platform artifact has been verified. Build jobs are read-only except for protected release publishing; only final publication receives `contents: write` and the scoped website token.
 
 The release should contain:
 
 - Windows installer and Portable ZIP
 - Apple silicon and Intel macOS artifacts
 - shared updater metadata and updater signatures when public updating is
-  enabled
+  enabled; the merged `latest.json` is committed to `Loxonl/vPaste-website`
+  under `download/stable/` or `download/rc/`
 - `SHA256SUMS.txt`
 - SBOM and dependency/license inventory
 - third-party notices and GPL license
@@ -297,7 +295,7 @@ If any quality gate or manual test fails:
 6. repeat the full validation matrix.
 
 Do not overwrite a public Release asset, retag a published version, or update
-`latest.json` to an unverified package.
+the website `latest.json` to an unverified package.
 
 For installer diagnosis, use the Inno-generated setup log. Common checks are:
 

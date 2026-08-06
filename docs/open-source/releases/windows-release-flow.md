@@ -20,11 +20,14 @@ Outputs under `src-tauri/target/release/bundle/windows/`:
 - `SHA256SUMS.txt`
 - a validated WinGet singleton manifest for later manual submission
 
-The script pins Inno Setup 6.7.3, downloads the matching official Simplified Chinese translation from an immutable source tag, verifies its SHA-256, compiles the installer, and rejects installer overhead above 2 MiB relative to the Portable ZIP.
+The script pins Inno Setup 6.7.3, downloads the matching official Simplified Chinese translation from an immutable source tag, verifies its SHA-256, compiles the installer, and rejects installer overhead above 2 MiB relative to the Portable ZIP. Local builds keep the public updater feed disabled unless the caller explicitly sets `VPASTE_PUBLIC_UPDATE_FEED=1`.
 
 ## Updater package
 
-`npm run build:windows:signed-updater` signs the final Inno EXE with the local updater key and writes `latest.windows.json` for the debug-only local update feed. It does not enable the public feed in the app and is not a public release command.
+`npm run build:windows:signed-updater` signs the final Inno EXE with the updater key and writes `latest.windows.json`. The public tag workflow uses that fragment with the macOS fragments to publish the merged channel manifest through `Loxonl/vPaste-website`:
+
+- Stable: `download/stable/latest.json` → `https://vpaste.app/download/stable/latest.json`
+- RC: `download/rc/latest.json` → `https://vpaste.app/download/rc/latest.json`
 
 Authenticode and updater signing are separate. Authenticode establishes Windows publisher trust; minisign prevents the app from installing modified updater bytes. Authenticode must happen before the final updater signature and checksum.
 
@@ -32,4 +35,4 @@ Authenticode and updater signing are separate. Authenticode establishes Windows 
 
 Run `.github/workflows/release.yml` manually with the exact version and full source SHA. Build jobs are read-only. Only the final job has `contents: write`, and it can only create or update a Draft Release. The workflow does not push code, create branches, or open pull requests.
 
-Private-stage drafts leave the public updater feed disabled and are marked unsigned. The workflow intentionally exposes no public-feed switch until Authenticode/SignPath, Apple notarization, and step-scoped protected secrets are integrated. WinGet submission remains a separate manual review after the GitHub Release is public.
+Private-stage drafts leave the public updater feed disabled and are marked unsigned. Public tag releases are handled by `.github/workflows/tag-release.yml`, which Authenticode-signs Windows artifacts, signs updater payloads, uploads release assets to a draft GitHub Release, commits the merged updater manifest directly to `Loxonl/vPaste-website` using the protected `VPASTE_WEBSITE_RELEASE_TOKEN`, and only then publishes the GitHub Release. WinGet submission remains a separate manual review after the GitHub Release is public.

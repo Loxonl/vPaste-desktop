@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${BASE_URL:-https://downloads.vpaste.app/macos}"
+BASE_URL="${BASE_URL:-}"
 VERSION="${VERSION:-}"
 NOTES_PATH="${NOTES_PATH:-}"
 MACOS_BUILD_TARGET="${MACOS_BUILD_TARGET:-}"
@@ -18,6 +18,14 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
+temporary_updater_key=""
+cleanup_temporary_updater_key() {
+  if [[ -n "${temporary_updater_key}" && -f "${temporary_updater_key}" ]]; then
+    rm -f "${temporary_updater_key}"
+  fi
+}
+trap cleanup_temporary_updater_key EXIT
+
 if [[ "${UNSIGNED}" == "1" || "${UNSIGNED}" == "true" ]]; then
   unsigned_build=true
 fi
@@ -27,7 +35,15 @@ if [[ "${unsigned_build}" == false && -z "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" &
   unset TAURI_SIGNING_PRIVATE_KEY
 fi
 
-if [[ "${unsigned_build}" == false && -z "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" && -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+if [[ "${unsigned_build}" == false && -z "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" && -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+  temporary_updater_key="$(mktemp)"
+  chmod 600 "${temporary_updater_key}"
+  printf '%s' "${TAURI_SIGNING_PRIVATE_KEY}" > "${temporary_updater_key}"
+  export TAURI_SIGNING_PRIVATE_KEY_PATH="${temporary_updater_key}"
+  unset TAURI_SIGNING_PRIVATE_KEY
+fi
+
+if [[ "${unsigned_build}" == false && -z "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]]; then
   default_key="${HOME}/.tauri/vpaste-updater-ci.key"
   if [[ -f "${default_key}" ]]; then
     export TAURI_SIGNING_PRIVATE_KEY_PATH="${default_key}"
@@ -39,12 +55,11 @@ fi
 
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 
-if [[ "${unsigned_build}" == false && -z "${TAURI_SIGNING_PRIVATE_KEY:-}" && -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]]; then
-  export TAURI_SIGNING_PRIVATE_KEY="$(cat "${TAURI_SIGNING_PRIVATE_KEY_PATH}")"
-fi
-
 if [[ -z "${VERSION}" ]]; then
   VERSION="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+fi
+if [[ -z "${BASE_URL}" ]]; then
+  BASE_URL="https://github.com/Loxonl/vPaste-desktop/releases/download/v${VERSION}"
 fi
 
 build_args=(tauri build --ci -b app,dmg)
@@ -127,14 +142,9 @@ fi
 signature="${updater_artifact}.sig"
 
 if [[ ! -f "${signature}" ]]; then
-  signer_args=(tauri signer sign)
-  if [[ -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]]; then
-    signer_args+=("-f" "${TAURI_SIGNING_PRIVATE_KEY_PATH}")
-  else
-    signer_args+=("-k" "${TAURI_SIGNING_PRIVATE_KEY}")
-  fi
-  signer_args+=("--password=${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}" "${updater_artifact}")
-  npx "${signer_args[@]}"
+  TAURI_SIGNING_PRIVATE_KEY_PATH="${TAURI_SIGNING_PRIVATE_KEY_PATH}" \
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}" \
+    npx tauri signer sign "${updater_artifact}"
 fi
 
 if [[ ! -f "${signature}" ]]; then

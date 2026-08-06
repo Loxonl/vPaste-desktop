@@ -22,8 +22,8 @@ Windows 官方交付物为 Inno Setup 6.7.3 编译的 x64 当前用户安装包�
 - Windows 把验签后的 Inno EXE 和元数据写入应用数据下的版本目录；下次启动会重新校验缓存签名和版本，再恢复“重启更新”状态。
 - 默认启动 60 秒后检查，此后每 24 小时检查并自动下载。下载完成后，设置页、主界面和托盘只提供一个“重启更新”操作。
 - 用户点击“重启更新”后，应用以静默参数启动安装器并退出；安装器完成替换后使用 `--updated-from` 启动新版本。
-- Stable 使用 `https://updates.vpaste.app/stable/latest.json`；RC 构建使用 `https://updates.vpaste.app/rc/latest.json`，由 tag 工作流写入 `VPASTE_UPDATE_CHANNEL=rc` 选择。
-- 当前私有阶段的 Release 构建仍硬性禁用公共 feed。Debug 可通过 `VPASTE_DEBUG_UPDATE_ENDPOINT` 使用本地签名测试源。
+- Stable 使用 `https://vpaste.app/download/stable/latest.json`；RC 构建使用 `https://vpaste.app/download/rc/latest.json`，由 tag workflow 写入 `VPASTE_UPDATE_CHANNEL=rc` 选择，并把合并后的 `latest.json` 直接提交到 `Loxonl/vPaste-website` 对应的 `download/<channel>/latest.json`。
+- 私有 Draft Release 仍硬性禁用公共 feed。Debug 可通过 `VPASTE_DEBUG_UPDATE_ENDPOINT` 使用本地签名测试源。
 
 ## Portable
 

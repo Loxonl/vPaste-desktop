@@ -1,0 +1,601 @@
+name: Build and publish release from tag
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tag-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 24.11.1
+  RUST_VERSION: 1.91.1
+  RELEASE_TAG: ${{ github.ref_name }}
+
+jobs:
+  validate:
+    name: Validate tag
+    runs-on: ubuntu-24.04
+    outputs:
+      release-version: ${{ steps.release.outputs.release-version }}
+      channel: ${{ steps.release.outputs.channel }}
+      website-manifest-path: ${{ steps.release.outputs.website-manifest-path }}
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Validate tag and derive release metadata
+        id: release
+        shell: bash
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "Unsupported release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          release_version="${RELEASE_TAG#v}"
+          if [[ "$RELEASE_TAG" == *-rc.* ]]; then
+            channel="rc"
+            website_manifest_path="download/rc/latest.json"
+          else
+            channel="stable"
+            website_manifest_path="download/stable/latest.json"
+          fi
+          node scripts/check-release-version.mjs "$RELEASE_TAG"
+          {
+            echo "release-version=$release_version"
+            echo "channel=$channel"
+            echo "website-manifest-path=$website_manifest_path"
+          } >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Package Windows (x64)
+    needs: validate
+    runs-on: windows-2022
+    timeout-minutes: 60
+    environment: release
+    env:
+      RELEASE_VERSION: ${{ needs.validate.outputs.release-version }}
+      VPASTE_PUBLIC_UPDATE_FEED: "1"
+      VPASTE_UPDATE_CHANNEL: ${{ needs.validate.outputs.channel }}
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Set up Rust and Inno Setup
+        shell: pwsh
+        run: |
+          rustup toolchain install $env:RUST_VERSION --profile minimal
+          rustup default $env:RUST_VERSION
+
+          $innoUrl = 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe'
+          $innoInstaller = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
+          $expectedHash = '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732'
+          Invoke-WebRequest -UseBasicParsing -Uri $innoUrl -OutFile $innoInstaller
+          $actualHash = (Get-FileHash -Algorithm SHA256 $innoInstaller).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+            throw "Inno Setup hash mismatch. Expected $expectedHash, found $actualHash."
+          }
+
+          $install = Start-Process -FilePath $innoInstaller `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-' `
+            -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            throw "Inno Setup installation exited with code $($install.ExitCode)."
+          }
+
+          $compilerCandidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $compiler = $compilerCandidates |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+          if (-not $compiler) {
+            throw 'Inno Setup compiler was not found after installation.'
+          }
+
+          $compilerVersion = (Get-Item -LiteralPath $compiler).VersionInfo.ProductVersion
+          if ($compilerVersion -eq '0.0.0.0') {
+            $uninstaller = Join-Path (Split-Path -Parent $compiler) 'unins000.exe'
+            if (Test-Path -LiteralPath $uninstaller) {
+              $compilerVersion = (Get-Item -LiteralPath $uninstaller).VersionInfo.ProductVersion.Trim()
+            }
+          }
+          if (-not $compilerVersion.StartsWith('6.7.3', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Expected Inno Setup 6.7.3, found $compilerVersion at $compiler."
+          }
+          "INNO_SETUP_COMPILER=$compiler" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows application binary
+        run: npx tauri build --no-bundle --config src-tauri/tauri.local.conf.json
+
+      - name: Build and sign Windows packages
+        shell: pwsh
+        env:
+          WINDOWS_AUTHENTICODE_CERTIFICATE: ${{ secrets.WINDOWS_AUTHENTICODE_CERTIFICATE }}
+          WINDOWS_AUTHENTICODE_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_AUTHENTICODE_CERTIFICATE_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_AUTHENTICODE_CERTIFICATE) {
+            throw 'Required release secret WINDOWS_AUTHENTICODE_CERTIFICATE is not configured.'
+          }
+          $certificatePath = Join-Path $env:RUNNER_TEMP 'vpaste-authenticode.pfx'
+          [System.IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_AUTHENTICODE_CERTIFICATE))
+          try {
+            ./scripts/build-windows-release.ps1 `
+              -SkipAppBuild `
+              -SignUpdater `
+              -AuthenticodeCertificatePath $certificatePath `
+              -AuthenticodeCertificatePassword $env:WINDOWS_AUTHENTICODE_CERTIFICATE_PASSWORD
+          } finally {
+            Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Verify Windows Authenticode signatures
+        shell: pwsh
+        run: |
+          $appBinary = 'src-tauri/target/release/vPaste.exe'
+          $installer = "src-tauri/target/release/bundle/windows/vPaste_$($env:RELEASE_VERSION)_windows_x64_setup.exe"
+          foreach ($path in @($appBinary, $installer)) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Expected signed Windows artifact was not found: $path"
+            }
+            $signature = Get-AuthenticodeSignature -LiteralPath $path
+            if ($signature.Status -ne 'Valid') {
+              throw "Expected a valid Authenticode signature for $path, found $($signature.Status): $($signature.StatusMessage)"
+            }
+          }
+
+      - name: Stage Windows packages
+        shell: pwsh
+        run: |
+          $source = 'src-tauri/target/release/bundle/windows'
+          $expected = @(
+            "vPaste_$($env:RELEASE_VERSION)_windows_x64_setup.exe",
+            "vPaste_$($env:RELEASE_VERSION)_windows_x64_setup.exe.sig",
+            "vPaste_$($env:RELEASE_VERSION)_windows_x64_portable.zip",
+            'SHA256SUMS.txt',
+            'winget/Loxonl.vPaste.yaml',
+            'latest.windows.json'
+          )
+          New-Item -ItemType Directory -Force release-assets | Out-Null
+          foreach ($relativePath in $expected) {
+            $artifact = Join-Path $source $relativePath
+            if (-not (Test-Path -LiteralPath $artifact)) {
+              throw "Expected Windows artifact was not found: $artifact"
+            }
+            $destination = Join-Path 'release-assets' $relativePath
+            New-Item -ItemType Directory -Force (Split-Path -Parent $destination) | Out-Null
+            Copy-Item -LiteralPath $artifact -Destination $destination
+          }
+
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-x64-${{ github.ref_name }}
+          path: release-assets
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: Package macOS (${{ matrix.arch }})
+    needs: validate
+    runs-on: macos-14
+    timeout-minutes: 90
+    environment: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: aarch64
+            updater-platform: darwin-aarch64
+          - target: x86_64-apple-darwin
+            arch: x86_64
+            updater-platform: darwin-x86_64
+    env:
+      RELEASE_VERSION: ${{ needs.validate.outputs.release-version }}
+      VPASTE_PUBLIC_UPDATE_FEED: "1"
+      VPASTE_UPDATE_CHANNEL: ${{ needs.validate.outputs.channel }}
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Set up Rust target
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          rustup target add "${{ matrix.target }}"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Import Developer ID certificate
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_KEYCHAIN_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Required release secret $name is not configured." >&2
+              exit 1
+            fi
+          done
+
+          certificate_path="$RUNNER_TEMP/vpaste-developer-id.p12"
+          keychain_path="$RUNNER_TEMP/vpaste-signing.keychain-db"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$certificate_path" \
+            -k "$keychain_path" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -t cert \
+            -f pkcs12 \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$APPLE_KEYCHAIN_PASSWORD" \
+            "$keychain_path"
+          security default-keychain -s "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path"
+
+      - name: Prepare App Store Connect API key
+        shell: bash
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$APPLE_API_PRIVATE_KEY" ]]; then
+            echo "Required release secret APPLE_API_PRIVATE_KEY is not configured." >&2
+            exit 1
+          fi
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$RUNNER_TEMP/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey.p8"
+
+      - name: Build signed and notarized macOS packages
+        shell: bash
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          for name in APPLE_API_ISSUER APPLE_API_KEY APPLE_SIGNING_IDENTITY TAURI_SIGNING_PRIVATE_KEY; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Required release secret $name is not configured." >&2
+              exit 1
+            fi
+          done
+
+          VERSION="$RELEASE_VERSION" \
+          MACOS_BUILD_TARGET="${{ matrix.target }}" \
+          OUTPUT_PATH="$RUNNER_TEMP/latest.macos.json" \
+          npm run build:macos-release
+
+      - name: Verify and stage macOS packages
+        shell: bash
+        run: |
+          bundle="src-tauri/target/${{ matrix.target }}/release/bundle"
+          app="$(find "$bundle" -type d -path '*/macos/*.app' -print | sort | tail -n 1)"
+          dmg="$(find "$bundle" -type f -path '*/dmg/*.dmg' -print | sort | tail -n 1)"
+          updater="$(find "$bundle" -type f -name '*.app.tar.gz' -print | sort | tail -n 1)"
+
+          for artifact in "$app" "$dmg" "$updater" "${updater}.sig"; do
+            if [[ -z "$artifact" || ! -e "$artifact" ]]; then
+              echo "Expected macOS artifact was not found: $artifact" >&2
+              exit 1
+            fi
+          done
+
+          codesign --verify --deep --strict --verbose=2 "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          xcrun stapler validate "$dmg"
+
+          mkdir -p release-assets
+          staged_dmg="release-assets/vPaste_${RELEASE_VERSION}_macos_${{ matrix.arch }}.dmg"
+          staged_updater="release-assets/vPaste_${RELEASE_VERSION}_macos_${{ matrix.arch }}.app.tar.gz"
+          cp "$dmg" "$staged_dmg"
+          cp "$updater" "$staged_updater"
+          cp "${updater}.sig" "${staged_updater}.sig"
+          node scripts/generate-updater-manifest.mjs \
+            --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}" \
+            --version "$RELEASE_VERSION" \
+            --artifact "$staged_updater" \
+            --signature "${staged_updater}.sig" \
+            --platforms "${{ matrix.updater-platform }}" \
+            --output "release-assets/latest.macos-${{ matrix.arch }}.json"
+          (
+            cd release-assets
+            shasum -a 256 ./* > SHA256SUMS.txt
+          )
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: macos-${{ matrix.arch }}-${{ github.ref_name }}
+          path: release-assets
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove signing material
+        if: always()
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/vpaste-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/vpaste-developer-id.p12" "$RUNNER_TEMP/AuthKey.p8"
+
+  publish-updater-manifest:
+    name: Publish updater manifest
+    needs: [validate, windows, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.validate.outputs.release-version }}
+      CHANNEL: ${{ needs.validate.outputs.channel }}
+      WEBSITE_MANIFEST_PATH: ${{ needs.validate.outputs.website-manifest-path }}
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up Rust
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: downloaded-artifacts
+          merge-multiple: false
+
+      - name: Prepare release assets and updater manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets manifest-fragments merged
+          while IFS= read -r -d '' file; do
+            name="$(basename "$file")"
+            case "$name" in
+              latest.*.json)
+                cp "$file" "manifest-fragments/$name"
+                ;;
+              SHA256SUMS.txt)
+                ;;
+              *)
+                cp "$file" "release-assets/$name"
+                ;;
+            esac
+          done < <(find downloaded-artifacts -type f -print0)
+
+          for fragment in latest.windows.json latest.macos-aarch64.json latest.macos-x86_64.json; do
+            if [[ ! -f "manifest-fragments/$fragment" ]]; then
+              echo "Missing updater manifest fragment: $fragment" >&2
+              exit 1
+            fi
+          done
+
+          node scripts/merge-updater-manifests.mjs \
+            merged/latest.json \
+            manifest-fragments/latest.windows.json \
+            manifest-fragments/latest.macos-aarch64.json \
+            manifest-fragments/latest.macos-x86_64.json
+          node scripts/validate-updater-manifest.mjs \
+            --manifest merged/latest.json \
+            --version "$RELEASE_VERSION" \
+            --tag "$RELEASE_TAG" \
+            --platforms windows-x86_64,darwin-aarch64,darwin-x86_64 \
+            --release-assets-dir release-assets
+          cargo run --manifest-path src-tauri/Cargo.toml --locked --bin verify_updater_manifest -- \
+            --manifest merged/latest.json \
+            --assets-dir release-assets \
+            --version "$RELEASE_VERSION" \
+            --platforms windows-x86_64,darwin-aarch64,darwin-x86_64
+
+          node scripts/check-third-party-licenses.mjs \
+            --output release-assets/THIRD_PARTY_LICENSES.json \
+            --sbom "release-assets/vPaste_${RELEASE_VERSION}_sbom.cdx.json"
+          cp LICENSE docs/open-source/third-party-notices.md release-assets/
+
+          (
+            cd release-assets
+            sha256sum ./* | sed 's#  \./#  #' > SHA256SUMS.txt
+          )
+
+      - name: Generate release notes
+        shell: bash
+        run: |
+          {
+            echo "Source commit: $GITHUB_SHA"
+            echo
+            awk -v prefix="## $RELEASE_VERSION " '
+              index($0, prefix) == 1 { capture = 1 }
+              capture && /^## / && index($0, prefix) != 1 { exit }
+              capture { print }
+            ' CHANGELOG.md
+          } > RELEASE_NOTES.md
+
+      - name: Create or update GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          mapfile -t assets < <(find release-assets -maxdepth 1 -type f -print | sort)
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "No release assets were staged." >&2
+            exit 1
+          fi
+
+          prerelease_args=()
+          if [[ "$CHANNEL" == "rc" ]]; then
+            prerelease_args+=(--prerelease)
+          fi
+
+          error_file="$(mktemp)"
+          if release_json="$(gh release view "$tag" --json isDraft,isImmutable,targetCommitish,assets 2>"$error_file")"; then
+            is_draft="$(jq -r '.isDraft' <<<"$release_json")"
+            is_immutable="$(jq -r '.isImmutable' <<<"$release_json")"
+            target_commitish="$(jq -r '.targetCommitish' <<<"$release_json")"
+            if [[ "$is_immutable" == "true" ]]; then
+              echo "Refusing to modify immutable release $tag." >&2
+              exit 1
+            fi
+            if [[ "$is_draft" != "true" ]]; then
+              echo "Refusing to modify published release $tag. Create a new version tag instead." >&2
+              exit 1
+            fi
+            if [[ "${target_commitish,,}" != "${GITHUB_SHA,,}" ]]; then
+              echo "Release $tag targets $target_commitish instead of $GITHUB_SHA." >&2
+              exit 1
+            fi
+            gh release edit "$tag" --draft --target "$GITHUB_SHA" --title "vPaste $RELEASE_VERSION" --notes-file RELEASE_NOTES.md "${prerelease_args[@]}"
+            gh release upload "$tag" "${assets[@]}" --clobber
+          else
+            if ! grep -qi 'release not found' "$error_file"; then
+              cat "$error_file" >&2
+              exit 1
+            fi
+            gh release create "$tag" "${assets[@]}" --draft --target "$GITHUB_SHA" --title "vPaste $RELEASE_VERSION" --notes-file RELEASE_NOTES.md "${prerelease_args[@]}"
+          fi
+
+      - name: Verify release assets referenced by manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          node scripts/validate-updater-manifest.mjs \
+            --manifest merged/latest.json \
+            --version "$RELEASE_VERSION" \
+            --tag "$RELEASE_TAG" \
+            --platforms windows-x86_64,darwin-aarch64,darwin-x86_64 \
+            --verify-release-assets Loxonl/vPaste-desktop
+
+      - name: Publish GitHub Release
+        id: publish-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          args=(--draft=false)
+          if [[ "$CHANNEL" == "rc" ]]; then
+            args+=(--prerelease)
+          else
+            args+=(--latest)
+          fi
+          gh release edit "$RELEASE_TAG" "${args[@]}"
+
+      - name: Verify public updater asset downloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const manifest = JSON.parse(fs.readFileSync("merged/latest.json", "utf8"));
+            for (const entry of Object.values(manifest.platforms)) console.log(entry.url);
+          ' | while IFS= read -r url; do
+            curl --fail --location --silent --show-error --head "$url" >/dev/null
+          done
+
+      - name: Check out vPaste website
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: Loxonl/vPaste-website
+          ref: main
+          path: vpaste-website
+          token: ${{ secrets.VPASTE_WEBSITE_RELEASE_TOKEN }}
+          persist-credentials: true
+
+      - name: Commit updater manifest to website
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd vpaste-website
+          mkdir -p "$(dirname "$WEBSITE_MANIFEST_PATH")"
+          cp ../merged/latest.json "$WEBSITE_MANIFEST_PATH"
+          node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))" "$WEBSITE_MANIFEST_PATH"
+          git config user.name "vPaste Release Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add "$WEBSITE_MANIFEST_PATH"
+          if git diff --cached --quiet -- "$WEBSITE_MANIFEST_PATH"; then
+            echo "Website updater manifest is already current."
+          else
+            git commit -m "release: publish vPaste $CHANNEL updater manifest $RELEASE_TAG"
+            for attempt in 1 2; do
+              git pull --rebase origin main
+              if git push origin HEAD:main; then
+                exit 0
+              fi
+              echo "Push failed; retrying after rebase ($attempt/2)." >&2
+              sleep 2
+            done
+            exit 1
+          fi
+
+      - name: Revert GitHub Release to draft after website publish failure
+        if: failure() && steps.publish-release.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' | grep -Fxq false; then
+            gh release edit "$RELEASE_TAG" --draft=true
+          fi

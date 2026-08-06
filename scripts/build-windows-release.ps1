@@ -2,7 +2,11 @@
 param(
     [switch]$SkipAppBuild,
     [switch]$SignUpdater,
-    [string]$ReleaseBaseUrl
+    [string]$ReleaseBaseUrl,
+    [string]$AuthenticodeCertificateThumbprint,
+    [string]$AuthenticodeCertificatePath,
+    [string]$AuthenticodeCertificatePassword,
+    [string]$AuthenticodeTimestampUrl = "http://timestamp.digicert.com"
 )
 
 $ErrorActionPreference = "Stop"
@@ -100,6 +104,51 @@ function Get-ChineseMessagesFile {
     return $languageFile
 }
 
+function Get-AuthenticodeCertificate {
+    if ($AuthenticodeCertificateThumbprint) {
+        $certificate = Get-ChildItem -Path Cert:\CurrentUser\My | Where-Object { $_.Thumbprint -eq $AuthenticodeCertificateThumbprint } | Select-Object -First 1
+        if (-not $certificate) {
+            throw "Authenticode certificate with thumbprint $AuthenticodeCertificateThumbprint was not found in Cert:\CurrentUser\My."
+        }
+        return $certificate
+    }
+
+    if ($AuthenticodeCertificatePath) {
+        if (-not (Test-Path -LiteralPath $AuthenticodeCertificatePath)) {
+            throw "Authenticode certificate file was not found at $AuthenticodeCertificatePath."
+        }
+        $certificatePassword = if ($null -ne $AuthenticodeCertificatePassword) { $AuthenticodeCertificatePassword } else { "" }
+        $password = ConvertTo-SecureString -String $certificatePassword -AsPlainText -Force
+        return [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            $AuthenticodeCertificatePath,
+            $password,
+            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+        )
+    }
+
+    return $null
+}
+
+function Invoke-AuthenticodeSign {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate
+    )
+
+    $signature = Set-AuthenticodeSignature `
+        -LiteralPath $Path `
+        -Certificate $Certificate `
+        -HashAlgorithm SHA256 `
+        -TimestampServer $AuthenticodeTimestampUrl
+    if ($signature.Status -ne "Valid") {
+        throw "Authenticode signing failed for $Path with status $($signature.Status): $($signature.StatusMessage)"
+    }
+}
+
+$authenticodeCertificate = Get-AuthenticodeCertificate
+
 $package = Get-Content -Raw package.json | ConvertFrom-Json
 $version = [string]$package.version
 if ($version -notmatch '^(\d+)\.(\d+)\.(\d+)') {
@@ -110,13 +159,18 @@ $versionInfoVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
 Invoke-Checked npm run check:release
 
 if (-not $SkipAppBuild) {
-    $env:VPASTE_PUBLIC_UPDATE_FEED = "0"
+    if (-not $env:VPASTE_PUBLIC_UPDATE_FEED) {
+        $env:VPASTE_PUBLIC_UPDATE_FEED = "0"
+    }
     Invoke-Checked npx.cmd tauri build --no-bundle --config src-tauri/tauri.local.conf.json
 }
 
 $appBinary = Join-Path $repoRoot "src-tauri\target\release\vPaste.exe"
 if (-not (Test-Path -LiteralPath $appBinary)) {
     throw "vPaste release binary was not found at $appBinary"
+}
+if ($authenticodeCertificate) {
+    Invoke-AuthenticodeSign -Path $appBinary -Certificate $authenticodeCertificate
 }
 
 $bundleRoot = Join-Path $repoRoot "src-tauri\target\release\bundle\windows"
@@ -171,20 +225,34 @@ Invoke-Checked $iscc `
 if (-not (Test-Path -LiteralPath $installer)) {
     throw "Inno Setup did not produce the expected installer at $installer"
 }
+if ($authenticodeCertificate) {
+    Invoke-AuthenticodeSign -Path $installer -Certificate $authenticodeCertificate
+}
 
 if ($SignUpdater) {
     $keyPath = $env:TAURI_SIGNING_PRIVATE_KEY_PATH
+    $temporaryKeyPath = $null
+    if (-not $keyPath -and $env:TAURI_SIGNING_PRIVATE_KEY) {
+        $temporaryKeyPath = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+        Set-Content -LiteralPath $temporaryKeyPath -Value $env:TAURI_SIGNING_PRIVATE_KEY -Encoding ascii -NoNewline
+        $keyPath = $temporaryKeyPath
+    }
     if (-not $keyPath) {
         $keyPath = Join-Path $HOME ".tauri\vpaste-updater-ci.key"
     }
-    if ($keyPath -and (Test-Path -LiteralPath $keyPath)) {
-        & npx.cmd tauri signer sign --private-key-path $keyPath "--password=$($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)" $installer
+    try {
+        if ($keyPath -and (Test-Path -LiteralPath $keyPath)) {
+            $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $keyPath
+            & npx.cmd tauri signer sign $installer
+        }
+        else {
+            throw "Updater signing key was not found. Set TAURI_SIGNING_PRIVATE_KEY_PATH or TAURI_SIGNING_PRIVATE_KEY."
+        }
     }
-    elseif ($env:TAURI_SIGNING_PRIVATE_KEY) {
-        & npx.cmd tauri signer sign --private-key $env:TAURI_SIGNING_PRIVATE_KEY "--password=$($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)" $installer
-    }
-    else {
-        throw "Updater signing key was not found. Set TAURI_SIGNING_PRIVATE_KEY_PATH or TAURI_SIGNING_PRIVATE_KEY."
+    finally {
+        if ($temporaryKeyPath -and (Test-Path -LiteralPath $temporaryKeyPath)) {
+            Remove-Item -LiteralPath $temporaryKeyPath -Force
+        }
     }
     if ($LASTEXITCODE -ne 0) {
         throw "Tauri updater signer exited with code $LASTEXITCODE"

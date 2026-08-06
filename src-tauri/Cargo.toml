@@ -4,6 +4,7 @@ version = "1.6.0"
 authors = ["Lox"]
 edition = "2021"
 rust-version = "1.91.1"
+default-run = "vPaste"
 
 [[bin]]
 name = "vPaste"

@@ -14,6 +14,9 @@ type ColorBucket = {
     blue: number;
     population: number;
     saturation: number;
+    bucketRed: number;
+    bucketGreen: number;
+    bucketBlue: number;
 };
 
 const FALLBACK_HEADER_COLOR: RgbColor = { red: 86, green: 94, blue: 104 };
@@ -106,13 +109,19 @@ export function dominantColorFromPixels(data: ArrayLike<number>): string | null 
         if (saturation < MIN_DOMINANT_COLOR_SATURATION) continue;
 
         colorWeight += alphaWeight;
-        const key = `${Math.floor(red / 24)},${Math.floor(green / 24)},${Math.floor(blue / 24)}`;
+        const bucketRed = Math.floor(red / 24);
+        const bucketGreen = Math.floor(green / 24);
+        const bucketBlue = Math.floor(blue / 24);
+        const key = `${bucketRed},${bucketGreen},${bucketBlue}`;
         const bucket = buckets.get(key) ?? {
             red: 0,
             green: 0,
             blue: 0,
             population: 0,
             saturation: 0,
+            bucketRed,
+            bucketGreen,
+            bucketBlue,
         };
         bucket.red += red * alphaWeight;
         bucket.green += green * alphaWeight;
@@ -123,17 +132,20 @@ export function dominantColorFromPixels(data: ArrayLike<number>): string | null 
     }
 
     if (visibleWeight <= 0 || colorWeight / visibleWeight < MIN_DOMINANT_COLOR_SHARE) return null;
-    const candidates = Array.from(buckets.values())
-        .sort((left, right) => right.population - left.population);
-    const primary = candidates[0];
-    if (!primary || primary.population <= 0) return null;
+    const candidates = Array.from(buckets.values());
+    const largestPopulation = Math.max(...candidates.map(candidate => candidate.population));
+    if (largestPopulation <= 0) return null;
 
-    const secondary = candidates[1];
-    const dominant = secondary
-        && secondary.population >= primary.population * CLOSE_DOMINANT_COLOR_AREA_RATIO
-        && secondary.saturation / secondary.population > primary.saturation / primary.population
-        ? secondary
-        : primary;
+    const dominant = candidates
+        .filter(candidate => candidate.population >= largestPopulation * CLOSE_DOMINANT_COLOR_AREA_RATIO)
+        .sort((left, right) =>
+            right.saturation / right.population - left.saturation / left.population
+            || right.population - left.population
+            || left.bucketRed - right.bucketRed
+            || left.bucketGreen - right.bucketGreen
+            || left.bucketBlue - right.bucketBlue,
+        )[0];
+    if (!dominant) return null;
 
     return formatColor({
         red: dominant.red / dominant.population,

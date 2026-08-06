@@ -1,5 +1,5 @@
 import { createRef } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -134,6 +134,7 @@ describe("clipboard header", () => {
             onToggleLanguage: vi.fn(),
             onToggleTheme: vi.fn(),
             onOpenUiLab: vi.fn(),
+            onOpenTestRoom: vi.fn(),
             onOpenSettings: vi.fn(),
         };
 
@@ -143,7 +144,6 @@ describe("clipboard header", () => {
                 tutorialActive={false}
                 tutorialPlatform="windows"
                 permissionIncomplete
-                developerMode
                 showDeveloperToolbar
                 languageCode="Chinese"
                 developerTheme="dark"
@@ -152,11 +152,15 @@ describe("clipboard header", () => {
             />,
         );
 
+        const developerToolbar = screen.getByRole("group", { name: "tutorial.debug.tools" });
+        expect(within(developerToolbar).getByRole("button", { name: "tutorial.debug.uiLab" })).toBeVisible();
+        expect(within(developerToolbar).getByRole("button", { name: "tutorial.debug.testRoom" })).toBeVisible();
         await user.click(screen.getByRole("button", { name: "clipboard.permissionsIncomplete" }));
         await user.click(screen.getByRole("button", { name: "tutorial.debug.windows" }));
         await user.click(screen.getByRole("button", { name: "tutorial.debug.language" }));
         await user.click(screen.getByRole("button", { name: "tutorial.debug.theme.dark" }));
         await user.click(screen.getByRole("button", { name: "tutorial.debug.uiLab" }));
+        await user.click(screen.getByRole("button", { name: "tutorial.debug.testRoom" }));
         await user.click(screen.getByRole("button", { name: "common.settings" }));
 
         expect(callbacks.onOpenPermissionCenter).toHaveBeenCalledOnce();
@@ -164,7 +168,46 @@ describe("clipboard header", () => {
         expect(callbacks.onToggleLanguage).toHaveBeenCalledOnce();
         expect(callbacks.onToggleTheme).toHaveBeenCalledOnce();
         expect(callbacks.onOpenUiLab).toHaveBeenCalledOnce();
+        expect(callbacks.onOpenTestRoom).toHaveBeenCalledOnce();
         expect(callbacks.onOpenSettings).toHaveBeenCalledOnce();
+    });
+
+    it("hides and restores the grouped developer toolbar without hiding settings", async () => {
+        const user = userEvent.setup();
+        render(
+            <ClipboardHeaderActions
+                isMac={false}
+                tutorialActive={false}
+                tutorialPlatform="windows"
+                permissionIncomplete={false}
+                showDeveloperToolbar
+                languageCode="Chinese"
+                developerTheme="light"
+                t={t}
+                onOpenPermissionCenter={vi.fn()}
+                onOpenTutorial={vi.fn()}
+                onToggleLanguage={vi.fn()}
+                onToggleTheme={vi.fn()}
+                onOpenUiLab={vi.fn()}
+                onOpenTestRoom={vi.fn()}
+                onOpenSettings={vi.fn()}
+            />,
+        );
+
+        const hideButton = screen.getByRole("button", { name: "tutorial.debug.hideTools" });
+        expect(hideButton).toHaveAttribute("aria-pressed", "true");
+        expect(screen.getByRole("group", { name: "tutorial.debug.tools" })).toBeVisible();
+
+        await user.click(hideButton);
+
+        expect(screen.queryByRole("group", { name: "tutorial.debug.tools" })).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "common.settings" })).toBeVisible();
+        const showButton = screen.getByRole("button", { name: "tutorial.debug.showTools" });
+        expect(showButton).toHaveAttribute("aria-pressed", "false");
+
+        await user.click(showButton);
+
+        expect(screen.getByRole("group", { name: "tutorial.debug.tools" })).toBeVisible();
     });
 
     it("renders the update text and forwards its action", async () => {

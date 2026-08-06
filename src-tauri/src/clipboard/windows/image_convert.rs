@@ -198,6 +198,39 @@ pub fn convert_bitmap_to_dibv5(data: &[u8]) -> Result<Vec<u8>, String> {
     convert_rgba_image_to_dibv5(&rgba)
 }
 
+pub fn legacy_dib_is_compatible(data: &[u8]) -> Result<bool, String> {
+    let header = parse_bitmap_info_header(data)?;
+    if header.bi_bit_count != 32 {
+        return Ok(true);
+    }
+
+    let width = header.bi_width as usize;
+    let height = header.bi_height.unsigned_abs() as usize;
+    let stride = (width * 4 + 3) & !3;
+    let pixel_data_offset =
+        header.bi_size as usize + bitfield_mask_size(header) + color_table_size(header);
+    let required_len = pixel_data_offset
+        .checked_add(stride.checked_mul(height).ok_or("bitmap is too large")?)
+        .ok_or("bitmap is too large")?;
+    if data.len() < required_len {
+        return Err(format!(
+            "bitmap pixel data is truncated: got {}, need {}",
+            data.len(),
+            required_len
+        ));
+    }
+
+    for row in 0..height {
+        let row_start = pixel_data_offset + row * stride;
+        for pixel in data[row_start..row_start + width * 4].chunks_exact(4) {
+            if pixel[3] != 255 {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 fn append_u16(buffer: &mut Vec<u8>, value: u16) {
     buffer.extend_from_slice(&value.to_le_bytes());
 }
@@ -345,5 +378,18 @@ mod tests {
         let png = convert_bitmap_to_png(&dibv5).unwrap();
         let restored = image::load_from_memory(&png).unwrap().to_rgba8();
         assert_eq!(restored.get_pixel(0, 0).0, [10, 20, 30, 128]);
+    }
+
+    #[test]
+    fn legacy_dib_is_only_compatible_with_fully_opaque_images() {
+        let transparent = RgbaImage::from_pixel(2, 1, Rgba([0, 0, 0, 0]));
+        let transparent_dib =
+            convert_dynamic_image_to_dib(image::DynamicImage::ImageRgba8(transparent)).unwrap();
+        assert!(!legacy_dib_is_compatible(&transparent_dib).unwrap());
+
+        let opaque = RgbaImage::from_pixel(2, 1, Rgba([10, 20, 30, 255]));
+        let opaque_dib =
+            convert_dynamic_image_to_dib(image::DynamicImage::ImageRgba8(opaque)).unwrap();
+        assert!(legacy_dib_is_compatible(&opaque_dib).unwrap());
     }
 }

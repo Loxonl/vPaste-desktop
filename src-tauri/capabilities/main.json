@@ -6,7 +6,8 @@
     "main",
     "clipboard",
     "config",
-    "clipboardPreview"
+    "clipboardPreview",
+    "testRoom"
   ],
   "permissions": [
     "core:path:default",

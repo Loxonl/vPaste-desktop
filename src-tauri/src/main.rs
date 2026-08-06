@@ -55,6 +55,7 @@ mod maintenance;
 mod runtime_mode;
 mod search;
 mod secure_store;
+mod test_room;
 
 #[cfg(test)]
 #[ctor]
@@ -139,9 +140,19 @@ fn get_developer_mode() -> bool {
     developer_mode_enabled_for_args(std::env::args(), cfg!(debug_assertions))
 }
 
+fn test_room_window_open_error(developer_mode: bool, window_exists: bool) -> Option<&'static str> {
+    if !developer_mode {
+        Some("测试间只在带 --dev-mode 参数的 Debug 构建中可用")
+    } else if !window_exists {
+        Some("测试间窗口尚未完成初始化，请稍后重试")
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod developer_mode_tests {
-    use super::developer_mode_enabled_for_args;
+    use super::{developer_mode_enabled_for_args, test_room_window_open_error};
 
     #[test]
     fn developer_mode_requires_exact_argument_in_debug_build() {
@@ -166,6 +177,13 @@ mod developer_mode_tests {
             ["vpaste", "--dev-mode"],
             false
         ));
+    }
+
+    #[test]
+    fn test_room_open_requires_developer_mode_and_a_prebuilt_window() {
+        assert!(test_room_window_open_error(false, false).is_some());
+        assert!(test_room_window_open_error(true, false).is_some());
+        assert!(test_room_window_open_error(true, true).is_none());
     }
 }
 const PREVIEW_IMAGE_MIN_HEIGHT: f64 = 320.0;
@@ -1307,6 +1325,31 @@ fn open_config_window(app: tauri::AppHandle, target: Option<String>) -> Result<(
 }
 
 #[tauri::command]
+fn open_test_room_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app.get_webview_window("testRoom");
+    if let Some(message) = test_room_window_open_error(get_developer_mode(), window.is_some()) {
+        return Err(message.to_string());
+    }
+    let window = window.expect("test room window existence was checked above");
+    let _ = window.unminimize();
+    window.show().map_err(|err| err.to_string())?;
+    activate_native_window(&window, "test room show");
+    window.set_focus().map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn close_test_room_window(app: tauri::AppHandle) -> Result<(), String> {
+    if !get_developer_mode() {
+        return Err("测试间只在带 --dev-mode 参数的 Debug 构建中可用".to_string());
+    }
+    if let Some(window) = app.get_webview_window("testRoom") {
+        window.hide().map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String> {
     let clipboard_window = app
         .get_webview_window("clipboard")
@@ -1358,16 +1401,58 @@ fn minimize_current_window(window: tauri::WebviewWindow) -> Result<(), String> {
 }
 
 fn apply_vpaste_window_icon(window: &tauri::WebviewWindow) {
-    match image::load_from_memory(include_bytes!("../icons/icon.png")) {
-        Ok(image) => {
-            let rgba = image.to_rgba8();
-            let (width, height) = rgba.dimensions();
-            let icon = tauri::image::Image::new_owned(rgba.into_raw(), width, height);
+    match build_vpaste_window_icon() {
+        Ok(icon) => {
             if let Err(err) = window.set_icon(icon) {
                 error!("Failed to set window icon: {:?}", err);
             }
         }
         Err(err) => error!("Failed to load window icon: {:?}", err),
+    }
+}
+
+fn build_vpaste_window_icon() -> Result<TauriImage<'static>, image::ImageError> {
+    #[cfg(target_os = "windows")]
+    {
+        const ICON_SIZE: u32 = 32;
+        const ICON_INSET: u32 = 2;
+        let logo =
+            image::load_from_memory(include_bytes!("../icons/source/vpaste-app-icon-1024.png"))?
+                .resize_exact(
+                    ICON_SIZE - ICON_INSET * 2,
+                    ICON_SIZE - ICON_INSET * 2,
+                    image::imageops::FilterType::Lanczos3,
+                )
+                .to_rgba8();
+        let mut icon = ImageBuffer::from_pixel(ICON_SIZE, ICON_SIZE, Rgba([0, 0, 0, 0]));
+        image::imageops::overlay(&mut icon, &logo, ICON_INSET.into(), ICON_INSET.into());
+        return Ok(TauriImage::new_owned(icon.into_raw(), ICON_SIZE, ICON_SIZE));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let icon = image::load_from_memory(include_bytes!("../icons/icon.png"))?.to_rgba8();
+        let (width, height) = icon.dimensions();
+        Ok(TauriImage::new_owned(icon.into_raw(), width, height))
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod window_icon_tests {
+    use super::build_vpaste_window_icon;
+
+    #[test]
+    fn small_windows_icon_has_fully_transparent_corners() {
+        let icon = build_vpaste_window_icon().expect("build the window icon");
+        assert_eq!((icon.width(), icon.height()), (32, 32));
+        let max_x = icon.width() - 1;
+        let max_y = icon.height() - 1;
+        let bytes = icon.rgba();
+
+        for (x, y) in [(0, 0), (max_x, 0), (0, max_y), (max_x, max_y)] {
+            let alpha = bytes[((y * icon.width() + x) * 4 + 3) as usize];
+            assert_eq!(alpha, 0, "corner ({x}, {y})");
+        }
     }
 }
 
@@ -5933,6 +6018,10 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
             err
         })
         .ok();
+    let legacy_dib_compatible = clipboard::windows::image_convert::legacy_dib_is_compatible(&dib)
+        .map_err(|err| {
+        format!("inspect image alpha for legacy clipboard format failed: {err}")
+    })?;
 
     let clipboard_start = Instant::now();
     let _clipboard = Clipboard::new_attempts(10).map_err(|err| format!("{:?}", err))?;
@@ -5962,19 +6051,23 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
         match clipboard_win::raw::set_without_clear(CF_DIBV5, bytes) {
             Ok(()) => {
                 has_dibv5_format = true;
-                if let Err(err) = clipboard_win::raw::set_without_clear(CF_DIB, &dib) {
-                    error!("Failed to set image DIB after DIBV5: {:?}", err);
+                if legacy_dib_compatible {
+                    if let Err(err) = clipboard_win::raw::set_without_clear(CF_DIB, &dib) {
+                        error!("Failed to set image DIB after DIBV5: {:?}", err);
+                    }
                 }
             }
             Err(err) => {
                 error!("Failed to set image DIBV5: {:?}", err);
-                clipboard_win::raw::set_without_clear(CF_DIB, &dib).map_err(|err| {
-                    error!("Failed to set image DIB: {:?}", err);
-                    format!("{:?}", err)
-                })?;
+                if legacy_dib_compatible {
+                    clipboard_win::raw::set_without_clear(CF_DIB, &dib).map_err(|err| {
+                        error!("Failed to set image DIB: {:?}", err);
+                        format!("{:?}", err)
+                    })?;
+                }
             }
         }
-    } else {
+    } else if legacy_dib_compatible {
         clipboard_win::raw::set_without_clear(CF_DIB, &dib).map_err(|err| {
             error!("Failed to set image DIB: {:?}", err);
             format!("{:?}", err)
@@ -5988,11 +6081,12 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
     }
     write_internal_clipboard_marker_without_open();
     info!(
-        "Copied image to clipboard in {}ms, total {}ms, dib_bytes={}, dibv5={}, png={}, hdrop={}",
+        "Copied image to clipboard in {}ms, total {}ms, dib_bytes={}, dibv5={}, legacy_dib={}, png={}, hdrop={}",
         clipboard_start.elapsed().as_millis(),
         start.elapsed().as_millis(),
         dib.len(),
         has_dibv5_format,
+        legacy_dib_compatible,
         has_png_format,
         has_file_drop_format
     );
@@ -7418,6 +7512,23 @@ fn sync_tray_visibility(app: &tauri::AppHandle, visible: bool) -> Result<bool, S
     Ok(TRAY_ICON_VISIBLE.load(Ordering::SeqCst))
 }
 
+fn build_test_room_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let window = WebviewWindowBuilder::new(handle, "testRoom", App("__test-room".into()))
+        .title("vPaste 测试间")
+        .visible(false)
+        .focused(false)
+        .inner_size(1080.0, 760.0)
+        .min_inner_size(860.0, 620.0)
+        .resizable(true)
+        .maximizable(true)
+        .closable(true)
+        .decorations(true)
+        .center()
+        .build()?;
+    apply_vpaste_window_icon(&window);
+    Ok(window)
+}
+
 fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     let (screen_x, screen_y, screen_width, screen_height) =
         if let Ok(Some(monitor)) = handle.primary_monitor() {
@@ -7615,6 +7726,10 @@ fn main() {
                     api.prevent_close();
                     let _ = window.hide();
                 }
+                if window.label() == "testRoom" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
                 if window.label() == "clipboardPreview" {
                     api.prevent_close();
                     let _ = window.hide();
@@ -7770,6 +7885,9 @@ fn main() {
             }
             clipboard::db::init();
             let _ = build_clipboard_window(app.handle())?;
+            if get_developer_mode() {
+                let _ = build_test_room_window(app.handle())?;
+            }
             get_app_data_dir();
             let handle = app.handle().clone();
 
@@ -8036,6 +8154,16 @@ fn main() {
             refresh_link_previews,
             get_config,
             get_developer_mode,
+            open_test_room_window,
+            close_test_room_window,
+            test_room::get_test_room_config,
+            test_room::save_test_room_config,
+            test_room::write_test_room_groups,
+            test_room::copy_test_room_item_to_clipboard,
+            test_room::cleanup_test_room_groups,
+            test_room::cleanup_today_test_room_case_history,
+            test_room::cleanup_test_room_history,
+            test_room::run_test_room_case,
             get_onboarding_permission_status,
             enable_onboarding_background_service,
             get_clipboard_history_paused,

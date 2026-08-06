@@ -22,6 +22,9 @@ const UiLab = import.meta.env.DEV
 const SettingsPreview = import.meta.env.DEV
     ? React.lazy(() => import("./config/SettingsPreview.tsx"))
     : null;
+const TestRoom = import.meta.env.DEV
+    ? React.lazy(() => import("./debug/TestRoom.tsx"))
+    : null;
 
 if ("__TAURI_INTERNALS__" in window) {
     void info(`Rendering app, path: ${window.location.pathname}`);
@@ -83,6 +86,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
                         <Route path="/tray-menu" element={<TrayMenu />} />
                         {UiLab ? <Route path="/__ui-lab" element={<UiLab />} /> : null}
                         {SettingsPreview ? <Route path="/__settings-preview" element={<SettingsPreview />} /> : null}
+                        {TestRoom ? <Route path="/__test-room" element={<TestRoom />} /> : null}
                         <Route path="/" element={<Clipboard />} />
                         <Route path="*" element={<Clipboard />} />
                     </Routes>

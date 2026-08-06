@@ -1,0 +1,14 @@
+vPaste Intro
+
+vPaste is a privacy-first clipboard manager for Windows and macOS.
+It keeps everyday content organized locally and ready when you need it.
+
+Highlights
+- Local clipboard history
+- Text, rich text, images, links, colors, and files
+- Fast keyboard-first access
+- Clear categories and previews
+- A consistent desktop experience across Windows and macOS
+
+This document contains non-sensitive sample content for product demos,
+screenshots, and testing.

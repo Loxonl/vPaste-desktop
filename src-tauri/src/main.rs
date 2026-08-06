@@ -428,13 +428,59 @@ fn default_screen_bounds() -> ScreenBounds {
 }
 
 fn select_clipboard_monitor<T>(
+    cursor_is_over_desktop: bool,
     focused_window_monitor: Option<T>,
     cursor_monitor: Option<T>,
     primary_monitor: Option<T>,
 ) -> Option<T> {
-    focused_window_monitor
-        .or(cursor_monitor)
-        .or(primary_monitor)
+    if cursor_is_over_desktop {
+        cursor_monitor
+            .or(focused_window_monitor)
+            .or(primary_monitor)
+    } else {
+        focused_window_monitor
+            .or(cursor_monitor)
+            .or(primary_monitor)
+    }
+}
+
+fn is_windows_desktop_window_class(class_name: &str) -> bool {
+    matches!(class_name, "Progman" | "WorkerW")
+}
+
+#[cfg(target_os = "windows")]
+fn cursor_is_over_windows_desktop(position: tauri::PhysicalPosition<i32>) -> bool {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetClassNameW, GetShellWindow, WindowFromPoint, GA_ROOT,
+    };
+
+    let hit_window = unsafe {
+        WindowFromPoint(POINT {
+            x: position.x,
+            y: position.y,
+        })
+    };
+    if hit_window.0 == 0 {
+        return false;
+    }
+
+    let root_window = unsafe { GetAncestor(hit_window, GA_ROOT) };
+    let candidate = if root_window.0 == 0 {
+        hit_window
+    } else {
+        root_window
+    };
+    if candidate == unsafe { GetShellWindow() } {
+        return true;
+    }
+
+    let mut class_name = [0_u16; 256];
+    let length = unsafe { GetClassNameW(candidate, &mut class_name) };
+    length > 0
+        && is_windows_desktop_window_class(&String::from_utf16_lossy(
+            &class_name[..length as usize],
+        ))
 }
 
 #[cfg(target_os = "windows")]
@@ -483,7 +529,11 @@ fn focused_window_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monito
 #[cfg(target_os = "windows")]
 fn target_clipboard_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
     let focused = focused_window_monitor(window);
-    let cursor = cursor_physical_position().and_then(|position| {
+    let cursor_position = cursor_physical_position();
+    let cursor_is_over_desktop = cursor_position
+        .map(cursor_is_over_windows_desktop)
+        .unwrap_or(false);
+    let cursor = cursor_position.and_then(|position| {
         window
             .app_handle()
             .monitor_from_point(position.x as f64, position.y as f64)
@@ -491,7 +541,7 @@ fn target_clipboard_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Moni
             .flatten()
     });
     let primary = window.primary_monitor().ok().flatten();
-    select_clipboard_monitor(focused, cursor, primary)
+    select_clipboard_monitor(cursor_is_over_desktop, focused, cursor, primary)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -672,15 +722,16 @@ fn clipboard_screen_bounds(
 mod clipboard_monitor_selection_tests {
     use super::{
         centered_window_position_in_work_area, clipboard_window_layout,
-        clipboard_window_physical_size, physical_window_center, select_auxiliary_monitor,
-        select_clipboard_monitor, should_reapply_clipboard_size_after_scale_change,
-        should_restore_foreground_after_hide, ScreenBounds,
+        clipboard_window_physical_size, is_windows_desktop_window_class, physical_window_center,
+        select_auxiliary_monitor, select_clipboard_monitor,
+        should_reapply_clipboard_size_after_scale_change, should_restore_foreground_after_hide,
+        ScreenBounds,
     };
 
     #[test]
     fn focused_window_monitor_takes_priority() {
         assert_eq!(
-            select_clipboard_monitor(Some("focused"), Some("cursor"), Some("primary")),
+            select_clipboard_monitor(false, Some("focused"), Some("cursor"), Some("primary"),),
             Some("focused")
         );
     }
@@ -688,13 +739,29 @@ mod clipboard_monitor_selection_tests {
     #[test]
     fn falls_back_to_cursor_then_primary_monitor() {
         assert_eq!(
-            select_clipboard_monitor(None, Some("cursor"), Some("primary")),
+            select_clipboard_monitor(false, None, Some("cursor"), Some("primary")),
             Some("cursor")
         );
         assert_eq!(
-            select_clipboard_monitor(None, None, Some("primary")),
+            select_clipboard_monitor(false, None, None, Some("primary")),
             Some("primary")
         );
+    }
+
+    #[test]
+    fn desktop_under_cursor_takes_priority_over_a_stale_focused_window() {
+        assert_eq!(
+            select_clipboard_monitor(true, Some("focused"), Some("cursor"), Some("primary"),),
+            Some("cursor")
+        );
+    }
+
+    #[test]
+    fn only_shell_desktop_window_classes_count_as_the_desktop() {
+        assert!(is_windows_desktop_window_class("Progman"));
+        assert!(is_windows_desktop_window_class("WorkerW"));
+        assert!(!is_windows_desktop_window_class("CabinetWClass"));
+        assert!(!is_windows_desktop_window_class("Chrome_WidgetWin_1"));
     }
 
     #[test]

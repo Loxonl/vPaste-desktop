@@ -20,6 +20,9 @@
   --ui-text-muted: #7f7f7f;
   --ui-border: rgba(26, 35, 46, 0.09);
   --ui-border-strong: rgba(26, 35, 46, 0.16);
+  --ui-transparency-grid-light: #f2f2f2;
+  --ui-transparency-grid-dark: #d8d8d8;
+  --ui-transparency-grid-square-size: 8px;
   --ui-shadow: 0 12px 32px rgba(35, 43, 54, 0.12);
   --ui-shadow-card: 0 8px 24px rgba(35, 43, 54, 0.045), 0 1px 2px rgba(35, 43, 54, 0.035);
   --ui-window-shadow: 0 2px 6px rgba(17, 24, 39, 0.24), 0 0 0 1px rgba(26, 35, 46, 0.10);
@@ -91,6 +94,8 @@
   --ui-text-muted: #a9adb3;
   --ui-border: rgba(255, 255, 255, 0.11);
   --ui-border-strong: rgba(255, 255, 255, 0.18);
+  --ui-transparency-grid-light: #505050;
+  --ui-transparency-grid-dark: #3c3c3c;
   --ui-shadow: 0 18px 46px rgba(0, 0, 0, 0.42);
   --ui-shadow-card: 0 14px 38px rgba(0, 0, 0, 0.34), inset 0 0 0 1px rgba(255, 255, 255, 0.045);
   --ui-window-shadow: 0 2px 6px rgba(0, 0, 0, 0.48), 0 0 0 1px rgba(255, 255, 255, 0.10);

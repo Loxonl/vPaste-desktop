@@ -11,6 +11,7 @@ import { Item, ItemType } from "./Item";
 import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
 import {
     compactPath,
+    isSingleImageFileItem,
     itemHasGifFormat,
     parseFilePaths,
     parseLinkContent,
@@ -407,7 +408,7 @@ export function ImagePreview({
                         alt=""
                         draggable={false}
                         decoding="async"
-                        className={classes(styles, "image-preview-img")}
+                        className={classes(styles, "image-preview-img transparency-grid")}
                         style={imageStyle}
                         onError={recoverImageSource}
                     />
@@ -444,15 +445,13 @@ function FilePreview({
     const fallbackPaths = parseFilePaths(item.getContent());
     const firstPath = previewInfo?.display_path || fallbackPaths[0] || item.getContent();
     const extension = previewInfo?.extension || (firstPath.split(".").pop() || "FILE").toUpperCase();
+    const isImageFile = isSingleImageFileItem(item);
     const isGifFile = extension.toLowerCase() === "gif";
     const isMultiple = previewInfo?.kind === "multiple" || fallbackPaths.length > 1;
     const isInvalid = previewInfo ? !previewInfo.exists : false;
     const displayedImageSize = previewInfo?.image_width && previewInfo?.image_height
         ? { width: previewInfo.image_width, height: previewInfo.image_height }
         : imageSize;
-    const fileImageStyle: React.CSSProperties | undefined = displayedImageSize
-        ? { width: `${displayedImageSize.width}px`, height: `${displayedImageSize.height}px` }
-        : undefined;
 
     useEffect(() => {
         const element = previewRef.current;
@@ -517,16 +516,15 @@ function FilePreview({
 
     return (
         <div className={classes(styles, `file-preview ${isInvalid ? 'invalid' : ''}`)} ref={previewRef}>
-            <div className={classes(styles, "file-preview-stage")}>
+            <div className={classes(styles, `file-preview-stage ${isImageFile ? 'image-file-stage' : ''}`)}>
                 {previewInfo?.kind === "single-preview" && previewInfo.preview_path ? (
                     <>
                         <img
                             key={previewSrc}
-                            className={classes(styles, "file-preview-image")}
+                            className={classes(styles, `file-preview-image ${isImageFile ? 'transparency-grid' : ''}`)}
                             src={previewSrc}
                             draggable={false}
                             alt=""
-                            style={fileImageStyle}
                             onLoad={(event) => {
                                 setImageSize({
                                     width: event.currentTarget.naturalWidth,

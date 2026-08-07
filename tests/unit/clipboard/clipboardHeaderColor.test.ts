@@ -23,7 +23,7 @@ describe("clipboard header colors", () => {
         expect(dominantColorFromPixels(data)).toBe("rgb(168, 223, 233)");
     });
 
-    it("prefers saturation when the top areas are within eighty percent", () => {
+    it("prefers saturation when the second area reaches ninety percent", () => {
         const data = pixels(
             { color: [179, 209, 250, 255], count: 800 },
             { color: [51, 136, 255, 255], count: 720 },
@@ -31,6 +31,25 @@ describe("clipboard header colors", () => {
         );
 
         expect(dominantColorFromPixels(data)).toBe("rgb(51, 136, 255)");
+    });
+
+    it("keeps the larger area when the second is below ninety percent", () => {
+        const data = pixels(
+            { color: [179, 209, 250, 255], count: 1000 },
+            { color: [51, 136, 255, 255], count: 850 },
+        );
+
+        expect(dominantColorFromPixels(data)).toBe("rgb(179, 209, 250)");
+    });
+
+    it("does not promote a more saturated third-place bucket", () => {
+        const data = pixels(
+            { color: [230, 63, 50, 255], count: 650 },
+            { color: [36, 149, 67, 255], count: 620 },
+            { color: [251, 196, 35, 255], count: 530 },
+        );
+
+        expect(dominantColorFromPixels(data)).toBe("rgb(230, 63, 50)");
     });
 
     it("uses a stable tie-breaker across all equal-area candidates", () => {

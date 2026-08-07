@@ -480,7 +480,7 @@ fn app_icon_dominant_color(icon_path: &str) -> Option<String> {
 fn calculate_dominant_color(icon_path: &str) -> Option<String> {
     const MIN_COLOR_SHARE: f64 = 0.05;
     const MIN_SATURATION: f64 = 0.16;
-    const CLOSE_AREA_RATIO: f64 = 0.8;
+    const CLOSE_AREA_RATIO: f64 = 0.9;
 
     let image = image::open(icon_path).ok()?.to_rgba8();
     let mut buckets: HashMap<(u8, u8, u8), (f64, f64, f64, f64, f64)> = HashMap::new();
@@ -526,21 +526,25 @@ fn calculate_dominant_color(icon_path: &str) -> Option<String> {
         .into_iter()
         .filter(|(_, bucket)| bucket.3 > 0.0)
         .collect();
-    let largest_population = candidates
-        .iter()
-        .map(|(_, bucket)| bucket.3)
-        .max_by(f64::total_cmp)?;
-    candidates.retain(|(_, bucket)| bucket.3 >= largest_population * CLOSE_AREA_RATIO);
     candidates.sort_by(|(left_key, left), (right_key, right)| {
         let left_saturation = left.4 / left.3;
         let right_saturation = right.4 / right.3;
-        right_saturation
-            .total_cmp(&left_saturation)
-            .then_with(|| right.3.total_cmp(&left.3))
+        right
+            .3
+            .total_cmp(&left.3)
+            .then_with(|| right_saturation.total_cmp(&left_saturation))
             .then_with(|| left_key.cmp(right_key))
     });
 
-    let (_, selected) = candidates.first()?;
+    let (_, primary) = candidates.first()?;
+    let selected = candidates
+        .get(1)
+        .map(|(_, bucket)| bucket)
+        .filter(|secondary| {
+            secondary.3 >= primary.3 * CLOSE_AREA_RATIO
+                && secondary.4 / secondary.3 > primary.4 / primary.3
+        })
+        .unwrap_or(primary);
     let (red, green, blue, population, _) = *selected;
 
     Some(format!(
@@ -2822,7 +2826,7 @@ mod tests {
     }
 
     #[test]
-    fn dominant_color_prefers_saturation_when_the_top_areas_are_within_eighty_percent() {
+    fn dominant_color_prefers_saturation_when_the_second_area_reaches_ninety_percent() {
         let mut image = image::RgbaImage::from_pixel(40, 40, image::Rgba([210, 210, 210, 255]));
         for pixel in image.pixels_mut().take(800) {
             *pixel = image::Rgba([179, 209, 250, 255]);
@@ -2834,6 +2838,62 @@ mod tests {
         assert_eq!(
             dominant_color_for_test_image(image),
             Some("rgb(51, 136, 255)".to_string())
+        );
+    }
+
+    #[test]
+    fn dominant_color_keeps_the_larger_area_when_the_second_is_below_ninety_percent() {
+        let mut image = image::RgbaImage::from_pixel(50, 50, image::Rgba([210, 210, 210, 255]));
+        for pixel in image.pixels_mut().take(1000) {
+            *pixel = image::Rgba([179, 209, 250, 255]);
+        }
+        for pixel in image.pixels_mut().skip(1000).take(850) {
+            *pixel = image::Rgba([51, 136, 255, 255]);
+        }
+
+        assert_eq!(
+            dominant_color_for_test_image(image),
+            Some("rgb(179, 209, 250)".to_string())
+        );
+    }
+
+    #[test]
+    fn dominant_color_does_not_promote_a_more_saturated_third_place_bucket() {
+        let mut image = image::RgbaImage::from_pixel(60, 60, image::Rgba([210, 210, 210, 255]));
+        for pixel in image.pixels_mut().take(1000) {
+            *pixel = image::Rgba([230, 63, 50, 255]);
+        }
+        for pixel in image.pixels_mut().skip(1000).take(960) {
+            *pixel = image::Rgba([36, 149, 67, 255]);
+        }
+        for pixel in image.pixels_mut().skip(1960).take(810) {
+            *pixel = image::Rgba([251, 196, 35, 255]);
+        }
+
+        assert_eq!(
+            dominant_color_for_test_image(image),
+            Some("rgb(230, 63, 50)".to_string())
+        );
+    }
+
+    #[test]
+    fn bundled_chrome_and_figma_icons_keep_area_first_brand_colors() {
+        let chrome =
+            image::load_from_memory(include_bytes!("../../icons/source/app-sources/chrome.png"))
+                .unwrap()
+                .to_rgba8();
+        let figma =
+            image::load_from_memory(include_bytes!("../../icons/source/app-sources/figma.png"))
+                .unwrap()
+                .to_rgba8();
+
+        assert_eq!(
+            dominant_color_for_test_image(chrome),
+            Some("rgb(230, 63, 50)".to_string())
+        );
+        assert_eq!(
+            dominant_color_for_test_image(figma),
+            Some("rgb(255, 55, 55)".to_string())
         );
     }
 

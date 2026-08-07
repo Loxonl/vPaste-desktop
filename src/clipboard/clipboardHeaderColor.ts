@@ -22,7 +22,7 @@ type ColorBucket = {
 const FALLBACK_HEADER_COLOR: RgbColor = { red: 86, green: 94, blue: 104 };
 const MIN_DOMINANT_COLOR_SHARE = 0.05;
 const MIN_DOMINANT_COLOR_SATURATION = 0.16;
-const CLOSE_DOMINANT_COLOR_AREA_RATIO = 0.8;
+const CLOSE_DOMINANT_COLOR_AREA_RATIO = 0.9;
 
 function parseColor(color: string): RgbColor | null {
     const hex = color.trim().match(/^#([\da-f]{3}|[\da-f]{6})$/i)?.[1];
@@ -132,20 +132,23 @@ export function dominantColorFromPixels(data: ArrayLike<number>): string | null 
     }
 
     if (visibleWeight <= 0 || colorWeight / visibleWeight < MIN_DOMINANT_COLOR_SHARE) return null;
-    const candidates = Array.from(buckets.values());
-    const largestPopulation = Math.max(...candidates.map(candidate => candidate.population));
-    if (largestPopulation <= 0) return null;
-
-    const dominant = candidates
-        .filter(candidate => candidate.population >= largestPopulation * CLOSE_DOMINANT_COLOR_AREA_RATIO)
+    const candidates = Array.from(buckets.values())
         .sort((left, right) =>
-            right.saturation / right.population - left.saturation / left.population
-            || right.population - left.population
+            right.population - left.population
+            || right.saturation / right.population - left.saturation / left.population
             || left.bucketRed - right.bucketRed
             || left.bucketGreen - right.bucketGreen
             || left.bucketBlue - right.bucketBlue,
-        )[0];
-    if (!dominant) return null;
+        );
+    const primary = candidates[0];
+    if (!primary || primary.population <= 0) return null;
+
+    const secondary = candidates[1];
+    const dominant = secondary
+        && secondary.population >= primary.population * CLOSE_DOMINANT_COLOR_AREA_RATIO
+        && secondary.saturation / secondary.population > primary.saturation / primary.population
+        ? secondary
+        : primary;
 
     return formatColor({
         red: dominant.red / dominant.population,

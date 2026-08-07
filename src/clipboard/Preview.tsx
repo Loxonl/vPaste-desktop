@@ -5,6 +5,7 @@ import { error } from "@tauri-apps/plugin-log";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
 import { ItemType } from "./Item";
+import { isImagePath } from "./itemPresentation";
 import { useLanguage } from "../lang";
 import styles from "./Preview.module.css";
 
@@ -241,7 +242,7 @@ function richHtmlHasVisibleContent(html: string): boolean {
         || Boolean(cloned.querySelector("table,img,svg,canvas,video"));
 }
 
-function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: string, params?: Record<string, string | number>) => string }) {
+export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: string, params?: Record<string, string | number>) => string }) {
     const [fileInfo, setFileInfo] = useState<FilePreviewInfo | null>(null);
     const [fileError, setFileError] = useState("");
     const [fileText, setFileText] = useState("");
@@ -382,6 +383,7 @@ function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: string,
                 <img
                     src={imageSrc}
                     alt=""
+                    className={styles["transparency-grid"]}
                 />
             </div>
         );
@@ -446,6 +448,7 @@ function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: string,
                         <img
                             src={filePreviewSrc}
                             alt=""
+                            className={isImagePath(mainPath) ? styles["transparency-grid"] : undefined}
                         />
                     </div>
                     <div className={styles["preview-file-caption"]}>

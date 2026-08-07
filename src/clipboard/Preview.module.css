@@ -208,8 +208,28 @@ body,
   max-height: 100%;
   object-fit: contain;
   border-radius: 10px;
-  background: #fff;
   box-shadow: 0 16px 44px rgba(0, 0, 0, 0.16);
+}
+
+.preview-file-image-wrap img:not(.transparency-grid) {
+  background: #fff;
+}
+
+.transparency-grid {
+  background-color: var(--ui-transparency-grid-light);
+  background-image:
+    linear-gradient(45deg, var(--ui-transparency-grid-dark) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--ui-transparency-grid-dark) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--ui-transparency-grid-dark) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--ui-transparency-grid-dark) 75%);
+  background-position:
+    0 0,
+    0 var(--ui-transparency-grid-square-size),
+    var(--ui-transparency-grid-square-size) calc(0px - var(--ui-transparency-grid-square-size)),
+    calc(0px - var(--ui-transparency-grid-square-size)) 0;
+  background-size:
+    calc(var(--ui-transparency-grid-square-size) + var(--ui-transparency-grid-square-size))
+    calc(var(--ui-transparency-grid-square-size) + var(--ui-transparency-grid-square-size));
 }
 
 .preview-file-image-wrap {

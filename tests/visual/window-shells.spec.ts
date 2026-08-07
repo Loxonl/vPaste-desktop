@@ -198,22 +198,22 @@ test.describe("window shells", () => {
         await samplesTab.click();
         await expect(page.getByRole("region", { name: "写入样板" })).toBeVisible();
         await expect(page.getByRole("button", { name: /^中文样板/ })).toBeVisible();
-        await expect(page.getByRole("button", { name: /^English Sample/ })).toBeVisible();
+        await expect(page.getByRole("button", { name: /^英文样板/ })).toBeVisible();
         await expect(page.getByRole("button", { name: "写入当前组" })).toBeVisible();
         await expect(page.getByRole("button", { name: "清理测试历史" })).toBeVisible();
         const sampleNames = page.getByRole("textbox", { name: "名称（可留空）" });
         expect(await sampleNames.evaluateAll(inputs => inputs.filter(input => (
             input as HTMLInputElement
-        ).value === "").length)).toBe(1);
-        await expect(page.getByRole("button", { name: "写入剪贴板 Image 样板" })).toBeVisible();
-        const copyToClipboard = page.getByRole("button", { name: "写入剪贴板 欢迎文案" });
+        ).value === "").length)).toBe(2);
+        await expect(page.getByRole("button", { name: "写入剪贴板 Image 样板" })).toHaveCount(2);
+        const copyToClipboard = page.getByRole("button", { name: "写入剪贴板 vPaste" });
         await expect(copyToClipboard).toBeVisible();
         await copyToClipboard.click();
         await expect.poll(() => page.evaluate(() => (
             window as typeof window & { __lastCopiedTestRoomItem?: { name?: string } }
-        ).__lastCopiedTestRoomItem?.name)).toBe("欢迎文案");
-        await expect(page.getByRole("button", { name: "复制 欢迎文案" })).toHaveCount(0);
-        const timeInput = page.getByRole("spinbutton", { name: "距现在 欢迎文案（秒）" });
+        ).__lastCopiedTestRoomItem?.name)).toBe("vPaste");
+        await expect(page.getByRole("button", { name: "复制 vPaste" })).toHaveCount(0);
+        const timeInput = page.getByRole("spinbutton", { name: "距现在 vPaste（秒）" });
         await expect(timeInput).toHaveValue("0");
         await timeInput.fill("90");
         await timeInput.blur();
@@ -221,7 +221,7 @@ test.describe("window shells", () => {
             const saved = (window as typeof window & {
                 __lastSavedTestRoomConfig?: { groups?: Array<{ items?: Array<{ name?: string; timeOffsetMs?: number }> }> };
             }).__lastSavedTestRoomConfig;
-            return saved?.groups?.[0]?.items?.find(item => item.name === "欢迎文案")?.timeOffsetMs;
+            return saved?.groups?.[0]?.items?.find(item => item.name === "vPaste")?.timeOffsetMs;
         })).toBe(90_000);
         const excelEditor = page.getByRole("textbox", { name: "编辑 销售概览 内容" });
         await expect(excelEditor).toBeVisible();

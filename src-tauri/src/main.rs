@@ -125,6 +125,7 @@ const DEVELOPER_MODE_ARG: &str = "--dev-mode";
 const PREVIEW_WINDOW_WIDTH: f64 = 760.0;
 const PREVIEW_WINDOW_HEIGHT: f64 = 560.0;
 const PREVIEW_IMAGE_MIN_WIDTH: f64 = 420.0;
+#[cfg(target_os = "macos")]
 const ROUNDED_WINDOW_RADIUS: f64 = 12.0;
 
 fn developer_mode_enabled_for_args<I, S>(args: I, debug_build: bool) -> bool
@@ -1409,69 +1410,6 @@ mod clipboard_window_animation_tests {
 }
 
 #[cfg(target_os = "windows")]
-fn apply_windows_rounded_window_region(
-    window: &tauri::WebviewWindow,
-    radius: f64,
-) -> Result<(), String> {
-    use std::ffi::c_void;
-
-    type Hwnd = *mut c_void;
-    type Hrgn = *mut c_void;
-
-    #[link(name = "gdi32")]
-    extern "system" {
-        fn CreateRoundRectRgn(
-            left: i32,
-            top: i32,
-            right: i32,
-            bottom: i32,
-            width_ellipse: i32,
-            height_ellipse: i32,
-        ) -> Hrgn;
-        fn DeleteObject(object: Hrgn) -> i32;
-    }
-
-    #[link(name = "user32")]
-    extern "system" {
-        fn SetWindowRgn(hwnd: Hwnd, region: Hrgn, redraw: i32) -> i32;
-    }
-
-    let size = window.outer_size().map_err(|err| err.to_string())?;
-    if size.width == 0 || size.height == 0 {
-        return Ok(());
-    }
-    let scale_factor = window.scale_factor().map_err(|err| err.to_string())?;
-    let diameter = (radius * 2_f64 * scale_factor).round().max(1_f64) as i32;
-    let width = i32::try_from(size.width).map_err(|_| "window width exceeds i32".to_string())?;
-    let height = i32::try_from(size.height).map_err(|_| "window height exceeds i32".to_string())?;
-    let hwnd = window.hwnd().map_err(|err| err.to_string())?;
-
-    let region = unsafe {
-        CreateRoundRectRgn(
-            0,
-            0,
-            width.saturating_add(1),
-            height.saturating_add(1),
-            diameter,
-            diameter,
-        )
-    };
-    if region.is_null() {
-        return Err("CreateRoundRectRgn failed".to_string());
-    }
-
-    // Windows owns the region after a successful SetWindowRgn call.
-    if unsafe { SetWindowRgn(hwnd.0 as Hwnd, region, 1) } == 0 {
-        unsafe {
-            let _ = DeleteObject(region);
-        }
-        return Err("SetWindowRgn failed".to_string());
-    }
-
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
 fn is_native_window_foreground(window: &tauri::WebviewWindow, _context: &str) -> bool {
     use std::ffi::c_void;
 
@@ -2146,8 +2084,6 @@ fn complete_onboarding(app: tauri::AppHandle) -> Result<(), String> {
 
 fn get_or_create_preview_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
     if let Some(window) = app.get_webview_window("clipboardPreview") {
-        #[cfg(target_os = "windows")]
-        apply_windows_rounded_window_region(&window, ROUNDED_WINDOW_RADIUS)?;
         return Ok(window);
     }
 
@@ -2168,10 +2104,6 @@ fn get_or_create_preview_window(app: &tauri::AppHandle) -> Result<tauri::Webview
             let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
             let _ = window.set_shadow(false);
             apply_vpaste_window_icon(window);
-            #[cfg(target_os = "windows")]
-            if let Err(err) = apply_windows_rounded_window_region(window, ROUNDED_WINDOW_RADIUS) {
-                error!("Failed to round preview window: {}", err);
-            }
             #[cfg(target_os = "macos")]
             set_macos_window_level(window, 102); // Above NSPopUpMenuWindowLevel
         })
@@ -2697,8 +2629,6 @@ fn show_preview_window(
     let position = preview_position_avoiding_clipboard(&app, bounds, size);
     set_window_position_for_scale(&window, position.x, position.y, bounds.scale_factor)?;
     set_window_size_for_scale(&window, size.width, size.height, bounds.scale_factor)?;
-    #[cfg(target_os = "windows")]
-    apply_windows_rounded_window_region(&window, ROUNDED_WINDOW_RADIUS)?;
     let _ = window.emit("preview-clear", ());
     window
         .emit(
@@ -8262,21 +8192,6 @@ fn main() {
                         window.app_handle().get_webview_window(window.label())
                     {
                         reapply_clipboard_size_after_scale_change(&webview_window, *scale_factor);
-                    }
-                }
-            }
-            #[cfg(target_os = "windows")]
-            if let tauri::WindowEvent::Resized(_) = event {
-                if window.label() == "clipboardPreview" {
-                    if let Some(webview_window) =
-                        window.app_handle().get_webview_window(window.label())
-                    {
-                        if let Err(err) = apply_windows_rounded_window_region(
-                            &webview_window,
-                            ROUNDED_WINDOW_RADIUS,
-                        ) {
-                            error!("Failed to update rounded window region: {}", err);
-                        }
                     }
                 }
             }

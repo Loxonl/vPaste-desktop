@@ -31,7 +31,7 @@ describe("test room sample model", () => {
         expect(APP_SOURCE_OPTIONS).not.toContain("Cursor");
     });
 
-    it("ships sanitized Excel table presets in both built-in sample groups", () => {
+    it("ships sanitized Excel table presets and content", () => {
         expect(SAMPLE_PRESETS.Excel.map(preset => preset.id)).toEqual([
             "excel-sales",
             "excel-projects",
@@ -44,7 +44,6 @@ describe("test room sample model", () => {
         )))).toBe(true);
         expect(BUILT_IN_SAMPLE_GROUPS.every(group => group.items.some(item => (
             item.itemType === "Excel"
-            && item.presetId?.startsWith("excel-")
             && item.value.includes("\t")
         )))).toBe(true);
     });
@@ -106,9 +105,53 @@ describe("test room sample model", () => {
     it("ships stable Chinese and English built-in groups", () => {
         expect(BUILT_IN_SAMPLE_GROUPS.map(group => [group.id, group.name])).toEqual([
             ["builtin-zh", "中文样板"],
-            ["builtin-en", "English Sample"],
+            ["builtin-en", "英文样板"],
         ]);
         expect(BUILT_IN_SAMPLE_GROUPS.every(group => group.items.length > 0)).toBe(true);
+    });
+
+    it("ships the reviewed short-term sample content with stable ids", () => {
+        expect(BUILT_IN_SAMPLE_GROUPS.map(group => ({
+            id: group.id,
+            name: group.name,
+            items: group.items.map(item => [
+                item.id,
+                item.name,
+                item.itemType,
+                item.value,
+                item.presetId ?? "",
+                item.appSource,
+                item.timeOffsetMs,
+            ]),
+        }))).toEqual([{
+            id: "builtin-zh",
+            name: "中文样板",
+            items: [
+                ["builtin-zh-rich", "vPaste", "RichText", "剪贴捷径，一键即达", "", "Google Chrome", 0],
+                ["builtin-zh-link", "产品链接", "Link", "https://vpaste.app", "", "Microsoft Edge", 10_000],
+                ["builtin-zh-image", "", "Image", "image-logo", "image-logo", "WeChat", 54_000],
+                ["builtin-zh-excel", "销售概览", "Excel", "序号\t区域\t销售额\t环比\n1\t华东\t¥128,600\t+12.4%\n2\t华南\t¥86,240\t+8.1%\n3\t华北\t¥64,900\t-2.3%", "", "Microsoft Excel", 78_000],
+                ["builtin-zh-color", "品牌色", "Color", "#9C25C1", "", "Microsoft OneNote", 123_000],
+                ["builtin-zh-file", "产品资料", "File", "file-brief", "file-brief", "File Explorer", 180_000],
+                ["builtin-zh-text-file", "发布记录", "TextFile", "vPaste Demo Release Notes\n\n- Smooth clipboard history\n- Safe local storage\n- Fast keyboard workflow\n", "", "Notepad3", 235_000],
+                ["builtin-zh-bing", "Bing", "Link", "https://www.bing.com", "", "OBS Studio", 278_000],
+                ["builtin-zh-grid", "", "Image", "image-grid", "image-grid", "Figma", 300_000],
+            ],
+        }, {
+            id: "builtin-en",
+            name: "英文样板",
+            items: [
+                ["builtin-en-rich", "vPaste", "RichText", "Your clipboard, \nAlways one shortcut away.", "", "Google Chrome", 0],
+                ["builtin-en-link", "产品链接", "Link", "https://vpaste.app", "", "Microsoft Edge", 10_000],
+                ["builtin-en-image", "", "Image", "image-logo", "image-logo", "WeChat", 54_000],
+                ["builtin-en-excel", "销售概览", "Excel", "No.\tArea\tRevenue\t%\n1\tUS\t$128,600\t+12.4%\n2\tCA\t$86,240\t+8.1%\n3\tAU\t$64,900\t-2.3%", "", "Microsoft Excel", 78_000],
+                ["builtin-en-color", "品牌色", "Color", "#9C25C1", "", "Microsoft OneNote", 123_000],
+                ["builtin-en-file", "产品资料", "File", "file-brief", "file-brief", "File Explorer", 180_000],
+                ["builtin-en-text-file", "发布记录", "TextFile", "vPaste Demo Release Notes\n\n- Smooth clipboard history\n- Safe local storage\n- Fast keyboard workflow\n", "", "Notepad3", 235_000],
+                ["builtin-en-bing", "Bing", "Link", "https://www.bing.com", "", "OBS Studio", 278_000],
+                ["builtin-en-grid", "", "Image", "image-grid", "image-grid", "Figma", 300_000],
+            ],
+        }]);
     });
 
     it("keeps local edits and appends newly introduced built-in groups", () => {
@@ -180,7 +223,7 @@ describe("test room sample model", () => {
 
         const merged = mergeTestRoomConfig(local);
 
-        expect(merged.groups[0].items[0].appSource).toBe("Microsoft OneNote");
+        expect(merged.groups[0].items[0].appSource).toBe("Google Chrome");
         expect(merged.groups[1].items[0].appSource).toBe("");
     });
 

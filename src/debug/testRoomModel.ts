@@ -107,68 +107,91 @@ function presetItem(
 const builtInItems = (language: "zh" | "en"): SampleItem[] => {
     const isZh = language === "zh";
     const prefix = `builtin-${language}`;
+    const releaseNotes = "vPaste Demo Release Notes\n\n- Smooth clipboard history\n- Safe local storage\n- Fast keyboard workflow\n";
     return [
         {
-            id: `${prefix}-text`,
-            name: isZh ? "欢迎文案" : "Welcome copy",
-            itemType: "Text",
-            value: isZh ? "灵感随手复制，需要时即刻找回。" : "Copy freely. Find everything when you need it.",
-            appSource: isZh ? "Microsoft OneNote" : "Figma",
-        },
-        {
-            id: `${prefix}-excel`,
-            name: isZh ? "销售概览" : "Campaign performance",
-            ...presetItem("Excel", isZh ? "excel-sales" : "excel-campaign"),
-            appSource: "Microsoft Excel",
-        },
-        {
             id: `${prefix}-rich`,
-            name: isZh ? "产品说明" : "Product note",
-            ...presetItem("RichText", isZh ? "rich-launch" : "rich-release-en"),
-            appSource: "Microsoft Word",
-        },
-        {
-            id: `${prefix}-color`,
-            name: isZh ? "品牌色" : "Brand color",
-            ...presetItem("Color", "color-indigo"),
-            appSource: "vPaste",
+            name: "vPaste",
+            itemType: "RichText",
+            value: isZh ? "剪贴捷径，一键即达" : "Your clipboard, \nAlways one shortcut away.",
+            presetId: "",
+            appSource: "Google Chrome",
+            timeOffsetMs: 0,
         },
         {
             id: `${prefix}-link`,
-            name: isZh ? "产品链接" : "Product link",
-            ...presetItem("Link", "link-vpaste"),
-            appSource: "Google Chrome",
+            name: "产品链接",
+            itemType: "Link",
+            value: "https://vpaste.app",
+            presetId: "",
+            appSource: "Microsoft Edge",
+            timeOffsetMs: 10_000,
         },
         {
             id: `${prefix}-image`,
             name: "",
             ...presetItem("Image", "image-logo"),
-            appSource: "File Explorer",
+            appSource: "WeChat",
+            timeOffsetMs: 54_000,
+        },
+        {
+            id: `${prefix}-excel`,
+            name: "销售概览",
+            itemType: "Excel",
+            value: isZh
+                ? "序号\t区域\t销售额\t环比\n1\t华东\t¥128,600\t+12.4%\n2\t华南\t¥86,240\t+8.1%\n3\t华北\t¥64,900\t-2.3%"
+                : "No.\tArea\tRevenue\t%\n1\tUS\t$128,600\t+12.4%\n2\tCA\t$86,240\t+8.1%\n3\tAU\t$64,900\t-2.3%",
+            presetId: "",
+            appSource: "Microsoft Excel",
+            timeOffsetMs: 78_000,
+        },
+        {
+            id: `${prefix}-color`,
+            name: "品牌色",
+            itemType: "Color",
+            value: "#9C25C1",
+            presetId: "",
+            appSource: "Microsoft OneNote",
+            timeOffsetMs: 123_000,
         },
         {
             id: `${prefix}-file`,
-            name: isZh ? "产品资料" : "Product brief",
+            name: "产品资料",
             ...presetItem("File", "file-brief"),
             appSource: "File Explorer",
+            timeOffsetMs: 180_000,
         },
         {
             id: `${prefix}-text-file`,
-            name: isZh ? "发布记录" : "Release notes",
-            ...presetItem("TextFile", "textfile-notes"),
-            appSource: "Microsoft Word",
+            name: "发布记录",
+            itemType: "TextFile",
+            value: releaseNotes,
+            presetId: "",
+            appSource: "Notepad3",
+            timeOffsetMs: 235_000,
         },
         {
-            id: `${prefix}-assets`,
-            name: isZh ? "宣传素材组合" : "Campaign assets",
-            ...presetItem("File", "file-assets"),
-            appSource: "File Explorer",
+            id: `${prefix}-bing`,
+            name: "Bing",
+            itemType: "Link",
+            value: "https://www.bing.com",
+            presetId: "",
+            appSource: "OBS Studio",
+            timeOffsetMs: 278_000,
+        },
+        {
+            id: `${prefix}-grid`,
+            name: "",
+            ...presetItem("Image", "image-grid"),
+            appSource: "Figma",
+            timeOffsetMs: 300_000,
         },
     ];
 };
 
 export const BUILT_IN_SAMPLE_GROUPS: SampleGroup[] = [
     { id: "builtin-zh", name: "中文样板", builtIn: true, items: builtInItems("zh") },
-    { id: "builtin-en", name: "English Sample", builtIn: true, items: builtInItems("en") },
+    { id: "builtin-en", name: "英文样板", builtIn: true, items: builtInItems("en") },
 ];
 
 export const MAX_SAMPLE_TIME_OFFSET_MS = 5 * 60_000;

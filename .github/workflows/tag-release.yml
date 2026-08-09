@@ -382,7 +382,9 @@ jobs:
 
           codesign --verify --deep --strict --verbose=2 "$app"
           spctl --assess --type execute --verbose=2 "$app"
-          xcrun stapler validate "$dmg"
+          # Tauri staples the notarized app before placing it in the signed DMG.
+          xcrun stapler validate "$app"
+          codesign --verify --strict --verbose=2 "$dmg"
 
           mkdir -p release-assets
           staged_dmg="release-assets/vPaste_${RELEASE_VERSION}_macos_${{ matrix.arch }}.dmg"

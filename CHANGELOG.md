@@ -16,6 +16,7 @@ All notable public changes to vPaste Desktop will be documented in this file.
 - Moved updater-manifest verification out of the desktop Cargo package so its CLI is not embedded as unsigned nested code in macOS app bundles.
 - Preserved the updater private key in the environment variable consumed by Tauri's macOS bundler.
 - Used a numeric Windows file version when packaging semantic prerelease versions such as RC builds.
+- Validated the notarization ticket on the app bundle instead of requiring a separate ticket on its signed DMG container.
 
 ## 1.6.0 - 2026-07-24
 

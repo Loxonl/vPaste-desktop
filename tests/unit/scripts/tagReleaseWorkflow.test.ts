@@ -23,6 +23,12 @@ describe("tag release signing workflow", () => {
     expect(contents).toContain("security find-identity -v -p codesigning");
   });
 
+  it.each(workflows)("validates the notarized app ticket and signed DMG in $path", ({ contents }) => {
+    expect(contents).toContain('xcrun stapler validate "$app"');
+    expect(contents).toContain('codesign --verify --strict --verbose=2 "$dmg"');
+    expect(contents).not.toContain('xcrun stapler validate "$dmg"');
+  });
+
   it("keeps the updater manifest verifier out of desktop application binary targets", () => {
     const metadata = JSON.parse(
       execFileSync(

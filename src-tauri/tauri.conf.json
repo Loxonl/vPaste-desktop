@@ -30,7 +30,7 @@
   "identifier": "com.loxonl.vpaste",
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhCMkZBOTA5ODEwMURDMkQKUldRdDNBR0JDYWt2aTl5bG5ON2t4cjJZTkJuUFpkWmwwY2ZhUXBCNWpnSjU4TkxXVWdtTGE4bVUK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQwNTEyNDYxOEYzMDFCMDIKUldRQ0d6Q1BZU1JSME5mYVNBRWxQT3BkR3RqVW1nQ1hFT2MzMllEVVhOV09CWDJCTjVONXUzK3oK",
       "endpoints": [
         "https://vpaste.app/download/stable/latest.json"
       ],

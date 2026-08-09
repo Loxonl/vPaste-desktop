@@ -12,6 +12,10 @@ All notable public changes to vPaste Desktop will be documented in this file.
 ### Fixed
 
 - Derived every application version source from the release tag before building Stable or RC packages.
+- Derived the macOS signing identity from the imported Developer ID certificate and made its temporary keychain discoverable to `codesign`.
+- Moved updater-manifest verification out of the desktop Cargo package so its CLI is not embedded as unsigned nested code in macOS app bundles.
+- Preserved the updater private key in the environment variable consumed by Tauri's macOS bundler.
+- Used a numeric Windows file version when packaging semantic prerelease versions such as RC builds.
 
 ## 1.6.0 - 2026-07-24
 

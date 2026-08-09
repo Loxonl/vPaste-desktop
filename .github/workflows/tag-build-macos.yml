@@ -105,7 +105,20 @@ jobs:
             -k "$APPLE_KEYCHAIN_PASSWORD" \
             "$keychain_path"
           security default-keychain -s "$keychain_path"
-          security find-identity -v -p codesigning "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+
+          identities="$(security find-identity -v -p codesigning "$keychain_path")"
+          printf '%s\n' "$identities"
+          identity_hashes="$(printf '%s\n' "$identities" | awk '
+            length($2) == 40 && $2 ~ /^[[:xdigit:]]+$/ && /"Developer ID Application:/ { print $2 }
+          ')"
+          identity_count="$(printf '%s\n' "$identity_hashes" | awk 'NF { count++ } END { print count + 0 }')"
+          if [[ "$identity_count" -ne 1 ]]; then
+            echo "Expected exactly one valid Developer ID Application identity, found $identity_count." >&2
+            exit 1
+          fi
+          identity_hash="$identity_hashes"
+          echo "APPLE_SIGNING_IDENTITY=$identity_hash" >> "$GITHUB_ENV"
 
       - name: Prepare App Store Connect API key
         shell: bash
@@ -125,7 +138,6 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
@@ -135,6 +147,13 @@ jobs:
               exit 1
             fi
           done
+
+          identities="$(security find-identity -v -p codesigning)"
+          printf '%s\n' "$identities"
+          if ! printf '%s\n' "$identities" | grep -Fq "$APPLE_SIGNING_IDENTITY"; then
+            echo "Imported Developer ID identity is not discoverable through the user keychain search list." >&2
+            exit 1
+          fi
 
           VERSION="$RELEASE_VERSION" \
           MACOS_BUILD_TARGET="${{ matrix.target }}" \

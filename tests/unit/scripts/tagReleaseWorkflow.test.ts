@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const releaseWorkflow = readFileSync(".github/workflows/tag-release.yml", "utf8");
 const draftReleaseWorkflow = readFileSync(".github/workflows/release.yml", "utf8");
 const macOSReleaseScript = readFileSync("scripts/build-macos-release.sh", "utf8");
+const windowsReleaseScript = readFileSync("scripts/build-windows-release.ps1", "utf8");
 const windowsInstallerScript = readFileSync("installer/windows/vpaste.iss", "utf8");
 const workflows = [".github/workflows/tag-release.yml", ".github/workflows/tag-build-macos.yml"].map(path => ({
   path,
@@ -61,5 +62,11 @@ describe("tag release signing workflow", () => {
   it("uses the numeric file version for prerelease Windows installer metadata", () => {
     expect(windowsInstallerScript).toContain("VersionInfoProductVersion={#VersionInfoVersion}");
     expect(windowsInstallerScript).not.toContain("VersionInfoProductVersion={#AppVersion}");
+  });
+
+  it("passes exactly one updater private-key source to the Windows signer", () => {
+    expect(windowsReleaseScript).not.toContain("$temporaryKeyPath");
+    expect(windowsReleaseScript).toContain("$env:TAURI_SIGNING_PRIVATE_KEY_PATH = $null");
+    expect(windowsReleaseScript).toContain("$env:TAURI_SIGNING_PRIVATE_KEY = $null");
   });
 });

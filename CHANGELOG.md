@@ -17,6 +17,7 @@ All notable public changes to vPaste Desktop will be documented in this file.
 - Preserved the updater private key in the environment variable consumed by Tauri's macOS bundler.
 - Used a numeric Windows file version when packaging semantic prerelease versions such as RC builds.
 - Validated the notarization ticket on the app bundle instead of requiring a separate ticket on its signed DMG container.
+- Passed exactly one private-key source to the Windows updater signer and kept secret key contents out of temporary files.
 
 ## 1.6.0 - 2026-07-24
 

@@ -1667,20 +1667,8 @@ body {
 }
 
 .color-value {
-  max-width: 100%;
-  box-sizing: border-box;
-  padding: 7px 11px;
-  border-radius: 10px;
-  color: #1f1f1f;
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24), 0 0 0 1px rgba(0, 0, 0, 0.08);
-  font-size: 14px;
-  font-weight: 720;
-  line-height: 18px;
   text-align: center;
   overflow-wrap: anywhere;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
-  backdrop-filter: blur(8px);
 }
 
 .card-preview-file {
@@ -1748,47 +1736,6 @@ body {
 
 .file-preview-image:not(.transparency-grid) {
   background: #fff;
-}
-
-.file-preview-icon {
-  position: relative;
-  width: 76px;
-  height: 76px;
-  border-radius: 18px;
-  color: #637083;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(229, 233, 239, 0.92));
-  box-shadow: 0 10px 22px rgba(45, 53, 65, 0.14), inset 0 0 0 1px rgba(0, 0, 0, 0.05);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.file-preview-icon svg {
-  width: 48px;
-  height: 48px;
-}
-
-.file-preview-icon.multiple {
-  color: #4b789f;
-}
-
-.file-extension {
-  position: absolute;
-  left: 50%;
-  bottom: 10px;
-  transform: translateX(-50%);
-  max-width: 54px;
-  padding: 1px 5px;
-  border-radius: 5px;
-  background: #4f6f95;
-  color: #fff;
-  font-size: 10px;
-  font-weight: 760;
-  line-height: 14px;
-  text-align: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .file-invalid-badge {
@@ -1874,14 +1821,8 @@ body {
   background: linear-gradient(135deg, rgba(47, 111, 237, 0.2), rgba(28, 32, 38, 0.88));
 }
 
-:root[data-theme="dark"] .file-icon,
-:root[data-theme="dark"] .file-preview-icon {
+:root[data-theme="dark"] .file-icon {
   color: #d7deea;
-}
-
-:root[data-theme="dark"] .file-preview-icon {
-  background: linear-gradient(180deg, rgba(54, 61, 72, 0.94), rgba(35, 40, 49, 0.94));
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.32), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
 :root[data-theme="dark"] .file-preview.invalid .file-preview-stage {
@@ -1941,20 +1882,27 @@ body {
   bottom: 8px;
   z-index: 2;
   transform: translateX(-50%);
-  box-sizing: border-box;
   max-width: calc(100% - 20px);
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.2), inset 0 0 0 1px rgba(0, 0, 0, 0.07);
-  font-size: 11px;
-  line-height: 14px;
-  color: #30343a;
-  font-weight: 650;
   text-align: center;
   white-space: nowrap;
   pointer-events: none;
-  backdrop-filter: blur(8px);
+}
+
+.preview-metadata {
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: var(--ui-radius-control);
+  color: rgba(30, 34, 40, 0.88);
+  background: rgba(248, 250, 252, 0.68);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 14px;
+  text-shadow: none;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
 }
 
 .file-image-resolution {
@@ -2021,10 +1969,7 @@ body {
 :root[data-theme="dark"] .alt-card-hint,
 :root[data-theme="dark"] .card-item-tag,
 :root[data-theme="dark"] .favorite-icon,
-:root[data-theme="dark"] .color-value,
-:root[data-theme="dark"] .image-resolution,
 :root[data-theme="dark"] .mixed-content-badge,
-:root[data-theme="dark"] .file-extension,
 :root[data-theme="dark"] .file-invalid-badge {
   color: #f7f8fa !important;
   -webkit-text-fill-color: #f7f8fa !important;

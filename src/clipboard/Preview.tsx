@@ -5,7 +5,8 @@ import { error } from "@tauri-apps/plugin-log";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
 import { ItemType } from "./Item";
-import { isImagePath } from "./itemPresentation";
+import { FileTypePresentation } from "./FileTypePresentation";
+import { isImagePath, type FilePreviewInfo } from "./itemPresentation";
 import { useLanguage } from "../lang";
 import styles from "./Preview.module.css";
 
@@ -27,19 +28,6 @@ type PreviewPayload = {
     textContent?: string;
     rich_html?: string;
     richHtml?: string;
-};
-
-type FilePreviewInfo = {
-    kind: 'single-preview' | 'single-icon' | 'single-folder' | 'multiple' | 'pdf-preview' | 'text-preview';
-    paths: string[];
-    exists: boolean;
-    missing_paths: string[];
-    display_path: string;
-    secondary_text: string;
-    extension: string;
-    preview_path: string;
-    image_width?: number | null;
-    image_height?: number | null;
 };
 
 function parseFilePaths(content: string): string[] {
@@ -460,9 +448,14 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
         }
         return (
             <div className={styles["preview-file-info"]}>
-                <div className={styles["preview-file-symbol"]}>
-                    {fileInfo.kind === "multiple" ? t("common.files") : fileInfo.kind === "single-folder" ? t("common.dir") : (fileInfo.extension || t("common.file"))}
-                </div>
+                <FileTypePresentation
+                    path={mainPath}
+                    extension={fileInfo.extension}
+                    kind={fileInfo.kind}
+                    containsDirectories={fileInfo.contains_directories}
+                    multipleLabel={t("clipboard.fileCount", { count: paths.length })}
+                    variant="preview"
+                />
                 <div className={styles["preview-file-name"]}>{fileName(mainPath) || t("common.file")}</div>
                 <div className={styles["preview-file-path"]}>{compactPath(mainPath)}</div>
                 {fileInfo.kind === "multiple" && <div className={styles["preview-file-note"]}>{t("preview.multipleNote", { count: paths.length })}</div>}

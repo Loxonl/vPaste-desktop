@@ -9,6 +9,7 @@ export type FilePreviewInfo = {
     secondary_text: string;
     extension: string;
     preview_path: string;
+    contains_directories?: boolean;
     image_width?: number | null;
     image_height?: number | null;
 };

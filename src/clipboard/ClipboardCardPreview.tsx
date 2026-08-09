@@ -1,13 +1,12 @@
 import React, { useEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { error } from "@tauri-apps/plugin-log";
-import FolderCopyOutlinedIcon from "@mui/icons-material/FolderCopyOutlined";
-import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
 import { Item, ItemType } from "./Item";
+import { FileTypePresentation } from "./FileTypePresentation";
 import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
 import {
     compactPath,
@@ -414,7 +413,7 @@ export function ImagePreview({
                     />
                 )}
                 {naturalSize && (
-                    <div className={classes(styles, "image-resolution")}>
+                    <div className={classes(styles, "image-resolution preview-metadata")}>
                         {`${naturalSize.width} x ${naturalSize.height}`}
                     </div>
                 )}
@@ -444,7 +443,13 @@ function FilePreview({
     const previewRef = useRef<HTMLDivElement>(null);
     const fallbackPaths = parseFilePaths(item.getContent());
     const firstPath = previewInfo?.display_path || fallbackPaths[0] || item.getContent();
-    const extension = previewInfo?.extension || (firstPath.split(".").pop() || "FILE").toUpperCase();
+    const fileName = firstPath.split(/[\\/]/).filter(Boolean).pop() || "";
+    const dotIndex = fileName.lastIndexOf(".");
+    const extension = previewInfo?.extension || (
+        dotIndex > 0 && dotIndex < fileName.length - 1
+            ? fileName.slice(dotIndex + 1).toUpperCase()
+            : "FILE"
+    );
     const isImageFile = isSingleImageFileItem(item);
     const isGifFile = extension.toLowerCase() === "gif";
     const isMultiple = previewInfo?.kind === "multiple" || fallbackPaths.length > 1;
@@ -487,6 +492,7 @@ function FilePreview({
                         secondary_text: fallbackPaths.length > 1 ? t("clipboard.multipleFiles") : "",
                         extension,
                         preview_path: "",
+                        contains_directories: false,
                         image_width: null,
                         image_height: null,
                     });
@@ -533,20 +539,22 @@ function FilePreview({
                             }}
                         />
                         {displayedImageSize && (
-                            <div className={classes(styles, "image-resolution file-image-resolution")}>
+                            <div className={classes(styles, "image-resolution file-image-resolution preview-metadata")}>
                                 {`${displayedImageSize.width} x ${displayedImageSize.height}`}
                             </div>
                         )}
                     </>
-                ) : isMultiple || previewInfo?.kind === "single-folder" ? (
-                    <div className={classes(styles, "file-preview-icon multiple")}>
-                        <FolderCopyOutlinedIcon />
-                    </div>
                 ) : (
-                    <div className={classes(styles, "file-preview-icon single")}>
-                        <InsertDriveFileOutlinedIcon />
-                        <span className={classes(styles, "file-extension")}>{extension}</span>
-                    </div>
+                    <FileTypePresentation
+                        path={firstPath}
+                        extension={extension}
+                        kind={previewInfo?.kind || (isMultiple ? "multiple" : "single-icon")}
+                        containsDirectories={previewInfo?.contains_directories}
+                        multipleLabel={t("clipboard.fileCount", {
+                            count: previewInfo?.paths.length || fallbackPaths.length,
+                        })}
+                        variant="card"
+                    />
                 )}
                 {isInvalid && (
                     <div className={classes(styles, "file-invalid-badge")}>
@@ -676,7 +684,7 @@ export default function ClipboardCardPreview({
     if (item.getType() === ItemType.Color) {
         return (
             <div className={classes(styles, "card-preview-color")} style={{ background: item.getContent() }}>
-                <span className={classes(styles, "color-value")}>
+                <span className={classes(styles, "color-value preview-metadata")}>
                     <HighlightedText text={item.getContent()} query={searchQuery} />
                 </span>
             </div>

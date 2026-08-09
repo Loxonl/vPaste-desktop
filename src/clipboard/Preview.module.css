@@ -74,11 +74,6 @@ body,
   color: var(--theme-muted);
 }
 
-:root[data-theme="dark"] .preview-file-symbol {
-  color: #d9e2ef;
-  background: linear-gradient(145deg, #343c48, #252b34);
-}
-
 .preview-pin {
   position: fixed;
   top: 10px;
@@ -348,21 +343,6 @@ body,
   background: rgba(255, 255, 255, 0.88);
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.12), inset 0 0 0 1px rgba(0, 0, 0, 0.06);
   text-align: center;
-}
-
-.preview-file-symbol {
-  width: 76px;
-  height: 76px;
-  margin: 0 auto 16px;
-  border-radius: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(145deg, #e7edf7, #d6dde8);
-  color: #475569;
-  font-size: 15px;
-  font-weight: 760;
-  letter-spacing: 0;
 }
 
 .preview-file-name {

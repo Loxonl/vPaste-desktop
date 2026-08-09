@@ -71,4 +71,38 @@ describe("PreviewBody transparency", () => {
             expect(container.querySelector("img")?.className).toContain("transparency-grid");
         });
     });
+
+    it("uses the same mapped file icon and extension label as the clipboard card", async () => {
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "file_preview_info") {
+                return {
+                    kind: "single-icon",
+                    paths: ["C:\\Documents\\contract.doc"],
+                    exists: true,
+                    missing_paths: [],
+                    display_path: "C:\\Documents\\contract.doc",
+                    secondary_text: "",
+                    extension: "DOC",
+                    preview_path: "",
+                    contains_directories: false,
+                };
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+        const { container } = render(
+            <PreviewBody
+                payload={{
+                    item_type: ItemType.File,
+                    content: JSON.stringify(["C:\\Documents\\contract.doc"]),
+                }}
+                t={t}
+            />,
+        );
+
+        await waitFor(() => {
+            expect(container.querySelector("[data-file-presentation='known']")).toHaveTextContent("DOC");
+        });
+        expect(container.querySelectorAll("[data-file-presentation='known'] img")).toHaveLength(1);
+        expect(container.querySelector("[class*='preview-file-symbol']")).toBeNull();
+    });
 });

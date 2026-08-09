@@ -42,6 +42,7 @@ const zhCN: LanguagePack = {
         "clipboard.richFormat": "富文本",
         "clipboard.gifFormat": "GIF",
         "clipboard.multipleFiles": "等多个文件",
+        "clipboard.fileCount": "{count} 个文件",
         "clipboard.tab.clipboard": "剪切板",
         "clipboard.tab.favorites": "个人收藏",
         "clipboard.sourceMissingOne": "源文件不存在：{path}",

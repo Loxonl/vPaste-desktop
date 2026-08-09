@@ -230,6 +230,7 @@ struct FilePreviewInfo {
     secondary_text: String,
     extension: String,
     preview_path: String,
+    contains_directories: bool,
     image_width: Option<u32>,
     image_height: Option<u32>,
 }
@@ -3657,6 +3658,7 @@ fn build_file_preview_info(content: String) -> Result<FilePreviewInfo, String> {
     let display_path = paths.first().cloned().unwrap_or_default();
 
     if paths.len() > 1 {
+        let contains_directories = paths.iter().any(|path| PathBuf::from(path).is_dir());
         return Ok(FilePreviewInfo {
             kind: "multiple".to_string(),
             paths,
@@ -3666,6 +3668,7 @@ fn build_file_preview_info(content: String) -> Result<FilePreviewInfo, String> {
             secondary_text: String::new(),
             extension: String::new(),
             preview_path: String::new(),
+            contains_directories,
             image_width: None,
             image_height: None,
         });
@@ -3719,6 +3722,7 @@ fn build_file_preview_info(content: String) -> Result<FilePreviewInfo, String> {
         secondary_text: String::new(),
         extension,
         preview_path,
+        contains_directories: is_directory,
         image_width: image_dimensions.map(|(width, _)| width),
         image_height: image_dimensions.map(|(_, height)| height),
     })
@@ -5454,6 +5458,28 @@ mod file_preview_tests {
         assert_eq!(info.kind, "multiple");
         assert_eq!(info.display_path, first_path.to_string_lossy());
         assert!(info.secondary_text.is_empty());
+        assert!(!info.contains_directories);
+    }
+
+    #[test]
+    fn multiple_file_preview_reports_when_the_selection_contains_a_directory() {
+        let workspace = tempfile::tempdir().unwrap();
+        let file_path = workspace.path().join("first.txt");
+        let directory_path = workspace.path().join("folder");
+        fs::write(&file_path, "first").unwrap();
+        fs::create_dir(&directory_path).unwrap();
+
+        let info = build_file_preview_info(
+            serde_json::to_string(&vec![
+                file_path.to_string_lossy().to_string(),
+                directory_path.to_string_lossy().to_string(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(info.kind, "multiple");
+        assert!(info.contains_directories);
     }
 }
 

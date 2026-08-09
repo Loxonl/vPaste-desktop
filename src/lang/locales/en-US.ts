@@ -42,6 +42,7 @@ const enUS: LanguagePack = {
         "clipboard.richFormat": "Rich",
         "clipboard.gifFormat": "GIF",
         "clipboard.multipleFiles": "and more files",
+        "clipboard.fileCount": "{count} files",
         "clipboard.tab.clipboard": "Clipboard",
         "clipboard.tab.favorites": "Favorites",
         "clipboard.sourceMissingOne": "Source file missing: {path}",

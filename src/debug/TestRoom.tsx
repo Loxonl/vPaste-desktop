@@ -75,9 +75,11 @@ const CASE_GROUPS = [
         id: "file",
         name: "文件",
         cases: [
-            { id: "clipboard-file", code: "TC-FILE-01", name: "文件组合写入与读回", description: "验证多文件记录。" },
-            { id: "clipboard-text-file", code: "TC-FILE-02", name: "文本文件写入与读回", description: "验证文本文件内容。" },
-            { id: "fixture-files", code: "TC-FILE-03", name: "文件存在与失效状态", description: "验证有效与失效路径。" },
+            { id: "file-single-types", code: "TC-FILE-01", name: "TXT、PNG、PSD 单文件", description: "依次写入三个单文件项。" },
+            { id: "file-multiple", code: "TC-FILE-02", name: "TXT、PNG、PSD 多文件", description: "三个文件合为一个粘贴项。" },
+            { id: "file-folder", code: "TC-FILE-03", name: "单文件夹", description: "写入一个文件夹项。" },
+            { id: "file-folder-and-file", code: "TC-FILE-04", name: "文件夹与文件", description: "文件夹和文件合为一项。" },
+            { id: "file-missing", code: "TC-FILE-05", name: "已删除文件", description: "验证失效文件状态。" },
         ],
     },
     {

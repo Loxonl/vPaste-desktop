@@ -29,10 +29,10 @@ The script pins Inno Setup 6.7.3, downloads the matching official Simplified Chi
 - Stable: `download/stable/latest.json` → `https://vpaste.app/download/stable/latest.json`
 - RC: `download/rc/latest.json` → `https://vpaste.app/download/rc/latest.json`
 
-Authenticode and updater signing are separate. Authenticode establishes Windows publisher trust; minisign prevents the app from installing modified updater bytes. Authenticode must happen before the final updater signature and checksum.
+Authenticode and updater signing are separate. Authenticode establishes Windows publisher trust; minisign prevents the app from installing modified updater bytes. Public Windows packages are currently not Authenticode-signed, so Windows can show Unknown publisher or SmartScreen warnings. The updater signature and checksum are still generated from the final installer bytes.
 
 ## Draft Release
 
 Run `.github/workflows/release.yml` manually with the exact version and full source SHA. Build jobs are read-only. Only the final job has `contents: write`, and it can only create or update a Draft Release. The workflow does not push code, create branches, or open pull requests.
 
-Private-stage drafts leave the public updater feed disabled and are marked unsigned. Public tag releases are handled by `.github/workflows/tag-release.yml`, which Authenticode-signs Windows artifacts, signs updater payloads, uploads release assets to a draft GitHub Release, commits the merged updater manifest directly to `Loxonl/vPaste-website` using the protected `VPASTE_WEBSITE_RELEASE_TOKEN`, and only then publishes the GitHub Release. WinGet submission remains a separate manual review after the GitHub Release is public.
+Private-stage drafts leave the public updater feed disabled and are marked unsigned. Public tag releases are handled by `.github/workflows/tag-release.yml`, which verifies that Windows artifacts are unsigned, signs updater payloads, uploads release assets to a draft GitHub Release, commits the merged updater manifest directly to `Loxonl/vPaste-website` using the protected `VPASTE_WEBSITE_RELEASE_TOKEN`, and only then publishes the GitHub Release. WinGet submission remains a separate manual review after the GitHub Release is public.

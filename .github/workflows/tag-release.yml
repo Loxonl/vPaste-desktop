@@ -84,6 +84,22 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - name: Cache Cargo dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-
+
+      - name: Cache Inno Setup installer
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/innosetup-6.7.3.exe
+          key: windows-inno-setup-6.7.3-9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
+
       - name: Set up Rust and Inno Setup
         shell: pwsh
         run: |
@@ -93,7 +109,9 @@ jobs:
           $innoUrl = 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe'
           $innoInstaller = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
           $expectedHash = '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732'
-          Invoke-WebRequest -UseBasicParsing -Uri $innoUrl -OutFile $innoInstaller
+          if (-not (Test-Path -LiteralPath $innoInstaller)) {
+            Invoke-WebRequest -UseBasicParsing -Uri $innoUrl -OutFile $innoInstaller
+          }
           $actualHash = (Get-FileHash -Algorithm SHA256 $innoInstaller).Hash.ToLowerInvariant()
           if ($actualHash -ne $expectedHash) {
             throw "Inno Setup hash mismatch. Expected $expectedHash, found $actualHash."
@@ -137,41 +155,28 @@ jobs:
       - name: Build Windows application binary
         run: npx tauri build --no-bundle --config src-tauri/tauri.local.conf.json
 
-      - name: Build and sign Windows packages
+      - name: Build Windows packages and sign updater payload
         shell: pwsh
         env:
-          WINDOWS_AUTHENTICODE_CERTIFICATE: ${{ secrets.WINDOWS_AUTHENTICODE_CERTIFICATE }}
-          WINDOWS_AUTHENTICODE_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_AUTHENTICODE_CERTIFICATE_PASSWORD }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          if (-not $env:WINDOWS_AUTHENTICODE_CERTIFICATE) {
-            throw 'Required release secret WINDOWS_AUTHENTICODE_CERTIFICATE is not configured.'
-          }
-          $certificatePath = Join-Path $env:RUNNER_TEMP 'vpaste-authenticode.pfx'
-          [System.IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_AUTHENTICODE_CERTIFICATE))
-          try {
-            ./scripts/build-windows-release.ps1 `
-              -SkipAppBuild `
-              -SignUpdater `
-              -AuthenticodeCertificatePath $certificatePath `
-              -AuthenticodeCertificatePassword $env:WINDOWS_AUTHENTICODE_CERTIFICATE_PASSWORD
-          } finally {
-            Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
-          }
+          ./scripts/build-windows-release.ps1 `
+            -SkipAppBuild `
+            -SignUpdater
 
-      - name: Verify Windows Authenticode signatures
+      - name: Verify Windows packages are unsigned
         shell: pwsh
         run: |
           $appBinary = 'src-tauri/target/release/vPaste.exe'
           $installer = "src-tauri/target/release/bundle/windows/vPaste_$($env:RELEASE_VERSION)_windows_x64_setup.exe"
           foreach ($path in @($appBinary, $installer)) {
             if (-not (Test-Path -LiteralPath $path)) {
-              throw "Expected signed Windows artifact was not found: $path"
+              throw "Expected Windows artifact was not found: $path"
             }
             $signature = Get-AuthenticodeSignature -LiteralPath $path
-            if ($signature.Status -ne 'Valid') {
-              throw "Expected a valid Authenticode signature for $path, found $($signature.Status): $($signature.StatusMessage)"
+            if ($signature.Status -ne 'NotSigned') {
+              throw "Expected an unsigned Windows artifact at $path, found Authenticode status $($signature.Status): $($signature.StatusMessage)"
             }
           }
 
@@ -239,6 +244,16 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-
 
       - name: Set up Rust target
         shell: bash
@@ -394,6 +409,16 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      - name: Cache Cargo dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-
+
       - name: Set up Rust
         shell: bash
         run: |
@@ -464,6 +489,9 @@ jobs:
         run: |
           {
             echo "Source commit: $GITHUB_SHA"
+            echo
+            echo "> [!WARNING]"
+            echo "> Windows packages are not Authenticode signed. Windows may show an Unknown publisher or SmartScreen warning. Updater packages remain cryptographically signed for integrity."
             echo
             awk -v prefix="## $RELEASE_VERSION " '
               index($0, prefix) == 1 { capture = 1 }

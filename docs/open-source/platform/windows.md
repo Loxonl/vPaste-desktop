@@ -29,7 +29,7 @@ Windows is the primary implemented and tested platform.
 - Some Office, OneNote, browser, QQ/WeChat, and GIF clipboard combinations need real-app regression testing after clipboard changes.
 - Link preview depends on public site metadata and may fall back to the default link icon.
 - Updater signature verifies package integrity, but Windows SmartScreen trust still depends on code signing reputation.
-- Unsigned private-stage installers show Unknown publisher until Authenticode signing is enabled.
+- Windows installers are currently distributed without Authenticode signing and can show Unknown publisher or SmartScreen warnings.
 
 ## Windows Clipboard Notes
 

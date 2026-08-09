@@ -6,7 +6,7 @@ Use this checklist together with the detailed [Windows Packaging Runbook](window
 
 1. Create a protected GitHub Environment named `release` with maintainer approval.
 2. Add updater secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` only to that Environment.
-3. Add Windows Authenticode secret `WINDOWS_AUTHENTICODE_CERTIFICATE` as a base64-encoded PFX and `WINDOWS_AUTHENTICODE_CERTIFICATE_PASSWORD` when public Windows signing is enabled.
+3. Windows packages are currently released without Authenticode signing. Do not configure Windows certificate secrets; release notes must retain the Unknown publisher and SmartScreen warning.
 4. Add macOS certificate secrets `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and `APPLE_KEYCHAIN_PASSWORD` when public signing is enabled.
 5. Add App Store Connect secrets `APPLE_API_ISSUER`, `APPLE_API_KEY`, and `APPLE_API_PRIVATE_KEY`; the tag workflow writes the private `.p8` key to the runner temporarily and exposes its path through `APPLE_API_KEY_PATH`.
 6. Add `VPASTE_WEBSITE_RELEASE_TOKEN` with contents read/write access only to `Loxonl/vPaste-website`; the final tag release job uses it to commit updater manifests to website `main`.
@@ -64,5 +64,5 @@ The workflow creates a Draft Release only. It never creates a tag-triggered rele
 ## Publish review
 
 - Private drafts contain the Windows installer/Portable, two macOS DMGs, checksums, SBOM, dependency inventory, notices, GPL license, and source archives.
-- Public packages must additionally include updater archives/signatures and a merged updater manifest published through `Loxonl/vPaste-website`, and pass platform signature and notarization checks.
+- Public packages must additionally include updater archives/signatures and a merged updater manifest published through `Loxonl/vPaste-website`; macOS packages must also pass platform signature and notarization checks.
 - Publish only after smoke tests; never replace assets under an already published version.

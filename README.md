@@ -105,7 +105,7 @@ The `Build draft release` workflow is started manually with an exact version and
 - SHA-256 checksums, a CycloneDX SBOM, and dependency-license inventory.
 - GitHub-generated source archives plus the GPL license.
 
-Private-stage drafts are explicitly marked unsigned and do not contain updater manifests or enable the public updater feed. Public Stable packages must pass Windows Authenticode signing and Apple Developer ID signing/notarization before updater signatures and `latest.json` are generated; a maintainer reviews installation and update smoke tests before publishing the draft. See the [release checklist](docs/open-source/releases/release-checklist.md).
+Private-stage drafts are explicitly marked unsigned and do not contain updater manifests or enable the public updater feed. Public Windows packages are currently distributed without Authenticode publisher signing and may show an Unknown publisher or SmartScreen warning; their updater payloads remain cryptographically signed for integrity. Public macOS packages must pass Apple Developer ID signing/notarization before updater signatures and `latest.json` are generated. See the [release checklist](docs/open-source/releases/release-checklist.md).
 
 ## Contributing
 

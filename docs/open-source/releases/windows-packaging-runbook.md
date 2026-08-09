@@ -239,7 +239,7 @@ version runnable.
 Unsigned private-stage packages must clearly state `Unknown publisher`. Do not
 use a self-signed certificate to imitate publisher trust.
 
-When protected signing is enabled, preserve this order:
+If Authenticode signing is enabled in the future, preserve this order:
 
 1. build `vPaste.exe`;
 2. Authenticode-sign `vPaste.exe` with timestamping;
@@ -251,6 +251,11 @@ When protected signing is enabled, preserve this order:
 
 Changing a signed artifact after step 4 invalidates the downstream signature,
 checksum, and manifest. Rebuild the entire chain instead of patching an asset.
+
+The current public tag workflow intentionally skips steps 2 and 4. It verifies
+that both Windows artifacts are unsigned, then generates the updater signature
+and checksums from the final installer bytes. Release notes must retain the
+Unknown publisher and SmartScreen warning while this policy is active.
 
 ## Draft Release and publication
 

@@ -5481,6 +5481,21 @@ mod file_preview_tests {
         assert_eq!(info.kind, "multiple");
         assert!(info.contains_directories);
     }
+
+    #[test]
+    fn missing_file_preview_reports_an_invalid_path() {
+        let workspace = tempfile::tempdir().unwrap();
+        let missing_path = workspace.path().join("deleted.txt");
+
+        let info = build_file_preview_info(
+            serde_json::to_string(&vec![missing_path.to_string_lossy().to_string()]).unwrap(),
+        )
+        .unwrap();
+
+        assert!(!info.exists);
+        assert_eq!(info.kind, "text-preview");
+        assert_eq!(info.missing_paths, vec![missing_path.to_string_lossy()]);
+    }
 }
 
 #[tauri::command]

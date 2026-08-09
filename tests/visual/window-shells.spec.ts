@@ -173,7 +173,11 @@ test.describe("window shells", () => {
         expect(pagePadding).toBeGreaterThanOrEqual(24);
         await expect(page.getByRole("heading", { name: "文本与富文本" })).toBeVisible();
         await expect(page.getByText("TC-TEXT-01 · 纯文本写入与读回")).toBeVisible();
-        await expect(page.getByText("TC-FILE-02 · 文本文件写入与读回")).toBeVisible();
+        await expect(page.getByText("TC-FILE-01 · TXT、PNG、PSD 单文件")).toBeVisible();
+        await expect(page.getByText("TC-FILE-02 · TXT、PNG、PSD 多文件")).toBeVisible();
+        await expect(page.getByText("TC-FILE-03 · 单文件夹")).toBeVisible();
+        await expect(page.getByText("TC-FILE-04 · 文件夹与文件")).toBeVisible();
+        await expect(page.getByText("TC-FILE-05 · 已删除文件")).toBeVisible();
         await expect(page.getByText("TC-EXCEL-01 · Excel 图表与表格")).toBeVisible();
         await expect(page.getByText("TC-IMAGE-02 · QQ 双图消息")).toBeVisible();
         await expect(page.getByText("TC-IMAGE-03 · GIF 历史预览")).toBeVisible();

@@ -230,30 +230,23 @@ if ($authenticodeCertificate) {
 }
 
 if ($SignUpdater) {
-    $keyPath = $env:TAURI_SIGNING_PRIVATE_KEY_PATH
-    $temporaryKeyPath = $null
-    if (-not $keyPath -and $env:TAURI_SIGNING_PRIVATE_KEY) {
-        $temporaryKeyPath = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
-        Set-Content -LiteralPath $temporaryKeyPath -Value $env:TAURI_SIGNING_PRIVATE_KEY -Encoding ascii -NoNewline
-        $keyPath = $temporaryKeyPath
+    if ($env:TAURI_SIGNING_PRIVATE_KEY) {
+        # Tauri rejects signer invocations that receive both key inputs.
+        $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $null
     }
-    if (-not $keyPath) {
-        $keyPath = Join-Path $HOME ".tauri\vpaste-updater-ci.key"
-    }
-    try {
-        if ($keyPath -and (Test-Path -LiteralPath $keyPath)) {
-            $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $keyPath
-            & npx.cmd tauri signer sign $installer
+    else {
+        $keyPath = $env:TAURI_SIGNING_PRIVATE_KEY_PATH
+        if (-not $keyPath) {
+            $keyPath = Join-Path $HOME ".tauri\vpaste-updater-ci.key"
         }
-        else {
+        if (-not (Test-Path -LiteralPath $keyPath)) {
             throw "Updater signing key was not found. Set TAURI_SIGNING_PRIVATE_KEY_PATH or TAURI_SIGNING_PRIVATE_KEY."
         }
+        $env:TAURI_SIGNING_PRIVATE_KEY = $null
+        $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $keyPath
     }
-    finally {
-        if ($temporaryKeyPath -and (Test-Path -LiteralPath $temporaryKeyPath)) {
-            Remove-Item -LiteralPath $temporaryKeyPath -Force
-        }
-    }
+
+    & npx.cmd tauri signer sign $installer
     if ($LASTEXITCODE -ne 0) {
         throw "Tauri updater signer exited with code $LASTEXITCODE"
     }

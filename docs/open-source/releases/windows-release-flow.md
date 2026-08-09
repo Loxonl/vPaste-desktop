@@ -22,6 +22,8 @@ Outputs under `src-tauri/target/release/bundle/windows/`:
 
 The script pins Inno Setup 6.7.3, downloads the matching official Simplified Chinese translation from an immutable source tag, verifies its SHA-256, compiles the installer, and rejects installer overhead above 2 MiB relative to the Portable ZIP. Local builds keep the public updater feed disabled unless the caller explicitly sets `VPASTE_PUBLIC_UPDATE_FEED=1`.
 
+For public tag releases, the tag is the effective application version. Each isolated build runner synchronizes `package.json`, `package-lock.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock` to that Stable or RC version before running the strict version check and compiling artifacts. These temporary changes are not committed back to the tagged source.
+
 ## Updater package
 
 `npm run build:windows:signed-updater` signs the final Inno EXE with the updater key and writes `latest.windows.json`. The public tag workflow uses that fragment with the macOS fragments to publish the merged channel manifest through `Loxonl/vPaste-website`:

@@ -9,6 +9,10 @@ All notable public changes to vPaste Desktop will be documented in this file.
 - Allowed public Windows tag releases without an Authenticode certificate while retaining updater signatures, artifact-integrity checks, and an explicit publisher warning.
 - Added Cargo dependency and pinned Inno Setup installer caching to the tag release workflow.
 
+### Fixed
+
+- Derived every application version source from the release tag before building Stable or RC packages.
+
 ## 1.6.0 - 2026-07-24
 
 ### Added

@@ -863,6 +863,13 @@ fn filter_app_sources(filter: &SearchFilter) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn item_types_for_filter(item_type: &str) -> (&str, Option<&str>) {
+    match item_type {
+        "Text" => ("Text", Some("TextFile")),
+        _ => (item_type, None),
+    }
+}
+
 fn apply_filter_clauses(filter: &SearchFilter, clauses: &mut Vec<String>, params: &mut Vec<Value>) {
     let mode = filter.mode.as_deref().unwrap_or("");
     if mode == "favorite" || filter.favorite == Some(true) {
@@ -879,17 +886,14 @@ fn apply_filter_clauses(filter: &SearchFilter, clauses: &mut Vec<String>, params
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
     {
-        if item_type == "File" {
-            clauses.push("(item_type = ? or item_type = ?)".to_string());
-            params.push(Value::Text("File".to_string()));
-            params.push(Value::Text("TextFile".to_string()));
-        } else if item_type == "Text" {
-            clauses.push("(item_type = ? or item_type = ?)".to_string());
-            params.push(Value::Text("Text".to_string()));
-            params.push(Value::Text("TextFile".to_string()));
+        let (primary_type, compatible_type) = item_types_for_filter(item_type);
+        if let Some(compatible_type) = compatible_type {
+            clauses.push("item_type in (?, ?)".to_string());
+            params.push(Value::Text(primary_type.to_string()));
+            params.push(Value::Text(compatible_type.to_string()));
         } else {
             clauses.push("item_type = ?".to_string());
-            params.push(Value::Text(item_type.to_string()));
+            params.push(Value::Text(primary_type.to_string()));
         }
     }
 
@@ -959,11 +963,8 @@ fn item_matches_filter(item: &Item, filter: &SearchFilter) -> bool {
         .filter(|value| !value.is_empty())
     {
         let current = item.item_type.to_string();
-        if item_type == "File" {
-            if current != "File" && current != "TextFile" {
-                return false;
-            }
-        } else if current != item_type {
+        let (primary_type, compatible_type) = item_types_for_filter(item_type);
+        if current != primary_type && compatible_type != Some(current.as_str()) {
             return false;
         }
     }
@@ -3401,6 +3402,59 @@ mod tests {
         let _: &String = &sql;
         assert!(sql.contains("app_source in (?, ?)"));
         assert_eq!(params.len(), 6);
+    }
+
+    #[test]
+    fn file_filter_query_excludes_disk_backed_long_text() {
+        let file_filter = SearchFilter {
+            item_type: Some("File".to_string()),
+            ..Default::default()
+        };
+        let text_filter = SearchFilter {
+            item_type: Some("Text".to_string()),
+            ..Default::default()
+        };
+
+        let (_, file_params) =
+            build_filter_query(&file_filter, i64::MAX as u64, i64::MAX as u64, 36);
+        let (_, text_params) =
+            build_filter_query(&text_filter, i64::MAX as u64, i64::MAX as u64, 36);
+
+        assert!(file_params.contains(&Value::Text("File".to_string())));
+        assert!(!file_params.contains(&Value::Text("TextFile".to_string())));
+        assert!(text_params.contains(&Value::Text("Text".to_string())));
+        assert!(text_params.contains(&Value::Text("TextFile".to_string())));
+    }
+
+    #[test]
+    fn in_memory_filters_treat_disk_backed_long_text_as_text_only() {
+        let item = Item {
+            id: 1,
+            content: String::new(),
+            preview_content: String::new(),
+            text_content: String::new(),
+            rich_html: String::new(),
+            app_source: String::new(),
+            app_icon_path: String::new(),
+            hash: "disk-backed-long-text".to_string(),
+            title_color: String::new(),
+            item_type: ItemType::TextFile,
+            time: 1,
+            search_index: 1,
+            label: 0,
+            tags: Vec::new(),
+        };
+        let file_filter = SearchFilter {
+            item_type: Some("File".to_string()),
+            ..Default::default()
+        };
+        let text_filter = SearchFilter {
+            item_type: Some("Text".to_string()),
+            ..Default::default()
+        };
+
+        assert!(!item_matches_filter(&item, &file_filter));
+        assert!(item_matches_filter(&item, &text_filter));
     }
 }
 

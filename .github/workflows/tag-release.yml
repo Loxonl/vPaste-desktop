@@ -54,6 +54,7 @@ jobs:
             channel="stable"
             website_manifest_path="download/stable/latest.json"
           fi
+          node scripts/set-release-version.mjs "$release_version"
           node scripts/check-release-version.mjs "$RELEASE_TAG"
           {
             echo "release-version=$release_version"
@@ -99,6 +100,12 @@ jobs:
         with:
           path: ${{ runner.temp }}/innosetup-6.7.3.exe
           key: windows-inno-setup-6.7.3-9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
+
+      - name: Set release version from tag
+        shell: pwsh
+        run: |
+          node scripts/set-release-version.mjs $env:RELEASE_VERSION
+          node scripts/check-release-version.mjs $env:RELEASE_TAG
 
       - name: Set up Rust and Inno Setup
         shell: pwsh
@@ -254,6 +261,12 @@ jobs:
           key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: |
             cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-
+
+      - name: Set release version from tag
+        shell: bash
+        run: |
+          node scripts/set-release-version.mjs "$RELEASE_VERSION"
+          node scripts/check-release-version.mjs "$RELEASE_TAG"
 
       - name: Set up Rust target
         shell: bash
@@ -418,6 +431,12 @@ jobs:
           key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: |
             cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-
+
+      - name: Set release version from tag
+        shell: bash
+        run: |
+          node scripts/set-release-version.mjs "$RELEASE_VERSION"
+          node scripts/check-release-version.mjs "$RELEASE_TAG"
 
       - name: Set up Rust
         shell: bash

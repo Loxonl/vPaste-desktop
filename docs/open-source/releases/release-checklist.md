@@ -16,7 +16,7 @@ Use this checklist together with the detailed [Windows Packaging Runbook](window
 
 ## Prepare a version
 
-1. Update npm, Cargo, Tauri, lockfile, and changelog versions together.
+1. Keep the checked-in npm, Cargo, Tauri, and lockfile versions internally consistent. The tag workflow derives the effective Stable or RC version from the tag and synchronizes all five version sources in each runner before building.
 2. Build `1.6.0-rc.1` first, complete install/update/uninstall validation, then prepare `1.6.0` without replacing published assets.
 3. Run:
 

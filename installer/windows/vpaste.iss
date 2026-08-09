@@ -80,7 +80,7 @@ SetupLogging=yes
 VersionInfoCompany={#AppPublisher}
 VersionInfoDescription=vPaste Setup
 VersionInfoProductName={#AppName}
-VersionInfoProductVersion={#AppVersion}
+VersionInfoProductVersion={#VersionInfoVersion}
 VersionInfoVersion={#VersionInfoVersion}
 
 [Languages]

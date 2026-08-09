@@ -68,3 +68,5 @@ test-results/
 .trellis/
 .github/skills/
 
+# Standalone release tool build outputs
+tools/verify-updater-manifest/target/

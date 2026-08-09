@@ -18,35 +18,20 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-temporary_updater_key=""
-cleanup_temporary_updater_key() {
-  if [[ -n "${temporary_updater_key}" && -f "${temporary_updater_key}" ]]; then
-    rm -f "${temporary_updater_key}"
-  fi
-}
-trap cleanup_temporary_updater_key EXIT
-
 if [[ "${UNSIGNED}" == "1" || "${UNSIGNED}" == "true" ]]; then
   unsigned_build=true
 fi
 
-if [[ "${unsigned_build}" == false && -z "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" && -n "${TAURI_SIGNING_PRIVATE_KEY:-}" && -f "${TAURI_SIGNING_PRIVATE_KEY}" ]]; then
-  export TAURI_SIGNING_PRIVATE_KEY_PATH="${TAURI_SIGNING_PRIVATE_KEY}"
-  unset TAURI_SIGNING_PRIVATE_KEY
+if [[ "${unsigned_build}" == false && -n "${TAURI_SIGNING_PRIVATE_KEY:-}" && -f "${TAURI_SIGNING_PRIVATE_KEY}" ]]; then
+  private_key_path="${TAURI_SIGNING_PRIVATE_KEY}"
+  export TAURI_SIGNING_PRIVATE_KEY="$(< "${private_key_path}")"
 fi
 
-if [[ "${unsigned_build}" == false && -z "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" && -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
-  temporary_updater_key="$(mktemp)"
-  chmod 600 "${temporary_updater_key}"
-  printf '%s' "${TAURI_SIGNING_PRIVATE_KEY}" > "${temporary_updater_key}"
-  export TAURI_SIGNING_PRIVATE_KEY_PATH="${temporary_updater_key}"
-  unset TAURI_SIGNING_PRIVATE_KEY
-fi
-
-if [[ "${unsigned_build}" == false && -z "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]]; then
+if [[ "${unsigned_build}" == false && -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
   default_key="${HOME}/.tauri/vpaste-updater-ci.key"
   if [[ -f "${default_key}" ]]; then
-    export TAURI_SIGNING_PRIVATE_KEY_PATH="${default_key}"
+    private_key_path="${default_key}"
+    export TAURI_SIGNING_PRIVATE_KEY="$(< "${private_key_path}")"
   else
     echo "Updater signing key is not set and ${default_key} does not exist." >&2
     exit 1
@@ -142,7 +127,7 @@ fi
 signature="${updater_artifact}.sig"
 
 if [[ ! -f "${signature}" ]]; then
-  TAURI_SIGNING_PRIVATE_KEY_PATH="${TAURI_SIGNING_PRIVATE_KEY_PATH}" \
+  TAURI_SIGNING_PRIVATE_KEY="${TAURI_SIGNING_PRIVATE_KEY}" \
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}" \
     npx tauri signer sign "${updater_artifact}"
 fi

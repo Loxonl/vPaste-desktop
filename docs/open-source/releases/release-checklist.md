@@ -7,7 +7,7 @@ Use this checklist together with the detailed [Windows Packaging Runbook](window
 1. Create a protected GitHub Environment named `release` with maintainer approval.
 2. Add updater secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` only to that Environment.
 3. Windows packages are currently released without Authenticode signing. Do not configure Windows certificate secrets; release notes must retain the Unknown publisher and SmartScreen warning.
-4. Add macOS certificate secrets `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, and `APPLE_KEYCHAIN_PASSWORD` when public signing is enabled.
+4. Add macOS certificate secrets `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, and `APPLE_KEYCHAIN_PASSWORD` when public signing is enabled. The workflow derives `APPLE_SIGNING_IDENTITY` from the imported Developer ID certificate.
 5. Add App Store Connect secrets `APPLE_API_ISSUER`, `APPLE_API_KEY`, and `APPLE_API_PRIVATE_KEY`; the tag workflow writes the private `.p8` key to the runner temporarily and exposes its path through `APPLE_API_KEY_PATH`.
 6. Add `VPASTE_WEBSITE_RELEASE_TOKEN` with contents read/write access only to `Loxonl/vPaste-website`; the final tag release job uses it to commit updater manifests to website `main`.
 7. Verify the updater private key matches `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`, and keep an encrypted offline backup.

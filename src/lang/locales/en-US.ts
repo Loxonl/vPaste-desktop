@@ -39,6 +39,8 @@ const enUS: LanguagePack = {
         "clipboard.source": "Source: {source}",
         "clipboard.unknownApp": "Unknown app",
         "clipboard.mixedText": "Text included",
+        "clipboard.largeImagePreview": "Large image — automatic preview paused",
+        "clipboard.resourceLimitedPreview": "This image or animation is too large to preview smoothly, so preview was skipped",
         "clipboard.richFormat": "Rich",
         "clipboard.gifFormat": "GIF",
         "clipboard.multipleFiles": "and more files",

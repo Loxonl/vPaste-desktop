@@ -94,13 +94,9 @@ export function createClipboardPasteRuntime(
         options.selectItem(hash);
         let content = item.getContent();
         let itemType = getBackendTypeLabel(item.getType());
+        const copyFromHistory = item.getType() === ItemType.TextFile;
         if (plainText && item.getTextContent()) {
             content = item.getTextContent();
-            itemType = "Text";
-        } else if (item.getType() === ItemType.TextFile) {
-            content = await invoke<string>("plain_text_content", {
-                hash: item.getHash(),
-            });
             itemType = "Text";
         } else if (item.getType() === ItemType.Link) {
             content = content.split("|||")[0];
@@ -126,7 +122,15 @@ export function createClipboardPasteRuntime(
             if (restoreAlt) {
                 await waitForQuickInputModifierRelease(triggerKey);
             }
-            if (itemType === "Image" && hasPermission) {
+            if (copyFromHistory) {
+                await invoke("copy_history_item", {
+                    hash: item.getHash(),
+                    plainText,
+                });
+                if (hasPermission) {
+                    await options.hideWindow();
+                }
+            } else if (itemType === "Image" && hasPermission) {
                 const hidePromise = options.hideWindow();
                 await invoke("copy", { item: content, itemType, hash: copyHash });
                 await hidePromise;
@@ -158,10 +162,10 @@ export function createClipboardPasteRuntime(
         options.closeContextMenu();
         options.selectItem(item.getHash());
         try {
-            const text = await invoke<string>("plain_text_content", {
+            await invoke("copy_history_item", {
                 hash: item.getHash(),
+                plainText: true,
             });
-            await invoke("copy", { item: text, itemType: "Text", hash: null });
             if (!hasPermission) {
                 await finishCopyWithoutAutoPaste();
                 return;

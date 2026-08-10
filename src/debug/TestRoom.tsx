@@ -90,6 +90,15 @@ const CASE_GROUPS = [
         ],
     },
     {
+        id: "boundary",
+        name: "边界测试",
+        cases: [
+            { id: "boundary-long-text", code: "TC-BOUNDARY-01", name: "超长文本", description: "验证主面板显示受控摘要，粘贴仍保留完整内容。" },
+            { id: "boundary-large-image", code: "TC-BOUNDARY-02", name: "超大图片", description: "验证超过自动预览预算后稳定降级。" },
+            { id: "boundary-large-gif", code: "TC-BOUNDARY-03", name: "大型 GIF", description: "验证超过自动播放预算后显示静态预览。" },
+        ],
+    },
+    {
         id: "window",
         name: "主窗口生命周期",
         cases: [

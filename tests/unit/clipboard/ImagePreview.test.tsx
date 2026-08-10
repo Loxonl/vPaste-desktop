@@ -83,12 +83,12 @@ describe("ImagePreview", () => {
         });
     });
 
-    it("remounts after the completed window refresh activates media and recovers a failed asset source", async () => {
+    it("keeps the painted image when a refreshed row has the same stable identity", async () => {
         const item = new Item(
             1,
-            "image-hash",
+            "stable-image-hash",
             ItemType.Image,
-            "C:\\history\\image.bin",
+            "C:\\history\\stable-image.bin",
             Date.now(),
         );
         const onGifFormatChange = vi.fn();
@@ -97,7 +97,6 @@ describe("ImagePreview", () => {
             <ImagePreview
                 item={item}
                 active={false}
-                refreshKey={0}
                 t={t}
                 onGifFormatChange={onGifFormatChange}
             />,
@@ -110,19 +109,50 @@ describe("ImagePreview", () => {
         expect(firstImage?.className).toContain("image-preview-img");
         expect(firstImage).not.toHaveAttribute("loading");
 
+        const refreshedItem = new Item(
+            2,
+            "stable-image-hash",
+            ItemType.Image,
+            "C:\\history\\stable-image.bin",
+            Date.now() + 1,
+        );
         rerender(
             <ImagePreview
-                item={item}
-                active={true}
-                refreshKey={1}
+                item={refreshedItem}
+                active={false}
                 t={t}
                 onGifFormatChange={onGifFormatChange}
             />,
         );
         const refreshedImage = container.querySelector("img");
-        expect(refreshedImage).not.toBe(firstImage);
+        expect(refreshedImage).toBe(firstImage);
+        expect(invokeMock.mock.calls.filter(([command]) => (
+            command === "history_image_card_preview_asset_path"
+        ))).toHaveLength(1);
+    });
 
-        fireEvent.error(refreshedImage!);
+    it("recovers a failed asset source without making refresh keys recreate the image", async () => {
+        const item = new Item(
+            2,
+            "recover-image-hash",
+            ItemType.Image,
+            "C:\\history\\recover-image.bin",
+            Date.now(),
+        );
+        const { container } = render(
+            <ImagePreview
+                item={item}
+                active={false}
+                t={((key: string) => key) as never}
+                onGifFormatChange={vi.fn()}
+            />,
+        );
+
+        await waitFor(() => {
+            expect(container.querySelector("img")).toHaveAttribute("src", "asset://C:\\cache\\preview.png");
+        });
+
+        fireEvent.error(container.querySelector("img")!);
         await waitFor(() => {
             expect(container.querySelector("img")).toHaveAttribute(
                 "src",
@@ -130,8 +160,100 @@ describe("ImagePreview", () => {
             );
         });
         expect(invokeMock).toHaveBeenCalledWith("history_file_data_url", {
-            path: "C:\\history\\image.bin",
+            path: "C:\\history\\recover-image.bin",
         });
+    });
+
+    it("keeps oversized images in a stable metadata fallback without requesting an asset", async () => {
+        invokeMock.mockImplementation(async (command: string) => {
+            if (command === "history_image_metadata") {
+                return {
+                    width: 12_000,
+                    height: 5_000,
+                    isGif: false,
+                    sourceBytes: 48 * 1024 * 1024,
+                    previewLimited: true,
+                    animationLimited: false,
+                };
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+        const item = new Item(
+            3,
+            "oversized-image-hash",
+            ItemType.Image,
+            "C:\\history\\oversized-image.bin",
+            Date.now(),
+        );
+        const { container, rerender } = render(
+            <ImagePreview
+                item={item}
+                active={false}
+                t={((key: string) => key) as never}
+                onGifFormatChange={vi.fn()}
+            />,
+        );
+
+        await waitFor(() => {
+            expect(container.querySelector("[data-image-preview-limited='true']"))
+                .toHaveTextContent("clipboard.largeImagePreview");
+        });
+        rerender(
+            <ImagePreview
+                item={new Item(
+                    4,
+                    "oversized-image-hash",
+                    ItemType.Image,
+                    "C:\\history\\oversized-image.bin",
+                    Date.now() + 1,
+                )}
+                active={true}
+                t={((key: string) => key) as never}
+                onGifFormatChange={vi.fn()}
+            />,
+        );
+
+        expect(container.querySelector("img")).toBeNull();
+        expect(invokeMock.mock.calls.filter(([command]) => (
+            command === "history_image_metadata"
+        ))).toHaveLength(1);
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "history_image_card_preview_asset_path",
+            expect.anything(),
+        );
+    });
+
+    it("shares in-flight metadata and preview work across duplicate mounted cards", async () => {
+        const item = new Item(
+            5,
+            "single-flight-image-hash",
+            ItemType.Image,
+            "C:\\history\\single-flight-image.bin",
+            Date.now(),
+        );
+        const props = {
+            item,
+            active: false,
+            t: ((key: string) => key) as never,
+            onGifFormatChange: vi.fn(),
+        };
+
+        const { container } = render(
+            <>
+                <ImagePreview {...props} />
+                <ImagePreview {...props} />
+            </>,
+        );
+
+        await waitFor(() => {
+            expect(container.querySelectorAll("img")).toHaveLength(2);
+        });
+        expect(invokeMock.mock.calls.filter(([command]) => (
+            command === "history_image_metadata"
+        ))).toHaveLength(1);
+        expect(invokeMock.mock.calls.filter(([command]) => (
+            command === "history_image_card_preview_asset_path"
+        ))).toHaveLength(1);
     });
 
     it("styles transparency with a checkerboard confined to the image bounds", () => {

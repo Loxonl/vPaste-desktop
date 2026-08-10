@@ -77,6 +77,106 @@ describe("clipboard preview runtime", () => {
         );
     });
 
+    it.each([
+        [
+            "oversized static image",
+            {
+                width: 0,
+                height: 0,
+                isGif: false,
+                sourceBytes: 48 * 1024 * 1024,
+                previewLimited: true,
+                animationLimited: false,
+            },
+        ],
+        [
+            "oversized animated GIF",
+            {
+                width: 96,
+                height: 64,
+                isGif: true,
+                sourceBytes: 24 * 1024 * 1024,
+                previewLimited: false,
+                animationLimited: true,
+            },
+        ],
+    ])("blocks %s preview before the full image is read", async (_name, metadata) => {
+        const callbacks = options();
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "history_image_metadata") return metadata;
+            if (command === "hide_preview_window") return undefined;
+            throw new Error("Unexpected command: " + command);
+        });
+        const runtime = createClipboardPreviewRuntime(callbacks);
+
+        await runtime.openPreviewItem(item(ItemType.Image));
+
+        expect(tauri.invoke).toHaveBeenNthCalledWith(1, "history_image_metadata", {
+            path: "content",
+        });
+        expect(tauri.invoke).toHaveBeenNthCalledWith(2, "hide_preview_window");
+        expect(tauri.invoke).not.toHaveBeenCalledWith(
+            "show_preview_window",
+            expect.anything(),
+        );
+        expect(callbacks.showToast).toHaveBeenCalledWith(
+            "clipboard.resourceLimitedPreview",
+            "warning",
+        );
+    });
+
+    it("keeps opening ordinary images after the budget check passes", async () => {
+        const callbacks = options();
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "history_image_metadata") {
+                return {
+                    width: 640,
+                    height: 480,
+                    isGif: false,
+                    sourceBytes: 128 * 1024,
+                    previewLimited: false,
+                    animationLimited: false,
+                };
+            }
+            if (command === "show_preview_window") return undefined;
+            throw new Error("Unexpected command: " + command);
+        });
+        const runtime = createClipboardPreviewRuntime(callbacks);
+
+        await runtime.openPreviewItem(item(ItemType.Image));
+
+        expect(tauri.invoke).toHaveBeenNthCalledWith(1, "history_image_metadata", {
+            path: "content",
+        });
+        expect(tauri.invoke).toHaveBeenNthCalledWith(2, "show_preview_window", {
+            itemType: ItemType.Image,
+            content: "content",
+            previewContent: "preview",
+            textContent: "plain",
+            richHtml: "<p>rich</p>",
+            appSource: "source",
+        });
+        expect(callbacks.showToast).not.toHaveBeenCalled();
+    });
+
+    it("does not fall back to an unbounded preview when image metadata fails", async () => {
+        const callbacks = options();
+        tauri.invoke.mockRejectedValue(new Error("metadata unavailable"));
+        const runtime = createClipboardPreviewRuntime(callbacks);
+
+        await runtime.openPreviewItem(item(ItemType.Image));
+
+        expect(tauri.invoke).toHaveBeenCalledOnce();
+        expect(tauri.invoke).not.toHaveBeenCalledWith(
+            "show_preview_window",
+            expect.anything(),
+        );
+        expect(callbacks.showToast).toHaveBeenCalledWith(
+            "clipboard.previewUnsupported",
+            "warning",
+        );
+    });
+
     it("does not let an older file request open after a newer request wins", async () => {
         const callbacks = options();
         let resolveFileInfo: (value: unknown) => void = () => undefined;

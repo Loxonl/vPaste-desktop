@@ -197,6 +197,7 @@ export default function Clipboard() {
     const toastTimerRef = useRef<number | null>(null);
     const scrollRefreshTimerRef = useRef<number | null>(null);
     const imagePrewarmTimerRef = useRef<number | null>(null);
+    const imagePrewarmIdleRef = useRef<number | null>(null);
     const loadMoreCheckFrameRef = useRef<number | null>(null);
     const searchDebounceTimerRef = useRef<number | null>(null);
     const searchRequestSeqRef = useRef(0);
@@ -761,7 +762,7 @@ export default function Clipboard() {
             .filter(item => item.getType() === ItemType.Image)
             .map(item => item.getContent())
             .filter(path => path && !imageClipboardCachePrewarmRef.current.has(path))
-            .slice(0, 18);
+            .slice(0, 6);
 
         if (paths.length === 0) return;
         paths.forEach(path => imageClipboardCachePrewarmRef.current.add(path));
@@ -770,24 +771,24 @@ export default function Clipboard() {
         }
         imagePrewarmTimerRef.current = window.setTimeout(() => {
             imagePrewarmTimerRef.current = null;
-            const firstWave = paths.slice(0, 8);
-            const secondWave = paths.slice(8, 18);
-            void Promise.all([
-                invoke("prewarm_image_preview_cache", { paths: firstWave }),
-                invoke("prewarm_image_clipboard_cache", { paths: firstWave.slice(0, 4) }),
-            ])
-                .catch(e => {
-                    firstWave.forEach(path => imageClipboardCachePrewarmRef.current.delete(path));
-                    error(`Failed to prewarm image caches: ${e}`);
-                });
-            if (secondWave.length > 0) {
-                window.setTimeout(() => {
-                    void invoke("prewarm_image_preview_cache", { paths: secondWave })
-                        .catch(e => {
-                            secondWave.forEach(path => imageClipboardCachePrewarmRef.current.delete(path));
-                            error(`Failed to prewarm deferred image previews: ${e}`);
-                        });
-                }, 1400);
+            const prewarm = () => {
+                imagePrewarmIdleRef.current = null;
+                void invoke("prewarm_image_preview_cache", { paths })
+                    .then(() => {
+                        window.setTimeout(() => {
+                            void invoke("prewarm_image_clipboard_cache", { paths: paths.slice(0, 2) })
+                                .catch(e => error(`Failed to prewarm image clipboard cache: ${e}`));
+                        }, 1800);
+                    })
+                    .catch(e => {
+                        paths.forEach(path => imageClipboardCachePrewarmRef.current.delete(path));
+                        error(`Failed to prewarm image preview cache: ${e}`);
+                    });
+            };
+            if (typeof window.requestIdleCallback === "function") {
+                imagePrewarmIdleRef.current = window.requestIdleCallback(prewarm, { timeout: 1800 });
+            } else {
+                imagePrewarmIdleRef.current = window.setTimeout(prewarm, 320);
             }
         }, 900);
     };
@@ -975,7 +976,6 @@ export default function Clipboard() {
             },
             onWindowShowComplete: () => {
                 setAnimationState("entered");
-                setFileRefreshKey(key => key + 1);
             },
             onWindowHide: () => {
                 resetCardsPointerState();
@@ -987,6 +987,14 @@ export default function Clipboard() {
                 if (imagePrewarmTimerRef.current !== null) {
                     window.clearTimeout(imagePrewarmTimerRef.current);
                     imagePrewarmTimerRef.current = null;
+                }
+                if (imagePrewarmIdleRef.current !== null) {
+                    if (typeof window.cancelIdleCallback === "function") {
+                        window.cancelIdleCallback(imagePrewarmIdleRef.current);
+                    } else {
+                        window.clearTimeout(imagePrewarmIdleRef.current);
+                    }
+                    imagePrewarmIdleRef.current = null;
                 }
                 if (loadMoreCheckFrameRef.current !== null) {
                     window.cancelAnimationFrame(loadMoreCheckFrameRef.current);

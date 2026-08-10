@@ -104,6 +104,19 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>, String> {
     read_file_with_key(path, &KEY_BYTES)
 }
 
+pub fn file_plaintext_len(path: impl AsRef<Path>) -> Result<u64, String> {
+    let path = path.as_ref();
+    let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
+    if !is_encrypted_file(path)? {
+        return Ok(metadata.len());
+    }
+    const NONCE_BYTES: u64 = 24;
+    const AUTH_TAG_BYTES: u64 = 16;
+    Ok(metadata
+        .len()
+        .saturating_sub(FILE_MAGIC.len() as u64 + NONCE_BYTES + AUTH_TAG_BYTES))
+}
+
 pub fn read_file_with_key(path: impl AsRef<Path>, key: &SecureKey) -> Result<Vec<u8>, String> {
     let bytes = fs::read(path.as_ref()).map_err(|err| err.to_string())?;
     if let Some(payload) = bytes.strip_prefix(FILE_MAGIC) {

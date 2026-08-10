@@ -22,7 +22,7 @@ use image::{ImageBuffer, Rgba};
 use lazy_static::lazy_static;
 use log::{error, info, LevelFilter};
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::image::Image as TauriImage;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -51,6 +51,7 @@ use crate::config::Config;
 mod app_updater;
 mod clipboard;
 mod config;
+mod image_preview;
 mod maintenance;
 mod runtime_mode;
 mod search;
@@ -73,6 +74,7 @@ static CLIPBOARD_VISIBLE: AtomicBool = AtomicBool::new(false);
 static CLIPBOARD_HIDING: AtomicBool = AtomicBool::new(false);
 static CLIPBOARD_WINDOW_TRANSITION_LOCK: Mutex<()> = Mutex::new(());
 static IMAGE_PREVIEW_CACHE_PUBLISH_LOCK: Mutex<()> = Mutex::new(());
+static SEARCH_COMMAND_LOCK: Mutex<()> = Mutex::new(());
 static IMAGE_PREVIEW_CACHE_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 pub(crate) static CLIPBOARD_IGNORE_NEXT_CHANGE: AtomicBool = AtomicBool::new(false);
 pub(crate) static CLIPBOARD_HISTORY_PAUSED: AtomicBool = AtomicBool::new(false);
@@ -235,13 +237,7 @@ struct FilePreviewInfo {
     image_height: Option<u32>,
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HistoryImageMetadata {
-    width: u32,
-    height: u32,
-    is_gif: bool,
-}
+use crate::image_preview::HistoryImageMetadata;
 
 #[derive(Clone, Copy, Serialize)]
 struct PasteAccessibilityPermissionStatus {
@@ -6715,7 +6711,7 @@ fn prewarm_image_clipboard_cache(paths: Vec<String>) {
 #[tauri::command]
 fn prewarm_image_preview_cache(paths: Vec<String>) {
     std::thread::spawn(move || {
-        for path in paths.into_iter().filter(|path| !path.is_empty()).take(18) {
+        for path in paths.into_iter().filter(|path| !path.is_empty()).take(6) {
             let _ = history_image_metadata_for_path(&path);
             if let Err(err) = image_card_preview_asset_path(&path) {
                 info!("Skip image preview cache prewarm for {}: {}", path, err);
@@ -6901,95 +6897,30 @@ fn image_preview_asset_path(path: &str) -> Result<String, String> {
     Ok(cache_path.to_string_lossy().to_string())
 }
 
-fn image_source_cache_key(path: &str) -> Option<String> {
-    use sha2::{Digest, Sha256};
-
-    let metadata = fs::metadata(path).ok()?;
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-
-    let mut hasher = Sha256::new();
-    hasher.update(path.as_bytes());
-    hasher.update(metadata.len().to_le_bytes());
-    hasher.update(modified.to_le_bytes());
-    Some(hex::encode(hasher.finalize()))
-}
-
 fn image_metadata_cache_path(path: &str) -> Option<PathBuf> {
-    image_source_cache_key(path).map(|key| {
-        PathBuf::from(app_runtime_dir(&["image_preview_cache"]))
-            .join(format!("{key}.metadata.json"))
-    })
-}
-
-fn read_image_metadata_cache(cache_path: &Path) -> Option<HistoryImageMetadata> {
-    fs::read_to_string(cache_path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<HistoryImageMetadata>(&content).ok())
-}
-
-fn write_image_metadata_cache(cache_path: &Path, metadata: HistoryImageMetadata) {
-    if let Some(parent) = cache_path.parent() {
-        if fs::create_dir_all(parent).is_err() {
-            return;
-        }
-    }
-    if let Ok(content) = serde_json::to_string(&metadata) {
-        let _ = fs::write(cache_path, content);
-    }
+    image_preview::metadata_cache_path(path)
 }
 
 fn history_image_metadata_from_bytes(
     path: &str,
     bytes: &[u8],
 ) -> Result<HistoryImageMetadata, String> {
-    let (width, height) = image_dimensions_from_bytes(bytes)?;
-    let metadata = HistoryImageMetadata {
-        width,
-        height,
-        is_gif: bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
-    };
-    if let Some(cache_path) = image_metadata_cache_path(path) {
-        write_image_metadata_cache(&cache_path, metadata);
-    }
-    Ok(metadata)
+    image_preview::metadata_from_bytes(path, bytes)
 }
 
 fn history_image_metadata_for_path(path: &str) -> Result<HistoryImageMetadata, String> {
-    if let Some(cache_path) = image_metadata_cache_path(path) {
-        if let Some(metadata) = read_image_metadata_cache(&cache_path) {
-            return Ok(metadata);
-        }
-    }
-    let bytes = secure_store::read_file(path)?;
-    history_image_metadata_from_bytes(path, &bytes)
+    image_preview::metadata_for_path(path)
 }
 
-fn image_thumbnail_preview_asset_path(
-    path: &str,
-    bytes: &[u8],
-    cache_version: &str,
-) -> Result<String, String> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+fn image_thumbnail_preview_asset_path(path: &str, bytes: &[u8]) -> Result<String, String> {
     use std::io::Cursor;
 
-    let mut hasher = DefaultHasher::new();
-    cache_version.hash(&mut hasher);
-    path.hash(&mut hasher);
-    bytes.len().hash(&mut hasher);
-    let cache_dir = PathBuf::from(app_runtime_dir(&["image_preview_cache"]));
-    fs::create_dir_all(&cache_dir).map_err(|err| err.to_string())?;
-    let cache_path = cache_dir.join(format!("{:x}.png", hasher.finish()));
+    let cache_path = image_preview::card_preview_cache_path(path)?;
     if valid_png_cache_file(&cache_path) {
         return Ok(cache_path.to_string_lossy().to_string());
     }
 
-    let image = image::load_from_memory(bytes).map_err(|err| err.to_string())?;
+    let image = image_preview::decode_card_image(bytes)?;
     let thumb = image.thumbnail(720, 420);
     let mut png = Vec::new();
     thumb
@@ -7085,9 +7016,23 @@ fn release_quick_input_keys(trigger_key: Option<&str>) {
 fn release_quick_input_keys(_trigger_key: Option<&str>) {}
 
 fn image_card_preview_asset_path(path: &str) -> Result<String, String> {
+    let cache_path = image_preview::card_preview_cache_path(path)?;
+    if valid_png_cache_file(&cache_path) {
+        return Ok(cache_path.to_string_lossy().to_string());
+    }
+    let metadata = history_image_metadata_for_path(path)?;
+    if metadata.preview_limited {
+        return Err(format!(
+            "image preview exceeds automatic budget: {} bytes, {}x{}",
+            metadata.source_bytes, metadata.width, metadata.height
+        ));
+    }
+    let _decode_guard = image_preview::decode_lock()?;
+    if valid_png_cache_file(&cache_path) {
+        return Ok(cache_path.to_string_lossy().to_string());
+    }
     let bytes = secure_store::read_file(path)?;
-    image_thumbnail_preview_asset_path(path, &bytes, "card-preview-v4")
-        .or_else(|_| image_preview_asset_path(path))
+    image_thumbnail_preview_asset_path(path, &bytes).or_else(|_| image_preview_asset_path(path))
 }
 
 #[cfg(test)]
@@ -7154,36 +7099,73 @@ mod image_cache_tests {
         assert!(width > 0);
         assert!(height > 0);
     }
+
+    #[test]
+    fn oversized_source_metadata_skips_original_file_decode() {
+        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(app_data.path().to_string_lossy().to_string());
+        let source = app_data.path().join("oversized-image.bin");
+        let file = fs::File::create(&source).unwrap();
+        file.set_len(32 * 1024 * 1024 + 1).unwrap();
+
+        let metadata = history_image_metadata_for_path(source.to_str().unwrap()).unwrap();
+
+        assert_eq!(metadata.source_bytes, 32 * 1024 * 1024 + 1);
+        assert!(metadata.preview_limited);
+        assert_eq!((metadata.width, metadata.height), (0, 0));
+    }
 }
 
 #[tauri::command]
-fn history_file_preview_asset_path(path: String) -> Result<String, String> {
-    image_preview_asset_path(&path)
+async fn history_file_preview_asset_path(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || image_preview_asset_path(&path))
+        .await
+        .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
-fn history_image_card_preview_asset_path(path: String) -> Result<String, String> {
-    image_card_preview_asset_path(&path)
+async fn history_image_card_preview_asset_path(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || image_card_preview_asset_path(&path))
+        .await
+        .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
-fn history_image_metadata(path: String) -> Result<HistoryImageMetadata, String> {
-    history_image_metadata_for_path(&path)
+async fn history_image_metadata(path: String) -> Result<HistoryImageMetadata, String> {
+    tauri::async_runtime::spawn_blocking(move || history_image_metadata_for_path(&path))
+        .await
+        .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
-fn history_image_dimensions(path: String) -> Result<(u32, u32), String> {
-    history_image_metadata_for_path(&path).map(|metadata| (metadata.width, metadata.height))
+async fn history_image_dimensions(path: String) -> Result<(u32, u32), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        history_image_metadata_for_path(&path).map(|metadata| (metadata.width, metadata.height))
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
-fn history_image_is_gif(path: String) -> Result<bool, String> {
-    history_image_metadata_for_path(&path).map(|metadata| metadata.is_gif)
+async fn history_image_is_gif(path: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        history_image_metadata_for_path(&path).map(|metadata| metadata.is_gif)
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
-fn history_file_data_url(path: String) -> Result<String, String> {
-    image_data_url(&path)
+async fn history_file_data_url(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if secure_store::file_plaintext_len(&path)? > image_preview::CARD_PREVIEW_MAX_SOURCE_BYTES {
+            return Err("image exceeds the automatic preview budget".to_string());
+        }
+        image_data_url(&path)
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[allow(dead_code)]
@@ -7546,7 +7528,7 @@ fn copy(
                 return copy_rich_to_clipboard(&item, &meta);
             }
         }
-        info!("Copying text: {}", item);
+        info!("Copying text payload: {} bytes", item.len());
         mark_internal();
         app.clipboard().write_text(item).map_err(|e| {
             error!("Failed to set text: {}", e);
@@ -7557,6 +7539,25 @@ fn copy(
     }
     info!("Copy successful");
     Ok(())
+}
+
+#[tauri::command]
+async fn copy_history_item(
+    app: tauri::AppHandle,
+    hash: String,
+    plain_text: bool,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let text = clipboard::plain_text_content(&hash)?;
+        copy(
+            app,
+            text,
+            "Text".to_string(),
+            if plain_text { None } else { Some(hash) },
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[cfg(target_os = "macos")]
@@ -7714,7 +7715,7 @@ fn set_position(window: tauri::Window, position: LogicalPosition<u32>) -> Result
 }
 
 #[tauri::command]
-fn search(
+async fn search(
     keywords: String,
     last_id: u64,
     last_time: Option<u64>,
@@ -7722,23 +7723,27 @@ fn search(
     label: String,
 ) -> Result<String, String> {
     let last_time = last_time.unwrap_or(0);
-    info!("begin search {} {} {} ", keywords, last_id, last_time);
-    let start = Instant::now();
-    let page = clipboard::search(&keywords, last_id, last_time, limit, &label);
-    if page.is_err() {
-        let error_msg = page.err().unwrap_or("can't get error log".to_string());
-        error!("{:?}", &error_msg);
-        return Err(error_msg);
-    }
-    let mut page = page.unwrap();
-    let duration = start.elapsed();
-    page.consumed = duration.as_millis();
-    info!(
-        "search {} {} {} consumed {}",
-        keywords, last_id, last_time, page.consumed
-    );
-    let result_json = serde_json::to_string(&page).unwrap();
-    Ok(result_json)
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = SEARCH_COMMAND_LOCK
+            .lock()
+            .map_err(|_| "search command lock is poisoned".to_string())?;
+        info!("begin search {} {} {} ", keywords, last_id, last_time);
+        let start = Instant::now();
+        let mut page = clipboard::search(&keywords, last_id, last_time, limit, &label).map_err(
+            |error_msg| {
+                error!("{:?}", &error_msg);
+                error_msg
+            },
+        )?;
+        page.consumed = start.elapsed().as_millis();
+        info!(
+            "search {} {} {} consumed {}",
+            keywords, last_id, last_time, page.consumed
+        );
+        serde_json::to_string(&page).map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
@@ -8650,6 +8655,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             copy,
+            copy_history_item,
             record_text_history,
             search,
             paste,

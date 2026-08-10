@@ -8,6 +8,11 @@ type Translate = (
     params?: Record<string, string | number>,
 ) => string;
 
+type HistoryImageMetadata = {
+    previewLimited?: boolean;
+    animationLimited?: boolean;
+};
+
 type ClipboardPreviewRuntimeOptions = {
     closeContextMenu: () => void;
     requestSequence: { current: number };
@@ -46,6 +51,35 @@ export function createClipboardPreviewRuntime(
             } catch (previewError) {
                 error(`Failed to prepare file preview: ${previewError}`);
                 options.showToast(options.t("clipboard.previewUnsupported"), "warning");
+                return;
+            }
+        }
+        if (item.getType() === "Image") {
+            try {
+                const metadata = await invoke<HistoryImageMetadata>(
+                    "history_image_metadata",
+                    { path: item.getContent() },
+                );
+                if (requestSeq !== options.requestSequence.current) return;
+                if (metadata.previewLimited || metadata.animationLimited) {
+                    try {
+                        await invoke("hide_preview_window");
+                    } catch (previewError) {
+                        error("Failed to close resource-limited preview: " + previewError);
+                    }
+                    options.showToast(
+                        options.t("clipboard.resourceLimitedPreview"),
+                        "warning",
+                    );
+                    return;
+                }
+            } catch (previewError) {
+                error("Failed to check image preview budget: " + previewError);
+                if (requestSeq !== options.requestSequence.current) return;
+                options.showToast(
+                    options.t("clipboard.previewUnsupported"),
+                    "warning",
+                );
                 return;
             }
         }

@@ -1868,6 +1868,13 @@ pub(crate) fn is_semantically_blank_text(content: &str) -> bool {
     })
 }
 
+fn normalized_color_text(content: &str) -> Option<&str> {
+    let normalized = content.trim_matches(|character: char| {
+        character.is_whitespace() || matches!(character, '\0' | '\u{200B}' | '\u{FEFF}')
+    });
+    color::is_color(normalized).then_some(normalized)
+}
+
 fn should_hash_rich_text_by_plain_text(plain_text: &str) -> bool {
     let trimmed = plain_text.trim();
     if trimmed.is_empty() {
@@ -1934,6 +1941,11 @@ pub fn insert_rich_text_from_app(
         );
         return;
     }
+    if let Some(normalized_color) = normalized_color_text(&plain_text) {
+        insert_text_from_app_impl(normalized_color.to_string(), app_source, app_icon_path);
+        return;
+    }
+
     let normalized_plain_text = plain_text.trim().to_string();
     if !normalized_plain_text.is_empty() && convert_type(&normalized_plain_text) == ItemType::Link {
         insert_text_from_app_impl(normalized_plain_text, app_source, app_icon_path);
@@ -2046,6 +2058,8 @@ fn insert_text_from_app_impl(content: String, app_source: &str, app_icon_path: &
         );
         return;
     }
+    let normalized_color = normalized_color_text(&content).map(str::to_string);
+    let content = normalized_color.unwrap_or(content);
     let hash = calculate_xxhash64(content.as_bytes());
     let preview_content = content.chars().take(CARD_TEXT_PREVIEW_CHARS).collect();
     let (stored_content, item_type) = if content.len() > LARGE_TEXT_THRESHOLD_BYTES {
@@ -3053,6 +3067,68 @@ mod tests {
         let second = rich_text_history_hash("OK", Some(&second_html), None, None);
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn color_history_deduplicates_plain_rich_and_trimmed_payloads() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        let config = crate::config::Config {
+            storage_dir: app_data.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        crate::config::save(config);
+        crate::clipboard::db::init();
+
+        insert_text_from_app("\u{200B}#5B67F1\u{FEFF}\r\n".to_string(), "TextEdit", "");
+        insert_rich_text_from_app(
+            "#5B67F1".to_string(),
+            Some(b"<span data-copy-id=\"1\">#5B67F1</span>".to_vec()),
+            None,
+            None,
+            "Browser",
+            "",
+        );
+        insert_rich_text_from_app(
+            "#5B67F1".to_string(),
+            Some(b"<span data-copy-id=\"2\">#5B67F1</span>".to_vec()),
+            None,
+            None,
+            "Browser",
+            "",
+        );
+        insert_text_from_app("#5B67F1".to_string(), "Browser", "");
+
+        let items = search("", 0, 0, 10, "__type:Color").unwrap().list;
+        reset_test_storage_config();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].content, "#5B67F1");
+        assert_eq!(items[0].item_type, ItemType::Color);
+    }
+
+    #[test]
+    fn color_history_keeps_distinct_text_formats() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        let config = crate::config::Config {
+            storage_dir: app_data.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        crate::config::save(config);
+        crate::clipboard::db::init();
+
+        insert_text_from_app("#5B67F1".to_string(), "Browser", "");
+        insert_text_from_app("rgb(91, 103, 241)".to_string(), "Browser", "");
+
+        let items = search("", 0, 0, 10, "__type:Color").unwrap().list;
+        reset_test_storage_config();
+
+        assert_eq!(items.len(), 2);
     }
 
     #[test]

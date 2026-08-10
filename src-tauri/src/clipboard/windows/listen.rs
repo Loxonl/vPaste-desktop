@@ -232,6 +232,21 @@ fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, S
                 && clipboard_text
                     .as_deref()
                     .is_some_and(|text| !text.trim().is_empty()));
+        let local_gif_candidate = if local_images.len() == 1
+            && !has_meaningful_text
+            && local_images[0]
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("gif"))
+        {
+            Some(fs::read(&local_images[0]))
+        } else {
+            None
+        };
+        let has_local_gif = local_gif_candidate
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .is_some_and(|bytes| is_gif_bytes(bytes));
 
         if should_ignore_empty_rich_content(
             text_content.as_deref(),
@@ -245,7 +260,11 @@ fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, S
             return Ok(false);
         }
 
-        if should_prefer_bitmap_for_rich_content(text_content.as_deref(), local_images.len()) {
+        if should_prefer_bitmap_for_rich_content(
+            text_content.as_deref(),
+            local_images.len(),
+            has_local_gif,
+        ) {
             if is_format_avail(CF_DIBV5) {
                 return read_bitmap(CF_DIBV5, "CF_DIBV5", None, app_source);
             }
@@ -264,10 +283,14 @@ fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, S
         }
 
         if local_images.len() == 1 && !has_meaningful_text {
-            let image_bytes = fs::read(&local_images[0])
+            let image_bytes = local_gif_candidate
+                .unwrap_or_else(|| fs::read(&local_images[0]))
                 .map_err(|err| format!("read local html image failed: {}", err))?;
             image::load_from_memory(&image_bytes)
                 .map_err(|err| format!("decode local html image failed: {}", err))?;
+            if has_local_gif {
+                info!("preserve local GIF clipboard image before bitmap fallback");
+            }
             clipboard::insert_image_with_text_and_app(
                 &image_bytes,
                 "",
@@ -483,8 +506,11 @@ fn should_ignore_empty_rich_content(
 fn should_prefer_bitmap_for_rich_content(
     clipboard_text: Option<&str>,
     local_image_count: usize,
+    has_local_gif: bool,
 ) -> bool {
-    local_image_count > 0 && clipboard_text.is_none_or(|text| text.trim().is_empty())
+    !has_local_gif
+        && local_image_count > 0
+        && clipboard_text.is_none_or(|text| text.trim().is_empty())
 }
 
 fn rtf_plain_text(bytes: &[u8]) -> Option<String> {
@@ -1447,10 +1473,23 @@ mod tests {
 
     #[test]
     fn image_only_excel_rich_content_prefers_bitmap_storage() {
-        assert!(should_prefer_bitmap_for_rich_content(None, 2));
-        assert!(should_prefer_bitmap_for_rich_content(Some("\r\n"), 1));
-        assert!(!should_prefer_bitmap_for_rich_content(Some("cell text"), 1));
-        assert!(!should_prefer_bitmap_for_rich_content(None, 0));
+        assert!(should_prefer_bitmap_for_rich_content(None, 2, false));
+        assert!(should_prefer_bitmap_for_rich_content(
+            Some("\r\n"),
+            1,
+            false,
+        ));
+        assert!(!should_prefer_bitmap_for_rich_content(
+            Some("cell text"),
+            1,
+            false,
+        ));
+        assert!(!should_prefer_bitmap_for_rich_content(None, 0, false));
+    }
+
+    #[test]
+    fn image_only_rich_gif_prefers_original_animation() {
+        assert!(!should_prefer_bitmap_for_rich_content(None, 1, true));
     }
 
     #[test]

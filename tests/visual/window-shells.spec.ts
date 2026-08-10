@@ -181,6 +181,9 @@ test.describe("window shells", () => {
         await expect(page.getByText("TC-EXCEL-01 · Excel 图表与表格")).toBeVisible();
         await expect(page.getByText("TC-IMAGE-02 · QQ 双图消息")).toBeVisible();
         await expect(page.getByText("TC-IMAGE-03 · GIF 历史预览")).toBeVisible();
+        await expect(page.getByText("TC-BOUNDARY-01 · 超长文本")).toBeVisible();
+        await expect(page.getByText("TC-BOUNDARY-02 · 超大图片")).toBeVisible();
+        await expect(page.getByText("TC-BOUNDARY-03 · 大型 GIF")).toBeVisible();
         await expect(page.locator("article h2").allTextContents()).resolves.toEqual([
             "文本与富文本",
             "Excel 与表格",
@@ -188,6 +191,7 @@ test.describe("window shells", () => {
             "链接",
             "文件",
             "颜色",
+            "边界测试",
             "主窗口生命周期",
             "功能与元数据",
         ]);

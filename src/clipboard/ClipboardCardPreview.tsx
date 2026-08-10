@@ -17,18 +17,25 @@ import {
     type FilePreviewInfo,
 } from "./itemPresentation";
 
-const HISTORY_DATA_URL_CACHE_LIMIT = 80;
+const HISTORY_IMAGE_CACHE_LIMIT = 96;
 const ACTIVE_IMAGE_LOAD_DELAY_MS = 140;
 
 const historyDataUrlCache = new Map<string, string>();
 const historyPreviewSrcCache = new Map<string, string>();
 const historyOriginalSrcCache = new Map<string, string>();
 const historyImageMetadataCache = new Map<string, HistoryImageMetadata>();
+const historyDataUrlPending = new Map<string, Promise<string>>();
+const historyPreviewSrcPending = new Map<string, Promise<string>>();
+const historyOriginalSrcPending = new Map<string, Promise<string>>();
+const historyImageMetadataPending = new Map<string, Promise<HistoryImageMetadata>>();
 
 type HistoryImageMetadata = {
     width: number;
     height: number;
     isGif: boolean;
+    sourceBytes?: number;
+    previewLimited?: boolean;
+    animationLimited?: boolean;
 };
 
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
@@ -43,87 +50,105 @@ type ClipboardCardPreviewProps = {
     onGifFormatChange: (isGif: boolean) => void;
 };
 
+function cachedValue<T>(cache: Map<string, T>, key: string): T | undefined {
+    const value = cache.get(key);
+    if (value === undefined) return undefined;
+    cache.delete(key);
+    cache.set(key, value);
+    return value;
+}
+
+function rememberValue<T>(cache: Map<string, T>, key: string, value: T) {
+    cache.delete(key);
+    cache.set(key, value);
+    while (cache.size > HISTORY_IMAGE_CACHE_LIMIT) {
+        const oldestKey = cache.keys().next().value;
+        if (oldestKey === undefined) break;
+        cache.delete(oldestKey);
+    }
+}
+
+function loadSingleFlight<T>(
+    cache: Map<string, T>,
+    pending: Map<string, Promise<T>>,
+    key: string,
+    loader: () => Promise<T>,
+): Promise<T> {
+    const cached = cachedValue(cache, key);
+    if (cached !== undefined) return Promise.resolve(cached);
+    const active = pending.get(key);
+    if (active) return active;
+
+    const request = loader()
+        .then(value => {
+            rememberValue(cache, key, value);
+            return value;
+        })
+        .finally(() => pending.delete(key));
+    pending.set(key, request);
+    return request;
+}
+
 async function loadHistoryDataUrl(path: string): Promise<string> {
     if (!path) return "";
-    const cached = historyDataUrlCache.get(path);
-    if (cached) return cached;
-
-    let src: string;
-    try {
-        src = await invoke<string>("history_file_data_url", { path });
-    } catch {
-        src = convertFileSrc(path);
-    }
-
-    historyDataUrlCache.set(path, src);
-    if (historyDataUrlCache.size > HISTORY_DATA_URL_CACHE_LIMIT) {
-        const oldestKey = historyDataUrlCache.keys().next().value;
-        if (oldestKey) {
-            historyDataUrlCache.delete(oldestKey);
+    return loadSingleFlight(historyDataUrlCache, historyDataUrlPending, path, async () => {
+        try {
+            return await invoke<string>("history_file_data_url", { path });
+        } catch {
+            return convertFileSrc(path);
         }
-    }
-    return src;
+    });
 }
 
 async function loadHistoryPreviewSrc(path: string): Promise<string> {
     if (!path) return "";
-    const cached = historyPreviewSrcCache.get(path);
-    if (cached) return cached;
-
-    let src: string;
-    try {
-        const assetPath = await invoke<string>("history_image_card_preview_asset_path", { path });
-        src = convertFileSrc(assetPath);
-    } catch {
-        src = await loadHistoryDataUrl(path);
-    }
-
-    historyPreviewSrcCache.set(path, src);
-    if (historyPreviewSrcCache.size > HISTORY_DATA_URL_CACHE_LIMIT) {
-        const oldestKey = historyPreviewSrcCache.keys().next().value;
-        if (oldestKey) {
-            historyPreviewSrcCache.delete(oldestKey);
+    return loadSingleFlight(historyPreviewSrcCache, historyPreviewSrcPending, path, async () => {
+        try {
+            const assetPath = await invoke<string>("history_image_card_preview_asset_path", { path });
+            return convertFileSrc(assetPath);
+        } catch {
+            return loadHistoryDataUrl(path);
         }
-    }
-    return src;
+    });
 }
 
 async function loadHistoryOriginalSrc(path: string): Promise<string> {
     if (!path) return "";
-    const cached = historyOriginalSrcCache.get(path);
-    if (cached) return cached;
-
-    let src: string;
-    try {
-        const assetPath = await invoke<string>("history_file_preview_asset_path", { path });
-        src = convertFileSrc(assetPath);
-    } catch {
-        src = await loadHistoryDataUrl(path);
-    }
-
-    historyOriginalSrcCache.set(path, src);
-    if (historyOriginalSrcCache.size > HISTORY_DATA_URL_CACHE_LIMIT) {
-        const oldestKey = historyOriginalSrcCache.keys().next().value;
-        if (oldestKey) {
-            historyOriginalSrcCache.delete(oldestKey);
+    return loadSingleFlight(historyOriginalSrcCache, historyOriginalSrcPending, path, async () => {
+        try {
+            const assetPath = await invoke<string>("history_file_preview_asset_path", { path });
+            return convertFileSrc(assetPath);
+        } catch {
+            return loadHistoryDataUrl(path);
         }
-    }
-    return src;
+    });
 }
 
 async function loadHistoryImageMetadata(path: string): Promise<HistoryImageMetadata> {
-    const cached = historyImageMetadataCache.get(path);
-    if (cached) return cached;
+    return loadSingleFlight(
+        historyImageMetadataCache,
+        historyImageMetadataPending,
+        path,
+        () => invoke<HistoryImageMetadata>("history_image_metadata", { path }),
+    );
+}
 
-    const metadata = await invoke<HistoryImageMetadata>("history_image_metadata", { path });
-    historyImageMetadataCache.set(path, metadata);
-    if (historyImageMetadataCache.size > HISTORY_DATA_URL_CACHE_LIMIT) {
-        const oldestKey = historyImageMetadataCache.keys().next().value;
-        if (oldestKey) {
-            historyImageMetadataCache.delete(oldestKey);
-        }
+function formatByteSize(bytes: number | undefined): string {
+    if (!bytes || bytes <= 0) return "";
+    const units = ["B", "KB", "MB", "GB"];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit += 1;
     }
-    return metadata;
+    return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
+function naturalSizeFromMetadata(metadata: HistoryImageMetadata | undefined) {
+    return metadata && metadata.width > 0 && metadata.height > 0
+        ? { width: metadata.width, height: metadata.height }
+        : null;
 }
 
 function searchTerms(query: string): string[] {
@@ -274,24 +299,26 @@ function AutoScrollPreview({
 export function ImagePreview({
     item,
     active,
-    refreshKey,
     t,
     onGifFormatChange,
 }: {
     item: Item;
     active: boolean;
-    refreshKey: number;
     t: TFunction;
     onGifFormatChange: (isGif: boolean) => void;
 }) {
+    const sourcePath = item.getContent();
+    const previewPath = item.getPreviewContent() || sourcePath;
+    const stableIdentity = `${item.getHash()}\u0000${sourcePath}\u0000${previewPath}`;
+    const initialMetadata = cachedValue(historyImageMetadataCache, sourcePath);
     const [naturalSize, setNaturalSize] = useState<{ width: number, height: number } | null>(null);
     const [stageSize, setStageSize] = useState<{ width: number, height: number }>({ width: 0, height: 0 });
-    const [imageSrc, setImageSrc] = useState("");
+    const [imageSrc, setImageSrc] = useState(() => cachedValue(historyPreviewSrcCache, previewPath) || "");
+    const [previewLimited, setPreviewLimited] = useState(Boolean(initialMetadata?.previewLimited));
+    const [sourceBytes, setSourceBytes] = useState(initialMetadata?.sourceBytes || 0);
     const [isVisible, setIsVisible] = useState(false);
     const stageRef = useRef<HTMLDivElement>(null);
     const fallbackAttemptedRef = useRef(false);
-    const sourcePath = item.getContent();
-    const previewPath = item.getPreviewContent() || sourcePath;
     const width = naturalSize?.width || 0;
     const height = naturalSize?.height || 0;
     const stageWidth = stageSize.width;
@@ -334,18 +361,20 @@ export function ImagePreview({
         });
         observer.observe(stage);
         return () => observer.disconnect();
-    }, [item.getHash()]);
+    }, [stableIdentity]);
 
     useEffect(() => {
-        setImageSrc("");
-        const cachedMetadata = historyImageMetadataCache.get(sourcePath);
-        setNaturalSize(cachedMetadata ? { width: cachedMetadata.width, height: cachedMetadata.height } : null);
+        const cachedMetadata = cachedValue(historyImageMetadataCache, sourcePath);
+        setImageSrc(cachedValue(historyPreviewSrcCache, previewPath) || "");
+        setNaturalSize(naturalSizeFromMetadata(cachedMetadata));
+        setPreviewLimited(Boolean(cachedMetadata?.previewLimited));
+        setSourceBytes(cachedMetadata?.sourceBytes || 0);
         onGifFormatChange(itemHasGifFormat(item));
-    }, [item, sourcePath, onGifFormatChange]);
+    }, [stableIdentity, sourcePath, previewPath, onGifFormatChange]);
 
     useEffect(() => {
         fallbackAttemptedRef.current = false;
-    }, [item.getHash(), refreshKey]);
+    }, [stableIdentity]);
 
     useEffect(() => {
         if (!isVisible) return;
@@ -354,40 +383,47 @@ export function ImagePreview({
         let timeout = 0;
         if (!sourcePath) return;
 
-        const load = (gif: boolean) => {
-            const loader = gif && active ? loadHistoryOriginalSrc : loadHistoryPreviewSrc;
-            loader(gif && active ? sourcePath : previewPath)
+        const load = (metadata: HistoryImageMetadata) => {
+            if (metadata.previewLimited) return;
+            const loadOriginal = metadata.isGif && active && !metadata.animationLimited;
+            const loader = loadOriginal ? loadHistoryOriginalSrc : loadHistoryPreviewSrc;
+            loader(loadOriginal ? sourcePath : previewPath)
                 .then(src => {
                     if (!cancelled && !fallbackAttemptedRef.current) setImageSrc(src);
                 });
         };
 
-        const loadWithGifState = (gif: boolean) => {
-            if (!cancelled) onGifFormatChange(gif);
+        const loadWithMetadata = (metadata: HistoryImageMetadata) => {
+            if (!cancelled) {
+                onGifFormatChange(metadata.isGif);
+                setPreviewLimited(Boolean(metadata.previewLimited));
+                setSourceBytes(metadata.sourceBytes || 0);
+                if (metadata.previewLimited) setImageSrc("");
+            }
             if (active) {
-                timeout = window.setTimeout(() => load(gif), ACTIVE_IMAGE_LOAD_DELAY_MS);
+                timeout = window.setTimeout(() => load(metadata), ACTIVE_IMAGE_LOAD_DELAY_MS);
             } else {
-                load(gif);
+                load(metadata);
             }
         };
 
         void loadHistoryImageMetadata(sourcePath)
             .then(metadata => {
                 if (!cancelled) {
-                    setNaturalSize({ width: metadata.width, height: metadata.height });
+                    setNaturalSize(naturalSizeFromMetadata(metadata));
                 }
-                loadWithGifState(metadata.isGif);
+                loadWithMetadata(metadata);
             })
-            .catch(() => loadWithGifState(false));
+            .catch(() => loadWithMetadata({ width: 0, height: 0, isGif: false }));
 
         return () => {
             cancelled = true;
             window.clearTimeout(timeout);
         };
-    }, [item.getHash(), sourcePath, previewPath, isVisible, active, refreshKey, onGifFormatChange]);
+    }, [stableIdentity, sourcePath, previewPath, isVisible, active, onGifFormatChange]);
 
     const recoverImageSource = () => {
-        if (!sourcePath || fallbackAttemptedRef.current) return;
+        if (!sourcePath || previewLimited || fallbackAttemptedRef.current) return;
         fallbackAttemptedRef.current = true;
         historyPreviewSrcCache.delete(previewPath);
         historyOriginalSrcCache.delete(sourcePath);
@@ -402,7 +438,6 @@ export function ImagePreview({
             <div className={classes(styles, "image-preview-stage")} ref={stageRef}>
                 {imageSrc && (
                     <img
-                        key={`${isVisible ? refreshKey : 0}:${imageSrc}`}
                         src={imageSrc}
                         alt=""
                         draggable={false}
@@ -411,6 +446,13 @@ export function ImagePreview({
                         style={imageStyle}
                         onError={recoverImageSource}
                     />
+                )}
+                {previewLimited && (
+                    <div className={classes(styles, "image-preview-limited")} data-image-preview-limited="true">
+                        <WarningAmberOutlinedIcon />
+                        <span>{t("clipboard.largeImagePreview")}</span>
+                        {sourceBytes > 0 && <small>{formatByteSize(sourceBytes)}</small>}
+                    </div>
                 )}
                 {naturalSize && (
                     <div className={classes(styles, "image-resolution preview-metadata")}>
@@ -675,7 +717,6 @@ export default function ClipboardCardPreview({
             <ImagePreview
                 item={item}
                 active={active && mediaPlaybackReady}
-                refreshKey={refreshKey}
                 t={t}
                 onGifFormatChange={onGifFormatChange}
             />

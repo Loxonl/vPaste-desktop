@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::str::{Chars, FromStr};
+use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -110,6 +110,12 @@ const LINK_PREVIEW_CACHE_RETENTION_SECS: u64 = 96 * 60 * 60;
 const LINK_PREVIEW_HISTORY_WINDOW_MILLIS: u64 = 7 * 24 * 60 * 60 * 1000;
 const SEARCH_SCAN_BATCH_SIZE: usize = 256;
 const RICH_HTML_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
+const CARD_TEXT_PREVIEW_CHARS: usize = 1_800;
+const LARGE_TEXT_THRESHOLD_BYTES: usize = 10_000;
+const RICH_CARD_SOURCE_MAX_BYTES: u64 = 256 * 1024;
+const RICH_CARD_HTML_MAX_BYTES: usize = 256 * 1024;
+const RICH_CARD_INLINE_IMAGE_MAX_BYTES: u64 = 1024 * 1024;
+const MAX_AUTOMATIC_CAPTURE_BYTES: usize = 256 * 1024 * 1024;
 
 pub fn try_get_by_hash(hash: &String) -> Option<Item> {
     let stored: rusqlite::Result<StoredItem> = db().query_row(
@@ -253,12 +259,16 @@ fn materialize_item(stored: StoredItem) -> Item {
     let mut content = secure_store::decrypt_text(&stored.content);
     let mut preview_content = secure_store::decrypt_text(&stored.preview_content);
     let source = secure_store::decrypt_text(&stored.source);
+    let rich_source = is_rich_meta_source(&source);
+    if rich_source && item_type == ItemType::Text && content.len() > LARGE_TEXT_THRESHOLD_BYTES {
+        content = preview_content.clone();
+    }
     let rich_html = rich_meta_from_source(&source)
         .and_then(|meta| read_rich_html_fragment(&meta.html_path))
         .unwrap_or_default();
     match &item_type {
         ItemType::Image => {
-            let stored_preview = data_dir() + "/" + &hash;
+            let stored_preview = native_path_string(&data_dir().join(&hash));
             if !PathBuf::from(&stored_preview).exists() && PathBuf::from(&content).exists() {
                 item_type = ItemType::File;
                 content = serde_json::to_string(&vec![content]).unwrap_or_default();
@@ -268,7 +278,7 @@ fn materialize_item(stored: StoredItem) -> Item {
             }
         }
         ItemType::TextFile => {
-            preview_content = read_text_file_preview(&content, 1800).unwrap_or(preview_content);
+            content = native_path_string(Path::new(&content));
         }
         ItemType::Text | ItemType::Link => {
             preview_content = content.clone();
@@ -1325,6 +1335,9 @@ fn escape_attr_value(value: &str) -> String {
 
 fn local_file_image_data_url(src: &str) -> Option<String> {
     let path = file_url_to_path(src)?;
+    if fs::metadata(&path).ok()?.len() > RICH_CARD_INLINE_IMAGE_MAX_BYTES {
+        return None;
+    }
     let bytes = fs::read(path).ok()?;
     image::load_from_memory(&bytes).ok()?;
     let mime = infer::get(&bytes)
@@ -1415,6 +1428,9 @@ fn read_rich_html_fragment(path: &str) -> Option<String> {
     if path.is_empty() {
         return None;
     }
+    if secure_store::file_plaintext_len(path).ok()? > RICH_CARD_SOURCE_MAX_BYTES {
+        return None;
+    }
     let stamp = rich_html_file_stamp(path);
     if let Some(cached) = stamp.and_then(|stamp| cached_rich_html(path, stamp)) {
         return Some(cached);
@@ -1448,7 +1464,7 @@ fn read_rich_html_fragment(path: &str) -> Option<String> {
         format!("{}\n{}", style_blocks, fragment)
     };
     let html = html.trim().to_string();
-    if html.is_empty() {
+    if html.is_empty() || html.len() > RICH_CARD_HTML_MAX_BYTES {
         return None;
     }
     if let Some(stamp) = stamp {
@@ -1550,7 +1566,7 @@ fn internal_paths_for_cleanup(
 ) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if matches!(item_type, "Image" | "TextFile") {
-        paths.push(PathBuf::from(data_dir()).join(hash));
+        paths.push(data_dir().join(hash));
         let content_path = PathBuf::from(content);
         if content_path.exists() && is_path_inside_history_storage(&content_path) {
             paths.push(content_path);
@@ -1735,25 +1751,29 @@ pub fn cleanup_older_than(days: u64) -> Result<CleanupEstimate, String> {
 }
 
 pub fn plain_text_content(hash: &str) -> Result<String, String> {
-    let hash = hash.to_string();
-    let item = try_get_by_hash(&hash).ok_or_else(|| "粘贴项不存在".to_string())?;
-    if !item.text_content.is_empty() {
-        return Ok(item.text_content);
+    let stored = db()
+        .query_row(
+            "select * from clipboard where hash = ?1",
+            [hash],
+            read_stored_item,
+        )
+        .optional()
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "粘贴项不存在".to_string())?;
+    let item_type = ItemType::from_str(&stored.item_type).map_err(|err| err.to_string())?;
+    let content = secure_store::decrypt_text(&stored.content);
+    let source = secure_store::decrypt_text(&stored.source);
+    if !source.is_empty() && !is_rich_meta_source(&source) {
+        return Ok(source);
     }
 
-    match item.item_type {
-        ItemType::TextFile => secure_store::read_file(&item.content)
+    match item_type {
+        ItemType::TextFile => secure_store::read_file(&content)
             .and_then(|bytes| String::from_utf8(bytes).map_err(|err| err.to_string()))
             .map_err(|err| format!("读取文本内容失败：{}", err)),
-        ItemType::Link => Ok(item.content.split("|||").next().unwrap_or("").to_string()),
-        _ => Ok(item.content),
+        ItemType::Link => Ok(content.split("|||").next().unwrap_or("").to_string()),
+        _ => Ok(content),
     }
-}
-
-fn read_text_file_preview(path: &str, max_chars: usize) -> Option<String> {
-    let bytes = secure_store::read_file(path).ok()?;
-    let text = String::from_utf8(bytes).ok()?;
-    Some(text.chars().take(max_chars).collect())
 }
 
 pub fn insert(item: &Item, search_content: &str) {
@@ -1878,11 +1898,12 @@ fn rich_text_history_hash(
         return calculate_xxhash64(plain_text.trim().as_bytes());
     }
 
-    let mut hash_input = plain_text.as_bytes().to_vec();
+    let mut hasher = XxHash64::with_seed(0);
+    hasher.write(plain_text.as_bytes());
     for bytes in [html, rtf, png].into_iter().flatten() {
-        hash_input.extend(bytes);
+        hasher.write(bytes);
     }
-    calculate_xxhash64(&hash_input)
+    format!("{:016x}", hasher.finish())
 }
 
 pub fn insert_text(content: String) {
@@ -1901,6 +1922,18 @@ pub fn insert_rich_text_from_app(
     app_source: &str,
     app_icon_path: &str,
 ) {
+    let payload_bytes = plain_text
+        .len()
+        .saturating_add(html.as_ref().map(Vec::len).unwrap_or(0))
+        .saturating_add(rtf.as_ref().map(Vec::len).unwrap_or(0))
+        .saturating_add(png.as_ref().map(Vec::len).unwrap_or(0));
+    if payload_bytes > MAX_AUTOMATIC_CAPTURE_BYTES {
+        error!(
+            "skip oversized rich clipboard payload: {} bytes",
+            payload_bytes
+        );
+        return;
+    }
     let normalized_plain_text = plain_text.trim().to_string();
     if !normalized_plain_text.is_empty() && convert_type(&normalized_plain_text) == ItemType::Link {
         insert_text_from_app_impl(normalized_plain_text, app_source, app_icon_path);
@@ -1928,14 +1961,18 @@ pub fn insert_rich_text_from_app(
         RICH_META_PREFIX,
         serde_json::to_string(&meta).unwrap_or_default()
     );
-    let preview_content = if plain_text.len() > 50 {
-        plain_text.chars().take(50).collect()
+    let preview_content: String = plain_text.chars().take(CARD_TEXT_PREVIEW_CHARS).collect();
+    let (content, item_type) = if plain_text.len() > LARGE_TEXT_THRESHOLD_BYTES {
+        (
+            save_to_disk(plain_text.as_bytes(), &hash),
+            ItemType::TextFile,
+        )
     } else {
-        String::new()
+        (plain_text.clone(), convert_type(&plain_text))
     };
     let item = Item {
         id: 0,
-        content: plain_text.clone(),
+        content,
         preview_content,
         text_content: String::new(),
         rich_html: String::new(),
@@ -1943,7 +1980,7 @@ pub fn insert_rich_text_from_app(
         app_icon_path: app_icon_path.to_string(),
         hash,
         title_color: String::new(),
-        item_type: convert_type(&plain_text),
+        item_type,
         time: Utc::now().timestamp_millis() as u64,
         search_index: 1,
         label: 0,
@@ -1970,17 +2007,26 @@ pub(crate) fn insert_test_room_rich_text(
         RICH_META_PREFIX,
         serde_json::to_string(&meta).unwrap_or_default()
     );
+    let preview_content = plain_text.chars().take(CARD_TEXT_PREVIEW_CHARS).collect();
+    let (content, item_type) = if plain_text.len() > LARGE_TEXT_THRESHOLD_BYTES {
+        (
+            save_to_disk(plain_text.as_bytes(), &hash),
+            ItemType::TextFile,
+        )
+    } else {
+        (plain_text.clone(), ItemType::Text)
+    };
     let item = Item {
         id: 0,
-        content: plain_text.clone(),
-        preview_content: plain_text.chars().take(50).collect(),
+        content,
+        preview_content,
         text_content: String::new(),
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: String::new(),
         hash,
         title_color: String::new(),
-        item_type: ItemType::Text,
+        item_type,
         time,
         search_index: 1,
         label: 0,
@@ -1989,30 +2035,28 @@ pub(crate) fn insert_test_room_rich_text(
     insert_with_source_and_app(&item, &plain_text, &source, app_source, "");
 }
 
-fn insert_text_from_app_impl(mut content: String, app_source: &str, app_icon_path: &str) {
+fn insert_text_from_app_impl(content: String, app_source: &str, app_icon_path: &str) {
     if is_semantically_blank_text(&content) {
         return;
     }
-    let item_type;
-    let hash = calculate_xxhash64(&content.clone().into_bytes());
-    let search_content = content.clone();
-    let content_charts: Chars = content.chars();
-    let mut preview_content: String = "".to_string();
-
-    if content.len() > 50 {
-        preview_content = content_charts.take(50).collect();
+    if content.len() > MAX_AUTOMATIC_CAPTURE_BYTES {
+        error!(
+            "skip oversized text clipboard payload: {} bytes",
+            content.len()
+        );
+        return;
     }
-
-    if content.len() > 10000 {
-        content = save_to_disk(content.as_bytes(), &hash);
-        item_type = ItemType::TextFile;
+    let hash = calculate_xxhash64(content.as_bytes());
+    let preview_content = content.chars().take(CARD_TEXT_PREVIEW_CHARS).collect();
+    let (stored_content, item_type) = if content.len() > LARGE_TEXT_THRESHOLD_BYTES {
+        (save_to_disk(content.as_bytes(), &hash), ItemType::TextFile)
     } else {
-        item_type = convert_type(&content);
-    }
+        (content.clone(), convert_type(&content))
+    };
 
     let item = Item {
         id: 0,
-        content,
+        content: stored_content,
         preview_content,
         text_content: String::from(""),
         rich_html: String::new(),
@@ -2026,7 +2070,7 @@ fn insert_text_from_app_impl(mut content: String, app_source: &str, app_icon_pat
         label: 0,
         tags: Vec::new(),
     };
-    insert_with_source_and_app(&item, &search_content, "", app_source, app_icon_path);
+    insert_with_source_and_app(&item, &content, "", app_source, app_icon_path);
 }
 
 #[allow(dead_code)]
@@ -2046,8 +2090,16 @@ pub fn insert_image_with_text_and_app(
     app_source: &str,
     app_icon_path: &str,
 ) {
+    if content.len() > MAX_AUTOMATIC_CAPTURE_BYTES {
+        error!(
+            "skip oversized image clipboard payload: {} bytes",
+            content.len()
+        );
+        return;
+    }
     let hash = calculate_xxhash64(content);
     let path = save_to_disk(content, &hash);
+    let _ = crate::image_preview::metadata_from_bytes(&path, content);
     let item = Item {
         id: 0,
         content: path,
@@ -2095,29 +2147,38 @@ pub fn insert_file_from_app(content: &Vec<String>, app_source: &str, app_icon_pa
     };
     insert_with_source_and_app(&item, &content, "", app_source, app_icon_path);
 }
-fn data_dir() -> String {
-    history_storage_dir() + "/data"
+fn native_path_string(path: &Path) -> String {
+    let value = path.to_string_lossy().into_owned();
+    #[cfg(target_os = "windows")]
+    {
+        return value.replace('/', "\\");
+    }
+    #[cfg(not(target_os = "windows"))]
+    value
 }
 
-fn rich_formats_dir() -> String {
-    history_storage_dir() + "/rich_formats"
+fn data_dir() -> PathBuf {
+    PathBuf::from(history_storage_dir()).join("data")
+}
+
+fn rich_formats_dir() -> PathBuf {
+    PathBuf::from(history_storage_dir()).join("rich_formats")
 }
 
 fn save_rich_format_to_disk(data: &[u8], hash: &str, extension: &str) -> String {
     let dir = rich_formats_dir();
-    let path = Path::new(&dir);
-    if !path.exists() {
-        if let Err(e) = fs::create_dir_all(path) {
+    if !dir.exists() {
+        if let Err(e) = fs::create_dir_all(&dir) {
             error!("创建富格式文件夹时出错: {}", e);
         }
     }
-    let file_path = Path::new(&dir).join(format!("{}.{}", hash, extension));
+    let file_path = dir.join(format!("{}.{}", hash, extension));
     if !file_path.exists() {
         if let Err(e) = secure_store::write_file(&file_path, data) {
             error!("写入富格式文件时出错: {}", e);
         }
     }
-    file_path.to_string_lossy().to_string()
+    native_path_string(&file_path)
 }
 
 fn is_previewable_domain_link(url: &str) -> bool {
@@ -2740,24 +2801,21 @@ pub fn refresh_link_previews(urls: Vec<String>) -> Result<Vec<LinkPreviewUpdate>
 }
 
 pub fn save_to_disk(data: &[u8], hash: &String) -> String {
-    let path_str = data_dir();
-    let path = Path::new(&path_str);
+    let path = data_dir();
     if !path.exists() {
-        match fs::create_dir_all(path) {
+        match fs::create_dir_all(&path) {
             Ok(_) => info!("文件夹创建成功"),
             Err(e) => error!("创建文件夹时出错: {}", e),
         }
     }
-    let file_path = path_str + "/" + hash;
+    let file_path = path.join(hash);
 
-    if !Path::new(&file_path).exists() {
+    if !file_path.exists() {
         if let Err(e) = secure_store::write_file(&file_path, data) {
             error!("写入加密文件时出错: {}", e);
         }
-    } else {
-        return file_path;
     }
-    file_path
+    native_path_string(&file_path)
 }
 
 #[cfg(test)]
@@ -2782,7 +2840,7 @@ mod tests {
         crate::config::save(config);
         crate::clipboard::db::init();
 
-        let preview_path = PathBuf::from(data_dir()).join("shared-link-preview");
+        let preview_path = data_dir().join("shared-link-preview");
         secure_store::write_file(&preview_path, b"shared preview").unwrap();
         let conn = db();
         for (hash, time, url) in [
@@ -3297,6 +3355,86 @@ mod tests {
         assert!(shared_file_preserved);
         assert!(retained_item_exists);
         assert!(final_owner_removed_file);
+    }
+
+    #[test]
+    fn large_plain_text_materializes_only_its_persisted_card_preview() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().to_string());
+        crate::config::save(crate::config::Config {
+            storage_dir: root.path().to_string_lossy().to_string(),
+            ..Default::default()
+        });
+        db::init();
+
+        let content = "边界长文本-".repeat(2_400);
+        let hash = calculate_xxhash64(content.as_bytes());
+        insert_text_from_app(content.clone(), "Notepad", "");
+
+        let stored = try_get_by_hash(&hash).unwrap();
+        assert_eq!(stored.item_type, ItemType::TextFile);
+        assert!(Path::new(&stored.content).is_file());
+        #[cfg(target_os = "windows")]
+        assert!(
+            !stored.content.contains('/'),
+            "Windows history path should use native separators: {}",
+            stored.content
+        );
+        assert_eq!(
+            PathBuf::from(&stored.content),
+            root.path().join("data").join(&hash)
+        );
+        assert_eq!(stored.preview_content.chars().count(), 1_800);
+        assert_eq!(
+            stored.preview_content,
+            content.chars().take(1_800).collect::<String>()
+        );
+        assert_ne!(stored.preview_content, content);
+        assert_eq!(plain_text_content(&hash).unwrap(), content);
+
+        delete_by_hash(&hash).unwrap();
+        crate::config::save(crate::config::Config::default());
+    }
+
+    #[test]
+    fn large_rich_text_keeps_full_formats_but_returns_a_bounded_text_card() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().to_string());
+        crate::config::save(crate::config::Config {
+            storage_dir: root.path().to_string_lossy().to_string(),
+            ..Default::default()
+        });
+        db::init();
+
+        let hash = "large-rich-card".to_string();
+        let plain_text = "富文本边界内容-".repeat(2_400);
+        let html = format!("<div>{}</div>", "<p>富文本段落</p>".repeat(15_000));
+        insert_test_room_rich_text(
+            hash.clone(),
+            plain_text.clone(),
+            html.into_bytes(),
+            "Microsoft Word",
+            1,
+        );
+
+        let stored = try_get_by_hash(&hash).unwrap();
+        assert_eq!(stored.item_type, ItemType::TextFile);
+        assert!(Path::new(&stored.content).is_file());
+        assert_eq!(stored.preview_content.chars().count(), 1_800);
+        assert_eq!(
+            stored.preview_content,
+            plain_text.chars().take(1_800).collect::<String>()
+        );
+        assert!(stored.rich_html.is_empty());
+        assert!(rich_clipboard_meta(&hash).is_some());
+        assert_eq!(plain_text_content(&hash).unwrap(), plain_text);
+
+        delete_by_hash(&hash).unwrap();
+        crate::config::save(crate::config::Config::default());
     }
 
     #[test]

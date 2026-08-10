@@ -1859,6 +1859,31 @@ body {
   object-fit: contain;
 }
 
+.image-preview-limited {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: rgba(61, 67, 78, 0.72);
+  text-align: center;
+}
+
+.image-preview-limited svg {
+  width: 28px;
+  height: 28px;
+}
+
+.image-preview-limited span {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.image-preview-limited small {
+  font-size: 11px;
+  color: rgba(61, 67, 78, 0.56);
+}
+
 .transparency-grid {
   background-color: var(--ui-transparency-grid-light);
   background-image:
@@ -2006,4 +2031,12 @@ body {
   color: #ffd18a !important;
   -webkit-text-fill-color: #ffd18a !important;
   background: rgba(75, 45, 16, 0.78) !important;
+}
+
+:root[data-theme="dark"] .image-preview-limited {
+  color: rgba(232, 236, 244, 0.82);
+}
+
+:root[data-theme="dark"] .image-preview-limited small {
+  color: rgba(232, 236, 244, 0.62);
 }

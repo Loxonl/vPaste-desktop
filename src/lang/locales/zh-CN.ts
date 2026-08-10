@@ -39,6 +39,8 @@ const zhCN: LanguagePack = {
         "clipboard.source": "来源：{source}",
         "clipboard.unknownApp": "未知程序",
         "clipboard.mixedText": "含文本",
+        "clipboard.largeImagePreview": "图片较大，已暂停自动预览",
+        "clipboard.resourceLimitedPreview": "图片或动图体积过大，为避免卡顿，已暂停预览",
         "clipboard.richFormat": "富文本",
         "clipboard.gifFormat": "GIF",
         "clipboard.multipleFiles": "等多个文件",

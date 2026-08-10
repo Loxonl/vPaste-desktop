@@ -119,14 +119,39 @@ describe("clipboard paste runtime", () => {
         expect(callbacks.hideWindow).toHaveBeenCalledOnce();
     });
 
-    it("pastes the backend plain-text projection without recording a new hash", async () => {
+    it("pastes a large text item entirely in the backend without transferring its body", async () => {
         const target = item(ItemType.TextFile, "file.txt", "");
         const callbacks = options([target]);
         tauri.invoke.mockImplementation(async (command: string) => {
             if (command === "check_paste_accessibility_permission") {
                 return { granted: true, needs_settings: false };
             }
-            if (command === "plain_text_content") return "file body";
+            return undefined;
+        });
+        const runtime = createClipboardPasteRuntime(callbacks);
+
+        await runtime.pasteItem(target.getHash());
+
+        expect(tauri.invoke).toHaveBeenCalledWith("copy_history_item", {
+            hash: "item-hash",
+            plainText: false,
+        });
+        expect(tauri.invoke).not.toHaveBeenCalledWith("plain_text_content", expect.anything());
+        expect(tauri.invoke).not.toHaveBeenCalledWith("copy", expect.anything());
+        expect(tauri.invoke).toHaveBeenCalledWith("paste", {
+            hash: "item-hash",
+            restoreAlt: false,
+            triggerKey: "",
+        });
+    });
+
+    it("pastes the plain-text projection through the same backend-only path", async () => {
+        const target = item(ItemType.TextFile, "file.txt", "");
+        const callbacks = options([target]);
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "check_paste_accessibility_permission") {
+                return { granted: true, needs_settings: false };
+            }
             return undefined;
         });
         const runtime = createClipboardPasteRuntime(callbacks);
@@ -134,11 +159,12 @@ describe("clipboard paste runtime", () => {
         await runtime.pastePlainTextItem(target);
 
         expect(callbacks.closeContextMenu).toHaveBeenCalledOnce();
-        expect(tauri.invoke).toHaveBeenCalledWith("copy", {
-            item: "file body",
-            itemType: "Text",
-            hash: null,
+        expect(tauri.invoke).toHaveBeenCalledWith("copy_history_item", {
+            hash: "item-hash",
+            plainText: true,
         });
+        expect(tauri.invoke).not.toHaveBeenCalledWith("plain_text_content", expect.anything());
+        expect(tauri.invoke).not.toHaveBeenCalledWith("copy", expect.anything());
         expect(tauri.invoke).toHaveBeenCalledWith("paste", {
             hash: "item-hash",
             triggerKey: "",

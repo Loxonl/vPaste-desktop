@@ -1064,6 +1064,143 @@ fn run_file_case(case_id: &str) -> Result<String, String> {
     Ok(format!("{}，测试历史已保留", message))
 }
 
+fn run_long_text_boundary_case() -> Result<String, String> {
+    let created_at_ms = clipboard::current_timestamp_millis();
+    let run_id = CASE_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let run_scope = format!("boundary-long-text-{}-{}", created_at_ms, run_id);
+    let mut hashes = Vec::with_capacity(1);
+
+    let result = (|| {
+        let long_text = format!(
+            "vPaste 边界测试 · 长普通文本 · {}\n{}",
+            run_scope,
+            "这是一段用于验证卡片摘要、搜索和完整粘贴的普通文本。\n".repeat(1_200),
+        );
+        let plain_hash = clipboard::calculate_xxhash64(long_text.as_bytes());
+        clipboard::insert_text_from_app(long_text.clone(), "vPaste Test Room", "");
+        if clipboard::count_by_hash(&plain_hash) != 1 {
+            return Err("长普通文本测试项写入失败".to_string());
+        }
+        hashes.push(plain_hash.clone());
+        let plain_item = clipboard::try_get_by_hash(&plain_hash)
+            .ok_or_else(|| "长普通文本测试项无法读回".to_string())?;
+        if plain_item.item_type != ItemType::TextFile
+            || plain_item.preview_content.chars().count() > 1_800
+            || clipboard::plain_text_content(&plain_hash)? != long_text
+        {
+            return Err("长普通文本未按受控摘要和完整正文分层保存".to_string());
+        }
+
+        record_test_case_history_hashes(created_at_ms, hashes.clone())
+            .map_err(|err| format!("测试历史登记失败：{}", err))?;
+        Ok(())
+    })();
+
+    if let Err(err) = result {
+        let _ = delete_hashes(&hashes);
+        return Err(err);
+    }
+
+    Ok("超长文本已写入；主面板应显示受控摘要，粘贴仍保留完整内容".to_string())
+}
+
+fn run_large_image_boundary_case() -> Result<String, String> {
+    let created_at_ms = clipboard::current_timestamp_millis();
+    let run_id = CASE_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let run_scope = format!("boundary-large-image-{}-{}", created_at_ms, run_id);
+    let mut hashes = Vec::with_capacity(1);
+
+    let result = (|| {
+        let mut large_image = image_bytes("image-grid")?;
+        large_image.resize(
+            crate::image_preview::CARD_PREVIEW_MAX_SOURCE_BYTES as usize + 1,
+            0,
+        );
+        large_image.extend_from_slice(run_scope.as_bytes());
+        let image_hash = clipboard::calculate_xxhash64(&large_image);
+        clipboard::insert_image_with_text_and_app(
+            &large_image,
+            "vPaste 边界测试 · 超大图片",
+            "vPaste Test Room",
+            "",
+        );
+        if clipboard::count_by_hash(&image_hash) != 1 {
+            return Err("超大图片测试项写入失败".to_string());
+        }
+        hashes.push(image_hash.clone());
+        let image_item = clipboard::try_get_by_hash(&image_hash)
+            .ok_or_else(|| "超大图片测试项无法读回".to_string())?;
+        let metadata = crate::image_preview::metadata_for_path(&image_item.content)?;
+        if image_item.item_type != ItemType::Image
+            || !metadata.preview_limited
+            || metadata.source_bytes <= crate::image_preview::CARD_PREVIEW_MAX_SOURCE_BYTES
+        {
+            return Err("超大图片未进入受控预览降级路径".to_string());
+        }
+
+        record_test_case_history_hashes(created_at_ms, hashes.clone())
+            .map_err(|err| format!("测试历史登记失败：{}", err))?;
+        Ok(())
+    })();
+
+    if let Err(err) = result {
+        let _ = delete_hashes(&hashes);
+        return Err(err);
+    }
+
+    Ok("超大图片已写入；主面板应显示稳定的预览受限占位".to_string())
+}
+
+fn run_large_gif_boundary_case() -> Result<String, String> {
+    let created_at_ms = clipboard::current_timestamp_millis();
+    let run_id = CASE_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let run_scope = format!("boundary-large-gif-{}-{}", created_at_ms, run_id);
+    let mut hashes = Vec::with_capacity(1);
+
+    let result = (|| {
+        let mut large_gif = animated_gif_bytes()?;
+        large_gif.resize(
+            crate::image_preview::ANIMATED_PREVIEW_MAX_SOURCE_BYTES as usize + 1,
+            0,
+        );
+        large_gif.extend_from_slice(run_scope.as_bytes());
+        let gif_hash = clipboard::calculate_xxhash64(&large_gif);
+        clipboard::insert_image_with_text_and_app(
+            &large_gif,
+            "vPaste 边界测试 · 大型 GIF",
+            "vPaste Test Room",
+            "",
+        );
+        if clipboard::count_by_hash(&gif_hash) != 1 {
+            return Err("大型 GIF 测试项写入失败".to_string());
+        }
+        hashes.push(gif_hash.clone());
+        let gif_item = clipboard::try_get_by_hash(&gif_hash)
+            .ok_or_else(|| "大型 GIF 测试项无法读回".to_string())?;
+        let metadata = crate::image_preview::metadata_for_path(&gif_item.content)?;
+        if gif_item.item_type != ItemType::Image
+            || !metadata.is_gif
+            || !metadata.animation_limited
+            || metadata.preview_limited
+            || metadata.source_bytes <= crate::image_preview::ANIMATED_PREVIEW_MAX_SOURCE_BYTES
+            || metadata.source_bytes > crate::image_preview::CARD_PREVIEW_MAX_SOURCE_BYTES
+        {
+            return Err("大型 GIF 未进入静态预览、禁止自动播放的降级路径".to_string());
+        }
+
+        record_test_case_history_hashes(created_at_ms, hashes.clone())
+            .map_err(|err| format!("测试历史登记失败：{}", err))?;
+        Ok(())
+    })();
+
+    if let Err(err) = result {
+        let _ = delete_hashes(&hashes);
+        return Err(err);
+    }
+
+    Ok("大型 GIF 已写入；主面板应显示静态首帧，不应自动播放".to_string())
+}
+
 fn png_data_url(preset: &str) -> Result<String, String> {
     Ok(format!(
         "data:image/png;base64,{}",
@@ -1358,6 +1495,9 @@ fn run_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
         "excel-chart" => run_excel_chart_case(),
         "qq-two-images" => run_qq_two_images_case(),
         "gif-history" => run_gif_history_case(),
+        "boundary-long-text" => run_long_text_boundary_case(),
+        "boundary-large-image" => run_large_image_boundary_case(),
+        "boundary-large-gif" => run_large_gif_boundary_case(),
         "file-single-types"
         | "file-multiple"
         | "file-folder"
@@ -1522,6 +1662,55 @@ mod tests {
 
         assert_eq!(all_hashes.len(), 7);
         assert_eq!(delete_hashes(&all_hashes).unwrap(), 7);
+        crate::config::save(crate::config::Config::default());
+    }
+
+    #[test]
+    fn boundary_cases_each_write_one_budgeted_history_item() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().to_string());
+        crate::config::save(crate::config::Config {
+            storage_dir: root.path().to_string_lossy().to_string(),
+            ..Default::default()
+        });
+        crate::clipboard::db::init();
+
+        run_long_text_boundary_case().unwrap();
+        run_large_image_boundary_case().unwrap();
+        run_large_gif_boundary_case().unwrap();
+
+        let manifest = load_case_history_manifest().unwrap();
+        let runs = &manifest.runs[manifest.runs.len() - 3..];
+        assert!(runs.iter().all(|run| run.hashes.len() == 1));
+        let hashes = runs
+            .iter()
+            .flat_map(|run| run.hashes.iter())
+            .collect::<Vec<_>>();
+        let items = hashes
+            .iter()
+            .map(|hash| clipboard::try_get_by_hash(hash).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(items[0].item_type, ItemType::TextFile);
+        assert_eq!(items[1].item_type, ItemType::Image);
+        assert_eq!(items[2].item_type, ItemType::Image);
+        assert!(
+            crate::image_preview::metadata_for_path(&items[1].content)
+                .unwrap()
+                .preview_limited
+        );
+        let gif_metadata = crate::image_preview::metadata_for_path(&items[2].content).unwrap();
+        assert!(gif_metadata.is_gif);
+        assert!(gif_metadata.animation_limited);
+        assert!(!gif_metadata.preview_limited);
+        let gif_preview = crate::image_card_preview_asset_path(&items[2].content).unwrap();
+        assert!(image::image_dimensions(gif_preview).is_ok());
+
+        assert_eq!(
+            cleanup_test_case_history_for_date(&current_local_date()).unwrap(),
+            3
+        );
         crate::config::save(crate::config::Config::default());
     }
 

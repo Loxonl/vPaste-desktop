@@ -1372,8 +1372,12 @@ pub fn copy_test_room_item_to_clipboard(
     let result = (|| {
         let stored = clipboard::try_get_by_hash(&hash)
             .ok_or_else(|| "样板未能写入临时剪贴板记录".to_string())?;
-        let (content, item_type, rich_hash) = match item.item_type.as_str() {
-            "RichText" | "Excel" => (stored.content, "Text".to_string(), Some(hash.clone())),
+        let (content, item_type, rich_meta) = match item.item_type.as_str() {
+            "RichText" | "Excel" => (
+                stored.content,
+                "Text".to_string(),
+                clipboard::rich_clipboard_meta(&hash),
+            ),
             "Image" => (stored.content, "Image".to_string(), None),
             "File" => (stored.content, "File".to_string(), None),
             "TextFile" => (
@@ -1383,7 +1387,7 @@ pub fn copy_test_room_item_to_clipboard(
             ),
             _ => (stored.content, "Text".to_string(), None),
         };
-        crate::copy(app.clone(), content, item_type, rich_hash)
+        crate::copy_with_rich_meta(app.clone(), content, item_type, rich_meta)
     })();
     finalize_test_room_clipboard_history(created_at_ms, &hash, result)?;
     if let Some(window) = app.get_webview_window("clipboard") {

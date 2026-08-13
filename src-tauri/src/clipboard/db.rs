@@ -134,6 +134,26 @@ create table if not exists clipboard_tags
 create index if not exists clipboard_tags_tag_id on clipboard_tags(tag_id);
 create index if not exists clipboard_tags_clipboard_id on clipboard_tags(clipboard_id);
 
+create table if not exists paste_queue
+(
+    hash            text    not null primary key,
+    position        integer not null,
+    queued_at       integer not null,
+    time            integer not null,
+    content         text    default '' not null,
+    preview_content text    default '' not null,
+    item_type       text    not null,
+    search_index    integer default 1 not null,
+    source          text    default '' not null,
+    app_source      text    default '' not null,
+    app_icon_path   text    default '' not null,
+    title_color     text    default '' not null,
+    label           integer default 0 not null
+)
+    strict;
+
+create unique index if not exists paste_queue_position on paste_queue(position);
+
     ";
     conn.execute_batch(sql)?;
     let has_app_source = conn
@@ -166,8 +186,119 @@ create index if not exists clipboard_tags_clipboard_id on clipboard_tags(clipboa
             [],
         )?;
     }
+    if table_columns(conn, "clipboard")?
+        .iter()
+        .any(|column| column == "history_visible")
+    {
+        conn.execute("alter table clipboard drop column history_visible", [])?;
+    }
+    migrate_legacy_paste_queue_schema(conn)?;
     rebuild_hash_unique_index(conn)?;
     Ok(())
+}
+
+fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    let mut statement = conn.prepare(&format!("pragma table_info({table})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>>>()?;
+    Ok(columns)
+}
+
+fn migrate_legacy_paste_queue_schema(conn: &Connection) -> Result<()> {
+    let columns = table_columns(conn, "paste_queue")?;
+    let required_columns = [
+        "hash",
+        "position",
+        "queued_at",
+        "time",
+        "content",
+        "preview_content",
+        "item_type",
+        "search_index",
+        "source",
+        "app_source",
+        "app_icon_path",
+        "title_color",
+        "label",
+    ];
+    let foreign_key_count = conn.query_row(
+        "SELECT count(*) FROM pragma_foreign_key_list('paste_queue')",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let has_full_payload = required_columns
+        .iter()
+        .all(|required| columns.iter().any(|column| column == required));
+    if foreign_key_count == 0 && has_full_payload {
+        return Ok(());
+    }
+
+    let foreign_keys_enabled = conn.query_row("PRAGMA foreign_keys", [], |row| {
+        Ok(row.get::<_, i64>(0)? != 0)
+    })?;
+    if foreign_keys_enabled {
+        conn.pragma_update(None, "foreign_keys", "OFF")?;
+    }
+
+    let payload_select = if has_full_payload {
+        "SELECT q.hash,
+                row_number() OVER (ORDER BY q.position ASC) - 1,
+                q.queued_at, q.time, q.content, q.preview_content, q.item_type,
+                q.search_index, q.source, q.app_source, q.app_icon_path,
+                q.title_color, q.label
+         FROM paste_queue q
+         ORDER BY q.position ASC"
+    } else {
+        "SELECT q.hash,
+                row_number() OVER (ORDER BY q.position ASC) - 1,
+                q.queued_at, c.time, coalesce(c.content, ''),
+                coalesce(c.preview_content, ''), coalesce(c.item_type, 'Text'),
+                coalesce(c.search_index, 1), coalesce(c.source, ''),
+                coalesce(c.app_source, ''), coalesce(c.app_icon_path, ''),
+                coalesce(c.title_color, ''), coalesce(c.label, 0)
+         FROM paste_queue q
+         JOIN clipboard c ON c.hash = q.hash
+         ORDER BY q.position ASC"
+    };
+    let migration_sql = format!(
+        "BEGIN IMMEDIATE;
+         DROP TABLE IF EXISTS paste_queue_v3;
+         CREATE TABLE paste_queue_v3(
+             hash TEXT NOT NULL PRIMARY KEY,
+             position INTEGER NOT NULL,
+             queued_at INTEGER NOT NULL,
+             time INTEGER NOT NULL,
+             content TEXT DEFAULT '' NOT NULL,
+             preview_content TEXT DEFAULT '' NOT NULL,
+             item_type TEXT NOT NULL,
+             search_index INTEGER DEFAULT 1 NOT NULL,
+             source TEXT DEFAULT '' NOT NULL,
+             app_source TEXT DEFAULT '' NOT NULL,
+             app_icon_path TEXT DEFAULT '' NOT NULL,
+             title_color TEXT DEFAULT '' NOT NULL,
+             label INTEGER DEFAULT 0 NOT NULL
+         ) STRICT;
+         INSERT INTO paste_queue_v3(
+             hash, position, queued_at, time, content, preview_content, item_type,
+             search_index, source, app_source, app_icon_path, title_color, label
+         ) {payload_select};
+         DROP TABLE paste_queue;
+         ALTER TABLE paste_queue_v3 RENAME TO paste_queue;
+         CREATE UNIQUE INDEX paste_queue_position ON paste_queue(position);
+         COMMIT;"
+    );
+    let migration = conn.execute_batch(&migration_sql);
+    if migration.is_err() {
+        let _ = conn.execute_batch("ROLLBACK;");
+    }
+    let restore_foreign_keys = if foreign_keys_enabled {
+        conn.pragma_update(None, "foreign_keys", "ON")
+    } else {
+        Ok(())
+    };
+    migration?;
+    restore_foreign_keys
 }
 
 fn rebuild_hash_unique_index(conn: &Connection) -> Result<()> {
@@ -191,30 +322,35 @@ fn remove_duplicate_hashes(conn: &Connection) -> Result<usize> {
 }
 
 pub fn clear_all() -> Result<usize> {
-    let conn = db();
-    conn.execute("DELETE FROM clipboard_tags", [])?;
-    conn.execute("DELETE FROM clipboard", [])
+    let mut conn = db();
+    let transaction = conn.transaction()?;
+    transaction.execute("DELETE FROM clipboard_tags", [])?;
+    let affected = transaction.execute("DELETE FROM clipboard", [])?;
+    transaction.commit()?;
+    Ok(affected)
 }
 
 pub fn clear_images() -> Result<usize> {
-    let conn = db();
-    let mut statement = conn.prepare("SELECT id, hash, item_type, content FROM clipboard")?;
-    let image_items = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })?
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .filter(|(_, _, item_type, content)| {
-            let content = secure_store::decrypt_text(content);
-            item_type == "Image" || (item_type == "File" && is_single_image_file(&content))
-        })
-        .collect::<Vec<_>>();
+    let mut conn = db();
+    let image_items = {
+        let mut statement = conn.prepare("SELECT id, hash, item_type, content FROM clipboard")?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>>>()?;
+        rows.into_iter()
+            .filter(|(_, _, item_type, content)| {
+                let content = secure_store::decrypt_text(content);
+                item_type == "Image" || (item_type == "File" && is_single_image_file(&content))
+            })
+            .collect::<Vec<_>>()
+    };
 
     for (_, hash, _, _) in &image_items {
         engine::delete(&hash);
@@ -228,7 +364,8 @@ pub fn clear_images() -> Result<usize> {
         return Ok(0);
     }
 
-    conn.execute(
+    let transaction = conn.transaction()?;
+    transaction.execute(
         format!(
             "DELETE FROM clipboard_tags WHERE clipboard_id IN ({})",
             ids.join(",")
@@ -237,10 +374,12 @@ pub fn clear_images() -> Result<usize> {
         [],
     )?;
 
-    conn.execute(
+    let affected = transaction.execute(
         format!("DELETE FROM clipboard WHERE id IN ({})", ids.join(",")).as_str(),
         [],
-    )
+    )?;
+    transaction.commit()?;
+    Ok(affected)
 }
 
 fn is_single_image_file(content: &str) -> bool {
@@ -260,7 +399,8 @@ fn is_single_image_file(content: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::setup_pool;
+    use super::{init_schema, setup_pool};
+    use rusqlite::Connection;
     use std::time::Duration;
 
     #[test]
@@ -287,5 +427,179 @@ mod tests {
         writer
             .execute("insert into clipboard_test(content) values('second')", [])
             .expect("an active history reader must not block clipboard writes");
+    }
+
+    #[test]
+    fn paste_queue_schema_survives_database_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let database_path = root.path().join("queue.db");
+        {
+            let connection = Connection::open(&database_path).unwrap();
+            init_schema(&connection).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO paste_queue(
+                        hash, position, queued_at, time, content, preview_content, item_type
+                     ) VALUES('saved', 0, 123, 456, 'payload', 'preview', 'Text')",
+                    [],
+                )
+                .unwrap();
+        }
+
+        let connection = Connection::open(&database_path).unwrap();
+        init_schema(&connection).unwrap();
+        let saved = connection
+            .query_row(
+                "SELECT hash, position, queued_at, content FROM paste_queue",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, u64>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(saved, ("saved".to_string(), 0, 123, "payload".to_string()));
+    }
+
+    #[test]
+    fn legacy_queue_migration_drops_orphans_and_normalizes_positions() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO clipboard(
+                    hash, time, content, preview_content, item_type, search_index
+                 ) VALUES('kept', 1, 'payload', 'preview', 'Text', 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE paste_queue;
+                 CREATE TABLE paste_queue(
+                     hash TEXT NOT NULL PRIMARY KEY,
+                     position INTEGER NOT NULL,
+                     queued_at INTEGER NOT NULL
+                 ) STRICT;
+                 CREATE UNIQUE INDEX paste_queue_position ON paste_queue(position);
+                 INSERT INTO paste_queue(hash, position, queued_at)
+                    VALUES('missing', 0, 100), ('kept', 1, 200);",
+            )
+            .unwrap();
+
+        init_schema(&connection).unwrap();
+
+        let mut statement = connection
+            .prepare("SELECT hash, position FROM paste_queue ORDER BY position")
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(rows, vec![("kept".to_string(), 0)]);
+    }
+
+    #[test]
+    fn legacy_paste_queue_foreign_key_is_removed_without_losing_queue() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO clipboard(
+                    hash, time, content, preview_content, item_type, search_index
+                 ) VALUES('saved', 1, 'payload', 'preview', 'Text', 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 DROP TABLE paste_queue;
+                 DROP INDEX hash;
+                 CREATE TABLE paste_queue(
+                     hash TEXT NOT NULL PRIMARY KEY,
+                     position INTEGER NOT NULL,
+                     queued_at INTEGER NOT NULL,
+                     FOREIGN KEY(hash) REFERENCES clipboard(hash) ON DELETE CASCADE
+                 ) STRICT;
+                 CREATE UNIQUE INDEX paste_queue_position ON paste_queue(position);
+                 INSERT INTO paste_queue(hash, position, queued_at) VALUES('saved', 0, 123);
+                 PRAGMA foreign_keys = ON;",
+            )
+            .unwrap();
+
+        init_schema(&connection).unwrap();
+
+        let foreign_key_count = connection
+            .query_row(
+                "SELECT count(*) FROM pragma_foreign_key_list('paste_queue')",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let foreign_keys_enabled = connection
+            .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+            .unwrap();
+        let saved = connection
+            .query_row(
+                "SELECT hash, position, queued_at, content FROM paste_queue",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, u64>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(foreign_key_count, 0);
+        assert_eq!(foreign_keys_enabled, 1);
+        assert_eq!(saved, ("saved".to_string(), 0, 123, "payload".to_string()));
+    }
+
+    #[test]
+    fn rejected_history_visibility_column_is_removed_without_losing_rows() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE clipboard(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    hash TEXT NOT NULL,
+                    time INTEGER NOT NULL,
+                    content TEXT,
+                    preview_content TEXT,
+                    item_type TEXT,
+                    search_index INTEGER,
+                    source TEXT,
+                    app_source TEXT DEFAULT '' NOT NULL,
+                    app_icon_path TEXT DEFAULT '' NOT NULL,
+                    title_color TEXT,
+                    icon TEXT,
+                    label INTEGER DEFAULT 0 NOT NULL,
+                    history_visible INTEGER DEFAULT 1 NOT NULL
+                ) STRICT;
+                INSERT INTO clipboard(hash, time) VALUES('existing', 1);",
+            )
+            .unwrap();
+
+        init_schema(&connection).unwrap();
+
+        let columns = super::table_columns(&connection, "clipboard").unwrap();
+        let rows = connection
+            .query_row("SELECT count(*) FROM clipboard", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert!(!columns.iter().any(|column| column == "history_visible"));
+        assert_eq!(rows, 1);
     }
 }

@@ -218,22 +218,23 @@ fn encrypt_files_recursive(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-struct StoredItem {
-    id: usize,
-    item_type: String,
-    hash: String,
-    content: String,
-    preview_content: String,
-    source: String,
-    app_source: String,
-    app_icon_path: String,
-    title_color: String,
-    time: u64,
-    search_index: u8,
-    label: u64,
+#[derive(Clone, Debug)]
+pub(crate) struct StoredItem {
+    pub(crate) id: usize,
+    pub(crate) item_type: String,
+    pub(crate) hash: String,
+    pub(crate) content: String,
+    pub(crate) preview_content: String,
+    pub(crate) source: String,
+    pub(crate) app_source: String,
+    pub(crate) app_icon_path: String,
+    pub(crate) title_color: String,
+    pub(crate) time: u64,
+    pub(crate) search_index: u8,
+    pub(crate) label: u64,
 }
 
-fn read_stored_item(row: &Row) -> Result<StoredItem, Error> {
+pub(crate) fn read_stored_item(row: &Row) -> Result<StoredItem, Error> {
     Ok(StoredItem {
         id: row.get("id")?,
         item_type: row.get("item_type")?,
@@ -252,7 +253,7 @@ fn read_stored_item(row: &Row) -> Result<StoredItem, Error> {
     })
 }
 
-fn materialize_item(stored: StoredItem) -> Item {
+pub(crate) fn materialize_item(stored: StoredItem) -> Item {
     let id = stored.id;
     let hash = stored.hash;
     let mut item_type = ItemType::from_str(stored.item_type.as_str()).unwrap();
@@ -1481,11 +1482,17 @@ pub fn rich_clipboard_meta(hash: &str) -> Option<RichClipboardMeta> {
             |row| row.get(0),
         )
         .ok()?;
-    rich_meta_from_source(&secure_store::decrypt_text(&source))
+    rich_clipboard_meta_from_stored_source(&source)
+}
+
+pub(crate) fn rich_clipboard_meta_from_stored_source(
+    encrypted_source: &str,
+) -> Option<RichClipboardMeta> {
+    rich_meta_from_source(&secure_store::decrypt_text(encrypted_source))
 }
 
 pub fn delete_by_hash(hash: &str) -> Result<usize, String> {
-    let conn = db();
+    let mut conn = db();
     let candidate = conn
         .query_row(
             "SELECT id, hash, item_type, content, source FROM clipboard WHERE hash = ?1",
@@ -1516,15 +1523,18 @@ pub fn delete_by_hash(hash: &str) -> Result<usize, String> {
     let retained_paths = internal_paths_referenced_by_survivors(candidates, &paths_to_delete)?;
 
     engine::delete(&candidate.hash);
-    conn.execute(
-        "DELETE FROM clipboard_tags WHERE clipboard_id = ?1",
-        [candidate.id],
-    )
-    .map_err(|err| err.to_string())?;
+    let transaction = conn.transaction().map_err(|err| err.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM clipboard_tags WHERE clipboard_id = ?1",
+            [candidate.id],
+        )
+        .map_err(|err| err.to_string())?;
 
-    let affected = conn
+    let affected = transaction
         .execute("DELETE FROM clipboard WHERE id = ?1", [candidate.id])
         .map_err(|err| err.to_string())?;
+    transaction.commit().map_err(|err| err.to_string())?;
 
     for path in paths_to_delete {
         if !retained_paths.contains(&path)
@@ -1594,12 +1604,25 @@ fn internal_paths_for_cleanup(
     paths
 }
 
+pub(crate) fn internal_paths_for_stored_item(stored: &StoredItem) -> HashSet<PathBuf> {
+    internal_paths_for_cleanup(
+        &stored.item_type,
+        &stored.hash,
+        &secure_store::decrypt_text(&stored.content),
+        &secure_store::decrypt_text(&stored.source),
+    )
+    .into_iter()
+    .collect()
+}
+
 fn cleanup_candidates(days: u64) -> Result<Vec<CleanupCandidate>, String> {
     let conn = db();
     let query = if days == 0 {
         "SELECT id, hash, item_type, content, source FROM clipboard".to_string()
     } else {
-        "SELECT id, hash, item_type, content, source FROM clipboard WHERE time < ?1".to_string()
+        "SELECT id, hash, item_type, content, source FROM clipboard
+         WHERE time < ?1"
+            .to_string()
     };
     let mut statement = conn.prepare(&query).map_err(|err| err.to_string())?;
     let map_row = |row: &Row<'_>| {
@@ -1670,7 +1693,46 @@ fn internal_paths_referenced_by_survivors(
             break;
         }
     }
+    let conn = db();
+    let mut statement = conn
+        .prepare("SELECT hash, item_type, content, source FROM paste_queue")
+        .map_err(|err| err.to_string())?;
+    let queue_rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|err| err.to_string())?;
+    for row in queue_rows {
+        let (hash, item_type, content, source) = row.map_err(|err| err.to_string())?;
+        for path in internal_paths_for_cleanup(
+            &item_type,
+            &hash,
+            &secure_store::decrypt_text(&content),
+            &secure_store::decrypt_text(&source),
+        ) {
+            if paths_to_check.contains(&path) {
+                retained_paths.insert(path);
+            }
+        }
+    }
     Ok(retained_paths)
+}
+
+pub(crate) fn delete_unreferenced_internal_paths(paths: HashSet<PathBuf>) {
+    if paths.is_empty() {
+        return;
+    }
+    let retained = internal_paths_referenced_by_survivors(&[], &paths).unwrap_or_default();
+    for path in paths {
+        if !retained.contains(&path) && path.is_file() && is_path_inside_history_storage(&path) {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 fn cleanup_estimate_for_candidates(
@@ -1760,6 +1822,10 @@ pub fn plain_text_content(hash: &str) -> Result<String, String> {
         .optional()
         .map_err(|err| err.to_string())?
         .ok_or_else(|| "粘贴项不存在".to_string())?;
+    plain_text_from_stored_item(&stored)
+}
+
+pub(crate) fn plain_text_from_stored_item(stored: &StoredItem) -> Result<String, String> {
     let item_type = ItemType::from_str(&stored.item_type).map_err(|err| err.to_string())?;
     let content = secure_store::decrypt_text(&stored.content);
     let source = secure_store::decrypt_text(&stored.source);
@@ -1777,11 +1843,11 @@ pub fn plain_text_content(hash: &str) -> Result<String, String> {
 }
 
 pub fn insert(item: &Item, search_content: &str) {
-    insert_with_source_and_app(item, search_content, "", "", "")
+    insert_with_source_and_app(item, search_content, "", "", "");
 }
 
 pub fn insert_with_source(item: &Item, search_content: &str, source: &str) {
-    insert_with_source_and_app(item, search_content, source, "", "")
+    insert_with_source_and_app(item, search_content, source, "", "");
 }
 
 pub fn insert_with_source_and_app(
@@ -1790,7 +1856,17 @@ pub fn insert_with_source_and_app(
     source: &str,
     app_source: &str,
     app_icon_path: &str,
-) {
+) -> bool {
+    insert_history_item(item, search_content, source, app_source, app_icon_path)
+}
+
+fn insert_history_item(
+    item: &Item,
+    search_content: &str,
+    source: &str,
+    app_source: &str,
+    app_icon_path: &str,
+) -> bool {
     if count_by_hash(&item.hash) > 0 {
         let conn = db();
         let encrypted_source = secure_store::encrypt_text(source);
@@ -1813,13 +1889,16 @@ pub fn insert_with_source_and_app(
                 item.item_type.to_string(),
                 item.hash,
                 encrypted_content,
-                encrypted_preview_content
+                encrypted_preview_content,
             ],
         );
-        if let Err(err) = state {
-            error!("update clipboard item time failed {:?} {:?}", item, err);
-        }
-        return;
+        return match state {
+            Ok(_) => true,
+            Err(err) => {
+                error!("update clipboard item time failed {:?} {:?}", item, err);
+                false
+            }
+        };
     }
     let start = Instant::now();
 
@@ -1847,13 +1926,56 @@ pub fn insert_with_source_and_app(
             (":search_index", &"1".to_string()),
         ])
     };
-    if state.is_err() {
-        error!("{:?} {:?}", item, state.err());
+    if let Err(err) = state {
+        error!("{:?} {:?}", item, err);
+        return false;
     }
     let row_id = conn.last_insert_rowid() as u64;
 
     engine::insert(search_content, &item.hash, &row_id);
     info!("insert item all :{}", start.elapsed().as_millis());
+    true
+}
+
+fn store_captured_item(
+    item: &Item,
+    search_content: &str,
+    source: &str,
+    app_source: &str,
+    app_icon_path: &str,
+    queue_only: bool,
+) -> bool {
+    if queue_only {
+        match crate::paste_queue::capture_item(item, source) {
+            Ok(()) => true,
+            Err(err) => {
+                crate::paste_queue::set_error(Some(item.hash.clone()), err);
+                false
+            }
+        }
+    } else {
+        insert_history_item(item, search_content, source, app_source, app_icon_path)
+    }
+}
+
+fn queue_capture_has_capacity(hash: &str, queue_only: bool) -> bool {
+    if !queue_only {
+        return true;
+    }
+    match crate::paste_queue::can_accept(hash) {
+        Ok(true) => true,
+        Ok(false) => {
+            crate::paste_queue::set_error(
+                Some(hash.to_string()),
+                format!("粘贴队列最多保留 {} 项", crate::paste_queue::CAPACITY),
+            );
+            false
+        }
+        Err(err) => {
+            crate::paste_queue::set_error(Some(hash.to_string()), err);
+            false
+        }
+    }
 }
 
 pub fn calculate_xxhash64(input: &[u8]) -> String {
@@ -1913,12 +2035,37 @@ fn rich_text_history_hash(
     format!("{:016x}", hasher.finish())
 }
 
-pub fn insert_text(content: String) {
-    insert_text_from_app(content, "", "");
+fn rich_format_storage_key(
+    hash: &str,
+    html: Option<&[u8]>,
+    rtf: Option<&[u8]>,
+    png: Option<&[u8]>,
+    queue_only: bool,
+) -> String {
+    if !queue_only {
+        return hash.to_string();
+    }
+
+    let mut hasher = XxHash64::with_seed(0);
+    hasher.write(b"paste-queue-rich-format-v1");
+    for bytes in [html, rtf, png] {
+        let bytes = bytes.unwrap_or_default();
+        hasher.write(&(bytes.len() as u64).to_le_bytes());
+        hasher.write(bytes);
+    }
+    format!("{hash}.queue.{:016x}", hasher.finish())
 }
 
-pub fn insert_text_from_app(content: String, app_source: &str, app_icon_path: &str) {
-    insert_text_from_app_impl(content, app_source, app_icon_path);
+pub fn insert_text(content: String) {
+    let _ = insert_text_from_app(content, "", "");
+}
+
+pub fn insert_text_from_app(
+    content: String,
+    app_source: &str,
+    app_icon_path: &str,
+) -> Option<String> {
+    insert_text_from_app_impl(content, app_source, app_icon_path, false)
 }
 
 pub fn insert_rich_text_from_app(
@@ -1928,7 +2075,48 @@ pub fn insert_rich_text_from_app(
     png: Option<Vec<u8>>,
     app_source: &str,
     app_icon_path: &str,
-) {
+) -> Option<String> {
+    insert_rich_text_from_app_impl(plain_text, html, rtf, png, app_source, app_icon_path, false)
+}
+
+pub fn capture_text_from_app(
+    content: String,
+    app_source: &str,
+    app_icon_path: &str,
+    queue_only: bool,
+) -> Option<String> {
+    insert_text_from_app_impl(content, app_source, app_icon_path, queue_only)
+}
+
+pub fn capture_rich_text_from_app(
+    plain_text: String,
+    html: Option<Vec<u8>>,
+    rtf: Option<Vec<u8>>,
+    png: Option<Vec<u8>>,
+    app_source: &str,
+    app_icon_path: &str,
+    queue_only: bool,
+) -> Option<String> {
+    insert_rich_text_from_app_impl(
+        plain_text,
+        html,
+        rtf,
+        png,
+        app_source,
+        app_icon_path,
+        queue_only,
+    )
+}
+
+fn insert_rich_text_from_app_impl(
+    plain_text: String,
+    html: Option<Vec<u8>>,
+    rtf: Option<Vec<u8>>,
+    png: Option<Vec<u8>>,
+    app_source: &str,
+    app_icon_path: &str,
+    queue_only: bool,
+) -> Option<String> {
     let payload_bytes = plain_text
         .len()
         .saturating_add(html.as_ref().map(Vec::len).unwrap_or(0))
@@ -1939,33 +2127,51 @@ pub fn insert_rich_text_from_app(
             "skip oversized rich clipboard payload: {} bytes",
             payload_bytes
         );
-        return;
+        return None;
     }
     if let Some(normalized_color) = normalized_color_text(&plain_text) {
-        insert_text_from_app_impl(normalized_color.to_string(), app_source, app_icon_path);
-        return;
+        return insert_text_from_app_impl(
+            normalized_color.to_string(),
+            app_source,
+            app_icon_path,
+            queue_only,
+        );
     }
 
     let normalized_plain_text = plain_text.trim().to_string();
     if !normalized_plain_text.is_empty() && convert_type(&normalized_plain_text) == ItemType::Link {
-        insert_text_from_app_impl(normalized_plain_text, app_source, app_icon_path);
-        return;
+        return insert_text_from_app_impl(
+            normalized_plain_text,
+            app_source,
+            app_icon_path,
+            queue_only,
+        );
     }
 
     let hash = rich_text_history_hash(&plain_text, html.as_deref(), rtf.as_deref(), png.as_deref());
+    if !queue_capture_has_capacity(&hash, queue_only) {
+        return None;
+    }
+    let storage_key = rich_format_storage_key(
+        &hash,
+        html.as_deref(),
+        rtf.as_deref(),
+        png.as_deref(),
+        queue_only,
+    );
     let meta = RichClipboardMeta {
         version: 1,
         html_path: html
             .as_ref()
-            .map(|bytes| save_rich_format_to_disk(bytes, &hash, "cf_html"))
+            .map(|bytes| save_rich_format_to_disk(bytes, &storage_key, "cf_html"))
             .unwrap_or_default(),
         rtf_path: rtf
             .as_ref()
-            .map(|bytes| save_rich_format_to_disk(bytes, &hash, "rtf"))
+            .map(|bytes| save_rich_format_to_disk(bytes, &storage_key, "rtf"))
             .unwrap_or_default(),
         png_path: png
             .as_ref()
-            .map(|bytes| save_rich_format_to_disk(bytes, &hash, "png"))
+            .map(|bytes| save_rich_format_to_disk(bytes, &storage_key, "png"))
             .unwrap_or_default(),
     };
     let source = format!(
@@ -1998,7 +2204,16 @@ pub fn insert_rich_text_from_app(
         label: 0,
         tags: Vec::new(),
     };
-    insert_with_source_and_app(&item, &plain_text, &source, app_source, app_icon_path);
+    let hash = item.hash.clone();
+    store_captured_item(
+        &item,
+        &plain_text,
+        &source,
+        app_source,
+        app_icon_path,
+        queue_only,
+    )
+    .then_some(hash)
 }
 
 pub(crate) fn insert_test_room_rich_text(
@@ -2044,23 +2259,31 @@ pub(crate) fn insert_test_room_rich_text(
         label: 0,
         tags: Vec::new(),
     };
-    insert_with_source_and_app(&item, &plain_text, &source, app_source, "");
+    let _ = insert_with_source_and_app(&item, &plain_text, &source, app_source, "");
 }
 
-fn insert_text_from_app_impl(content: String, app_source: &str, app_icon_path: &str) {
+fn insert_text_from_app_impl(
+    content: String,
+    app_source: &str,
+    app_icon_path: &str,
+    queue_only: bool,
+) -> Option<String> {
     if is_semantically_blank_text(&content) {
-        return;
+        return None;
     }
     if content.len() > MAX_AUTOMATIC_CAPTURE_BYTES {
         error!(
             "skip oversized text clipboard payload: {} bytes",
             content.len()
         );
-        return;
+        return None;
     }
     let normalized_color = normalized_color_text(&content).map(str::to_string);
     let content = normalized_color.unwrap_or(content);
     let hash = calculate_xxhash64(content.as_bytes());
+    if !queue_capture_has_capacity(&hash, queue_only) {
+        return None;
+    }
     let preview_content = content.chars().take(CARD_TEXT_PREVIEW_CHARS).collect();
     let (stored_content, item_type) = if content.len() > LARGE_TEXT_THRESHOLD_BYTES {
         (save_to_disk(content.as_bytes(), &hash), ItemType::TextFile)
@@ -2084,7 +2307,8 @@ fn insert_text_from_app_impl(content: String, app_source: &str, app_icon_path: &
         label: 0,
         tags: Vec::new(),
     };
-    insert_with_source_and_app(&item, &content, "", app_source, app_icon_path);
+    let hash = item.hash.clone();
+    store_captured_item(&item, &content, "", app_source, app_icon_path, queue_only).then_some(hash)
 }
 
 #[allow(dead_code)]
@@ -2103,15 +2327,44 @@ pub fn insert_image_with_text_and_app(
     text_content: &str,
     app_source: &str,
     app_icon_path: &str,
-) {
+) -> Option<String> {
+    insert_image_with_text_and_app_impl(content, text_content, app_source, app_icon_path, false)
+}
+
+pub fn capture_image_with_text_and_app(
+    content: &Vec<u8>,
+    text_content: &str,
+    app_source: &str,
+    app_icon_path: &str,
+    queue_only: bool,
+) -> Option<String> {
+    insert_image_with_text_and_app_impl(
+        content,
+        text_content,
+        app_source,
+        app_icon_path,
+        queue_only,
+    )
+}
+
+fn insert_image_with_text_and_app_impl(
+    content: &Vec<u8>,
+    text_content: &str,
+    app_source: &str,
+    app_icon_path: &str,
+    queue_only: bool,
+) -> Option<String> {
     if content.len() > MAX_AUTOMATIC_CAPTURE_BYTES {
         error!(
             "skip oversized image clipboard payload: {} bytes",
             content.len()
         );
-        return;
+        return None;
     }
     let hash = calculate_xxhash64(content);
+    if !queue_capture_has_capacity(&hash, queue_only) {
+        return None;
+    }
     let path = save_to_disk(content, &hash);
     let _ = crate::image_preview::metadata_from_bytes(&path, content);
     let item = Item {
@@ -2130,18 +2383,52 @@ pub fn insert_image_with_text_and_app(
         label: 0,
         tags: Vec::new(),
     };
-    insert_with_source_and_app(&item, text_content, text_content, app_source, app_icon_path);
+    let hash = item.hash.clone();
+    store_captured_item(
+        &item,
+        text_content,
+        text_content,
+        app_source,
+        app_icon_path,
+        queue_only,
+    )
+    .then_some(hash)
 }
 
 #[allow(dead_code)]
 pub fn insert_file(content: &Vec<String>) {
-    insert_file_from_app(content, "", "");
+    let _ = insert_file_from_app(content, "", "");
 }
 
 #[allow(dead_code)]
-pub fn insert_file_from_app(content: &Vec<String>, app_source: &str, app_icon_path: &str) {
+pub fn insert_file_from_app(
+    content: &Vec<String>,
+    app_source: &str,
+    app_icon_path: &str,
+) -> Option<String> {
+    insert_file_from_app_impl(content, app_source, app_icon_path, false)
+}
+
+pub fn capture_file_from_app(
+    content: &Vec<String>,
+    app_source: &str,
+    app_icon_path: &str,
+    queue_only: bool,
+) -> Option<String> {
+    insert_file_from_app_impl(content, app_source, app_icon_path, queue_only)
+}
+
+fn insert_file_from_app_impl(
+    content: &Vec<String>,
+    app_source: &str,
+    app_icon_path: &str,
+    queue_only: bool,
+) -> Option<String> {
     let content = serde_json::to_string(content).unwrap();
     let hash = calculate_xxhash64(&content.clone().into_bytes());
+    if !queue_capture_has_capacity(&hash, queue_only) {
+        return None;
+    }
 
     let item = Item {
         id: 0,
@@ -2159,7 +2446,8 @@ pub fn insert_file_from_app(content: &Vec<String>, app_source: &str, app_icon_pa
         label: 0,
         tags: Vec::new(),
     };
-    insert_with_source_and_app(&item, &content, "", app_source, app_icon_path);
+    let hash = item.hash.clone();
+    store_captured_item(&item, &content, "", app_source, app_icon_path, queue_only).then_some(hash)
 }
 fn native_path_string(path: &Path) -> String {
     let value = path.to_string_lossy().into_owned();
@@ -2880,6 +3168,61 @@ mod tests {
 
     fn reset_test_storage_config() {
         crate::config::save(crate::config::Config::default());
+    }
+
+    #[test]
+    fn queue_capture_stays_out_of_history_without_hiding_a_preexisting_item() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        let config = crate::config::Config {
+            storage_dir: app_data.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        crate::config::save(config);
+        crate::clipboard::db::init();
+        crate::paste_queue::set_active(false);
+
+        let existing = "visible before queue".to_string();
+        let existing_hash = insert_text_from_app(existing.clone(), "ExistingApp", "").unwrap();
+
+        crate::paste_queue::set_active(true);
+        let repeated_hash = capture_text_from_app(existing, "ExistingApp", "", true).unwrap();
+        let queue_only = "only captured for queue".to_string();
+        let queue_only_hash =
+            capture_text_from_app(queue_only.clone(), "QueueOnlyApp", "", true).unwrap();
+
+        let visible_items = search("", 0, 0, 10, "__all").unwrap().list;
+        let queue_search = search("only captured", 0, 0, 10, "__all").unwrap().list;
+        let history_queue_item = try_get_by_hash(&queue_only_hash);
+        let queue_item = crate::paste_queue::item(&queue_only_hash).unwrap();
+        let queue_hashes = crate::paste_queue::ordered_hashes().unwrap();
+        let app_sources = recent_app_sources(1).unwrap();
+
+        crate::paste_queue::set_active(false);
+        insert_text_from_app(queue_only, "QueueOnlyApp", "").unwrap();
+        let visible_after_normal_copy = search("", 0, 0, 10, "__all").unwrap().list;
+
+        crate::paste_queue::clear().unwrap();
+        reset_test_storage_config();
+
+        assert_eq!(repeated_hash, existing_hash);
+        assert_eq!(visible_items.len(), 1);
+        assert_eq!(visible_items[0].hash, existing_hash);
+        assert!(queue_search.is_empty());
+        assert!(history_queue_item.is_none());
+        assert!(
+            queue_item.is_some(),
+            "queue-only data must remain pasteable"
+        );
+        assert_eq!(
+            queue_hashes,
+            vec![repeated_hash.clone(), queue_only_hash.clone()]
+        );
+        assert_eq!(app_sources, vec!["ExistingApp"]);
+        assert_eq!(visible_after_normal_copy.len(), 2);
+        assert_eq!(visible_after_normal_copy[0].hash, queue_only_hash);
     }
 
     #[test]

@@ -12,6 +12,8 @@ use std::fs;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::sync::atomic::AtomicPtr;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
@@ -53,6 +55,7 @@ mod clipboard;
 mod config;
 mod image_preview;
 mod maintenance;
+mod paste_queue;
 mod runtime_mode;
 mod search;
 mod secure_store;
@@ -68,6 +71,21 @@ fn global_init() {
 
 lazy_static! {
     pub static ref GLOBAL_APP_DATA_DIR: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    static ref PASTE_QUEUE_REQUEST_SENDER: Mutex<Option<std::sync::mpsc::Sender<PasteQueueRequest>>> =
+        Mutex::new(None);
+}
+
+#[derive(Debug)]
+struct PasteQueueRequest {
+    hash: Option<String>,
+    activation_epoch: u64,
+    origin: PasteQueueRequestOrigin,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PasteQueueRequestOrigin {
+    Shortcut,
+    QueueWindow,
 }
 
 static CLIPBOARD_VISIBLE: AtomicBool = AtomicBool::new(false);
@@ -93,6 +111,15 @@ static TRAY_MENU_WATCHING: AtomicBool = AtomicBool::new(false);
 static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
 static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
 static PASTE_FALLBACK_NOTICE_GENERATION: AtomicU64 = AtomicU64::new(0);
+static PASTE_QUEUE_INTERCEPTOR_READY: AtomicBool = AtomicBool::new(false);
+static PASTE_QUEUE_INTERCEPTOR_STARTING: AtomicBool = AtomicBool::new(false);
+static PASTE_QUEUE_INTERNAL_PASTE: AtomicBool = AtomicBool::new(false);
+static PASTE_QUEUE_MENU_OPEN: AtomicBool = AtomicBool::new(false);
+static PASTE_QUEUE_MENU_GENERATION: AtomicU64 = AtomicU64::new(0);
+static PASTE_QUEUE_POINTER_GENERATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "macos")]
+static PASTE_QUEUE_MAC_EVENT_TAP: AtomicPtr<std::ffi::c_void> =
+    AtomicPtr::new(std::ptr::null_mut());
 #[cfg(all(target_os = "macos", debug_assertions))]
 static DEBUG_BACKGROUND_AGENT_ENABLED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
@@ -111,6 +138,10 @@ const CLIPBOARD_ANIMATION_FRAME_MS: u64 = 8;
 const CLIPBOARD_HORIZONTAL_BLEED: f64 = 12.0;
 const PASTE_FALLBACK_NOTICE_WIDTH: f64 = 560.0;
 const PASTE_FALLBACK_NOTICE_HEIGHT: f64 = 76.0;
+const PASTE_QUEUE_WINDOW_WIDTH: f64 = 360.0;
+const PASTE_QUEUE_WINDOW_HEIGHT: f64 = 448.0;
+#[cfg(target_os = "macos")]
+const PASTE_QUEUE_MAC_EVENT_MARKER: i64 = 0x5650_4153_5445_5155;
 const PASTE_FALLBACK_NOTICE_TOP_INSET: f64 = 18.0;
 const PASTE_FALLBACK_NOTICE_DURATION_MS: u64 = 4_000;
 const AUXILIARY_WINDOW_GUTTER: f64 = 8.0;
@@ -544,7 +575,15 @@ fn target_clipboard_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Moni
 
 #[cfg(not(target_os = "windows"))]
 fn target_clipboard_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
-    window.primary_monitor().ok().flatten()
+    cursor_physical_position()
+        .and_then(|position| {
+            window
+                .app_handle()
+                .monitor_from_point(position.x as f64, position.y as f64)
+                .ok()
+                .flatten()
+        })
+        .or_else(|| window.primary_monitor().ok().flatten())
 }
 
 fn screen_bounds(window: &tauri::WebviewWindow) -> ScreenBounds {
@@ -2226,7 +2265,25 @@ fn mouse_button_pressed() -> bool {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn mouse_button_pressed() -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceButtonState(state_id: u32, button: u32) -> bool;
+    }
+
+    const COMBINED_SESSION_STATE: u32 = 0;
+    const LEFT_BUTTON: u32 = 0;
+    const RIGHT_BUTTON: u32 = 1;
+    const CENTER_BUTTON: u32 = 2;
+    unsafe {
+        CGEventSourceButtonState(COMBINED_SESSION_STATE, LEFT_BUTTON)
+            || CGEventSourceButtonState(COMBINED_SESSION_STATE, RIGHT_BUTTON)
+            || CGEventSourceButtonState(COMBINED_SESSION_STATE, CENTER_BUTTON)
+    }
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn mouse_button_pressed() -> bool {
     false
 }
@@ -2334,6 +2391,145 @@ fn watch_tray_menu_outside_click(app: tauri::AppHandle) {
         }
         TRAY_MENU_WATCHING.store(false, Ordering::SeqCst);
     });
+}
+
+fn should_dismiss_paste_queue_menu(
+    menu_open: bool,
+    mouse_pressed: bool,
+    cursor_inside: bool,
+) -> bool {
+    menu_open && mouse_pressed && !cursor_inside
+}
+
+fn watch_paste_queue_menu_outside_click(app: tauri::AppHandle, generation: u64) {
+    std::thread::spawn(move || loop {
+        if PASTE_QUEUE_MENU_GENERATION.load(Ordering::SeqCst) != generation
+            || !PASTE_QUEUE_MENU_OPEN.load(Ordering::SeqCst)
+        {
+            break;
+        }
+        let Some(window) = app.get_webview_window("pasteQueue") else {
+            break;
+        };
+        if !window.is_visible().unwrap_or(false) {
+            break;
+        }
+        if should_dismiss_paste_queue_menu(
+            true,
+            mouse_button_pressed(),
+            cursor_inside_window(&window),
+        ) {
+            if PASTE_QUEUE_MENU_GENERATION.load(Ordering::SeqCst) == generation
+                && PASTE_QUEUE_MENU_OPEN.swap(false, Ordering::SeqCst)
+            {
+                PASTE_QUEUE_MENU_GENERATION.fetch_add(1, Ordering::SeqCst);
+                let _ = window.emit("paste-queue-dismiss-menu", ());
+            }
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(12));
+    });
+}
+
+#[derive(Clone, Copy, Serialize)]
+struct PasteQueuePointerPosition {
+    x: f64,
+    y: f64,
+    inside: bool,
+}
+
+fn paste_queue_pointer_position(
+    window: &tauri::WebviewWindow,
+) -> Option<(PasteQueuePointerPosition, (i32, i32, bool))> {
+    let cursor = window.cursor_position().ok()?;
+    let position = window.outer_position().ok()?;
+    let size = window.outer_size().ok()?;
+    let scale = window.scale_factor().ok()?;
+    let physical_x = cursor.x - position.x as f64;
+    let physical_y = cursor.y - position.y as f64;
+    let inside = physical_x >= 0.0
+        && physical_y >= 0.0
+        && physical_x <= size.width as f64
+        && physical_y <= size.height as f64;
+    let payload = PasteQueuePointerPosition {
+        x: physical_x / scale,
+        y: physical_y / scale,
+        inside,
+    };
+    let identity = if inside {
+        (cursor.x.round() as i32, cursor.y.round() as i32, true)
+    } else {
+        (0, 0, false)
+    };
+    Some((payload, identity))
+}
+
+fn watch_paste_queue_pointer(app: tauri::AppHandle, generation: u64) {
+    std::thread::spawn(move || {
+        let mut last_position = None;
+        loop {
+            if PASTE_QUEUE_POINTER_GENERATION.load(Ordering::SeqCst) != generation
+                || !paste_queue::is_active()
+            {
+                break;
+            }
+            let Some(window) = app.get_webview_window("pasteQueue") else {
+                break;
+            };
+            if !window.is_visible().unwrap_or(false) {
+                break;
+            }
+            if let Some((payload, identity)) = paste_queue_pointer_position(&window) {
+                if last_position != Some(identity) {
+                    let _ = window.emit("paste-queue-pointer-position", payload);
+                    last_position = Some(identity);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        if let Some(window) = app.get_webview_window("pasteQueue") {
+            let _ = window.emit(
+                "paste-queue-pointer-position",
+                PasteQueuePointerPosition {
+                    x: -1.0,
+                    y: -1.0,
+                    inside: false,
+                },
+            );
+        }
+    });
+}
+
+#[cfg(test)]
+mod paste_queue_menu_tests {
+    use super::{
+        should_dismiss_paste_queue_menu, should_prepare_paste_queue_click_target,
+        PasteQueueRequestOrigin,
+    };
+
+    #[test]
+    fn only_an_outside_mouse_press_dismisses_an_open_menu() {
+        assert!(should_dismiss_paste_queue_menu(true, true, false));
+        assert!(!should_dismiss_paste_queue_menu(true, true, true));
+        assert!(!should_dismiss_paste_queue_menu(true, false, false));
+        assert!(!should_dismiss_paste_queue_menu(false, true, false));
+    }
+
+    #[test]
+    fn every_queue_window_click_restores_the_previous_target() {
+        assert!(should_prepare_paste_queue_click_target(
+            PasteQueueRequestOrigin::QueueWindow,
+            true,
+        ));
+        assert!(should_prepare_paste_queue_click_target(
+            PasteQueueRequestOrigin::QueueWindow,
+            false,
+        ));
+        assert!(!should_prepare_paste_queue_click_target(
+            PasteQueueRequestOrigin::Shortcut,
+            true,
+        ));
+    }
 }
 
 fn handle_preview_focus_lost(app: tauri::AppHandle) {
@@ -3597,11 +3793,12 @@ async fn refresh_link_previews(
 }
 
 #[tauri::command]
-fn delete_clipboard_item(hash: String) -> Result<(), String> {
+fn delete_clipboard_item(app: tauri::AppHandle, hash: String) -> Result<(), String> {
     let affected = clipboard::delete_by_hash(&hash)?;
     if affected == 0 {
         Err("粘贴项不存在".to_string())
     } else {
+        paste_queue::emit_state(&app);
         Ok(())
     }
 }
@@ -5685,9 +5882,36 @@ fn validate_paste_as_text_shortcut(shortcut: Option<&str>) -> Result<(), String>
     Ok(())
 }
 
+fn validate_paste_queue_shortcut(shortcut: Option<&str>) -> Result<(), String> {
+    let Some(shortcut) = shortcut.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    if !shortcut_has_modifier(shortcut) {
+        return Err("粘贴队列快捷键至少需要包含一个修饰键".to_string());
+    }
+    if is_blocked_main_shortcut(shortcut) || is_reserved_quick_input_shortcut(shortcut) {
+        return Err("该粘贴队列快捷键被系统或快捷输入占用，请换一个快捷键".to_string());
+    }
+    if matches!(shortcut_policy_key(shortcut).as_str(), "ctrl+v" | "super+v") {
+        return Err("Ctrl/Command+V 由激活后的粘贴队列自动接管".to_string());
+    }
+    parse_shortcut(shortcut, "开关粘贴队列")?;
+    Ok(())
+}
+
 fn validate_shortcut_config(config: &Config) -> Result<(), String> {
     validate_main_window_shortcut(config.shortcut_keys.main_window.as_deref())?;
+    validate_paste_queue_shortcut(config.shortcut_keys.paste_queue_toggle.as_deref())?;
     validate_paste_as_text_shortcut(config.shortcut_keys.paste_into_plain_text.as_deref())?;
+    if config
+        .shortcut_keys
+        .main_window
+        .as_deref()
+        .zip(config.shortcut_keys.paste_queue_toggle.as_deref())
+        .is_some_and(|(main, queue)| shortcut_policy_key(main) == shortcut_policy_key(queue))
+    {
+        return Err("唤起主窗口和粘贴队列不能使用同一个快捷键".to_string());
+    }
     Ok(())
 }
 
@@ -5747,6 +5971,14 @@ fn configured_main_window_shortcut() -> Result<Option<Shortcut>, String> {
     parse_optional_shortcut(config.shortcut_keys.main_window.as_deref(), "唤起主窗口")
 }
 
+fn configured_paste_queue_shortcut() -> Result<Option<Shortcut>, String> {
+    let config = config::get();
+    parse_optional_shortcut(
+        config.shortcut_keys.paste_queue_toggle.as_deref(),
+        "开关粘贴队列",
+    )
+}
+
 #[tauri::command]
 fn begin_main_shortcut_recording(app: tauri::AppHandle) -> Result<(), String> {
     let current_shortcut = match configured_main_window_shortcut() {
@@ -5775,6 +6007,44 @@ fn end_main_shortcut_recording(app: tauri::AppHandle) -> Result<ShortcutRegistra
 }
 
 #[tauri::command]
+fn begin_paste_queue_shortcut_recording(app: tauri::AppHandle) -> Result<(), String> {
+    unregister_main_window_shortcut(&app, configured_paste_queue_shortcut().unwrap_or(None))
+}
+
+#[tauri::command]
+fn end_paste_queue_shortcut_recording(
+    app: tauri::AppHandle,
+) -> Result<ShortcutRegistrationInfo, String> {
+    register_main_window_shortcut(&app, configured_paste_queue_shortcut().unwrap_or(None))
+}
+
+#[tauri::command]
+fn check_paste_queue_shortcut_registration(
+    app: tauri::AppHandle,
+    shortcut: String,
+) -> Result<ShortcutRegistrationInfo, String> {
+    validate_paste_queue_shortcut(Some(&shortcut))?;
+    let parsed = parse_optional_shortcut(Some(&shortcut), "开关粘贴队列")?;
+    let Some(parsed) = parsed else {
+        return Ok(ShortcutRegistrationInfo {
+            registered: false,
+            conflict: false,
+        });
+    };
+    if app.global_shortcut().is_registered(parsed) {
+        return Ok(ShortcutRegistrationInfo {
+            registered: true,
+            conflict: false,
+        });
+    }
+    let info = register_main_window_shortcut(&app, Some(parsed))?;
+    if info.registered {
+        unregister_main_window_shortcut(&app, Some(parsed))?;
+    }
+    Ok(info)
+}
+
+#[tauri::command]
 fn check_main_shortcut_registration(
     app: tauri::AppHandle,
     shortcut: String,
@@ -5800,19 +6070,6 @@ fn check_main_shortcut_registration(
         unregister_main_window_shortcut(&app, Some(shortcut))?;
     }
     Ok(info)
-}
-
-fn sync_main_window_shortcut(
-    app: &tauri::AppHandle,
-    previous: Option<Shortcut>,
-    desired: Option<Shortcut>,
-) -> Result<ShortcutRegistrationInfo, String> {
-    if previous == desired {
-        return register_main_window_shortcut(app, desired);
-    }
-
-    unregister_main_window_shortcut(app, previous)?;
-    register_main_window_shortcut(app, desired)
 }
 
 #[cfg(test)]
@@ -5861,6 +6118,85 @@ mod shortcut_policy_tests {
         assert!(validate_paste_as_text_shortcut(Some("Tab")).is_err());
         assert!(validate_paste_as_text_shortcut(Some("Escape")).is_err());
         assert!(validate_paste_as_text_shortcut(Some("Enter")).is_err());
+    }
+
+    #[test]
+    fn validates_paste_queue_toggle_shortcut_policy() {
+        assert!(validate_paste_queue_shortcut(Some("Alt+Shift+V")).is_ok());
+        assert!(validate_paste_queue_shortcut(Some("Control+V")).is_err());
+        assert!(validate_paste_queue_shortcut(Some("Command+V")).is_err());
+        assert!(validate_paste_queue_shortcut(Some("V")).is_err());
+    }
+
+    #[test]
+    fn rejects_matching_main_and_paste_queue_shortcuts() {
+        let mut config = Config::default();
+        config.shortcut_keys.main_window = Some("Alt+V".to_string());
+        config.shortcut_keys.paste_queue_toggle = Some("V+Alt".to_string());
+        assert!(validate_shortcut_config(&config).is_err());
+    }
+
+    #[test]
+    fn paste_queue_intercepts_only_the_platform_paste_modifier() {
+        let mut state = PasteQueueInputState {
+            control: true,
+            ..Default::default()
+        };
+        assert!(exact_paste_queue_modifier_for_platform(&state, false));
+        assert!(!exact_paste_queue_modifier_for_platform(&state, true));
+
+        state.control = false;
+        state.meta = true;
+        assert!(exact_paste_queue_modifier_for_platform(&state, true));
+        assert!(!exact_paste_queue_modifier_for_platform(&state, false));
+
+        state.shift = true;
+        assert!(!exact_paste_queue_modifier_for_platform(&state, true));
+    }
+
+    #[test]
+    fn paste_queue_ignores_internal_and_repeated_v_presses() {
+        let mut state = PasteQueueInputState::default();
+        #[cfg(target_os = "macos")]
+        {
+            state.meta = true;
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            state.control = true;
+        }
+
+        assert_eq!(
+            begin_paste_queue_v_press(&mut state, true, false),
+            (true, true)
+        );
+        assert_eq!(
+            begin_paste_queue_v_press(&mut state, true, false),
+            (true, false)
+        );
+
+        state.v_down = false;
+        state.swallow_v = false;
+        assert_eq!(
+            begin_paste_queue_v_press(&mut state, true, true),
+            (false, false)
+        );
+        assert_eq!(
+            begin_paste_queue_v_press(&mut state, false, false),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn macos_paste_queue_interceptor_uses_raw_key_events() {
+        assert_eq!(
+            paste_queue_interceptor_backend_for_platform(true),
+            PasteQueueInterceptorBackend::RawMacEventTap
+        );
+        assert_eq!(
+            paste_queue_interceptor_backend_for_platform(false),
+            PasteQueueInterceptorBackend::RdevGrab
+        );
     }
 
     #[test]
@@ -6225,12 +6561,25 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
         config_struct.shortcut_keys.main_window.as_deref(),
         "唤起主窗口",
     )?;
+    let previous_paste_queue_shortcut = parse_optional_shortcut(
+        previous_config.shortcut_keys.paste_queue_toggle.as_deref(),
+        "当前粘贴队列",
+    )?;
+    let next_paste_queue_shortcut = parse_optional_shortcut(
+        config_struct.shortcut_keys.paste_queue_toggle.as_deref(),
+        "开关粘贴队列",
+    )?;
     let automatic_updates_enabled = config_struct.update_check_enabled;
     let next_language = config_struct.multilingual.clone();
     let next_theme_mode = config_struct.theme_mode.clone();
 
-    let registration_info =
-        sync_main_window_shortcut(&app, previous_main_shortcut, next_main_shortcut)?;
+    // Release both old registrations before acquiring either new one. This keeps
+    // swapping the two shortcuts from unregistering the first newly registered key.
+    unregister_main_window_shortcut(&app, previous_main_shortcut)?;
+    unregister_main_window_shortcut(&app, previous_paste_queue_shortcut)?;
+    let registration_info = register_main_window_shortcut(&app, next_main_shortcut)?;
+    let paste_queue_registration_info =
+        register_main_window_shortcut(&app, next_paste_queue_shortcut)?;
     if !runtime_mode::is_portable() {
         let actual_startup = check_autostart_enabled(&app)?;
         if actual_startup != config_struct.startup {
@@ -6270,12 +6619,12 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
         skipped_items: 0,
         copied_files: 0,
         backup_dir: String::new(),
-        message: if registration_info.conflict {
+        message: if registration_info.conflict || paste_queue_registration_info.conflict {
             "配置已保存，但快捷键被其他应用占用".to_string()
         } else {
             "配置已保存".to_string()
         },
-        shortcut_conflict: registration_info.conflict,
+        shortcut_conflict: registration_info.conflict || paste_queue_registration_info.conflict,
     })
 }
 #[tauri::command]
@@ -7414,6 +7763,16 @@ fn copy(
     item_type: String,
     hash: Option<String>,
 ) -> Result<(), String> {
+    let rich_meta = hash.as_deref().and_then(clipboard::rich_clipboard_meta);
+    copy_with_rich_meta(app, item, item_type, rich_meta)
+}
+
+fn copy_with_rich_meta(
+    app: tauri::AppHandle,
+    item: String,
+    item_type: String,
+    rich_meta: Option<clipboard::RichClipboardMeta>,
+) -> Result<(), String> {
     use tauri_plugin_clipboard_manager::ClipboardExt;
 
     info!("Attempting to copy item of type: {}", item_type);
@@ -7521,12 +7880,10 @@ fn copy(
         }
     } else {
         #[cfg(any(target_os = "windows", target_os = "macos"))]
-        if let Some(hash) = hash.as_deref() {
-            if let Some(meta) = clipboard::rich_clipboard_meta(hash) {
-                info!("Copying rich text formats for hash: {}", hash);
-                mark_internal();
-                return copy_rich_to_clipboard(&item, &meta);
-            }
+        if let Some(meta) = rich_meta.as_ref() {
+            info!("Copying rich text formats");
+            mark_internal();
+            return copy_rich_to_clipboard(&item, meta);
         }
         info!("Copying text payload: {} bytes", item.len());
         mark_internal();
@@ -7549,12 +7906,12 @@ async fn copy_history_item(
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let text = clipboard::plain_text_content(&hash)?;
-        copy(
-            app,
-            text,
-            "Text".to_string(),
-            if plain_text { None } else { Some(hash) },
-        )
+        let rich_meta = if plain_text {
+            None
+        } else {
+            clipboard::rich_clipboard_meta(&hash)
+        };
+        copy_with_rich_meta(app, text, "Text".to_string(), rich_meta)
     })
     .await
     .map_err(|err| err.to_string())?
@@ -7562,7 +7919,7 @@ async fn copy_history_item(
 
 #[cfg(target_os = "macos")]
 fn simulate_paste_shortcut() -> Result<(), String> {
-    use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
+    use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, EventField};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
     const V_KEY_CODE: u16 = 0x09;
@@ -7573,11 +7930,19 @@ fn simulate_paste_shortcut() -> Result<(), String> {
     let key_down = CGEvent::new_keyboard_event(source.clone(), V_KEY_CODE, true)
         .map_err(|_| "failed to create paste key down event".to_string())?;
     key_down.set_flags(flags);
+    key_down.set_integer_value_field(
+        EventField::EVENT_SOURCE_USER_DATA,
+        PASTE_QUEUE_MAC_EVENT_MARKER,
+    );
     key_down.post(CGEventTapLocation::HID);
 
     let key_up = CGEvent::new_keyboard_event(source, V_KEY_CODE, false)
         .map_err(|_| "failed to create paste key up event".to_string())?;
     key_up.set_flags(flags);
+    key_up.set_integer_value_field(
+        EventField::EVENT_SOURCE_USER_DATA,
+        PASTE_QUEUE_MAC_EVENT_MARKER,
+    );
     key_up.post(CGEventTapLocation::HID);
     Ok(())
 }
@@ -7630,6 +7995,581 @@ fn simulate_paste_shortcut() -> Result<(), String> {
     simulate(&EventType::KeyRelease(Key::KeyV)).map_err(|e| e.to_string())?;
     simulate(&EventType::KeyRelease(Key::ControlLeft)).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn restore_paste_queue_item(app: tauri::AppHandle, hash: &str) -> Result<(), String> {
+    let item = paste_queue::item(hash)?.ok_or_else(|| "粘贴项不存在".to_string())?;
+    let rich_meta = paste_queue::rich_clipboard_meta(hash);
+    let (content, item_type) = match item.item_type {
+        clipboard::item::ItemType::TextFile => {
+            (paste_queue::plain_text_content(hash)?, "Text".to_string())
+        }
+        clipboard::item::ItemType::Link => (
+            item.content.split("|||").next().unwrap_or("").to_string(),
+            "Link".to_string(),
+        ),
+        _ => (item.content, item.item_type.to_string()),
+    };
+    copy_with_rich_meta(app, content, item_type, rich_meta)
+}
+
+fn should_prepare_paste_queue_click_target(
+    origin: PasteQueueRequestOrigin,
+    _clipboard_visible: bool,
+) -> bool {
+    origin == PasteQueueRequestOrigin::QueueWindow
+}
+
+fn prepare_paste_queue_click_target(app: &tauri::AppHandle, origin: PasteQueueRequestOrigin) {
+    if !should_prepare_paste_queue_click_target(origin, CLIPBOARD_VISIBLE.load(Ordering::SeqCst)) {
+        return;
+    }
+
+    if CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+        if let Some(window) = app.get_webview_window("clipboard") {
+            hide_clipboard_window(&window);
+            let started = Instant::now();
+            while CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+                && started.elapsed() < std::time::Duration::from_millis(400)
+            {
+                std::thread::sleep(std::time::Duration::from_millis(8));
+            }
+        }
+    }
+    restore_foreground_app_before_paste();
+    std::thread::sleep(std::time::Duration::from_millis(40));
+}
+
+fn process_paste_queue_request(app: &tauri::AppHandle, request: PasteQueueRequest) {
+    if !paste_queue::is_active() || request.activation_epoch != paste_queue::activation_epoch() {
+        return;
+    }
+    let hash = match paste_queue::paste_target(request.hash.as_deref()) {
+        Ok(Some(hash)) => hash,
+        Ok(None) => {
+            paste_queue::emit_state(app);
+            return;
+        }
+        Err(err) => {
+            paste_queue::set_error(request.hash, err);
+            paste_queue::emit_state(app);
+            return;
+        }
+    };
+
+    paste_queue::clear_error();
+    paste_queue::set_busy(true);
+    paste_queue::emit_state(app);
+    let result = restore_paste_queue_item(app.clone(), &hash).and_then(|_| {
+        prepare_paste_queue_click_target(app, request.origin);
+        PASTE_QUEUE_INTERNAL_PASTE.store(true, Ordering::SeqCst);
+        let result = simulate_paste_shortcut();
+        std::thread::sleep(std::time::Duration::from_millis(24));
+        PASTE_QUEUE_INTERNAL_PASTE.store(false, Ordering::SeqCst);
+        result
+    });
+    match result {
+        Ok(()) => {
+            if let Err(err) = paste_queue::touch(&hash) {
+                error!("failed to touch paste queue item: {err}");
+            }
+            if let Err(err) = paste_queue::consume(&hash) {
+                paste_queue::set_error(Some(hash), err);
+            } else if !paste_queue::is_active()
+                || request.activation_epoch != paste_queue::activation_epoch()
+            {
+                // An in-flight paste still commits after exit, but its undo entry
+                // belongs to the activation that just ended.
+                paste_queue::clear_undo();
+            }
+        }
+        Err(err) => paste_queue::set_error(Some(hash), err),
+    }
+    paste_queue::set_busy(false);
+    paste_queue::emit_state(app);
+}
+
+fn initialize_paste_queue_worker(app: &tauri::AppHandle) {
+    let (sender, receiver) = std::sync::mpsc::channel::<PasteQueueRequest>();
+    *PASTE_QUEUE_REQUEST_SENDER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(sender);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        while let Ok(request) = receiver.recv() {
+            process_paste_queue_request(&app, request);
+        }
+    });
+}
+
+fn enqueue_paste_queue_request(
+    hash: Option<String>,
+    origin: PasteQueueRequestOrigin,
+) -> Result<(), String> {
+    let sender = PASTE_QUEUE_REQUEST_SENDER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+        .ok_or_else(|| "粘贴队列执行器尚未就绪".to_string())?;
+    sender
+        .send(PasteQueueRequest {
+            hash,
+            activation_epoch: paste_queue::activation_epoch(),
+            origin,
+        })
+        .map_err(|err| err.to_string())
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+#[derive(Default)]
+struct PasteQueueInputState {
+    control: bool,
+    meta: bool,
+    shift: bool,
+    alt: bool,
+    v_down: bool,
+    swallow_v: bool,
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn update_paste_queue_modifier(state: &mut PasteQueueInputState, key: rdev::Key, down: bool) {
+    match key {
+        rdev::Key::ControlLeft | rdev::Key::ControlRight => state.control = down,
+        rdev::Key::MetaLeft | rdev::Key::MetaRight => state.meta = down,
+        rdev::Key::ShiftLeft | rdev::Key::ShiftRight => state.shift = down,
+        rdev::Key::Alt | rdev::Key::AltGr => state.alt = down,
+        _ => {}
+    }
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn exact_paste_queue_modifier(state: &PasteQueueInputState) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        exact_paste_queue_modifier_for_platform(state, true)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        exact_paste_queue_modifier_for_platform(state, false)
+    }
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn exact_paste_queue_modifier_for_platform(state: &PasteQueueInputState, macos: bool) -> bool {
+    if macos {
+        state.meta && !state.control && !state.shift && !state.alt
+    } else {
+        state.control && !state.meta && !state.shift && !state.alt
+    }
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn begin_paste_queue_v_press(
+    state: &mut PasteQueueInputState,
+    active: bool,
+    internal: bool,
+) -> (bool, bool) {
+    let intercept = active && !internal && exact_paste_queue_modifier(state);
+    let trigger = intercept && !state.v_down;
+    state.v_down = true;
+    if intercept {
+        state.swallow_v = true;
+    }
+    (intercept, trigger)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PasteQueueInterceptorBackend {
+    RawMacEventTap,
+    RdevGrab,
+}
+
+fn paste_queue_interceptor_backend_for_platform(macos: bool) -> PasteQueueInterceptorBackend {
+    if macos {
+        PasteQueueInterceptorBackend::RawMacEventTap
+    } else {
+        PasteQueueInterceptorBackend::RdevGrab
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct PasteQueueMacInputState {
+    v_down: bool,
+    swallow_v: bool,
+}
+
+#[cfg(target_os = "macos")]
+static PASTE_QUEUE_MAC_INPUT_STATE: Mutex<PasteQueueMacInputState> =
+    Mutex::new(PasteQueueMacInputState {
+        v_down: false,
+        swallow_v: false,
+    });
+
+#[cfg(target_os = "macos")]
+type PasteQueueMacEventTapCallback = unsafe extern "C" fn(
+    proxy: *mut std::ffi::c_void,
+    event_type: u32,
+    event: *mut std::ffi::c_void,
+    user_info: *mut std::ffi::c_void,
+) -> *mut std::ffi::c_void;
+
+#[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn CGEventTapCreate(
+        tap: u32,
+        place: u32,
+        options: u32,
+        events_of_interest: u64,
+        callback: PasteQueueMacEventTapCallback,
+        user_info: *mut std::ffi::c_void,
+    ) -> *mut std::ffi::c_void;
+    fn CGEventTapEnable(tap: *mut std::ffi::c_void, enable: bool);
+    fn CGEventGetIntegerValueField(event: *mut std::ffi::c_void, field: u32) -> i64;
+    fn CGEventGetFlags(event: *mut std::ffi::c_void) -> u64;
+    fn CGEventSetType(event: *mut std::ffi::c_void, event_type: u32);
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFMachPortCreateRunLoopSource(
+        allocator: *const std::ffi::c_void,
+        tap: *mut std::ffi::c_void,
+        order: i64,
+    ) -> *mut std::ffi::c_void;
+    fn CFRunLoopGetCurrent() -> *mut std::ffi::c_void;
+    fn CFRunLoopAddSource(
+        run_loop: *mut std::ffi::c_void,
+        source: *mut std::ffi::c_void,
+        mode: *const std::ffi::c_void,
+    );
+    fn CFRunLoopRun();
+    static kCFRunLoopCommonModes: *const std::ffi::c_void;
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn paste_queue_macos_event_callback(
+    _proxy: *mut std::ffi::c_void,
+    event_type: u32,
+    event: *mut std::ffi::c_void,
+    _user_info: *mut std::ffi::c_void,
+) -> *mut std::ffi::c_void {
+    const KEY_DOWN: u32 = 10;
+    const KEY_UP: u32 = 11;
+    const TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
+    const TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
+    const NULL_EVENT: u32 = 0;
+    const V_KEY_CODE: i64 = 0x09;
+    const KEYBOARD_EVENT_KEYCODE: u32 = 9;
+    const EVENT_SOURCE_USER_DATA: u32 = 42;
+    const FLAG_SHIFT: u64 = 0x0002_0000;
+    const FLAG_CONTROL: u64 = 0x0004_0000;
+    const FLAG_ALTERNATE: u64 = 0x0008_0000;
+    const FLAG_COMMAND: u64 = 0x0010_0000;
+    const FLAG_SECONDARY_FN: u64 = 0x0080_0000;
+
+    if event_type == TAP_DISABLED_BY_TIMEOUT || event_type == TAP_DISABLED_BY_USER_INPUT {
+        let tap = PASTE_QUEUE_MAC_EVENT_TAP.load(Ordering::SeqCst);
+        if !tap.is_null() {
+            CGEventTapEnable(tap, true);
+        }
+        return event;
+    }
+    if event_type != KEY_DOWN && event_type != KEY_UP {
+        return event;
+    }
+    if CGEventGetIntegerValueField(event, KEYBOARD_EVENT_KEYCODE) != V_KEY_CODE {
+        return event;
+    }
+    if CGEventGetIntegerValueField(event, EVENT_SOURCE_USER_DATA) == PASTE_QUEUE_MAC_EVENT_MARKER {
+        return event;
+    }
+
+    let mut state = PASTE_QUEUE_MAC_INPUT_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if event_type == KEY_DOWN {
+        let flags = CGEventGetFlags(event);
+        let exact_command = flags & FLAG_COMMAND != 0
+            && flags & (FLAG_SHIFT | FLAG_CONTROL | FLAG_ALTERNATE | FLAG_SECONDARY_FN) == 0;
+        let intercept = paste_queue::is_active()
+            && !PASTE_QUEUE_INTERNAL_PASTE.load(Ordering::SeqCst)
+            && exact_command;
+        let trigger = intercept && !state.v_down;
+        state.v_down = true;
+        if intercept {
+            state.swallow_v = true;
+            if trigger {
+                let _ = enqueue_paste_queue_request(None, PasteQueueRequestOrigin::Shortcut);
+            }
+            CGEventSetType(event, NULL_EVENT);
+        }
+    } else {
+        state.v_down = false;
+        if state.swallow_v {
+            state.swallow_v = false;
+            CGEventSetType(event, NULL_EVENT);
+        }
+    }
+    event
+}
+
+#[cfg(target_os = "macos")]
+fn run_paste_queue_interceptor() -> Result<(), String> {
+    const HID_EVENT_TAP: u32 = 0;
+    const HEAD_INSERT_EVENT_TAP: u32 = 0;
+    const DEFAULT_EVENT_TAP: u32 = 0;
+    const KEY_DOWN: u32 = 10;
+    const KEY_UP: u32 = 11;
+    let event_mask = (1_u64 << KEY_DOWN) | (1_u64 << KEY_UP);
+
+    unsafe {
+        let tap = CGEventTapCreate(
+            HID_EVENT_TAP,
+            HEAD_INSERT_EVENT_TAP,
+            DEFAULT_EVENT_TAP,
+            event_mask,
+            paste_queue_macos_event_callback,
+            std::ptr::null_mut(),
+        );
+        if tap.is_null() {
+            return Err("macOS Event Tap 创建失败".to_string());
+        }
+        let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
+        if source.is_null() {
+            return Err("macOS Event Tap RunLoop Source 创建失败".to_string());
+        }
+        PASTE_QUEUE_MAC_EVENT_TAP.store(tap, Ordering::SeqCst);
+        let run_loop = CFRunLoopGetCurrent();
+        CFRunLoopAddSource(run_loop, source, kCFRunLoopCommonModes);
+        CGEventTapEnable(tap, true);
+        PASTE_QUEUE_INTERCEPTOR_READY.store(true, Ordering::SeqCst);
+        CFRunLoopRun();
+        PASTE_QUEUE_MAC_EVENT_TAP.store(std::ptr::null_mut(), Ordering::SeqCst);
+    }
+    Err("macOS Event Tap 已停止".to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn run_paste_queue_interceptor() -> Result<(), String> {
+    let input_state = Mutex::new(PasteQueueInputState::default());
+    PASTE_QUEUE_INTERCEPTOR_READY.store(true, Ordering::SeqCst);
+    rdev::grab(move |event| {
+        let mut state = input_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match event.event_type {
+            rdev::EventType::KeyPress(key) => {
+                update_paste_queue_modifier(&mut state, key, true);
+                if key == rdev::Key::KeyV {
+                    let (intercept, trigger) = begin_paste_queue_v_press(
+                        &mut state,
+                        paste_queue::is_active(),
+                        PASTE_QUEUE_INTERNAL_PASTE.load(Ordering::SeqCst),
+                    );
+                    if intercept {
+                        if trigger {
+                            let _ = enqueue_paste_queue_request(
+                                None,
+                                PasteQueueRequestOrigin::Shortcut,
+                            );
+                        }
+                        return None;
+                    }
+                }
+            }
+            rdev::EventType::KeyRelease(key) => {
+                if key == rdev::Key::KeyV {
+                    state.v_down = false;
+                    if state.swallow_v {
+                        state.swallow_v = false;
+                        return None;
+                    }
+                }
+                update_paste_queue_modifier(&mut state, key, false);
+            }
+            _ => {}
+        }
+        Some(event)
+    })
+    .map_err(|err| format!("{err:?}"))
+}
+
+fn ensure_paste_queue_interceptor(app: &tauri::AppHandle) -> Result<(), String> {
+    if PASTE_QUEUE_INTERCEPTOR_READY.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    if !PASTE_QUEUE_INTERCEPTOR_STARTING.swap(true, Ordering::SeqCst) {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            info!(
+                "starting paste queue interceptor: {:?}",
+                paste_queue_interceptor_backend_for_platform(cfg!(target_os = "macos"))
+            );
+            let result = run_paste_queue_interceptor();
+            PASTE_QUEUE_INTERCEPTOR_READY.store(false, Ordering::SeqCst);
+            PASTE_QUEUE_INTERCEPTOR_STARTING.store(false, Ordering::SeqCst);
+            if let Err(err) = result {
+                paste_queue::set_active(false);
+                paste_queue::set_error(None, format!("无法接管系统粘贴快捷键：{err}"));
+                paste_queue::hide_window(&app);
+                paste_queue::emit_state(&app);
+            }
+        });
+    }
+    for _ in 0..25 {
+        if PASTE_QUEUE_INTERCEPTOR_READY.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        if !PASTE_QUEUE_INTERCEPTOR_STARTING.load(Ordering::SeqCst) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    Err("无法启动系统粘贴快捷键拦截".to_string())
+}
+
+fn show_paste_queue_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("pasteQueue")
+        .ok_or_else(|| "粘贴队列窗口不存在".to_string())?;
+    let bounds = app
+        .get_webview_window("clipboard")
+        .map(|clipboard_window| target_clipboard_screen_bounds(&clipboard_window))
+        .unwrap_or_else(|| screen_bounds(&window));
+    let x = bounds.x + bounds.width - PASTE_QUEUE_WINDOW_WIDTH - 24.0;
+    let y = bounds.y + (bounds.height - PASTE_QUEUE_WINDOW_HEIGHT) / 2.0;
+    set_window_size_for_scale(
+        &window,
+        PASTE_QUEUE_WINDOW_WIDTH,
+        PASTE_QUEUE_WINDOW_HEIGHT,
+        bounds.scale_factor,
+    )?;
+    set_window_position_for_scale(&window, x, y, bounds.scale_factor)?;
+    window.show().map_err(|err| err.to_string())
+}
+
+fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(), String> {
+    if active {
+        if !is_process_trusted_with_prompt(false) {
+            if let Some(source_window) = app.get_webview_window("clipboard") {
+                let _ = open_onboarding_permission_window(
+                    app.clone(),
+                    source_window,
+                    "paste".to_string(),
+                    None,
+                    None,
+                );
+            }
+            return Err("需要辅助功能权限才能启用粘贴队列".to_string());
+        }
+        ensure_paste_queue_interceptor(app)?;
+        if !paste_queue::is_active() && !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+            record_foreground_app_before_clipboard();
+        }
+        paste_queue::set_active(true);
+        paste_queue::clear_error();
+        if let Err(err) = show_paste_queue_window(app) {
+            paste_queue::set_active(false);
+            return Err(err);
+        }
+        let generation = PASTE_QUEUE_POINTER_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+        watch_paste_queue_pointer(app.clone(), generation);
+    } else {
+        PASTE_QUEUE_POINTER_GENERATION.fetch_add(1, Ordering::SeqCst);
+        PASTE_QUEUE_MENU_GENERATION.fetch_add(1, Ordering::SeqCst);
+        PASTE_QUEUE_MENU_OPEN.store(false, Ordering::SeqCst);
+        paste_queue::set_active(false);
+        paste_queue::hide_window(app);
+    }
+    paste_queue::emit_state(app);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_paste_queue_state() -> Result<paste_queue::PasteQueueState, String> {
+    paste_queue::state()
+}
+
+#[tauri::command]
+fn set_paste_queue_menu_open(app: tauri::AppHandle, open: bool) {
+    let generation = PASTE_QUEUE_MENU_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    PASTE_QUEUE_MENU_OPEN.store(open, Ordering::SeqCst);
+    if open {
+        watch_paste_queue_menu_outside_click(app, generation);
+    }
+}
+
+#[tauri::command]
+fn set_paste_queue_active(
+    app: tauri::AppHandle,
+    active: bool,
+) -> Result<paste_queue::PasteQueueState, String> {
+    set_paste_queue_active_impl(&app, active)?;
+    paste_queue::state()
+}
+
+#[tauri::command]
+fn add_paste_queue_items(
+    app: tauri::AppHandle,
+    hashes: Vec<String>,
+) -> Result<paste_queue::PasteQueueState, String> {
+    paste_queue::add_items(&hashes)?;
+    paste_queue::emit_state(&app);
+    paste_queue::state()
+}
+
+#[tauri::command]
+fn reorder_paste_queue(
+    app: tauri::AppHandle,
+    hashes: Vec<String>,
+) -> Result<paste_queue::PasteQueueState, String> {
+    paste_queue::reorder(&hashes)?;
+    paste_queue::emit_state(&app);
+    paste_queue::state()
+}
+
+#[tauri::command]
+fn reverse_paste_queue(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueState, String> {
+    paste_queue::reverse()?;
+    paste_queue::emit_state(&app);
+    paste_queue::state()
+}
+
+#[tauri::command]
+fn remove_paste_queue_item(
+    app: tauri::AppHandle,
+    hash: String,
+) -> Result<paste_queue::PasteQueueState, String> {
+    paste_queue::remove_item(&hash)?;
+    paste_queue::emit_state(&app);
+    paste_queue::state()
+}
+
+#[tauri::command]
+fn clear_paste_queue(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueState, String> {
+    paste_queue::clear()?;
+    paste_queue::emit_state(&app);
+    paste_queue::state()
+}
+
+#[tauri::command]
+fn paste_queue_item(app: tauri::AppHandle, hash: Option<String>) -> Result<(), String> {
+    if !paste_queue::is_active() {
+        return Err("粘贴队列尚未激活".to_string());
+    }
+    enqueue_paste_queue_request(hash, PasteQueueRequestOrigin::QueueWindow)?;
+    paste_queue::emit_state(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn undo_paste_queue_consume(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueState, String> {
+    let _ = paste_queue::undo_consume()?;
+    paste_queue::emit_state(&app);
+    paste_queue::state()
 }
 
 #[tauri::command]
@@ -7747,12 +8687,13 @@ async fn search(
 }
 
 #[tauri::command]
-fn clear_history(clear_type: String) -> Result<(), String> {
+fn clear_history(app: tauri::AppHandle, clear_type: String) -> Result<(), String> {
     if clear_type == "all" {
         clipboard::db::clear_all().map_err(|e| e.to_string())?;
     } else if clear_type == "images" {
         clipboard::db::clear_images().map_err(|e| e.to_string())?;
     }
+    paste_queue::emit_state(&app);
     Ok(())
 }
 
@@ -8128,6 +9069,42 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
     Ok(clipboard_window)
 }
 
+fn build_paste_queue_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let window = WebviewWindowBuilder::new(handle, "pasteQueue", App("paste-queue".into()))
+        .title("Paste Queue")
+        .visible(false)
+        .focused(false)
+        .focusable(false)
+        .accept_first_mouse(true)
+        .fullscreen(false)
+        .resizable(false)
+        .minimizable(false)
+        .maximizable(false)
+        .decorations(false)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
+        .inner_size(PASTE_QUEUE_WINDOW_WIDTH, PASTE_QUEUE_WINDOW_HEIGHT)
+        .always_on_top(true)
+        .skip_taskbar(true);
+    #[cfg(target_os = "windows")]
+    let window = window.shadow(false);
+    #[cfg(target_os = "macos")]
+    let window = window
+        .hidden_title(true)
+        .title_bar_style(TitleBarStyle::Overlay);
+    let window = window.build()?;
+    let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    let _ = window.set_shadow(false);
+    apply_vpaste_window_icon(&window);
+    #[cfg(target_os = "macos")]
+    {
+        set_macos_window_level(&window, 102);
+        enable_macos_mouse_moved_events(&window);
+        configure_macos_transparent_window(&window);
+    }
+    Ok(window)
+}
+
 #[cfg(target_os = "windows")]
 fn show_startup_error(message: &str) {
     use windows::core::PCWSTR;
@@ -8220,6 +9197,18 @@ fn main() {
                             if let Ok(parsed) = s.parse::<Shortcut>() {
                                 if shortcut == &parsed {
                                     toggle_clipboard_window(&app);
+                                    return;
+                                }
+                            }
+                        }
+                        if let Some(s) = config.shortcut_keys.paste_queue_toggle {
+                            if let Ok(parsed) = s.parse::<Shortcut>() {
+                                if shortcut == &parsed {
+                                    let active = !paste_queue::is_active();
+                                    if let Err(err) = set_paste_queue_active_impl(&app, active) {
+                                        paste_queue::set_error(None, err);
+                                        paste_queue::emit_state(&app);
+                                    }
                                 }
                             }
                         }
@@ -8242,6 +9231,12 @@ fn main() {
                 }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "pasteQueue" {
+                    api.prevent_close();
+                    paste_queue::set_active(false);
+                    let _ = window.hide();
+                    paste_queue::emit_state(window.app_handle());
+                }
                 if window.label() == "config" {
                     api.prevent_close();
                     let _ = window.hide();
@@ -8398,6 +9393,14 @@ fn main() {
                     Err(err) => error!("Skipping invalid startup shortcut: {}", err),
                 }
             }
+            if let Some(s) = config.shortcut_keys.paste_queue_toggle.clone() {
+                match parse_optional_shortcut(Some(s.as_str()), "开关粘贴队列") {
+                    Ok(shortcut) => {
+                        let _ = register_main_window_shortcut(app.handle(), shortcut);
+                    }
+                    Err(err) => error!("Skipping invalid paste queue shortcut: {}", err),
+                }
+            }
 
             secure_store::init_key();
             if let Err(err) = ensure_history_storage_dirs() {
@@ -8405,6 +9408,8 @@ fn main() {
             }
             clipboard::db::init();
             let _ = build_clipboard_window(app.handle())?;
+            let _ = build_paste_queue_window(app.handle())?;
+            initialize_paste_queue_worker(app.handle());
             if get_developer_mode() {
                 let _ = build_test_room_window(app.handle())?;
             }
@@ -8659,6 +9664,16 @@ fn main() {
             record_text_history,
             search,
             paste,
+            get_paste_queue_state,
+            set_paste_queue_menu_open,
+            set_paste_queue_active,
+            add_paste_queue_items,
+            reorder_paste_queue,
+            reverse_paste_queue,
+            remove_paste_queue_item,
+            clear_paste_queue,
+            paste_queue_item,
+            undo_paste_queue_consume,
             set_window_size,
             set_position,
             get_app_data_dir,
@@ -8698,6 +9713,9 @@ fn main() {
             begin_main_shortcut_recording,
             end_main_shortcut_recording,
             check_main_shortcut_registration,
+            begin_paste_queue_shortcut_recording,
+            end_paste_queue_shortcut_recording,
+            check_paste_queue_shortcut_registration,
             save_config,
             clear_history,
             simulate_cmd_c,

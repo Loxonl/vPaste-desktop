@@ -15,7 +15,7 @@ pub struct Page<T> {
     pub next_time: u64,
 }
 
-#[derive(serde::Serialize, Debug)]
+#[derive(serde::Serialize, Debug, Clone)]
 pub struct Item {
     pub id: usize,
     pub content: String,
@@ -46,7 +46,7 @@ pub struct ItemTag {
     pub name: String,
 }
 
-#[derive(serde::Serialize, strum_macros::Display, EnumString, Debug, PartialEq)]
+#[derive(serde::Serialize, strum_macros::Display, EnumString, Debug, PartialEq, Clone)]
 pub enum ItemType {
     Text,
     TextFile,

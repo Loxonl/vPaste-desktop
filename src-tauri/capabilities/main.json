@@ -7,6 +7,7 @@
     "clipboard",
     "config",
     "clipboardPreview",
+    "pasteQueue",
     "testRoom"
   ],
   "permissions": [

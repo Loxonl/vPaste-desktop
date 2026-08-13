@@ -14,6 +14,7 @@ describe("parseSettingsConfig", () => {
             ignored_app_sources: [],
             shortcut_keys: {
                 main_window: "Ctrl+Space",
+                paste_queue_toggle: DEFAULT_CONFIG.shortcut_keys.paste_queue_toggle,
                 paste_into_plain_text: DEFAULT_CONFIG.shortcut_keys.paste_into_plain_text,
             },
         });

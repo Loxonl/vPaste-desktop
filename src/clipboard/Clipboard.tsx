@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
 import { Item, ItemTag, ItemType } from "./Item.ts";
 import { useLanguage } from "../lang";
@@ -99,6 +100,7 @@ import {
 import { createClipboardItemActions } from "./clipboardItemActions";
 import { createClipboardPasteRuntime } from "./clipboardPasteRuntime";
 import { createClipboardPreviewRuntime } from "./clipboardPreviewRuntime";
+import { parsePasteQueueState } from "./pasteQueueState";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const HISTORY_PAGE_LIMIT = 36;
@@ -173,6 +175,9 @@ export default function Clipboard() {
     const [developerMode, setDeveloperMode] = useState(false);
     const [developerTheme, setDeveloperTheme] = useState<ResolvedTheme>(() => getResolvedTheme());
     const [mainShortcut, setMainShortcut] = useState(DEFAULT_MAIN_SHORTCUT);
+    const [pasteQueueActive, setPasteQueueActive] = useState(false);
+    const queueSelectionMode = pasteQueueActive;
+    const [queueSelectedHashes, setQueueSelectedHashes] = useState<string[]>([]);
 
     // Initialize with mock data
     const [clipboardPage, setPage] = useState(() => {
@@ -221,6 +226,7 @@ export default function Clipboard() {
     const pendingRecordTagAssignTargetRef = useRef<Item | null>(null);
     const previewRequestSeqRef = useRef(0);
     const activateClipboardCardRef = useRef<(hash: string, plainText: boolean) => void>(() => { });
+    const pasteQueueRevisionRef = useRef(0);
     const {
         clearTimer: clearAltHintTimer,
         hide: hideAltHints,
@@ -233,6 +239,29 @@ export default function Clipboard() {
         [customTabs, itemTags, tabOrder],
     );
     const openClipboardContextMenuRef = useRef<(item: Item, clientX: number, clientY: number) => void>(() => { });
+
+    const applyPasteQueueState = useCallback((payload: Parameters<typeof parsePasteQueueState>[0]) => {
+        const state = parsePasteQueueState(payload);
+        if (state.revision < pasteQueueRevisionRef.current) return;
+        pasteQueueRevisionRef.current = state.revision;
+        setPasteQueueActive(state.active);
+        if (!state.active) {
+            setQueueSelectedHashes([]);
+        }
+    }, []);
+
+    useEffect(() => {
+        void invoke<Parameters<typeof parsePasteQueueState>[0]>("get_paste_queue_state")
+            .then(applyPasteQueueState)
+            .catch(() => undefined);
+        const unlisten = listen<Parameters<typeof parsePasteQueueState>[0]>(
+            "paste-queue-state-changed",
+            event => applyPasteQueueState(event.payload),
+        );
+        return () => {
+            void unlisten.then(remove => remove());
+        };
+    }, [applyPasteQueueState]);
 
     const activateClipboardCard = useCallback((hash: string, plainText: boolean) => {
         activateClipboardCardRef.current(hash, plainText);
@@ -279,7 +308,11 @@ export default function Clipboard() {
         selectedRef.current = item.getHash() as string;
         setSelected(item.getHash() as string);
         hideAltHints();
-        void clickClipboardItem(item.getHash(), false, true, String(index + 1));
+        if (queueSelectionMode) {
+            activateClipboardCardRef.current(item.getHash() as string, false);
+        } else {
+            void clickClipboardItem(item.getHash(), false, true, String(index + 1));
+        }
     };
 
     const selectFirstLoadedItem = (scroll: boolean = false) => {
@@ -1156,7 +1189,11 @@ export default function Clipboard() {
                 case "submit-search": {
                     const firstHash = pageListRef.current[0]?.getHash() as string | undefined;
                     if (firstHash) {
-                        void clickClipboardItem(firstHash, false);
+                        if (queueSelectionMode) {
+                            activateClipboardCardRef.current(firstHash, false);
+                        } else {
+                            void clickClipboardItem(firstHash, false);
+                        }
                     }
                     return;
                 }
@@ -1222,7 +1259,11 @@ export default function Clipboard() {
                             item => item.getHash() === selectedRef.current,
                         ) || pageListRef.current[0];
                         if (selectedItem) {
-                            void clickClipboardItem(selectedItem.getHash(), true);
+                            if (queueSelectionMode) {
+                                activateClipboardCardRef.current(selectedItem.getHash() as string, true);
+                            } else {
+                                void clickClipboardItem(selectedItem.getHash(), true);
+                            }
                         }
                         return;
                     }
@@ -1230,7 +1271,11 @@ export default function Clipboard() {
                         const selectedHash = selectedRef.current
                             || (pageListRef.current[0]?.getHash() as string | undefined);
                         if (selectedHash) {
-                            void clickClipboardItem(selectedHash, false);
+                            if (queueSelectionMode) {
+                                activateClipboardCardRef.current(selectedHash, false);
+                            } else {
+                                void clickClipboardItem(selectedHash, false);
+                            }
                         }
                     }
                     return;
@@ -1256,7 +1301,7 @@ export default function Clipboard() {
             window.removeEventListener('keyup', handleKeyUp, true);
             window.removeEventListener('blur', handleBlur);
         };
-    }, [searchOpen, searchWord, contextMenu, contextMenuIndex, t]);
+    }, [searchOpen, searchWord, contextMenu, contextMenuIndex, queueSelectionMode, t]);
 
     const handleSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         setSearchWord(event.target.value);
@@ -1279,6 +1324,14 @@ export default function Clipboard() {
     });
 
     activateClipboardCardRef.current = (hash: string, plainText: boolean) => {
+        if (queueSelectionMode) {
+            setQueueSelectedHashes(current => (
+                current.includes(hash)
+                    ? current.filter(candidate => candidate !== hash)
+                    : [...current, hash]
+            ));
+            return;
+        }
         void clickClipboardItem(hash, plainText);
     };
 
@@ -1433,6 +1486,31 @@ export default function Clipboard() {
             await invoke('open_config_window');
         } catch (e) {
             error(`Failed to open config window: ${e}`);
+        }
+    };
+
+    const openPasteQueueSelection = async () => {
+        try {
+            const payload = await invoke<Parameters<typeof parsePasteQueueState>[0]>(
+                "set_paste_queue_active",
+                { active: !pasteQueueActive },
+            );
+            applyPasteQueueState(payload);
+            setQueueSelectedHashes([]);
+            setContextMenu(null);
+            setTabContextMenu(null);
+        } catch (reason) {
+            showToast(t("clipboard.actionFailed", { error: String(reason) }), "error");
+        }
+    };
+
+    const addSelectedItemsToPasteQueue = async () => {
+        if (queueSelectedHashes.length === 0) return;
+        try {
+            await invoke("add_paste_queue_items", { hashes: queueSelectedHashes });
+            setQueueSelectedHashes([]);
+        } catch (reason) {
+            showToast(t("clipboard.actionFailed", { error: String(reason) }), "error");
         }
     };
 
@@ -1632,6 +1710,8 @@ export default function Clipboard() {
                     languageCode={languageCode}
                     developerTheme={developerTheme}
                     t={t}
+                    pasteQueueActive={pasteQueueActive}
+                    onOpenPasteQueue={tutorialActive ? blockTutorialNavigation : openPasteQueueSelection}
                     onOpenPermissionCenter={openPermissionCenter}
                     onOpenTutorial={openTutorialFromDebug}
                     onToggleLanguage={toggleDeveloperLanguage}
@@ -1652,7 +1732,7 @@ export default function Clipboard() {
 
             {/* Cards Grid */}
             <div
-                className={classes(styles, "cards-container")}
+                className={classes(styles, `cards-container${queueSelectionMode ? " queue-selection-mode" : ""}`)}
                 ref={cardsContainerRef}
                 onScroll={() => {
                     if (!tutorialActive) maybeLoadMoreHistory();
@@ -1693,7 +1773,9 @@ export default function Clipboard() {
                             <ClipboardCard
                                 key={item.getHash() as string}
                                 item={item}
-                                selected={selected === item.getHash()}
+                                selected={queueSelectionMode
+                                    ? queueSelectedHashes.includes(item.getHash() as string)
+                                    : selected === item.getHash()}
                                 simulatedHover={simulatedHoverHash === item.getHash()}
                                 refreshKey={fileRefreshKey}
                                 searchQuery={searchWord as string}
@@ -1709,6 +1791,15 @@ export default function Clipboard() {
                     </div>
                 )}
             </div>
+            {queueSelectionMode && (
+                <div className={classes(styles, "paste-queue-selection-bar")} role="toolbar" aria-label={t("pasteQueue.selectTitle")}>
+                    <strong>{t("pasteQueue.selectTitle")}</strong>
+                    <span>{queueSelectedHashes.length}</span>
+                    <button type="button" className={classes(styles, "primary")} onClick={() => void addSelectedItemsToPasteQueue()}>
+                        {t("pasteQueue.addSelected", { count: queueSelectedHashes.length })}
+                    </button>
+                </div>
+            )}
             {tagCreateChoice && (
                 <TagCreateChoicePopover
                     state={tagCreateChoice}

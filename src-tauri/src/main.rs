@@ -107,6 +107,7 @@ static CLIPBOARD_RESTORE_FOCUS_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_PINNED: AtomicBool = AtomicBool::new(false);
 static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
+static ONBOARDING_ACTIVE: AtomicBool = AtomicBool::new(false);
 static TRAY_MENU_WATCHING: AtomicBool = AtomicBool::new(false);
 static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
 static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
@@ -333,8 +334,25 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+fn should_block_clipboard_hide(onboarding_active: bool) -> bool {
+    onboarding_active
+}
+
+fn clipboard_hide_blocked() -> bool {
+    should_block_clipboard_hide(ONBOARDING_ACTIVE.load(Ordering::SeqCst))
+}
+
+fn should_finish_clipboard_hide(
+    generation: u64,
+    current_generation: u64,
+    onboarding_active: bool,
+) -> bool {
+    generation == current_generation && !should_block_clipboard_hide(onboarding_active)
+}
+
 fn clipboard_blur_hide_suppressed() -> bool {
-    now_millis() < CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL.load(Ordering::SeqCst)
+    clipboard_hide_blocked()
+        || now_millis() < CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL.load(Ordering::SeqCst)
 }
 
 #[tauri::command]
@@ -1358,6 +1376,10 @@ fn animate_clipboard_window_y(
 }
 
 fn finish_hide_window_locked(window: &tauri::WebviewWindow) -> Result<(), String> {
+    if clipboard_hide_blocked() {
+        CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
+        return Ok(());
+    }
     let bounds = screen_bounds(window);
     let _ = set_window_position_for_scale(
         window,
@@ -1411,7 +1433,14 @@ fn finish_animated_hide_window(
     let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
+    if !should_finish_clipboard_hide(
+        generation,
+        CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst),
+        ONBOARDING_ACTIVE.load(Ordering::SeqCst),
+    ) {
+        if clipboard_hide_blocked() {
+            CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
+        }
         return Ok(());
     }
     if let Err(err) = animation_result {
@@ -1425,7 +1454,10 @@ fn finish_animated_hide_window(
 
 #[cfg(test)]
 mod clipboard_window_animation_tests {
-    use super::{clipboard_window_animation_progress, ClipboardWindowAnimation};
+    use super::{
+        clipboard_window_animation_progress, should_block_clipboard_hide,
+        should_finish_clipboard_hide, ClipboardWindowAnimation,
+    };
 
     #[test]
     fn show_and_hide_curves_keep_exact_endpoints() {
@@ -1436,6 +1468,15 @@ mod clipboard_window_animation_tests {
             assert_eq!(clipboard_window_animation_progress(0.0, animation), 0.0);
             assert_eq!(clipboard_window_animation_progress(1.0, animation), 1.0);
         }
+    }
+
+    #[test]
+    fn onboarding_blocks_new_and_in_flight_clipboard_hides() {
+        assert!(!should_block_clipboard_hide(false));
+        assert!(should_block_clipboard_hide(true));
+        assert!(should_finish_clipboard_hide(7, 7, false));
+        assert!(!should_finish_clipboard_hide(7, 7, true));
+        assert!(!should_finish_clipboard_hide(7, 8, false));
     }
 
     #[test]
@@ -1642,11 +1683,17 @@ fn focus_clipboard_window(window: &tauri::WebviewWindow, context: &str) {
 }
 
 fn hide_clipboard_window(window: &tauri::WebviewWindow) {
+    if clipboard_hide_blocked() {
+        return;
+    }
     remember_clipboard_monitor(window);
     let generation = {
         let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if clipboard_hide_blocked() {
+            return;
+        }
         if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
             || CLIPBOARD_HIDING.swap(true, Ordering::SeqCst)
         {
@@ -1772,11 +1819,17 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
 
 #[tauri::command]
 fn begin_hide_clipboard_window(window: tauri::WebviewWindow) -> u64 {
+    if clipboard_hide_blocked() {
+        return 0;
+    }
     remember_clipboard_monitor(&window);
     let generation = {
         let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if clipboard_hide_blocked() {
+            return 0;
+        }
         if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
             return 0;
         }
@@ -1998,12 +2051,23 @@ fn mark_onboarding_completed(app: &tauri::AppHandle) {
     }
 }
 
-fn show_onboarding_window(app: &tauri::AppHandle) -> Result<(), String> {
-    info!("Opening tutorial in main panel");
+fn begin_onboarding_impl(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
     let window = app
         .get_webview_window("clipboard")
         .ok_or_else(|| "clipboard window not found".to_string())?;
+    ONBOARDING_ACTIVE.store(true, Ordering::SeqCst);
     show_clipboard_window(&window);
+    Ok(window)
+}
+
+#[tauri::command]
+fn begin_onboarding(app: tauri::AppHandle) -> Result<(), String> {
+    begin_onboarding_impl(&app).map(|_| ())
+}
+
+fn show_onboarding_window(app: &tauri::AppHandle) -> Result<(), String> {
+    info!("Opening tutorial in main panel");
+    let window = begin_onboarding_impl(app)?;
     let _ = window.emit("tutorial-started", ());
     Ok(())
 }
@@ -2077,9 +2141,6 @@ fn open_onboarding_permission_window(
         )
         .map_err(|err| err.to_string())?;
 
-    if let Some(clipboard_window) = app.get_webview_window("clipboard") {
-        let _ = finish_hide_window(&clipboard_window);
-    }
     Ok(())
 }
 
@@ -2112,6 +2173,7 @@ fn notify_onboarding_permission_status_changed(
 #[tauri::command]
 fn complete_onboarding(app: tauri::AppHandle) -> Result<(), String> {
     mark_onboarding_completed(&app);
+    ONBOARDING_ACTIVE.store(false, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("clipboard") {
         let _ = window.emit("tutorial-completed", ());
     }
@@ -9723,6 +9785,7 @@ fn main() {
             begin_hide_clipboard_window,
             hide_clipboard_if_inactive,
             set_clipboard_blur_hide_suppressed,
+            begin_onboarding,
             minimize_current_window,
             open_config_window,
             open_onboarding_window,

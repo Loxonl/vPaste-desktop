@@ -20,7 +20,6 @@ type ClipboardTutorialRuntimeOptions = {
     onActionError: (actionError: unknown) => void;
     onBeforeStart: () => void;
     onComplete: () => void;
-    onHideWindow: () => Promise<void>;
     setActive: (active: boolean) => void;
     setMainShortcut: (shortcut: string) => void;
     setPermissionStatus: (
@@ -58,6 +57,12 @@ export function createClipboardTutorialRuntime(
         platform: TutorialPlatform =
             isMacPlatform() ? "mac" : "windows",
     ) => {
+        try {
+            await invoke("begin_onboarding");
+        } catch (actionError) {
+            options.onActionError(actionError);
+            return;
+        }
         options.onBeforeStart();
         options.setPlatform(platform);
         options.incrementRunId();
@@ -80,7 +85,6 @@ export function createClipboardTutorialRuntime(
                 PENDING_PERMISSION_WINDOW_KEY,
                 JSON.stringify(payload),
             );
-            await options.onHideWindow();
             await invoke("open_onboarding_permission_window", payload);
         } catch (actionError) {
             options.onActionError(actionError);

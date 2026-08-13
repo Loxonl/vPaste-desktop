@@ -1032,8 +1032,13 @@ fn record_foreground_app_before_clipboard() {
         return;
     }
 
+    let mut process_id = 0_u32;
+    let target_thread = unsafe { GetWindowThreadProcessId(hwnd, &mut process_id) };
+    if process_id == std::process::id() {
+        info!("Skip foreground record: vPaste owns the current window");
+        return;
+    }
     let current_thread = unsafe { GetCurrentThreadId() };
-    let target_thread = unsafe { GetWindowThreadProcessId(hwnd, std::ptr::null_mut()) };
     let attached = target_thread != 0
         && target_thread != current_thread
         && unsafe { AttachThreadInput(current_thread, target_thread, 1) } != 0;
@@ -2529,6 +2534,9 @@ fn paste_queue_pointer_position(
 fn watch_paste_queue_pointer(app: tauri::AppHandle, generation: u64) {
     std::thread::spawn(move || {
         let mut last_position = None;
+        let mut last_foreground_recorded_at = Instant::now()
+            .checked_sub(std::time::Duration::from_millis(100))
+            .unwrap_or_else(Instant::now);
         loop {
             if PASTE_QUEUE_POINTER_GENERATION.load(Ordering::SeqCst) != generation
                 || !paste_queue::is_active()
@@ -2547,6 +2555,14 @@ fn watch_paste_queue_pointer(app: tauri::AppHandle, generation: u64) {
                     last_position = Some(identity);
                 }
             }
+            if should_track_paste_queue_foreground_target(
+                paste_queue::is_active(),
+                CLIPBOARD_VISIBLE.load(Ordering::SeqCst),
+            ) && last_foreground_recorded_at.elapsed() >= std::time::Duration::from_millis(100)
+            {
+                record_foreground_app_before_clipboard();
+                last_foreground_recorded_at = Instant::now();
+            }
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
         if let Some(window) = app.get_webview_window("pasteQueue") {
@@ -2562,10 +2578,15 @@ fn watch_paste_queue_pointer(app: tauri::AppHandle, generation: u64) {
     });
 }
 
+fn should_track_paste_queue_foreground_target(active: bool, clipboard_visible: bool) -> bool {
+    active && !clipboard_visible
+}
+
 #[cfg(test)]
 mod paste_queue_menu_tests {
     use super::{
         should_dismiss_paste_queue_menu, should_prepare_paste_queue_click_target,
+        should_refresh_paste_queue_click_target, should_track_paste_queue_foreground_target,
         PasteQueueRequestOrigin,
     };
 
@@ -2591,6 +2612,29 @@ mod paste_queue_menu_tests {
             PasteQueueRequestOrigin::Shortcut,
             true,
         ));
+    }
+
+    #[test]
+    fn queue_click_refreshes_the_target_when_the_main_panel_is_hidden() {
+        assert!(should_refresh_paste_queue_click_target(
+            PasteQueueRequestOrigin::QueueWindow,
+            false,
+        ));
+        assert!(!should_refresh_paste_queue_click_target(
+            PasteQueueRequestOrigin::QueueWindow,
+            true,
+        ));
+        assert!(!should_refresh_paste_queue_click_target(
+            PasteQueueRequestOrigin::Shortcut,
+            false,
+        ));
+    }
+
+    #[test]
+    fn active_queue_tracks_external_foreground_while_main_panel_is_hidden() {
+        assert!(should_track_paste_queue_foreground_target(true, false));
+        assert!(!should_track_paste_queue_foreground_target(false, false));
+        assert!(!should_track_paste_queue_foreground_target(true, true));
     }
 }
 
@@ -8082,6 +8126,13 @@ fn should_prepare_paste_queue_click_target(
     origin == PasteQueueRequestOrigin::QueueWindow
 }
 
+fn should_refresh_paste_queue_click_target(
+    origin: PasteQueueRequestOrigin,
+    clipboard_visible: bool,
+) -> bool {
+    origin == PasteQueueRequestOrigin::QueueWindow && !clipboard_visible
+}
+
 fn prepare_paste_queue_click_target(app: &tauri::AppHandle, origin: PasteQueueRequestOrigin) {
     if !should_prepare_paste_queue_click_target(origin, CLIPBOARD_VISIBLE.load(Ordering::SeqCst)) {
         return;
@@ -8621,6 +8672,12 @@ fn clear_paste_queue(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueSta
 fn paste_queue_item(app: tauri::AppHandle, hash: Option<String>) -> Result<(), String> {
     if !paste_queue::is_active() {
         return Err("粘贴队列尚未激活".to_string());
+    }
+    if should_refresh_paste_queue_click_target(
+        PasteQueueRequestOrigin::QueueWindow,
+        CLIPBOARD_VISIBLE.load(Ordering::SeqCst),
+    ) {
+        record_foreground_app_before_clipboard();
     }
     enqueue_paste_queue_request(hash, PasteQueueRequestOrigin::QueueWindow)?;
     paste_queue::emit_state(&app);

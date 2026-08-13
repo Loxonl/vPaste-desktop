@@ -55,7 +55,6 @@ function runtimeOptions() {
         onActionError: vi.fn(),
         onBeforeStart: vi.fn(),
         onComplete: vi.fn(),
-        onHideWindow: vi.fn(async () => undefined),
         setActive: vi.fn(),
         setMainShortcut: vi.fn(),
         setPermissionStatus: vi.fn(),
@@ -117,12 +116,9 @@ describe("clipboard tutorial runtime", () => {
         );
     });
 
-    it("stores permission context and hides before opening the permission window", async () => {
+    it("stores permission context and opens the permission window without hiding the main window", async () => {
         const calls: string[] = [];
         const options = runtimeOptions();
-        options.onHideWindow.mockImplementation(async () => {
-            calls.push("hide");
-        });
         theme.preview.mockReturnValue("dark");
         tauri.invoke.mockImplementation(async (command: string) => {
             if (command === "open_onboarding_permission_window") {
@@ -140,7 +136,7 @@ describe("clipboard tutorial runtime", () => {
             languageCode: "Chinese",
             themePreview: "dark",
         });
-        expect(calls).toEqual(["hide", "open"]);
+        expect(calls).toEqual(["open"]);
         expect(tauri.invoke).toHaveBeenCalledWith(
             "open_onboarding_permission_window",
             {
@@ -149,6 +145,36 @@ describe("clipboard tutorial runtime", () => {
                 themePreview: "dark",
             },
         );
+    });
+
+    it("locks main-window visibility before activating the tutorial", async () => {
+        const calls: string[] = [];
+        const options = runtimeOptions();
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "begin_onboarding") {
+                calls.push("lock");
+            }
+        });
+        options.setActive.mockImplementation(() => {
+            calls.push("activate");
+        });
+        const runtime = createClipboardTutorialRuntime(options);
+
+        await runtime.start("windows");
+
+        expect(calls).toEqual(["lock", "activate"]);
+    });
+
+    it("does not activate the tutorial when the visibility lock cannot be established", async () => {
+        const options = runtimeOptions();
+        const failure = new Error("lock failed");
+        tauri.invoke.mockRejectedValue(failure);
+        const runtime = createClipboardTutorialRuntime(options);
+
+        await runtime.start("windows");
+
+        expect(options.setActive).not.toHaveBeenCalled();
+        expect(options.onActionError).toHaveBeenCalledWith(failure);
     });
 
     it("completes through the established command before leaving tutorial mode", async () => {

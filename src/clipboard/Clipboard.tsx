@@ -403,6 +403,7 @@ export default function Clipboard() {
     }, [isLoadingMore]);
 
     const hideCurrentWindowWithAnimation = async () => {
+        if (tutorialActiveRef.current) return;
         setAnimationState('exiting');
         const generation = await invoke<number>('begin_hide_clipboard_window')
             .catch(e => {
@@ -410,11 +411,11 @@ export default function Clipboard() {
                 return 0;
             });
         if (generation === 0) {
-            setAnimationState('hidden');
+            setAnimationState(tutorialActiveRef.current ? 'entered' : 'hidden');
             return;
         }
         await invoke('finish_hide_clipboard_window', { generation });
-        setAnimationState('hidden');
+        setAnimationState(tutorialActiveRef.current ? 'entered' : 'hidden');
     };
 
     const focusSearchInput = () => {
@@ -583,6 +584,7 @@ export default function Clipboard() {
             );
         },
         onBeforeStart: () => {
+            setAnimationState("entered");
             setContextMenu(null);
             setTabContextMenu(null);
             setTagCreateChoice(null);
@@ -596,8 +598,10 @@ export default function Clipboard() {
             clearCardsClickSuppression();
         },
         onComplete: () => refreshHistoryRef.current(),
-        onHideWindow: hideCurrentWindowWithAnimation,
-        setActive: setTutorialActive,
+        setActive: active => {
+            tutorialActiveRef.current = active;
+            setTutorialActive(active);
+        },
         setMainShortcut,
         setPermissionStatus: setTutorialPermissionStatus,
         setPlatform: setTutorialPlatform,

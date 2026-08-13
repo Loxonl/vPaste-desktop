@@ -129,6 +129,7 @@ describe("clipboard header", () => {
     it("keeps permission, debug, UI-lab, and settings actions explicit", async () => {
         const user = userEvent.setup();
         const callbacks = {
+            onOpenPasteQueue: vi.fn(),
             onOpenPermissionCenter: vi.fn(),
             onOpenTutorial: vi.fn(),
             onToggleLanguage: vi.fn(),
@@ -148,6 +149,7 @@ describe("clipboard header", () => {
                 languageCode="Chinese"
                 developerTheme="dark"
                 t={t}
+                pasteQueueActive
                 {...callbacks}
             />,
         );
@@ -162,6 +164,9 @@ describe("clipboard header", () => {
         await user.click(screen.getByRole("button", { name: "tutorial.debug.uiLab" }));
         await user.click(screen.getByRole("button", { name: "tutorial.debug.testRoom" }));
         await user.click(screen.getByRole("button", { name: "common.settings" }));
+        const pasteQueueButton = screen.getByRole("button", { name: "pasteQueue.close" });
+        expect(pasteQueueButton).toHaveAttribute("aria-pressed", "true");
+        await user.click(pasteQueueButton);
 
         expect(callbacks.onOpenPermissionCenter).toHaveBeenCalledOnce();
         expect(callbacks.onOpenTutorial).toHaveBeenCalledWith("windows");
@@ -170,6 +175,7 @@ describe("clipboard header", () => {
         expect(callbacks.onOpenUiLab).toHaveBeenCalledOnce();
         expect(callbacks.onOpenTestRoom).toHaveBeenCalledOnce();
         expect(callbacks.onOpenSettings).toHaveBeenCalledOnce();
+        expect(callbacks.onOpenPasteQueue).toHaveBeenCalledOnce();
     });
 
     it("hides and restores the grouped developer toolbar without hiding settings", async () => {
@@ -184,6 +190,8 @@ describe("clipboard header", () => {
                 languageCode="Chinese"
                 developerTheme="light"
                 t={t}
+                pasteQueueActive={false}
+                onOpenPasteQueue={vi.fn()}
                 onOpenPermissionCenter={vi.fn()}
                 onOpenTutorial={vi.fn()}
                 onToggleLanguage={vi.fn()}

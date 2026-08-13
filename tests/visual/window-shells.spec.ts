@@ -1,9 +1,20 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+async function expectPasteQueueFrame(page: Page) {
+    const panel = page.getByTestId("paste-queue").locator("section");
+    const box = await panel.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(8);
+    expect(box!.y).toBeGreaterThanOrEqual(8);
+    await expect(panel).toHaveCSS("box-shadow", "none");
+    await expect(page.getByRole("button", { name: /退出粘贴队列|Exit Paste Queue/ })).toBeVisible();
+}
 
 const windows = [
     { name: "tray", path: "/tray-menu", width: 216, height: 184, ready: "[class*='tray-menu-shell']" },
     { name: "emoji", path: "/emoji-picker", width: 278, height: 164, ready: "[role='menu']" },
     { name: "paste-notice", path: "/paste-fallback-notice", width: 560, height: 76, ready: "[role='status']" },
+    { name: "paste-queue", path: "/paste-queue", width: 360, height: 448, ready: "[data-testid='paste-queue']" },
     { name: "preview", path: "/clipboard/preview", width: 640, height: 480, ready: "button" },
     { name: "tab-editor", path: "/tab-editor", width: 302, height: 416, ready: "button" },
     { name: "permission", path: "/onboarding-permission?permission=background", width: 720, height: 560, ready: "button" },
@@ -248,5 +259,103 @@ test.describe("window shells", () => {
         await page.getByRole("button", { name: /管理分组 中文样板/ }).click();
         await expect(page.getByRole("menuitem", { name: "复制分组" })).toBeVisible();
         await expect(page.getByRole("menuitem", { name: "删除分组" })).toBeVisible();
+    });
+});
+
+test.describe("paste queue states", () => {
+    test.beforeEach(async ({ page }) => {
+        await page.setViewportSize({ width: 360, height: 448 });
+    });
+
+    test("empty light zh", async ({ page }) => {
+        await page.goto("/paste-queue?state=empty");
+        await expect(page.getByText("队列为空")).toBeVisible();
+        await expectPasteQueueFrame(page);
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await expect(page).toHaveScreenshot("paste-queue-empty-light-zh.png");
+    });
+
+    test("panel is opaque in light and dark themes", async ({ page }) => {
+        await page.goto("/paste-queue?state=empty");
+        const panel = page.getByTestId("paste-queue").locator("section");
+        await expect(panel).toHaveCSS("background-color", "rgb(248, 248, 246)");
+        await expect(panel).toHaveCSS("backdrop-filter", "none");
+
+        await page.emulateMedia({ colorScheme: "dark" });
+        await page.reload();
+        await expect(panel).toHaveCSS("background-color", "rgb(27, 30, 36)");
+        await expect(panel).toHaveCSS("backdrop-filter", "none");
+    });
+
+    test("error dark zh", async ({ page }) => {
+        await page.emulateMedia({ colorScheme: "dark" });
+        await page.goto("/paste-queue?state=error");
+        await expect(page.getByRole("alert")).toBeVisible();
+        await expectPasteQueueFrame(page);
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await expect(page).toHaveScreenshot("paste-queue-error-dark-zh.png");
+    });
+
+    test("normal dark en", async ({ page }) => {
+        await page.addInitScript(() => {
+            Object.defineProperty(navigator, "language", { value: "en-US" });
+            Object.defineProperty(navigator, "languages", { value: ["en-US"] });
+        });
+        await page.emulateMedia({ colorScheme: "dark" });
+        await page.goto("/paste-queue");
+        await expect(page.getByText("Paste Queue")).toBeVisible();
+        await expectPasteQueueFrame(page);
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await expect(page).toHaveScreenshot("paste-queue-normal-dark-en.png");
+    });
+
+    test("shows the row delete action on pointer hover", async ({ page }) => {
+        await page.goto("/paste-queue");
+        const firstRow = page.getByRole("listitem").first();
+        const deleteButton = firstRow.getByRole("button", { name: /从队列移除|Remove from queue/ });
+        await expect(deleteButton).toHaveCSS("opacity", "0");
+        await firstRow.hover();
+        await expect(deleteButton).toHaveCSS("opacity", "1");
+    });
+
+    test("drags the entire row vertically and animates neighboring space", async ({ page }) => {
+        await page.goto("/paste-queue");
+        const rows = page.getByRole("listitem");
+        const handles = page.getByRole("button", { name: /拖动调整顺序|Drag to reorder/ });
+        const firstRow = rows.nth(0);
+        const secondRow = rows.nth(1);
+        const firstBounds = await firstRow.boundingBox();
+        const secondHandleBounds = await handles.nth(1).boundingBox();
+        expect(firstBounds).not.toBeNull();
+        expect(secondHandleBounds).not.toBeNull();
+
+        await page.mouse.move(
+            secondHandleBounds!.x + secondHandleBounds!.width / 2,
+            secondHandleBounds!.y + secondHandleBounds!.height / 2,
+        );
+        await page.mouse.down();
+        await page.mouse.move(
+            secondHandleBounds!.x + secondHandleBounds!.width / 2,
+            firstBounds!.y + 2,
+            { steps: 4 },
+        );
+
+        await expect.poll(() => secondRow.evaluate(element => element.style.transform))
+            .toMatch(/^translate3d\(0(px)?, -\d+(\.\d+)?px, 0(px)?\)$/);
+        await expect.poll(() => firstRow.evaluate(element => element.style.transform))
+            .toMatch(/^translate3d\(0(px)?, \d+(\.\d+)?px, 0(px)?\)$/);
+        await page.mouse.up();
+    });
+
+    test("undo light en", async ({ page }) => {
+        await page.addInitScript(() => {
+            Object.defineProperty(navigator, "language", { value: "en-US" });
+            Object.defineProperty(navigator, "languages", { value: ["en-US"] });
+        });
+        await page.goto("/paste-queue?state=undo");
+        await expect(page.getByText("Pasted from queue")).toBeVisible();
+        await expectPasteQueueFrame(page);
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await expect(page).toHaveScreenshot("paste-queue-undo-light-en.png");
     });
 });

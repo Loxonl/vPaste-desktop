@@ -19,7 +19,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{Emitter, WebviewWindow};
+use tauri::{Emitter, Manager, WebviewWindow};
 
 const READ_ATTEMPTS: usize = 3;
 const INITIAL_RETRY_DELAY_MS: u64 = 25;
@@ -33,6 +33,10 @@ const HTML_PASTEBOARD_TYPES: &[&str] = &[
 const RTF_PASTEBOARD_TYPES: &[&str] =
     &["public.rtf", "Apple RTF pasteboard type", "NSRTFPboardType"];
 const REMOTE_CLIPBOARD_TYPE: &str = "com.apple.is-remote-clipboard";
+const SENSITIVE_PASTEBOARD_TYPES: &[&str] = &[
+    "org.nspasteboard.ConcealedType",
+    "org.nspasteboard.TransientType",
+];
 
 static APP_SOURCE_CACHE: OnceLock<Mutex<HashMap<String, AppSource>>> = OnceLock::new();
 
@@ -69,11 +73,14 @@ pub fn start(window: WebviewWindow) {
         loop {
             // Cocoa returns autoreleased pasteboard, workspace, image, and data objects.
             // Drain them before this long-lived listener thread goes back to sleep.
-            let should_emit = autoreleasepool(|| {
+            let captured = autoreleasepool(|| {
                 poll_clipboard_once(&mut system_clipboard, &mut last_change_count)
             });
-            if should_emit {
-                emit_clipboard_event(&window);
+            if let Some((hash, queue_only)) = captured {
+                emit_clipboard_event(&window, queue_only);
+                info!("captured clipboard hash: {hash}");
+            } else if crate::paste_queue::is_active() {
+                crate::paste_queue::emit_state(window.app_handle());
             }
 
             thread::sleep(Duration::from_millis(CLIPBOARD_POLL_INTERVAL_MS));
@@ -81,38 +88,42 @@ pub fn start(window: WebviewWindow) {
     });
 }
 
-fn poll_clipboard_once(system_clipboard: &mut Clipboard, last_change_count: &mut isize) -> bool {
+fn poll_clipboard_once(
+    system_clipboard: &mut Clipboard,
+    last_change_count: &mut isize,
+) -> Option<(String, bool)> {
     if CLIPBOARD_IGNORE_NEXT_CHANGE.swap(false, Ordering::SeqCst) {
         info!("skip internal clipboard change");
         *last_change_count = pasteboard_change_count();
-        return false;
+        return None;
     }
 
     let current_change_count = pasteboard_change_count();
     if current_change_count == *last_change_count {
-        return false;
+        return None;
     }
     *last_change_count = current_change_count;
 
     if is_clipboard_history_paused() {
         info!("skip clipboard history while recording is paused");
-        return false;
+        return None;
     }
 
     let start = Instant::now();
-    if parse_with_retry(system_clipboard) {
+    let queue_only = crate::paste_queue::is_active();
+    if let Some(hash) = parse_with_retry(system_clipboard, queue_only) {
         info!("clipboard parsed in {}ms", start.elapsed().as_millis());
-        true
+        Some((hash, queue_only))
     } else {
         info!("clipboard ignored in {}ms", start.elapsed().as_millis());
-        false
+        None
     }
 }
 
-fn parse_with_retry(system_clipboard: &mut Clipboard) -> bool {
+fn parse_with_retry(system_clipboard: &mut Clipboard, queue_only: bool) -> Option<String> {
     for attempt in 0..READ_ATTEMPTS {
-        match parse(system_clipboard) {
-            Ok(parsed) => return parsed,
+        match parse(system_clipboard, queue_only) {
+            Ok(hash) => return hash,
             Err(err) => {
                 let delay = INITIAL_RETRY_DELAY_MS * (attempt as u64 + 1);
                 info!(
@@ -128,43 +139,57 @@ fn parse_with_retry(system_clipboard: &mut Clipboard) -> bool {
     }
 
     error!("clipboard read failed after {} attempts", READ_ATTEMPTS);
-    false
+    None
 }
 
-fn parse(system_clipboard: &mut Clipboard) -> Result<bool, String> {
+fn parse(system_clipboard: &mut Clipboard, queue_only: bool) -> Result<Option<String>, String> {
     let app_source = clipboard_app_source();
+    if config::get().sensitive_content_protection
+        && SENSITIVE_PASTEBOARD_TYPES
+            .iter()
+            .any(|pasteboard_type| pasteboard_contains_type(pasteboard_type))
+    {
+        info!("skip clipboard history item marked as sensitive or transient");
+        return Ok(None);
+    }
     if is_ignored_app_source(&app_source.name) {
         info!(
             "skip clipboard history from ignored app source: {}",
             app_source.name
         );
-        return Ok(false);
+        return Ok(None);
     }
 
-    if insert_file_if_present(&app_source) {
-        return Ok(true);
+    if let Some(hash) = insert_file_if_present(&app_source, queue_only) {
+        return Ok(Some(hash));
     }
 
     let text_content = read_text_content(system_clipboard);
     let html = read_pasteboard_data(HTML_PASTEBOARD_TYPES);
     let rtf = read_pasteboard_data(RTF_PASTEBOARD_TYPES);
 
-    if insert_rich_text_if_present(text_content.as_deref(), html, rtf, &app_source) {
-        return Ok(true);
+    if let Some(hash) =
+        insert_rich_text_if_present(text_content.as_deref(), html, rtf, &app_source, queue_only)
+    {
+        return Ok(Some(hash));
     }
 
     if let Some(text) = text_content {
         info!("New text clipboard content detected");
-        clipboard::insert_text_from_app(text, &app_source.name, &app_source.icon_path);
-        return Ok(true);
+        return Ok(clipboard::capture_text_from_app(
+            text,
+            &app_source.name,
+            &app_source.icon_path,
+            queue_only,
+        ));
     }
 
-    if insert_image_if_present(system_clipboard, &app_source)? {
-        return Ok(true);
+    if let Some(hash) = insert_image_if_present(system_clipboard, &app_source, queue_only)? {
+        return Ok(Some(hash));
     }
 
     info!("clipboard format is not supported yet");
-    Ok(false)
+    Ok(None)
 }
 
 fn clipboard_app_source() -> AppSource {
@@ -175,14 +200,13 @@ fn clipboard_app_source() -> AppSource {
     foreground_app_source().unwrap_or_default()
 }
 
-fn insert_file_if_present(app_source: &AppSource) -> bool {
+fn insert_file_if_present(app_source: &AppSource, queue_only: bool) -> Option<String> {
     let Some(files) = read_file_paths_from_pasteboard() else {
-        return false;
+        return None;
     };
 
     info!("New file clipboard content detected");
-    clipboard::insert_file_from_app(&files, &app_source.name, &app_source.icon_path);
-    true
+    clipboard::capture_file_from_app(&files, &app_source.name, &app_source.icon_path, queue_only)
 }
 
 fn read_text_content(system_clipboard: &mut Clipboard) -> Option<String> {
@@ -197,9 +221,10 @@ fn insert_rich_text_if_present(
     html: Option<Vec<u8>>,
     rtf: Option<Vec<u8>>,
     app_source: &AppSource,
-) -> bool {
+    queue_only: bool,
+) -> Option<String> {
     if html.is_none() && rtf.is_none() {
-        return false;
+        return None;
     }
 
     let html_text = rich_preview_text(html.as_deref(), None);
@@ -224,27 +249,28 @@ fn insert_rich_text_if_present(
 
     if has_meaningful_text || rtf.is_some() {
         info!("New rich text clipboard content detected");
-        clipboard::insert_rich_text_from_app(
+        return clipboard::capture_rich_text_from_app(
             plain_text,
             html,
             rtf,
             None,
             &app_source.name,
             &app_source.icon_path,
+            queue_only,
         );
-        return true;
     }
 
-    false
+    None
 }
 
 fn insert_image_if_present(
     system_clipboard: &mut Clipboard,
     app_source: &AppSource,
-) -> Result<bool, String> {
+    queue_only: bool,
+) -> Result<Option<String>, String> {
     let image = match system_clipboard.get_image() {
         Ok(image) => image,
-        Err(_) => return Ok(false),
+        Err(_) => return Ok(None),
     };
 
     let width = image.width as u32;
@@ -261,12 +287,19 @@ fn insert_image_if_present(
         .map_err(|err| format!("encode image as PNG failed: {}", err))?;
 
     info!("New image clipboard content detected");
-    clipboard::insert_image_with_text_and_app(&bytes, "", &app_source.name, &app_source.icon_path);
-    Ok(true)
+    Ok(clipboard::capture_image_with_text_and_app(
+        &bytes,
+        "",
+        &app_source.name,
+        &app_source.icon_path,
+        queue_only,
+    ))
 }
 
-fn emit_clipboard_event(window: &WebviewWindow) {
-    if let Err(e) = window.emit("listen_new_clipboard", ()) {
+fn emit_clipboard_event(window: &WebviewWindow, queue_only: bool) {
+    if queue_only {
+        crate::paste_queue::emit_state(window.app_handle());
+    } else if let Err(e) = window.emit("listen_new_clipboard", ()) {
         error!("Failed to emit event: {}", e);
     }
 }

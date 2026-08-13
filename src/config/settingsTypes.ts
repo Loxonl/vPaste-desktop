@@ -4,10 +4,12 @@ import type { SettingsBridge } from "./SettingsBridge";
 import {
     DEFAULT_MAIN_SHORTCUT,
     DEFAULT_PASTE_AS_TEXT_SHORTCUT,
+    DEFAULT_PASTE_QUEUE_SHORTCUT,
 } from "./shortcutDefaults";
 
 export interface Shortcutkey {
     main_window?: string;
+    paste_queue_toggle?: string;
     copy_and_show_shortcut?: string;
     copy_and_exec_shortcut?: string;
     translate?: string;
@@ -131,6 +133,7 @@ export const DEFAULT_CONFIG: ConfigData = {
     ignored_app_sources: [],
     shortcut_keys: {
         main_window: DEFAULT_MAIN_SHORTCUT,
+        paste_queue_toggle: DEFAULT_PASTE_QUEUE_SHORTCUT,
         paste_into_plain_text: DEFAULT_PASTE_AS_TEXT_SHORTCUT,
     },
 };
@@ -149,6 +152,9 @@ export function parseSettingsConfig(raw: string): ConfigData {
         shortcut_keys: {
             ...DEFAULT_CONFIG.shortcut_keys,
             ...shortcutKeys,
+            paste_queue_toggle:
+                shortcutKeys.paste_queue_toggle
+                ?? DEFAULT_CONFIG.shortcut_keys.paste_queue_toggle,
             paste_into_plain_text:
                 shortcutKeys.paste_into_plain_text
                 ?? DEFAULT_CONFIG.shortcut_keys.paste_into_plain_text,

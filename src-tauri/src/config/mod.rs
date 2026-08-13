@@ -113,6 +113,7 @@ fn system_locale() -> Option<String> {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Shortcutkey {
     pub main_window: Option<String>,
+    pub paste_queue_toggle: Option<String>,
     pub copy_and_show_shortcut: Option<String>,
     pub copy_and_exec_shortcut: Option<String>,
     pub translate: Option<String>,
@@ -125,6 +126,7 @@ impl Default for Shortcutkey {
     fn default() -> Self {
         Shortcutkey {
             main_window: Some("Alt+V".to_string()),
+            paste_queue_toggle: Some("Alt+Shift+V".to_string()),
             copy_and_show_shortcut: None,
             copy_and_exec_shortcut: None,
             translate: None,
@@ -177,6 +179,9 @@ pub fn get() -> Config {
     }
     if config.shortcut_keys.main_window.is_none() {
         config.shortcut_keys.main_window = Shortcutkey::default().main_window;
+    }
+    if config.shortcut_keys.paste_queue_toggle.is_none() {
+        config.shortcut_keys.paste_queue_toggle = Shortcutkey::default().paste_queue_toggle;
     }
 
     // Update cache

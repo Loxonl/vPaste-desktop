@@ -94,6 +94,16 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
         return null;
     };
 
+    const validatePasteQueueShortcut = (value: string, event?: React.KeyboardEvent) => {
+        const commonError = validateMainWindowShortcut(value, event);
+        if (commonError) return commonError;
+        const normalized = normalizeShortcutForPolicy(value);
+        if (normalized === "ctrl+v" || normalized === "super+v") {
+            return t("settings.shortcut.unsupportedSystem");
+        }
+        return null;
+    };
+
     const validatePasteAsTextShortcut = (value: string, event?: React.KeyboardEvent) => {
         if (isUnsupportedRecordedKey(event)) {
             return t("settings.shortcut.invalid");
@@ -136,6 +146,17 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
                         onRecordingCancel={() => bridge.invoke('end_main_shortcut_recording')}
                         checkRegistration={(v) => bridge.invoke<ShortcutRegistrationInfo>('check_main_shortcut_registration', { shortcut: v })}
                         validate={validateMainWindowShortcut}
+                        t={t}
+                    />
+                    <Divider component="li" />
+                    <ShortcutItem
+                        label={t("settings.shortcuts.pasteQueue")}
+                        value={config.shortcut_keys.paste_queue_toggle}
+                        onChange={(v) => handleShortcutChange('paste_queue_toggle', v)}
+                        onRecordingStart={() => bridge.invoke('begin_paste_queue_shortcut_recording')}
+                        onRecordingCancel={() => bridge.invoke('end_paste_queue_shortcut_recording')}
+                        checkRegistration={(v) => bridge.invoke<ShortcutRegistrationInfo>('check_paste_queue_shortcut_registration', { shortcut: v })}
+                        validate={validatePasteQueueShortcut}
                         t={t}
                     />
                 </List>

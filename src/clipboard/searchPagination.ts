@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Item, type ItemTag, type ItemType } from "./Item";
 
-type SearchItemPayload = {
+export type SearchItemPayload = {
     id: number;
     hash: string;
     itemType: ItemType;
@@ -41,7 +41,7 @@ export type SearchRequest = {
 
 export type SearchInvoker = (request: SearchRequest) => Promise<string>;
 
-function itemFromPayload(item: SearchItemPayload): Item {
+export function itemFromPayload(item: SearchItemPayload): Item {
     return new Item(
         item.id,
         item.hash,

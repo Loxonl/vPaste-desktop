@@ -13,6 +13,7 @@ const Preview = React.lazy(() => import("./clipboard/Preview.tsx"));
 const TabEditor = React.lazy(() => import("./clipboard/TabEditor.tsx"));
 const OnboardingPermissionWindow = React.lazy(() => import("./clipboard/OnboardingPermissionWindow.tsx"));
 const PasteFallbackNotice = React.lazy(() => import("./clipboard/PasteFallbackNotice.tsx"));
+const PasteQueue = React.lazy(() => import("./clipboard/PasteQueue.tsx"));
 const Config = React.lazy(() => import("./config/Config.tsx"));
 const TrayMenu = React.lazy(() => import("./tray/TrayMenu.tsx"));
 
@@ -82,6 +83,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
                         <Route path="/tab-editor" element={<TabEditor />} />
                         <Route path="/onboarding-permission" element={<OnboardingPermissionWindow />} />
                         <Route path="/paste-fallback-notice" element={<PasteFallbackNotice />} />
+                        <Route path="/paste-queue" element={<PasteQueue />} />
                         <Route path="/config" element={<Config />} />
                         <Route path="/tray-menu" element={<TrayMenu />} />
                         {UiLab ? <Route path="/__ui-lab" element={<UiLab />} /> : null}

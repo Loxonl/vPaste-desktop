@@ -60,7 +60,7 @@ env_logger = "0.11.3"
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.24.0"
 backtrace = "0.3"
-rdev = "0.5"
+rdev = { version = "0.5", features = ["unstable_grab"] }
 infer = { version = "0.15.0", default-features = false, features = ["std"] }
 arboard = "3.6.1"
 reqwest = { version = "0.12.24", features = ["blocking", "cookies"] }

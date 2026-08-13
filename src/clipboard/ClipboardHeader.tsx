@@ -5,6 +5,7 @@ import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
 import DashboardCustomizeOutlinedIcon from "@mui/icons-material/DashboardCustomizeOutlined";
 import DarkModeRoundedIcon from "@mui/icons-material/DarkModeRounded";
 import LightModeRoundedIcon from "@mui/icons-material/LightModeRounded";
+import PlaylistAddCheckRoundedIcon from "@mui/icons-material/PlaylistAddCheckRounded";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
 import StarBorderOutlinedIcon from "@mui/icons-material/StarBorderOutlined";
@@ -142,6 +143,8 @@ type ClipboardHeaderActionsProps = {
     languageCode: string;
     developerTheme: "light" | "dark";
     t: TFunction;
+    pasteQueueActive: boolean;
+    onOpenPasteQueue: () => void;
     onOpenPermissionCenter: () => void;
     onOpenTutorial: (platform: TutorialPlatform) => void;
     onToggleLanguage: () => void;
@@ -160,6 +163,8 @@ export function ClipboardHeaderActions({
     languageCode,
     developerTheme,
     t,
+    pasteQueueActive,
+    onOpenPasteQueue,
     onOpenPermissionCenter,
     onOpenTutorial,
     onToggleLanguage,
@@ -266,6 +271,18 @@ export function ClipboardHeaderActions({
                     onClick={() => setDeveloperToolsVisible(visible => !visible)}
                 >
                     <VisibilityOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
+                </button>
+            )}
+            {!tutorialActive && (
+                <button
+                    type="button"
+                    className={classes(styles, `settings-button${pasteQueueActive ? " is-active" : ""}`)}
+                    title={t(pasteQueueActive ? "pasteQueue.close" : "pasteQueue.open")}
+                    aria-label={t(pasteQueueActive ? "pasteQueue.close" : "pasteQueue.open")}
+                    aria-pressed={pasteQueueActive}
+                    onClick={onOpenPasteQueue}
+                >
+                    <PlaylistAddCheckRoundedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
                 </button>
             )}
             <button

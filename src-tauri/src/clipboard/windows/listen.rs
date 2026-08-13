@@ -9,7 +9,7 @@ use clipboard_win::get_clipboard;
 use clipboard_win::is_format_avail;
 use clipboard_win::monitor::Monitor;
 use log::{error, info};
-use tauri::{Emitter, WebviewWindow};
+use tauri::{Emitter, Manager, WebviewWindow};
 
 use crate::clipboard;
 use crate::clipboard::windows::image_convert;
@@ -118,22 +118,29 @@ pub fn start(window: WebviewWindow) {
                 continue;
             }
             let start = Instant::now();
-            if parse_with_retry(&app_source) {
+            let queue_only = crate::paste_queue::is_active();
+            if let Some(hash) = parse_with_retry(&app_source, queue_only) {
                 info!("clipboard parsed in {}ms", start.elapsed().as_millis());
-                if let Err(err) = window.emit("listen_new_clipboard", "") {
+                info!("captured clipboard hash: {hash}");
+                if queue_only {
+                    crate::paste_queue::emit_state(window.app_handle());
+                } else if let Err(err) = window.emit("listen_new_clipboard", "") {
                     error!("failed to emit clipboard refresh event: {:?}", err);
                 }
             } else {
                 info!("clipboard ignored in {}ms", start.elapsed().as_millis());
+                if queue_only {
+                    crate::paste_queue::emit_state(window.app_handle());
+                }
             }
         }
     });
 }
 
-fn parse_with_retry(app_source: &AppSource) -> bool {
+fn parse_with_retry(app_source: &AppSource, queue_only: bool) -> Option<String> {
     for attempt in 0..READ_ATTEMPTS {
-        match parse(attempt + 1 < READ_ATTEMPTS, app_source) {
-            Ok(parsed) => return parsed,
+        match parse(attempt + 1 < READ_ATTEMPTS, app_source, queue_only) {
+            Ok(hash) => return hash,
             Err(err) => {
                 let delay = (INITIAL_RETRY_DELAY_MS * (attempt as u64 + 1)).min(MAX_RETRY_DELAY_MS);
                 info!(
@@ -149,18 +156,22 @@ fn parse_with_retry(app_source: &AppSource) -> bool {
     }
 
     error!("clipboard read failed after {} attempts", READ_ATTEMPTS);
-    false
+    None
 }
 
-fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, String> {
+fn parse(
+    should_retry_file_hint: bool,
+    app_source: &AppSource,
+    queue_only: bool,
+) -> Result<Option<String>, String> {
     if has_internal_clipboard_marker() {
         info!("skip vPaste internal clipboard payload");
-        return Ok(false);
+        return Ok(None);
     }
 
     if is_internal_clipboard_window_active() && is_vpaste_app_source(&app_source.name) {
         info!("skip vPaste foreground clipboard payload during internal window");
-        return Ok(false);
+        return Ok(None);
     }
 
     if is_internal_clipboard_window_active() {
@@ -169,7 +180,7 @@ fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, S
 
     if config::get().sensitive_content_protection && has_sensitive_clipboard_marker() {
         info!("skip clipboard history item marked as sensitive by system clipboard formats");
-        return Ok(false);
+        return Ok(None);
     }
 
     let text_content: Option<String> = if is_format_avail(formats::Unicode.into()) {
@@ -185,13 +196,13 @@ fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, S
 
     if let Some(gif) = gif {
         if is_gif_bytes(&gif) {
-            clipboard::insert_image_with_text_and_app(
+            return Ok(clipboard::capture_image_with_text_and_app(
                 &gif,
                 text_content.as_deref().unwrap_or(""),
                 &app_source.name,
                 &app_source.icon_path,
-            );
-            return Ok(true);
+                queue_only,
+            ));
         }
     }
 
@@ -203,7 +214,7 @@ fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, S
         png.is_some(),
     ) {
         info!("ignore transient blank Excel bitmap payload");
-        return Ok(false);
+        return Ok(None);
     }
 
     if html.is_some() || rtf.is_some() {
@@ -257,7 +268,7 @@ fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, S
             png.is_some(),
         ) {
             info!("ignore empty rich clipboard payload");
-            return Ok(false);
+            return Ok(None);
         }
 
         if should_prefer_bitmap_for_rich_content(
@@ -266,19 +277,19 @@ fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, S
             has_local_gif,
         ) {
             if is_format_avail(CF_DIBV5) {
-                return read_bitmap(CF_DIBV5, "CF_DIBV5", None, app_source);
+                return read_bitmap(CF_DIBV5, "CF_DIBV5", None, app_source, queue_only);
             }
             if is_format_avail(CF_DIB) {
-                return read_bitmap(CF_DIB, "CF_DIB", None, app_source);
+                return read_bitmap(CF_DIB, "CF_DIB", None, app_source, queue_only);
             }
             if let Some(png) = png.as_ref() {
-                clipboard::insert_image_with_text_and_app(
+                return Ok(clipboard::capture_image_with_text_and_app(
                     png,
                     "",
                     &app_source.name,
                     &app_source.icon_path,
-                );
-                return Ok(true);
+                    queue_only,
+                ));
             }
         }
 
@@ -291,29 +302,29 @@ fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, S
             if has_local_gif {
                 info!("preserve local GIF clipboard image before bitmap fallback");
             }
-            clipboard::insert_image_with_text_and_app(
+            return Ok(clipboard::capture_image_with_text_and_app(
                 &image_bytes,
                 "",
                 &app_source.name,
                 &app_source.icon_path,
-            );
-            return Ok(true);
+                queue_only,
+            ));
         }
 
         if remote_gif_images.len() == 1 && !has_meaningful_text {
             if let Some(image_bytes) = fetch_remote_gif_bytes(&remote_gif_images[0]) {
-                clipboard::insert_image_with_text_and_app(
+                return Ok(clipboard::capture_image_with_text_and_app(
                     &image_bytes,
                     "",
                     &app_source.name,
                     &app_source.icon_path,
-                );
-                return Ok(true);
+                    queue_only,
+                ));
             }
         }
 
         if has_meaningful_text || !local_images.is_empty() {
-            clipboard::insert_rich_text_from_app(
+            return Ok(clipboard::capture_rich_text_from_app(
                 if has_meaningful_text {
                     plain_text
                 } else {
@@ -324,34 +335,50 @@ fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, S
                 png,
                 &app_source.name,
                 &app_source.icon_path,
-            );
-            return Ok(true);
+                queue_only,
+            ));
         }
     }
 
     if is_format_avail(CF_DIBV5.into()) {
-        return read_bitmap(CF_DIBV5, "CF_DIBV5", text_content.as_deref(), &app_source);
+        return read_bitmap(
+            CF_DIBV5,
+            "CF_DIBV5",
+            text_content.as_deref(),
+            &app_source,
+            queue_only,
+        );
     }
 
     if is_format_avail(CF_DIB.into()) {
-        return read_bitmap(CF_DIB, "CF_DIB", text_content.as_deref(), &app_source);
+        return read_bitmap(
+            CF_DIB,
+            "CF_DIB",
+            text_content.as_deref(),
+            &app_source,
+            queue_only,
+        );
     }
 
     if let Some(png) = png {
-        clipboard::insert_image_with_text_and_app(
+        return Ok(clipboard::capture_image_with_text_and_app(
             &png,
             text_content.as_deref().unwrap_or(""),
             &app_source.name,
             &app_source.icon_path,
-        );
-        return Ok(true);
+            queue_only,
+        ));
     }
 
     if is_format_avail(formats::FileList.into()) {
         let files = get_clipboard(formats::FileList)
             .map_err(|err| format!("read file list failed: {:?}", err))?;
-        clipboard::insert_file_from_app(&files, &app_source.name, &app_source.icon_path);
-        return Ok(true);
+        return Ok(clipboard::capture_file_from_app(
+            &files,
+            &app_source.name,
+            &app_source.icon_path,
+            queue_only,
+        ));
     }
 
     if is_format_avail(formats::Unicode.into()) {
@@ -360,17 +387,21 @@ fn parse(should_retry_file_hint: bool, app_source: &AppSource) -> Result<bool, S
             .unwrap_or_else(|| get_clipboard(formats::Unicode))
             .map_err(|err| format!("read unicode text failed: {:?}", err))?;
         if !has_visible_text(Some(&text)) {
-            return Ok(false);
+            return Ok(None);
         }
         if should_retry_file_hint && is_probable_file_clipboard_placeholder(&text) {
             return Err("file list format is not ready yet".to_string());
         }
-        clipboard::insert_text_from_app(text, &app_source.name, &app_source.icon_path);
-        return Ok(true);
+        return Ok(clipboard::capture_text_from_app(
+            text,
+            &app_source.name,
+            &app_source.icon_path,
+            queue_only,
+        ));
     }
 
     info!("clipboard format is not supported yet");
-    Ok(false)
+    Ok(None)
 }
 
 fn registered_format_code(name: &str) -> Option<u32> {
@@ -857,19 +888,20 @@ fn read_bitmap(
     name: &str,
     text_content: Option<&str>,
     app_source: &AppSource,
-) -> Result<bool, String> {
+    queue_only: bool,
+) -> Result<Option<String>, String> {
     let raw = get_clipboard(formats::RawData(format))
         .map_err(|err| format!("read {} bitmap failed: {:?}", name, err))?;
     let png = image_convert::convert_bitmap_to_png(raw.as_slice())
         .map_err(|err| format!("convert {} bitmap failed: {}", name, err))?;
 
-    clipboard::insert_image_with_text_and_app(
+    Ok(clipboard::capture_image_with_text_and_app(
         &png,
         text_content.unwrap_or(""),
         &app_source.name,
         &app_source.icon_path,
-    );
-    Ok(true)
+        queue_only,
+    ))
 }
 
 #[cfg(target_os = "windows")]

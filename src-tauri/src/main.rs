@@ -8,6 +8,7 @@ extern crate ctor;
 #[macro_use]
 extern crate tantivy;
 
+use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -23,7 +24,6 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use image::{ImageBuffer, Rgba};
 use lazy_static::lazy_static;
 use log::{error, info, LevelFilter};
-use rand::RngCore;
 use serde::Serialize;
 use tauri::image::Image as TauriImage;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
@@ -53,12 +53,12 @@ use crate::config::Config;
 mod app_updater;
 mod clipboard;
 mod config;
+mod history_store;
 mod image_preview;
 mod maintenance;
 mod paste_queue;
 mod runtime_mode;
 mod search;
-mod secure_store;
 mod test_room;
 
 #[cfg(test)]
@@ -105,6 +105,7 @@ static CLIPBOARD_WINDOW_GENERATION: AtomicU64 = AtomicU64::new(0);
 static LAST_CLIPBOARD_MONITOR_CENTER: Mutex<Option<(f64, f64)>> = Mutex::new(None);
 #[cfg(target_os = "windows")]
 static CLIPBOARD_RESTORE_FOCUS_GENERATION: AtomicU64 = AtomicU64::new(0);
+static LEGACY_HISTORY_BLOCKED: AtomicBool = AtomicBool::new(false);
 static PREVIEW_PINNED: AtomicBool = AtomicBool::new(false);
 static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
@@ -255,7 +256,7 @@ struct ClipboardWindowLayout {
     scale_factor: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct FilePreviewInfo {
     kind: String,
     paths: Vec<String>,
@@ -421,7 +422,7 @@ struct HistoryArchiveInfo {
     message: String,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct HistoryArchiveTotals {
     total_files: usize,
     total_bytes: u64,
@@ -3457,7 +3458,7 @@ fn read_preview_text_file(path: String) -> Result<String, String> {
     if metadata.len() > 1024 * 1024 {
         return Err("文本文件超过 1 MB，暂不预览".to_string());
     }
-    secure_store::read_file(&path)
+    history_store::read_file(&path)
         .and_then(|bytes| String::from_utf8(bytes).map_err(|err| err.to_string()))
         .map_err(|err| format!("读取文本失败：{}", err))
 }
@@ -3837,6 +3838,7 @@ fn get_app_version() -> AppVersionInfo {
 
 #[tauri::command]
 fn set_item_favorite(hash: String, favorite: bool) -> Result<(), String> {
+    ensure_history_ready()?;
     let affected = clipboard::set_favorite(&hash, favorite).map_err(|err| err.to_string())?;
     if affected == 0 {
         Err("粘贴项不存在".to_string())
@@ -3872,21 +3874,25 @@ fn delete_item_tag(id: i64) -> Result<(), String> {
 
 #[tauri::command]
 fn assign_item_tag(hash: String, tag_id: i64) -> Result<(), String> {
+    ensure_history_ready()?;
     clipboard::assign_tag(&hash, tag_id)
 }
 
 #[tauri::command]
 fn remove_item_tag(hash: String, tag_id: i64) -> Result<(), String> {
+    ensure_history_ready()?;
     clipboard::remove_tag(&hash, tag_id)
 }
 
 #[tauri::command]
 fn list_recent_app_sources(days: u64) -> Result<Vec<String>, String> {
+    ensure_history_ready()?;
     clipboard::recent_app_sources(days)
 }
 
 #[tauri::command]
 fn list_recent_app_source_options(days: u64) -> Result<Vec<clipboard::AppSourceOption>, String> {
+    ensure_history_ready()?;
     clipboard::recent_app_source_options(days)
 }
 
@@ -3894,6 +3900,7 @@ fn list_recent_app_source_options(days: u64) -> Result<Vec<clipboard::AppSourceO
 async fn refresh_link_previews(
     urls: Vec<String>,
 ) -> Result<Vec<clipboard::LinkPreviewUpdate>, String> {
+    ensure_history_ready()?;
     tauri::async_runtime::spawn_blocking(move || clipboard::refresh_link_previews(urls))
         .await
         .map_err(|err| err.to_string())?
@@ -3901,6 +3908,7 @@ async fn refresh_link_previews(
 
 #[tauri::command]
 fn delete_clipboard_item(app: tauri::AppHandle, hash: String) -> Result<(), String> {
+    ensure_history_ready()?;
     let affected = clipboard::delete_by_hash(&hash)?;
     if affected == 0 {
         Err("粘贴项不存在".to_string())
@@ -3936,7 +3944,7 @@ fn export_image_item(source_path: String, target_path: String) -> Result<(), Str
         return Ok(());
     }
 
-    let bytes = secure_store::read_file(&source)?;
+    let bytes = history_store::read_file(&source)?;
     fs::write(&target, bytes).map_err(|err| err.to_string())
 }
 
@@ -4142,7 +4150,7 @@ fn create_file_thumbnail(path: &str) -> Result<String, String> {
                     image::ImageFormat::Png,
                 )
                 .map_err(|err| err.to_string())?;
-            secure_store::write_file(&preview_path, &png_bytes)?;
+            history_store::write_file(&preview_path, &png_bytes)?;
             Ok(preview_path.to_string_lossy().to_string())
         })();
 
@@ -4410,15 +4418,6 @@ fn cleanup_runtime_caches() {
     cleanup_runtime_cache_dir("logs", 14);
 }
 
-fn migrate_history_files_encryption() {
-    let custom_tabs = custom_tabs_path();
-    if custom_tabs.exists() {
-        if let Err(err) = secure_store::ensure_file_encrypted(&custom_tabs) {
-            error!("encrypt custom tabs failed: {}", err);
-        }
-    }
-}
-
 #[tauri::command]
 fn list_language_packs() -> Result<Vec<LanguagePackFile>, String> {
     let lang_dir = PathBuf::from(app_runtime_dir(&["lang"]));
@@ -4487,12 +4486,13 @@ fn list_language_packs() -> Result<Vec<LanguagePackFile>, String> {
 
 #[tauri::command]
 fn get_custom_tabs() -> Result<serde_json::Value, String> {
+    ensure_history_ready()?;
     ensure_history_storage_dirs()?;
     let path = custom_tabs_path();
     if !path.exists() {
         return Ok(serde_json::Value::Array(Vec::new()));
     }
-    let content = secure_store::read_file(&path)
+    let content = history_store::read_file(&path)
         .and_then(|bytes| String::from_utf8(bytes).map_err(|err| err.to_string()))
         .map_err(|err| err.to_string())?;
     let value: serde_json::Value = serde_json::from_str(&content).map_err(|err| err.to_string())?;
@@ -4505,6 +4505,7 @@ fn get_custom_tabs() -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 fn save_custom_tabs(tabs: serde_json::Value) -> Result<(), String> {
+    ensure_history_ready()?;
     ensure_history_storage_dirs()?;
     let path = custom_tabs_path();
     let value = if tabs.is_array() {
@@ -4513,7 +4514,7 @@ fn save_custom_tabs(tabs: serde_json::Value) -> Result<(), String> {
         serde_json::Value::Array(Vec::new())
     };
     let content = serde_json::to_string_pretty(&value).map_err(|err| err.to_string())?;
-    secure_store::write_file(path, content.as_bytes())
+    history_store::write_file(path, content.as_bytes())
 }
 
 fn copy_dir_contents_recursive(source: &Path, target: &Path) -> Result<usize, String> {
@@ -4540,19 +4541,13 @@ fn copy_dir_contents_recursive(source: &Path, target: &Path) -> Result<usize, St
 }
 
 #[cfg(test)]
-fn copy_secure_file(
-    source: &Path,
-    target: &Path,
-    source_key: Option<&secure_store::SecureKey>,
-    overwrite: bool,
-) -> Result<bool, String> {
-    copy_secure_file_with_progress(source, target, source_key, overwrite, None)
+fn copy_history_file(source: &Path, target: &Path, overwrite: bool) -> Result<bool, String> {
+    copy_history_file_with_progress(source, target, overwrite, None)
 }
 
-fn copy_secure_file_with_progress(
+fn copy_history_file_with_progress(
     source: &Path,
     target: &Path,
-    source_key: Option<&secure_store::SecureKey>,
     overwrite: bool,
     mut progress: Option<&mut HistoryArchiveProgressState>,
 ) -> Result<bool, String> {
@@ -4569,20 +4564,8 @@ fn copy_secure_file_with_progress(
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
-    let bytes = match source_key {
-        Some(key) => secure_store::read_file_with_key(source, key).or_else(|source_err| {
-            secure_store::read_file(source).map_err(|current_err| {
-                format!(
-                    "import decrypt failed: {}: source key: {}; current key: {}",
-                    source.display(),
-                    source_err,
-                    current_err
-                )
-            })
-        }),
-        None => secure_store::read_file(source),
-    }?;
-    secure_store::write_file(target, &bytes)?;
+    let bytes = history_store::read_file(source)?;
+    history_store::write_file(target, &bytes)?;
     if let Some(progress) = progress {
         progress.add_file(source_bytes);
     }
@@ -4590,18 +4573,13 @@ fn copy_secure_file_with_progress(
 }
 
 #[cfg(test)]
-fn copy_secure_dir_contents_recursive(
-    source: &Path,
-    target: &Path,
-    source_key: Option<&secure_store::SecureKey>,
-) -> Result<usize, String> {
-    copy_secure_dir_contents_recursive_with_progress(source, target, source_key, None)
+fn copy_history_dir_contents_recursive(source: &Path, target: &Path) -> Result<usize, String> {
+    copy_history_dir_contents_recursive_with_progress(source, target, None)
 }
 
-fn copy_secure_dir_contents_recursive_with_progress(
+fn copy_history_dir_contents_recursive_with_progress(
     source: &Path,
     target: &Path,
-    source_key: Option<&secure_store::SecureKey>,
     mut progress: Option<&mut HistoryArchiveProgressState>,
 ) -> Result<usize, String> {
     if !source.exists() {
@@ -4614,16 +4592,14 @@ fn copy_secure_dir_contents_recursive_with_progress(
         let source_path = entry.path();
         let target_path = target.join(entry.file_name());
         if source_path.is_dir() {
-            copied += copy_secure_dir_contents_recursive_with_progress(
+            copied += copy_history_dir_contents_recursive_with_progress(
                 &source_path,
                 &target_path,
-                source_key,
                 progress.as_deref_mut(),
             )?;
-        } else if copy_secure_file_with_progress(
+        } else if copy_history_file_with_progress(
             &source_path,
             &target_path,
-            source_key,
             false,
             progress.as_deref_mut(),
         )? {
@@ -4680,7 +4656,6 @@ fn merge_clipboard_database(
     source_dir: &str,
     target_dir: &str,
     rewrite_source_dir: &str,
-    source_key: Option<&secure_store::SecureKey>,
 ) -> Result<(usize, usize), String> {
     let source_db = PathBuf::from(source_dir).join("vpaste.db");
     if !source_db.exists() {
@@ -4742,18 +4717,6 @@ fn merge_clipboard_database(
             icon,
             label,
         ) = row.map_err(|err| err.to_string())?;
-        content = match source_key {
-            Some(key) => secure_store::decrypt_text_with_key(&content, key),
-            None => secure_store::decrypt_text(&content),
-        };
-        preview_content = match source_key {
-            Some(key) => secure_store::decrypt_text_with_key(&preview_content, key),
-            None => secure_store::decrypt_text(&preview_content),
-        };
-        source = match source_key {
-            Some(key) => secure_store::decrypt_text_with_key(&source, key),
-            None => secure_store::decrypt_text(&source),
-        };
         content = rewrite_internal_storage_paths(content, rewrite_source_dir, target_dir);
         preview_content =
             rewrite_internal_storage_paths(preview_content, rewrite_source_dir, target_dir);
@@ -4772,11 +4735,11 @@ fn merge_clipboard_database(
                 rusqlite::params![
                     hash,
                     time,
-                    secure_store::encrypt_text(&content),
-                    secure_store::encrypt_text(&preview_content),
+                    content.clone(),
+                    preview_content.clone(),
                     item_type,
                     search_index,
-                    secure_store::encrypt_text(&source),
+                    source.clone(),
                     app_source,
                     app_icon_path,
                     title_color,
@@ -4818,10 +4781,8 @@ fn rebuild_current_search_index() -> Result<(), String> {
         .query_map([], |row| {
             let id = row.get::<_, u64>(0)?;
             let hash = row.get::<_, String>(1)?;
-            let content =
-                secure_store::decrypt_text(&row.get::<_, Option<String>>(2)?.unwrap_or_default());
-            let source =
-                secure_store::decrypt_text(&row.get::<_, Option<String>>(3)?.unwrap_or_default());
+            let content = row.get::<_, Option<String>>(2)?.unwrap_or_default();
+            let source = row.get::<_, Option<String>>(3)?.unwrap_or_default();
             let search_content = if source.trim().is_empty() || source.starts_with("vpaste-rich:") {
                 content
             } else {
@@ -4838,12 +4799,217 @@ fn rebuild_current_search_index() -> Result<(), String> {
 const HISTORY_ARCHIVE_METADATA: &str = "vpaste-export.json";
 const HISTORY_ARCHIVE_DB: &str = "vpaste.db";
 const CUSTOM_TABS_FILE: &str = "custom_tabs.json";
-const HISTORY_ARCHIVE_VERSION: u32 = 2;
+const HISTORY_ARCHIVE_VERSION: u32 = 3;
 const HISTORY_ARCHIVE_MAGIC: &[u8] = b"VPASTE-HISTORY";
 const HISTORY_ARCHIVE_METADATA_MAX_BYTES: u64 = 1024 * 1024;
 const HISTORY_ARCHIVE_PATH_MAX_BYTES: u32 = 4096;
 const HISTORY_ARCHIVE_DIRS: [&str; 2] = ["data", "rich_formats"];
 const HISTORY_ARCHIVE_FILES: [&str; 1] = [CUSTOM_TABS_FILE];
+const LEGACY_TEXT_PREFIX: &str = "vpaste-secure:v2:";
+const LEGACY_FILE_MAGIC: &[u8] = b"VPASTESEC2";
+
+fn path_contains_legacy_history(path: &Path) -> Result<bool, String> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    if path.is_dir() {
+        for entry in fs::read_dir(path).map_err(|err| err.to_string())? {
+            if path_contains_legacy_history(&entry.map_err(|err| err.to_string())?.path())? {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
+    }
+    let mut file = File::open(path).map_err(|err| err.to_string())?;
+    let mut magic = [0_u8; 10];
+    Ok(
+        file.read(&mut magic).map_err(|err| err.to_string())? == magic.len()
+            && magic == LEGACY_FILE_MAGIC,
+    )
+}
+
+fn table_has_legacy_text(conn: &rusqlite::Connection, table: &str) -> Result<bool, String> {
+    let exists: i64 = conn
+        .query_row(
+            "select count(*) from sqlite_master where type='table' and name=?1",
+            [table],
+            |row| row.get(0),
+        )
+        .map_err(|err| err.to_string())?;
+    if exists == 0 {
+        return Ok(false);
+    }
+    let query = format!(
+        "select count(*) from {table} where content like ?1 or preview_content like ?1 or source like ?1"
+    );
+    conn.query_row(&query, [format!("{LEGACY_TEXT_PREFIX}%")], |row| {
+        row.get::<_, i64>(0)
+    })
+    .map(|count| count > 0)
+    .map_err(|err| err.to_string())
+}
+
+fn legacy_history_present(root: &Path) -> Result<bool, String> {
+    let db_path = root.join(HISTORY_ARCHIVE_DB);
+    if db_path.is_file() {
+        let conn = rusqlite::Connection::open_with_flags(
+            db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(|err| err.to_string())?;
+        if table_has_legacy_text(&conn, "clipboard")?
+            || table_has_legacy_text(&conn, "paste_queue")?
+        {
+            return Ok(true);
+        }
+    }
+    for name in [
+        CUSTOM_TABS_FILE,
+        "data",
+        "rich_formats",
+        "image_clipboard_cache",
+    ] {
+        if path_contains_legacy_history(&root.join(name))? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(test)]
+mod legacy_history_detection_tests {
+    use super::*;
+
+    fn create_history_db(root: &Path, clipboard_content: &str, queue_content: &str) {
+        let conn = rusqlite::Connection::open(root.join(HISTORY_ARCHIVE_DB)).unwrap();
+        conn.execute_batch(
+            "create table clipboard(content text, preview_content text, source text);
+             create table paste_queue(content text, preview_content text, source text);",
+        )
+        .unwrap();
+        conn.execute(
+            "insert into clipboard values(?1, 'preview', 'source')",
+            [clipboard_content],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into paste_queue values(?1, 'preview', 'source')",
+            [queue_content],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn detects_legacy_clipboard_and_mixed_plaintext() {
+        let root = tempfile::tempdir().unwrap();
+        create_history_db(root.path(), "vpaste-secure:v2:ciphertext", "plain queue");
+        assert!(legacy_history_present(root.path()).unwrap());
+    }
+
+    #[test]
+    fn detects_legacy_paste_queue_without_legacy_clipboard() {
+        let root = tempfile::tempdir().unwrap();
+        create_history_db(
+            root.path(),
+            "plain clipboard",
+            "vpaste-secure:v2:ciphertext",
+        );
+        assert!(legacy_history_present(root.path()).unwrap());
+    }
+
+    #[test]
+    fn detects_legacy_managed_file_magic() {
+        let root = tempfile::tempdir().unwrap();
+        create_history_db(root.path(), "plain clipboard", "plain queue");
+        fs::create_dir(root.path().join("rich_formats")).unwrap();
+        fs::write(
+            root.path().join("rich_formats/item.html"),
+            b"VPASTESEC2ciphertext",
+        )
+        .unwrap();
+        assert!(legacy_history_present(root.path()).unwrap());
+    }
+
+    #[test]
+    fn accepts_fully_plaintext_history() {
+        let root = tempfile::tempdir().unwrap();
+        create_history_db(root.path(), "plain clipboard", "plain queue");
+        fs::create_dir(root.path().join("data")).unwrap();
+        fs::write(root.path().join("data/item"), b"plain bytes").unwrap();
+        assert!(!legacy_history_present(root.path()).unwrap());
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct HistoryFormatStatus {
+    migration_required: bool,
+}
+
+#[tauri::command]
+fn get_history_format_status() -> HistoryFormatStatus {
+    HistoryFormatStatus {
+        migration_required: LEGACY_HISTORY_BLOCKED.load(Ordering::SeqCst),
+    }
+}
+
+fn ensure_history_ready() -> Result<(), String> {
+    if LEGACY_HISTORY_BLOCKED.load(Ordering::SeqCst) {
+        Err("LEGACY_HISTORY_MIGRATION_REQUIRED".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn remove_managed_path(path: &Path) -> Result<(), String> {
+    if path.is_dir() {
+        fs::remove_dir_all(path).map_err(|err| err.to_string())
+    } else if path.is_file() {
+        fs::remove_file(path).map_err(|err| err.to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn clear_legacy_history(app: tauri::AppHandle, confirmation: String) -> Result<(), String> {
+    if confirmation != "CLEAR_LEGACY_HISTORY" {
+        return Err("legacy history clear confirmation is invalid".to_string());
+    }
+    if !LEGACY_HISTORY_BLOCKED.load(Ordering::SeqCst) {
+        return Err("legacy history migration is not required".to_string());
+    }
+    clipboard::db::clear_legacy_payload().map_err(|err| err.to_string())?;
+    let root = PathBuf::from(history_storage_dir());
+    for name in [
+        CUSTOM_TABS_FILE,
+        "data",
+        "rich_formats",
+        "image_clipboard_cache",
+    ] {
+        remove_managed_path(&root.join(name))?;
+    }
+    for name in [
+        "search",
+        "file_previews",
+        "image_clipboard_cache",
+        "image_preview_cache",
+    ] {
+        remove_managed_path(&PathBuf::from(app_runtime_dir(&[name])))?;
+    }
+    clipboard::db::init();
+    LEGACY_HISTORY_BLOCKED.store(false, Ordering::SeqCst);
+    initialize_paste_queue_worker(&app);
+    if let Some(window) = app.get_webview_window("clipboard") {
+        listen::start(window);
+    }
+    let _ = app.emit(
+        "history-format-status-changed",
+        HistoryFormatStatus {
+            migration_required: false,
+        },
+    );
+    Ok(())
+}
 
 impl HistoryArchiveTotals {
     fn empty() -> Self {
@@ -5019,6 +5185,11 @@ fn read_history_archive_header(reader: &mut File) -> Result<(serde_json::Value, 
     }
 
     let version = read_u32(reader)?;
+    if version == 2 {
+        return Err(
+            "vPaste v2 历史包需要先使用 vpaste-history-converter 转换为明文 v3 格式".to_string(),
+        );
+    }
     if version != HISTORY_ARCHIVE_VERSION {
         return Err(format!("不支持的 vPaste 历史包版本：{}", version));
     }
@@ -5086,39 +5257,40 @@ fn validate_archive_entry_name(name: &str) -> Result<(), String> {
     {
         return Err("vPaste 历史包包含无效路径".to_string());
     }
+    if name != HISTORY_ARCHIVE_DB
+        && name != CUSTOM_TABS_FILE
+        && !name.starts_with("data/")
+        && !name.starts_with("rich_formats/")
+    {
+        return Err("vPaste 历史包包含不受支持的路径".to_string());
+    }
     Ok(())
 }
 
-fn validate_archive_metadata(
-    metadata: &serde_json::Value,
-) -> Result<(String, secure_store::SecureKey), String> {
+fn validate_archive_metadata(metadata: &serde_json::Value) -> Result<String, String> {
     let source_dir = metadata
         .get("source_dir")
         .and_then(|value| value.as_str())
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| "vPaste 历史包缺少来源目录信息".to_string())?
         .to_string();
-    let key = metadata
-        .get("encryption")
-        .and_then(|value| value.get("key"))
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| "vPaste 历史包缺少加密信息".to_string())
-        .and_then(secure_store::key_from_base64)?;
-    Ok((source_dir, key))
+    Ok(source_dir)
 }
 
-fn validate_history_archive(
-    archive_path: &str,
-) -> Result<(String, secure_store::SecureKey, HistoryArchiveTotals), String> {
+fn validate_history_archive(archive_path: &str) -> Result<(String, HistoryArchiveTotals), String> {
     let mut reader = File::open(archive_path).map_err(|err| err.to_string())?;
     let (metadata, entry_count) = read_history_archive_header(&mut reader)?;
-    let (source_dir, source_key) = validate_archive_metadata(&metadata)?;
+    let source_dir = validate_archive_metadata(&metadata)?;
     let mut totals = HistoryArchiveTotals::empty();
     let mut has_db = false;
+    let mut names = HashSet::new();
 
     for _ in 0..entry_count {
         let (name, size) = read_history_archive_entry_header(&mut reader)?;
         validate_archive_entry_name(&name)?;
+        if !names.insert(name.clone()) {
+            return Err("vPaste 历史包包含重复路径".to_string());
+        }
         if name == HISTORY_ARCHIVE_DB {
             has_db = true;
         }
@@ -5131,7 +5303,12 @@ fn validate_history_archive(
     if !has_db {
         return Err("导入文件不是有效的 vPaste 历史包".to_string());
     }
-    Ok((source_dir, source_key, totals))
+    let position = reader.stream_position().map_err(|err| err.to_string())?;
+    let length = reader.metadata().map_err(|err| err.to_string())?.len();
+    if position != length {
+        return Err("vPaste 历史包末尾包含无效数据".to_string());
+    }
+    Ok((source_dir, totals))
 }
 
 fn add_path_to_history_archive(
@@ -5160,56 +5337,18 @@ fn add_path_to_history_archive(
     Ok(())
 }
 
-fn add_secure_path_to_history_archive(
-    root: &Path,
-    path: &Path,
-    writer: &mut File,
-    progress: &mut HistoryArchiveProgressState,
-) -> Result<(), String> {
-    if !path.exists() {
-        return Ok(());
-    }
-    if path.is_dir() {
-        for entry in fs::read_dir(path).map_err(|err| err.to_string())? {
-            let entry = entry.map_err(|err| err.to_string())?;
-            add_secure_path_to_history_archive(root, &entry.path(), writer, progress)?;
-        }
-    } else if path.is_file() {
-        let name = archive_path_name(root, path)?;
-        validate_archive_entry_name(&name)?;
-        let source_bytes = fs::metadata(path).map_err(|err| err.to_string())?.len();
-        if secure_store::is_encrypted_file(path)
-            .map_err(|err| format!("export inspect failed: {}: {}", path.display(), err))?
-        {
-            write_history_archive_entry_header(writer, &name, source_bytes)?;
-            let mut source = File::open(path).map_err(|err| err.to_string())?;
-            io::copy(&mut source, writer).map_err(|err| err.to_string())?;
-        } else {
-            let bytes = secure_store::read_file(path)
-                .map_err(|err| format!("export decrypt failed: {}: {}", path.display(), err))?;
-            let encrypted = secure_store::encrypt_file_bytes(&bytes)
-                .map_err(|err| format!("export encrypt failed: {}: {}", path.display(), err))?;
-            write_history_archive_entry_header(writer, &name, encrypted.len() as u64)?;
-            writer
-                .write_all(&encrypted)
-                .map_err(|err| err.to_string())?;
-        }
-        progress.add_file(source_bytes);
-    }
-    Ok(())
-}
-
 fn export_history_archive_impl(
     app: Option<&tauri::AppHandle>,
     archive_path: String,
 ) -> Result<HistoryArchiveInfo, String> {
+    ensure_history_ready()?;
     ensure_history_storage_dirs()?;
     clipboard::db::init();
-    if let Err(err) = clipboard::migrate_history_encryption() {
-        error!("migrate history encryption before export failed: {}", err);
-        return Err(format!("导出前历史迁移失败：{err}"));
-    }
-    migrate_history_files_encryption();
+    let _: (i64, i64, i64) = clipboard::db::db()
+        .query_row("pragma wal_checkpoint(full)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(|err| format!("checkpoint history database failed: {err}"))?;
     let root = PathBuf::from(history_storage_dir());
     let mut progress =
         HistoryArchiveProgressState::new(app, "export", history_export_totals(&root)?);
@@ -5227,10 +5366,6 @@ fn export_history_archive_impl(
         "version": HISTORY_ARCHIVE_VERSION,
         "exported_at": now_millis(),
         "source_dir": root.to_string_lossy().to_string(),
-        "encryption": {
-            "algorithm": "xchacha20-poly1305",
-            "key": secure_store::export_key_base64(),
-        },
     });
     write_history_archive_header(&mut writer, &metadata, progress.total_files as u64)?;
 
@@ -5241,20 +5376,10 @@ fn export_history_archive_impl(
         &mut progress,
     )?;
     for file_name in HISTORY_ARCHIVE_FILES {
-        add_secure_path_to_history_archive(
-            &root,
-            &root.join(file_name),
-            &mut writer,
-            &mut progress,
-        )?;
+        add_path_to_history_archive(&root, &root.join(file_name), &mut writer, &mut progress)?;
     }
     for dir_name in HISTORY_ARCHIVE_DIRS {
-        add_secure_path_to_history_archive(
-            &root,
-            &root.join(dir_name),
-            &mut writer,
-            &mut progress,
-        )?;
+        add_path_to_history_archive(&root, &root.join(dir_name), &mut writer, &mut progress)?;
     }
     writer.flush().map_err(|err| err.to_string())?;
     progress.finish();
@@ -5285,7 +5410,7 @@ fn extract_history_archive(
     target_dir: &Path,
     progress: &mut HistoryArchiveProgressState,
 ) -> Result<(), String> {
-    let (_, _, totals) = validate_history_archive(archive_path)?;
+    let (_, totals) = validate_history_archive(archive_path)?;
     let mut reader = File::open(archive_path).map_err(|err| err.to_string())?;
     let (metadata, entry_count) = read_history_archive_header(&mut reader)?;
     progress.set_totals(totals);
@@ -5320,12 +5445,13 @@ fn import_history_archive_impl(
     app: tauri::AppHandle,
     archive_path: String,
 ) -> Result<HistoryArchiveInfo, String> {
+    ensure_history_ready()?;
     ensure_history_storage_dirs()?;
     let target_dir = history_storage_dir();
     let mut progress =
         HistoryArchiveProgressState::new(Some(&app), "import", HistoryArchiveTotals::empty());
     progress.emit();
-    let (rewrite_source_dir, source_key, _) = validate_history_archive(&archive_path)?;
+    let (rewrite_source_dir, _) = validate_history_archive(&archive_path)?;
     let temp_dir = tempfile::tempdir().map_err(|err| err.to_string())?;
     extract_history_archive(&archive_path, temp_dir.path(), &mut progress)?;
 
@@ -5339,10 +5465,9 @@ fn import_history_archive_impl(
     let mut copied_files = 0_usize;
     for file_name in HISTORY_ARCHIVE_FILES {
         let source_path = temp_dir.path().join(file_name);
-        if copy_secure_file_with_progress(
+        if copy_history_file_with_progress(
             &source_path,
             &PathBuf::from(&target_dir).join(file_name),
-            Some(&source_key),
             true,
             Some(&mut progress),
         )? {
@@ -5350,10 +5475,9 @@ fn import_history_archive_impl(
         }
     }
     for dir_name in HISTORY_ARCHIVE_DIRS {
-        copied_files += copy_secure_dir_contents_recursive_with_progress(
+        copied_files += copy_history_dir_contents_recursive_with_progress(
             &temp_dir.path().join(dir_name),
             &PathBuf::from(&target_dir).join(dir_name),
-            Some(&source_key),
             Some(&mut progress),
         )?;
     }
@@ -5364,7 +5488,6 @@ fn import_history_archive_impl(
         temp_dir.path().to_str().unwrap_or(""),
         &target_dir,
         &rewrite_source_dir,
-        Some(&source_key),
     )?;
     clipboard::db::init();
     progress.set_stage("index");
@@ -5406,288 +5529,67 @@ async fn import_history_archive(
 }
 
 #[cfg(test)]
-mod history_archive_tests {
+mod history_archive_v3_tests {
     use super::*;
 
-    fn init_test_app_data(path: &Path) {
-        *GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(path.to_string_lossy().to_string());
-    }
-
-    fn archive_entry_bytes(archive_path: &Path, entry_name: &str) -> Vec<u8> {
-        let mut reader = File::open(archive_path).unwrap();
-        let (_, entry_count) = read_history_archive_header(&mut reader).unwrap();
-        for _ in 0..entry_count {
-            let (name, size) = read_history_archive_entry_header(&mut reader).unwrap();
-            if name == entry_name {
-                let mut bytes = vec![0_u8; size as usize];
-                reader.read_exact(&mut bytes).unwrap();
-                return bytes;
-            }
-            reader.seek(SeekFrom::Current(size as i64)).unwrap();
-        }
-        panic!("archive entry not found: {entry_name}");
-    }
-
-    #[test]
-    fn imported_secure_history_is_reencrypted_with_local_key() {
-        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
-        let app_data = tempfile::tempdir().unwrap();
-        init_test_app_data(app_data.path());
-
-        let source_key = [7_u8; 32];
-        let workspace = tempfile::tempdir().unwrap();
-        let source_dir = workspace.path().join("source");
-        let target_dir = workspace.path().join("target");
-        fs::create_dir_all(source_dir.join("data")).unwrap();
-        fs::create_dir_all(&target_dir).unwrap();
-
-        let source_file = source_dir.join("data").join("sample.txt");
-        secure_store::write_file_with_key(&source_file, b"migrated file bytes", &source_key)
-            .unwrap();
-
-        let source_tabs = source_dir.join(CUSTOM_TABS_FILE);
-        secure_store::write_file_with_key(&source_tabs, br#"[{"name":"Work"}]"#, &source_key)
-            .unwrap();
-
-        let source_db = source_dir.join(HISTORY_ARCHIVE_DB);
-        let conn = rusqlite::Connection::open(&source_db).unwrap();
-        clipboard::db::init_schema(&conn).unwrap();
-        conn.execute(
-            "
-            insert into clipboard(
-                hash, time, content, preview_content, item_type, search_index, source,
-                app_source, app_icon_path, title_color, icon, label
-            )
-            values(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-            ",
-            rusqlite::params![
-                "hash-secure-import",
-                100_u64,
-                secure_store::encrypt_text_with_key(&source_file.to_string_lossy(), &source_key),
-                secure_store::encrypt_text_with_key("preview text", &source_key),
-                "TextFile",
-                1_i64,
-                secure_store::encrypt_text_with_key("source text", &source_key),
-                "SourceApp",
-                "",
-                "#336699",
-                "",
-                0_i64,
-            ],
-        )
-        .unwrap();
-
-        let copied = copy_secure_dir_contents_recursive(
-            &source_dir.join("data"),
-            &target_dir.join("data"),
-            Some(&source_key),
-        )
-        .unwrap();
-        assert_eq!(copied, 1);
-        assert!(copy_secure_file(
-            &source_tabs,
-            &target_dir.join(CUSTOM_TABS_FILE),
-            Some(&source_key),
-            true,
-        )
-        .unwrap());
-
-        let (merged, skipped) = merge_clipboard_database(
-            source_dir.to_str().unwrap(),
-            target_dir.to_str().unwrap(),
-            source_dir.to_str().unwrap(),
-            Some(&source_key),
-        )
-        .unwrap();
-        assert_eq!((merged, skipped), (1, 0));
-
-        let target_file = target_dir.join("data").join("sample.txt");
-        assert_eq!(
-            secure_store::read_file(&target_file).unwrap(),
-            b"migrated file bytes"
-        );
-        assert_eq!(
-            secure_store::read_file(target_dir.join(CUSTOM_TABS_FILE)).unwrap(),
-            br#"[{"name":"Work"}]"#
-        );
-
-        let target_conn = rusqlite::Connection::open(target_dir.join(HISTORY_ARCHIVE_DB)).unwrap();
-        let (content, preview_content, source): (String, String, String) = target_conn
-            .query_row(
-                "select content, preview_content, source from clipboard where hash = ?1",
-                ["hash-secure-import"],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-
-        let decoded_content = secure_store::decrypt_text(&content);
-        assert!(decoded_content.starts_with(target_dir.to_str().unwrap()));
-        assert!(
-            decoded_content.ends_with("data\\sample.txt")
-                || decoded_content.ends_with("data/sample.txt")
-        );
-        assert_eq!(secure_store::decrypt_text(&preview_content), "preview text");
-        assert_eq!(secure_store::decrypt_text(&source), "source text");
-    }
-
-    #[test]
-    fn exported_custom_archive_carries_readable_migration_key() {
-        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
-        let app_data = tempfile::tempdir().unwrap();
-        init_test_app_data(app_data.path());
-
-        let workspace = tempfile::tempdir().unwrap();
-        let source_dir = workspace.path().join("source");
-        let archive_path = workspace.path().join("vpaste-history.vphistory");
-        fs::create_dir_all(source_dir.join("data")).unwrap();
-
-        let mut config = config::Config::default();
-        config.storage_dir = source_dir.to_string_lossy().to_string();
-        config::save(config);
-        ensure_history_storage_dirs().unwrap();
-
-        let source_file = source_dir.join("data").join("note.txt");
-        secure_store::write_file(&source_file, b"custom archive migration data").unwrap();
-
-        let source_tabs = source_dir.join(CUSTOM_TABS_FILE);
-        secure_store::write_file(&source_tabs, br#"[{"name":"Custom"}]"#).unwrap();
-
-        export_history_archive_impl(None, archive_path.to_string_lossy().to_string()).unwrap();
-        assert_eq!(
-            &fs::read(&archive_path).unwrap()[..HISTORY_ARCHIVE_MAGIC.len()],
-            HISTORY_ARCHIVE_MAGIC
-        );
-        assert!(validate_history_archive(archive_path.to_str().unwrap()).is_ok());
-
-        let extracted = workspace.path().join("extracted");
-        let mut progress =
-            HistoryArchiveProgressState::new(None, "import", HistoryArchiveTotals::empty());
-        extract_history_archive(archive_path.to_str().unwrap(), &extracted, &mut progress).unwrap();
-        let (_, source_key, _) = validate_history_archive(archive_path.to_str().unwrap()).unwrap();
-
-        assert_eq!(
-            secure_store::read_file_with_key(extracted.join("data").join("note.txt"), &source_key)
-                .unwrap(),
-            b"custom archive migration data"
-        );
-        assert_eq!(
-            secure_store::read_file_with_key(extracted.join(CUSTOM_TABS_FILE), &source_key)
-                .unwrap(),
-            br#"[{"name":"Custom"}]"#
-        );
-    }
-
-    #[test]
-    fn exported_secure_payloads_use_custom_container_entries() {
-        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
-        let app_data = tempfile::tempdir().unwrap();
-        init_test_app_data(app_data.path());
-
-        let workspace = tempfile::tempdir().unwrap();
-        let source_dir = workspace.path().join("source");
-        let archive_path = workspace.path().join("vpaste-history.vphistory");
-        fs::create_dir_all(source_dir.join("data")).unwrap();
-        fs::create_dir_all(source_dir.join("rich_formats")).unwrap();
-
-        let mut config = config::Config::default();
-        config.storage_dir = source_dir.to_string_lossy().to_string();
-        config::save(config);
-        ensure_history_storage_dirs().unwrap();
-
-        secure_store::write_file(source_dir.join("data").join("note.txt"), b"stored data").unwrap();
-        secure_store::write_file(
-            source_dir.join("rich_formats").join("note.html"),
-            b"<p>stored rich text</p>",
-        )
-        .unwrap();
-        secure_store::write_file(source_dir.join(CUSTOM_TABS_FILE), br#"[{"name":"Stored"}]"#)
-            .unwrap();
-
-        export_history_archive_impl(None, archive_path.to_string_lossy().to_string()).unwrap();
-
-        assert_eq!(
-            secure_store::read_file(&{
-                let path = workspace.path().join("archived-data.bin");
-                fs::write(&path, archive_entry_bytes(&archive_path, "data/note.txt")).unwrap();
-                path
-            })
-            .unwrap(),
-            b"stored data"
-        );
-        assert!(secure_store::is_encrypted_file_bytes(&archive_entry_bytes(
-            &archive_path,
-            "rich_formats/note.html"
-        )));
-        assert!(secure_store::is_encrypted_file_bytes(&archive_entry_bytes(
-            &archive_path,
-            CUSTOM_TABS_FILE
-        )));
-    }
-
-    #[test]
-    fn exported_legacy_plain_file_is_encrypted_in_archive() {
-        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
-        let app_data = tempfile::tempdir().unwrap();
-        init_test_app_data(app_data.path());
-
-        let workspace = tempfile::tempdir().unwrap();
-        let source_dir = workspace.path().join("source");
-        let archive_path = workspace.path().join("vpaste-history.vphistory");
-        fs::create_dir_all(source_dir.join("data")).unwrap();
-
-        let mut config = config::Config::default();
-        config.storage_dir = source_dir.to_string_lossy().to_string();
-        config::save(config);
-        ensure_history_storage_dirs().unwrap();
-
-        fs::write(
-            source_dir.join("data").join("legacy.txt"),
-            b"legacy plain text",
-        )
-        .unwrap();
-        export_history_archive_impl(None, archive_path.to_string_lossy().to_string()).unwrap();
-
-        let bytes = archive_entry_bytes(&archive_path, "data/legacy.txt");
-
-        assert!(secure_store::is_encrypted_file_bytes(&bytes));
-        let archived_payload = workspace.path().join("archived-legacy-payload.bin");
-        fs::write(&archived_payload, bytes).unwrap();
-        assert_eq!(
-            secure_store::read_file(&archived_payload).unwrap(),
-            b"legacy plain text"
-        );
-    }
-
-    #[test]
-    fn custom_archive_validation_rejects_zip_files() {
-        let workspace = tempfile::tempdir().unwrap();
-        let archive_path = workspace.path().join("vpaste-history.zip");
-        fs::write(&archive_path, b"PK\x03\x04not a vpaste archive").unwrap();
-
-        assert!(validate_history_archive(archive_path.to_str().unwrap()).is_err());
-    }
-
-    #[test]
-    fn custom_archive_validation_rejects_unsafe_paths() {
-        let workspace = tempfile::tempdir().unwrap();
-        let archive_path = workspace.path().join("vpaste-history.vphistory");
-        let mut writer = File::create(&archive_path).unwrap();
+    fn archive_with_entries(entries: &[(&str, &[u8])]) -> tempfile::NamedTempFile {
+        let mut archive = tempfile::NamedTempFile::new().unwrap();
         let metadata = serde_json::json!({
             "format": "vpaste-history",
-            "version": HISTORY_ARCHIVE_VERSION,
-            "source_dir": workspace.path().to_string_lossy().to_string(),
-            "encryption": {
-                "algorithm": "xchacha20-poly1305",
-                "key": secure_store::export_key_base64(),
-            },
+            "version": 3,
+            "exported_at": 1,
+            "source_dir": "/old/history"
         });
-        write_history_archive_header(&mut writer, &metadata, 1).unwrap();
-        let name = "../vpaste.db";
-        write_u32(&mut writer, name.len() as u32).unwrap();
-        writer.write_all(name.as_bytes()).unwrap();
-        write_u64(&mut writer, 0).unwrap();
+        write_history_archive_header(archive.as_file_mut(), &metadata, entries.len() as u64)
+            .unwrap();
+        for (name, bytes) in entries {
+            write_history_archive_entry_header(archive.as_file_mut(), name, bytes.len() as u64)
+                .unwrap();
+            archive.as_file_mut().write_all(bytes).unwrap();
+        }
+        archive.as_file_mut().flush().unwrap();
+        archive
+    }
 
-        assert!(validate_history_archive(archive_path.to_str().unwrap()).is_err());
+    #[test]
+    fn v3_metadata_has_no_encryption_node() {
+        let archive = archive_with_entries(&[(HISTORY_ARCHIVE_DB, b"sqlite")]);
+        let mut reader = File::open(archive.path()).unwrap();
+        let (metadata, _) = read_history_archive_header(&mut reader).unwrap();
+        assert_eq!(metadata["version"], 3);
+        assert!(metadata.get("encryption").is_none());
+        validate_history_archive(archive.path().to_str().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn v2_requires_the_converter() {
+        let archive = tempfile::NamedTempFile::new().unwrap();
+        let mut file = archive.reopen().unwrap();
+        file.write_all(HISTORY_ARCHIVE_MAGIC).unwrap();
+        file.write_all(&2_u32.to_le_bytes()).unwrap();
+        file.flush().unwrap();
+        let error =
+            read_history_archive_header(&mut File::open(archive.path()).unwrap()).unwrap_err();
+        assert!(error.contains("vpaste-history-converter"));
+    }
+
+    #[test]
+    fn rejects_duplicate_unsafe_and_trailing_entries() {
+        let duplicate =
+            archive_with_entries(&[(HISTORY_ARCHIVE_DB, b"one"), (HISTORY_ARCHIVE_DB, b"two")]);
+        assert!(validate_history_archive(duplicate.path().to_str().unwrap())
+            .unwrap_err()
+            .contains("重复"));
+
+        let unsafe_path = archive_with_entries(&[(HISTORY_ARCHIVE_DB, b"db"), ("../x", b"x")]);
+        assert!(validate_history_archive(unsafe_path.path().to_str().unwrap()).is_err());
+
+        let mut trailing = archive_with_entries(&[(HISTORY_ARCHIVE_DB, b"db")]);
+        trailing.as_file_mut().write_all(b"extra").unwrap();
+        trailing.as_file_mut().flush().unwrap();
+        assert!(validate_history_archive(trailing.path().to_str().unwrap())
+            .unwrap_err()
+            .contains("末尾"));
     }
 }
 
@@ -5815,6 +5717,7 @@ fn get_storage_paths() -> StoragePaths {
 
 #[tauri::command]
 async fn estimate_storage_cleanup(days: u64) -> Result<StorageCleanupInfo, String> {
+    ensure_history_ready()?;
     tauri::async_runtime::spawn_blocking(move || {
         let estimate = clipboard::cleanup_estimate(days)?;
         Ok(StorageCleanupInfo {
@@ -5828,6 +5731,7 @@ async fn estimate_storage_cleanup(days: u64) -> Result<StorageCleanupInfo, Strin
 
 #[tauri::command]
 async fn cleanup_storage_history(days: u64) -> Result<StorageCleanupInfo, String> {
+    ensure_history_ready()?;
     tauri::async_runtime::spawn_blocking(move || {
         let estimate = clipboard::cleanup_older_than(days)?;
         Ok(StorageCleanupInfo {
@@ -6798,15 +6702,7 @@ fn image_dib_cache_path(path: &str) -> Option<PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn read_image_dib_cache(cache_path: &Path) -> Result<Vec<u8>, String> {
-    let bytes =
-        fs::read(cache_path).map_err(|err| format!("read image clipboard cache failed: {err}"))?;
-    if secure_store::is_encrypted_file_bytes(&bytes) {
-        let dib = secure_store::read_file(cache_path)
-            .map_err(|err| format!("read encrypted image clipboard cache failed: {err}"))?;
-        let _ = write_image_dib_cache(cache_path, &dib);
-        return Ok(dib);
-    }
-    Ok(bytes)
+    fs::read(cache_path).map_err(|err| format!("read image clipboard cache failed: {err}"))
 }
 
 #[cfg(target_os = "windows")]
@@ -6906,7 +6802,7 @@ fn cached_or_load_png_bytes(path: &str, dib_cache_path: &Path) -> Result<Option<
         return Ok(None);
     }
 
-    let bytes = secure_store::read_file(path)?;
+    let bytes = history_store::read_file(path)?;
     if let Some(png_bytes) = png_clipboard_bytes_from_image_bytes(bytes) {
         let _ = write_image_png_cache(dib_cache_path, &png_bytes);
         Ok(Some(png_bytes))
@@ -6938,7 +6834,7 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
             dib
         } else {
             let convert_start = Instant::now();
-            let image_bytes = secure_store::read_file(path)?;
+            let image_bytes = history_store::read_file(path)?;
             if copy_gif_bytes_to_clipboard_as_file(path, &image_bytes)? {
                 info!(
                     "Copied GIF image as file list in {}ms",
@@ -6961,7 +6857,7 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
             dib
         }
     } else {
-        let image_bytes = secure_store::read_file(path)?;
+        let image_bytes = history_store::read_file(path)?;
         if copy_gif_bytes_to_clipboard_as_file(path, &image_bytes)? {
             info!(
                 "Copied GIF image as file list in {}ms",
@@ -7119,7 +7015,7 @@ fn prewarm_image_clipboard_cache_path(path: &str) -> Result<bool, String> {
         info!("Skip large image clipboard cache prewarm for {}", path);
         return Ok(false);
     }
-    let image_bytes = secure_store::read_file(path)?;
+    let image_bytes = history_store::read_file(path)?;
     let _ = history_image_metadata_from_bytes(path, &image_bytes);
     let is_gif = infer::get(&image_bytes)
         .map(|kind| kind.mime_type() == "image/gif")
@@ -7221,12 +7117,12 @@ fn image_dimensions_from_bytes(bytes: &[u8]) -> Result<(u32, u32), String> {
 }
 
 fn image_dimensions_secure(path: &str) -> Result<(u32, u32), String> {
-    let bytes = secure_store::read_file(path)?;
+    let bytes = history_store::read_file(path)?;
     image_dimensions_from_bytes(&bytes)
 }
 
 fn image_reader_secure(path: &Path) -> Result<image::DynamicImage, String> {
-    let bytes = secure_store::read_file(path)?;
+    let bytes = history_store::read_file(path)?;
     image::load_from_memory(&bytes).map_err(|err| err.to_string())
 }
 
@@ -7268,7 +7164,7 @@ fn image_extension_from_bytes(bytes: &[u8]) -> &'static str {
 
 fn image_data_url(path: &str) -> Result<String, String> {
     use base64::{engine::general_purpose, Engine as _};
-    let bytes = secure_store::read_file(path)?;
+    let bytes = history_store::read_file(path)?;
     let mime = image_mime_from_bytes(&bytes);
     Ok(format!(
         "data:{};base64,{}",
@@ -7281,12 +7177,10 @@ fn plain_cache_file_matches_bytes(path: &Path, bytes: &[u8]) -> bool {
     fs::metadata(path)
         .map(|metadata| metadata.is_file() && metadata.len() == bytes.len() as u64)
         .unwrap_or(false)
-        && matches!(secure_store::is_encrypted_file(path), Ok(false))
 }
 
 fn valid_png_cache_file(path: &Path) -> bool {
-    matches!(secure_store::is_encrypted_file(path), Ok(false))
-        && image::image_dimensions(path).is_ok()
+    image::image_dimensions(path).is_ok()
 }
 
 fn publish_image_cache_file(
@@ -7336,7 +7230,7 @@ fn image_preview_asset_path(path: &str) -> Result<String, String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let bytes = secure_store::read_file(path)?;
+    let bytes = history_store::read_file(path)?;
     let extension = image_extension_from_bytes(&bytes);
     let mut hasher = DefaultHasher::new();
     "preview-asset-v2".hash(&mut hasher);
@@ -7487,7 +7381,7 @@ fn image_card_preview_asset_path(path: &str) -> Result<String, String> {
     if valid_png_cache_file(&cache_path) {
         return Ok(cache_path.to_string_lossy().to_string());
     }
-    let bytes = secure_store::read_file(path)?;
+    let bytes = history_store::read_file(path)?;
     image_thumbnail_preview_asset_path(path, &bytes).or_else(|_| image_preview_asset_path(path))
 }
 
@@ -7507,7 +7401,7 @@ mod image_cache_tests {
         image
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
-        secure_store::write_file(&source_path, &png).unwrap();
+        history_store::write_file(&source_path, &png).unwrap();
 
         let source = source_path.to_string_lossy().to_string();
         let metadata = history_image_metadata_for_path(&source).unwrap();
@@ -7537,14 +7431,13 @@ mod image_cache_tests {
         image
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
-        secure_store::write_file(&source_path, &png).unwrap();
+        history_store::write_file(&source_path, &png).unwrap();
         let source = source_path.to_string_lossy().to_string();
 
         let preview_path = PathBuf::from(image_preview_asset_path(&source).unwrap());
-        secure_store::write_file(&preview_path, b"encrypted cache").unwrap();
+        history_store::write_file(&preview_path, b"invalid cache").unwrap();
         let repaired_preview = PathBuf::from(image_preview_asset_path(&source).unwrap());
         assert_eq!(preview_path, repaired_preview);
-        assert!(!secure_store::is_encrypted_file(&repaired_preview).unwrap());
         assert_eq!(fs::read(&repaired_preview).unwrap(), png);
 
         let card_path = PathBuf::from(image_card_preview_asset_path(&source).unwrap());
@@ -7615,7 +7508,7 @@ async fn history_image_is_gif(path: String) -> Result<bool, String> {
 #[tauri::command]
 async fn history_file_data_url(path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        if secure_store::file_plaintext_len(&path)? > image_preview::CARD_PREVIEW_MAX_SOURCE_BYTES {
+        if history_store::file_len(&path)? > image_preview::CARD_PREVIEW_MAX_SOURCE_BYTES {
             return Err("image exceeds the automatic preview budget".to_string());
         }
         image_data_url(&path)
@@ -7647,7 +7540,7 @@ fn write_registered_clipboard_file(format_name: &str, path: &str) -> Result<(), 
     }
     let format = registered_clipboard_format(format_name)
         .ok_or_else(|| format!("register clipboard format failed: {}", format_name))?;
-    let bytes = secure_store::read_file(path)
+    let bytes = history_store::read_file(path)
         .map_err(|err| format!("read {} failed: {}", format_name, err))?;
     if bytes.is_empty() {
         return Ok(());
@@ -7684,7 +7577,7 @@ fn write_macos_pasteboard_file(
     if path.is_empty() {
         return Ok(());
     }
-    let bytes = secure_store::read_file(path).map_err(|err| {
+    let bytes = history_store::read_file(path).map_err(|err| {
         format!(
             "read {} rich clipboard file failed: {}",
             pasteboard_type, err
@@ -7870,6 +7763,9 @@ fn copy(
     item_type: String,
     hash: Option<String>,
 ) -> Result<(), String> {
+    if hash.is_some() {
+        ensure_history_ready()?;
+    }
     let rich_meta = hash.as_deref().and_then(clipboard::rich_clipboard_meta);
     copy_with_rich_meta(app, item, item_type, rich_meta)
 }
@@ -8011,6 +7907,7 @@ async fn copy_history_item(
     hash: String,
     plain_text: bool,
 ) -> Result<(), String> {
+    ensure_history_ready()?;
     tauri::async_runtime::spawn_blocking(move || {
         let text = clipboard::plain_text_content(&hash)?;
         let rich_meta = if plain_text {
@@ -8623,6 +8520,7 @@ fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(
 
 #[tauri::command]
 fn get_paste_queue_state() -> Result<paste_queue::PasteQueueState, String> {
+    ensure_history_ready()?;
     paste_queue::state()
 }
 
@@ -8640,6 +8538,7 @@ fn set_paste_queue_active(
     app: tauri::AppHandle,
     active: bool,
 ) -> Result<paste_queue::PasteQueueState, String> {
+    ensure_history_ready()?;
     set_paste_queue_active_impl(&app, active)?;
     paste_queue::state()
 }
@@ -8649,6 +8548,7 @@ fn add_paste_queue_items(
     app: tauri::AppHandle,
     hashes: Vec<String>,
 ) -> Result<paste_queue::PasteQueueState, String> {
+    ensure_history_ready()?;
     paste_queue::run_user_operation(|| paste_queue::add_items(&hashes))?;
     paste_queue::emit_state(&app);
     paste_queue::state()
@@ -8659,6 +8559,7 @@ fn reorder_paste_queue(
     app: tauri::AppHandle,
     hashes: Vec<String>,
 ) -> Result<paste_queue::PasteQueueState, String> {
+    ensure_history_ready()?;
     paste_queue::run_user_operation(|| paste_queue::reorder(&hashes))?;
     paste_queue::emit_state(&app);
     paste_queue::state()
@@ -8666,6 +8567,7 @@ fn reorder_paste_queue(
 
 #[tauri::command]
 fn reverse_paste_queue(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueState, String> {
+    ensure_history_ready()?;
     paste_queue::run_user_operation(paste_queue::reverse)?;
     paste_queue::emit_state(&app);
     paste_queue::state()
@@ -8676,6 +8578,7 @@ fn remove_paste_queue_item(
     app: tauri::AppHandle,
     hash: String,
 ) -> Result<paste_queue::PasteQueueState, String> {
+    ensure_history_ready()?;
     let cleanup =
         paste_queue::run_user_operation(|| paste_queue::remove_item_with_deferred_cleanup(&hash))?;
     paste_queue::emit_state(&app);
@@ -8686,6 +8589,7 @@ fn remove_paste_queue_item(
 
 #[tauri::command]
 fn clear_paste_queue(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueState, String> {
+    ensure_history_ready()?;
     let cleanup = paste_queue::run_user_operation(paste_queue::clear_with_deferred_cleanup)?;
     paste_queue::emit_state(&app);
     let state = paste_queue::state()?;
@@ -8695,6 +8599,7 @@ fn clear_paste_queue(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueSta
 
 #[tauri::command]
 fn paste_queue_item(app: tauri::AppHandle, hash: Option<String>) -> Result<(), String> {
+    ensure_history_ready()?;
     if !paste_queue::is_active() {
         return Err("粘贴队列尚未激活".to_string());
     }
@@ -8711,6 +8616,7 @@ fn paste_queue_item(app: tauri::AppHandle, hash: Option<String>) -> Result<(), S
 
 #[tauri::command]
 fn undo_paste_queue_consume(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueState, String> {
+    ensure_history_ready()?;
     let _ = paste_queue::run_user_operation(paste_queue::undo_consume)?;
     paste_queue::emit_state(&app);
     paste_queue::state()
@@ -8718,6 +8624,9 @@ fn undo_paste_queue_consume(app: tauri::AppHandle) -> Result<paste_queue::PasteQ
 
 #[tauri::command]
 fn paste(_hash: &str, restore_alt: Option<bool>, trigger_key: Option<String>) {
+    if ensure_history_ready().is_err() {
+        return;
+    }
     let restore_alt = restore_alt.unwrap_or(false);
     let trigger_key = trigger_key.as_deref();
     if !_hash.is_empty() {
@@ -8757,6 +8666,9 @@ fn paste(_hash: &str, restore_alt: Option<bool>, trigger_key: Option<String>) {
 
 #[tauri::command]
 fn record_text_history(content: String) {
+    if ensure_history_ready().is_err() {
+        return;
+    }
     clipboard::insert_text(content);
 }
 
@@ -8806,6 +8718,7 @@ async fn search(
     limit: usize,
     label: String,
 ) -> Result<String, String> {
+    ensure_history_ready()?;
     let last_time = last_time.unwrap_or(0);
     let generation = SEARCH_COMMAND_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     tauri::async_runtime::spawn_blocking(move || {
@@ -8841,6 +8754,7 @@ async fn search(
 
 #[tauri::command]
 fn clear_history(app: tauri::AppHandle, clear_type: String) -> Result<(), String> {
+    ensure_history_ready()?;
     if clear_type == "all" {
         clipboard::db::clear_all().map_err(|e| e.to_string())?;
     } else if clear_type == "images" {
@@ -9555,15 +9469,23 @@ fn main() {
                     Err(err) => error!("Skipping invalid paste queue shortcut: {}", err),
                 }
             }
-
-            secure_store::init_key();
             if let Err(err) = ensure_history_storage_dirs() {
                 panic!("创建历史存储目录时出错: {:?}", err);
             }
-            clipboard::db::init();
+            let legacy_history = legacy_history_present(Path::new(&history_storage_dir()))
+                .unwrap_or_else(|err| {
+                    error!("Failed to inspect history format: {err}");
+                    true
+                });
+            LEGACY_HISTORY_BLOCKED.store(legacy_history, Ordering::SeqCst);
+            if !legacy_history {
+                clipboard::db::init();
+            }
             let _ = build_clipboard_window(app.handle())?;
             let _ = build_paste_queue_window(app.handle())?;
-            initialize_paste_queue_worker(app.handle());
+            if !legacy_history {
+                initialize_paste_queue_worker(app.handle());
+            }
             if get_developer_mode() {
                 let _ = build_test_room_window(app.handle())?;
             }
@@ -9797,17 +9719,23 @@ fn main() {
                     }
                 }
 
-                info!("Starting clipboard listener");
-                listen::start(clipboard_window);
-                info!("Clipboard listener started");
+                if !LEGACY_HISTORY_BLOCKED.load(Ordering::SeqCst) {
+                    info!("Starting clipboard listener");
+                    listen::start(clipboard_window);
+                    info!("Clipboard listener started");
+                } else {
+                    error!("Legacy encrypted history detected; history writes are blocked");
+                    let _ = handle.emit(
+                        "history-format-status-changed",
+                        HistoryFormatStatus {
+                            migration_required: true,
+                        },
+                    );
+                }
                 std::thread::spawn(|| {
                     migrate_runtime_dirs_out_of_history();
                     cleanup_runtime_caches();
                     cleanup_legacy_autostart_entries();
-                    if let Err(err) = clipboard::migrate_history_encryption() {
-                        error!("migrate history encryption failed: {}", err);
-                    }
-                    migrate_history_files_encryption();
                 });
             });
             Ok(())
@@ -9832,6 +9760,8 @@ fn main() {
             set_position,
             get_app_data_dir,
             get_storage_paths,
+            get_history_format_status,
+            clear_legacy_history,
             export_history_archive,
             import_history_archive,
             estimate_storage_cleanup,

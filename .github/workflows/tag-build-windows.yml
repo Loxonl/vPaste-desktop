@@ -101,6 +101,9 @@ jobs:
       - name: Build Windows packages
         run: npm run build:windows
 
+      - name: Build history archive converter
+        run: cargo build --release --locked --manifest-path tools/history-archive-converter/Cargo.toml
+
       - name: Stage Windows packages
         shell: pwsh
         run: |
@@ -121,6 +124,7 @@ jobs:
             New-Item -ItemType Directory -Force (Split-Path -Parent $destination) | Out-Null
             Copy-Item -LiteralPath $artifact -Destination $destination
           }
+          Copy-Item 'tools/history-archive-converter/target/release/vpaste-history-converter.exe' 'release-assets/vpaste-history-converter_windows_x64.exe'
 
       - name: Upload Windows packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

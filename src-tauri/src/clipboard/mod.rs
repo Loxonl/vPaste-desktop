@@ -17,7 +17,7 @@ use twox_hash::XxHash64;
 
 use crate::clipboard::db::db;
 use crate::clipboard::item::{convert_type, Item, ItemTag, ItemType, Page};
-use crate::{app_runtime_dir, history_storage_dir, search::engine, secure_store};
+use crate::{app_runtime_dir, history_storage_dir, history_store, search::engine};
 
 pub mod color;
 pub(crate) mod db;
@@ -138,86 +138,6 @@ pub fn count_by_hash(hash: &String) -> i64 {
     .unwrap()
 }
 
-pub fn migrate_history_encryption() -> Result<(), String> {
-    let conn = db();
-    let mut statement = conn
-        .prepare("select id, content, preview_content, source, app_icon_path from clipboard")
-        .map_err(|err| err.to_string())?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                row.get::<_, Option<String>>(4)?.unwrap_or_default(),
-            ))
-        })
-        .map_err(|err| err.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| err.to_string())?;
-
-    let history_app_icons = PathBuf::from(history_storage_dir()).join("app_icons");
-    let runtime_app_icons = PathBuf::from(app_runtime_dir(&["app_icons"]));
-    for (id, content, preview_content, source, app_icon_path) in rows {
-        let plain_content = secure_store::decrypt_text(&content);
-        let plain_preview = secure_store::decrypt_text(&preview_content);
-        let plain_source = secure_store::decrypt_text(&source);
-        let next_app_icon_path = if !app_icon_path.is_empty() {
-            let path = PathBuf::from(&app_icon_path);
-            if path.starts_with(&history_app_icons) {
-                path.file_name()
-                    .map(|name| runtime_app_icons.join(name).to_string_lossy().to_string())
-                    .unwrap_or(app_icon_path)
-            } else {
-                app_icon_path
-            }
-        } else {
-            app_icon_path
-        };
-        let next_app_icon_path = prefer_jumbo_app_icon(next_app_icon_path);
-        conn.execute(
-            "
-            update clipboard
-            set content = ?1,
-                preview_content = ?2,
-                source = ?3,
-                app_icon_path = ?4
-            where id = ?5
-            ",
-            rusqlite::params![
-                secure_store::encrypt_text(&plain_content),
-                secure_store::encrypt_text(&plain_preview),
-                secure_store::encrypt_text(&plain_source),
-                next_app_icon_path,
-                id
-            ],
-        )
-        .map_err(|err| err.to_string())?;
-    }
-
-    for dir in ["data", "rich_formats", "image_clipboard_cache"] {
-        let root = PathBuf::from(history_storage_dir()).join(dir);
-        if root.exists() {
-            encrypt_files_recursive(&root)?;
-        }
-    }
-    Ok(())
-}
-
-fn encrypt_files_recursive(root: &Path) -> Result<(), String> {
-    for entry in fs::read_dir(root).map_err(|err| err.to_string())? {
-        let entry = entry.map_err(|err| err.to_string())?;
-        let path = entry.path();
-        if path.is_dir() {
-            encrypt_files_recursive(&path)?;
-        } else if path.is_file() {
-            secure_store::ensure_file_encrypted(&path)?;
-        }
-    }
-    Ok(())
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct StoredItem {
     pub(crate) id: usize,
@@ -257,9 +177,9 @@ pub(crate) fn materialize_item(stored: StoredItem) -> Item {
     let id = stored.id;
     let hash = stored.hash;
     let mut item_type = ItemType::from_str(stored.item_type.as_str()).unwrap();
-    let mut content = secure_store::decrypt_text(&stored.content);
-    let mut preview_content = secure_store::decrypt_text(&stored.preview_content);
-    let source = secure_store::decrypt_text(&stored.source);
+    let mut content = stored.content.clone();
+    let mut preview_content = stored.preview_content.clone();
+    let source = stored.source.clone();
     let rich_source = is_rich_meta_source(&source);
     if rich_source && item_type == ItemType::Text && content.len() > LARGE_TEXT_THRESHOLD_BYTES {
         content = preview_content.clone();
@@ -744,9 +664,9 @@ fn stored_item_matches_keywords(stored: &StoredItem, keywords: &str) -> bool {
         return true;
     }
 
-    let content = secure_store::decrypt_text(&stored.content);
-    let preview_content = secure_store::decrypt_text(&stored.preview_content);
-    let source = secure_store::decrypt_text(&stored.source);
+    let content = stored.content.clone();
+    let preview_content = stored.preview_content.clone();
+    let source = stored.source.clone();
 
     if stored.item_type == ItemType::TextFile.to_string()
         && text_file_contains_keyword(&content, &keyword)
@@ -765,7 +685,7 @@ fn stored_item_matches_keywords(stored: &StoredItem, keywords: &str) -> bool {
 }
 
 fn text_file_contains_keyword(path: &str, keyword: &str) -> bool {
-    secure_store::read_file(path)
+    history_store::read_file(path)
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .map(|text| text.to_ascii_lowercase().contains(keyword))
@@ -1450,14 +1370,14 @@ fn read_rich_html_fragment(path: &str) -> Option<String> {
     if path.is_empty() {
         return None;
     }
-    if secure_store::file_plaintext_len(path).ok()? > RICH_CARD_SOURCE_MAX_BYTES {
+    if history_store::file_len(path).ok()? > RICH_CARD_SOURCE_MAX_BYTES {
         return None;
     }
     let stamp = rich_html_file_stamp(path);
     if let Some(cached) = stamp.and_then(|stamp| cached_rich_html(path, stamp)) {
         return Some(cached);
     }
-    let bytes = secure_store::read_file(path).ok()?;
+    let bytes = history_store::read_file(path).ok()?;
     if bytes.is_empty() {
         return None;
     }
@@ -1507,9 +1427,9 @@ pub fn rich_clipboard_meta(hash: &str) -> Option<RichClipboardMeta> {
 }
 
 pub(crate) fn rich_clipboard_meta_from_stored_source(
-    encrypted_source: &str,
+    stored_source: &str,
 ) -> Option<RichClipboardMeta> {
-    rich_meta_from_source(&secure_store::decrypt_text(encrypted_source))
+    rich_meta_from_source(stored_source)
 }
 
 pub fn delete_by_hash(hash: &str) -> Result<usize, String> {
@@ -1523,12 +1443,8 @@ pub fn delete_by_hash(hash: &str) -> Result<usize, String> {
                     id: row.get(0)?,
                     hash: row.get(1)?,
                     item_type: row.get(2)?,
-                    content: secure_store::decrypt_text(
-                        &row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                    ),
-                    source: secure_store::decrypt_text(
-                        &row.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                    ),
+                    content: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    source: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
                 })
             },
         )
@@ -1629,8 +1545,8 @@ pub(crate) fn internal_paths_for_stored_item(stored: &StoredItem) -> HashSet<Pat
     internal_paths_for_cleanup(
         &stored.item_type,
         &stored.hash,
-        &secure_store::decrypt_text(&stored.content),
-        &secure_store::decrypt_text(&stored.source),
+        &stored.content,
+        &stored.source,
     )
     .into_iter()
     .collect()
@@ -1651,12 +1567,8 @@ fn cleanup_candidates(days: u64) -> Result<Vec<CleanupCandidate>, String> {
             id: row.get(0)?,
             hash: row.get(1)?,
             item_type: row.get(2)?,
-            content: secure_store::decrypt_text(
-                &row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-            ),
-            source: secure_store::decrypt_text(
-                &row.get::<_, Option<String>>(4)?.unwrap_or_default(),
-            ),
+            content: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            source: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
         })
     };
     let candidates = if days == 0 {
@@ -1730,12 +1642,7 @@ fn internal_paths_referenced_by_survivors(
         .map_err(|err| err.to_string())?;
     for row in queue_rows {
         let (hash, item_type, content, source) = row.map_err(|err| err.to_string())?;
-        for path in internal_paths_for_cleanup(
-            &item_type,
-            &hash,
-            &secure_store::decrypt_text(&content),
-            &secure_store::decrypt_text(&source),
-        ) {
+        for path in internal_paths_for_cleanup(&item_type, &hash, &content, &source) {
             if paths_to_check.contains(&path) {
                 retained_paths.insert(path);
             }
@@ -1848,14 +1755,14 @@ pub fn plain_text_content(hash: &str) -> Result<String, String> {
 
 pub(crate) fn plain_text_from_stored_item(stored: &StoredItem) -> Result<String, String> {
     let item_type = ItemType::from_str(&stored.item_type).map_err(|err| err.to_string())?;
-    let content = secure_store::decrypt_text(&stored.content);
-    let source = secure_store::decrypt_text(&stored.source);
+    let content = stored.content.clone();
+    let source = stored.source.clone();
     if !source.is_empty() && !is_rich_meta_source(&source) {
         return Ok(source);
     }
 
     match item_type {
-        ItemType::TextFile => secure_store::read_file(&content)
+        ItemType::TextFile => history_store::read_file(&content)
             .and_then(|bytes| String::from_utf8(bytes).map_err(|err| err.to_string()))
             .map_err(|err| format!("读取文本内容失败：{}", err)),
         ItemType::Link => Ok(content.split("|||").next().unwrap_or("").to_string()),
@@ -1890,9 +1797,9 @@ fn insert_history_item(
 ) -> bool {
     if count_by_hash(&item.hash) > 0 {
         let conn = db();
-        let encrypted_source = secure_store::encrypt_text(source);
-        let encrypted_content = secure_store::encrypt_text(&item.content);
-        let encrypted_preview_content = secure_store::encrypt_text(&item.preview_content);
+        let stored_source = source.to_string();
+        let stored_content = item.content.clone();
+        let stored_preview_content = item.preview_content.clone();
         let state = conn.execute(
             "update clipboard
                 set time = ?1,
@@ -1906,11 +1813,11 @@ fn insert_history_item(
                 item.time.to_string(),
                 app_source,
                 app_icon_path,
-                encrypted_source,
+                stored_source,
                 item.item_type.to_string(),
                 item.hash,
-                encrypted_content,
-                encrypted_preview_content,
+                stored_content,
+                stored_preview_content,
             ],
         );
         return match state {
@@ -1928,20 +1835,20 @@ fn insert_history_item(
                                       values(:hash,:content,:preview_content,:time,:title_color,:item_type,:icon,:source,:app_source,:app_icon_path,:search_index)
                             ";
     let conn = db();
-    let encrypted_content = secure_store::encrypt_text(&item.content);
-    let encrypted_preview_content = secure_store::encrypt_text(&item.preview_content);
-    let encrypted_source = secure_store::encrypt_text(source);
+    let stored_content = item.content.clone();
+    let stored_preview_content = item.preview_content.clone();
+    let stored_source = source.to_string();
     let state = {
         let mut statement = conn.prepare(insert_sql).unwrap();
         statement.execute(&[
             (":hash", &item.hash),
-            (":content", &encrypted_content),
-            (":preview_content", &encrypted_preview_content),
+            (":content", &stored_content),
+            (":preview_content", &stored_preview_content),
             (":time", &item.time.to_string()),
             (":title_color", &item.title_color),
             (":item_type", &item.item_type.to_string()),
             (":icon", &"".to_string()),
-            (":source", &encrypted_source),
+            (":source", &stored_source),
             (":app_source", &app_source.to_string()),
             (":app_icon_path", &app_icon_path.to_string()),
             (":search_index", &"1".to_string()),
@@ -2494,7 +2401,7 @@ fn save_rich_format_to_disk(data: &[u8], hash: &str, extension: &str) -> String 
     }
     let file_path = dir.join(format!("{}.{}", hash, extension));
     if !file_path.exists() {
-        if let Err(e) = secure_store::write_file(&file_path, data) {
+        if let Err(e) = history_store::write_file(&file_path, data) {
             error!("写入富格式文件时出错: {}", e);
         }
     }
@@ -2954,8 +2861,8 @@ fn find_link_record_for_preview(url: &str) -> Result<Option<LinkPreviewRecord>, 
         .map_err(|err| err.to_string())?;
 
     for row in rows {
-        let (id, hash, time, encrypted_content) = row.map_err(|err| err.to_string())?;
-        let content = secure_store::decrypt_text(&encrypted_content);
+        let (id, hash, time, stored_content) = row.map_err(|err| err.to_string())?;
+        let content = stored_content.clone();
         if link_url_from_content(&content) == url {
             return Ok(Some(LinkPreviewRecord {
                 id,
@@ -2999,7 +2906,7 @@ fn cached_link_image_is_usable(path: &str) -> bool {
     if path.trim().is_empty() {
         return false;
     }
-    let Ok(bytes) = secure_store::read_file(path) else {
+    let Ok(bytes) = history_store::read_file(path) else {
         return false;
     };
     if bytes.is_empty() {
@@ -3092,12 +2999,12 @@ pub fn refresh_link_previews(urls: Vec<String>) -> Result<Vec<LinkPreviewUpdate>
         if record.content == next_content {
             continue;
         }
-        let encrypted_next_content = secure_store::encrypt_text(&next_content);
+        let stored_next_content = next_content.clone();
 
         db().execute(
             "update clipboard set content = ?1 where hash = ?2 and item_type = ?3",
             [
-                &encrypted_next_content,
+                &stored_next_content,
                 &record.hash,
                 &ItemType::Link.to_string(),
             ],
@@ -3131,7 +3038,7 @@ pub fn save_to_disk(data: &[u8], hash: &String) -> String {
     let file_path = path.join(hash);
 
     if !file_path.exists() {
-        if let Err(e) = secure_store::write_file(&file_path, data) {
+        if let Err(e) = history_store::write_file(&file_path, data) {
             error!("写入加密文件时出错: {}", e);
         }
     }
@@ -3161,7 +3068,7 @@ mod tests {
         crate::clipboard::db::init();
 
         let preview_path = data_dir().join("shared-link-preview");
-        secure_store::write_file(&preview_path, b"shared preview").unwrap();
+        history_store::write_file(&preview_path, b"shared preview").unwrap();
         let conn = db();
         for (hash, time, url) in [
             ("old-link", old_time, "https://example.com/old"),
@@ -3177,7 +3084,7 @@ mod tests {
                     hash, time, content, preview_content, item_type, search_index, source,
                     app_source, app_icon_path, title_color, icon, label
                  ) values(?1, ?2, ?3, ?3, 'Link', 1, '', '', '', '', '', 0)",
-                params![hash, time as i64, secure_store::encrypt_text(&content)],
+                params![hash, time as i64, content.clone()],
             )
             .unwrap();
         }
@@ -3502,7 +3409,7 @@ mod tests {
             image_url
         );
         let rich_path = root.path().join("excel.cf_html");
-        secure_store::write_file(&rich_path, html.as_bytes()).unwrap();
+        history_store::write_file(&rich_path, html.as_bytes()).unwrap();
 
         let first = read_rich_html_fragment(rich_path.to_str().unwrap()).unwrap();
         assert!(first.contains("data:image/png;base64,"));
@@ -3544,9 +3451,9 @@ mod tests {
             id: 0,
             item_type: ItemType::Text.to_string(),
             hash: "app-icon-color-test".to_string(),
-            content: secure_store::encrypt_text("text"),
-            preview_content: secure_store::encrypt_text("text"),
-            source: secure_store::encrypt_text("text"),
+            content: "text".to_string(),
+            preview_content: "text".to_string(),
+            source: "text".to_string(),
             app_source: "Test App".to_string(),
             app_icon_path: icon_path.to_string_lossy().to_string(),
             title_color: String::new(),
@@ -3610,11 +3517,7 @@ mod tests {
                 hash, time, content, preview_content, item_type, search_index, source,
                 app_source, app_icon_path, title_color, icon, label
              ) values(?1, 1, ?2, '', 'Text', 1, ?3, 'EXCEL', '', '', '', 0)",
-            params![
-                hash,
-                secure_store::encrypt_text(content),
-                secure_store::encrypt_text(original_source),
-            ],
+            params![hash, content.to_string(), original_source.to_string(),],
         )
         .unwrap();
 
@@ -3624,12 +3527,7 @@ mod tests {
             .query_row(
                 "select time, source from clipboard where hash = ?1",
                 [&hash],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        secure_store::decrypt_text(&row.get::<_, String>(1)?),
-                    ))
-                },
+                |row| Ok((row.get(0)?, row.get::<_, String>(1)?)),
             )
             .unwrap();
         let visible_items = search("", 0, 0, 10, "__all").unwrap().list;
@@ -3660,7 +3558,7 @@ mod tests {
             format!("{url}|||C:\\preview.png|||Example article|||preview|||2026-08-06");
         db().execute(
             "update clipboard set content = ?1, preview_content = ?1 where hash = ?2",
-            params![secure_store::encrypt_text(&cached_content), hash],
+            params![cached_content.clone(), hash],
         )
         .unwrap();
 
@@ -3672,7 +3570,7 @@ mod tests {
                 [&hash],
                 |row| row.get(0),
             )
-            .map(|content: String| secure_store::decrypt_text(&content))
+            .map(|content: String| content.clone())
             .unwrap();
         reset_test_storage_config();
 
@@ -3727,10 +3625,10 @@ mod tests {
             params![
                 hash,
                 current_timestamp_millis() as i64,
-                secure_store::encrypt_text("tagged body"),
-                secure_store::encrypt_text("tagged body"),
+                "tagged body".to_string(),
+                "tagged body".to_string(),
                 ItemType::Text.to_string(),
-                secure_store::encrypt_text("tagged body"),
+                "tagged body".to_string(),
                 "Code"
             ],
         )
@@ -4059,7 +3957,7 @@ pub fn get_on_disk(_path: String) -> Vec<u8> {
 #[allow(dead_code)]
 pub fn get_text_preview_on_disk(path: String, search_word: String) -> String {
     let bytes =
-        secure_store::read_file(&path).unwrap_or_else(|_| fs::read(&path).unwrap_or_default());
+        history_store::read_file(&path).unwrap_or_else(|_| fs::read(&path).unwrap_or_default());
     let content = String::from_utf8_lossy(&bytes).to_string();
     if search_word.is_empty() {
         return content;

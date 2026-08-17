@@ -712,8 +712,8 @@ fn insert_sample_item(group_id: &str, item: &SampleItem, time: u64) -> Result<St
         "Image" => {
             let bytes = image_bytes(&value)?;
             let path = clipboard::save_to_disk(&bytes, &hash);
-            if crate::secure_store::read_file(&path).ok().as_deref() != Some(bytes.as_slice()) {
-                crate::secure_store::write_file(&path, &bytes)
+            if crate::history_store::read_file(&path).ok().as_deref() != Some(bytes.as_slice()) {
+                crate::history_store::write_file(&path, &bytes)
                     .map_err(|err| format!("更新图片样板失败：{err}"))?;
             }
             let history_item =
@@ -894,7 +894,7 @@ fn run_clipboard_case(case_id: &str) -> Result<String, String> {
             }
             "Color" if stored.content != "#5B67F1" => Err("颜色值不一致".to_string()),
             "Link" if stored.content != "https://vpaste.app" => Err("链接 URL 不一致".to_string()),
-            "Image" => crate::secure_store::read_file(&stored.content).and_then(|bytes| {
+            "Image" => crate::history_store::read_file(&stored.content).and_then(|bytes| {
                 if bytes.is_empty() {
                     Err("图片文件内容为空".to_string())
                 } else {
@@ -910,7 +910,7 @@ fn run_clipboard_case(case_id: &str) -> Result<String, String> {
                     Ok(())
                 }
             }
-            "TextFile" => crate::secure_store::read_file(&stored.content).and_then(|bytes| {
+            "TextFile" => crate::history_store::read_file(&stored.content).and_then(|bytes| {
                 if bytes.is_empty() {
                     Err("文本文件内容为空".to_string())
                 } else {
@@ -1292,7 +1292,7 @@ fn run_gif_history_case() -> Result<String, String> {
     register_case_history(created_at_ms, &hash)?;
     let stored = clipboard::try_get_by_hash(&hash)
         .ok_or_else(|| "GIF 测试项未能从历史数据库读回".to_string())?;
-    let bytes = crate::secure_store::read_file(&stored.content)?;
+    let bytes = crate::history_store::read_file(&stored.content)?;
     if stored.item_type != ItemType::Image
         || !Path::new(&stored.app_icon_path).is_file()
         || !(bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"))
@@ -1841,12 +1841,12 @@ mod tests {
             include_bytes!("../icons/source/vpaste-app-icon-1024.png"),
             &hash,
         );
-        let legacy = crate::secure_store::read_file(&path).unwrap();
+        let legacy = crate::history_store::read_file(&path).unwrap();
         assert_eq!(image::load_from_memory(&legacy).unwrap().width(), 1024);
 
         insert_sample_item("legacy-logo-group", &sample, 1).unwrap();
 
-        let rewritten = crate::secure_store::read_file(&path).unwrap();
+        let rewritten = crate::history_store::read_file(&path).unwrap();
         let rewritten = image::load_from_memory(&rewritten).unwrap().to_rgba8();
         assert_eq!(rewritten.dimensions(), (256, 256));
         assert_eq!(rewritten.get_pixel(0, 0).0, [255, 255, 255, 255]);

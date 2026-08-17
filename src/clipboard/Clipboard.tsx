@@ -28,6 +28,10 @@ import {
     type CustomTab,
 } from "./customTabs";
 import { fetchSearchPage } from "./searchPagination";
+import {
+    searchDebounceDelay,
+    shouldMaskSearchResults,
+} from "./clipboardSearch";
 import ClipboardCard from "./ClipboardCard";
 import {
     parseLinkContent,
@@ -152,6 +156,8 @@ export default function Clipboard() {
     const [selected, setSelected] = useState<String>("");
     const [searchWord, setSearchWord] = useState<String>("");
     const [searchOpen, setSearchOpen] = useState<boolean>(false);
+    const [isSearchComposing, setIsSearchComposing] = useState(false);
+    const [isSearching, setIsSearching] = useState(false);
     const [activeTab, setActiveTab] = useState<string>("all");
     const [customTabs, setCustomTabs] = useState<CustomTab[]>(loadCustomTabs);
     const [tabOrder, setTabOrder] = useState<string[]>(loadTabOrder);
@@ -832,6 +838,9 @@ export default function Clipboard() {
 
     async function fetchHistoryWith(keywords: string, tab: string, options: { selectFirst?: boolean, background?: boolean } = {}) {
         const requestSeq = ++searchRequestSeqRef.current;
+        if (!options.background && keywords.trim()) {
+            setIsSearching(true);
+        }
         try {
             const tagSearch = parseTagSearch(keywords);
             const label = mergeTagSearchFilter(tabLabelForBackend(tab), tagSearch.tagNames);
@@ -865,7 +874,13 @@ export default function Clipboard() {
                 scheduleImageClipboardCachePrewarm(items);
             }
         } catch (e) {
-            error(`Failed to fetch history: ${e}`);
+            if (requestSeq === searchRequestSeqRef.current) {
+                error(`Failed to fetch history: ${e}`);
+            }
+        } finally {
+            if (requestSeq === searchRequestSeqRef.current) {
+                setIsSearching(false);
+            }
         }
     }
 
@@ -1139,7 +1154,11 @@ export default function Clipboard() {
             window.clearTimeout(searchDebounceTimerRef.current);
         }
         const keywords = searchWord as string;
-        const delay = keywords.trim() ? 120 : 40;
+        const delay = searchDebounceDelay(keywords, isSearchComposing);
+        if (delay === null) {
+            return;
+        }
+        setIsSearching(Boolean(keywords.trim()));
         searchDebounceTimerRef.current = window.setTimeout(() => {
             searchDebounceTimerRef.current = null;
             void fetchHistoryWith(keywords, activeTabRef.current, { selectFirst: true });
@@ -1150,7 +1169,7 @@ export default function Clipboard() {
                 searchDebounceTimerRef.current = null;
             }
         };
-    }, [searchWord]);
+    }, [searchWord, isSearchComposing]);
 
     useEffect(() => {
         void fetchHistoryWith(searchWordRef.current, activeTab, { selectFirst: true });
@@ -1164,6 +1183,7 @@ export default function Clipboard() {
                 pasteAsTextShortcut: pasteAsTextShortcutRef.current,
                 quickInputEnabled: quickInputEnabledRef.current,
                 searchHasText: Boolean(searchWord),
+                searchComposing: isSearchComposing,
                 searchInput: searchInputRef.current,
                 searchOpen,
                 tabQuickSelectEnabled: tabQuickSelectEnabledRef.current,
@@ -1305,7 +1325,7 @@ export default function Clipboard() {
             window.removeEventListener('keyup', handleKeyUp, true);
             window.removeEventListener('blur', handleBlur);
         };
-    }, [searchOpen, searchWord, contextMenu, contextMenuIndex, queueSelectionMode, t]);
+    }, [searchOpen, searchWord, isSearchComposing, contextMenu, contextMenuIndex, queueSelectionMode, t]);
 
     const handleSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         setSearchWord(event.target.value);
@@ -1645,6 +1665,11 @@ export default function Clipboard() {
                                 placeholder={t("common.search")}
                                 value={searchWord as string}
                                 onChange={handleSearchChange}
+                                onCompositionStart={() => setIsSearchComposing(true)}
+                                onCompositionEnd={(event) => {
+                                    setSearchWord(event.currentTarget.value);
+                                    setIsSearchComposing(false);
+                                }}
                                 onBlur={() => {
                                     if (!searchWord) {
                                         setSearchOpen(false);
@@ -1771,6 +1796,10 @@ export default function Clipboard() {
                         onToggleFilter={handleTutorialFilterToggle}
                         onComplete={completeTutorial}
                     />
+                ) : shouldMaskSearchResults(searchWord as string, isSearching) ? (
+                    <div className={classes(styles, "cards-grid")} role="status" aria-live="polite">
+                        <div className={classes(styles, "history-loading-card")}>{t("common.loading")}</div>
+                    </div>
                 ) : (
                     <div className={classes(styles, "cards-grid")}>
                         {clipboardPage.list.map((item, index) => (

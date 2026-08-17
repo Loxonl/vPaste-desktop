@@ -8153,7 +8153,7 @@ fn prepare_paste_queue_click_target(app: &tauri::AppHandle, origin: PasteQueueRe
     std::thread::sleep(std::time::Duration::from_millis(40));
 }
 
-fn process_paste_queue_request(app: &tauri::AppHandle, request: PasteQueueRequest) {
+fn process_paste_queue_request_inner(app: &tauri::AppHandle, request: PasteQueueRequest) {
     if !paste_queue::is_active() || request.activation_epoch != paste_queue::activation_epoch() {
         return;
     }
@@ -8200,6 +8200,10 @@ fn process_paste_queue_request(app: &tauri::AppHandle, request: PasteQueueReques
     }
     paste_queue::set_busy(false);
     paste_queue::emit_state(app);
+}
+
+fn process_paste_queue_request(app: &tauri::AppHandle, request: PasteQueueRequest) {
+    paste_queue::run_paste_operation(|| process_paste_queue_request_inner(app, request));
 }
 
 fn initialize_paste_queue_worker(app: &tauri::AppHandle) {
@@ -8564,6 +8568,22 @@ fn show_paste_queue_window(app: &tauri::AppHandle) -> Result<(), String> {
     window.show().map_err(|err| err.to_string())
 }
 
+fn schedule_paste_queue_cleanup(cleanup: paste_queue::DeferredCleanup) {
+    if cleanup.is_empty() {
+        return;
+    }
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        paste_queue::run_deferred_cleanup(cleanup);
+    }));
+}
+
+fn deactivate_paste_queue_window(app: &tauri::AppHandle) -> Result<(), String> {
+    paste_queue::hide_window(app);
+    let cleanup = paste_queue::deactivate_with_deferred_cleanup()?;
+    schedule_paste_queue_cleanup(cleanup);
+    Ok(())
+}
+
 fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(), String> {
     if active {
         if !is_process_trusted_with_prompt(false) {
@@ -8594,8 +8614,7 @@ fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(
         PASTE_QUEUE_POINTER_GENERATION.fetch_add(1, Ordering::SeqCst);
         PASTE_QUEUE_MENU_GENERATION.fetch_add(1, Ordering::SeqCst);
         PASTE_QUEUE_MENU_OPEN.store(false, Ordering::SeqCst);
-        paste_queue::set_active(false);
-        paste_queue::hide_window(app);
+        deactivate_paste_queue_window(app)?;
     }
     paste_queue::emit_state(app);
     Ok(())
@@ -8629,7 +8648,7 @@ fn add_paste_queue_items(
     app: tauri::AppHandle,
     hashes: Vec<String>,
 ) -> Result<paste_queue::PasteQueueState, String> {
-    paste_queue::add_items(&hashes)?;
+    paste_queue::run_user_operation(|| paste_queue::add_items(&hashes))?;
     paste_queue::emit_state(&app);
     paste_queue::state()
 }
@@ -8639,14 +8658,14 @@ fn reorder_paste_queue(
     app: tauri::AppHandle,
     hashes: Vec<String>,
 ) -> Result<paste_queue::PasteQueueState, String> {
-    paste_queue::reorder(&hashes)?;
+    paste_queue::run_user_operation(|| paste_queue::reorder(&hashes))?;
     paste_queue::emit_state(&app);
     paste_queue::state()
 }
 
 #[tauri::command]
 fn reverse_paste_queue(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueState, String> {
-    paste_queue::reverse()?;
+    paste_queue::run_user_operation(paste_queue::reverse)?;
     paste_queue::emit_state(&app);
     paste_queue::state()
 }
@@ -8656,16 +8675,21 @@ fn remove_paste_queue_item(
     app: tauri::AppHandle,
     hash: String,
 ) -> Result<paste_queue::PasteQueueState, String> {
-    paste_queue::remove_item(&hash)?;
+    let cleanup =
+        paste_queue::run_user_operation(|| paste_queue::remove_item_with_deferred_cleanup(&hash))?;
     paste_queue::emit_state(&app);
-    paste_queue::state()
+    let state = paste_queue::state()?;
+    schedule_paste_queue_cleanup(cleanup);
+    Ok(state)
 }
 
 #[tauri::command]
 fn clear_paste_queue(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueState, String> {
-    paste_queue::clear()?;
+    let cleanup = paste_queue::run_user_operation(paste_queue::clear_with_deferred_cleanup)?;
     paste_queue::emit_state(&app);
-    paste_queue::state()
+    let state = paste_queue::state()?;
+    schedule_paste_queue_cleanup(cleanup);
+    Ok(state)
 }
 
 #[tauri::command]
@@ -8686,7 +8710,7 @@ fn paste_queue_item(app: tauri::AppHandle, hash: Option<String>) -> Result<(), S
 
 #[tauri::command]
 fn undo_paste_queue_consume(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueState, String> {
-    let _ = paste_queue::undo_consume()?;
+    let _ = paste_queue::run_user_operation(paste_queue::undo_consume)?;
     paste_queue::emit_state(&app);
     paste_queue::state()
 }
@@ -9352,8 +9376,9 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "pasteQueue" {
                     api.prevent_close();
-                    paste_queue::set_active(false);
-                    let _ = window.hide();
+                    if let Err(err) = deactivate_paste_queue_window(window.app_handle()) {
+                        paste_queue::set_error(None, err);
+                    }
                     paste_queue::emit_state(window.app_handle());
                 }
                 if window.label() == "config" {

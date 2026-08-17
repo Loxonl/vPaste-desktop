@@ -124,7 +124,8 @@ pub fn start(window: WebviewWindow) {
                 info!("captured clipboard hash: {hash}");
                 if queue_only {
                     crate::paste_queue::emit_state(window.app_handle());
-                } else if let Err(err) = window.emit("listen_new_clipboard", "") {
+                }
+                if let Err(err) = window.emit("listen_new_clipboard", "") {
                     error!("failed to emit clipboard refresh event: {:?}", err);
                 }
             } else {

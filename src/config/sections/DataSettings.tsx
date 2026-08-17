@@ -10,6 +10,7 @@ import { classes } from "../../ui/classNames";
 import styles from "../Config.module.css";
 
 export default function DataSettings({ bridge, config, storagePaths, t, onSave, onBlockingOperationChange }: SettingsSectionProps & { storagePaths: StoragePaths | null, onBlockingOperationChange: (operation: SettingsBlockingOperation | null) => void }) {
+    const [legacyHistoryBlocked, setLegacyHistoryBlocked] = React.useState(false);
     const [storageDirDraft, setStorageDirDraft] = React.useState(config.storage_dir || "");
     const [cleanupDays, setCleanupDays] = React.useState<string>("");
     const [cleanupInfo, setCleanupInfo] = React.useState<StorageCleanupInfo | null>(null);
@@ -51,6 +52,27 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
     React.useEffect(() => {
         refreshStorageSummary();
     }, [refreshStorageSummary]);
+
+    React.useEffect(() => {
+        bridge.invoke<{ migration_required: boolean }>('get_history_format_status')
+            .then(status => setLegacyHistoryBlocked(status.migration_required))
+            .catch(e => error(`Failed to load history format status: ${e}`));
+        const unlisten = bridge.listen<{ migration_required: boolean }>('history-format-status-changed', event => {
+            setLegacyHistoryBlocked(event.payload.migration_required);
+        });
+        return () => { unlisten.then(fn => fn()).catch(e => error(`Failed to unlisten history format status: ${e}`)); };
+    }, [bridge]);
+
+    const handleClearLegacyHistory = async () => {
+        if (!window.confirm(t("settings.legacyHistory.confirm"))) return;
+        try {
+            await bridge.invoke('clear_legacy_history', { confirmation: 'CLEAR_LEGACY_HISTORY' });
+            setLegacyHistoryBlocked(false);
+            refreshStorageSummary();
+        } catch (e) {
+            error(`Failed to clear legacy history: ${e}`);
+        }
+    };
 
     React.useEffect(() => {
         if (selectedPrivacyApp && config.ignored_app_sources.includes(selectedPrivacyApp)) {
@@ -321,6 +343,17 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                     {t("settings.section.history")}
                 </Typography>
                 <List>
+                    {legacyHistoryBlocked && (
+                        <ListItem sx={{ alignItems: 'flex-start' }}>
+                            <Stack spacing={1} sx={{ width: '100%' }}>
+                                <ListItemText primary={t("settings.legacyHistory.title")} secondary={t("settings.legacyHistory.desc")} />
+                                <Button color="error" variant="contained" size="small" onClick={handleClearLegacyHistory} sx={{ alignSelf: 'flex-start' }}>
+                                    {t("settings.legacyHistory.clear")}
+                                </Button>
+                            </Stack>
+                        </ListItem>
+                    )}
+                    {legacyHistoryBlocked && <Divider component="li" />}
                     <ListItem sx={{ alignItems: 'flex-start' }}>
                         <Stack spacing={0.75} sx={{ width: '100%' }}>
                             <ListItemText
@@ -335,9 +368,9 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                     fullWidth
                                     InputProps={{ readOnly: true }}
                                     inputProps={{ className: styles["storage-path-input"] }}
-                                    disabled={historyWorking}
+                                    disabled={historyWorking || legacyHistoryBlocked}
                                 />
-                                <Button disabled={historyWorking} variant="contained" color="inherit" size="small" onClick={handleChooseStorageDir} sx={{ flex: '0 0 auto' }}>{t("common.modify")}</Button>
+                                <Button disabled={historyWorking || legacyHistoryBlocked} variant="contained" color="inherit" size="small" onClick={handleChooseStorageDir} sx={{ flex: '0 0 auto' }}>{t("common.modify")}</Button>
                             </Stack>
                             {(historyWorkingArea === 'storage' || historyMessage) && (
                                 <div className={classes(styles, `storage-migration-status ${historyMessage?.kind || 'working'}`)}>
@@ -362,7 +395,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                 <Select
                                     value={cleanupDays}
                                     onChange={handleCleanupDaysChange}
-                                    disabled={cleanupWorking || historyWorking}
+                                    disabled={cleanupWorking || historyWorking || legacyHistoryBlocked}
                                     size="small"
                                     displayEmpty
                                     sx={{
@@ -380,7 +413,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                     color="inherit"
                                     size="small"
                                     onClick={handleCleanupStorage}
-                                    disabled={cleanupWorking || historyWorking || !cleanupInfo || cleanupInfo.items === 0}
+                                    disabled={cleanupWorking || historyWorking || legacyHistoryBlocked || !cleanupInfo || cleanupInfo.items === 0}
                                     startIcon={cleanupWorking ? <CircularProgress size={14} thickness={5} /> : <AutoDeleteOutlinedIcon fontSize="small" />}
                                     sx={{ flex: '0 0 auto' }}
                                 >
@@ -400,7 +433,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                         <button
                             className={classes(styles, "history-transfer-card")}
                             type="button"
-                            disabled={historyWorking || cleanupWorking}
+                            disabled={historyWorking || cleanupWorking || legacyHistoryBlocked}
                             onClick={handleImportHistory}
                         >
                             <FileUploadIcon className={classes(styles, "history-transfer-card__icon")} fontSize="large" />
@@ -410,7 +443,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                         <button
                             className={classes(styles, "history-transfer-card")}
                             type="button"
-                            disabled={historyWorking || cleanupWorking}
+                            disabled={historyWorking || cleanupWorking || legacyHistoryBlocked}
                             onClick={handleExportHistory}
                         >
                             <FileDownloadIcon className={classes(styles, "history-transfer-card__icon")} fontSize="large" />

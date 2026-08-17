@@ -160,6 +160,8 @@ jobs:
           OUTPUT_PATH="$RUNNER_TEMP/latest.macos.json" \
           npm run build:macos-release
 
+          cargo build --release --locked --target "${{ matrix.target }}" --manifest-path tools/history-archive-converter/Cargo.toml
+
       - name: Verify and stage macOS packages
         shell: bash
         run: |
@@ -187,6 +189,7 @@ jobs:
           cp "$dmg" "$staged_dmg"
           cp "$updater" "$staged_updater"
           cp "${updater}.sig" "${staged_updater}.sig"
+          cp "tools/history-archive-converter/target/${{ matrix.target }}/release/vpaste-history-converter" "release-assets/vpaste-history-converter_macos_${{ matrix.arch }}"
           node scripts/generate-updater-manifest.mjs \
             --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}" \
             --version "$RELEASE_VERSION" \

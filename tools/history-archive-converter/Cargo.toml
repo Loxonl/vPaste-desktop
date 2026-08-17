@@ -1,0 +1,11 @@
+[package]
+name = "vpaste-history-converter"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde_json = "1"
+tempfile = "3"

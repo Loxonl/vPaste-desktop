@@ -9,8 +9,8 @@ use std::sync::RwLock;
 use std::time::Duration;
 
 use crate::history_storage_dir;
+use crate::history_store;
 use crate::search::engine;
-use crate::secure_store;
 
 lazy_static! {
     static ref POOL: RwLock<Option<(String, Pool<SqliteConnectionManager>)>> = RwLock::new(None);
@@ -330,6 +330,19 @@ pub fn clear_all() -> Result<usize> {
     Ok(affected)
 }
 
+pub fn clear_legacy_payload() -> Result<()> {
+    let mut conn = db();
+    clear_legacy_payload_with_conn(&mut conn)
+}
+
+fn clear_legacy_payload_with_conn(conn: &mut Connection) -> Result<()> {
+    let transaction = conn.transaction()?;
+    transaction.execute("DELETE FROM clipboard_tags", [])?;
+    transaction.execute("DELETE FROM clipboard", [])?;
+    transaction.execute("DELETE FROM paste_queue", [])?;
+    transaction.commit()
+}
+
 pub fn clear_images() -> Result<usize> {
     let mut conn = db();
     let image_items = {
@@ -346,7 +359,7 @@ pub fn clear_images() -> Result<usize> {
             .collect::<Result<Vec<_>>>()?;
         rows.into_iter()
             .filter(|(_, _, item_type, content)| {
-                let content = secure_store::decrypt_text(content);
+                let content = content.to_string();
                 item_type == "Image" || (item_type == "File" && is_single_image_file(&content))
             })
             .collect::<Vec<_>>()
@@ -399,7 +412,7 @@ fn is_single_image_file(content: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{init_schema, setup_pool};
+    use super::{clear_legacy_payload_with_conn, init_schema, setup_pool};
     use rusqlite::Connection;
     use std::time::Duration;
 
@@ -463,6 +476,40 @@ mod tests {
             )
             .unwrap();
         assert_eq!(saved, ("saved".to_string(), 0, 123, "payload".to_string()));
+    }
+
+    #[test]
+    fn legacy_clear_preserves_tag_definitions() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        connection
+            .execute(
+                "insert into tags(name, created_at, updated_at) values('kept', 1, 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "insert into clipboard(hash, time, content) values('old', 1, 'cipher')",
+                [],
+            )
+            .unwrap();
+        connection.execute("insert into paste_queue(hash, position, queued_at, time, content, item_type) values('old', 0, 1, 1, 'cipher', 'Text')", []).unwrap();
+
+        clear_legacy_payload_with_conn(&mut connection).unwrap();
+
+        let tags: i64 = connection
+            .query_row("select count(*) from tags where name='kept'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let clipboard: i64 = connection
+            .query_row("select count(*) from clipboard", [], |row| row.get(0))
+            .unwrap();
+        let queue: i64 = connection
+            .query_row("select count(*) from paste_queue", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!((tags, clipboard, queue), (1, 0, 0));
     }
 
     #[test]

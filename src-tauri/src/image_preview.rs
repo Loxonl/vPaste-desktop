@@ -7,7 +7,7 @@ use std::time::UNIX_EPOCH;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{app_runtime_dir, secure_store};
+use crate::{app_runtime_dir, history_store};
 
 pub const CARD_PREVIEW_MAX_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 pub const CARD_PREVIEW_MAX_PIXELS: u64 = 40_000_000;
@@ -109,7 +109,7 @@ pub fn metadata_from_bytes(path: &str, bytes: &[u8]) -> Result<HistoryImageMetad
 }
 
 pub fn metadata_for_path(path: &str) -> Result<HistoryImageMetadata, String> {
-    let source_bytes = secure_store::file_plaintext_len(path)?;
+    let source_bytes = history_store::file_len(path)?;
     if let Some(cache_path) = metadata_cache_path(path) {
         if let Some(cached) = read_metadata_cache(&cache_path) {
             let normalized = apply_limits(HistoryImageMetadata {
@@ -136,7 +136,7 @@ pub fn metadata_for_path(path: &str) -> Result<HistoryImageMetadata, String> {
         }
     }
 
-    let bytes = secure_store::read_file(path)?;
+    let bytes = history_store::read_file(path)?;
     metadata_from_bytes(path, &bytes)
 }
 

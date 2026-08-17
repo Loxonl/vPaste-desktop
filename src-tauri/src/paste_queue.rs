@@ -11,7 +11,7 @@ use crate::clipboard;
 use crate::clipboard::db::db;
 use crate::clipboard::item::Item;
 use crate::clipboard::{RichClipboardMeta, StoredItem};
-use crate::secure_store;
+use crate::history_store;
 
 pub const CAPACITY: usize = 100;
 pub const UNDO_WINDOW_MS: u64 = 5_000;
@@ -258,9 +258,9 @@ fn record_from_capture(item: &Item, source: &str) -> QueueRecord {
             id: 0,
             item_type: item.item_type.to_string(),
             hash: item.hash.clone(),
-            content: secure_store::encrypt_text(&item.content),
-            preview_content: secure_store::encrypt_text(&item.preview_content),
-            source: secure_store::encrypt_text(source),
+            content: item.content.clone(),
+            preview_content: item.preview_content.clone(),
+            source: source.to_string(),
             app_source: item.app_source.clone(),
             app_icon_path: item.app_icon_path.clone(),
             title_color: item.title_color.clone(),
@@ -978,7 +978,7 @@ mod tests {
             .unwrap();
             let history_meta = clipboard::rich_clipboard_meta(&hash).unwrap();
             assert_eq!(
-                crate::secure_store::read_file(&history_meta.html_path).unwrap(),
+                crate::history_store::read_file(&history_meta.html_path).unwrap(),
                 history_html
             );
 
@@ -1002,7 +1002,7 @@ mod tests {
             assert_ne!(queue_meta.html_path, history_meta.html_path);
             assert!(!std::path::Path::new(&history_meta.html_path).exists());
             assert_eq!(
-                crate::secure_store::read_file(&queue_meta.html_path).unwrap(),
+                crate::history_store::read_file(&queue_meta.html_path).unwrap(),
                 queue_html
             );
 
@@ -1028,7 +1028,7 @@ mod tests {
             assert_ne!(replacement_meta.html_path, queue_meta.html_path);
             assert!(!std::path::Path::new(&queue_meta.html_path).exists());
             assert_eq!(
-                crate::secure_store::read_file(&replacement_meta.html_path).unwrap(),
+                crate::history_store::read_file(&replacement_meta.html_path).unwrap(),
                 replacement_html
             );
         });

@@ -70,3 +70,4 @@ test-results/
 
 # Standalone release tool build outputs
 tools/verify-updater-manifest/target/
+tools/history-archive-converter/target/

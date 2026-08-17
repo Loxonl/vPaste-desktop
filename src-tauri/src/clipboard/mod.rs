@@ -632,11 +632,26 @@ pub fn test_type() {
 }
 pub fn search(
     keywords: &str,
+    last_id: u64,
+    last_time: u64,
+    limit: usize,
+    label: &str,
+) -> Result<Page<Item>, String> {
+    search_with_cancellation(keywords, last_id, last_time, limit, label, || true)?
+        .ok_or_else(|| "search was unexpectedly cancelled".to_string())
+}
+
+pub fn search_with_cancellation(
+    keywords: &str,
     mut last_id: u64,
     mut last_time: u64,
     limit: usize,
     label: &str,
-) -> Result<Page<Item>, String> {
+    is_current: impl Fn() -> bool,
+) -> Result<Option<Page<Item>>, String> {
+    if !is_current() {
+        return Ok(None);
+    }
     let filter = parse_search_filter(label);
     if last_id == 0 {
         last_id = i64::MAX as u64;
@@ -668,6 +683,9 @@ pub fn search(
         let scan_limit = limit.max(5000);
         let mut scanned = 0;
         while scanned < scan_limit && items.len() < limit {
+            if !is_current() {
+                return Ok(None);
+            }
             let batch_limit = (scan_limit - scanned).min(SEARCH_SCAN_BATCH_SIZE);
             let (cursor_id, cursor_time) = next_cursor.unwrap_or((last_id, last_time));
             let (search_sql, params) =
@@ -684,6 +702,9 @@ pub fn search(
             };
             let batch_len = stored_items.len();
             for stored in stored_items {
+                if !is_current() {
+                    return Ok(None);
+                }
                 scanned += 1;
                 next_cursor = Some((stored.id as u64, stored.time));
                 if stored_item_matches_keywords(&stored, keywords) {
@@ -708,13 +729,13 @@ pub fn search(
     items.retain(is_displayable_history_item);
     let (next_id, next_time) = next_cursor.unwrap_or((0, 0));
     // let count = conn.query_row("select count(*) from clipboard", [], |row| row.get(0)).expect("count clipoard error");
-    Ok(Page {
+    Ok(Some(Page {
         list: items,
         consumed: 0,
         has_more,
         next_id,
         next_time,
-    })
+    }))
 }
 
 fn stored_item_matches_keywords(stored: &StoredItem, keywords: &str) -> bool {
@@ -3938,6 +3959,28 @@ mod tests {
             .list
             .iter()
             .all(|item| !first_hashes.contains(item.hash.as_str())));
+    }
+
+    #[test]
+    fn keyword_search_stops_when_a_newer_request_supersedes_it() {
+        use std::cell::Cell;
+
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        seed_search_history(600, |_| "other".to_string());
+        let checks = Cell::new(0);
+
+        let page = search_with_cancellation("needle", 0, 0, 36, "__all", || {
+            let next = checks.get() + 1;
+            checks.set(next);
+            next < 10
+        })
+        .unwrap();
+
+        assert!(page.is_none());
+        assert_eq!(checks.get(), 10);
     }
 
     #[test]

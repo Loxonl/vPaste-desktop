@@ -20,6 +20,7 @@ function context(overrides: Partial<Parameters<typeof clipboardKeyDownAction>[1]
         pasteAsTextShortcut: "Shift+Enter",
         quickInputEnabled: true,
         searchHasText: false,
+        searchComposing: false,
         searchInput: null,
         searchOpen: false,
         tabQuickSelectEnabled: true,
@@ -70,6 +71,26 @@ describe("clipboardKeyDownAction", () => {
             keyDown("Escape", {}, searchInput),
             context({ searchInput, searchOpen: true }),
         )).toEqual({ type: "dismiss-search", clear: false });
+    });
+
+    it("does not treat IME confirmation as a search submission", () => {
+        const searchInput = document.createElement("input");
+        const composingEnter = keyDown(
+            "Enter",
+            { isComposing: true },
+            searchInput,
+        );
+        const legacyImeEnter = keyDown("Enter", {}, searchInput);
+        Object.defineProperty(legacyImeEnter, "keyCode", { value: 229 });
+
+        expect(clipboardKeyDownAction(
+            composingEnter,
+            context({ searchInput }),
+        )).toBeNull();
+        expect(clipboardKeyDownAction(
+            legacyImeEnter,
+            context({ searchInput }),
+        )).toBeNull();
     });
 
     it("keeps context-menu navigation ahead of global navigation", () => {

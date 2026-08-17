@@ -93,6 +93,7 @@ static CLIPBOARD_HIDING: AtomicBool = AtomicBool::new(false);
 static CLIPBOARD_WINDOW_TRANSITION_LOCK: Mutex<()> = Mutex::new(());
 static IMAGE_PREVIEW_CACHE_PUBLISH_LOCK: Mutex<()> = Mutex::new(());
 static SEARCH_COMMAND_LOCK: Mutex<()> = Mutex::new(());
+static SEARCH_COMMAND_GENERATION: AtomicU64 = AtomicU64::new(0);
 static IMAGE_PREVIEW_CACHE_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 pub(crate) static CLIPBOARD_IGNORE_NEXT_CHANGE: AtomicBool = AtomicBool::new(false);
 pub(crate) static CLIPBOARD_HISTORY_PAUSED: AtomicBool = AtomicBool::new(false);
@@ -8806,18 +8807,27 @@ async fn search(
     label: String,
 ) -> Result<String, String> {
     let last_time = last_time.unwrap_or(0);
+    let generation = SEARCH_COMMAND_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = SEARCH_COMMAND_LOCK
             .lock()
             .map_err(|_| "search command lock is poisoned".to_string())?;
+        let is_current = || SEARCH_COMMAND_GENERATION.load(Ordering::SeqCst) == generation;
+        if !is_current() {
+            return Err("search superseded".to_string());
+        }
         info!("begin search {} {} {} ", keywords, last_id, last_time);
         let start = Instant::now();
-        let mut page = clipboard::search(&keywords, last_id, last_time, limit, &label).map_err(
-            |error_msg| {
-                error!("{:?}", &error_msg);
-                error_msg
-            },
-        )?;
+        let Some(mut page) = clipboard::search_with_cancellation(
+            &keywords, last_id, last_time, limit, &label, is_current,
+        )
+        .map_err(|error_msg| {
+            error!("{:?}", &error_msg);
+            error_msg
+        })?
+        else {
+            return Err("search superseded".to_string());
+        };
         page.consumed = start.elapsed().as_millis();
         info!(
             "search {} {} {} consumed {}",

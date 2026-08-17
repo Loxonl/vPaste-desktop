@@ -26,6 +26,7 @@ export type ClipboardKeyboardContext = {
     pasteAsTextShortcut?: string | null;
     quickInputEnabled: boolean;
     searchHasText: boolean;
+    searchComposing: boolean;
     searchInput: HTMLInputElement | null;
     searchOpen: boolean;
     tabQuickSelectEnabled: boolean;
@@ -35,6 +36,10 @@ export function clipboardKeyDownAction(
     event: KeyboardEvent,
     context: ClipboardKeyboardContext,
 ): ClipboardKeyDownAction | null {
+    if (context.searchComposing || event.isComposing || event.keyCode === 229) {
+        return null;
+    }
+
     if (event.key === "Alt") {
         return {
             type: "alt-press",

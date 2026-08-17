@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex, MutexGuard, TryLockError};
 
 use lazy_static::lazy_static;
 use rusqlite::{params, OptionalExtension, Row, Transaction};
@@ -20,10 +20,13 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static BUSY: AtomicBool = AtomicBool::new(false);
 static REVISION: AtomicU64 = AtomicU64::new(0);
 static ACTIVATION_EPOCH: AtomicU64 = AtomicU64::new(0);
+static DEACTIVATING: AtomicBool = AtomicBool::new(false);
 
 lazy_static! {
     static ref LAST_ERROR: Mutex<Option<PasteQueueError>> = Mutex::new(None);
     static ref UNDO: Mutex<Option<UndoEntry>> = Mutex::new(None);
+    static ref OPERATION: Mutex<()> = Mutex::new(());
+    static ref DEACTIVATION_FINISHED: Condvar = Condvar::new();
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -42,6 +45,16 @@ struct QueueRecord {
 struct UndoEntry {
     record: QueueRecord,
     expires_at: u64,
+}
+
+pub(crate) struct DeferredCleanup {
+    records: Vec<QueueRecord>,
+}
+
+impl DeferredCleanup {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
 }
 
 #[derive(Serialize)]
@@ -82,13 +95,85 @@ pub fn is_active() -> bool {
 }
 
 pub fn set_active(active: bool) {
+    if !active {
+        match deactivate_with_deferred_cleanup() {
+            Ok(cleanup) => run_deferred_cleanup(cleanup),
+            Err(err) => {
+                clear_undo();
+                set_error(None, err);
+            }
+        }
+        return;
+    }
+    let mut operation = lock_operation();
+    while DEACTIVATING.load(Ordering::SeqCst) {
+        operation = DEACTIVATION_FINISHED
+            .wait(operation)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    }
     ACTIVE.store(active, Ordering::SeqCst);
     ACTIVATION_EPOCH.fetch_add(1, Ordering::SeqCst);
-    if !active {
-        BUSY.store(false, Ordering::SeqCst);
-        clear_undo();
-    }
     bump_revision();
+}
+
+pub(crate) fn deactivate_with_deferred_cleanup() -> Result<DeferredCleanup, String> {
+    DEACTIVATING.store(true, Ordering::SeqCst);
+    ACTIVE.store(false, Ordering::SeqCst);
+    ACTIVATION_EPOCH.fetch_add(1, Ordering::SeqCst);
+    BUSY.store(false, Ordering::SeqCst);
+    bump_revision();
+
+    let _operation = lock_operation();
+    let result = detach_all_records();
+    DEACTIVATING.store(false, Ordering::SeqCst);
+    DEACTIVATION_FINISHED.notify_all();
+    result
+}
+
+fn detach_all_records() -> Result<DeferredCleanup, String> {
+    let mut conn = db();
+    let transaction = conn.transaction().map_err(|err| err.to_string())?;
+    let mut records = ordered_records_with_conn(&transaction)?;
+    transaction
+        .execute("DELETE FROM paste_queue", [])
+        .map_err(|err| err.to_string())?;
+    transaction.commit().map_err(|err| err.to_string())?;
+    if let Some(undo) = take_undo() {
+        records.push(undo.record);
+    }
+    Ok(DeferredCleanup { records })
+}
+
+pub(crate) fn run_deferred_cleanup(cleanup: DeferredCleanup) {
+    cleanup_records(&cleanup.records);
+}
+
+fn lock_operation() -> MutexGuard<'static, ()> {
+    OPERATION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub fn run_user_operation<T>(operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let _operation = match OPERATION.try_lock() {
+        Ok(operation) => operation,
+        Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(TryLockError::WouldBlock) => {
+            return Err("正在粘贴，请稍后再操作".to_string());
+        }
+    };
+    if BUSY.load(Ordering::SeqCst) {
+        return Err("正在粘贴，请稍后再操作".to_string());
+    }
+    if !is_active() {
+        return Err("粘贴队列尚未激活".to_string());
+    }
+    operation()
+}
+
+pub fn run_paste_operation<T>(operation: impl FnOnce() -> T) -> T {
+    let _operation = lock_operation();
+    operation()
 }
 
 pub fn activation_epoch() -> u64 {
@@ -250,22 +335,12 @@ fn merged_queue_order(current: &[String], requested: &[String]) -> Result<Vec<St
     if current.len().saturating_add(new_count) > CAPACITY {
         return Err(format!("粘贴队列最多保留 {CAPACITY} 项"));
     }
-    let mut next = requested
+    let mut next = current
         .iter()
-        .filter(|hash| current_set.contains(*hash))
+        .filter(|hash| !requested_set.contains(*hash))
         .cloned()
         .collect::<Vec<_>>();
-    next.extend(
-        current
-            .iter()
-            .filter(|hash| !requested_set.contains(*hash))
-            .cloned(),
-    );
-    next.extend(
-        requested
-            .into_iter()
-            .filter(|hash| !current_set.contains(hash)),
-    );
+    next.extend(requested);
     Ok(next)
 }
 
@@ -298,19 +373,6 @@ pub fn ordered_hashes() -> Result<Vec<String>, String> {
         .into_iter()
         .map(|record| record.stored.hash)
         .collect())
-}
-
-pub fn can_accept(hash: &str) -> Result<bool, String> {
-    let conn = db();
-    if record_with_conn(&conn, hash)?.is_some() {
-        return Ok(true);
-    }
-    let count = conn
-        .query_row("SELECT count(*) FROM paste_queue", [], |row| {
-            row.get::<_, usize>(0)
-        })
-        .map_err(|err| err.to_string())?;
-    Ok(count < CAPACITY)
 }
 
 pub fn add_items(hashes: &[String]) -> Result<(), String> {
@@ -346,37 +408,44 @@ pub fn add_items(hashes: &[String]) -> Result<(), String> {
 
 pub fn capture_item(item: &Item, source: &str) -> Result<(), String> {
     let incoming = record_from_capture(item, source);
-    let result = (|| {
-        if !is_active() {
-            return Err("粘贴队列未开启".to_string());
+    let expected_epoch = activation_epoch();
+    let result = if !is_active() {
+        Err("粘贴队列未开启".to_string())
+    } else {
+        let _operation = lock_operation();
+        if !is_active() || activation_epoch() != expected_epoch {
+            Err("粘贴队列已关闭".to_string())
+        } else {
+            (|| {
+                let mut conn = db();
+                let transaction = conn.transaction().map_err(|err| err.to_string())?;
+                let current = ordered_records_with_conn(&transaction)?;
+                let replaced = current
+                    .iter()
+                    .find(|record| record.stored.hash == item.hash)
+                    .cloned();
+                let current_hashes = current
+                    .iter()
+                    .map(|record| record.stored.hash.clone())
+                    .collect::<Vec<_>>();
+                let next_hashes = merged_queue_order(&current_hashes, &[item.hash.clone()])?;
+                let mut records = current
+                    .into_iter()
+                    .filter(|record| record.stored.hash != item.hash)
+                    .collect::<Vec<_>>();
+                records.push(incoming.clone());
+                let next = reorder_records(records, &next_hashes);
+                rewrite_records(&transaction, &next)?;
+                transaction.commit().map_err(|err| err.to_string())?;
+                if let Some(replaced) = replaced {
+                    cleanup_records(&[replaced]);
+                }
+                clear_error();
+                bump_revision();
+                Ok(())
+            })()
         }
-        let mut conn = db();
-        let transaction = conn.transaction().map_err(|err| err.to_string())?;
-        let current = ordered_records_with_conn(&transaction)?;
-        let replaced = current
-            .iter()
-            .find(|record| record.stored.hash == item.hash)
-            .cloned();
-        let current_hashes = current
-            .iter()
-            .map(|record| record.stored.hash.clone())
-            .collect::<Vec<_>>();
-        let next_hashes = merged_queue_order(&current_hashes, &[item.hash.clone()])?;
-        let mut records = current
-            .into_iter()
-            .filter(|record| record.stored.hash != item.hash)
-            .collect::<Vec<_>>();
-        records.push(incoming.clone());
-        let next = reorder_records(records, &next_hashes);
-        rewrite_records(&transaction, &next)?;
-        transaction.commit().map_err(|err| err.to_string())?;
-        if let Some(replaced) = replaced {
-            cleanup_records(&[replaced]);
-        }
-        clear_error();
-        bump_revision();
-        Ok(())
-    })();
+    };
     if result.is_err() {
         cleanup_records(&[incoming]);
     }
@@ -395,7 +464,7 @@ fn cleanup_records(records: &[QueueRecord]) {
     clipboard::delete_unreferenced_internal_paths(paths);
 }
 
-pub fn remove_item(hash: &str) -> Result<(), String> {
+pub(crate) fn remove_item_with_deferred_cleanup(hash: &str) -> Result<DeferredCleanup, String> {
     let mut conn = db();
     let transaction = conn.transaction().map_err(|err| err.to_string())?;
     let records = ordered_records_with_conn(&transaction)?;
@@ -409,26 +478,29 @@ pub fn remove_item(hash: &str) -> Result<(), String> {
         .collect::<Vec<_>>();
     rewrite_records(&transaction, &remaining)?;
     transaction.commit().map_err(|err| err.to_string())?;
-    if let Some(record) = removed {
-        cleanup_records(&[record]);
-    }
     clear_error();
     bump_revision();
+    Ok(DeferredCleanup {
+        records: removed.into_iter().collect(),
+    })
+}
+
+pub fn remove_item(hash: &str) -> Result<(), String> {
+    let cleanup = remove_item_with_deferred_cleanup(hash)?;
+    run_deferred_cleanup(cleanup);
     Ok(())
 }
 
-pub fn clear() -> Result<(), String> {
-    let mut conn = db();
-    let transaction = conn.transaction().map_err(|err| err.to_string())?;
-    let records = ordered_records_with_conn(&transaction)?;
-    transaction
-        .execute("DELETE FROM paste_queue", [])
-        .map_err(|err| err.to_string())?;
-    transaction.commit().map_err(|err| err.to_string())?;
+pub(crate) fn clear_with_deferred_cleanup() -> Result<DeferredCleanup, String> {
+    let cleanup = detach_all_records()?;
     clear_error();
-    clear_undo();
-    cleanup_records(&records);
     bump_revision();
+    Ok(cleanup)
+}
+
+pub fn clear() -> Result<(), String> {
+    let cleanup = clear_with_deferred_cleanup()?;
+    run_deferred_cleanup(cleanup);
     Ok(())
 }
 
@@ -520,13 +592,15 @@ fn set_undo(record: QueueRecord) {
 }
 
 pub fn clear_undo() {
-    let removed = UNDO
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take();
-    if let Some(undo) = removed {
+    if let Some(undo) = take_undo() {
         cleanup_records(&[undo.record]);
     }
+}
+
+fn take_undo() -> Option<UndoEntry> {
+    UNDO.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
 }
 
 fn live_undo() -> Option<UndoEntry> {
@@ -679,13 +753,64 @@ mod tests {
     }
 
     #[test]
-    fn existing_items_move_to_the_front_and_new_items_append() {
+    fn requested_items_move_to_the_back_in_request_order() {
         let current = vec!["a".into(), "b".into(), "c".into()];
         let requested = vec!["b".into(), "d".into()];
         assert_eq!(
             merged_queue_order(&current, &requested).unwrap(),
-            vec!["b", "a", "c", "d"]
+            vec!["a", "c", "b", "d"]
         );
+    }
+
+    #[test]
+    fn repeated_capture_moves_the_existing_item_to_the_back() {
+        with_test_database(|| {
+            set_active(true);
+            let hashes = ["1", "2", "3", "4", "5"]
+                .into_iter()
+                .map(|content| {
+                    clipboard::capture_text_from_app(content.to_string(), "Browser", "", true)
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                clipboard::capture_text_from_app("3".to_string(), "Browser", "", true),
+                Some(hashes[2].clone())
+            );
+            assert_eq!(
+                ordered_hashes().unwrap(),
+                vec![
+                    hashes[0].clone(),
+                    hashes[1].clone(),
+                    hashes[3].clone(),
+                    hashes[4].clone(),
+                    hashes[2].clone(),
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn manually_readding_an_existing_item_moves_it_to_the_back() {
+        with_test_database(|| {
+            let hashes = ["1", "2", "3", "4", "5"].map(str::to_string);
+            seed_history(&hashes);
+            add_items(&hashes).unwrap();
+
+            add_items(&[hashes[2].clone()]).unwrap();
+
+            assert_eq!(
+                ordered_hashes().unwrap(),
+                vec![
+                    hashes[0].clone(),
+                    hashes[1].clone(),
+                    hashes[3].clone(),
+                    hashes[4].clone(),
+                    hashes[2].clone(),
+                ]
+            );
+        });
     }
 
     #[test]
@@ -756,7 +881,55 @@ mod tests {
     }
 
     #[test]
-    fn queue_only_image_and_rich_text_keep_their_payload_formats() {
+    fn deactivation_detaches_image_undo_cleanup_from_the_close_path() {
+        with_test_database(|| {
+            set_active(true);
+            let image_bytes = include_bytes!("../icons/32x32.png").to_vec();
+            let hash =
+                clipboard::capture_image_with_text_and_app(&image_bytes, "", "ImageApp", "", true)
+                    .unwrap();
+            let image_path = std::path::PathBuf::from(item(&hash).unwrap().unwrap().content);
+            clipboard::delete_by_hash(&hash).unwrap();
+
+            consume(&hash).unwrap();
+            let cleanup = deactivate_with_deferred_cleanup().unwrap();
+
+            assert!(!is_active());
+            assert!(live_undo().is_none());
+            assert!(image_path.is_file());
+
+            run_deferred_cleanup(cleanup);
+            assert!(!image_path.exists());
+        });
+    }
+
+    #[test]
+    fn deferred_cleanup_keeps_an_image_recaptured_after_reactivation() {
+        with_test_database(|| {
+            set_active(true);
+            let image_bytes = include_bytes!("../icons/32x32.png").to_vec();
+            let hash =
+                clipboard::capture_image_with_text_and_app(&image_bytes, "", "ImageApp", "", true)
+                    .unwrap();
+            let image_path = std::path::PathBuf::from(item(&hash).unwrap().unwrap().content);
+            clipboard::delete_by_hash(&hash).unwrap();
+            consume(&hash).unwrap();
+
+            let cleanup = deactivate_with_deferred_cleanup().unwrap();
+            set_active(true);
+            assert_eq!(
+                clipboard::capture_image_with_text_and_app(&image_bytes, "", "ImageApp", "", true),
+                Some(hash.clone())
+            );
+
+            run_deferred_cleanup(cleanup);
+            assert!(image_path.is_file());
+            assert!(item(&hash).unwrap().is_some());
+        });
+    }
+
+    #[test]
+    fn queued_image_and_rich_text_are_also_saved_to_history() {
         with_test_database(|| {
             set_active(true);
             let image_bytes = include_bytes!("../icons/32x32.png").to_vec();
@@ -774,8 +947,8 @@ mod tests {
             )
             .unwrap();
 
-            assert!(clipboard::try_get_by_hash(&image_hash).is_none());
-            assert!(clipboard::try_get_by_hash(&rich_hash).is_none());
+            assert!(clipboard::try_get_by_hash(&image_hash).is_some());
+            assert!(clipboard::try_get_by_hash(&rich_hash).is_some());
             assert_eq!(
                 item(&image_hash).unwrap().unwrap().item_type.to_string(),
                 "Image"
@@ -789,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    fn queue_rich_capture_does_not_reuse_same_hash_history_formats() {
+    fn queued_rich_capture_updates_history_and_queue_formats_together() {
         with_test_database(|| {
             let plain_text = "→".to_string();
             let history_html = b"<b>history</b>".to_vec();
@@ -804,6 +977,10 @@ mod tests {
             )
             .unwrap();
             let history_meta = clipboard::rich_clipboard_meta(&hash).unwrap();
+            assert_eq!(
+                crate::secure_store::read_file(&history_meta.html_path).unwrap(),
+                history_html
+            );
 
             set_active(true);
             assert_eq!(
@@ -819,12 +996,11 @@ mod tests {
                 Some(hash.clone())
             );
             let queue_meta = rich_clipboard_meta(&hash).unwrap();
+            let updated_history_meta = clipboard::rich_clipboard_meta(&hash).unwrap();
 
+            assert_eq!(queue_meta.html_path, updated_history_meta.html_path);
             assert_ne!(queue_meta.html_path, history_meta.html_path);
-            assert_eq!(
-                crate::secure_store::read_file(&history_meta.html_path).unwrap(),
-                history_html
-            );
+            assert!(!std::path::Path::new(&history_meta.html_path).exists());
             assert_eq!(
                 crate::secure_store::read_file(&queue_meta.html_path).unwrap(),
                 queue_html
@@ -844,20 +1020,22 @@ mod tests {
                 Some(hash.clone())
             );
             let replacement_meta = rich_clipboard_meta(&hash).unwrap();
+            let replacement_history_meta = clipboard::rich_clipboard_meta(&hash).unwrap();
+            assert_eq!(
+                replacement_meta.html_path,
+                replacement_history_meta.html_path
+            );
+            assert_ne!(replacement_meta.html_path, queue_meta.html_path);
             assert!(!std::path::Path::new(&queue_meta.html_path).exists());
             assert_eq!(
                 crate::secure_store::read_file(&replacement_meta.html_path).unwrap(),
                 replacement_html
             );
-            assert_eq!(
-                crate::secure_store::read_file(&history_meta.html_path).unwrap(),
-                history_html
-            );
         });
     }
 
     #[test]
-    fn full_queue_rejects_capture_without_creating_history() {
+    fn full_queue_rejects_queue_add_but_keeps_history_capture() {
         with_test_database(|| {
             let hashes = (0..CAPACITY)
                 .map(|index| format!("full-{index}"))
@@ -874,9 +1052,152 @@ mod tests {
             );
             let rejected_hash = clipboard::calculate_xxhash64(b"must not fall back to history");
 
-            assert!(rejected.is_none());
-            assert!(clipboard::try_get_by_hash(&rejected_hash).is_none());
+            assert_eq!(rejected, Some(rejected_hash.clone()));
+            assert!(clipboard::try_get_by_hash(&rejected_hash).is_some());
             assert_eq!(ordered_hashes().unwrap().len(), CAPACITY);
+        });
+    }
+
+    #[test]
+    fn deactivation_clears_persisted_queue_before_cleanup_runs() {
+        with_test_database(|| {
+            set_active(true);
+            let hash = clipboard::capture_text_from_app(
+                "clear on close".to_string(),
+                "QueueApp",
+                "",
+                true,
+            )
+            .unwrap();
+            assert_eq!(ordered_hashes().unwrap(), vec![hash.clone()]);
+
+            let cleanup = deactivate_with_deferred_cleanup().unwrap();
+
+            assert!(ordered_hashes().unwrap().is_empty());
+            assert!(clipboard::try_get_by_hash(&hash).is_some());
+            run_deferred_cleanup(cleanup);
+        });
+    }
+
+    #[test]
+    fn busy_queue_rejects_user_mutations_before_they_run() {
+        with_test_database(|| {
+            set_active(true);
+            set_busy(true);
+            let mut called = false;
+
+            let result = run_user_operation(|| {
+                called = true;
+                Ok(())
+            });
+
+            assert!(result.is_err());
+            assert!(!called);
+            set_busy(false);
+        });
+    }
+
+    #[test]
+    fn deactivation_waits_for_an_in_flight_write_then_clears_it() {
+        with_test_database(|| {
+            use std::sync::mpsc;
+
+            set_active(true);
+            let hash = "late-write".to_string();
+            seed_history(std::slice::from_ref(&hash));
+            let (started_tx, started_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let worker_hash = hash.clone();
+            let worker = std::thread::spawn(move || {
+                run_user_operation(|| {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    add_items(&[worker_hash])
+                })
+            });
+            started_rx.recv().unwrap();
+
+            let closer = std::thread::spawn(deactivate_with_deferred_cleanup);
+            while is_active() {
+                std::thread::yield_now();
+            }
+            release_tx.send(()).unwrap();
+
+            worker.join().unwrap().unwrap();
+            let cleanup = closer.join().unwrap().unwrap();
+            assert!(ordered_hashes().unwrap().is_empty());
+            run_deferred_cleanup(cleanup);
+        });
+    }
+
+    #[test]
+    fn clipboard_capture_waiting_during_close_stays_in_history_but_not_the_queue() {
+        with_test_database(|| {
+            set_active(true);
+            let content = "capture while closing".to_string();
+            let hash = clipboard::calculate_xxhash64(content.as_bytes());
+            let operation = lock_operation();
+            let capture = std::thread::spawn(move || {
+                clipboard::capture_text_from_app(content, "Browser", "", true)
+            });
+            while clipboard::try_get_by_hash(&hash).is_none() {
+                std::thread::yield_now();
+            }
+
+            let closer = std::thread::spawn(deactivate_with_deferred_cleanup);
+            while is_active() {
+                std::thread::yield_now();
+            }
+            drop(operation);
+
+            assert_eq!(capture.join().unwrap(), Some(hash.clone()));
+            let cleanup = closer.join().unwrap().unwrap();
+            assert!(ordered_hashes().unwrap().is_empty());
+            assert!(clipboard::try_get_by_hash(&hash).is_some());
+            run_deferred_cleanup(cleanup);
+        });
+    }
+
+    #[test]
+    fn remove_and_clear_detach_resource_cleanup_from_the_database_change() {
+        with_test_database(|| {
+            set_active(true);
+            let first_bytes = include_bytes!("../icons/32x32.png").to_vec();
+            let first_hash = clipboard::capture_image_with_text_and_app(
+                &first_bytes,
+                "first",
+                "ImageApp",
+                "",
+                true,
+            )
+            .unwrap();
+            let first_path = std::path::PathBuf::from(item(&first_hash).unwrap().unwrap().content);
+            clipboard::delete_by_hash(&first_hash).unwrap();
+
+            let remove_cleanup = remove_item_with_deferred_cleanup(&first_hash).unwrap();
+            assert!(item(&first_hash).unwrap().is_none());
+            assert!(first_path.is_file());
+            run_deferred_cleanup(remove_cleanup);
+            assert!(!first_path.exists());
+
+            let second_bytes = include_bytes!("../icons/32x32.png").to_vec();
+            let second_hash = clipboard::capture_image_with_text_and_app(
+                &second_bytes,
+                "second",
+                "ImageApp",
+                "",
+                true,
+            )
+            .unwrap();
+            let second_path =
+                std::path::PathBuf::from(item(&second_hash).unwrap().unwrap().content);
+            clipboard::delete_by_hash(&second_hash).unwrap();
+
+            let clear_cleanup = clear_with_deferred_cleanup().unwrap();
+            assert!(ordered_hashes().unwrap().is_empty());
+            assert!(second_path.is_file());
+            run_deferred_cleanup(clear_cleanup);
+            assert!(!second_path.exists());
         });
     }
 

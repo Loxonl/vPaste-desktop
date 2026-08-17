@@ -412,4 +412,29 @@ describe("PasteQueue", () => {
         expect(tauri.invoke).toHaveBeenCalledWith("paste_queue_item", { hash: "first" });
         expect(tauri.invoke).toHaveBeenCalledWith("remove_paste_queue_item", { hash: "first" });
     });
+
+    it("disables every queue mutation while a paste is in progress", async () => {
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "get_paste_queue_state") {
+                return {
+                    ...state({ hash: "first", message: "Paste failed" }),
+                    busy: true,
+                    undoHash: "first",
+                    undoExpiresAt: Date.now() + 5_000,
+                };
+            }
+            return state();
+        });
+        render(<PasteQueue />);
+
+        expect(await screen.findByRole("button", { name: "pasteQueue.reverse" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "pasteQueue.more" })).toBeDisabled();
+        screen.getAllByRole("button", { name: "pasteQueue.drag" })
+            .forEach(button => expect(button).toBeDisabled());
+        screen.getAllByRole("button", { name: "pasteQueue.remove" })
+            .forEach(button => expect(button).toBeDisabled());
+        expect(screen.getByRole("button", { name: "pasteQueue.retry" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "pasteQueue.deleteFailed" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "pasteQueue.undo" })).toBeDisabled();
+    });
 });

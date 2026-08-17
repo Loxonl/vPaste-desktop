@@ -299,7 +299,8 @@ fn insert_image_if_present(
 fn emit_clipboard_event(window: &WebviewWindow, queue_only: bool) {
     if queue_only {
         crate::paste_queue::emit_state(window.app_handle());
-    } else if let Err(e) = window.emit("listen_new_clipboard", ()) {
+    }
+    if let Err(e) = window.emit("listen_new_clipboard", ()) {
         error!("Failed to emit event: {}", e);
     }
 }

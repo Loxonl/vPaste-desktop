@@ -409,10 +409,10 @@ export default function PasteQueue() {
                         <span>{countLabel}</span>
                     </div>
                     <div className={styles.headerActions}>
-                        <button type="button" className={styles.iconButton} onClick={reverse} disabled={state.items.length < 2} aria-label={t("pasteQueue.reverse")}>
+                        <button type="button" className={styles.iconButton} onClick={reverse} disabled={state.busy || state.items.length < 2} aria-label={t("pasteQueue.reverse")}>
                             <SwapVertRoundedIcon fontSize="small" />
                         </button>
-                        <button ref={menuButtonRef} type="button" className={styles.iconButton} onClick={() => setMenuOpen(open => !open)} aria-label={t("pasteQueue.more")} aria-expanded={menuOpen}>
+                        <button ref={menuButtonRef} type="button" className={styles.iconButton} onClick={() => setMenuOpen(open => !open)} disabled={state.busy} aria-label={t("pasteQueue.more")} aria-expanded={menuOpen}>
                             <MoreHorizRoundedIcon fontSize="small" />
                         </button>
                     </div>
@@ -421,7 +421,7 @@ export default function PasteQueue() {
                             <button type="button" role="menuitem" onClick={() => {
                                 setMenuOpen(false);
                                 setConfirmingClear(true);
-                            }} disabled={state.items.length === 0}>
+                            }} disabled={state.busy || state.items.length === 0}>
                                 {t("pasteQueue.clear")}
                             </button>
                         </div>
@@ -457,6 +457,7 @@ export default function PasteQueue() {
                                         type="button"
                                         className={styles.dragHandle}
                                         onPointerDown={event => startPointerDrag(event, hash)}
+                                        disabled={state.busy}
                                         onKeyDown={event => {
                                             if (event.key === "ArrowUp") {
                                                 event.preventDefault();
@@ -490,6 +491,7 @@ export default function PasteQueue() {
                                         className={styles.deleteButton}
                                         data-pointer-visible={pointerHash === hash}
                                         onClick={() => remove(hash)}
+                                        disabled={state.busy}
                                         aria-label={t("pasteQueue.remove")}
                                     >
                                         <DeleteOutlineRoundedIcon fontSize="small" />
@@ -505,10 +507,10 @@ export default function PasteQueue() {
                         <span>{state.error.message}</span>
                         {state.error.hash && (
                             <div>
-                                <button type="button" onClick={() => paste(state.error?.hash as string)}>
+                                <button type="button" onClick={() => paste(state.error?.hash as string)} disabled={state.busy}>
                                     {t("pasteQueue.retry")}
                                 </button>
-                                <button type="button" onClick={() => remove(state.error?.hash as string)}>
+                                <button type="button" onClick={() => remove(state.error?.hash as string)} disabled={state.busy}>
                                     {t("pasteQueue.deleteFailed")}
                                 </button>
                             </div>
@@ -522,7 +524,7 @@ export default function PasteQueue() {
                             <button type="button" onClick={() => setConfirmingClear(false)}>
                                 {t("pasteQueue.keep")}
                             </button>
-                            <button type="button" onClick={clear}>
+                            <button type="button" onClick={clear} disabled={state.busy}>
                                 {t("pasteQueue.clear")}
                             </button>
                         </div>
@@ -531,7 +533,7 @@ export default function PasteQueue() {
                 {undoVisible && (
                     <div className={styles.undo} role="status">
                         <span>{t("pasteQueue.pasted")}</span>
-                        <button type="button" onClick={undo}>
+                        <button type="button" onClick={undo} disabled={state.busy}>
                             <UndoRoundedIcon fontSize="inherit" />
                             {t("pasteQueue.undo")}
                         </button>

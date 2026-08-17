@@ -1946,35 +1946,45 @@ fn store_captured_item(
     queue_only: bool,
 ) -> bool {
     if queue_only {
-        match crate::paste_queue::capture_item(item, source) {
+        let replacement_paths = internal_paths_for_cleanup(
+            &item.item_type.to_string(),
+            &item.hash,
+            &item.content,
+            source,
+        )
+        .into_iter()
+        .collect::<HashSet<_>>();
+        let replaced_history = db()
+            .query_row(
+                "select * from clipboard where hash = ?1",
+                [&item.hash],
+                read_stored_item,
+            )
+            .optional()
+            .ok()
+            .flatten();
+        let history_stored =
+            insert_history_item(item, search_content, source, app_source, app_icon_path);
+        let queue_stored = match crate::paste_queue::capture_item(item, source) {
             Ok(()) => true,
             Err(err) => {
                 crate::paste_queue::set_error(Some(item.hash.clone()), err);
                 false
             }
+        };
+        if history_stored {
+            if let Some(replaced_history) = replaced_history {
+                let stale_paths = internal_paths_for_stored_item(&replaced_history)
+                    .difference(&replacement_paths)
+                    .filter(|path| path.is_file())
+                    .cloned()
+                    .collect();
+                delete_unreferenced_internal_paths(stale_paths);
+            }
         }
+        history_stored || queue_stored
     } else {
         insert_history_item(item, search_content, source, app_source, app_icon_path)
-    }
-}
-
-fn queue_capture_has_capacity(hash: &str, queue_only: bool) -> bool {
-    if !queue_only {
-        return true;
-    }
-    match crate::paste_queue::can_accept(hash) {
-        Ok(true) => true,
-        Ok(false) => {
-            crate::paste_queue::set_error(
-                Some(hash.to_string()),
-                format!("粘贴队列最多保留 {} 项", crate::paste_queue::CAPACITY),
-            );
-            false
-        }
-        Err(err) => {
-            crate::paste_queue::set_error(Some(hash.to_string()), err);
-            false
-        }
     }
 }
 
@@ -2149,9 +2159,6 @@ fn insert_rich_text_from_app_impl(
     }
 
     let hash = rich_text_history_hash(&plain_text, html.as_deref(), rtf.as_deref(), png.as_deref());
-    if !queue_capture_has_capacity(&hash, queue_only) {
-        return None;
-    }
     let storage_key = rich_format_storage_key(
         &hash,
         html.as_deref(),
@@ -2281,9 +2288,6 @@ fn insert_text_from_app_impl(
     let normalized_color = normalized_color_text(&content).map(str::to_string);
     let content = normalized_color.unwrap_or(content);
     let hash = calculate_xxhash64(content.as_bytes());
-    if !queue_capture_has_capacity(&hash, queue_only) {
-        return None;
-    }
     let preview_content = content.chars().take(CARD_TEXT_PREVIEW_CHARS).collect();
     let (stored_content, item_type) = if content.len() > LARGE_TEXT_THRESHOLD_BYTES {
         (save_to_disk(content.as_bytes(), &hash), ItemType::TextFile)
@@ -2362,9 +2366,6 @@ fn insert_image_with_text_and_app_impl(
         return None;
     }
     let hash = calculate_xxhash64(content);
-    if !queue_capture_has_capacity(&hash, queue_only) {
-        return None;
-    }
     let path = save_to_disk(content, &hash);
     let _ = crate::image_preview::metadata_from_bytes(&path, content);
     let item = Item {
@@ -2426,10 +2427,6 @@ fn insert_file_from_app_impl(
 ) -> Option<String> {
     let content = serde_json::to_string(content).unwrap();
     let hash = calculate_xxhash64(&content.clone().into_bytes());
-    if !queue_capture_has_capacity(&hash, queue_only) {
-        return None;
-    }
-
     let item = Item {
         id: 0,
         content: content.clone(),
@@ -3171,7 +3168,7 @@ mod tests {
     }
 
     #[test]
-    fn queue_capture_stays_out_of_history_without_hiding_a_preexisting_item() {
+    fn queue_capture_is_saved_to_history_without_duplicating_a_preexisting_item() {
         let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
         let app_data = tempfile::tempdir().unwrap();
         *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
@@ -3189,40 +3186,36 @@ mod tests {
 
         crate::paste_queue::set_active(true);
         let repeated_hash = capture_text_from_app(existing, "ExistingApp", "", true).unwrap();
-        let queue_only = "only captured for queue".to_string();
-        let queue_only_hash =
-            capture_text_from_app(queue_only.clone(), "QueueOnlyApp", "", true).unwrap();
+        let queued_content = "captured for queue and history".to_string();
+        let queued_hash = capture_text_from_app(queued_content, "QueueApp", "", true).unwrap();
 
         let visible_items = search("", 0, 0, 10, "__all").unwrap().list;
-        let queue_search = search("only captured", 0, 0, 10, "__all").unwrap().list;
-        let history_queue_item = try_get_by_hash(&queue_only_hash);
-        let queue_item = crate::paste_queue::item(&queue_only_hash).unwrap();
+        let queue_search = search("captured for queue", 0, 0, 10, "__all")
+            .unwrap()
+            .list;
+        let history_queue_item = try_get_by_hash(&queued_hash);
+        let queue_item = crate::paste_queue::item(&queued_hash).unwrap();
         let queue_hashes = crate::paste_queue::ordered_hashes().unwrap();
         let app_sources = recent_app_sources(1).unwrap();
 
         crate::paste_queue::set_active(false);
-        insert_text_from_app(queue_only, "QueueOnlyApp", "").unwrap();
-        let visible_after_normal_copy = search("", 0, 0, 10, "__all").unwrap().list;
+        let queue_hashes_after_close = crate::paste_queue::ordered_hashes().unwrap();
 
         crate::paste_queue::clear().unwrap();
         reset_test_storage_config();
 
         assert_eq!(repeated_hash, existing_hash);
-        assert_eq!(visible_items.len(), 1);
-        assert_eq!(visible_items[0].hash, existing_hash);
-        assert!(queue_search.is_empty());
-        assert!(history_queue_item.is_none());
-        assert!(
-            queue_item.is_some(),
-            "queue-only data must remain pasteable"
-        );
+        assert_eq!(visible_items.len(), 2);
+        assert_eq!(visible_items[0].hash, queued_hash);
+        assert_eq!(queue_search.len(), 1);
+        assert!(history_queue_item.is_some());
+        assert!(queue_item.is_some(), "queued data must remain pasteable");
         assert_eq!(
             queue_hashes,
-            vec![repeated_hash.clone(), queue_only_hash.clone()]
+            vec![repeated_hash.clone(), queued_hash.clone()]
         );
-        assert_eq!(app_sources, vec!["ExistingApp"]);
-        assert_eq!(visible_after_normal_copy.len(), 2);
-        assert_eq!(visible_after_normal_copy[0].hash, queue_only_hash);
+        assert_eq!(app_sources, vec!["QueueApp", "ExistingApp"]);
+        assert!(queue_hashes_after_close.is_empty());
     }
 
     #[test]

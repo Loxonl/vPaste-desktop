@@ -12,6 +12,16 @@ const pasteQueueStyles = readFileSync(
 );
 
 describe("paste queue native window", () => {
+    it("inherits the app font for queue content and native controls", () => {
+        expect(pasteQueueStyles).toMatch(
+            /\.shell\s+button\s*\{[^}]*font-family:\s*inherit;/s,
+        );
+        expect(pasteQueueStyles).toMatch(
+            /\.itemText\s*>\s*span\s*\{[^}]*font-family:\s*inherit;/s,
+        );
+        expect(pasteQueueStyles).not.toContain("ui-monospace");
+    });
+
     it("accepts mouse-moved events so row hover actions update without focusing", () => {
         const start = mainSource.indexOf("fn build_paste_queue_window");
         const end = mainSource.indexOf("fn show_startup_error", start);

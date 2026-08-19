@@ -24,11 +24,52 @@ import { StatusToast } from "./StatusToast";
 import Surface from "./Surface";
 import { ToolbarIconButton } from "./ToolbarIconButton";
 import { SettingsRow, SettingsSection } from "./settings/SettingsPrimitives";
+import {
+    MotionConfig,
+    m,
+    useMotionPreset,
+    type MotionPresetName,
+} from "./motion";
 import styles from "./UiLab.module.css";
 
 type LabLanguage = "zh" | "en";
 
 const longMenuItems = Array.from({ length: 18 }, (_, index) => index + 1);
+const motionPresetNames: MotionPresetName[] = [
+    "fade",
+    "popover",
+    "toast",
+    "panel",
+    "listItem",
+    "selectionIndicator",
+];
+
+function MotionPresetTile({ name }: { name: MotionPresetName }) {
+    const variants = useMotionPreset(name);
+    return (
+        <m.div
+            className={styles.motionPresetTile}
+            data-motion-preset={name}
+            variants={variants}
+            initial="initial"
+            animate="animate"
+        >
+            {name}
+        </m.div>
+    );
+}
+
+function MotionPresetRow({ reduced, replayKey }: { reduced: boolean; replayKey: number }) {
+    return (
+        <MotionConfig reducedMotion={reduced ? "always" : "never"}>
+            <div className={styles.motionPresetRow}>
+                {motionPresetNames.map(name => (
+                    <MotionPresetTile key={`${name}-${replayKey}`} name={name} />
+                ))}
+            </div>
+        </MotionConfig>
+    );
+}
 
 const copy = {
     zh: {
@@ -40,6 +81,10 @@ const copy = {
         toggles: "开关与复选框",
         navigation: "导航与反馈",
         overlays: "菜单、Toast 与工具栏",
+        motionSystem: "统一动效预设",
+        motionNormal: "正常动效",
+        motionReduced: "减少动态效果",
+        motionReplay: "重新播放",
         settings: "设置行",
         actionCards: "操作卡片",
         normal: "正常",
@@ -100,6 +145,10 @@ const copy = {
         toggles: "Switches and checkboxes",
         navigation: "Navigation and feedback",
         overlays: "Menus, toasts, and toolbar",
+        motionSystem: "Motion presets",
+        motionNormal: "Standard motion",
+        motionReduced: "Reduced motion",
+        motionReplay: "Replay",
         settings: "Settings rows",
         actionCards: "Action cards",
         normal: "Default",
@@ -161,6 +210,7 @@ export default function UiLab() {
     const [longListValue, setLongListValue] = useState("1");
     const [tabValue, setTabValue] = useState(0);
     const [dialogOpen, setDialogOpen] = useState(false);
+    const [motionReplayKey, setMotionReplayKey] = useState(0);
     const text = copy[language];
 
     useEffect(() => {
@@ -422,6 +472,21 @@ export default function UiLab() {
                         <ToolbarIconButton label={text.settings}>
                             <SettingsOutlinedIcon fontSize="small" />
                         </ToolbarIconButton>
+                    </div>
+                </Surface>
+
+                <Surface padded className={`${styles.panel} ${styles.widePanel}`}>
+                    <div className={styles.motionPresetHeader}>
+                        <h2>{text.motionSystem}</h2>
+                        <Button variant="outlined" onClick={() => setMotionReplayKey(key => key + 1)}>
+                            {text.motionReplay}
+                        </Button>
+                    </div>
+                    <div className={styles.motionPresetMatrix}>
+                        <strong>{text.motionNormal}</strong>
+                        <MotionPresetRow reduced={false} replayKey={motionReplayKey} />
+                        <strong>{text.motionReduced}</strong>
+                        <MotionPresetRow reduced replayKey={motionReplayKey} />
                     </div>
                 </Surface>
 

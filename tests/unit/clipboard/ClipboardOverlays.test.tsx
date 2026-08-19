@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { render as renderUi, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -8,6 +9,9 @@ import {
     TagCreateChoicePopover,
 } from "../../../src/clipboard/ClipboardOverlays";
 import { Item, ItemType } from "../../../src/clipboard/Item";
+import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
+
+const render = (ui: ReactElement) => renderUi(<MotionTestProvider>{ui}</MotionTestProvider>);
 
 const t = (key: string) => key;
 

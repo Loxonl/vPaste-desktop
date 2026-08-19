@@ -70,14 +70,12 @@ body {
   transform: translateX(-50%);
   max-width: min(560px, calc(100vw - 48px));
   white-space: nowrap;
-  animation: toastIn 140ms ease-out forwards;
 }
 
 .context-menu {
   position: fixed;
   z-index: 30;
   width: 188px;
-  animation: contextMenuIn 90ms ease-out forwards;
 }
 
 .context-submenu {
@@ -85,21 +83,18 @@ body {
   z-index: 31;
   width: 312px;
   max-height: calc(100vh - 16px);
-  animation: contextMenuIn 90ms ease-out forwards;
 }
 
 .tab-context-menu {
   position: fixed;
   z-index: 31;
   width: 126px;
-  animation: contextMenuIn 90ms ease-out forwards;
 }
 
 .tag-create-choice-popover {
   position: fixed;
   z-index: 31;
   width: 252px;
-  animation: contextMenuIn 90ms ease-out forwards;
 }
 
 .tag-create-choice-popover strong {
@@ -298,30 +293,6 @@ body {
   color: #777d82;
   text-align: center;
   font-size: 12.5px;
-}
-
-@keyframes contextMenuIn {
-  from {
-    opacity: 0;
-    transform: scale(0.98) translateY(-2px);
-  }
-
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-}
-
-@keyframes toastIn {
-  from {
-    opacity: 0;
-    transform: translate(-50%, -8px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translate(-50%, 0);
-  }
 }
 
 /* Header Section */

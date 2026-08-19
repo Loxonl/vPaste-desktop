@@ -21,6 +21,7 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { InlineMenuItem, InlineMenuSurface } from "../ui/InlineMenu";
 import { StatusToast } from "../ui/StatusToast";
 import { ToolbarIconButton } from "../ui/ToolbarIconButton";
+import { AnimatePresence } from "../ui/motion";
 import { Item, ItemType } from "./Item";
 import {
     emptyPasteQueueState,
@@ -429,17 +430,19 @@ export default function PasteQueue() {
                             <MoreHorizRoundedIcon fontSize="small" />
                         </ToolbarIconButton>
                     </div>
-                    {menuOpen && (
-                        <InlineMenuSurface ref={menuRef} className={styles.menu}>
-                            <InlineMenuItem danger onClick={() => {
-                                menuButtonRef.current?.focus();
-                                setMenuOpen(false);
-                                setConfirmingClear(true);
-                            }} disabled={state.busy || state.items.length === 0}>
-                                {t("pasteQueue.clear")}
-                            </InlineMenuItem>
-                        </InlineMenuSurface>
-                    )}
+                    <AnimatePresence mode="wait" initial={false}>
+                        {menuOpen && (
+                            <InlineMenuSurface key="paste-queue-menu" ref={menuRef} className={styles.menu}>
+                                <InlineMenuItem danger onClick={() => {
+                                    menuButtonRef.current?.focus();
+                                    setMenuOpen(false);
+                                    setConfirmingClear(true);
+                                }} disabled={state.busy || state.items.length === 0}>
+                                    {t("pasteQueue.clear")}
+                                </InlineMenuItem>
+                            </InlineMenuSurface>
+                        )}
+                    </AnimatePresence>
                 </header>
 
                 {state.items.length === 0 ? (
@@ -530,28 +533,29 @@ export default function PasteQueue() {
                         )}
                     </div>
                 )}
-                {confirmingClear && (
-                    <ConfirmDialog
-                        open
-                        title={t("pasteQueue.clear")}
-                        description={t("pasteQueue.clearConfirm")}
-                        cancelLabel={t("pasteQueue.keep")}
-                        confirmLabel={t("pasteQueue.clear")}
-                        confirmDisabled={state.busy}
-                        onCancel={() => setConfirmingClear(false)}
-                        onConfirm={clear}
-                    />
-                )}
-                {undoVisible && (
-                    <StatusToast
-                        className={styles.undo}
-                        message={t("pasteQueue.pasted")}
-                        actionLabel={t("pasteQueue.undo")}
-                        actionIcon={<UndoRoundedIcon fontSize="inherit" />}
-                        actionDisabled={state.busy}
-                        onAction={undo}
-                    />
-                )}
+                <ConfirmDialog
+                    open={confirmingClear}
+                    title={t("pasteQueue.clear")}
+                    description={t("pasteQueue.clearConfirm")}
+                    cancelLabel={t("pasteQueue.keep")}
+                    confirmLabel={t("pasteQueue.clear")}
+                    confirmDisabled={state.busy}
+                    onCancel={() => setConfirmingClear(false)}
+                    onConfirm={clear}
+                />
+                <AnimatePresence mode="wait" initial={false}>
+                    {undoVisible && (
+                        <StatusToast
+                            key={state.undoHash}
+                            className={styles.undo}
+                            message={t("pasteQueue.pasted")}
+                            actionLabel={t("pasteQueue.undo")}
+                            actionIcon={<UndoRoundedIcon fontSize="inherit" />}
+                            actionDisabled={state.busy}
+                            onAction={undo}
+                        />
+                    )}
+                </AnimatePresence>
             </section>
         </main>
     );

@@ -197,6 +197,46 @@
   justify-self: start;
 }
 
+.motionPresetHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-3);
+}
+
+.motionPresetHeader h2 {
+  margin: 0;
+}
+
+.motionPresetMatrix {
+  display: grid;
+  gap: var(--ui-space-3);
+}
+
+.motionPresetMatrix strong {
+  color: var(--ui-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.motionPresetRow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--ui-space-2);
+}
+
+.motionPresetTile {
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  color: var(--ui-accent-strong);
+  background: var(--ui-accent-soft);
+  border: 1px solid color-mix(in srgb, var(--ui-accent) 24%, transparent);
+  border-radius: var(--ui-radius-control);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 @media (max-width: 720px) {
   .page {
     padding: var(--ui-space-4);
@@ -205,6 +245,10 @@
   .header,
   .grid {
     grid-template-columns: 1fr;
+  }
+
+  .motionPresetRow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .header {

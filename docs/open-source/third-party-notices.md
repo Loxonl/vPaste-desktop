@@ -27,6 +27,7 @@ The current lockfile resolves these direct npm dependencies:
 | `@tauri-apps/plugin-notification` | 2.3.3 | MIT OR Apache-2.0 | runtime |
 | `@tauri-apps/plugin-process` | 2.3.1 | MIT OR Apache-2.0 | runtime |
 | `material-icon-theme` | 5.37.0 | MIT | runtime |
+| `motion` | 13.1.0 | MIT | runtime |
 | `react` | 18.3.1 | MIT | runtime |
 | `react-dom` | 18.3.1 | MIT | runtime |
 | `react-router-dom` | 6.30.4 | MIT | runtime |

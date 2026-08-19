@@ -14,6 +14,7 @@ import { type AppSourceOption, compactAppSourceName, displayAppSource } from "./
 import { loadAndApplyTheme } from "../theme";
 import { InlineMenuItem, InlineMenuSurface } from "../ui/InlineMenu";
 import { ToolbarIconButton } from "../ui/ToolbarIconButton";
+import { AnimatePresence } from "../ui/motion";
 import { applyNameEmoji, selectedNameEmoji } from "./nameEmoji";
 import type { ItemTag } from "./Item";
 import {
@@ -438,29 +439,31 @@ export default function TabEditor() {
                                     )}
                                     <span className={styles["app-source-label"]}>{appSourceSummary()}</span>
                                 </ButtonBase>
-                                {appSourceOpen && (
-                                    <InlineMenuSurface className={styles["app-source-menu"]} scrollable>
-                                        <InlineMenuItem selected={selectedAppSources.length === 0} className={[styles["app-source-option"], styles["app-source-option-plain"]].join(" ")} onClick={clearAppSources}>
-                                            <span>{t("tabs.any")}</span>
-                                        </InlineMenuItem>
-                                        {recentAppSources.map(option => (
-                                            <InlineMenuItem
-                                                key={option.source}
-                                                selected={selectedAppSources.includes(option.source)}
-                                                className={styles["app-source-option"]}
-                                                onClick={() => toggleAppSource(option.source)}
-                                            >
-                                                {option.icon_path ? (
-                                                    <img src={convertFileSrc(option.icon_path)} alt="" />
-                                                ) : (
-                                                    <span className={styles["app-source-placeholder-icon"]} />
-                                                )}
-                                                <span className={styles["app-source-option-label"]}>{displayAppSource(option.source, t)}</span>
-                                                {selectedAppSources.includes(option.source) && <span className={styles["app-source-check"]}>✓</span>}
+                                <AnimatePresence mode="wait" initial={false}>
+                                    {appSourceOpen && (
+                                        <InlineMenuSurface key="app-source-menu" className={styles["app-source-menu"]} scrollable>
+                                            <InlineMenuItem selected={selectedAppSources.length === 0} className={[styles["app-source-option"], styles["app-source-option-plain"]].join(" ")} onClick={clearAppSources}>
+                                                <span>{t("tabs.any")}</span>
                                             </InlineMenuItem>
-                                        ))}
-                                    </InlineMenuSurface>
-                                )}
+                                            {recentAppSources.map(option => (
+                                                <InlineMenuItem
+                                                    key={option.source}
+                                                    selected={selectedAppSources.includes(option.source)}
+                                                    className={styles["app-source-option"]}
+                                                    onClick={() => toggleAppSource(option.source)}
+                                                >
+                                                    {option.icon_path ? (
+                                                        <img src={convertFileSrc(option.icon_path)} alt="" />
+                                                    ) : (
+                                                        <span className={styles["app-source-placeholder-icon"]} />
+                                                    )}
+                                                    <span className={styles["app-source-option-label"]}>{displayAppSource(option.source, t)}</span>
+                                                    {selectedAppSources.includes(option.source) && <span className={styles["app-source-check"]}>✓</span>}
+                                                </InlineMenuItem>
+                                            ))}
+                                        </InlineMenuSurface>
+                                    )}
+                                </AnimatePresence>
                             </div>
                         </label>
                         <label>

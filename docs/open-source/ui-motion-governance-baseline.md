@@ -81,6 +81,16 @@ Auxiliary window shells continue to own transparent gutters, `--ui-radius-window
 
 Local screenshots cover all six auxiliary windows in light and dark modes plus the open MUI Select and the recent-source menu scrolled to its last item. These screenshots were manually approved and remain outside hosted GitHub Actions.
 
+## Phase-Five Motion Foundation and Pilot
+
+The app root now loads `domMax` asynchronously through strict `LazyMotion`, uses `MotionConfig reducedMotion="user"`, and synchronizes the approved 120 / 180 / 240 / 320 ms durations, 6 / 10 / 16 px distances, and easing curves to CSS variables before React renders. Business modules consume only `src/ui/motion`; the architecture check rejects direct Motion/Framer Motion imports, unreviewed dependency ranges, missing `AnimatePresence` modes, and new hard-coded motion values.
+
+The first pilot moves inline menus and status Toasts from entry-only CSS keyframes to shared `popover` and `toast` presets with complete enter/exit behavior. CSS remains the coordinate owner and Motion animates an inner element, so fixed menu placement, centered Toast positioning, and Paste Queue drag transforms never compete for the same `transform`. MUI Dialog retains its Portal, focus trap, Escape handling, and focus restoration while its built-in transition durations use the same tokens.
+
+UI Lab displays all six approved presets in normal and forced reduced-motion modes. Reduced presets contain opacity only and finish within 120 ms. Motion 13.1.0 and its resolved transitive packages are MIT/0BSD compatible and remain covered by the release license inventory.
+
+The phase-five production build contains 35 JavaScript chunks totaling 1,393,217 bytes (356,336 bytes gzip). The asynchronously loaded `domMax` feature chunk is 84,519 bytes (27,770 bytes gzip); the application entry is 274,245 bytes (93,429 bytes gzip). Compared with phase one, Motion adds 146,409 raw bytes and 56,028 gzip bytes across the route graph while keeping the 84,519-byte feature bundle out of the initial entry. These figures are retained for the final cleanup audit rather than used as a hosted CI gate.
+
 ## Phase Gates
 
 1. Governance baseline and inventory: no production visual changes.
@@ -92,4 +102,4 @@ Local screenshots cover all six auxiliary windows in light and dark modes plus t
 7. Cards and Paste Queue: 36/100-item local benchmark and 10% rollback rule.
 8. Tutorial and cleanup: only replace Web Animations API after behavior coverage exists.
 
-Each phase is a separate pull request and stops for manual screenshot review. This workstream does not add GitHub Actions jobs; the pull request checklist prompts the maintainer to run architecture, build, unit, visual, and benchmark checks locally as applicable.
+Each phase remains a separate pull request. By maintainer approval, phases five through eight proceed continuously and receive one combined manual review at the end. This workstream does not add GitHub Actions jobs; architecture, build, unit, visual, license, and benchmark checks run locally as applicable.

@@ -4,7 +4,7 @@ import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
 import { StatusToast, type StatusToastKind } from "../ui/StatusToast";
 import { ToolbarIconButton } from "../ui/ToolbarIconButton";
-import { AnimatePresence } from "../ui/motion";
+import { AnimatePresence, m, motionSprings, useMotionPreset } from "../ui/motion";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
@@ -155,6 +155,8 @@ class ClipboardPage {
 export default function Clipboard() {
     const { t, languageCode, setPreviewLanguageCode } = useLanguage();
     const { state: updateState, restartToUpdate } = useAppUpdateState();
+    const fadeMotion = useMotionPreset("fade");
+    const listItemMotion = useMotionPreset("listItem");
     const [selected, setSelected] = useState<String>("");
     const [searchWord, setSearchWord] = useState<String>("");
     const [searchOpen, setSearchOpen] = useState<boolean>(false);
@@ -1645,7 +1647,11 @@ export default function Clipboard() {
                 {tutorialActive ? (
                     <div className={classes(styles, "tutorial-header-spacer")} />
                 ) : (
-                    <div className={classes(styles, `search-box ${searchOpen || searchWord ? 'open' : ''}`)}>
+                    <m.div
+                        className={classes(styles, `search-box ${searchOpen || searchWord ? 'open' : ''}`)}
+                        layout="size"
+                        transition={{ layout: motionSprings.layout }}
+                    >
                         <ToolbarIconButton
                             className={classes(styles, "search-button")}
                             label={t("common.search")}
@@ -1653,27 +1659,38 @@ export default function Clipboard() {
                         >
                             <SearchIcon className={classes(styles, "search-icon")} fontSize="inherit" />
                         </ToolbarIconButton>
-                        {(searchOpen || searchWord) && (
-                            <input
-                                ref={searchInputRef}
-                                type="text"
-                                className={classes(styles, "search-input")}
-                                placeholder={t("common.search")}
-                                value={searchWord as string}
-                                onChange={handleSearchChange}
-                                onCompositionStart={() => setIsSearchComposing(true)}
-                                onCompositionEnd={(event) => {
-                                    setSearchWord(event.currentTarget.value);
-                                    setIsSearchComposing(false);
-                                }}
-                                onBlur={() => {
-                                    if (!searchWord) {
-                                        setSearchOpen(false);
-                                    }
-                                }}
-                            />
-                        )}
-                    </div>
+                        <AnimatePresence mode="wait" initial={false}>
+                            {(searchOpen || searchWord) && (
+                                <m.div
+                                    key="clipboard-search-input"
+                                    className={classes(styles, "search-input-motion")}
+                                    variants={fadeMotion}
+                                    initial="initial"
+                                    animate="animate"
+                                    exit="exit"
+                                >
+                                    <input
+                                        ref={searchInputRef}
+                                        type="text"
+                                        className={classes(styles, "search-input")}
+                                        placeholder={t("common.search")}
+                                        value={searchWord as string}
+                                        onChange={handleSearchChange}
+                                        onCompositionStart={() => setIsSearchComposing(true)}
+                                        onCompositionEnd={(event) => {
+                                            setSearchWord(event.currentTarget.value);
+                                            setIsSearchComposing(false);
+                                        }}
+                                        onBlur={() => {
+                                            if (!searchWord) {
+                                                setSearchOpen(false);
+                                            }
+                                        }}
+                                    />
+                                </m.div>
+                            )}
+                        </AnimatePresence>
+                    </m.div>
                 )}
                 <ClipboardTabBar
                     activeTab={activeTab}
@@ -1747,13 +1764,24 @@ export default function Clipboard() {
                 />
             </div>
 
-            {!tutorialActive && restartReady(updateState) && (
-                <ClipboardUpdateBanner
-                    version={updateState.availableVersion || ""}
-                    t={t}
-                    onRestart={() => void restartForUpdate()}
-                />
-            )}
+            <AnimatePresence mode="wait" initial={false}>
+                {!tutorialActive && restartReady(updateState) && (
+                    <m.div
+                        key="clipboard-update-banner"
+                        className={classes(styles, "app-update-motion")}
+                        variants={listItemMotion}
+                        initial="initial"
+                        animate="animate"
+                        exit="exit"
+                    >
+                        <ClipboardUpdateBanner
+                            version={updateState.availableVersion || ""}
+                            t={t}
+                            onRestart={() => void restartForUpdate()}
+                        />
+                    </m.div>
+                )}
+            </AnimatePresence>
 
             {/* Cards Grid */}
             <div
@@ -1792,43 +1820,93 @@ export default function Clipboard() {
                         onToggleFilter={handleTutorialFilterToggle}
                         onComplete={completeTutorial}
                     />
-                ) : shouldMaskSearchResults(searchWord as string, isSearching) ? (
-                    <div className={classes(styles, "cards-grid")} role="status" aria-live="polite">
-                        <div className={classes(styles, "history-loading-card")}>{t("common.loading")}</div>
-                    </div>
                 ) : (
-                    <div className={classes(styles, "cards-grid")}>
-                        {clipboardPage.list.map((item, index) => (
-                            <ClipboardCard
-                                key={item.getHash() as string}
-                                item={item}
-                                selected={queueSelectionMode
-                                    ? queueSelectedHashes.includes(item.getHash() as string)
-                                    : selected === item.getHash()}
-                                simulatedHover={simulatedHoverHash === item.getHash()}
-                                refreshKey={fileRefreshKey}
-                                searchQuery={searchWord as string}
-                                shortcutHint={altHintsVisible && index < 9 ? String(index + 1) : undefined}
-                                mediaPlaybackReady={animationState === 'entered'}
-                                t={t}
-                                onContextMenu={openClipboardContextMenu}
-                            />
-                        ))}
-                        {isLoadingMore && (
-                            <div className={classes(styles, "history-loading-card")}>{t("common.loading")}</div>
+                    <AnimatePresence mode="wait" initial={false}>
+                        {shouldMaskSearchResults(searchWord as string, isSearching) ? (
+                            <m.div
+                                key="search-loading"
+                                className={classes(styles, "cards-grid")}
+                                role="status"
+                                aria-live="polite"
+                                variants={fadeMotion}
+                                initial="initial"
+                                animate="animate"
+                                exit="exit"
+                            >
+                                <div className={classes(styles, "history-loading-card")}>{t("common.loading")}</div>
+                            </m.div>
+                        ) : (
+                            <m.div
+                                key="clipboard-results"
+                                className={classes(styles, "cards-grid")}
+                                variants={fadeMotion}
+                                initial="initial"
+                                animate="animate"
+                                exit="exit"
+                            >
+                                {clipboardPage.list.map((item, index) => (
+                                    <ClipboardCard
+                                        key={item.getHash() as string}
+                                        item={item}
+                                        selected={queueSelectionMode
+                                            ? queueSelectedHashes.includes(item.getHash() as string)
+                                            : selected === item.getHash()}
+                                        simulatedHover={simulatedHoverHash === item.getHash()}
+                                        refreshKey={fileRefreshKey}
+                                        searchQuery={searchWord as string}
+                                        shortcutHint={altHintsVisible && index < 9 ? String(index + 1) : undefined}
+                                        mediaPlaybackReady={animationState === 'entered'}
+                                        t={t}
+                                        onContextMenu={openClipboardContextMenu}
+                                    />
+                                ))}
+                                <AnimatePresence mode="wait" initial={false}>
+                                    {isLoadingMore && (
+                                        <m.div
+                                            key="history-loading-more"
+                                            className={classes(styles, "history-loading-card")}
+                                            variants={listItemMotion}
+                                            initial="initial"
+                                            animate="animate"
+                                            exit="exit"
+                                        >
+                                            {t("common.loading")}
+                                        </m.div>
+                                    )}
+                                </AnimatePresence>
+                            </m.div>
                         )}
-                    </div>
+                    </AnimatePresence>
                 )}
             </div>
-            {queueSelectionMode && (
-                <div className={classes(styles, "paste-queue-selection-bar")} role="toolbar" aria-label={t("pasteQueue.selectTitle")}>
-                    <strong>{t("pasteQueue.selectTitle")}</strong>
-                    <span>{queueSelectedHashes.length}</span>
-                    <Button variant="contained" className={classes(styles, "primary")} onClick={() => void addSelectedItemsToPasteQueue()}>
-                        {t("pasteQueue.addSelected", { count: queueSelectedHashes.length })}
-                    </Button>
-                </div>
-            )}
+            <AnimatePresence mode="wait" initial={false}>
+                {queueSelectionMode && (
+                    <m.div
+                        key="paste-queue-selection"
+                        className={classes(styles, "paste-queue-selection-positioner")}
+                        variants={fadeMotion}
+                        initial="initial"
+                        animate="animate"
+                        exit="exit"
+                    >
+                        <m.div
+                            className={classes(styles, "paste-queue-selection-bar")}
+                            role="toolbar"
+                            aria-label={t("pasteQueue.selectTitle")}
+                            variants={listItemMotion}
+                            initial="initial"
+                            animate="animate"
+                            exit="exit"
+                        >
+                            <strong>{t("pasteQueue.selectTitle")}</strong>
+                            <span>{queueSelectedHashes.length}</span>
+                            <Button variant="contained" className={classes(styles, "primary")} onClick={() => void addSelectedItemsToPasteQueue()}>
+                                {t("pasteQueue.addSelected", { count: queueSelectedHashes.length })}
+                            </Button>
+                        </m.div>
+                    </m.div>
+                )}
+            </AnimatePresence>
             <AnimatePresence mode="wait" initial={false}>
                 {tagCreateChoice && (
                     <TagCreateChoicePopover

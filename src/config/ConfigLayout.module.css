@@ -201,6 +201,11 @@
   padding: 0 var(--ui-space-6) 52px;
 }
 
+.contentPanel {
+  width: 100%;
+  min-height: 100%;
+}
+
 .blockingOverlay {
   position: absolute;
   inset: 0;

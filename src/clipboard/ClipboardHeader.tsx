@@ -17,6 +17,7 @@ import WindowOutlinedIcon from "@mui/icons-material/WindowOutlined";
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
 import { ToolbarIconButton } from "../ui/ToolbarIconButton";
+import { AnimatePresence, m, motionSprings, useMotionPreset } from "../ui/motion";
 import { type DynamicTabEntry } from "./customTabs";
 import { type TutorialPlatform } from "./TutorialOverlay";
 
@@ -57,6 +58,21 @@ export function ClipboardTabBar({
     onDrop,
     onAdd,
 }: ClipboardTabBarProps) {
+    const selectionIndicator = useMotionPreset("selectionIndicator");
+
+    const activeIndicator = (active: boolean) => active ? (
+        <m.span
+            className={classes(styles, "tab-selection-indicator")}
+            layoutId="clipboard-tab-selection-indicator"
+            variants={selectionIndicator}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            transition={{ layout: motionSprings.layout }}
+            aria-hidden="true"
+        />
+    ) : null;
+
     const selectTab = (tabId: string) => {
         if (tutorialActive) {
             onBlockedNavigation();
@@ -72,6 +88,7 @@ export function ClipboardTabBar({
                 className={classes(styles, `tab-item fixed ${activeTab === "all" ? 'active' : ''}`)}
                 onClick={() => selectTab("all")}
             >
+                {activeIndicator(activeTab === "all")}
                 <AppsOutlinedIcon className={classes(styles, "tab-icon tab-icon-all")} fontSize="inherit" />
                 <span className={classes(styles, "tab-label")}>{t("tabs.all")}</span>
                 {altHintsVisible && <span className={classes(styles, "alt-tab-hint")}>A</span>}
@@ -81,6 +98,7 @@ export function ClipboardTabBar({
                 className={classes(styles, `tab-item fixed ${activeTab === "favorite" ? 'active' : ''}`)}
                 onClick={() => selectTab("favorite")}
             >
+                {activeIndicator(activeTab === "favorite")}
                 <StarBorderOutlinedIcon className={classes(styles, "tab-icon tab-icon-favorite")} fontSize="inherit" />
                 <span className={classes(styles, "tab-label")}>{t("tabs.favorite")}</span>
                 {altHintsVisible && <span className={classes(styles, "alt-tab-hint")}>F</span>}
@@ -113,6 +131,7 @@ export function ClipboardTabBar({
                             onDrop(entry.id);
                         }}
                     >
+                        {activeIndicator(activeTab === entry.id)}
                         <span className={classes(styles, "tab-label")}>{label}</span>
                     </button>
                 );
@@ -175,18 +194,30 @@ export function ClipboardHeaderActions({
     onOpenSettings,
 }: ClipboardHeaderActionsProps) {
     const [developerToolsVisible, setDeveloperToolsVisible] = useState(true);
+    const statusMotion = useMotionPreset("listItem");
 
     return (
         <div className={classes(styles, "header-actions")}>
-            {isMac && !tutorialActive && permissionIncomplete && (
-                <ButtonBase
-                    className={classes(styles, "permission-summary-banner")}
-                    onClick={onOpenPermissionCenter}
-                >
-                    <WarningAmberOutlinedIcon fontSize="inherit" />
-                    <span>{t("clipboard.permissionsIncomplete")}</span>
-                </ButtonBase>
-            )}
+            <AnimatePresence mode="wait" initial={false}>
+                {isMac && !tutorialActive && permissionIncomplete && (
+                    <m.div
+                        key="permission-summary"
+                        className={classes(styles, "permission-summary-motion")}
+                        variants={statusMotion}
+                        initial="initial"
+                        animate="animate"
+                        exit="exit"
+                    >
+                        <ButtonBase
+                            className={classes(styles, "permission-summary-banner")}
+                            onClick={onOpenPermissionCenter}
+                        >
+                            <WarningAmberOutlinedIcon fontSize="inherit" />
+                            <span>{t("clipboard.permissionsIncomplete")}</span>
+                        </ButtonBase>
+                    </m.div>
+                )}
+            </AnimatePresence>
             {showDeveloperToolbar && developerToolsVisible && (
                 <div
                     id="developer-toolbar"

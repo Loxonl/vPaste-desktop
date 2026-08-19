@@ -209,7 +209,7 @@ describe("PasteQueue", () => {
 
         render(<PasteQueue />);
 
-        expect(await screen.findByText("Plain text")).toBeVisible();
+        await waitFor(() => expect(screen.getByText("Plain text")).toBeVisible());
         expect(screen.getByText("Rich text fallback")).toBeVisible();
         expect(screen.getByText("Large text preview")).toBeVisible();
         expect(screen.queryByText("/history/large-text.bin")).not.toBeInTheDocument();
@@ -452,7 +452,7 @@ describe("PasteQueue", () => {
 
         expect(await screen.findByRole("button", { name: "pasteQueue.reverse" })).toBeDisabled();
         expect(screen.getByRole("button", { name: "pasteQueue.more" })).toBeDisabled();
-        screen.getAllByRole("button", { name: "pasteQueue.drag" })
+        (await screen.findAllByRole("button", { name: "pasteQueue.drag" }))
             .forEach(button => expect(button).toBeDisabled());
         screen.getAllByRole("button", { name: "pasteQueue.remove" })
             .forEach(button => expect(button).toBeDisabled());

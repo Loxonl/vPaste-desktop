@@ -7,6 +7,7 @@ import { error } from "@tauri-apps/plugin-log";
 import aboutLogo from "../../../src-tauri/icons/source/vpaste-app-icon-1024.png";
 import { restartReady, useAppUpdateState, type UpdateState } from "../../update";
 import type { SettingsSectionProps, TFunction } from "../settingsTypes";
+import ActionCard from "../../ui/ActionCard";
 import { classes } from "../../ui/classNames";
 import styles from "../Config.module.css";
 
@@ -112,22 +113,20 @@ export default function AboutSettings({ bridge, t }: SettingsSectionProps & { di
                     {t("settings.about.linksSection")}
                 </Typography>
                 <div className={classes(styles, "about-link-grid")}>
-                    <button className={classes(styles, "about-link-card")} type="button" onClick={() => openExternal(APP_CHANGELOG_URL)}>
-                        <span className={classes(styles, "about-link-card__icon")}><ArticleOutlinedIcon fontSize="small" /></span>
-                        <span className={classes(styles, "about-link-card__body")}>
-                            <span className={classes(styles, "about-link-card__title")}>{t("settings.about.changelog")}</span>
-                            <span className={classes(styles, "about-link-card__desc")}>{t("settings.about.changelog.desc")}</span>
-                        </span>
-                        <LaunchOutlinedIcon className={classes(styles, "about-link-card__launch")} fontSize="small" />
-                    </button>
-                    <button className={classes(styles, "about-link-card")} type="button" onClick={() => openExternal(APP_REPOSITORY_URL)}>
-                        <span className={classes(styles, "about-link-card__icon")}><GitHubIcon fontSize="small" /></span>
-                        <span className={classes(styles, "about-link-card__body")}>
-                            <span className={classes(styles, "about-link-card__title")}>{t("settings.about.github")}</span>
-                            <span className={classes(styles, "about-link-card__desc")}>Loxonl/vPaste-desktop</span>
-                        </span>
-                        <LaunchOutlinedIcon className={classes(styles, "about-link-card__launch")} fontSize="small" />
-                    </button>
+                    <ActionCard
+                        icon={<ArticleOutlinedIcon fontSize="small" />}
+                        title={t("settings.about.changelog")}
+                        description={t("settings.about.changelog.desc")}
+                        endAdornment={<LaunchOutlinedIcon fontSize="small" />}
+                        onClick={() => openExternal(APP_CHANGELOG_URL)}
+                    />
+                    <ActionCard
+                        icon={<GitHubIcon fontSize="small" />}
+                        title={t("settings.about.github")}
+                        description="Loxonl/vPaste-desktop"
+                        endAdornment={<LaunchOutlinedIcon fontSize="small" />}
+                        onClick={() => openExternal(APP_REPOSITORY_URL)}
+                    />
                 </div>
             </Box>
         </Stack>

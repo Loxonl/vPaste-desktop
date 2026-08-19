@@ -254,9 +254,8 @@ body {
     font-size: 11px;
 }
 
-.privacy-app-chip button {
+.privacy-app-remove {
     flex: 0 0 auto;
-    border: 0;
     border-radius: 999px;
     padding: 4px 9px;
     color: #8a2525;
@@ -266,7 +265,7 @@ body {
     cursor: pointer;
 }
 
-.privacy-app-chip button:hover {
+.privacy-app-remove:hover {
     background: rgba(255, 220, 220, 0.98);
 }
 
@@ -312,58 +311,9 @@ body {
     gap: 14px;
 }
 
-.history-transfer-card {
-    min-height: 128px;
-    border: 1px solid rgba(35, 43, 54, 0.09);
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.56);
-    color: #1f242b;
-    font: inherit;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 18px;
-    cursor: pointer;
-    transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
-}
-
-.history-transfer-card:hover {
-    border-color: rgba(30, 146, 238, 0.24);
-    background: rgba(255, 255, 255, 0.88);
-    box-shadow: 0 6px 18px rgba(35, 43, 54, 0.065);
-    transform: translateY(-1px);
-}
-
-.history-transfer-card:disabled {
-    cursor: wait;
-    opacity: 0.58;
-    transform: none;
-    box-shadow: none;
-}
-
-.history-transfer-card__icon {
-    color: #1f242b;
-}
-
 .storage-path-input {
     font-family: Consolas, "SFMono-Regular", monospace;
     font-size: 13px;
-}
-
-.history-transfer-card__title {
-    font-size: 15px;
-    font-weight: 620;
-    line-height: 1.25;
-}
-
-.history-transfer-card__desc {
-    max-width: 220px;
-    color: #7f7f7f;
-    font-size: 12px;
-    line-height: 1.4;
-    text-align: center;
 }
 
 .history-transfer-progress {
@@ -485,67 +435,6 @@ body {
     gap: 12px;
 }
 
-.about-link-card {
-    min-width: 0;
-    min-height: 76px;
-    border: 1px solid rgba(35, 43, 54, 0.09);
-    border-radius: 12px;
-    background: rgba(255, 255, 255, 0.72);
-    box-shadow: 0 8px 24px rgba(35, 43, 54, 0.045), 0 1px 2px rgba(35, 43, 54, 0.035);
-    color: #1f242b;
-    font: inherit;
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 12px;
-    padding: 13px 14px;
-    text-align: left;
-    cursor: pointer;
-    transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
-}
-
-.about-link-card:hover {
-    border-color: rgba(30, 146, 238, 0.24);
-    background: rgba(255, 255, 255, 0.92);
-    box-shadow: 0 8px 22px rgba(35, 43, 54, 0.075);
-    transform: translateY(-1px);
-}
-
-.about-link-card__icon {
-    width: 34px;
-    height: 34px;
-    border-radius: 10px;
-    display: grid;
-    place-items: center;
-    color: #0b73d7;
-    background: rgba(30, 146, 238, 0.10);
-}
-
-.about-link-card__body {
-    min-width: 0;
-    display: grid;
-    gap: 3px;
-}
-
-.about-link-card__title {
-    font-size: 14px;
-    font-weight: 620;
-    line-height: 1.25;
-}
-
-.about-link-card__desc {
-    overflow: hidden;
-    color: #7f7f7f;
-    font-size: 12px;
-    line-height: 1.35;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.about-link-card__launch {
-    color: #7f8791;
-}
-
 :root[data-theme="dark"] .history-transfer-progress {
     color: var(--settings-muted);
     background: rgba(255, 255, 255, 0.08);
@@ -628,8 +517,7 @@ body {
     background: rgba(109, 35, 35, 0.72);
 }
 
-:root[data-theme="dark"] .history-transfer-panel,
-:root[data-theme="dark"] .about-link-card {
+:root[data-theme="dark"] .history-transfer-panel {
     background: var(--settings-card-bg);
     box-shadow: var(--settings-card-shadow);
 }
@@ -664,37 +552,16 @@ body {
     color: var(--settings-muted);
 }
 
-:root[data-theme="dark"] .privacy-app-chip button {
+:root[data-theme="dark"] .privacy-app-remove {
     color: #ffb4b4;
     background: rgba(109, 35, 35, 0.64);
 }
 
-:root[data-theme="dark"] .privacy-app-chip button:hover {
+:root[data-theme="dark"] .privacy-app-remove:hover {
     background: rgba(128, 42, 42, 0.74);
 }
 
-:root[data-theme="dark"] .history-transfer-card {
-    color: var(--settings-text);
-    border-color: rgba(255, 255, 255, 0.10);
-    background: rgba(255, 255, 255, 0.05);
-}
-
-:root[data-theme="dark"] .history-transfer-card:hover {
-    border-color: rgba(138, 180, 255, 0.26);
-    background: rgba(255, 255, 255, 0.08);
-}
-
-:root[data-theme="dark"] .history-transfer-card__icon,
-:root[data-theme="dark"] .history-transfer-card__title {
-    color: var(--settings-text);
-}
-
-:root[data-theme="dark"] .history-transfer-card__desc {
-    color: var(--settings-muted);
-}
-
-:root[data-theme="dark"] .about-version-pill,
-:root[data-theme="dark"] .about-link-card__icon {
+:root[data-theme="dark"] .about-version-pill {
     color: #8ab4ff;
     background: rgba(138, 180, 255, 0.14);
 }
@@ -712,21 +579,6 @@ body {
 :root[data-theme="dark"] .about-update-status.error {
     color: #ff9f9f;
     background: rgba(255, 107, 107, 0.14);
-}
-
-:root[data-theme="dark"] .about-link-card {
-    color: var(--settings-text);
-    border-color: rgba(255, 255, 255, 0.10);
-}
-
-:root[data-theme="dark"] .about-link-card:hover {
-    border-color: rgba(138, 180, 255, 0.26);
-    background: rgba(255, 255, 255, 0.08);
-}
-
-:root[data-theme="dark"] .about-link-card__desc,
-:root[data-theme="dark"] .about-link-card__launch {
-    color: var(--settings-muted);
 }
 
 /* Custom Scrollbar */

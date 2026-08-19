@@ -16,7 +16,11 @@ import Tab from "@mui/material/Tab";
 import Tabs from "@mui/material/Tabs";
 import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
+import ArticleOutlinedIcon from "@mui/icons-material/ArticleOutlined";
+import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
+import LaunchOutlinedIcon from "@mui/icons-material/LaunchOutlined";
 import { setThemePreview, type ResolvedTheme } from "../theme";
+import ActionCard from "./ActionCard";
 import StatusBadge from "./StatusBadge";
 import Surface from "./Surface";
 import { SettingsRow, SettingsSection } from "./settings/SettingsPrimitives";
@@ -36,6 +40,7 @@ const copy = {
         toggles: "开关与复选框",
         navigation: "导航与反馈",
         settings: "设置行",
+        actionCards: "操作卡片",
         normal: "正常",
         disabled: "禁用",
         loading: "处理中",
@@ -77,6 +82,10 @@ const copy = {
         determinate: "确定进度",
         indeterminate: "未知进度",
         languageDesc: "更改 vPaste 内置界面的显示语言",
+        importTitle: "导入历史记录",
+        importDescription: "从 vPaste 归档恢复历史记录",
+        changelogTitle: "更新日志",
+        changelogDescription: "查看每个版本的改动内容",
     },
     en: {
         title: "vPaste UI Lab",
@@ -87,6 +96,7 @@ const copy = {
         toggles: "Switches and checkboxes",
         navigation: "Navigation and feedback",
         settings: "Settings rows",
+        actionCards: "Action cards",
         normal: "Default",
         disabled: "Disabled",
         loading: "Working",
@@ -128,6 +138,10 @@ const copy = {
         determinate: "Known progress",
         indeterminate: "Unknown progress",
         languageDesc: "Choose the language used by the built-in vPaste interface",
+        importTitle: "Import history",
+        importDescription: "Restore history from a vPaste archive",
+        changelogTitle: "Changelog",
+        changelogDescription: "Review changes included in each release",
     },
 } as const;
 
@@ -414,6 +428,34 @@ export default function UiLab() {
                             }
                         />
                     </SettingsSection>
+                </Surface>
+
+                <Surface padded className={styles.settingsPreview}>
+                    <h2>{text.actionCards}</h2>
+                    <div className={styles.actionCardGrid}>
+                        <ActionCard
+                            icon={<ArticleOutlinedIcon fontSize="small" />}
+                            title={text.changelogTitle}
+                            description={text.changelogDescription}
+                            endAdornment={<LaunchOutlinedIcon fontSize="small" />}
+                            onClick={() => undefined}
+                        />
+                        <ActionCard
+                            layout="vertical"
+                            icon={<FileUploadOutlinedIcon fontSize="large" />}
+                            title={text.importTitle}
+                            description={text.importDescription}
+                            onClick={() => undefined}
+                        />
+                        <ActionCard
+                            layout="vertical"
+                            icon={<FileUploadOutlinedIcon fontSize="large" />}
+                            title={text.importTitle}
+                            description={text.disabled}
+                            disabled
+                            onClick={() => undefined}
+                        />
+                    </div>
                 </Surface>
             </div>
 

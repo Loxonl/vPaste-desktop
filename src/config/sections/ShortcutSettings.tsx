@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Box, Divider, List, ListItem, ListItemText, Stack, Switch, Typography } from "@mui/material";
+import { Box, ButtonBase, Divider, List, ListItem, ListItemText, Stack, Switch, Typography } from "@mui/material";
 import { error } from "@tauri-apps/plugin-log";
 import { formatShortcutLabel, getModifierDisplayLabel, isMacPlatform } from "../../shortcutDisplay";
 import type { SettingsSectionProps, Shortcutkey, ShortcutRegistrationInfo, StorageMigrationInfo, TFunction } from "../settingsTypes";
@@ -325,7 +325,7 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
                 primary={label}
             />
             <div className={classes(styles, "shortcut-control")}>
-                <button
+                <ButtonBase
                     ref={recorderRef}
                     className={classes(styles, `shortcut-recorder ${recording ? "recording" : ""} ${value ? "" : "empty"} ${errorMessage ? "has-error" : ""}`)}
                     type="button"
@@ -338,7 +338,7 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
                     }}
                 >
                     {recording ? t("settings.shortcut.recording") : formatShortcutLabel(value) || t("settings.shortcut.clickToSet")}
-                </button>
+                </ButtonBase>
                 {errorMessage && <span className={classes(styles, "shortcut-error-text")}>{errorMessage}</span>}
             </div>
         </ListItem>

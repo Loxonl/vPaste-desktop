@@ -59,6 +59,12 @@ The raw sample list is printed by the command. Do not compare these numbers acro
 
 The first Windows run on the unchanged production source exposed five Paste Queue cases that only had `chromium-darwin` snapshots and one settings screenshot that predated the current main-branch render. Phase one adds the missing `chromium-win32` Paste Queue snapshots and refreshes the settings shortcut snapshot after its geometric alignment assertion passes. These are baseline artifacts only; no production source or CSS changed. They require manual approval in the phase-one pull request before later visual comparisons use them.
 
+## Phase-Two Settings Convergence
+
+Settings section actions use MUI controls after phase two. Repeated link and history-transfer surfaces share `src/ui/ActionCard.tsx`; permission status and shortcut recording use MUI `ButtonBase`, and the privacy-app removal action uses MUI `Button`. The four native controls remaining in `src/config/Config.tsx` are platform window controls and stay in the temporary baseline as an explicit exception.
+
+The migration preserves the existing settings screenshots and bridge callbacks. UI Lab adds horizontal, vertical, and disabled ActionCard samples; its five changed Windows snapshots require local manual approval. No GitHub Actions visual job is added.
+
 ## Phase Gates
 
 1. Governance baseline and inventory: no production visual changes.

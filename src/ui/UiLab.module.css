@@ -175,6 +175,13 @@
   gap: var(--ui-space-4);
 }
 
+.actionCardGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  gap: var(--ui-space-3);
+}
+
 @media (max-width: 720px) {
   .page {
     padding: var(--ui-space-4);
@@ -199,7 +206,8 @@
   }
 
   .fieldGrid,
-  .feedbackGrid {
+  .feedbackGrid,
+  .actionCardGrid {
     grid-template-columns: 1fr;
   }
 }

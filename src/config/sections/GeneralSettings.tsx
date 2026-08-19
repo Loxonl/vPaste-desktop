@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Box, Button, Divider, List, ListItem, ListItemText, MenuItem, Select, Stack, Switch, Typography, type SelectChangeEvent } from "@mui/material";
+import { Box, Button, ButtonBase, Divider, List, ListItem, ListItemText, MenuItem, Select, Stack, Switch, Typography, type SelectChangeEvent } from "@mui/material";
 import { error } from "@tauri-apps/plugin-log";
 import { isMacPlatform } from "../../shortcutDisplay";
 import type { ThemeMode } from "../../theme";
@@ -163,15 +163,14 @@ export default function GeneralSettings({ bridge, config, languages, t, onSave }
                                     <ListItemText
                                         primary={t(`settings.permissions.${permission}`)}
                                     />
-                                    <button
-                                        type="button"
+                                    <ButtonBase
                                         className={classes(styles, `permission-status-button ${done ? 'enabled' : 'required'}`)}
                                         disabled={permissionStatus === null || done}
                                         onClick={() => openPermissionGuide(permission)}
                                     >
                                         <span className={classes(styles, "permission-status-dot")} aria-hidden="true" />
                                         {label}
-                                    </button>
+                                    </ButtonBase>
                                 </ListItem>
                                 <Divider component="li" />
                             </React.Fragment>

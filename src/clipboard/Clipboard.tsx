@@ -1844,22 +1844,24 @@ export default function Clipboard() {
                                 animate="animate"
                                 exit="exit"
                             >
-                                {clipboardPage.list.map((item, index) => (
-                                    <ClipboardCard
-                                        key={item.getHash() as string}
-                                        item={item}
-                                        selected={queueSelectionMode
-                                            ? queueSelectedHashes.includes(item.getHash() as string)
-                                            : selected === item.getHash()}
-                                        simulatedHover={simulatedHoverHash === item.getHash()}
-                                        refreshKey={fileRefreshKey}
-                                        searchQuery={searchWord as string}
-                                        shortcutHint={altHintsVisible && index < 9 ? String(index + 1) : undefined}
-                                        mediaPlaybackReady={animationState === 'entered'}
-                                        t={t}
-                                        onContextMenu={openClipboardContextMenu}
-                                    />
-                                ))}
+                                <AnimatePresence mode="sync" initial={false}>
+                                    {clipboardPage.list.map((item, index) => (
+                                        <ClipboardCard
+                                            key={item.getHash() as string}
+                                            item={item}
+                                            selected={queueSelectionMode
+                                                ? queueSelectedHashes.includes(item.getHash() as string)
+                                                : selected === item.getHash()}
+                                            simulatedHover={simulatedHoverHash === item.getHash()}
+                                            refreshKey={fileRefreshKey}
+                                            searchQuery={searchWord as string}
+                                            shortcutHint={altHintsVisible && index < 9 ? String(index + 1) : undefined}
+                                            mediaPlaybackReady={animationState === 'entered'}
+                                            t={t}
+                                            onContextMenu={openClipboardContextMenu}
+                                        />
+                                    ))}
+                                </AnimatePresence>
                                 <AnimatePresence mode="wait" initial={false}>
                                     {isLoadingMore && (
                                         <m.div

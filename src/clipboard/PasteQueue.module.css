@@ -120,6 +120,12 @@ body {
   list-style: none;
 }
 
+.rowMotion {
+  position: relative;
+  min-height: 66px;
+  list-style: none;
+}
+
 .row {
   position: relative;
   display: flex;

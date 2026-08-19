@@ -12,6 +12,7 @@ import {
     WHITE_HEADER_TEXT_COLOR,
 } from "./clipboardHeaderColor";
 import { isSingleImageFileItem } from "./itemPresentation";
+import { m, useMotionPreset } from "../ui/motion";
 
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
 
@@ -114,6 +115,7 @@ function ClipboardCardComponent({
     t,
     onContextMenu,
 }: ClipboardCardProps) {
+    const cardMotion = useMotionPreset("listItem");
     const dragStateRef = useRef<{ x: number, y: number, dragging: boolean } | null>(null);
     const visualType = isSingleImageFileItem(item) ? ItemType.Image : item.getType();
     const typeLabel = getTypeLabel(visualType, t);
@@ -142,7 +144,14 @@ function ClipboardCardComponent({
     }, [item.getHash(), item.getTitleColor()]);
 
     return (
-        <div
+        <m.div
+            className={classes(styles, "card-motion-item")}
+            variants={cardMotion}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+        >
+            <div
             className={classes(styles, `clipboard-card ${selected ? 'selected' : ''} ${simulatedHover ? 'simulated-hover' : ''}`)}
             data-hash={item.getHash() as string}
             tabIndex={-1}
@@ -251,7 +260,8 @@ function ClipboardCardComponent({
                 />
                 {shortcutHint && <div className={classes(styles, "alt-card-hint")}>{shortcutHint}</div>}
             </div>
-        </div>
+            </div>
+        </m.div>
     );
 }
 

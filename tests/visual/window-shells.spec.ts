@@ -424,9 +424,9 @@ test.describe("paste queue states", () => {
             { steps: 4 },
         );
 
-        await expect.poll(() => secondRow.evaluate(element => element.style.transform))
+        await expect.poll(() => secondRow.locator("[data-drag-surface]").evaluate(element => (element as HTMLElement).style.transform))
             .toMatch(/^translate3d\(0(px)?, -\d+(\.\d+)?px, 0(px)?\)$/);
-        await expect.poll(() => firstRow.evaluate(element => element.style.transform))
+        await expect.poll(() => firstRow.locator("[data-drag-surface]").evaluate(element => (element as HTMLElement).style.transform))
             .toMatch(/^translate3d\(0(px)?, \d+(\.\d+)?px, 0(px)?\)$/);
         await page.mouse.up();
     });

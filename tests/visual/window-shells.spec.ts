@@ -21,6 +21,15 @@ const windows = [
     { name: "clipboard", path: "/clipboard", width: 960, height: 600, ready: "button" },
 ] as const;
 
+const darkAuxiliaryWindows = windows.filter(window => (
+    window.name === "tray"
+    || window.name === "emoji"
+    || window.name === "paste-notice"
+    || window.name === "preview"
+    || window.name === "tab-editor"
+    || window.name === "permission"
+));
+
 test.describe("window shells", () => {
     for (const window of windows) {
         test(window.name, async ({ page }) => {
@@ -31,6 +40,16 @@ test.describe("window shells", () => {
             await expect(page.locator("body")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
             await expect(page.locator("#root")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
             await expect(page).toHaveScreenshot(`${window.name}-shell.png`);
+        });
+    }
+
+    for (const window of darkAuxiliaryWindows) {
+        test(`${window.name} dark`, async ({ page }) => {
+            await page.emulateMedia({ colorScheme: "dark" });
+            await page.setViewportSize({ width: window.width, height: window.height });
+            await page.goto(window.path);
+            await expect(page.locator(window.ready).first()).toBeVisible();
+            await expect(page).toHaveScreenshot(`${window.name}-shell-dark.png`);
         });
     }
 
@@ -62,6 +81,60 @@ test.describe("window shells", () => {
             expect(box!.x).toBeGreaterThanOrEqual(8);
             expect(box!.y).toBeGreaterThanOrEqual(8);
         }
+    });
+
+    test("tab editor uses the shared MUI select menu", async ({ page }) => {
+        await page.setViewportSize({ width: 302, height: 416 });
+        await page.goto("/tab-editor");
+
+        await page.getByRole("combobox", { name: /类型|Type/ }).click();
+        const listbox = page.getByRole("listbox");
+        await expect(listbox).toBeVisible();
+        await expect(listbox.getByRole("option")).toHaveCount(6);
+        await expect(page).toHaveScreenshot("tab-editor-type-select.png");
+    });
+
+    test("tab editor recent-source menu remains scrollable to its last option", async ({ page }) => {
+        await page.addInitScript(() => {
+            localStorage.setItem("vpaste.pendingTabEditorPayload", JSON.stringify({
+                mode: "add",
+                kind: "filter",
+                tabs: [],
+                languageCode: "Chinese",
+            }));
+            let callbackId = 0;
+            Object.assign(window, {
+                __TAURI_INTERNALS__: {
+                    invoke: async (cmd: string) => {
+                        if (cmd === "list_recent_app_source_options") {
+                            return Array.from({ length: 10 }, (_, index) => ({
+                                source: `Example App ${index + 1}`,
+                            }));
+                        }
+                        if (cmd === "list_language_packs") return [];
+                        if (cmd === "get_config") return JSON.stringify({ multilingual: "Chinese" });
+                        return null;
+                    },
+                    transformCallback: () => ++callbackId,
+                    unregisterCallback: () => undefined,
+                    convertFileSrc: (value: string) => value,
+                    metadata: {
+                        currentWindow: { label: "tabEditor" },
+                        currentWebview: { label: "tabEditor" },
+                    },
+                },
+            });
+        });
+        await page.setViewportSize({ width: 302, height: 416 });
+        await page.goto("/tab-editor");
+
+        await page.getByRole("button", { name: /来源 App|Source App/ }).click();
+        const sourceMenu = page.getByRole("menu");
+        await expect(sourceMenu.getByRole("menuitem")).toHaveCount(11);
+        const lastOption = sourceMenu.getByRole("menuitem", { name: "Example App 10" });
+        await lastOption.scrollIntoViewIfNeeded();
+        await expect(lastOption).toBeInViewport();
+        await expect(page).toHaveScreenshot("tab-editor-source-menu.png");
     });
 
     test("developer mode exposes the UI lab and test room launchers", async ({ page }) => {

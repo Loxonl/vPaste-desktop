@@ -73,6 +73,14 @@ Across `Clipboard.tsx`, `ClipboardHeader.tsx`, `ClipboardOverlays.tsx`, and `Pas
 
 This phase adds no Motion dependency and does not replace the existing CSS entry animations. UI Lab displays the shared menu, Toast, toolbar action, and confirmation dialog. Local screenshots cover the tag-create menu plus Paste Queue menu and clear confirmation; hosted visual checks remain disabled.
 
+## Phase-Four Auxiliary-Window Convergence
+
+The tag editor now uses MUI `TextField`, `Select`, `MenuItem`, `Button`, and shared toolbar/menu primitives. Its recent-application picker remains inline and scrollable so the Tauri webview keeps the established placement and can reach the final option. The Emoji picker, preview pin, paste fallback notice, onboarding permission actions, and tray menu use MUI button/menu semantics without changing their Tauri commands or lifecycle.
+
+Auxiliary window shells continue to own transparent gutters, `--ui-radius-window`, `--ui-window-shadow`, and platform-specific positioning in CSS Modules. The migration therefore changes the controls inside those shells, not the native window geometry. The six migrated files leave the raw-control inventory entirely, while tutorial controls remain deferred to the final tutorial phase.
+
+Local screenshots cover all six auxiliary windows in light and dark modes plus the open MUI Select and the recent-source menu scrolled to its last item. These screenshots were manually approved and remain outside hosted GitHub Actions.
+
 ## Phase Gates
 
 1. Governance baseline and inventory: no production visual changes.

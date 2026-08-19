@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
+import Button from "@mui/material/Button";
 import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import appIcon from "../../src-tauri/icons/source/vpaste-app-icon-1024.png";
@@ -9,6 +10,7 @@ import authorizeTips from "../assets/tutorial/authorize-tips.png";
 import backgroundAuthorizeTips from "../assets/tutorial/background-authorize-tips.png";
 import { useLanguage } from "../lang";
 import { loadAndApplyTheme, setThemePreview, type ResolvedTheme } from "../theme";
+import { ToolbarIconButton } from "../ui/ToolbarIconButton";
 import {
     PENDING_PERMISSION_WINDOW_KEY,
     type TutorialPermissionId,
@@ -165,15 +167,15 @@ export default function OnboardingPermissionWindow() {
                 aria-labelledby="tutorial-guide-title"
                 aria-describedby="tutorial-guide-description"
             >
-                <button
-                    type="button"
+                <ToolbarIconButton
+                    size="medium"
                     className={styles["tutorial-guide-close"]}
-                    aria-label={t("tutorial.permission.guide.close")}
+                    label={t("tutorial.permission.guide.close")}
                     disabled={pending}
                     onClick={() => void closeWindow(true)}
                 >
                     <CloseRoundedIcon />
-                </button>
+                </ToolbarIconButton>
                 <div className={styles["tutorial-guide-copy"]}>
                     <span className={styles["tutorial-guide-logo"]}><img src={appIcon} alt="vPaste" /></span>
                     <div>
@@ -183,8 +185,8 @@ export default function OnboardingPermissionWindow() {
                 </div>
                 <PermissionGuideVisual id={permission} />
                 <div className={styles["tutorial-guide-actions"]}>
-                    <button
-                        type="button"
+                    <Button
+                        variant="contained"
                         className={styles["tutorial-guide-primary"]}
                         disabled={pending}
                         onClick={() => void runAction()}
@@ -193,15 +195,15 @@ export default function OnboardingPermissionWindow() {
                             ? t("tutorial.permission.guide.working")
                             : t(`tutorial.permission.guide.${permission}.action`)}
                         <ArrowOutwardRoundedIcon />
-                    </button>
-                    <button
-                        type="button"
+                    </Button>
+                    <Button
+                        variant="text"
                         className={styles["tutorial-guide-later"]}
                         disabled={pending}
                         onClick={() => void closeWindow(true)}
                     >
                         {t("tutorial.permission.guide.notNow")}
-                    </button>
+                    </Button>
                     {actionError && <p className={styles["permission-guide-error"]} role="alert">{actionError}</p>}
                 </div>
             </section>

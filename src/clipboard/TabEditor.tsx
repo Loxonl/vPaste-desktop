@@ -1,4 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import Button from "@mui/material/Button";
+import ButtonBase from "@mui/material/ButtonBase";
+import MenuItem from "@mui/material/MenuItem";
+import Select from "@mui/material/Select";
+import TextField from "@mui/material/TextField";
 import styles from "./TabEditor.module.css";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
@@ -7,6 +12,8 @@ import { error } from "@tauri-apps/plugin-log";
 import { useLanguage } from "../lang";
 import { type AppSourceOption, compactAppSourceName, displayAppSource } from "./appSource";
 import { loadAndApplyTheme } from "../theme";
+import { InlineMenuItem, InlineMenuSurface } from "../ui/InlineMenu";
+import { ToolbarIconButton } from "../ui/ToolbarIconButton";
 import { applyNameEmoji, selectedNameEmoji } from "./nameEmoji";
 import type { ItemTag } from "./Item";
 import {
@@ -353,30 +360,32 @@ export default function TabEditor() {
                     <strong>{tagKind === "record"
                         ? mode === "edit" ? t("tabs.editRecordTag") : t("tabs.addRecordTag")
                         : mode === "edit" ? t("tabs.edit") : t("tabs.add")}</strong>
-                    <button type="button" className={styles["tab-editor-close"]} aria-label={t("common.close")} onClick={closeWindow}>
+                    <ToolbarIconButton size="small" className={styles["tab-editor-close"]} label={t("common.close")} onClick={closeWindow}>
                         <CloseIcon fontSize="small" />
-                    </button>
+                    </ToolbarIconButton>
                 </div>
                 <label>
                     <span>{t("tabs.name")}</span>
                     <div className={styles["tab-name-composer"]}>
                         <div className={styles["emoji-prefix-select"]}>
-                            <button
+                            <ToolbarIconButton
                                 ref={emojiButtonRef}
-                                type="button"
+                                size="medium"
                                 className={[styles["emoji-prefix-trigger"], selectedEmoji ? styles.selected : ""].join(" ")}
-                                title={t("tabs.emojiPrefix")}
-                                aria-label={t("tabs.emojiPrefix")}
+                                label={t("tabs.emojiPrefix")}
                                 aria-haspopup="menu"
                                 aria-expanded={emojiPickerOpen}
                                 onClick={openEmojiPicker}
                             >
                                 {selectedEmoji || "＋"}
-                            </button>
+                            </ToolbarIconButton>
                         </div>
-                        <input
+                        <TextField
+                            className={styles["tab-editor-field"]}
+                            fullWidth
+                            size="small"
                             value={draft.name}
-                            maxLength={20}
+                            inputProps={{ maxLength: 20 }}
                             onChange={event => setDraft(tab => ({ ...tab, name: event.target.value }))}
                         />
                     </div>
@@ -388,27 +397,34 @@ export default function TabEditor() {
                     <>
                         <label>
                             <span>{t("tabs.type")}</span>
-                            <select
+                            <Select
+                                className={styles["tab-editor-field"]}
+                                fullWidth
+                                size="small"
+                                displayEmpty
+                                SelectDisplayProps={{ "aria-label": t("tabs.type") }}
                                 value={draft.filter.itemType}
                                 onChange={event => setDraft(tab => ({
                                     ...tab,
                                     filter: { ...tab.filter, itemType: event.target.value },
                                 }))}
                             >
-                                <option value="">{t("tabs.any")}</option>
-                                <option value="Text">{t("type.text")}</option>
-                                <option value="Image">{t("type.image")}</option>
-                                <option value="File">{t("type.file")}</option>
-                                <option value="Link">{t("type.link")}</option>
-                                <option value="Color">{t("type.color")}</option>
-                            </select>
+                                <MenuItem value="">{t("tabs.any")}</MenuItem>
+                                <MenuItem value="Text">{t("type.text")}</MenuItem>
+                                <MenuItem value="Image">{t("type.image")}</MenuItem>
+                                <MenuItem value="File">{t("type.file")}</MenuItem>
+                                <MenuItem value="Link">{t("type.link")}</MenuItem>
+                                <MenuItem value="Color">{t("type.color")}</MenuItem>
+                            </Select>
                         </label>
                         <label>
                             <span>{t("tabs.sourceApp")}</span>
                             <div className={styles["app-source-select"]}>
-                                <button
-                                    type="button"
+                                <ButtonBase
                                     className={styles["app-source-trigger"]}
+                                    aria-label={t("tabs.sourceApp")}
+                                    aria-haspopup="menu"
+                                    aria-expanded={appSourceOpen}
                                     onClick={toggleAppSourcePicker}
                                 >
                                     {selectedAppSources.length > 0 && (
@@ -421,17 +437,17 @@ export default function TabEditor() {
                                         ))
                                     )}
                                     <span className={styles["app-source-label"]}>{appSourceSummary()}</span>
-                                </button>
+                                </ButtonBase>
                                 {appSourceOpen && (
-                                    <div className={styles["app-source-menu"]}>
-                                        <button type="button" className={[styles["app-source-option"], styles["app-source-option-plain"], selectedAppSources.length === 0 ? styles.selected : ""].join(" ")} onClick={clearAppSources}>
+                                    <InlineMenuSurface className={styles["app-source-menu"]} scrollable>
+                                        <InlineMenuItem selected={selectedAppSources.length === 0} className={[styles["app-source-option"], styles["app-source-option-plain"]].join(" ")} onClick={clearAppSources}>
                                             <span>{t("tabs.any")}</span>
-                                        </button>
+                                        </InlineMenuItem>
                                         {recentAppSources.map(option => (
-                                            <button
+                                            <InlineMenuItem
                                                 key={option.source}
-                                                type="button"
-                                                className={[styles["app-source-option"], selectedAppSources.includes(option.source) ? styles.selected : ""].join(" ")}
+                                                selected={selectedAppSources.includes(option.source)}
+                                                className={styles["app-source-option"]}
                                                 onClick={() => toggleAppSource(option.source)}
                                             >
                                                 {option.icon_path ? (
@@ -441,34 +457,41 @@ export default function TabEditor() {
                                                 )}
                                                 <span className={styles["app-source-option-label"]}>{displayAppSource(option.source, t)}</span>
                                                 {selectedAppSources.includes(option.source) && <span className={styles["app-source-check"]}>✓</span>}
-                                            </button>
+                                            </InlineMenuItem>
                                         ))}
-                                    </div>
+                                    </InlineMenuSurface>
                                 )}
                             </div>
                         </label>
                         <label>
                             <span>{t("tabs.favoriteFilter")}</span>
-                            <select
+                            <Select
+                                className={styles["tab-editor-field"]}
+                                fullWidth
+                                size="small"
+                                SelectDisplayProps={{ "aria-label": t("tabs.favoriteFilter") }}
                                 value={draft.filter.favorite}
                                 onChange={event => setDraft(tab => ({
                                     ...tab,
                                     filter: { ...tab.filter, favorite: event.target.value as FavoriteFilter },
                                 }))}
                             >
-                                <option value="any">{t("tabs.any")}</option>
-                                <option value="yes">{t("tabs.favoriteOnly")}</option>
-                                <option value="no">{t("tabs.notFavorite")}</option>
-                            </select>
+                                <MenuItem value="any">{t("tabs.any")}</MenuItem>
+                                <MenuItem value="yes">{t("tabs.favoriteOnly")}</MenuItem>
+                                <MenuItem value="no">{t("tabs.notFavorite")}</MenuItem>
+                            </Select>
                         </label>
                         <div className={styles["tab-editor-row"]}>
                             <label>
                                 <span>{t("tabs.recent")}</span>
-                                <input
+                                <TextField
+                                    className={styles["tab-editor-field"]}
+                                    fullWidth
+                                    size="small"
                                     type="number"
-                                    min="1"
                                     value={draft.filter.relativeAmount}
                                     placeholder={t("tabs.unlimited")}
+                                    inputProps={{ min: 1 }}
                                     onChange={event => setDraft(tab => ({
                                         ...tab,
                                         filter: { ...tab.filter, relativeAmount: event.target.value },
@@ -477,27 +500,31 @@ export default function TabEditor() {
                             </label>
                             <label>
                                 <span>{t("tabs.unit")}</span>
-                                <select
+                                <Select
+                                    className={styles["tab-editor-field"]}
+                                    fullWidth
+                                    size="small"
+                                    SelectDisplayProps={{ "aria-label": t("tabs.unit") }}
                                     value={draft.filter.relativeUnit}
                                     onChange={event => setDraft(tab => ({
                                         ...tab,
                                         filter: { ...tab.filter, relativeUnit: event.target.value as DateUnit },
                                     }))}
                                 >
-                                    <option value="minute">{t("tabs.unit.minute")}</option>
-                                    <option value="hour">{t("tabs.unit.hour")}</option>
-                                    <option value="day">{t("tabs.unit.day")}</option>
-                                    <option value="week">{t("tabs.unit.week")}</option>
-                                    <option value="month">{t("tabs.unit.month")}</option>
-                                </select>
+                                    <MenuItem value="minute">{t("tabs.unit.minute")}</MenuItem>
+                                    <MenuItem value="hour">{t("tabs.unit.hour")}</MenuItem>
+                                    <MenuItem value="day">{t("tabs.unit.day")}</MenuItem>
+                                    <MenuItem value="week">{t("tabs.unit.week")}</MenuItem>
+                                    <MenuItem value="month">{t("tabs.unit.month")}</MenuItem>
+                                </Select>
                             </label>
                         </div>
                     </>
                 )}
                 <div className={styles["tab-editor-actions"]}>
-                    <button type="button" className={styles["tab-save-button"]} onClick={saveDraft}>
+                    <Button variant="contained" className={styles["tab-save-button"]} onClick={saveDraft}>
                         {t("tabs.save")}
-                    </button>
+                    </Button>
                 </div>
             </div>
         </div>

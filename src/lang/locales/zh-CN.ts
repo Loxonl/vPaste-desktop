@@ -217,6 +217,7 @@ const zhCN: LanguagePack = {
         "preview.unpin": "取消固定",
         "preview.waiting": "等待预览内容",
 
+        "tray.menu": "vPaste 菜单",
         "tray.showMain": "显示主面板",
         "tray.historyRecording": "正在记录剪贴板历史",
         "tray.historyPaused": "已暂停记录",

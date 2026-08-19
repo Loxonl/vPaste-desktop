@@ -1,4 +1,5 @@
 import ContentCopyRoundedIcon from "@mui/icons-material/ContentCopyRounded";
+import Button from "@mui/material/Button";
 import { invoke } from "@tauri-apps/api/core";
 import { error } from "@tauri-apps/plugin-log";
 import { useLanguage } from "../lang";
@@ -25,9 +26,9 @@ export default function PasteFallbackNotice() {
                 <span className={styles["paste-fallback-notice-message"]}>
                     {t("clipboard.copyFallbackNotice")}
                 </span>
-                <button type="button" onClick={() => void openPermissionCenter()}>
+                <Button variant="contained" className={styles["paste-fallback-notice-action"]} onClick={() => void openPermissionCenter()}>
                     {t("clipboard.enableAutoPaste")}
-                </button>
+                </Button>
             </section>
         </main>
     );

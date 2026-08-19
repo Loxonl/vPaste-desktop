@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import ButtonBase from "@mui/material/ButtonBase";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
@@ -76,8 +77,7 @@ export default function EmojiPicker() {
     return (
         <div className={styles["emoji-picker-frame"]} onContextMenu={event => event.preventDefault()}>
             <div className={styles["emoji-picker-window"]} role="menu">
-                <button
-                    type="button"
+                <ButtonBase
                     role="menuitem"
                     className={[styles["emoji-clear-option"], !selectedEmoji ? styles.selected : ""].join(" ")}
                     onMouseDown={event => {
@@ -86,12 +86,11 @@ export default function EmojiPicker() {
                     }}
                 >
                     {t("tabs.emojiNone")}
-                </button>
+                </ButtonBase>
                 <div className={styles["emoji-grid"]}>
                     {NAME_PREFIX_EMOJIS.map(emoji => (
-                        <button
+                        <ButtonBase
                             key={emoji}
-                            type="button"
                             role="menuitem"
                             className={[styles["emoji-option"], selectedEmoji === emoji ? styles.selected : ""].join(" ")}
                             title={emoji}
@@ -102,7 +101,7 @@ export default function EmojiPicker() {
                             }}
                         >
                             {emoji}
-                        </button>
+                        </ButtonBase>
                     ))}
                 </div>
             </div>

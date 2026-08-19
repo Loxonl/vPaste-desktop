@@ -18,9 +18,7 @@
 :root[data-theme="dark"] .tab-editor-header strong,
 :root[data-theme="dark"] .app-source-trigger,
 :root[data-theme="dark"] .app-source-option,
-:root[data-theme="dark"] .emoji-prefix-trigger,
-:root[data-theme="dark"] .tab-editor-panel input,
-:root[data-theme="dark"] .tab-editor-panel select {
+:root[data-theme="dark"] .emoji-prefix-trigger {
   color: var(--theme-text);
 }
 
@@ -34,31 +32,15 @@
 
 :root[data-theme="dark"] .tab-editor-close,
 :root[data-theme="dark"] .app-source-trigger,
-:root[data-theme="dark"] .emoji-prefix-trigger,
-:root[data-theme="dark"] .tab-editor-panel input,
-:root[data-theme="dark"] .tab-editor-panel select {
+:root[data-theme="dark"] .emoji-prefix-trigger {
   background: rgba(46, 52, 61, 0.86);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
-:root[data-theme="dark"] .app-source-menu {
-  background: rgba(31, 35, 42, 0.98);
-}
-
-:root[data-theme="dark"] .app-source-option:hover {
-  background: rgba(255, 255, 255, 0.08);
-}
-
-:root[data-theme="dark"] .app-source-option.selected,
 :root[data-theme="dark"] .app-source-check,
 :root[data-theme="dark"] .emoji-prefix-trigger.selected {
   color: #b9dcff;
   background: rgba(74, 168, 255, 0.18);
-}
-
-:root[data-theme="dark"] .tab-save-button {
-  color: #06111d;
-  background: var(--theme-accent);
 }
 
 .tab-editor-panel {
@@ -144,20 +126,8 @@
   min-width: 0;
 }
 
-.tab-editor-panel input,
-.tab-editor-panel select {
+.tab-editor-field {
   width: 100%;
-  height: 29px;
-  box-sizing: border-box;
-  border: 0;
-  border-radius: 8px;
-  padding: 0 8px;
-  outline: none;
-  color: #202423;
-  background: rgba(238, 240, 235, 0.82);
-  font-family: inherit;
-  font-size: 12.5px;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.05);
 }
 
 .tab-name-composer {
@@ -168,7 +138,7 @@
   width: 100%;
 }
 
-.tab-name-composer input {
+.tab-name-composer .tab-editor-field {
   min-width: 0;
   flex: 1 1 auto;
 }
@@ -225,6 +195,7 @@
 
 .app-source-trigger {
   height: 36px;
+  justify-content: flex-start;
   border-radius: 9px;
   padding: 0 9px;
   color: #202423;
@@ -288,13 +259,8 @@
   top: calc(100% + 5px);
   left: 0;
   right: 0;
-  max-height: 164px;
+  max-height: 132px;
   box-sizing: border-box;
-  padding: 5px;
-  overflow-y: auto;
-  border-radius: 11px;
-  background: rgba(250, 250, 248, 0.98);
-  box-shadow: var(--ui-window-shadow);
 }
 
 .app-source-option {
@@ -310,29 +276,11 @@
   padding-left: 12px;
 }
 
-.app-source-option:hover {
-  background: rgba(0, 0, 0, 0.055);
-}
-
-.app-source-option.selected {
-  color: #0f4f94;
-  background: rgba(45, 126, 210, 0.13);
-}
-
 .tab-editor-actions {
   justify-content: flex-end;
   margin-top: 14px;
 }
 
 .tab-save-button {
-  height: 30px;
-  border: 0;
-  border-radius: 8px;
-  padding: 0 12px;
-  color: white;
-  background: #202423;
-  font-family: inherit;
-  font-size: 12.5px;
-  font-weight: 680;
-  cursor: pointer;
+  min-width: 68px;
 }

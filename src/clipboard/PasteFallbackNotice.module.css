@@ -60,7 +60,7 @@ body,
     line-height: 18px;
 }
 
-.paste-fallback-notice button {
+.paste-fallback-notice-action.paste-fallback-notice-action {
     flex: 0 0 auto;
     height: 32px;
     padding: 0 13px;
@@ -74,7 +74,7 @@ body,
     cursor: pointer;
 }
 
-.paste-fallback-notice button:hover {
+.paste-fallback-notice-action.paste-fallback-notice-action:hover {
     background: linear-gradient(180deg, #4297f8, #1d7dec);
 }
 

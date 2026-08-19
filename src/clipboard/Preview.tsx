@@ -4,6 +4,7 @@ import { emitTo, listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
+import { ToolbarIconButton } from "../ui/ToolbarIconButton";
 import { ItemType } from "./Item";
 import { FileTypePresentation } from "./FileTypePresentation";
 import { isImagePath, type FilePreviewInfo } from "./itemPresentation";
@@ -525,15 +526,15 @@ export default function Preview() {
 
     return (
         <div className={styles["preview-shell"]}>
-            <button
-                type="button"
+            <ToolbarIconButton
+                size="medium"
                 className={[styles["preview-pin"], pinned ? styles.pinned : ""].join(" ")}
-                title={pinned ? t("preview.unpin") : t("preview.pin")}
-                aria-label={pinned ? t("preview.unpin") : t("preview.pin")}
+                label={pinned ? t("preview.unpin") : t("preview.pin")}
+                aria-pressed={pinned}
                 onClick={togglePinned}
             >
                 {pinned ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
-            </button>
+            </ToolbarIconButton>
             <div className={styles["preview-content"]}>
                 {payload ? <PreviewBody payload={payload} t={t} /> : <div className={styles["preview-empty"]}>{t("preview.waiting")}</div>}
             </div>

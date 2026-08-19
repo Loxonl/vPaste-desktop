@@ -103,6 +103,18 @@ Clipboard cards and Paste Queue rows now use `AnimatePresence` for item entry an
 
 Local benchmarking was run before and after the phase on the same machine. The first layout-compensation trial raised the 100-row Paste Queue median from 75.47 ms to 98.62 ms, so the planned rollback rule was applied. The retained implementation has no Motion layout compensation: it keeps opacity/translation entry and exit while the established drag engine owns reordering. A repeated retained run measured 8.31 ms / 10.04 ms for 36-card selection and 81.82 ms / 119.28 ms for the 100-row queue median/p95; the cold first queue sample remains the dominant p95 outlier. These numbers are local evidence, not a hosted gate.
 
+## Phase-Eight Tutorial and Cleanup
+
+The tutorial now has behavior coverage for Windows step skipping, macOS permission actions, filter changes, back navigation, and completion before its Web Animations API sequences are replaced. Its welcome, panel, permission-status, filter, and shortcut sequences use scoped `useAnimate` calls with the shared duration, distance, easing, and reduced-motion policy. Reduced motion keeps the welcome hold and short opacity feedback while removing displacement and scale. Tutorial buttons and switches use MUI, and the standalone permission guide and tag editor use the shared popover preset instead of entry-only CSS keyframes.
+
+Hard-coded CSS transitions across clipboard controls, Paste Queue, preview, settings, and shared ActionCard now consume the synchronized Motion CSS variables. The governance checker recognizes only the imported token objects as valid scripted motion and correctly compares primitive Web Animations counts, so a removed legacy animation cannot silently reappear. The remaining raw-control baseline is limited to the composition-aware clipboard search input, draggable tab and queue surfaces, native window controls, and debug-only Test Room controls. The only product CSS animation exception is the existing eight-second tag marquee; the global 0.01 ms declarations remain the CSS reduced-motion safety net.
+
+The final production build contains 39 JavaScript chunks totaling 1,403,824 bytes (362,600 bytes gzip). The async Motion feature chunk is 57,256 bytes (17,780 bytes gzip), the application entry is 274,511 bytes (93,559 bytes gzip), the Clipboard chunk is 114,862 bytes (36,728 bytes gzip), and the Config chunk is 79,432 bytes (24,089 bytes gzip). No `UiLab` asset or `__ui-lab` production route is emitted.
+
+The final same-machine benchmark measured 7.50 ms / 9.71 ms for 36-card selection and 79.70 ms / 116.93 ms for the 100-row queue median/p95. The retained queue implementation remains below the phase-seven median and p95 and continues to leave drag transforms to the existing pointer engine.
+
+Local completion checks passed with 240 unit tests, 42 Playwright visual/interaction tests, 172 Rust tests, and license inspection of 310 npm plus 840 Cargo packages. Visual tests remain local; this workstream adds no GitHub Actions visual job.
+
 ## Phase Gates
 
 1. Governance baseline and inventory: no production visual changes.

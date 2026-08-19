@@ -1,10 +1,13 @@
 import React from "react";
+import Button from "@mui/material/Button";
+import Switch from "@mui/material/Switch";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
 import backgroundVisual from "../assets/tutorial/permission-background.svg";
 import pasteVisual from "../assets/tutorial/permission-paste.svg";
 import shortcutVisual from "../assets/tutorial/shortcut-popover.svg";
 import styles from "./TutorialOverlay.module.css";
+import { motionTokens, stagger, useAnimate, useReducedMotionConfig } from "../ui/motion";
 import type {
     TutorialFilterId,
     TutorialFilterTab,
@@ -40,8 +43,8 @@ const permissionVisuals: Record<TutorialPermissionId, string> = {
     paste: pasteVisual,
 };
 
-function classSelector(name: string, descendant = "") {
-    return `.${styles[name]}${descendant}`;
+function classSelector(name: string) {
+    return `.${styles[name]}`;
 }
 
 type StepShellProps = {
@@ -54,9 +57,7 @@ type StepShellProps = {
     nextLabel?: string;
 };
 
-const WELCOME_REVEAL_MS = 680;
 const WELCOME_HOLD_MS = 900;
-const WELCOME_EXIT_MS = 500;
 
 export default function TutorialOverlay({
     t,
@@ -69,7 +70,8 @@ export default function TutorialOverlay({
     onToggleFilter,
     onComplete,
 }: TutorialOverlayProps) {
-    const rootRef = React.useRef<HTMLDivElement>(null);
+    const [scope, animate] = useAnimate();
+    const reduceMotion = Boolean(useReducedMotionConfig());
     const [step, setStep] = React.useState(0);
     const previousPermissionState = React.useRef(
         new Map(permissions.map(permission => [permission.id, permission.done])),
@@ -79,129 +81,129 @@ export default function TutorialOverlay({
     const shortcutStepIndex = hasPermissionStep ? 3 : 2;
 
     React.useLayoutEffect(() => {
-        const root = rootRef.current;
-        if (!root) return;
+        if (!scope.current) return;
 
-        const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-        const animations: Animation[] = [];
-        let stepTimer: number | null = null;
-        const animate = (
-            selector: string,
-            keyframes: Keyframe[],
-            options: KeyframeAnimationOptions,
-            stagger = 0,
-        ) => {
-            root.querySelectorAll<HTMLElement>(selector).forEach((element, index) => {
-                animations.push(element.animate(keyframes, {
-                    fill: "both",
-                    ...options,
-                    delay: Number(options.delay ?? 0) + index * stagger,
-                }));
-            });
-        };
+        const controls: Array<{ stop: () => void }> = [];
+        let cancelled = false;
+        let holdTimer: number | null = null;
+        let releaseHold: (() => void) | null = null;
+        function track<T extends { stop: () => void }>(control: T): T {
+            controls.push(control);
+            return control;
+        }
+        const waitForWelcomeHold = () => new Promise<void>(resolve => {
+            releaseHold = resolve;
+            holdTimer = window.setTimeout(resolve, WELCOME_HOLD_MS);
+        });
 
         if (step === 0) {
-            const welcomeDuration = reduceMotion
-                ? WELCOME_HOLD_MS
-                : WELCOME_REVEAL_MS + WELCOME_HOLD_MS + WELCOME_EXIT_MS;
-            const revealOffset = WELCOME_REVEAL_MS / welcomeDuration;
-            const exitOffset = (WELCOME_REVEAL_MS + WELCOME_HOLD_MS) / welcomeDuration;
-            if (!reduceMotion) {
-                animate(classSelector("tutorial-welcome", ""), [
-                    {
-                        transform: "translate3d(64px, 0, 0) scale(.965)",
-                        opacity: 0,
-                        easing: "cubic-bezier(.22,1,.36,1)",
-                    },
-                    { transform: "translate3d(0, 0, 0) scale(1)", opacity: 1, offset: revealOffset },
-                    {
-                        transform: "translate3d(0, 0, 0) scale(1)",
-                        opacity: 1,
-                        offset: exitOffset,
-                        easing: "cubic-bezier(.65,0,.35,1)",
-                    },
-                    { transform: "translate3d(-120%, 0, 0) scale(1)", opacity: 0 },
-                ], { duration: welcomeDuration, easing: "linear" });
-                animate(classSelector("tutorial-welcome-orbit", ""), [
-                    { transform: "rotate(-5deg) scale(.96) translateY(0)" },
-                    { transform: "rotate(1deg) scale(1.015) translateY(0)", offset: .72 },
-                    { transform: "rotate(0) scale(1) translateY(0)" },
-                ], { duration: 560, delay: 30, easing: "cubic-bezier(.22,1,.36,1)" });
-                animate(classSelector("tutorial-welcome-logo", ""), [
-                    { transform: "rotate(-7deg) scale(.84)", opacity: 0 },
-                    { transform: "rotate(1deg) scale(1.025)", opacity: 1, offset: .78 },
-                    { transform: "rotate(0) scale(1)", opacity: 1 },
-                ], { duration: 520, delay: 50, easing: "cubic-bezier(.22,1,.36,1)" });
-                animate(classSelector("tutorial-welcome-word", ""), [
-                    { transform: "translateY(24px) rotateX(-24deg)", opacity: 0 },
-                    { transform: "translateY(0) rotateX(0)", opacity: 1 },
-                ], { duration: 420, delay: 180, easing: "cubic-bezier(.16,1,.3,1)" }, 55);
-                animate(classSelector("tutorial-welcome-accent", ""), [
-                    { transform: "scaleX(0)" },
-                    { transform: "scaleX(1)" },
-                ], { duration: 320, delay: 360, easing: "cubic-bezier(.16,1,.3,1)" });
-            }
-            stepTimer = window.setTimeout(() => setStep(hasPermissionStep ? 1 : 2), welcomeDuration);
+            const playWelcome = async () => {
+                if (!reduceMotion) {
+                    await Promise.all([
+                        track(animate(
+                            classSelector("tutorial-welcome"),
+                            { opacity: [0, 1], x: [motionTokens.distance.emphasis, 0] },
+                            { duration: motionTokens.duration.slow, ease: motionTokens.easing.enter },
+                        )),
+                        track(animate(
+                            classSelector("tutorial-welcome-logo"),
+                            { opacity: [0, 1], y: [motionTokens.distance.standard, 0] },
+                            { duration: motionTokens.duration.standard, ease: motionTokens.easing.enter },
+                        )),
+                        track(animate(
+                            classSelector("tutorial-welcome-word"),
+                            { opacity: [0, 1], y: [motionTokens.distance.standard, 0] },
+                            {
+                                duration: motionTokens.duration.standard,
+                                ease: motionTokens.easing.enter,
+                                delay: stagger(motionTokens.duration.quick),
+                            },
+                        )),
+                        track(animate(
+                            classSelector("tutorial-welcome-accent"),
+                            { opacity: [0, 1], scaleX: [0, 1] },
+                            { duration: motionTokens.duration.standard, ease: motionTokens.easing.enter },
+                        )),
+                    ]);
+                }
+                await waitForWelcomeHold();
+                if (!reduceMotion && !cancelled) {
+                    await track(animate(
+                        classSelector("tutorial-welcome"),
+                        { opacity: 0, x: -motionTokens.distance.emphasis },
+                        { duration: motionTokens.duration.standard, ease: motionTokens.easing.exit },
+                    ));
+                }
+                if (!cancelled) setStep(hasPermissionStep ? 1 : 2);
+            };
+            void playWelcome();
         } else if (!reduceMotion) {
-            animate(classSelector("tutorial-panel", ""), [
-                { transform: "perspective(900px) translateX(84px) rotateY(-4deg)", opacity: 0 },
-                { transform: "perspective(900px) translateX(0) rotateY(0)", opacity: 1 },
-            ], { duration: 520, easing: "cubic-bezier(.16,1,.3,1)" });
-            animate(classSelector("tutorial-step-copy", ""), [
-                { transform: "translateX(-24px)", opacity: 0 },
-                { transform: "translateX(0)", opacity: 1 },
-            ], { duration: 420, delay: 80, easing: "cubic-bezier(.16,1,.3,1)" });
-            animate(classSelector("tutorial-actions", ""), [
-                { transform: "translateX(28px)", opacity: 0 },
-                { transform: "translateX(0)", opacity: 1 },
-            ], { duration: 400, delay: 100, easing: "cubic-bezier(.34,1.56,.64,1)" });
-            animate(classSelector("tutorial-primary", ""), [
-                { transform: "scale(.82)" },
-                { transform: "scale(1)" },
-            ], { duration: 420, delay: 180, easing: "cubic-bezier(.34,1.56,.64,1)" });
+            track(animate(
+                classSelector("tutorial-panel"),
+                { opacity: [0, 1], x: [motionTokens.distance.standard, 0] },
+                { duration: motionTokens.duration.slow, ease: motionTokens.easing.enter },
+            ));
+            track(animate(
+                classSelector("tutorial-step-copy"),
+                { opacity: [0, 1], x: [-motionTokens.distance.subtle, 0] },
+                { duration: motionTokens.duration.standard, ease: motionTokens.easing.enter },
+            ));
+            track(animate(
+                classSelector("tutorial-actions"),
+                { opacity: [0, 1], x: [motionTokens.distance.subtle, 0] },
+                { duration: motionTokens.duration.standard, ease: motionTokens.easing.enter },
+            ));
 
             if (step === 1) {
-                animate(classSelector("tutorial-permission-card", ""), [
-                    { transform: "perspective(700px) translateY(34px) rotateY(-9deg) scale(.94)", opacity: 0 },
-                    { transform: "perspective(700px) translateY(0) rotateY(0) scale(1)", opacity: 1 },
-                ], { duration: 520, delay: 160, easing: "cubic-bezier(.34,1.56,.64,1)" }, 75);
-                animate(classSelector("tutorial-card-visual", " img"), [
-                    { transform: "translateY(9px) scale(1.16)" },
-                    { transform: "translateY(0) scale(1)" },
-                ], { duration: 560, delay: 260, easing: "cubic-bezier(.16,1,.3,1)" }, 60);
-                animate(classSelector("tutorial-status-pill", ""), [
-                    { transform: "translateY(-8px) scale(.72)", opacity: 0 },
-                    { transform: "translateY(0) scale(1)", opacity: 1 },
-                ], { duration: 340, delay: 330, easing: "cubic-bezier(.34,1.56,.64,1)" }, 50);
+                track(animate(
+                    classSelector("tutorial-permission-card"),
+                    { opacity: [0, 1], y: [motionTokens.distance.standard, 0] },
+                    {
+                        duration: motionTokens.duration.slow,
+                        ease: motionTokens.easing.enter,
+                        delay: stagger(motionTokens.duration.quick),
+                    },
+                ));
+                track(animate(
+                    classSelector("tutorial-status-pill"),
+                    { opacity: [0, 1], y: [-motionTokens.distance.subtle, 0] },
+                    {
+                        duration: motionTokens.duration.standard,
+                        ease: motionTokens.easing.enter,
+                        delay: stagger(motionTokens.duration.quick),
+                    },
+                ));
             } else if (step === 2) {
-                animate(classSelector("tutorial-toggle", ""), [
-                    { transform: "translateY(28px) rotate(-2.5deg) scale(.9)", opacity: 0 },
-                    { transform: "translateY(0) rotate(0) scale(1)", opacity: 1 },
-                ], { duration: 460, delay: 160, easing: "cubic-bezier(.34,1.56,.64,1)" }, 65);
+                track(animate(
+                    classSelector("tutorial-toggle"),
+                    { opacity: [0, 1], y: [motionTokens.distance.standard, 0] },
+                    {
+                        duration: motionTokens.duration.standard,
+                        ease: motionTokens.easing.enter,
+                        delay: stagger(motionTokens.duration.quick),
+                    },
+                ));
             } else if (step === 3) {
-                animate(classSelector("tutorial-shortcut-art", ""), [
-                    { transform: "translateX(-36px) rotate(-2deg)", opacity: 0 },
-                    { transform: "translateX(0) rotate(0)", opacity: 1 },
-                ], { duration: 550, delay: 160, easing: "cubic-bezier(.16,1,.3,1)" });
-                animate(classSelector("tutorial-shortcut-keycap", ""), [
-                    { transform: "translateX(42px) scale(.82)", opacity: 0 },
-                    { transform: "translateX(0) scale(1)", opacity: 1 },
-                ], { duration: 520, delay: 240, easing: "cubic-bezier(.34,1.56,.64,1)" });
-                animate(classSelector("tutorial-shortcut-keycap", " strong"), [
-                    { transform: "scale(1)" },
-                    { transform: "scale(1.06)", offset: .5 },
-                    { transform: "scale(1)" },
-                ], { duration: 600, delay: 650, easing: "ease-in-out" });
+                track(animate(
+                    classSelector("tutorial-shortcut-art"),
+                    { opacity: [0, 1], x: [-motionTokens.distance.standard, 0] },
+                    { duration: motionTokens.duration.slow, ease: motionTokens.easing.enter },
+                ));
+                track(animate(
+                    classSelector("tutorial-shortcut-keycap"),
+                    { opacity: [0, 1], x: [motionTokens.distance.standard, 0] },
+                    { duration: motionTokens.duration.slow, ease: motionTokens.easing.enter },
+                ));
             }
         }
 
         return () => {
-            if (stepTimer !== null) {
-                window.clearTimeout(stepTimer);
-            }
-            animations.forEach(animation => animation.cancel());
+            cancelled = true;
+            if (holdTimer !== null) window.clearTimeout(holdTimer);
+            releaseHold?.();
+            controls.forEach(control => control.stop());
         };
-    }, [hasPermissionStep, step]);
+    }, [animate, hasPermissionStep, reduceMotion, scope, step]);
 
     React.useEffect(() => {
         const currentState = new Map(permissions.map(permission => [permission.id, permission.done]));
@@ -210,40 +212,42 @@ export default function TutorialOverlay({
         ));
         previousPermissionState.current = currentState;
 
-        const root = rootRef.current;
+        const root = scope.current as HTMLElement | null;
         if (!root || step !== 1 || newlyEnabled.length === 0) return;
-        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+        if (reduceMotion) return;
 
-        const animations: Animation[] = [];
+        const controls: Array<{ stop: () => void }> = [];
         newlyEnabled.forEach((permission, index) => {
             const card = root.querySelector<HTMLElement>(`[data-permission-id="${permission.id}"]`);
             if (!card) return;
-            const delay = index * 60;
-            animations.push(card.animate([
-                { transform: "translateY(0) scale(1)" },
-                { transform: "translateY(-7px) scale(1.025)", offset: .35 },
-                { transform: "translateY(0) scale(1)" },
-            ], { duration: 620, delay, easing: "cubic-bezier(.34,1.56,.64,1)" }));
+            const delay = index * motionTokens.duration.quick;
+            controls.push(animate(
+                card,
+                { y: [0, -motionTokens.distance.subtle, 0] },
+                { duration: motionTokens.duration.slow, delay, ease: motionTokens.easing.enter },
+            ));
 
             const status = card.querySelector<HTMLElement>(classSelector("tutorial-status-pill"));
             if (status) {
-                animations.push(status.animate([
-                    { transform: "scale(.45) rotate(-8deg)", opacity: 0 },
-                    { transform: "scale(1) rotate(0)", opacity: 1 },
-                ], { duration: 420, delay, easing: "cubic-bezier(.34,1.56,.64,1)" }));
+                controls.push(animate(
+                    status,
+                    { opacity: [0, 1], y: [-motionTokens.distance.subtle, 0] },
+                    { duration: motionTokens.duration.standard, delay, ease: motionTokens.easing.enter },
+                ));
             }
 
             const burst = card.querySelector<HTMLElement>(classSelector("tutorial-status-burst"));
             if (burst) {
-                animations.push(burst.animate([
-                    { transform: "scale(.25)", opacity: .75 },
-                    { transform: "scale(2.1)", opacity: 0 },
-                ], { duration: 500, delay, easing: "cubic-bezier(.16,1,.3,1)" }));
+                controls.push(animate(
+                    burst,
+                    { opacity: [0.75, 0] },
+                    { duration: motionTokens.duration.standard, delay, ease: motionTokens.easing.exit },
+                ));
             }
         });
 
-        return () => animations.forEach(animation => animation.cancel());
-    }, [permissions, step]);
+        return () => controls.forEach(control => control.stop());
+    }, [animate, permissions, reduceMotion, scope, step]);
 
     const renderStep = ({
         index,
@@ -260,24 +264,24 @@ export default function TutorialOverlay({
                 <h2>{title}</h2>
                 <p>{description}</p>
                 {onBack && (
-                    <button type="button" className={`${styles["tutorial-nav-button"]} ${styles["tutorial-back-action"]}`} onClick={onBack}>
+                    <Button variant="text" className={`${styles["tutorial-nav-button"]} ${styles["tutorial-back-action"]}`} onClick={onBack}>
                         {t("tutorial.back")}
-                    </button>
+                    </Button>
                 )}
             </div>
             <div className={`${styles["tutorial-main"]} ${styles["tutorial-animate-item"]}`}>
                 {children}
             </div>
             <div className={`${styles["tutorial-actions"]} ${styles["tutorial-animate-item"]}`}>
-                <button type="button" className={`${styles["tutorial-nav-button"]} ${styles["tutorial-primary"]}`} onClick={onNext}>
+                <Button variant="contained" className={`${styles["tutorial-nav-button"]} ${styles["tutorial-primary"]}`} onClick={onNext}>
                     {nextLabel}
-                </button>
+                </Button>
             </div>
         </section>
     );
 
     return (
-        <div className={styles["tutorial-root"]} ref={rootRef}>
+        <div className={styles["tutorial-root"]} ref={scope}>
             {step === 0 && (
                 <section className={styles["tutorial-welcome"]} aria-live="polite">
                     <div className={styles["tutorial-welcome-orbit"]}>
@@ -323,10 +327,10 @@ export default function TutorialOverlay({
                                     <p>{permission.description}</p>
                                 </div>
                                 {!permission.done && (
-                                    <button type="button" className={styles["tutorial-card-action"]} onClick={() => void onPermissionAction(permission.id)}>
+                                    <Button variant="contained" className={styles["tutorial-card-action"]} onClick={() => void onPermissionAction(permission.id)}>
                                         <span>{permission.actionLabel}</span>
                                         <ArrowOutwardRoundedIcon fontSize="inherit" />
-                                    </button>
+                                    </Button>
                                 )}
                             </article>
                         ))}
@@ -347,12 +351,12 @@ export default function TutorialOverlay({
                         {filters.map(filter => (
                             <label className={`${styles["tutorial-toggle"]} ${styles["tutorial-orbit-item"]}`} key={filter.id}>
                                 <span>{filter.name}</span>
-                                <input
-                                    type="checkbox"
+                                <Switch
+                                    size="small"
                                     checked={filter.enabled}
-                                    onChange={event => onToggleFilter(filter.id, event.target.checked)}
+                                    onChange={(_event, checked) => onToggleFilter(filter.id, checked)}
+                                    inputProps={{ "aria-label": filter.name }}
                                 />
-                                <i aria-hidden="true" />
                             </label>
                         ))}
                     </div>

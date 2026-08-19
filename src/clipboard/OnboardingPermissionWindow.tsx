@@ -11,6 +11,7 @@ import backgroundAuthorizeTips from "../assets/tutorial/background-authorize-tip
 import { useLanguage } from "../lang";
 import { loadAndApplyTheme, setThemePreview, type ResolvedTheme } from "../theme";
 import { ToolbarIconButton } from "../ui/ToolbarIconButton";
+import { m, useMotionPreset } from "../ui/motion";
 import {
     PENDING_PERMISSION_WINDOW_KEY,
     type TutorialPermissionId,
@@ -51,6 +52,7 @@ export default function OnboardingPermissionWindow() {
     );
     const [pending, setPending] = useState(false);
     const [actionError, setActionError] = useState("");
+    const dialogMotion = useMotionPreset("popover");
 
     const applyPayload = (payload: PermissionWindowPayload) => {
         if (!isPermissionId(payload.permission)) return;
@@ -162,10 +164,13 @@ export default function OnboardingPermissionWindow() {
 
     return (
         <main className={styles["permission-guide-window-root"]}>
-            <section
+            <m.section
                 className={`${styles["tutorial-guide-dialog"]} ${styles["permission-guide-standalone-dialog"]}`}
                 aria-labelledby="tutorial-guide-title"
                 aria-describedby="tutorial-guide-description"
+                variants={dialogMotion}
+                initial="initial"
+                animate="animate"
             >
                 <ToolbarIconButton
                     size="medium"
@@ -206,7 +211,7 @@ export default function OnboardingPermissionWindow() {
                     </Button>
                     {actionError && <p className={styles["permission-guide-error"]} role="alert">{actionError}</p>}
                 </div>
-            </section>
+            </m.section>
         </main>
     );
 }

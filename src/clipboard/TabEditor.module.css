@@ -51,19 +51,6 @@
   border-radius: var(--ui-radius-window);
   background: #fafaf8;
   box-shadow: var(--ui-window-shadow);
-  animation: tabEditorIn 100ms ease-out forwards;
-}
-
-@keyframes tabEditorIn {
-  from {
-    opacity: 0;
-    transform: translateY(4px) scale(0.985);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
 }
 
 .tab-editor-header,

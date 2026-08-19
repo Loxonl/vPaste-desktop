@@ -90,7 +90,11 @@ body,
   color: #5d6672;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18), inset 0 0 0 1px rgba(0, 0, 0, 0.08);
   cursor: pointer;
-  transition: background 0.14s ease, color 0.14s ease, box-shadow 0.14s ease, transform 0.14s ease;
+  transition:
+    background var(--motion-duration-quick) var(--motion-ease-standard),
+    color var(--motion-duration-quick) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-quick) var(--motion-ease-standard),
+    transform var(--motion-duration-quick) var(--motion-ease-standard);
 }
 
 .preview-pin:hover {

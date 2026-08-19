@@ -76,6 +76,8 @@ test.describe("window shells", () => {
             const surface = page.locator(popup.surface).first();
             await expect(surface).toHaveCSS("border-radius", "12px");
             await expect(surface).not.toHaveCSS("box-shadow", "none");
+            await expect.poll(async () => (await surface.boundingBox())?.x ?? -1).toBeGreaterThanOrEqual(8);
+            await expect.poll(async () => (await surface.boundingBox())?.y ?? -1).toBeGreaterThanOrEqual(8);
             const box = await surface.boundingBox();
             expect(box).not.toBeNull();
             expect(box!.x).toBeGreaterThanOrEqual(8);

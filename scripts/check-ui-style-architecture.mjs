@@ -42,8 +42,12 @@ function compareBaseline(label, expected, actual) {
     for (const path of paths) {
         const expectedValue = expected[path] ?? {};
         const actualValue = actual[path] ?? {};
-        const normalizedExpected = Object.fromEntries(Object.entries(expectedValue).sort());
-        const normalizedActual = Object.fromEntries(Object.entries(actualValue).sort());
+        const normalizedExpected = typeof expectedValue === "object"
+            ? Object.fromEntries(Object.entries(expectedValue).sort())
+            : expectedValue;
+        const normalizedActual = typeof actualValue === "object"
+            ? Object.fromEntries(Object.entries(actualValue).sort())
+            : actualValue;
         if (JSON.stringify(normalizedExpected) !== JSON.stringify(normalizedActual)) {
             errors.push(
                 `${path}: ${label} changed; expected ${JSON.stringify(normalizedExpected)}, received ${JSON.stringify(normalizedActual)}. Migrate the control/motion to the shared system and shrink scripts/ui-governance-baseline.json in the same PR`,
@@ -114,7 +118,9 @@ for (const path of walk(sourceRoot)) {
             /\b(?:transition|duration|easing)\s*:\s*(?:"[^"]*"|'[^']*'|[A-Za-z_$][\w$]*|\d+(?:\.\d+)?)/g,
         )]
             .map(match => match[0].replace(/\s+/g, " ").trim())
-            .filter(declaration => !declaration.includes("var(--motion-"));
+            .filter(declaration => !declaration.includes("var(--motion-"))
+            .filter(declaration => !declaration.endsWith(": motionTokens"))
+            .filter(declaration => !declaration.endsWith(": motionSprings"));
         if (scriptedDeclarations.length > 0 && !sourcePath.startsWith("src/ui/motion/")) {
             scriptMotion[sourcePath] = countByValue(scriptedDeclarations);
         }

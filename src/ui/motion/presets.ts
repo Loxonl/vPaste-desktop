@@ -1,5 +1,5 @@
 import type { Variants } from "motion/react";
-import { useReducedMotion } from "motion/react";
+import { useReducedMotionConfig } from "motion/react";
 import { motionTokens } from "./tokens";
 
 export type MotionPresetName =
@@ -80,5 +80,5 @@ export function motionPresetFor(name: MotionPresetName, reducedMotion: boolean):
 }
 
 export function useMotionPreset(name: MotionPresetName): Variants {
-    return motionPresetFor(name, Boolean(useReducedMotion()));
+    return motionPresetFor(name, Boolean(useReducedMotionConfig()));
 }

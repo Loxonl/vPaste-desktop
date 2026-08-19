@@ -24,6 +24,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use image::{ImageBuffer, Rgba};
 use lazy_static::lazy_static;
 use log::{error, info, LevelFilter};
+#[cfg(any(test, target_os = "windows"))]
+use rand::RngCore;
 use serde::Serialize;
 use tauri::image::Image as TauriImage;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
@@ -7093,8 +7095,7 @@ fn write_internal_clipboard_marker() {
 
 #[cfg(target_os = "windows")]
 fn write_internal_clipboard_marker_without_open() {
-    let mut marker = [0_u8; 16];
-    rand::thread_rng().fill_bytes(&mut marker);
+    let marker = generate_internal_clipboard_marker();
     if let Ok(mut current_marker) = CLIPBOARD_INTERNAL_MARKER.lock() {
         *current_marker = marker;
     }
@@ -7107,6 +7108,25 @@ fn write_internal_clipboard_marker_without_open() {
             }
         }
         None => error!("Failed to register internal clipboard marker format"),
+    }
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn generate_internal_clipboard_marker() -> [u8; 16] {
+    let mut marker = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut marker);
+    marker
+}
+
+#[cfg(test)]
+mod internal_clipboard_marker_tests {
+    use super::*;
+
+    #[test]
+    fn generated_internal_clipboard_marker_has_expected_size() {
+        let marker = generate_internal_clipboard_marker();
+
+        assert_eq!(marker.len(), 16);
     }
 }
 

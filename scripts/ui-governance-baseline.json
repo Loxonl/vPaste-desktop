@@ -1,0 +1,100 @@
+{
+  "rawControls": {
+    "src/clipboard/Clipboard.tsx": { "button": 3, "input": 1 },
+    "src/clipboard/ClipboardHeader.tsx": { "button": 15 },
+    "src/clipboard/ClipboardOverlays.tsx": { "button": 8 },
+    "src/clipboard/EmojiPicker.tsx": { "button": 2 },
+    "src/clipboard/OnboardingPermissionWindow.tsx": { "button": 3 },
+    "src/clipboard/PasteFallbackNotice.tsx": { "button": 1 },
+    "src/clipboard/PasteQueue.tsx": { "button": 12 },
+    "src/clipboard/Preview.tsx": { "button": 1 },
+    "src/clipboard/TabEditor.tsx": { "button": 6, "input": 2, "select": 3 },
+    "src/clipboard/TutorialOverlay.tsx": { "button": 3, "input": 1 },
+    "src/config/Config.tsx": { "button": 4 },
+    "src/config/sections/AboutSettings.tsx": { "button": 2 },
+    "src/config/sections/DataSettings.tsx": { "button": 3 },
+    "src/config/sections/GeneralSettings.tsx": { "button": 1 },
+    "src/config/sections/ShortcutSettings.tsx": { "button": 1 },
+    "src/debug/TestRoom.tsx": { "button": 8 },
+    "src/tray/TrayMenu.tsx": { "button": 3 }
+  },
+  "cssMotion": {
+    "src/clipboard/Clipboard.module.css": {
+      "animation: cardItemTagsScroll 8s linear infinite": 1,
+      "animation: contextMenuIn 90ms ease-out forwards": 4,
+      "animation: toastIn 140ms ease-out forwards": 1,
+      "transition: background 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease": 1,
+      "transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease": 1,
+      "transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease": 1,
+      "transition: color 0.16s ease, background 0.16s ease, transform 0.16s ease": 1,
+      "transition: min-width 0.16s ease": 1,
+      "transition: opacity 0.16s ease, background-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease": 1,
+      "transition: opacity 0.16s ease, transform 0.16s ease": 1,
+      "transition: transform 0.2s ease, box-shadow 0.2s ease, outline-color 0.2s ease": 1
+    },
+    "src/clipboard/PasteQueue.module.css": {
+      "transition: opacity 100ms ease, background 100ms ease": 1,
+      "transition: transform 160ms cubic-bezier(0.2, 0, 0, 1), opacity 100ms ease, background 100ms ease": 1
+    },
+    "src/clipboard/Preview.module.css": {
+      "transition: background 0.14s ease, color 0.14s ease, box-shadow 0.14s ease, transform 0.14s ease": 1
+    },
+    "src/clipboard/TabEditor.module.css": {
+      "animation: tabEditorIn 100ms ease-out forwards": 1
+    },
+    "src/clipboard/TutorialOverlay.module.css": {
+      "animation: tutorial-guide-backdrop-in 180ms ease-out both": 1,
+      "animation: tutorial-guide-dialog-in 230ms cubic-bezier(0.2, 0.82, 0.2, 1) both": 1,
+      "transition-duration: 150ms": 1,
+      "transition-duration: 160ms": 1,
+      "transition-duration: 170ms": 2,
+      "transition: background-color 160ms ease": 1,
+      "transition: transform 160ms ease": 1,
+      "transition-property: transform, background-color, box-shadow": 1,
+      "transition-property: transform, background-color, color, box-shadow, opacity": 1,
+      "transition-property: transform, border-color, background-color, box-shadow": 1,
+      "transition-property: transform, border-color, box-shadow, background-color": 1,
+      "transition-timing-function: ease-out": 4
+    },
+    "src/config/Config.module.css": {
+      "transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease": 1,
+      "transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease": 2
+    },
+    "src/config/ConfigLayout.module.css": {
+      "transition: background-color 120ms ease, color 120ms ease": 1
+    },
+    "src/theme.css": {
+      "animation-duration: 0.01ms !important": 1,
+      "transition-duration: 0.01ms !important": 1
+    }
+  },
+  "scriptMotion": {
+    "src/clipboard/TutorialOverlay.tsx": {
+      "duration: 320": 1,
+      "duration: 340": 1,
+      "duration: 400": 1,
+      "duration: 420": 4,
+      "duration: 460": 1,
+      "duration: 500": 1,
+      "duration: 520": 4,
+      "duration: 550": 1,
+      "duration: 560": 2,
+      "duration: 600": 1,
+      "duration: 620": 1,
+      "duration: welcomeDuration": 1,
+      "easing: \"cubic-bezier(.16,1,.3,1)\"": 7,
+      "easing: \"cubic-bezier(.22,1,.36,1)\"": 3,
+      "easing: \"cubic-bezier(.34,1.56,.64,1)\"": 8,
+      "easing: \"cubic-bezier(.65,0,.35,1)\"": 1,
+      "easing: \"ease-in-out\"": 1,
+      "easing: \"linear\"": 1
+    },
+    "src/ui/appTheme.ts": {
+      "transition: \"background-color 120ms ease\"": 1,
+      "transition: \"background-color 140ms ease, color 140ms ease\"": 1
+    }
+  },
+  "legacyWebAnimations": {
+    "src/clipboard/TutorialOverlay.tsx": 4
+  }
+}

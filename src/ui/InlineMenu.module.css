@@ -1,4 +1,10 @@
+.motionRoot {
+  transform-origin: top center;
+}
+
 .surface.surface {
+  width: 100%;
+  max-height: inherit;
   box-sizing: border-box;
   overflow: visible;
   color: var(--ui-text);

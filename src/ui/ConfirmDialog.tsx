@@ -38,7 +38,6 @@ export function ConfirmDialog({
             aria-labelledby={titleId}
             aria-describedby={descriptionId}
             maxWidth={false}
-            transitionDuration={0}
             BackdropProps={{ className: styles.backdrop }}
             PaperProps={{ className: styles.paper, role: "alertdialog" }}
         >

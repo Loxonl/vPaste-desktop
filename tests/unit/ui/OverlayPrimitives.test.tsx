@@ -1,11 +1,14 @@
-import { useState } from "react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { useState, type ReactElement } from "react";
+import { cleanup, render as renderUi, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConfirmDialog } from "../../../src/ui/ConfirmDialog";
 import { InlineMenuItem, InlineMenuSurface } from "../../../src/ui/InlineMenu";
 import { StatusToast } from "../../../src/ui/StatusToast";
 import { ToolbarIconButton } from "../../../src/ui/ToolbarIconButton";
+import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
+
+const render = (ui: ReactElement) => renderUi(<MotionTestProvider>{ui}</MotionTestProvider>);
 
 afterEach(cleanup);
 

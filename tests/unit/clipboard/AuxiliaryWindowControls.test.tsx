@@ -1,4 +1,5 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { cleanup, render as renderUi, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import EmojiPicker from "../../../src/clipboard/EmojiPicker";
@@ -6,6 +7,9 @@ import PasteFallbackNotice from "../../../src/clipboard/PasteFallbackNotice";
 import Preview from "../../../src/clipboard/Preview";
 import TabEditor from "../../../src/clipboard/TabEditor";
 import TrayMenu from "../../../src/tray/TrayMenu";
+import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
+
+const render = (ui: ReactElement) => renderUi(<MotionTestProvider>{ui}</MotionTestProvider>);
 
 const tauri = vi.hoisted(() => ({
     emit: vi.fn(),

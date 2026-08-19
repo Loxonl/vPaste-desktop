@@ -1,8 +1,12 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { act, cleanup, fireEvent, render as renderUi, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import PasteQueue from "../../../src/clipboard/PasteQueue";
 import { ItemType } from "../../../src/clipboard/Item";
+import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
+
+const render = (ui: ReactElement) => renderUi(<MotionTestProvider>{ui}</MotionTestProvider>);
 
 const tauri = vi.hoisted(() => ({
     invoke: vi.fn(),
@@ -355,8 +359,9 @@ describe("PasteQueue", () => {
 
         const moreButton = await screen.findByRole("button", { name: "pasteQueue.more" });
         await user.click(moreButton);
+        await waitFor(() => expect(screen.getByRole("menuitem", { name: "pasteQueue.clear" })).toBeVisible());
         await user.keyboard("{Escape}");
-        expect(screen.queryByRole("menuitem", { name: "pasteQueue.clear" })).not.toBeInTheDocument();
+        await waitFor(() => expect(screen.queryByRole("menuitem", { name: "pasteQueue.clear" })).not.toBeInTheDocument());
         expect(moreButton).toHaveFocus();
 
         await user.click(moreButton);
@@ -373,24 +378,24 @@ describe("PasteQueue", () => {
 
         const moreButton = await screen.findByRole("button", { name: "pasteQueue.more" });
         await user.click(moreButton);
-        expect(screen.getByRole("menuitem", { name: "pasteQueue.clear" })).toBeVisible();
+        await waitFor(() => expect(screen.getByRole("menuitem", { name: "pasteQueue.clear" })).toBeVisible());
 
         fireEvent.pointerDown(document.body);
-        expect(screen.queryByRole("menuitem", { name: "pasteQueue.clear" })).not.toBeInTheDocument();
+        await waitFor(() => expect(screen.queryByRole("menuitem", { name: "pasteQueue.clear" })).not.toBeInTheDocument());
 
         await user.click(moreButton);
-        expect(screen.getByRole("menuitem", { name: "pasteQueue.clear" })).toBeVisible();
+        await waitFor(() => expect(screen.getByRole("menuitem", { name: "pasteQueue.clear" })).toBeVisible());
 
         fireEvent.focusIn(screen.getByRole("menuitem", { name: "pasteQueue.clear" }));
         expect(screen.getByRole("menuitem", { name: "pasteQueue.clear" })).toBeVisible();
         fireEvent.focusIn(screen.getByRole("button", { name: "pasteQueue.close" }));
-        expect(screen.queryByRole("menuitem", { name: "pasteQueue.clear" })).not.toBeInTheDocument();
+        await waitFor(() => expect(screen.queryByRole("menuitem", { name: "pasteQueue.clear" })).not.toBeInTheDocument());
 
         await user.click(moreButton);
-        expect(screen.getByRole("menuitem", { name: "pasteQueue.clear" })).toBeVisible();
+        await waitFor(() => expect(screen.getByRole("menuitem", { name: "pasteQueue.clear" })).toBeVisible());
 
         fireEvent.blur(window);
-        expect(screen.queryByRole("menuitem", { name: "pasteQueue.clear" })).not.toBeInTheDocument();
+        await waitFor(() => expect(screen.queryByRole("menuitem", { name: "pasteQueue.clear" })).not.toBeInTheDocument());
     });
 
     it("dismisses the clear queue menu from a native outside-window click event", async () => {
@@ -399,7 +404,7 @@ describe("PasteQueue", () => {
 
         const moreButton = await screen.findByRole("button", { name: "pasteQueue.more" });
         await user.click(moreButton);
-        expect(screen.getByRole("menuitem", { name: "pasteQueue.clear" })).toBeVisible();
+        await waitFor(() => expect(screen.getByRole("menuitem", { name: "pasteQueue.clear" })).toBeVisible());
         await waitFor(() => {
             expect(tauri.invoke).toHaveBeenCalledWith("set_paste_queue_menu_open", { open: true });
         });
@@ -408,7 +413,7 @@ describe("PasteQueue", () => {
             tauri.listeners.get("paste-queue-dismiss-menu")?.({ payload: null });
         });
 
-        expect(screen.queryByRole("menuitem", { name: "pasteQueue.clear" })).not.toBeInTheDocument();
+        await waitFor(() => expect(screen.queryByRole("menuitem", { name: "pasteQueue.clear" })).not.toBeInTheDocument());
         await waitFor(() => {
             expect(tauri.invoke).toHaveBeenCalledWith("set_paste_queue_menu_open", { open: false });
         });

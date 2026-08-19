@@ -9,7 +9,7 @@
   background: var(--ui-surface-solid);
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-control);
-  box-shadow: var(--ui-shadow);
+  box-shadow: var(--status-toast-shadow, var(--ui-shadow));
   font-size: 13px;
   font-weight: 560;
   line-height: 18px;

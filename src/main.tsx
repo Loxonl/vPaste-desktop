@@ -6,6 +6,8 @@ import "./theme.css";
 import { installThemeSync } from "./theme.ts";
 import AppThemeProvider from "./ui/AppThemeProvider.tsx";
 import RouteFallback from "./ui/RouteFallback.tsx";
+import AppMotionProvider from "./ui/motion/AppMotionProvider.tsx";
+import { syncMotionCssVariables } from "./ui/motion";
 
 const Clipboard = React.lazy(() => import("./clipboard/Clipboard.tsx"));
 const EmojiPicker = React.lazy(() => import("./clipboard/EmojiPicker.tsx"));
@@ -31,6 +33,7 @@ if ("__TAURI_INTERNALS__" in window) {
     void info(`Rendering app, path: ${window.location.pathname}`);
 }
 installThemeSync();
+syncMotionCssVariables();
 
 function isEditableTarget(target: EventTarget | null) {
     if (!(target instanceof HTMLElement)) return false;
@@ -73,10 +76,11 @@ installDesktopInteractionGuards();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
-        <AppThemeProvider>
-            <Router>
-                <React.Suspense fallback={<RouteFallback />}>
-                    <Routes>
+        <AppMotionProvider>
+            <AppThemeProvider>
+                <Router>
+                    <React.Suspense fallback={<RouteFallback />}>
+                        <Routes>
                         <Route path="/clipboard" element={<Clipboard />} />
                         <Route path="/clipboard/preview" element={<Preview />} />
                         <Route path="/emoji-picker" element={<EmojiPicker />} />
@@ -91,9 +95,10 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
                         {TestRoom ? <Route path="/__test-room" element={<TestRoom />} /> : null}
                         <Route path="/" element={<Clipboard />} />
                         <Route path="*" element={<Clipboard />} />
-                    </Routes>
-                </React.Suspense>
-            </Router>
-        </AppThemeProvider>
+                        </Routes>
+                    </React.Suspense>
+                </Router>
+            </AppThemeProvider>
+        </AppMotionProvider>
     </React.StrictMode>,
 );

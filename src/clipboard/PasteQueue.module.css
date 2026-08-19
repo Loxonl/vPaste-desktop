@@ -293,5 +293,5 @@ body {
 .undo {
   align-self: stretch;
   margin: var(--ui-space-2);
-  box-shadow: none;
+  --status-toast-shadow: none;
 }

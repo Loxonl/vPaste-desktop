@@ -1,5 +1,6 @@
 import { createTheme, type Theme } from "@mui/material/styles";
 import type { ResolvedTheme } from "../theme";
+import { motionDurationsMs } from "./motion/tokens";
 
 const lightPalette = {
     background: {
@@ -27,6 +28,17 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
     const dark = mode === "dark";
 
     return createTheme({
+        transitions: {
+            duration: {
+                shortest: motionDurationsMs.quick,
+                shorter: motionDurationsMs.fast,
+                short: motionDurationsMs.fast,
+                standard: motionDurationsMs.standard,
+                complex: motionDurationsMs.slow,
+                enteringScreen: motionDurationsMs.standard,
+                leavingScreen: motionDurationsMs.fast,
+            },
+        },
         palette: {
             mode,
             primary: {
@@ -149,7 +161,7 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                     },
                     switchBase: {
                         padding: 2,
-                        transitionDuration: "160ms",
+                        transitionDuration: "var(--motion-duration-fast)",
                         "&:hover": {
                             backgroundColor: "transparent",
                         },
@@ -210,7 +222,7 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                         fontSize: 15,
                         fontWeight: 420,
                         color: "var(--settings-sidebar-text)",
-                        transition: "background-color 140ms ease, color 140ms ease",
+                        transition: "background-color var(--motion-duration-fast) var(--motion-ease-standard), color var(--motion-duration-fast) var(--motion-ease-standard)",
                         "&.Mui-selected": {
                             color: "var(--settings-sidebar-selected-text)",
                             backgroundColor: "var(--settings-sidebar-selected-bg)",
@@ -314,7 +326,7 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                         minHeight: "var(--ui-control-height)",
                         borderRadius: 0,
                         fontSize: 13,
-                        transition: "background-color 120ms ease",
+                        transition: "background-color var(--motion-duration-quick) var(--motion-ease-standard)",
                         "&:hover": {
                             backgroundColor: "var(--ui-surface-hover)",
                         },

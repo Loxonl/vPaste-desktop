@@ -4,6 +4,7 @@ import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
 import { StatusToast, type StatusToastKind } from "../ui/StatusToast";
 import { ToolbarIconButton } from "../ui/ToolbarIconButton";
+import { AnimatePresence } from "../ui/motion";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
@@ -1620,23 +1621,25 @@ export default function Clipboard() {
             tabIndex={-1}
             onContextMenu={event => event.preventDefault()}
         >
-            {toast && (
-                <StatusToast
-                    key={toast.id}
-                    className={classes(styles, "clipboard-toast")}
-                    kind={toast.kind}
-                    message={toast.message}
-                    actionLabel={toast.actionLabel}
-                    onAction={toast.actionLabel && toast.onAction ? () => {
-                        if (toastTimerRef.current !== null) {
-                            window.clearTimeout(toastTimerRef.current);
-                            toastTimerRef.current = null;
-                        }
-                        setToast(null);
-                        toast.onAction?.();
-                    } : undefined}
-                />
-            )}
+            <AnimatePresence mode="wait" initial={false}>
+                {toast && (
+                    <StatusToast
+                        key={toast.id}
+                        className={classes(styles, "clipboard-toast")}
+                        kind={toast.kind}
+                        message={toast.message}
+                        actionLabel={toast.actionLabel}
+                        onAction={toast.actionLabel && toast.onAction ? () => {
+                            if (toastTimerRef.current !== null) {
+                                window.clearTimeout(toastTimerRef.current);
+                                toastTimerRef.current = null;
+                            }
+                            setToast(null);
+                            toast.onAction?.();
+                        } : undefined}
+                    />
+                )}
+            </AnimatePresence>
             {/* Header */}
             <div className={classes(styles, "clipboard-header")}>
                 {tutorialActive ? (
@@ -1826,49 +1829,54 @@ export default function Clipboard() {
                     </Button>
                 </div>
             )}
-            {tagCreateChoice && (
-                <TagCreateChoicePopover
-                    state={tagCreateChoice}
-                    t={t}
-                    onSelect={(kind, originX, originY) => {
-                        setTagCreateChoice(null);
-                        openTabEditorWindowAt("add", kind, undefined, undefined, originX, originY);
-                    }}
-                />
-            )}
-            {contextMenu && (
-                <ClipboardContextMenus
-                    state={contextMenu}
-                    options={contextMenuOptions}
-                    selectedIndex={contextMenuIndex}
-                    submenuOptions={selectedSubmenuOptions}
-                    submenuLeft={submenuLeft}
-                    submenuTop={submenuTop}
-                    onSelectedIndexChange={setContextMenuIndex}
-                />
-            )}
-            {tabContextMenu && (
-                <TabContextMenu
-                    state={tabContextMenu}
-                    t={t}
-                    onEdit={state => {
-                        if (state.kind === "record") {
-                            openTabEditorWindowAt("edit", "record", undefined, state.tag, state.originX, state.originY);
-                        } else {
-                            openTabEditorWindowAt("edit", "filter", state.tab, undefined, state.originX, state.originY);
-                        }
-                        setTabContextMenu(null);
-                    }}
-                    onDelete={state => {
-                        if (state.kind === "record") {
-                            setDeleteConfirmRecordTag(state.tag);
-                        } else {
-                            setDeleteConfirmTab(state.tab);
-                        }
-                        setTabContextMenu(null);
-                    }}
-                />
-            )}
+            <AnimatePresence mode="wait" initial={false}>
+                {tagCreateChoice && (
+                    <TagCreateChoicePopover
+                        key="tag-create-choice"
+                        state={tagCreateChoice}
+                        t={t}
+                        onSelect={(kind, originX, originY) => {
+                            setTagCreateChoice(null);
+                            openTabEditorWindowAt("add", kind, undefined, undefined, originX, originY);
+                        }}
+                    />
+                )}
+                {contextMenu && (
+                    <ClipboardContextMenus
+                        key="clipboard-context-menu"
+                        state={contextMenu}
+                        options={contextMenuOptions}
+                        selectedIndex={contextMenuIndex}
+                        submenuOptions={selectedSubmenuOptions}
+                        submenuLeft={submenuLeft}
+                        submenuTop={submenuTop}
+                        onSelectedIndexChange={setContextMenuIndex}
+                    />
+                )}
+                {tabContextMenu && (
+                    <TabContextMenu
+                        key="tab-context-menu"
+                        state={tabContextMenu}
+                        t={t}
+                        onEdit={state => {
+                            if (state.kind === "record") {
+                                openTabEditorWindowAt("edit", "record", undefined, state.tag, state.originX, state.originY);
+                            } else {
+                                openTabEditorWindowAt("edit", "filter", state.tab, undefined, state.originX, state.originY);
+                            }
+                            setTabContextMenu(null);
+                        }}
+                        onDelete={state => {
+                            if (state.kind === "record") {
+                                setDeleteConfirmRecordTag(state.tag);
+                            } else {
+                                setDeleteConfirmTab(state.tab);
+                            }
+                            setTabContextMenu(null);
+                        }}
+                    />
+                )}
+            </AnimatePresence>
             {deleteConfirmTab && (
                 <DeleteConfirmDialog
                     title={t("tabs.deleteConfirmTitle")}

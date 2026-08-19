@@ -2,6 +2,7 @@ import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { InlineMenuItem, InlineMenuSurface } from "../ui/InlineMenu";
+import { AnimatePresence } from "../ui/motion";
 import { Item, ItemTag } from "./Item";
 import { type CustomTab } from "./customTabs";
 
@@ -127,26 +128,29 @@ export function ClipboardContextMenus({
                     </InlineMenuItem>
                 ))}
             </InlineMenuSurface>
-            {submenuOptions.length > 0 && (
-                <InlineMenuSurface
-                    className={classes(styles, "context-submenu")}
-                    style={{ left: submenuLeft, top: submenuTop }}
-                    scrollable
-                >
-                    {submenuOptions.map(option => (
-                        <InlineMenuItem
-                            key={option.label}
-                            title={option.label}
-                            danger={option.danger}
-                            onClick={() => {
-                                if (option.action) void option.action();
-                            }}
-                        >
-                            {option.label}
-                        </InlineMenuItem>
-                    ))}
-                </InlineMenuSurface>
-            )}
+            <AnimatePresence mode="wait" initial={false}>
+                {submenuOptions.length > 0 && (
+                    <InlineMenuSurface
+                        key="context-submenu"
+                        className={classes(styles, "context-submenu")}
+                        style={{ left: submenuLeft, top: submenuTop }}
+                        scrollable
+                    >
+                        {submenuOptions.map(option => (
+                            <InlineMenuItem
+                                key={option.label}
+                                title={option.label}
+                                danger={option.danger}
+                                onClick={() => {
+                                    if (option.action) void option.action();
+                                }}
+                            >
+                                {option.label}
+                            </InlineMenuItem>
+                        ))}
+                    </InlineMenuSurface>
+                )}
+            </AnimatePresence>
         </>
     );
 }

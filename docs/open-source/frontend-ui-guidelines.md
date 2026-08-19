@@ -57,6 +57,8 @@ Business modules must not import `motion`, `motion/react`, `motion/react-m`, or 
 
 The approved timing scale is 120 / 180 / 240 / 320 ms, with 6 / 10 / 16 px distances. Only `transform` and `opacity` should normally animate. Keep the existing Tauri main-window slide as the sole owner of whole-window movement. In reduced-motion mode, remove translation, scale, and springs; retain only a short fade when it conveys state.
 
+The root uses strict asynchronous `LazyMotion` with `domMax` and `MotionConfig reducedMotion="user"`. Render animated DOM through the shared `m` export and choose only `fade`, `popover`, `toast`, `panel`, `listItem`, or `selectionIndicator`. Positioning wrappers keep fixed/absolute coordinates in CSS while an inner Motion element owns animated transforms. MUI Dialog and Switch keep their mature MUI transitions, with duration values synchronized from the shared Motion tokens.
+
 The legacy CSS and Web Animations API declarations are frozen in `scripts/ui-governance-baseline.json`. Token-based declarations are not baseline exceptions. Each migration must reduce the baseline, and the tutorial remains the final Web Animations API migration.
 
 ## Interaction State Contract

@@ -19,6 +19,9 @@ Use `sx` only for a one-off layout relationship such as flex sizing, alignment, 
 - Use MUI for interactive controls such as buttons, selects, text fields, switches, tabs, menus, dialogs, and progress indicators.
 - Use the shared settings primitives for conventional label/description/control rows.
 - Use `ActionCard` for repeated product actions that need an icon, title, and description. Choose its fixed horizontal or vertical layout instead of recreating card markup in a feature module.
+- Use `ConfirmDialog` for destructive confirmation so focus lock, Escape handling, Portal rendering, and focus return stay consistent.
+- Use `InlineMenuSurface` with `InlineMenuItem` for coordinate-sensitive Tauri menus; the feature supplies only placement and width.
+- Use `StatusToast` for transient status with an optional action, and `ToolbarIconButton` for named icon-only toolbar actions.
 - Use native buttons only for custom surfaces such as clipboard cards; they still need a visible focus state, a minimum 24×24 px target, disabled styling, and an accessible name.
 - Use semantic status components or text as well as color for success, warning, and error states.
 
@@ -29,8 +32,10 @@ Use this decision table before adding a control:
 | Standard action or icon action | MUI `Button`, `IconButton`, or `ButtonBase` | Native window controls and product-specific interactive surfaces may remain semantic native elements |
 | Repeated descriptive action card | Shared `ActionCard`, built on MUI `ButtonBase` | Use a normal MUI button when title and description are not both needed |
 | Text, selection, toggle | MUI `TextField`, `Select`, `Switch`, `Tabs` | None without a documented platform constraint |
-| Modal confirmation | Shared confirmation dialog built on MUI `Dialog` | None; keep focus lock, Escape, Portal, and focus return |
-| Coordinate-sensitive desktop menu | Absolute-positioned shell with MUI `Paper`, `MenuList`, and `MenuItem` | Full MUI `Menu` only when its Portal cannot change Tauri coordinates |
+| Modal confirmation | Shared `ConfirmDialog`, built on MUI `Dialog` | None; keep focus lock, Escape, Portal, and focus return |
+| Coordinate-sensitive desktop menu | Shared `InlineMenuSurface` and `InlineMenuItem` with feature-owned coordinates | Full MUI `Menu` only when its Portal cannot change Tauri coordinates |
+| Transient status with one optional action | Shared `StatusToast` | Persistent form errors stay next to the affected control |
+| Icon-only toolbar action | Shared `ToolbarIconButton` with its required `label` | Product-specific drag handles may stay native |
 | Repeated product pattern | A semantic shared component in `src/ui/` after the second consumer exists | Do not create wrappers for one use |
 
 The temporary raw-control inventory is stored in `scripts/ui-governance-baseline.json`. New raw `button`, `input`, or `select` elements fail `npm run check:styles`. When a module migrates to MUI, reduce its baseline entry in the same pull request; never increase the baseline to make a new control pass.

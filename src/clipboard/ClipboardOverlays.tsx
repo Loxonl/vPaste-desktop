@@ -1,5 +1,7 @@
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { InlineMenuItem, InlineMenuSurface } from "../ui/InlineMenu";
 import { Item, ItemTag } from "./Item";
 import { type CustomTab } from "./customTabs";
 
@@ -63,27 +65,25 @@ export function TagCreateChoicePopover({
     onSelect,
 }: TagCreateChoicePopoverProps) {
     return (
-        <div
+        <InlineMenuSurface
             className={classes(styles, "tag-create-choice-popover")}
             style={{ left: state.x, top: state.y }}
-            onClick={event => event.stopPropagation()}
-            onMouseDown={event => event.stopPropagation()}
         >
-            <button
-                type="button"
+            <InlineMenuItem
+                multiline
                 onClick={() => onSelect("filter", state.originX, state.originY)}
             >
                 <strong>{t("tabs.filterTag")}</strong>
                 <span>{t("tabs.filterTagDesc")}</span>
-            </button>
-            <button
-                type="button"
+            </InlineMenuItem>
+            <InlineMenuItem
+                multiline
                 onClick={() => onSelect("record", state.originX, state.originY)}
             >
                 <strong>{t("tabs.recordTag")}</strong>
                 <span>{t("tabs.recordTagDesc")}</span>
-            </button>
-        </div>
+            </InlineMenuItem>
+        </InlineMenuSurface>
     );
 }
 
@@ -108,52 +108,44 @@ export function ClipboardContextMenus({
 }: ClipboardContextMenusProps) {
     return (
         <>
-            <div
+            <InlineMenuSurface
                 className={classes(styles, "context-menu")}
                 style={{ left: state.x, top: state.y }}
-                role="menu"
-                onClick={event => event.stopPropagation()}
-                onMouseDown={event => event.stopPropagation()}
             >
                 {options.map((option, index) => (
-                    <button
+                    <InlineMenuItem
                         key={option.label}
-                        type="button"
-                        role="menuitem"
-                        className={classes(styles, `${index === selectedIndex ? 'selected' : ''} ${option.children ? 'has-submenu' : ''} ${option.danger ? 'danger' : ''}`)}
+                        selected={index === selectedIndex}
+                        danger={option.danger}
+                        endAdornment={option.children ? "›" : undefined}
                         onMouseEnter={() => onSelectedIndexChange(index)}
                         onClick={() => {
                             if (option.action) void option.action();
                         }}
                     >
                         {option.label}
-                        {option.children && <span className={classes(styles, "context-menu-chevron")}>›</span>}
-                    </button>
+                    </InlineMenuItem>
                 ))}
-            </div>
+            </InlineMenuSurface>
             {submenuOptions.length > 0 && (
-                <div
+                <InlineMenuSurface
                     className={classes(styles, "context-submenu")}
                     style={{ left: submenuLeft, top: submenuTop }}
-                    role="menu"
-                    onClick={event => event.stopPropagation()}
-                    onMouseDown={event => event.stopPropagation()}
+                    scrollable
                 >
                     {submenuOptions.map(option => (
-                        <button
+                        <InlineMenuItem
                             key={option.label}
-                            type="button"
-                            role="menuitem"
                             title={option.label}
-                            className={classes(styles, option.danger ? 'danger' : '')}
+                            danger={option.danger}
                             onClick={() => {
                                 if (option.action) void option.action();
                             }}
                         >
                             {option.label}
-                        </button>
+                        </InlineMenuItem>
                     ))}
-                </div>
+                </InlineMenuSurface>
             )}
         </>
     );
@@ -173,36 +165,29 @@ export function TabContextMenu({
     onDelete,
 }: TabContextMenuProps) {
     return (
-        <div
+        <InlineMenuSurface
             className={classes(styles, "tab-context-menu")}
             style={{ left: state.x, top: state.y }}
-            role="menu"
-            onClick={event => event.stopPropagation()}
-            onMouseDown={event => event.stopPropagation()}
             onContextMenu={event => event.preventDefault()}
         >
-            <button
-                type="button"
-                role="menuitem"
+            <InlineMenuItem
                 onClick={event => {
                     event.stopPropagation();
                     onEdit(state);
                 }}
             >
                 {t("tabs.edit")}
-            </button>
-            <button
-                type="button"
-                role="menuitem"
-                className={classes(styles, "danger")}
+            </InlineMenuItem>
+            <InlineMenuItem
+                danger
                 onClick={event => {
                     event.stopPropagation();
                     onDelete(state);
                 }}
             >
                 {t("tabs.delete")}
-            </button>
-        </div>
+            </InlineMenuItem>
+        </InlineMenuSurface>
     );
 }
 
@@ -224,25 +209,14 @@ export function DeleteConfirmDialog({
     onConfirm,
 }: DeleteConfirmDialogProps) {
     return (
-        <div
-            className={classes(styles, "tab-confirm-backdrop")}
-            onClick={onCancel}
-        >
-            <div
-                className={classes(styles, "tab-confirm-dialog")}
-                onClick={event => event.stopPropagation()}
-            >
-                <strong>{title}</strong>
-                <p>{description}</p>
-                <div className={classes(styles, "tab-confirm-actions")}>
-                    <button type="button" onClick={onCancel}>
-                        {cancelLabel}
-                    </button>
-                    <button type="button" className={classes(styles, "danger")} onClick={onConfirm}>
-                        {confirmLabel}
-                    </button>
-                </div>
-            </div>
-        </div>
+        <ConfirmDialog
+            open
+            title={title}
+            description={description}
+            cancelLabel={cancelLabel}
+            confirmLabel={confirmLabel}
+            onCancel={onCancel}
+            onConfirm={onConfirm}
+        />
     );
 }

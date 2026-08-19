@@ -2,11 +2,6 @@ import { useEffect, useState } from "react";
 import Button from "@mui/material/Button";
 import Checkbox from "@mui/material/Checkbox";
 import CircularProgress from "@mui/material/CircularProgress";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogContentText from "@mui/material/DialogContentText";
-import DialogTitle from "@mui/material/DialogTitle";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import LinearProgress from "@mui/material/LinearProgress";
 import MenuItem from "@mui/material/MenuItem";
@@ -19,10 +14,15 @@ import Tooltip from "@mui/material/Tooltip";
 import ArticleOutlinedIcon from "@mui/icons-material/ArticleOutlined";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import LaunchOutlinedIcon from "@mui/icons-material/LaunchOutlined";
+import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import { setThemePreview, type ResolvedTheme } from "../theme";
 import ActionCard from "./ActionCard";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { InlineMenuItem, InlineMenuSurface } from "./InlineMenu";
 import StatusBadge from "./StatusBadge";
+import { StatusToast } from "./StatusToast";
 import Surface from "./Surface";
+import { ToolbarIconButton } from "./ToolbarIconButton";
 import { SettingsRow, SettingsSection } from "./settings/SettingsPrimitives";
 import styles from "./UiLab.module.css";
 
@@ -39,6 +39,7 @@ const copy = {
         selections: "选择与长内容",
         toggles: "开关与复选框",
         navigation: "导航与反馈",
+        overlays: "菜单、Toast 与工具栏",
         settings: "设置行",
         actionCards: "操作卡片",
         normal: "正常",
@@ -76,6 +77,9 @@ const copy = {
         dialogDescription: "对话框打开后应限制焦点，按 Escape 可关闭并把焦点还给触发按钮。",
         close: "关闭",
         confirm: "确认",
+        edit: "编辑标签",
+        undo: "撤销",
+        saved: "标签已保存",
         tooltipAction: "查看提示",
         tooltipContent: "工具提示同时支持鼠标悬停和键盘焦点。",
         progress: "进度反馈",
@@ -95,6 +99,7 @@ const copy = {
         selections: "Selection and long content",
         toggles: "Switches and checkboxes",
         navigation: "Navigation and feedback",
+        overlays: "Menus, toasts, and toolbar",
         settings: "Settings rows",
         actionCards: "Action cards",
         normal: "Default",
@@ -132,6 +137,9 @@ const copy = {
         dialogDescription: "The dialog traps focus, closes with Escape, and restores focus to its trigger.",
         close: "Close",
         confirm: "Confirm",
+        edit: "Edit tag",
+        undo: "Undo",
+        saved: "Tag saved",
         tooltipAction: "Show tooltip",
         tooltipContent: "The tooltip works with both pointer hover and keyboard focus.",
         progress: "Progress feedback",
@@ -398,6 +406,25 @@ export default function UiLab() {
                     </div>
                 </Surface>
 
+                <Surface padded className={`${styles.panel} ${styles.widePanel}`}>
+                    <h2>{text.overlays}</h2>
+                    <div className={styles.overlayGrid}>
+                        <InlineMenuSurface className={styles.inlineMenuSample}>
+                            <InlineMenuItem selected>{text.edit}</InlineMenuItem>
+                            <InlineMenuItem danger>{text.remove}</InlineMenuItem>
+                        </InlineMenuSurface>
+                        <StatusToast
+                            className={styles.toastSample}
+                            message={text.saved}
+                            actionLabel={text.undo}
+                            onAction={() => undefined}
+                        />
+                        <ToolbarIconButton label={text.settings}>
+                            <SettingsOutlinedIcon fontSize="small" />
+                        </ToolbarIconButton>
+                    </div>
+                </Surface>
+
                 <Surface padded className={styles.settingsPreview}>
                     <h2>{text.settings}</h2>
                     <SettingsSection title={text.settings}>
@@ -459,25 +486,15 @@ export default function UiLab() {
                 </Surface>
             </div>
 
-            <Dialog
+            <ConfirmDialog
                 open={dialogOpen}
-                onClose={() => setDialogOpen(false)}
-                aria-labelledby="lab-dialog-title"
-                aria-describedby="lab-dialog-description"
-            >
-                <DialogTitle id="lab-dialog-title">{text.dialogTitle}</DialogTitle>
-                <DialogContent>
-                    <DialogContentText id="lab-dialog-description">
-                        {text.dialogDescription}
-                    </DialogContentText>
-                </DialogContent>
-                <DialogActions>
-                    <Button onClick={() => setDialogOpen(false)}>{text.close}</Button>
-                    <Button variant="contained" onClick={() => setDialogOpen(false)}>
-                        {text.confirm}
-                    </Button>
-                </DialogActions>
-            </Dialog>
+                title={text.dialogTitle}
+                description={text.dialogDescription}
+                cancelLabel={text.close}
+                confirmLabel={text.confirm}
+                onCancel={() => setDialogOpen(false)}
+                onConfirm={() => setDialogOpen(false)}
+            />
         </main>
     );
 }

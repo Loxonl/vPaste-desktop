@@ -23,8 +23,8 @@ describe("clipboard overlays", () => {
             />,
         );
 
-        await user.click(screen.getByRole("button", { name: /tabs\.filterTag/ }));
-        await user.click(screen.getByRole("button", { name: /tabs\.recordTag/ }));
+        await user.click(screen.getByRole("menuitem", { name: /tabs\.filterTag/ }));
+        await user.click(screen.getByRole("menuitem", { name: /tabs\.recordTag/ }));
 
         expect(onSelect).toHaveBeenNthCalledWith(1, "filter", 30, 40);
         expect(onSelect).toHaveBeenNthCalledWith(2, "record", 30, 40);

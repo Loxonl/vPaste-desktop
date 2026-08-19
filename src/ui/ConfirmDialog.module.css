@@ -1,0 +1,39 @@
+.backdrop.backdrop {
+  background: var(--ui-backdrop);
+  backdrop-filter: blur(2px);
+}
+
+.paper.paper {
+  width: 280px;
+  max-width: calc(100% - (var(--ui-space-4) * 2));
+  margin: var(--ui-space-4);
+  color: var(--ui-text);
+  background: var(--ui-surface-solid);
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--ui-radius-surface);
+  box-shadow: var(--ui-shadow);
+}
+
+.title.title {
+  padding: var(--ui-space-4) var(--ui-space-4) 0;
+  color: var(--ui-text-strong);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.content.content {
+  padding: var(--ui-space-2) var(--ui-space-4) 0;
+}
+
+.description.description {
+  margin: 0;
+  color: var(--ui-text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.actions.actions {
+  gap: var(--ui-space-2);
+  padding: var(--ui-space-3) var(--ui-space-4) var(--ui-space-4);
+}

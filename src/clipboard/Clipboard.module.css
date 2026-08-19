@@ -27,50 +27,24 @@ body {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
-:root[data-theme="dark"] .clipboard-toast,
-:root[data-theme="dark"] .context-menu,
-:root[data-theme="dark"] .context-submenu,
-:root[data-theme="dark"] .tab-context-menu,
-:root[data-theme="dark"] .tag-create-choice-popover,
 :root[data-theme="dark"] .tag-manager-dialog,
-:root[data-theme="dark"] .tab-confirm-dialog,
 :root[data-theme="dark"] .clipboard-permission-dialog {
   color: var(--theme-text);
   background: rgba(31, 35, 42, 0.96);
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.38), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
-:root[data-theme="dark"] .context-menu button,
-:root[data-theme="dark"] .context-submenu button,
-:root[data-theme="dark"] .tab-context-menu button,
-:root[data-theme="dark"] .tag-create-choice-popover button,
 :root[data-theme="dark"] .tag-manager-header button,
 :root[data-theme="dark"] .tag-manager-row button,
-:root[data-theme="dark"] .tag-manager-create input,
-:root[data-theme="dark"] .tab-confirm-actions button {
+:root[data-theme="dark"] .tag-manager-create input {
   color: var(--theme-text);
 }
 
-:root[data-theme="dark"] .clipboard-toast-action {
-  color: #9cc8ff;
-  background: rgba(115, 169, 255, 0.16);
-}
-
-:root[data-theme="dark"] .clipboard-toast-action:hover {
-  background: rgba(115, 169, 255, 0.24);
-}
-
-:root[data-theme="dark"] .context-menu button:hover,
-:root[data-theme="dark"] .context-submenu button:hover,
-:root[data-theme="dark"] .tab-context-menu button:hover,
-:root[data-theme="dark"] .tag-create-choice-popover button:hover,
 :root[data-theme="dark"] .tag-manager-row:hover,
-:root[data-theme="dark"] .tab-confirm-actions button:hover,
 :root[data-theme="dark"] .clipboard-permission-actions button:hover {
   background: rgba(255, 255, 255, 0.08);
 }
 
-:root[data-theme="dark"] .tab-confirm-backdrop,
 :root[data-theme="dark"] .tag-manager-backdrop,
 :root[data-theme="dark"] .clipboard-permission-backdrop {
   background: rgba(0, 0, 0, 0.22);
@@ -93,71 +67,16 @@ body {
   top: 12px;
   left: 50%;
   z-index: 20;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
   transform: translateX(-50%);
   max-width: min(560px, calc(100vw - 48px));
-  box-sizing: border-box;
-  padding: 10px 16px;
-  border-radius: 999px;
-  color: #242424;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18), inset 0 0 0 1px rgba(0, 0, 0, 0.06);
-  font-size: 13px;
-  font-weight: 560;
-  line-height: 18px;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   animation: toastIn 140ms ease-out forwards;
-}
-
-.clipboard-toast span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.clipboard-toast-action {
-  flex: 0 0 auto;
-  border: 0;
-  border-radius: 999px;
-  padding: 3px 8px;
-  color: #0b5cad;
-  background: rgba(31, 124, 222, 0.10);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 650;
-  cursor: pointer;
-}
-
-.clipboard-toast-action:hover {
-  background: rgba(31, 124, 222, 0.16);
-}
-
-.clipboard-toast.warning {
-  color: #5c3a00;
-  background: rgba(255, 248, 226, 0.96);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18), inset 0 0 0 1px rgba(214, 144, 0, 0.22);
-}
-
-.clipboard-toast.error {
-  color: #7d1d1d;
-  background: rgba(255, 237, 237, 0.96);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18), inset 0 0 0 1px rgba(210, 66, 66, 0.24);
 }
 
 .context-menu {
   position: fixed;
   z-index: 30;
   width: 188px;
-  box-sizing: border-box;
-  padding: 5px;
-  border-radius: 10px;
-  background: rgba(250, 250, 249, 0.97);
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.22), inset 0 0 0 1px rgba(0, 0, 0, 0.08);
-  backdrop-filter: blur(14px);
   animation: contextMenuIn 90ms ease-out forwards;
 }
 
@@ -166,13 +85,6 @@ body {
   z-index: 31;
   width: 312px;
   max-height: calc(100vh - 16px);
-  box-sizing: border-box;
-  padding: 5px;
-  overflow-y: auto;
-  border-radius: 10px;
-  background: rgba(250, 250, 249, 0.97);
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.22), inset 0 0 0 1px rgba(0, 0, 0, 0.08);
-  backdrop-filter: blur(14px);
   animation: contextMenuIn 90ms ease-out forwards;
 }
 
@@ -180,71 +92,14 @@ body {
   position: fixed;
   z-index: 31;
   width: 126px;
-  box-sizing: border-box;
-  padding: 5px;
-  border-radius: 10px;
-  background: rgba(250, 250, 249, 0.97);
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.22), inset 0 0 0 1px rgba(0, 0, 0, 0.08);
-  backdrop-filter: blur(14px);
   animation: contextMenuIn 90ms ease-out forwards;
-}
-
-.tab-context-menu button {
-  width: 100%;
-  height: 32px;
-  box-sizing: border-box;
-  border: 0;
-  border-radius: 7px;
-  padding: 0 10px;
-  background: transparent;
-  color: #252525;
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 560;
-  line-height: 32px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.tab-context-menu button:hover {
-  background: rgba(0, 0, 0, 0.07);
-}
-
-.tab-context-menu button.danger {
-  color: #8a2d2d;
 }
 
 .tag-create-choice-popover {
   position: fixed;
   z-index: 31;
   width: 252px;
-  box-sizing: border-box;
-  padding: 6px;
-  border-radius: 10px;
-  background: rgba(250, 250, 249, 0.97);
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.22), inset 0 0 0 1px rgba(0, 0, 0, 0.08);
-  backdrop-filter: blur(14px);
   animation: contextMenuIn 90ms ease-out forwards;
-}
-
-.tag-create-choice-popover button {
-  width: 100%;
-  min-height: 60px;
-  box-sizing: border-box;
-  border: 0;
-  border-radius: 8px;
-  padding: 8px 10px;
-  display: grid;
-  gap: 3px;
-  background: transparent;
-  color: #252525;
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.tag-create-choice-popover button:hover {
-  background: rgba(0, 0, 0, 0.07);
 }
 
 .tag-create-choice-popover strong {
@@ -258,7 +113,6 @@ body {
   line-height: 15px;
 }
 
-.tab-confirm-backdrop,
 .clipboard-permission-backdrop {
   position: fixed;
   inset: 0;
@@ -269,7 +123,6 @@ body {
   backdrop-filter: blur(2px);
 }
 
-.tab-confirm-dialog,
 .clipboard-permission-dialog {
   box-sizing: border-box;
   border-radius: 14px;
@@ -277,24 +130,17 @@ body {
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.24), inset 0 0 0 1px rgba(0, 0, 0, 0.08);
 }
 
-.tab-confirm-dialog {
-  width: 280px;
-  padding: 16px;
-}
-
 .clipboard-permission-dialog {
   width: min(360px, calc(100vw - 32px));
   padding: 18px;
 }
 
-.tab-confirm-dialog strong,
 .clipboard-permission-dialog strong {
   display: block;
   font-size: 15px;
   margin-bottom: 8px;
 }
 
-.tab-confirm-dialog p,
 .clipboard-permission-dialog p {
   margin: 0;
   color: #666d69;
@@ -302,7 +148,6 @@ body {
   line-height: 19px;
 }
 
-.tab-confirm-actions,
 .clipboard-permission-actions {
   display: flex;
   justify-content: flex-end;
@@ -310,7 +155,6 @@ body {
   margin-top: 14px;
 }
 
-.tab-confirm-actions button,
 .clipboard-permission-actions button {
   height: 30px;
   border: 0;
@@ -324,68 +168,9 @@ body {
   color: #303532;
 }
 
-.tab-confirm-actions button.danger {
-  color: white;
-  background: #b84c4c;
-}
-
 .clipboard-permission-actions button.primary {
   color: white;
   background: #2f6fed;
-}
-
-.context-menu button,
-.context-submenu button {
-  width: 100%;
-  height: 34px;
-  box-sizing: border-box;
-  border: 0;
-  border-radius: 7px;
-  padding: 0 10px;
-  background: transparent;
-  color: #252525;
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 540;
-  line-height: 34px;
-  text-align: left;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.context-menu button {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.context-menu button:hover,
-.context-submenu button:hover {
-  background: rgba(0, 0, 0, 0.07);
-}
-
-.context-menu button.selected {
-  color: #0d47a1;
-  background: rgba(25, 118, 210, 0.14);
-}
-
-.context-menu button.danger,
-.context-submenu button.danger {
-  color: #9e2d24;
-}
-
-.context-menu button:active,
-.context-submenu button:active {
-  background: rgba(0, 0, 0, 0.11);
-}
-
-.context-menu-chevron {
-  flex: 0 0 auto;
-  font-size: 16px;
-  line-height: 1;
 }
 
 .tag-manager-backdrop {

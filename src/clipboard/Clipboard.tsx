@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Button from "@mui/material/Button";
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
+import { StatusToast, type StatusToastKind } from "../ui/StatusToast";
+import { ToolbarIconButton } from "../ui/ToolbarIconButton";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
@@ -109,12 +112,10 @@ import { parsePasteQueueState } from "./pasteQueueState";
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
 const HISTORY_PAGE_LIMIT = 36;
 
-type ToastKind = 'info' | 'warning' | 'error';
-
 type ToastState = {
     id: number;
     message: string;
-    kind: ToastKind;
+    kind: StatusToastKind;
     actionLabel?: string;
     onAction?: () => void;
 } | null;
@@ -431,7 +432,7 @@ export default function Clipboard() {
 
     const showToast = (
         message: string,
-        kind: ToastKind = 'info',
+        kind: StatusToastKind = 'info',
         durationMs: number = 2500,
         actionLabel?: string,
         onAction?: () => void,
@@ -1620,27 +1621,21 @@ export default function Clipboard() {
             onContextMenu={event => event.preventDefault()}
         >
             {toast && (
-                <div className={classes(styles, `clipboard-toast ${toast.kind}`)} key={toast.id}>
-                    <span>{toast.message}</span>
-                    {toast.actionLabel && toast.onAction && (
-                        <button
-                            type="button"
-                            className={classes(styles, "clipboard-toast-action")}
-                            onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                if (toastTimerRef.current !== null) {
-                                    window.clearTimeout(toastTimerRef.current);
-                                    toastTimerRef.current = null;
-                                }
-                                setToast(null);
-                                toast.onAction?.();
-                            }}
-                        >
-                            {toast.actionLabel}
-                        </button>
-                    )}
-                </div>
+                <StatusToast
+                    key={toast.id}
+                    className={classes(styles, "clipboard-toast")}
+                    kind={toast.kind}
+                    message={toast.message}
+                    actionLabel={toast.actionLabel}
+                    onAction={toast.actionLabel && toast.onAction ? () => {
+                        if (toastTimerRef.current !== null) {
+                            window.clearTimeout(toastTimerRef.current);
+                            toastTimerRef.current = null;
+                        }
+                        setToast(null);
+                        toast.onAction?.();
+                    } : undefined}
+                />
             )}
             {/* Header */}
             <div className={classes(styles, "clipboard-header")}>
@@ -1648,15 +1643,13 @@ export default function Clipboard() {
                     <div className={classes(styles, "tutorial-header-spacer")} />
                 ) : (
                     <div className={classes(styles, `search-box ${searchOpen || searchWord ? 'open' : ''}`)}>
-                        <button
-                            type="button"
+                        <ToolbarIconButton
                             className={classes(styles, "search-button")}
-                            title={t("common.search")}
-                            aria-label={t("common.search")}
+                            label={t("common.search")}
                             onClick={focusSearchInput}
                         >
                             <SearchIcon className={classes(styles, "search-icon")} fontSize="inherit" />
-                        </button>
+                        </ToolbarIconButton>
                         {(searchOpen || searchWord) && (
                             <input
                                 ref={searchInputRef}
@@ -1828,9 +1821,9 @@ export default function Clipboard() {
                 <div className={classes(styles, "paste-queue-selection-bar")} role="toolbar" aria-label={t("pasteQueue.selectTitle")}>
                     <strong>{t("pasteQueue.selectTitle")}</strong>
                     <span>{queueSelectedHashes.length}</span>
-                    <button type="button" className={classes(styles, "primary")} onClick={() => void addSelectedItemsToPasteQueue()}>
+                    <Button variant="contained" className={classes(styles, "primary")} onClick={() => void addSelectedItemsToPasteQueue()}>
                         {t("pasteQueue.addSelected", { count: queueSelectedHashes.length })}
-                    </button>
+                    </Button>
                 </div>
             )}
             {tagCreateChoice && (

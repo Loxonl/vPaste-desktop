@@ -9,6 +9,7 @@ import { ItemType } from "./Item";
 import { FileTypePresentation } from "./FileTypePresentation";
 import { isImagePath, type FilePreviewInfo } from "./itemPresentation";
 import { useLanguage } from "../lang";
+import { AnimatePresence, m, useMotionPreset } from "../ui/motion";
 import styles from "./Preview.module.css";
 
 type HistoryImageMetadata = {
@@ -481,6 +482,7 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
 
 export default function Preview() {
     const { t } = useLanguage();
+    const contentMotion = useMotionPreset("fade");
     const [payload, setPayload] = useState<PreviewPayload | null>(null);
     const [pinned, setPinned] = useState(false);
     const openedAtRef = useRef(0);
@@ -536,7 +538,20 @@ export default function Preview() {
                 {pinned ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
             </ToolbarIconButton>
             <div className={styles["preview-content"]}>
-                {payload ? <PreviewBody payload={payload} t={t} /> : <div className={styles["preview-empty"]}>{t("preview.waiting")}</div>}
+                <AnimatePresence mode="wait" initial={false}>
+                    <m.div
+                        key={payload ? "preview-content" : "preview-waiting"}
+                        className={styles["preview-state"]}
+                        variants={contentMotion}
+                        initial="initial"
+                        animate="animate"
+                        exit="exit"
+                    >
+                        {payload
+                            ? <PreviewBody payload={payload} t={t} />
+                            : <div className={styles["preview-empty"]}>{t("preview.waiting")}</div>}
+                    </m.div>
+                </AnimatePresence>
             </div>
         </div>
     );

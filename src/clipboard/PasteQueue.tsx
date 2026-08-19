@@ -21,7 +21,7 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { InlineMenuItem, InlineMenuSurface } from "../ui/InlineMenu";
 import { StatusToast } from "../ui/StatusToast";
 import { ToolbarIconButton } from "../ui/ToolbarIconButton";
-import { AnimatePresence } from "../ui/motion";
+import { AnimatePresence, m, useMotionPreset } from "../ui/motion";
 import { Item, ItemType } from "./Item";
 import {
     emptyPasteQueueState,
@@ -173,6 +173,8 @@ function QueuePreview({ item }: { item: Item }) {
 
 export default function PasteQueue() {
     const { t } = useLanguage();
+    const fadeMotion = useMotionPreset("fade");
+    const listItemMotion = useMotionPreset("listItem");
     const [state, setState] = useState<PasteQueueState>(() => (
         "__TAURI_INTERNALS__" in window ? emptyPasteQueueState() : demoState()
     ));
@@ -445,13 +447,30 @@ export default function PasteQueue() {
                     </AnimatePresence>
                 </header>
 
-                {state.items.length === 0 ? (
-                    <div className={styles.empty} role="status">
-                        <strong>{t("pasteQueue.empty")}</strong>
-                        <span>{t("pasteQueue.emptyIntercepting")}</span>
-                    </div>
-                ) : (
-                    <ol className={styles.list} aria-label={t("pasteQueue.items")}>
+                <AnimatePresence mode="sync" initial={false}>
+                    {state.items.length === 0 ? (
+                        <m.div
+                            key="paste-queue-empty"
+                            className={styles.empty}
+                            role="status"
+                            variants={fadeMotion}
+                            initial="initial"
+                            animate="animate"
+                            exit="exit"
+                        >
+                            <strong>{t("pasteQueue.empty")}</strong>
+                            <span>{t("pasteQueue.emptyIntercepting")}</span>
+                        </m.div>
+                    ) : (
+                        <m.ol
+                            key="paste-queue-list"
+                            className={styles.list}
+                            aria-label={t("pasteQueue.items")}
+                            variants={fadeMotion}
+                            initial="initial"
+                            animate="animate"
+                            exit="exit"
+                        >
                         {state.items.map((item, index) => {
                             const hash = item.getHash() as string;
                             const visualIndex = drag ? drag.order.indexOf(hash) : index;
@@ -515,24 +534,35 @@ export default function PasteQueue() {
                                 </li>
                             );
                         })}
-                    </ol>
-                )}
+                        </m.ol>
+                    )}
+                </AnimatePresence>
 
-                {state.error && (
-                    <div className={styles.error} role="alert">
-                        <span>{state.error.message}</span>
-                        {state.error.hash && (
-                            <div className={styles.errorActions}>
-                                <Button onClick={() => paste(state.error?.hash as string)} disabled={state.busy}>
-                                    {t("pasteQueue.retry")}
-                                </Button>
-                                <Button color="error" onClick={() => remove(state.error?.hash as string)} disabled={state.busy}>
-                                    {t("pasteQueue.deleteFailed")}
-                                </Button>
-                            </div>
-                        )}
-                    </div>
-                )}
+                <AnimatePresence mode="wait" initial={false}>
+                    {state.error && (
+                        <m.div
+                            key={`${state.error.hash ?? "queue"}:${state.error.message}`}
+                            className={styles.error}
+                            role="alert"
+                            variants={listItemMotion}
+                            initial="initial"
+                            animate="animate"
+                            exit="exit"
+                        >
+                            <span>{state.error.message}</span>
+                            {state.error.hash && (
+                                <div className={styles.errorActions}>
+                                    <Button onClick={() => paste(state.error?.hash as string)} disabled={state.busy}>
+                                        {t("pasteQueue.retry")}
+                                    </Button>
+                                    <Button color="error" onClick={() => remove(state.error?.hash as string)} disabled={state.busy}>
+                                        {t("pasteQueue.deleteFailed")}
+                                    </Button>
+                                </div>
+                            )}
+                        </m.div>
+                    )}
+                </AnimatePresence>
                 <ConfirmDialog
                     open={confirmingClear}
                     title={t("pasteQueue.clear")}

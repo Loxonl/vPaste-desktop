@@ -1,7 +1,6 @@
 import * as React from 'react';
 import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
-import Box from '@mui/material/Box';
 import { CircularProgress, LinearProgress } from "@mui/material";
 import Typography from '@mui/material/Typography';
 import { info, error } from "@tauri-apps/plugin-log";
@@ -16,6 +15,7 @@ import GeneralSettings from "./sections/GeneralSettings";
 import DataSettings from "./sections/DataSettings";
 import ShortcutSettings from "./sections/ShortcutSettings";
 import AboutSettings from "./sections/AboutSettings";
+import { AnimatePresence, m, useMotionPreset } from "../ui/motion";
 
 // Icons
 import TuneIcon from '@mui/icons-material/Tune'; // For General/Common
@@ -23,33 +23,6 @@ import StorageIcon from '@mui/icons-material/StorageOutlined'; // For Data
 import KeyboardIcon from '@mui/icons-material/Keyboard'; // For Shortcuts
 import InfoIcon from '@mui/icons-material/InfoOutlined'; // For About
 import CloseIcon from '@mui/icons-material/Close';
-
-interface TabPanelProps {
-    children?: React.ReactNode;
-    index: number;
-    value: number;
-}
-
-function TabPanel(props: TabPanelProps) {
-    const { children, value, index, ...other } = props;
-
-    return (
-        <div
-            role="tabpanel"
-            hidden={value !== index}
-            id={`vertical-tabpanel-${index}`}
-            aria-labelledby={`vertical-tab-${index}`}
-            style={{ width: '100%', height: '100%' }}
-            {...other}
-        >
-            {value === index && (
-                <Box sx={{ p: 0, height: '100%' }}>
-                    {children}
-                </Box>
-            )}
-        </div>
-    );
-}
 
 function startConfigWindowDrag(event: React.MouseEvent<HTMLElement>, bridge: SettingsBridge) {
     if (event.button !== 0) return;
@@ -94,6 +67,9 @@ function a11yProps(index: number) {
 
 export default function Config({ bridge = tauriSettingsBridge }: { bridge?: SettingsBridge }) {
     const { t, languages, setLanguageCode } = useLanguage(bridge);
+    const panelMotion = useMotionPreset("panel");
+    const fadeMotion = useMotionPreset("fade");
+    const popoverMotion = useMotionPreset("popover");
     const [value, setValue] = React.useState(0);
     const [dir, setDir] = React.useState("");
     const [config, setConfig] = React.useState<ConfigData>(DEFAULT_CONFIG);
@@ -194,6 +170,12 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
         && new URLSearchParams(window.location.search).get("platform") === "windows";
     const nativeWindowsSurface = nativeWindowsPreview
         || ("__TAURI_INTERNALS__" in window && !isMacPlatform());
+    const activeSection = [
+        <GeneralSettings bridge={bridge} config={config} languages={languages} t={t} onSave={saveConfig} />,
+        <DataSettings bridge={bridge} config={config} storagePaths={storagePaths} t={t} onSave={saveConfig} onBlockingOperationChange={setBlockingOperation} />,
+        <ShortcutSettings bridge={bridge} config={config} t={t} onSave={saveConfig} />,
+        <AboutSettings bridge={bridge} config={config} dir={dir} t={t} onSave={saveConfig} />,
+    ][value];
 
     return (
         <>
@@ -233,37 +215,57 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
                     </div>
                     <div className={layout.contentScroll}>
                         <div className={layout.contentInner}>
-                    <TabPanel value={value} index={0}>
-                        <GeneralSettings bridge={bridge} config={config} languages={languages} t={t} onSave={saveConfig} />
-                    </TabPanel>
-                    <TabPanel value={value} index={1}>
-                        <DataSettings bridge={bridge} config={config} storagePaths={storagePaths} t={t} onSave={saveConfig} onBlockingOperationChange={setBlockingOperation} />
-                    </TabPanel>
-                    <TabPanel value={value} index={2}>
-                        <ShortcutSettings bridge={bridge} config={config} t={t} onSave={saveConfig} />
-                    </TabPanel>
-                    <TabPanel value={value} index={3}>
-                        <AboutSettings bridge={bridge} config={config} dir={dir} t={t} onSave={saveConfig} />
-                    </TabPanel>
+                            <AnimatePresence mode="wait" initial={false}>
+                                <m.div
+                                    key={value}
+                                    className={layout.contentPanel}
+                                    role="tabpanel"
+                                    id={`vertical-tabpanel-${value}`}
+                                    aria-labelledby={`vertical-tab-${value}`}
+                                    variants={panelMotion}
+                                    initial="initial"
+                                    animate="animate"
+                                    exit="exit"
+                                >
+                                    {activeSection}
+                                </m.div>
+                            </AnimatePresence>
                         </div>
                     </div>
                 </div>
-                {blockingOperation && (
-                    <div className={layout.blockingOverlay} role="alert" aria-live="assertive">
-                        <div className={layout.blockingDialog}>
-                            <div className={layout.blockingSpinner}>
-                                <CircularProgress size={28} thickness={4.5} />
-                            </div>
-                            <div className={layout.blockingTitle}>{blockingOperation.title}</div>
-                            <div className={layout.blockingDescription}>{blockingOperation.description}</div>
-                            <LinearProgress
-                                className={layout.blockingProgress}
-                                variant={blockingOperation.progress != null ? "determinate" : "indeterminate"}
-                                value={blockingOperation.progress ?? undefined}
-                            />
-                        </div>
-                    </div>
-                )}
+                <AnimatePresence mode="wait" initial={false}>
+                    {blockingOperation && (
+                        <m.div
+                            key="settings-blocking-operation"
+                            className={layout.blockingOverlay}
+                            role="alert"
+                            aria-live="assertive"
+                            variants={fadeMotion}
+                            initial="initial"
+                            animate="animate"
+                            exit="exit"
+                        >
+                            <m.div
+                                className={layout.blockingDialog}
+                                variants={popoverMotion}
+                                initial="initial"
+                                animate="animate"
+                                exit="exit"
+                            >
+                                <div className={layout.blockingSpinner}>
+                                    <CircularProgress size={28} thickness={4.5} />
+                                </div>
+                                <div className={layout.blockingTitle}>{blockingOperation.title}</div>
+                                <div className={layout.blockingDescription}>{blockingOperation.description}</div>
+                                <LinearProgress
+                                    className={layout.blockingProgress}
+                                    variant={blockingOperation.progress != null ? "determinate" : "indeterminate"}
+                                    value={blockingOperation.progress ?? undefined}
+                                />
+                            </m.div>
+                        </m.div>
+                    )}
+                </AnimatePresence>
             </div>
         </>
     );

@@ -22,6 +22,7 @@ Use `sx` only for a one-off layout relationship such as flex sizing, alignment, 
 - Use `ConfirmDialog` for destructive confirmation so focus lock, Escape handling, Portal rendering, and focus return stay consistent.
 - Use `InlineMenuSurface` with `InlineMenuItem` for coordinate-sensitive Tauri menus; the feature supplies only placement and width.
 - Use `StatusToast` for transient status with an optional action, and `ToolbarIconButton` for named icon-only toolbar actions.
+- Auxiliary webviews use MUI controls inside their existing CSS Module window shells. Keep `--ui-radius-window`, `--ui-window-shadow`, transparent gutters, and Tauri-owned placement intact instead of replacing the whole shell with a portal or generic page card.
 - Use native buttons only for custom surfaces such as clipboard cards; they still need a visible focus state, a minimum 24×24 px target, disabled styling, and an accessible name.
 - Use semantic status components or text as well as color for success, warning, and error states.
 
@@ -36,6 +37,7 @@ Use this decision table before adding a control:
 | Coordinate-sensitive desktop menu | Shared `InlineMenuSurface` and `InlineMenuItem` with feature-owned coordinates | Full MUI `Menu` only when its Portal cannot change Tauri coordinates |
 | Transient status with one optional action | Shared `StatusToast` | Persistent form errors stay next to the affected control |
 | Icon-only toolbar action | Shared `ToolbarIconButton` with its required `label` | Product-specific drag handles may stay native |
+| Auxiliary-window fields and actions | MUI `TextField`, `Select`, `Button`, `ButtonBase`, and `MenuItem` | Keep the feature CSS Module only for layout, transparent-window geometry, and branded surfaces |
 | Repeated product pattern | A semantic shared component in `src/ui/` after the second consumer exists | Do not create wrappers for one use |
 
 The temporary raw-control inventory is stored in `scripts/ui-governance-baseline.json`. New raw `button`, `input`, or `select` elements fail `npm run check:styles`. When a module migrates to MUI, reduce its baseline entry in the same pull request; never increase the baseline to make a new control pass.

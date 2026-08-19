@@ -2,6 +2,9 @@ import React from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
+import MenuItem from "@mui/material/MenuItem";
+import MenuList from "@mui/material/MenuList";
+import Paper from "@mui/material/Paper";
 import { useLanguage } from "../lang";
 import { restartReady, useAppUpdateState } from "../update";
 import styles from "./TrayMenu.module.css";
@@ -105,9 +108,9 @@ export default function TrayMenu() {
 
     return (
         <div ref={menuRef} className={[styles["tray-menu-frame"], isMacOS ? styles.macos : ""].join(" ")}>
-            <div className={styles["tray-menu-shell"]}>
-                <button
-                    type="button"
+            <Paper component="nav" square elevation={0} className={styles["tray-menu-shell"]} aria-label={t("tray.menu")}>
+                <MenuList disablePadding className={styles["tray-menu-list"]}>
+                <MenuItem
                     className={[styles["tray-status-card"], styles[paused ? "paused" : "recording"]].join(" ")}
                     onClick={() => void togglePause()}
                     disabled={toggleWorking}
@@ -120,28 +123,27 @@ export default function TrayMenu() {
                     <span className={styles["tray-status-state"]}>
                         {t(paused ? "tray.historyPausedShort" : "tray.historyRecordingShort")}
                     </span>
-                </button>
+                </MenuItem>
                 {restartReady(updateState) && (
-                    <button
-                        type="button"
+                    <MenuItem
                         className={`${styles["tray-menu-item"]} ${styles["update-ready"]}`}
                         onClick={() => void restartForUpdate()}
                     >
                         <span>{t("tray.updateReady", { version: updateState.availableVersion || "" })}</span>
                         <strong>{t("tray.updateRestart")}</strong>
-                    </button>
+                    </MenuItem>
                 )}
                 {items.map(item => (
-                    <button
+                    <MenuItem
                         key={item.action}
-                        type="button"
                         className={styles["tray-menu-item"]}
                         onClick={() => void runAction(item.action)}
                     >
                         {t(item.labelKey)}
-                    </button>
+                    </MenuItem>
                 ))}
-            </div>
+                </MenuList>
+            </Paper>
         </div>
     );
 }

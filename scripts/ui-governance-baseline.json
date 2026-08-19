@@ -2,16 +2,10 @@
   "rawControls": {
     "src/clipboard/Clipboard.tsx": { "input": 1 },
     "src/clipboard/ClipboardHeader.tsx": { "button": 3 },
-    "src/clipboard/EmojiPicker.tsx": { "button": 2 },
-    "src/clipboard/OnboardingPermissionWindow.tsx": { "button": 3 },
-    "src/clipboard/PasteFallbackNotice.tsx": { "button": 1 },
     "src/clipboard/PasteQueue.tsx": { "button": 2 },
-    "src/clipboard/Preview.tsx": { "button": 1 },
-    "src/clipboard/TabEditor.tsx": { "button": 6, "input": 2, "select": 3 },
     "src/clipboard/TutorialOverlay.tsx": { "button": 3, "input": 1 },
     "src/config/Config.tsx": { "button": 4 },
-    "src/debug/TestRoom.tsx": { "button": 8 },
-    "src/tray/TrayMenu.tsx": { "button": 3 }
+    "src/debug/TestRoom.tsx": { "button": 8 }
   },
   "cssMotion": {
     "src/clipboard/Clipboard.module.css": {

@@ -217,6 +217,7 @@ const enUS: LanguagePack = {
         "preview.unpin": "Unpin preview",
         "preview.waiting": "Waiting for preview content",
 
+        "tray.menu": "vPaste menu",
         "tray.showMain": "Show Main Panel",
         "tray.historyRecording": "Recording clipboard history",
         "tray.historyPaused": "History recording paused",

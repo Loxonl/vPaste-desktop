@@ -155,7 +155,7 @@ test.describe("UI lab", () => {
         }
 
         await dialogTrigger.click();
-        const dialog = page.getByRole("dialog", { name: "确认操作" });
+        const dialog = page.getByRole("alertdialog", { name: "确认操作" });
         await expect(dialog).toBeVisible();
         await page.keyboard.press("Tab");
         await expect.poll(async () => dialog.evaluate(

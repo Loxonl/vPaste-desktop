@@ -182,6 +182,21 @@
   gap: var(--ui-space-3);
 }
 
+.overlayGrid {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--ui-space-4);
+}
+
+.inlineMenuSample {
+  width: 220px;
+}
+
+.toastSample {
+  justify-self: start;
+}
+
 @media (max-width: 720px) {
   .page {
     padding: var(--ui-space-4);
@@ -207,7 +222,8 @@
 
   .fieldGrid,
   .feedbackGrid,
-  .actionCardGrid {
+  .actionCardGrid,
+  .overlayGrid {
     grid-template-columns: 1fr;
   }
 }

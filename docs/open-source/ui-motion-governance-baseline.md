@@ -65,6 +65,14 @@ Settings section actions use MUI controls after phase two. Repeated link and his
 
 The migration preserves the existing settings screenshots and bridge callbacks. UI Lab adds horizontal, vertical, and disabled ActionCard samples; its five changed Windows snapshots require local manual approval. No GitHub Actions visual job is added.
 
+## Phase-Three Main-Window Overlay Convergence
+
+Main-window and Paste Queue overlays share four product components after phase three: `ConfirmDialog`, `InlineMenuSurface` / `InlineMenuItem`, `StatusToast`, and `ToolbarIconButton`. Destructive confirmation now uses the MUI Dialog focus trap, Escape handling, Portal, and focus return. Coordinate-sensitive menus remain in the current webview and keep their feature-owned click coordinates, widths, submenu direction, and Tauri dismissal events.
+
+Across `Clipboard.tsx`, `ClipboardHeader.tsx`, `ClipboardOverlays.tsx`, and `PasteQueue.tsx`, the temporary inventory drops from 38 raw buttons to five. The remaining three Clipboard header buttons are draggable/custom tab surfaces; the remaining two Paste Queue buttons own pointer dragging and direct item activation. The native Clipboard search input also remains for its existing composition and shortcut behavior.
+
+This phase adds no Motion dependency and does not replace the existing CSS entry animations. UI Lab displays the shared menu, Toast, toolbar action, and confirmation dialog. Local screenshots cover the tag-create menu plus Paste Queue menu and clear confirmation; hosted visual checks remain disabled.
+
 ## Phase Gates
 
 1. Governance baseline and inventory: no production visual changes.

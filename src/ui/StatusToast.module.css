@@ -1,0 +1,51 @@
+.root.root {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  box-sizing: border-box;
+  gap: 10px;
+  padding: var(--ui-space-2) var(--ui-space-3);
+  color: var(--ui-text);
+  background: var(--ui-surface-solid);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-control);
+  box-shadow: var(--ui-shadow);
+  font-size: 13px;
+  font-weight: 560;
+  line-height: 18px;
+}
+
+.root.root.warning {
+  color: var(--ui-warning);
+  background: color-mix(in srgb, var(--ui-warning-soft) 55%, var(--ui-surface-solid));
+  border-color: color-mix(in srgb, var(--ui-warning) 24%, transparent);
+}
+
+.root.root.error {
+  color: var(--ui-danger);
+  background: color-mix(in srgb, var(--ui-danger-soft) 62%, var(--ui-surface-solid));
+  border-color: color-mix(in srgb, var(--ui-danger) 24%, transparent);
+}
+
+.message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.action.action {
+  flex: 0 0 auto;
+  min-height: 24px;
+  gap: 5px;
+  padding: 3px var(--ui-space-2);
+  color: var(--ui-accent-strong);
+  background: var(--ui-accent-soft);
+  border-radius: var(--ui-radius-pill);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.action.action:hover {
+  background: color-mix(in srgb, var(--ui-accent) 18%, transparent);
+}

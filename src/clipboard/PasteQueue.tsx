@@ -8,6 +8,7 @@ import {
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import Button from "@mui/material/Button";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
 import DragIndicatorRoundedIcon from "@mui/icons-material/DragIndicatorRounded";
@@ -16,6 +17,10 @@ import SwapVertRoundedIcon from "@mui/icons-material/SwapVertRounded";
 import UndoRoundedIcon from "@mui/icons-material/UndoRounded";
 import { error } from "@tauri-apps/plugin-log";
 import { useLanguage } from "../lang";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { InlineMenuItem, InlineMenuSurface } from "../ui/InlineMenu";
+import { StatusToast } from "../ui/StatusToast";
+import { ToolbarIconButton } from "../ui/ToolbarIconButton";
 import { Item, ItemType } from "./Item";
 import {
     emptyPasteQueueState,
@@ -250,14 +255,22 @@ export default function PasteQueue() {
         const dismissWhenHidden = () => {
             if (document.hidden) setMenuOpen(false);
         };
+        const dismissFromEscape = (event: KeyboardEvent) => {
+            if (event.key !== "Escape") return;
+            event.preventDefault();
+            setMenuOpen(false);
+            menuButtonRef.current?.focus();
+        };
 
         document.addEventListener("pointerdown", dismissFromOutside, true);
         document.addEventListener("focusin", dismissFromOutside, true);
+        document.addEventListener("keydown", dismissFromEscape, true);
         document.addEventListener("visibilitychange", dismissWhenHidden);
         window.addEventListener("blur", dismissFromWindowBlur);
         return () => {
             document.removeEventListener("pointerdown", dismissFromOutside, true);
             document.removeEventListener("focusin", dismissFromOutside, true);
+            document.removeEventListener("keydown", dismissFromEscape, true);
             document.removeEventListener("visibilitychange", dismissWhenHidden);
             window.removeEventListener("blur", dismissFromWindowBlur);
         };
@@ -401,30 +414,31 @@ export default function PasteQueue() {
                         void getCurrentWindow().startDragging();
                     }}
                 >
-                    <button type="button" className={styles.iconButton} onClick={close} aria-label={t("pasteQueue.close")}>
+                    <ToolbarIconButton className={styles.iconButton} onClick={close} label={t("pasteQueue.close")}>
                         <CloseRoundedIcon fontSize="small" />
-                    </button>
+                    </ToolbarIconButton>
                     <div className={styles.titleGroup}>
                         <strong>{t("pasteQueue.title")}</strong>
                         <span>{countLabel}</span>
                     </div>
                     <div className={styles.headerActions}>
-                        <button type="button" className={styles.iconButton} onClick={reverse} disabled={state.busy || state.items.length < 2} aria-label={t("pasteQueue.reverse")}>
+                        <ToolbarIconButton className={styles.iconButton} onClick={reverse} disabled={state.busy || state.items.length < 2} label={t("pasteQueue.reverse")}>
                             <SwapVertRoundedIcon fontSize="small" />
-                        </button>
-                        <button ref={menuButtonRef} type="button" className={styles.iconButton} onClick={() => setMenuOpen(open => !open)} disabled={state.busy} aria-label={t("pasteQueue.more")} aria-expanded={menuOpen}>
+                        </ToolbarIconButton>
+                        <ToolbarIconButton ref={menuButtonRef} className={styles.iconButton} onClick={() => setMenuOpen(open => !open)} disabled={state.busy} label={t("pasteQueue.more")} aria-haspopup="menu" aria-expanded={menuOpen}>
                             <MoreHorizRoundedIcon fontSize="small" />
-                        </button>
+                        </ToolbarIconButton>
                     </div>
                     {menuOpen && (
-                        <div ref={menuRef} className={styles.menu} role="menu">
-                            <button type="button" role="menuitem" onClick={() => {
+                        <InlineMenuSurface ref={menuRef} className={styles.menu}>
+                            <InlineMenuItem danger onClick={() => {
+                                menuButtonRef.current?.focus();
                                 setMenuOpen(false);
                                 setConfirmingClear(true);
                             }} disabled={state.busy || state.items.length === 0}>
                                 {t("pasteQueue.clear")}
-                            </button>
-                        </div>
+                            </InlineMenuItem>
+                        </InlineMenuSurface>
                     )}
                 </header>
 
@@ -486,16 +500,15 @@ export default function PasteQueue() {
                                             <small>{visualIndex === 0 ? t("pasteQueue.next") : item.getType()}</small>
                                         </span>
                                     </button>
-                                    <button
-                                        type="button"
+                                    <ToolbarIconButton
                                         className={styles.deleteButton}
                                         data-pointer-visible={pointerHash === hash}
                                         onClick={() => remove(hash)}
                                         disabled={state.busy}
-                                        aria-label={t("pasteQueue.remove")}
+                                        label={t("pasteQueue.remove")}
                                     >
                                         <DeleteOutlineRoundedIcon fontSize="small" />
-                                    </button>
+                                    </ToolbarIconButton>
                                 </li>
                             );
                         })}
@@ -506,38 +519,38 @@ export default function PasteQueue() {
                     <div className={styles.error} role="alert">
                         <span>{state.error.message}</span>
                         {state.error.hash && (
-                            <div>
-                                <button type="button" onClick={() => paste(state.error?.hash as string)} disabled={state.busy}>
+                            <div className={styles.errorActions}>
+                                <Button onClick={() => paste(state.error?.hash as string)} disabled={state.busy}>
                                     {t("pasteQueue.retry")}
-                                </button>
-                                <button type="button" onClick={() => remove(state.error?.hash as string)} disabled={state.busy}>
+                                </Button>
+                                <Button color="error" onClick={() => remove(state.error?.hash as string)} disabled={state.busy}>
                                     {t("pasteQueue.deleteFailed")}
-                                </button>
+                                </Button>
                             </div>
                         )}
                     </div>
                 )}
                 {confirmingClear && (
-                    <div className={styles.confirm} role="alertdialog" aria-label={t("pasteQueue.clearConfirm")}>
-                        <span>{t("pasteQueue.clearConfirm")}</span>
-                        <div>
-                            <button type="button" onClick={() => setConfirmingClear(false)}>
-                                {t("pasteQueue.keep")}
-                            </button>
-                            <button type="button" onClick={clear} disabled={state.busy}>
-                                {t("pasteQueue.clear")}
-                            </button>
-                        </div>
-                    </div>
+                    <ConfirmDialog
+                        open
+                        title={t("pasteQueue.clear")}
+                        description={t("pasteQueue.clearConfirm")}
+                        cancelLabel={t("pasteQueue.keep")}
+                        confirmLabel={t("pasteQueue.clear")}
+                        confirmDisabled={state.busy}
+                        onCancel={() => setConfirmingClear(false)}
+                        onConfirm={clear}
+                    />
                 )}
                 {undoVisible && (
-                    <div className={styles.undo} role="status">
-                        <span>{t("pasteQueue.pasted")}</span>
-                        <button type="button" onClick={undo} disabled={state.busy}>
-                            <UndoRoundedIcon fontSize="inherit" />
-                            {t("pasteQueue.undo")}
-                        </button>
-                    </div>
+                    <StatusToast
+                        className={styles.undo}
+                        message={t("pasteQueue.pasted")}
+                        actionLabel={t("pasteQueue.undo")}
+                        actionIcon={<UndoRoundedIcon fontSize="inherit" />}
+                        actionDisabled={state.busy}
+                        onAction={undo}
+                    />
                 )}
             </section>
         </main>

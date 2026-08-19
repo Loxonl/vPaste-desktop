@@ -349,6 +349,24 @@ describe("PasteQueue", () => {
         expect(tauri.invoke).toHaveBeenCalledWith("clear_paste_queue", undefined);
     });
 
+    it("restores focus to the menu trigger after Escape closes a menu or confirmation", async () => {
+        const user = userEvent.setup();
+        render(<PasteQueue />);
+
+        const moreButton = await screen.findByRole("button", { name: "pasteQueue.more" });
+        await user.click(moreButton);
+        await user.keyboard("{Escape}");
+        expect(screen.queryByRole("menuitem", { name: "pasteQueue.clear" })).not.toBeInTheDocument();
+        expect(moreButton).toHaveFocus();
+
+        await user.click(moreButton);
+        await user.click(screen.getByRole("menuitem", { name: "pasteQueue.clear" }));
+        expect(screen.getByRole("alertdialog")).toBeVisible();
+        await user.keyboard("{Escape}");
+        await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+        expect(moreButton).toHaveFocus();
+    });
+
     it("dismisses the clear queue menu when focus leaves it", async () => {
         const user = userEvent.setup();
         render(<PasteQueue />);

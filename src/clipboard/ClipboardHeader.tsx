@@ -1,4 +1,5 @@
 import { type RefObject, useState } from "react";
+import ButtonBase from "@mui/material/ButtonBase";
 import AddIcon from "@mui/icons-material/Add";
 import AppleIcon from "@mui/icons-material/Apple";
 import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
@@ -15,6 +16,7 @@ import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import WindowOutlinedIcon from "@mui/icons-material/WindowOutlined";
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
+import { ToolbarIconButton } from "../ui/ToolbarIconButton";
 import { type DynamicTabEntry } from "./customTabs";
 import { type TutorialPlatform } from "./TutorialOverlay";
 
@@ -116,19 +118,18 @@ export function ClipboardTabBar({
                 );
             })}
             {!tutorialActive && (
-                <button
+                <ToolbarIconButton
                     ref={addButtonRef}
-                    type="button"
                     className={classes(styles, "tab-add-button")}
-                    title={t("tabs.add")}
-                    aria-label={t("tabs.add")}
+                    label={t("tabs.add")}
+                    aria-haspopup="menu"
                     onClick={event => {
                         event.stopPropagation();
                         onAdd(event.clientX, event.clientY);
                     }}
                 >
                     <AddIcon fontSize="small" />
-                </button>
+                </ToolbarIconButton>
             )}
         </div>
     );
@@ -178,14 +179,13 @@ export function ClipboardHeaderActions({
     return (
         <div className={classes(styles, "header-actions")}>
             {isMac && !tutorialActive && permissionIncomplete && (
-                <button
-                    type="button"
+                <ButtonBase
                     className={classes(styles, "permission-summary-banner")}
                     onClick={onOpenPermissionCenter}
                 >
                     <WarningAmberOutlinedIcon fontSize="inherit" />
                     <span>{t("clipboard.permissionsIncomplete")}</span>
-                </button>
+                </ButtonBase>
             )}
             {showDeveloperToolbar && developerToolsVisible && (
                 <div
@@ -195,8 +195,7 @@ export function ClipboardHeaderActions({
                     aria-label={t("tutorial.debug.tools")}
                 >
                     <span className={classes(styles, "developer-toolbar-badge")} aria-hidden="true">DEV</span>
-                    <button
-                        type="button"
+                    <ButtonBase
                         className={classes(styles, `settings-button developer-toolbar-button${tutorialActive && tutorialPlatform === "windows" ? " is-active" : ""}`)}
                         title={t("tutorial.debug.windows")}
                         aria-label={t("tutorial.debug.windows")}
@@ -205,9 +204,8 @@ export function ClipboardHeaderActions({
                     >
                         <WindowOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
                         <span>Win</span>
-                    </button>
-                    <button
-                        type="button"
+                    </ButtonBase>
+                    <ButtonBase
                         className={classes(styles, `settings-button developer-toolbar-button${tutorialActive && tutorialPlatform === "mac" ? " is-active" : ""}`)}
                         title={t("tutorial.debug.mac")}
                         aria-label={t("tutorial.debug.mac")}
@@ -216,84 +214,70 @@ export function ClipboardHeaderActions({
                     >
                         <AppleIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
                         <span>Mac</span>
-                    </button>
+                    </ButtonBase>
                     <span className={classes(styles, "developer-toolbar-divider")} aria-hidden="true" />
-                    <button
-                        type="button"
+                    <ToolbarIconButton
                         className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}
-                        title={t("tutorial.debug.language")}
-                        aria-label={t("tutorial.debug.language")}
+                        label={t("tutorial.debug.language")}
                         onClick={onToggleLanguage}
                     >
                         <span>{languageCode === "Chinese" ? "中" : "EN"}</span>
-                    </button>
-                    <button
-                        type="button"
+                    </ToolbarIconButton>
+                    <ToolbarIconButton
                         className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}
-                        title={t(developerTheme === "dark" ? "tutorial.debug.theme.dark" : "tutorial.debug.theme.light")}
-                        aria-label={t(developerTheme === "dark" ? "tutorial.debug.theme.dark" : "tutorial.debug.theme.light")}
+                        label={t(developerTheme === "dark" ? "tutorial.debug.theme.dark" : "tutorial.debug.theme.light")}
                         aria-pressed={developerTheme === "dark"}
                         onClick={onToggleTheme}
                     >
                         {developerTheme === "dark"
                             ? <DarkModeRoundedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
                             : <LightModeRoundedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />}
-                    </button>
+                    </ToolbarIconButton>
                     <span className={classes(styles, "developer-toolbar-divider")} aria-hidden="true" />
-                    <button
-                        type="button"
+                    <ToolbarIconButton
                         className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}
-                        title={t("tutorial.debug.testRoom")}
-                        aria-label={t("tutorial.debug.testRoom")}
+                        label={t("tutorial.debug.testRoom")}
                         onClick={onOpenTestRoom}
                     >
                         <ScienceOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
-                    </button>
-                    <button
-                        type="button"
+                    </ToolbarIconButton>
+                    <ToolbarIconButton
                         className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}
-                        title={t("tutorial.debug.uiLab")}
-                        aria-label={t("tutorial.debug.uiLab")}
+                        label={t("tutorial.debug.uiLab")}
                         onClick={onOpenUiLab}
                     >
                         <DashboardCustomizeOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
-                    </button>
+                    </ToolbarIconButton>
                 </div>
             )}
             {showDeveloperToolbar && (
-                <button
-                    type="button"
+                <ToolbarIconButton
                     className={classes(styles, `settings-button developer-visibility-button${developerToolsVisible ? "" : " is-hidden"}`)}
-                    title={t(developerToolsVisible ? "tutorial.debug.hideTools" : "tutorial.debug.showTools")}
-                    aria-label={t(developerToolsVisible ? "tutorial.debug.hideTools" : "tutorial.debug.showTools")}
+                    label={t(developerToolsVisible ? "tutorial.debug.hideTools" : "tutorial.debug.showTools")}
                     aria-pressed={developerToolsVisible}
                     aria-controls="developer-toolbar"
                     onClick={() => setDeveloperToolsVisible(visible => !visible)}
                 >
                     <VisibilityOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
-                </button>
+                </ToolbarIconButton>
             )}
             {!tutorialActive && (
-                <button
-                    type="button"
+                <ToolbarIconButton
                     className={classes(styles, `settings-button${pasteQueueActive ? " is-active" : ""}`)}
-                    title={t(pasteQueueActive ? "pasteQueue.close" : "pasteQueue.open")}
-                    aria-label={t(pasteQueueActive ? "pasteQueue.close" : "pasteQueue.open")}
+                    label={t(pasteQueueActive ? "pasteQueue.close" : "pasteQueue.open")}
                     aria-pressed={pasteQueueActive}
                     onClick={onOpenPasteQueue}
                 >
                     <PlaylistAddCheckRoundedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
-                </button>
+                </ToolbarIconButton>
             )}
-            <button
-                type="button"
+            <ToolbarIconButton
                 className={classes(styles, "settings-button")}
-                title={t("common.settings")}
-                aria-label={t("common.settings")}
+                label={t("common.settings")}
                 onClick={onOpenSettings}
             >
                 <SettingsOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
-            </button>
+            </ToolbarIconButton>
         </div>
     );
 }
@@ -310,10 +294,10 @@ export function ClipboardUpdateBanner({
     onRestart,
 }: ClipboardUpdateBannerProps) {
     return (
-        <button className={classes(styles, "app-update-banner")} type="button" onClick={onRestart}>
+        <ButtonBase className={classes(styles, "app-update-banner")} onClick={onRestart}>
             <SystemUpdateAltOutlinedIcon fontSize="inherit" />
             <span>{t("clipboard.updateDownloaded", { version })}</span>
             <strong>{t("clipboard.updateRestart")}</strong>
-        </button>
+        </ButtonBase>
     );
 }

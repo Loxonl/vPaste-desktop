@@ -127,6 +127,17 @@ test.describe("window shells", () => {
         await expect(developerToolbar).toBeVisible();
     });
 
+    test("clipboard tag menu keeps click-relative placement and shared surface", async ({ page }) => {
+        await page.setViewportSize({ width: 960, height: 600 });
+        await page.goto("/clipboard");
+
+        await page.getByRole("button", { name: /添加标签|Add Tab/ }).click();
+        const tagMenu = page.getByRole("menu");
+        await expect(tagMenu).toHaveCSS("border-radius", "10px");
+        await expect(tagMenu.getByRole("menuitem")).toHaveCount(2);
+        await expect(page).toHaveScreenshot("clipboard-tag-create-menu.png");
+    });
+
     test("test room shows grouped cases and persistent sample tabs", async ({ page }) => {
         await page.addInitScript(() => {
             let callbackId = 0;
@@ -357,5 +368,20 @@ test.describe("paste queue states", () => {
         await expectPasteQueueFrame(page);
         await page.evaluate(() => window.scrollTo(0, 0));
         await expect(page).toHaveScreenshot("paste-queue-undo-light-en.png");
+    });
+
+    test("menu and clear confirmation share the standard overlay components", async ({ page }) => {
+        await page.goto("/paste-queue");
+        await page.getByRole("button", { name: /更多队列操作|More queue actions/ }).click();
+        const clearMenuItem = page.getByRole("menuitem", { name: /清空队列|Clear queue/ });
+        await expect(clearMenuItem).toBeVisible();
+        await expect(page).toHaveScreenshot("paste-queue-menu.png");
+
+        await clearMenuItem.click();
+        const dialog = page.getByRole("alertdialog", { name: /清空队列|Clear queue/ });
+        await expect(dialog).toBeVisible();
+        await expect(page).toHaveScreenshot("paste-queue-clear-dialog.png");
+        await page.keyboard.press("Escape");
+        await expect(dialog).toBeHidden();
     });
 });

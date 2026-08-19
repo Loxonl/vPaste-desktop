@@ -21,6 +21,35 @@ Use `sx` only for a one-off layout relationship such as flex sizing, alignment, 
 - Use native buttons only for custom surfaces such as clipboard cards; they still need a visible focus state, a minimum 24×24 px target, disabled styling, and an accessible name.
 - Use semantic status components or text as well as color for success, warning, and error states.
 
+Use this decision table before adding a control:
+
+| Need | Preferred implementation | Exception |
+| --- | --- | --- |
+| Standard action or icon action | MUI `Button`, `IconButton`, or `ButtonBase` | Native window controls and product-specific interactive surfaces may remain semantic native elements |
+| Text, selection, toggle | MUI `TextField`, `Select`, `Switch`, `Tabs` | None without a documented platform constraint |
+| Modal confirmation | Shared confirmation dialog built on MUI `Dialog` | None; keep focus lock, Escape, Portal, and focus return |
+| Coordinate-sensitive desktop menu | Absolute-positioned shell with MUI `Paper`, `MenuList`, and `MenuItem` | Full MUI `Menu` only when its Portal cannot change Tauri coordinates |
+| Repeated product pattern | A semantic shared component in `src/ui/` after the second consumer exists | Do not create wrappers for one use |
+
+The temporary raw-control inventory is stored in `scripts/ui-governance-baseline.json`. New raw `button`, `input`, or `select` elements fail `npm run check:styles`. When a module migrates to MUI, reduce its baseline entry in the same pull request; never increase the baseline to make a new control pass.
+
+## Motion Ownership
+
+Motion is added deliberately after component structure is stable. Use one animation owner per element:
+
+| Change | Owner |
+| --- | --- |
+| Color, background, border, focus, MUI Switch internals | MUI theme or CSS Modules |
+| Conditional mount/unmount, small state transitions, layout continuity | Shared exports from `src/ui/motion/` |
+| Native window position, size, show, and hide | Tauri/Rust |
+| Active pointer drag transform | Existing drag implementation until a separately benchmarked migration |
+
+Business modules must not import `motion`, `motion/react`, `motion/react-m`, or `framer-motion` directly. They use the shared `src/ui/motion` entry and its named presets. `framer-motion` must never be a direct dependency. Every `AnimatePresence` declares its `mode`, and business components do not invent duration, easing, spring, or distance values.
+
+The approved timing scale is 120 / 180 / 240 / 320 ms, with 6 / 10 / 16 px distances. Only `transform` and `opacity` should normally animate. Keep the existing Tauri main-window slide as the sole owner of whole-window movement. In reduced-motion mode, remove translation, scale, and springs; retain only a short fade when it conveys state.
+
+The legacy CSS and Web Animations API declarations are frozen in `scripts/ui-governance-baseline.json`. Token-based declarations are not baseline exceptions. Each migration must reduce the baseline, and the tutorial remains the final Web Animations API migration.
+
 ## Interaction State Contract
 
 Every shared control must define and test the states that are relevant to it. A default-state screenshot alone is not sufficient.
@@ -63,8 +92,10 @@ Before opening a UI pull request:
 npm run check:ui
 ```
 
-The full command includes Playwright visual tests and is intended for local review. To conserve hosted-runner quota, GitHub Actions runs only the style-architecture check, production build, and unit tests. Visual baselines must be checked locally before submitting UI changes.
+The full command includes Playwright visual tests and is intended for local review. Hosted GitHub Actions quota is not used for this UI workstream. Run the checks locally, inspect the screenshots manually, and record the results in the pull request for the maintainer to verify.
 
 Screenshot changes are review artifacts, not automatic updates. Regenerate them with `npm run test:visual:update`, inspect every changed image, and commit only intentional changes.
+
+For Motion-related changes, also verify normal and reduced-motion behavior directly. Wait for exit animations before taking screenshots; screenshots do not replace behavior tests for callbacks, focus return, or reduced-motion selection. Performance comparisons for 36 clipboard cards and 100 Paste Queue rows are local-only evidence and are never a hosted CI gate.
 
 Do not combine a React or MUI major-version upgrade with visual migration work. Do not edit Windows installer files as part of frontend UI work.

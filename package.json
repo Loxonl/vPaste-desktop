@@ -25,6 +25,7 @@
     "build:windows:signed-updater": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-windows-release.ps1 -SignUpdater",
     "build:macos": "tauri build --bundles dmg --config src-tauri/tauri.local.conf.json",
     "build:macos-release": "bash ./scripts/build-macos-release.sh",
+    "benchmark:ui": "playwright test --config playwright.benchmark.config.ts",
     "check:licenses": "node scripts/check-third-party-licenses.mjs",
     "check:release": "node scripts/check-release-version.mjs",
     "check:styles": "node scripts/check-ui-style-architecture.mjs",

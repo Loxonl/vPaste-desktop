@@ -108,7 +108,7 @@ const LINK_PREVIEW_SUCCESS_COOLDOWN_SECS: u64 = 12 * 60 * 60;
 const LINK_PREVIEW_FAILURE_COOLDOWN_SECS: u64 = 72 * 60 * 60;
 const LINK_PREVIEW_CACHE_RETENTION_SECS: u64 = 96 * 60 * 60;
 const LINK_PREVIEW_HISTORY_WINDOW_MILLIS: u64 = 7 * 24 * 60 * 60 * 1000;
-const SEARCH_SCAN_BATCH_SIZE: usize = 256;
+const SEARCH_RESULT_DB_CHUNK_SIZE: usize = 400;
 const RICH_HTML_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
 const CARD_TEXT_PREVIEW_CHARS: usize = 1_800;
 const LARGE_TEXT_THRESHOLD_BYTES: usize = 10_000;
@@ -174,6 +174,26 @@ pub(crate) fn read_stored_item(row: &Row) -> Result<StoredItem, Error> {
 }
 
 pub(crate) fn materialize_item(stored: StoredItem) -> Item {
+    let tags = tags_for_clipboard_id(stored.id as i64).unwrap_or_default();
+    materialize_item_with_tags(stored, tags)
+}
+
+fn materialize_items(stored_items: Vec<StoredItem>) -> Vec<Item> {
+    let ids = stored_items
+        .iter()
+        .map(|stored| stored.id)
+        .collect::<Vec<_>>();
+    let mut tags_by_clipboard_id = tags_for_clipboard_ids(&ids).unwrap_or_default();
+    stored_items
+        .into_iter()
+        .map(|stored| {
+            let tags = tags_by_clipboard_id.remove(&stored.id).unwrap_or_default();
+            materialize_item_with_tags(stored, tags)
+        })
+        .collect()
+}
+
+fn materialize_item_with_tags(stored: StoredItem, tags: Vec<ItemTag>) -> Item {
     let id = stored.id;
     let hash = stored.hash;
     let mut item_type = ItemType::from_str(stored.item_type.as_str()).unwrap();
@@ -230,7 +250,7 @@ pub(crate) fn materialize_item(stored: StoredItem) -> Item {
         time: stored.time,
         search_index: stored.search_index,
         label: stored.label,
-        tags: tags_for_clipboard_id(id as i64).unwrap_or_default(),
+        tags,
     }
 }
 
@@ -267,6 +287,44 @@ fn tags_for_clipboard_id(clipboard_id: i64) -> Result<Vec<ItemTag>, Error> {
         })?
         .collect();
     tags
+}
+
+fn tags_for_clipboard_ids(clipboard_ids: &[usize]) -> Result<HashMap<usize, Vec<ItemTag>>, Error> {
+    if clipboard_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let sql = format!(
+        "select ct.clipboard_id, t.id, t.name
+         from tags t
+         join clipboard_tags ct on ct.tag_id = t.id
+         where ct.clipboard_id in ({})
+         order by ct.clipboard_id, lower(t.name), t.id",
+        vec!["?"; clipboard_ids.len()].join(", ")
+    );
+    let params = clipboard_ids
+        .iter()
+        .map(|id| Value::Integer(*id as i64))
+        .collect::<Vec<_>>();
+    let conn = db();
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(params), |row| {
+        Ok((
+            row.get::<_, usize>(0)?,
+            ItemTag {
+                id: row.get(1)?,
+                name: row.get(2)?,
+            },
+        ))
+    })?;
+    let mut tags_by_clipboard_id = HashMap::new();
+    for row in rows {
+        let (clipboard_id, tag) = row?;
+        tags_by_clipboard_id
+            .entry(clipboard_id)
+            .or_insert_with(Vec::new)
+            .push(tag);
+    }
+    Ok(tags_by_clipboard_id)
 }
 
 fn normalize_tag_name(name: &str) -> String {
@@ -580,7 +638,7 @@ pub fn search_with_cancellation(
         last_time = i64::MAX as u64;
     }
     let mut items = Vec::new();
-    let mut next_cursor = None;
+    let next_cursor;
     let has_more;
 
     if keywords.trim().is_empty() {
@@ -597,20 +655,41 @@ pub fn search_with_cancellation(
         };
         next_cursor = stored_items.last().map(|item| (item.id as u64, item.time));
         has_more = stored_items.len() == limit;
-        items.extend(stored_items.into_iter().map(materialize_item));
+        items.extend(materialize_items(stored_items));
     } else {
-        let mut seen_hashes = HashSet::new();
-        let scan_limit = limit.max(5000);
-        let mut scanned = 0;
-        while scanned < scan_limit && items.len() < limit {
+        if !engine::is_ready() {
+            rebuild_search_index()?;
+        }
+        let mut stored_items = Vec::new();
+        let query_limit = limit.saturating_add(1);
+        let mut candidate_offset = 0;
+        let mut candidate_count = 0;
+        let mut database_elapsed = Duration::ZERO;
+        let session_started = Instant::now();
+        let search_session = search_index_session(keywords)?;
+        let mut index_elapsed = session_started.elapsed();
+        loop {
             if !is_current() {
                 return Ok(None);
             }
-            let batch_limit = (scan_limit - scanned).min(SEARCH_SCAN_BATCH_SIZE);
-            let (cursor_id, cursor_time) = next_cursor.unwrap_or((last_id, last_time));
-            let (search_sql, params) =
-                build_filter_query(&filter, cursor_id, cursor_time, batch_limit);
-            let stored_items = {
+            let index_started = Instant::now();
+            let candidate_page =
+                search_session.search_page(candidate_offset, SEARCH_RESULT_DB_CHUNK_SIZE)?;
+            index_elapsed += index_started.elapsed();
+            if candidate_page.hashes.is_empty() {
+                break;
+            }
+            candidate_count += candidate_page.hashes.len();
+            candidate_offset += candidate_page.hashes.len();
+            let (search_sql, params) = build_indexed_filter_query(
+                &filter,
+                &candidate_page.hashes,
+                last_id,
+                last_time,
+                query_limit,
+            );
+            let database_started = Instant::now();
+            let chunk_items = {
                 let conn = db();
                 let mut statement = conn.prepare(&search_sql).map_err(|err| err.to_string())?;
                 let collected = statement
@@ -620,30 +699,28 @@ pub fn search_with_cancellation(
                     .map_err(|err| err.to_string())?;
                 collected
             };
-            let batch_len = stored_items.len();
-            for stored in stored_items {
-                if !is_current() {
-                    return Ok(None);
-                }
-                scanned += 1;
-                next_cursor = Some((stored.id as u64, stored.time));
-                if stored_item_matches_keywords(&stored, keywords) {
-                    let item = materialize_item(stored);
-                    if seen_hashes.insert(item.hash.clone()) {
-                        items.push(item);
-                    }
-                }
-                if items.len() >= limit {
-                    break;
-                }
-            }
-            if batch_len < batch_limit {
+            database_elapsed += database_started.elapsed();
+            stored_items.extend(chunk_items);
+            if stored_items.len() >= query_limit || !candidate_page.has_more {
                 break;
             }
         }
-        items.sort_by(|a, b| b.time.cmp(&a.time).then_with(|| b.id.cmp(&a.id)));
-        items.truncate(limit);
-        has_more = items.len() == limit || scanned == scan_limit;
+        drop(search_session);
+        stored_items.sort_by(|a, b| b.time.cmp(&a.time).then_with(|| b.id.cmp(&a.id)));
+        stored_items.dedup_by(|left, right| left.hash == right.hash);
+        has_more = stored_items.len() > limit;
+        stored_items.truncate(limit);
+        next_cursor = stored_items.last().map(|item| (item.id as u64, item.time));
+        let materialize_started = Instant::now();
+        items.extend(materialize_items(stored_items));
+        info!(
+            "clipboard search stages candidates={} index_ms={} database_ms={} materialize_ms={} results={}",
+            candidate_count,
+            index_elapsed.as_millis(),
+            database_elapsed.as_millis(),
+            materialize_started.elapsed().as_millis(),
+            items.len()
+        );
     }
 
     items.retain(is_displayable_history_item);
@@ -658,38 +735,60 @@ pub fn search_with_cancellation(
     }))
 }
 
-fn stored_item_matches_keywords(stored: &StoredItem, keywords: &str) -> bool {
-    let keyword = keywords.trim().to_ascii_lowercase();
-    if keyword.is_empty() {
-        return true;
+fn search_index_session(keywords: &str) -> Result<engine::SearchSession, String> {
+    match engine::start_search(keywords) {
+        Ok(session) => Ok(session),
+        Err(_) => {
+            engine::invalidate();
+            rebuild_search_index()?;
+            engine::start_search(keywords)
+        }
     }
-
-    let content = stored.content.clone();
-    let preview_content = stored.preview_content.clone();
-    let source = stored.source.clone();
-
-    if stored.item_type == ItemType::TextFile.to_string()
-        && text_file_contains_keyword(&content, &keyword)
-    {
-        return true;
-    }
-
-    [
-        content.as_str(),
-        preview_content.as_str(),
-        source.as_str(),
-        stored.app_source.as_str(),
-    ]
-    .iter()
-    .any(|value| value.to_ascii_lowercase().contains(&keyword))
 }
 
-fn text_file_contains_keyword(path: &str, keyword: &str) -> bool {
-    history_store::read_file(path)
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .map(|text| text.to_ascii_lowercase().contains(keyword))
-        .unwrap_or(false)
+fn stored_item_search_content(stored: &StoredItem) -> String {
+    let content = if stored.item_type == ItemType::TextFile.to_string() {
+        history_store::read_file(&stored.content)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .unwrap_or_else(|| stored.content.clone())
+    } else {
+        stored.content.clone()
+    };
+    [
+        content.as_str(),
+        stored.preview_content.as_str(),
+        stored.source.as_str(),
+        stored.app_source.as_str(),
+    ]
+    .join("\n")
+}
+
+pub(crate) fn rebuild_search_index() -> Result<(), String> {
+    let stored_items = {
+        let conn = db();
+        let mut statement = conn
+            .prepare("select * from clipboard order by id")
+            .map_err(|err| err.to_string())?;
+        let collected = statement
+            .query_map([], read_stored_item)
+            .map_err(|err| err.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())?;
+        collected
+    };
+    let documents = stored_items
+        .iter()
+        .map(|stored| {
+            (
+                stored.id as u64,
+                stored.time,
+                stored_item_search_content(stored),
+                stored.hash.clone(),
+            )
+        })
+        .collect();
+    engine::rebuild(documents)
 }
 
 fn parse_search_filter(label: &str) -> SearchFilter {
@@ -791,6 +890,34 @@ fn build_filter_query(
         clauses.join(" and ")
     );
     (sql, params)
+}
+
+fn build_indexed_filter_query(
+    filter: &SearchFilter,
+    hashes: &[String],
+    last_id: u64,
+    last_time: u64,
+    limit: usize,
+) -> (String, Vec<Value>) {
+    let mut clauses = vec![
+        "(time < ? or (time = ? and id < ?))".to_string(),
+        format!("hash in ({})", vec!["?"; hashes.len()].join(", ")),
+    ];
+    let mut params = vec![
+        Value::Integer(last_time as i64),
+        Value::Integer(last_time as i64),
+        Value::Integer(last_id as i64),
+    ];
+    params.extend(hashes.iter().cloned().map(Value::Text));
+    apply_filter_clauses(filter, &mut clauses, &mut params);
+    params.push(Value::Integer(limit as i64));
+    (
+        format!(
+            "select * from clipboard where {} order by time desc, id desc limit ?",
+            clauses.join(" and ")
+        ),
+        params,
+    )
 }
 
 fn filter_app_sources(filter: &SearchFilter) -> Vec<String> {
@@ -1821,9 +1948,23 @@ fn insert_history_item(
             ],
         );
         return match state {
-            Ok(_) => true,
+            Ok(_) => {
+                if let Ok(row_id) = conn.query_row(
+                    "select id from clipboard where hash = ?1",
+                    [&item.hash],
+                    |row| row.get::<_, u64>(0),
+                ) {
+                    engine::insert(
+                        &captured_item_search_content(item, search_content, source, app_source),
+                        &item.hash,
+                        &row_id,
+                        item.time,
+                    );
+                }
+                true
+            }
             Err(err) => {
-                error!("update clipboard item time failed {:?} {:?}", item, err);
+                error!("failed to update clipboard item metadata: {err}");
                 false
             }
         };
@@ -1855,14 +1996,35 @@ fn insert_history_item(
         ])
     };
     if let Err(err) = state {
-        error!("{:?} {:?}", item, err);
+        error!("failed to insert clipboard item: {err}");
         return false;
     }
     let row_id = conn.last_insert_rowid() as u64;
 
-    engine::insert(search_content, &item.hash, &row_id);
+    engine::insert(
+        &captured_item_search_content(item, search_content, source, app_source),
+        &item.hash,
+        &row_id,
+        item.time,
+    );
     info!("insert item all :{}", start.elapsed().as_millis());
     true
+}
+
+fn captured_item_search_content(
+    item: &Item,
+    search_content: &str,
+    source: &str,
+    app_source: &str,
+) -> String {
+    [
+        search_content,
+        item.content.as_str(),
+        item.preview_content.as_str(),
+        source,
+        app_source,
+    ]
+    .join("\n")
 }
 
 fn store_captured_item(
@@ -2704,12 +2866,9 @@ fn fetch_link_preview(url: &str) -> Result<LinkPreviewUpdate, String> {
         .send()
     {
         Ok(response) => response,
-        Err(err) => {
+        Err(_) => {
             let fallback = fallback_link_preview(&client, &preview_url, "");
-            info!(
-                "link preview fetch fell back to local icon for {}: {}",
-                url, err
-            );
+            info!("link preview fetch failed; using a local icon");
             return Ok(fallback);
         }
     };
@@ -2717,8 +2876,8 @@ fn fetch_link_preview(url: &str) -> Result<LinkPreviewUpdate, String> {
         let status = response.status();
         let fallback = fallback_link_preview(&client, &preview_url, "");
         info!(
-            "link preview fetch fell back to local icon for {}: http status {}",
-            url, status
+            "link preview fetch returned HTTP {}; using a local icon",
+            status
         );
         return Ok(fallback);
     }
@@ -2734,8 +2893,8 @@ fn fetch_link_preview(url: &str) -> Result<LinkPreviewUpdate, String> {
     {
         let fallback = fallback_link_preview(&client, &preview_url, "");
         info!(
-            "link preview fetch fell back to local icon for {}: non-html response {}",
-            url, content_type
+            "link preview fetch returned non-html {}; using a local icon",
+            content_type
         );
         return Ok(fallback);
     }
@@ -2979,9 +3138,9 @@ pub fn refresh_link_previews(urls: Vec<String>) -> Result<Vec<LinkPreviewUpdate>
                 remember_link_preview_attempt(&url, false);
                 update
             }
-            Err(err) => {
+            Err(_) => {
                 remember_link_preview_attempt(&url, true);
-                info!("link preview fetch skipped for {}: {}", url, err);
+                info!("link preview refresh skipped after a fetch failure");
                 continue;
             }
         };
@@ -3010,12 +3169,22 @@ pub fn refresh_link_previews(urls: Vec<String>) -> Result<Vec<LinkPreviewUpdate>
             ],
         )
         .map_err(|err| err.to_string())?;
-        engine::delete(&record.hash);
-        engine::insert(
-            format!("{} {}", url, sanitized_title).trim(),
-            &record.hash,
-            &record.id,
-        );
+        if let Some(stored) = db()
+            .query_row(
+                "select * from clipboard where hash = ?1",
+                [&record.hash],
+                read_stored_item,
+            )
+            .optional()
+            .map_err(|err| err.to_string())?
+        {
+            engine::insert(
+                &stored_item_search_content(&stored),
+                &record.hash,
+                &record.id,
+                stored.time,
+            );
+        }
 
         updates.push(LinkPreviewUpdate {
             url,
@@ -3039,7 +3208,7 @@ pub fn save_to_disk(data: &[u8], hash: &String) -> String {
 
     if !file_path.exists() {
         if let Err(e) = history_store::write_file(&file_path, data) {
-            error!("写入加密文件时出错: {}", e);
+            error!("写入历史文件时出错: {}", e);
         }
     }
     native_path_string(&file_path)
@@ -3792,36 +3961,98 @@ mod tests {
     }
 
     #[test]
-    fn keyword_search_scans_beyond_first_candidate_batch() {
+    fn keyword_search_uses_index_beyond_the_old_scan_limit() {
         let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
         let app_data = tempfile::tempdir().unwrap();
         *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
             Some(app_data.path().to_string_lossy().to_string());
         seed_search_history(5001, |index| {
             if index == 5000 {
-                "old needle".to_string()
+                "old indexed needle".to_string()
             } else {
                 "other".to_string()
             }
         });
+        rebuild_search_index().unwrap();
 
-        let first_batch = search("needle", 0, 0, 36, "__all").unwrap();
-        assert!(first_batch.list.is_empty());
-        assert!(first_batch.has_more);
-        assert_ne!((first_batch.next_id, first_batch.next_time), (0, 0));
-
-        let page = search(
-            "needle",
-            first_batch.next_id,
-            first_batch.next_time,
-            36,
-            "__all",
-        )
-        .unwrap();
+        let page = search("indexed needle", 0, 0, 36, "__all").unwrap();
 
         assert_eq!(page.list.len(), 1);
-        assert_eq!(page.list[0].content, "old needle");
+        assert_eq!(page.list[0].content, "old indexed needle");
         assert!(!page.has_more);
+    }
+
+    #[test]
+    fn indexed_keyword_search_still_applies_database_filters() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        seed_search_history(2, |_| "shared needle".to_string());
+        db().execute(
+            "update clipboard set app_source = 'Code' where hash = 'search-test-1'",
+            [],
+        )
+        .unwrap();
+        rebuild_search_index().unwrap();
+
+        let page = search("needle", 0, 0, 36, r#"__filter:{"app_sources":["Code"]}"#).unwrap();
+
+        assert_eq!(page.list.len(), 1);
+        assert_eq!(page.list[0].app_source, "Code");
+    }
+
+    #[test]
+    fn indexed_keyword_search_scans_later_batches_for_filtered_matches() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        seed_search_history(450, |_| "shared needle".to_string());
+        db().execute(
+            "update clipboard set app_source = 'Code' where hash = 'search-test-449'",
+            [],
+        )
+        .unwrap();
+        rebuild_search_index().unwrap();
+
+        let page = search("needle", 0, 0, 36, r#"__filter:{"app_sources":["Code"]}"#).unwrap();
+
+        assert_eq!(page.list.len(), 1);
+        assert_eq!(page.list[0].hash, "search-test-449");
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn indexed_keyword_search_preserves_result_tags() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        seed_search_history(1, |_| "tagged needle".to_string());
+        let clipboard_id: i64 = db()
+            .query_row(
+                "select id from clipboard where hash = 'search-test-0'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        db().execute(
+            "insert into tags(id, name, created_at, updated_at) values(1, 'Important', 1, 1)",
+            [],
+        )
+        .unwrap();
+        db().execute(
+            "insert into clipboard_tags(clipboard_id, tag_id, created_at) values(?1, 1, 1)",
+            [clipboard_id],
+        )
+        .unwrap();
+        rebuild_search_index().unwrap();
+
+        let page = search("needle", 0, 0, 36, "__all").unwrap();
+
+        assert_eq!(page.list.len(), 1);
+        assert_eq!(page.list[0].tags[0].name, "Important");
     }
 
     #[test]
@@ -3838,10 +4069,7 @@ mod tests {
             }
         });
 
-        let scan = search("needle", 0, 0, 36, "__all").unwrap();
-        assert!(scan.list.is_empty());
-        assert!(scan.has_more);
-        let first = search("needle", scan.next_id, scan.next_time, 36, "__all").unwrap();
+        let first = search("needle", 0, 0, 36, "__all").unwrap();
         assert_eq!(first.list.len(), 36);
         assert!(first.has_more);
         let second = search("needle", first.next_id, first.next_time, 36, "__all").unwrap();
@@ -3873,12 +4101,12 @@ mod tests {
         let page = search_with_cancellation("needle", 0, 0, 36, "__all", || {
             let next = checks.get() + 1;
             checks.set(next);
-            next < 10
+            next < 2
         })
         .unwrap();
 
         assert!(page.is_none());
-        assert_eq!(checks.get(), 10);
+        assert_eq!(checks.get(), 2);
     }
 
     #[test]

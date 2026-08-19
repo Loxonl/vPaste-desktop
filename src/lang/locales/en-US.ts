@@ -281,7 +281,7 @@ const enUS: LanguagePack = {
         "settings.exportHistory": "Export Data",
         "settings.exportHistory.desc": "Package the complete history (exports are not encrypted; store them securely)",
         "settings.legacyHistory.title": "Legacy history migration required",
-        "settings.legacyHistory.desc": "Export with the old app and convert the archive with vpaste-history-converter. After confirming the backup, clear local legacy history and import the converted v3 file.",
+        "settings.legacyHistory.desc": "Export with the old app. On Windows, drag the v2 archive onto vpaste-history-converter.exe to create a .v3.vphistory file beside it. Confirm the backup, clear local legacy history, then import that file manually.",
         "settings.legacyHistory.clear": "Backup confirmed, clear legacy history",
         "settings.legacyHistory.confirm": "This permanently clears legacy clipboard history and attachments. Confirm that you exported and converted a backup. Continue?",
         "settings.importHistory": "Import Data",

@@ -1,10 +1,12 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import AboutSettings from "../../../src/config/sections/AboutSettings";
 import type { SettingsBridge } from "../../../src/config/SettingsBridge";
 import { DEFAULT_CONFIG } from "../../../src/config/settingsTypes";
 import type { UpdateState } from "../../../src/update";
+
+afterEach(cleanup);
 
 const baseState: UpdateState = {
     status: "idle",
@@ -62,6 +64,20 @@ describe("About update controls", () => {
         await user.click(await screen.findByRole("button", { name: "settings.updateRestart" }));
         await waitFor(() => {
             expect(invoke).toHaveBeenCalledWith("restart_and_install_app_update");
+        });
+    });
+
+    it("opens shared link cards through the existing browser command", async () => {
+        const invoke = vi.fn(async (command: string) => {
+            if (command === "get_update_state") return baseState;
+            return undefined;
+        });
+        renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
+
+        await userEvent.click(screen.getByRole("button", { name: /settings\.about\.changelog/ }));
+
+        expect(invoke).toHaveBeenCalledWith("open_url_in_browser", {
+            url: "https://github.com/Loxonl/vPaste-desktop/releases",
         });
     });
 });

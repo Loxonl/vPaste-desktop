@@ -6,6 +6,7 @@ import FileUploadIcon from "@mui/icons-material/FileUploadOutlined";
 import { error } from "@tauri-apps/plugin-log";
 import { displayAppSource, type AppSourceOption } from "../../clipboard/appSource";
 import type { HistoryArchiveInfo, HistoryArchiveProgressPayload, SettingsBlockingOperation, SettingsSectionProps, StorageCleanupInfo, StoragePaths, TFunction } from "../settingsTypes";
+import ActionCard from "../../ui/ActionCard";
 import { classes } from "../../ui/classNames";
 import styles from "../Config.module.css";
 
@@ -286,9 +287,15 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                                     <strong>{displayAppSource(source, t)}</strong>
                                                     <small>{source}</small>
                                                 </span>
-                                                <button type="button" onClick={() => handleRemovePrivacyApp(source)}>
+                                                <Button
+                                                    className={classes(styles, "privacy-app-remove")}
+                                                    color="error"
+                                                    variant="text"
+                                                    size="small"
+                                                    onClick={() => handleRemovePrivacyApp(source)}
+                                                >
                                                     {t("common.remove")}
-                                                </button>
+                                                </Button>
                                             </div>
                                         );
                                     })}
@@ -430,26 +437,22 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                 </Typography>
                 <div className={classes(styles, "history-transfer-panel")}>
                     <div className={classes(styles, "history-transfer-grid")}>
-                        <button
-                            className={classes(styles, "history-transfer-card")}
-                            type="button"
+                        <ActionCard
+                            layout="vertical"
                             disabled={historyWorking || cleanupWorking || legacyHistoryBlocked}
                             onClick={handleImportHistory}
-                        >
-                            <FileUploadIcon className={classes(styles, "history-transfer-card__icon")} fontSize="large" />
-                            <span className={classes(styles, "history-transfer-card__title")}>{t("settings.importHistory")}</span>
-                            <span className={classes(styles, "history-transfer-card__desc")}>{t("settings.importHistory.desc")}</span>
-                        </button>
-                        <button
-                            className={classes(styles, "history-transfer-card")}
-                            type="button"
+                            icon={<FileUploadIcon fontSize="large" />}
+                            title={t("settings.importHistory")}
+                            description={t("settings.importHistory.desc")}
+                        />
+                        <ActionCard
+                            layout="vertical"
                             disabled={historyWorking || cleanupWorking || legacyHistoryBlocked}
                             onClick={handleExportHistory}
-                        >
-                            <FileDownloadIcon className={classes(styles, "history-transfer-card__icon")} fontSize="large" />
-                            <span className={classes(styles, "history-transfer-card__title")}>{t("settings.exportHistory")}</span>
-                            <span className={classes(styles, "history-transfer-card__desc")}>{t("settings.exportHistory.desc")}</span>
-                        </button>
+                            icon={<FileDownloadIcon fontSize="large" />}
+                            title={t("settings.exportHistory")}
+                            description={t("settings.exportHistory.desc")}
+                        />
                     </div>
                     {(transferWorking || transferMessage) && (
                         <div className={classes(styles, `history-transfer-progress ${transferMessage?.kind || 'working'}`)}>

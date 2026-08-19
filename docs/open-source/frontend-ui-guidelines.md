@@ -18,6 +18,7 @@ Use `sx` only for a one-off layout relationship such as flex sizing, alignment, 
 
 - Use MUI for interactive controls such as buttons, selects, text fields, switches, tabs, menus, dialogs, and progress indicators.
 - Use the shared settings primitives for conventional label/description/control rows.
+- Use `ActionCard` for repeated product actions that need an icon, title, and description. Choose its fixed horizontal or vertical layout instead of recreating card markup in a feature module.
 - Use native buttons only for custom surfaces such as clipboard cards; they still need a visible focus state, a minimum 24×24 px target, disabled styling, and an accessible name.
 - Use semantic status components or text as well as color for success, warning, and error states.
 
@@ -26,6 +27,7 @@ Use this decision table before adding a control:
 | Need | Preferred implementation | Exception |
 | --- | --- | --- |
 | Standard action or icon action | MUI `Button`, `IconButton`, or `ButtonBase` | Native window controls and product-specific interactive surfaces may remain semantic native elements |
+| Repeated descriptive action card | Shared `ActionCard`, built on MUI `ButtonBase` | Use a normal MUI button when title and description are not both needed |
 | Text, selection, toggle | MUI `TextField`, `Select`, `Switch`, `Tabs` | None without a documented platform constraint |
 | Modal confirmation | Shared confirmation dialog built on MUI `Dialog` | None; keep focus lock, Escape, Portal, and focus return |
 | Coordinate-sensitive desktop menu | Absolute-positioned shell with MUI `Paper`, `MenuList`, and `MenuItem` | Full MUI `Menu` only when its Portal cannot change Tauri coordinates |
@@ -57,6 +59,7 @@ Every shared control must define and test the states that are relevant to it. A 
 | Component | Required visual states | Required behavior |
 | --- | --- | --- |
 | Button | default, hover, keyboard focus, disabled, destructive, loading | Enter/Space activation; loading and disabled controls cannot trigger duplicate actions |
+| ActionCard | horizontal, vertical, hover, keyboard focus, disabled, light/dark | Entire surface has one button role; Enter/Space activates it; disabled cards do not invoke actions |
 | TextField | default, keyboard focus, error with text guidance, read-only, disabled | visible label; errors use `aria-invalid` and associated helper text |
 | Select/Menu | default, open, selected, hover, keyboard focus, disabled, long value, long list | Arrow-key selection; Escape closes; focus returns to the trigger; long menus scroll to their final item |
 | Switch/Checkbox | on/off or checked/unchecked, keyboard focus, disabled | associated label; Space toggles; the interactive target is at least 24×24 px |

@@ -132,7 +132,9 @@ body {
   align-items: center;
   min-height: 66px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.07);
-  transition: opacity 100ms ease, background 100ms ease;
+  transition:
+    opacity var(--motion-duration-quick) var(--motion-ease-standard),
+    background var(--motion-duration-quick) var(--motion-ease-standard);
 }
 
 .row.pointerInside {
@@ -140,7 +142,10 @@ body {
 }
 
 .row.sorting:not(.dragging) {
-  transition: transform 160ms cubic-bezier(0.2, 0, 0, 1), opacity 100ms ease, background 100ms ease;
+  transition:
+    transform var(--motion-duration-fast) var(--motion-ease-standard),
+    opacity var(--motion-duration-quick) var(--motion-ease-standard),
+    background var(--motion-duration-quick) var(--motion-ease-standard);
 }
 
 .row.dragging {

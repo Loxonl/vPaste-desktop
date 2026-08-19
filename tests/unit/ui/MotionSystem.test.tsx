@@ -7,6 +7,7 @@ import {
     m,
     motionPresetFor,
     syncMotionCssVariables,
+    useMotionPreset,
 } from "../../../src/ui/motion";
 import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
 
@@ -37,6 +38,21 @@ describe("Motion system", () => {
         expect(reducedAnimate).not.toHaveProperty("y");
         expect(reducedAnimate).not.toHaveProperty("scale");
         expect(reducedAnimate).not.toHaveProperty("scaleX");
+    });
+
+    it("uses the MotionConfig reduced-motion policy for shared presets", () => {
+        function Harness() {
+            const preset = useMotionPreset("popover");
+            return <div data-testid="preset" data-initial={JSON.stringify(preset.initial)} />;
+        }
+
+        render(
+            <MotionTestProvider reducedMotion="always">
+                <Harness />
+            </MotionTestProvider>,
+        );
+
+        expect(screen.getByTestId("preset")).toHaveAttribute("data-initial", JSON.stringify({ opacity: 0 }));
     });
 
     it.each(["never", "always"] as const)(

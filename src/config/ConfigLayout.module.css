@@ -128,7 +128,9 @@
   background: transparent;
   font: inherit;
   cursor: default;
-  transition: background-color 120ms ease, color 120ms ease;
+  transition:
+    background-color var(--motion-duration-quick) var(--motion-ease-standard),
+    color var(--motion-duration-quick) var(--motion-ease-standard);
 }
 
 .windowsControlsHoverReady .windowsWindowClose:hover {

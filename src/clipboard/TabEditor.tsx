@@ -14,7 +14,7 @@ import { type AppSourceOption, compactAppSourceName, displayAppSource } from "./
 import { loadAndApplyTheme } from "../theme";
 import { InlineMenuItem, InlineMenuSurface } from "../ui/InlineMenu";
 import { ToolbarIconButton } from "../ui/ToolbarIconButton";
-import { AnimatePresence } from "../ui/motion";
+import { AnimatePresence, m, useMotionPreset } from "../ui/motion";
 import { applyNameEmoji, selectedNameEmoji } from "./nameEmoji";
 import type { ItemTag } from "./Item";
 import {
@@ -72,6 +72,7 @@ export default function TabEditor() {
     const [recentAppSources, setRecentAppSources] = useState<AppSourceOption[]>([]);
     const [appSourceOpen, setAppSourceOpen] = useState(false);
     const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
+    const panelMotion = useMotionPreset("popover");
     const panelRef = useRef<HTMLDivElement>(null);
     const emojiButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -356,7 +357,13 @@ export default function TabEditor() {
 
     return (
         <div className={styles["tab-editor-window"]} onContextMenu={event => event.preventDefault()}>
-            <div className={styles["tab-editor-panel"]} ref={panelRef}>
+            <m.div
+                className={styles["tab-editor-panel"]}
+                ref={panelRef}
+                variants={panelMotion}
+                initial="initial"
+                animate="animate"
+            >
                 <div className={styles["tab-editor-header"]}>
                     <strong>{tagKind === "record"
                         ? mode === "edit" ? t("tabs.editRecordTag") : t("tabs.addRecordTag")
@@ -529,7 +536,7 @@ export default function TabEditor() {
                         {t("tabs.save")}
                     </Button>
                 </div>
-            </div>
+            </m.div>
         </div>
     );
 }

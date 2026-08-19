@@ -91,6 +91,18 @@ UI Lab displays all six approved presets in normal and forced reduced-motion mod
 
 The phase-five production build contains 35 JavaScript chunks totaling 1,393,217 bytes (356,336 bytes gzip). The asynchronously loaded `domMax` feature chunk is 84,519 bytes (27,770 bytes gzip); the application entry is 274,245 bytes (93,429 bytes gzip). Compared with phase one, Motion adds 146,409 raw bytes and 56,028 gzip bytes across the route graph while keeping the 84,519-byte feature bundle out of the initial entry. These figures are retained for the final cleanup audit rather than used as a hosted CI gate.
 
+## Phase-Six High-Value State Transitions
+
+Search expansion now uses a Motion layout-size transition around the unchanged composition-aware native input instead of animating CSS `min-width`. The clipboard tab indicator uses a shared layout identity without taking ownership of draggable tab transforms. Settings sections, blocking progress, update and permission status, queue selection, preview waiting/content, and Paste Queue empty/error states use the approved presets with explicit presence modes.
+
+These transitions remain inside each webview. Tauri continues to own main-window movement, hiding, sizing, and native coordinates. Initial clipboard history population is not staggered, and the existing queue drag engine remains unchanged.
+
+## Phase-Seven Card and Queue Feedback
+
+Clipboard cards and Paste Queue rows now use `AnimatePresence` for item entry and exit, with `initial={false}` so initial history and queue hydration do not animate. Motion owns an outer item wrapper while clipboard hover and Paste Queue pointer dragging remain on inner elements, preventing two systems from writing the same `transform`.
+
+Local benchmarking was run before and after the phase on the same machine. The first layout-compensation trial raised the 100-row Paste Queue median from 75.47 ms to 98.62 ms, so the planned rollback rule was applied. The retained implementation has no Motion layout compensation: it keeps opacity/translation entry and exit while the established drag engine owns reordering. A repeated retained run measured 8.31 ms / 10.04 ms for 36-card selection and 81.82 ms / 119.28 ms for the 100-row queue median/p95; the cold first queue sample remains the dominant p95 outlier. These numbers are local evidence, not a hosted gate.
+
 ## Phase Gates
 
 1. Governance baseline and inventory: no production visual changes.

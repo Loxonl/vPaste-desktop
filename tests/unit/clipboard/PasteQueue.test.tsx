@@ -312,8 +312,10 @@ describe("PasteQueue", () => {
             clientY: 10,
         });
 
-        expect(rows[1]).toHaveStyle({ transform: "translate3d(0, -66px, 0)" });
-        expect(rows[0]).toHaveStyle({ transform: "translate3d(0, 66px, 0)" });
+        expect(rows[1].querySelector("[data-drag-surface]"))
+            .toHaveStyle({ transform: "translate3d(0, -66px, 0)" });
+        expect(rows[0].querySelector("[data-drag-surface]"))
+            .toHaveStyle({ transform: "translate3d(0, 66px, 0)" });
 
         fireEvent.pointerUp(screen.getByTestId("paste-queue"), {
             pointerId: 7,

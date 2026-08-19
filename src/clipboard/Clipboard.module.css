@@ -888,6 +888,12 @@ body {
   align-items: center;
 }
 
+.card-motion-item {
+  flex: 0 0 auto;
+  width: 220px;
+  height: 230px;
+}
+
 /* Card Styles */
 .clipboard-card {
   width: 220px;

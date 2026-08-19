@@ -471,24 +471,33 @@ export default function PasteQueue() {
                             animate="animate"
                             exit="exit"
                         >
-                        {state.items.map((item, index) => {
-                            const hash = item.getHash() as string;
-                            const visualIndex = drag ? drag.order.indexOf(hash) : index;
-                            return (
-                                <li
-                                    key={hash}
-                                    ref={element => {
-                                        if (element) rowElements.current.set(hash, element);
-                                        else rowElements.current.delete(hash);
-                                    }}
-                                    className={`${styles.row} ${drag?.hash === hash ? styles.dragging : ""} ${drag ? styles.sorting : ""} ${pointerHash === hash ? styles.pointerInside : ""}`}
-                                    style={{ transform: `translate3d(0, ${dragTransforms[hash] ?? 0}px, 0)` }}
-                                    data-queue-hash={hash}
-                                    data-pointer-hovered={pointerHash === hash}
-                                    onPointerEnter={() => setPointerHash(hash)}
-                                    onPointerMove={() => setPointerHash(hash)}
-                                    onPointerLeave={() => setPointerHash(current => current === hash ? null : current)}
-                                >
+                            <AnimatePresence mode="sync" initial={false}>
+                                {state.items.map((item, index) => {
+                                    const hash = item.getHash() as string;
+                                    const visualIndex = drag ? drag.order.indexOf(hash) : index;
+                                    return (
+                                        <m.li
+                                            key={hash}
+                                            ref={element => {
+                                                if (element) rowElements.current.set(hash, element);
+                                                else rowElements.current.delete(hash);
+                                            }}
+                                            className={styles.rowMotion}
+                                            variants={listItemMotion}
+                                            initial="initial"
+                                            animate="animate"
+                                            exit="exit"
+                                            data-queue-hash={hash}
+                                            data-pointer-hovered={pointerHash === hash}
+                                            onPointerEnter={() => setPointerHash(hash)}
+                                            onPointerMove={() => setPointerHash(hash)}
+                                            onPointerLeave={() => setPointerHash(current => current === hash ? null : current)}
+                                        >
+                                            <div
+                                                className={`${styles.row} ${drag?.hash === hash ? styles.dragging : ""} ${drag ? styles.sorting : ""} ${pointerHash === hash ? styles.pointerInside : ""}`}
+                                                style={{ transform: `translate3d(0, ${dragTransforms[hash] ?? 0}px, 0)` }}
+                                                data-drag-surface="true"
+                                            >
                                     <button
                                         type="button"
                                         className={styles.dragHandle}
@@ -531,9 +540,11 @@ export default function PasteQueue() {
                                     >
                                         <DeleteOutlineRoundedIcon fontSize="small" />
                                     </ToolbarIconButton>
-                                </li>
-                            );
-                        })}
+                                            </div>
+                                        </m.li>
+                                    );
+                                })}
+                            </AnimatePresence>
                         </m.ol>
                     )}
                 </AnimatePresence>

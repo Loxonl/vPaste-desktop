@@ -4611,14 +4611,30 @@ fn copy_history_dir_contents_recursive_with_progress(
     Ok(copied)
 }
 
-fn clipboard_table_exists(conn: &rusqlite::Connection) -> Result<bool, String> {
+fn database_table_exists(conn: &rusqlite::Connection, table: &str) -> Result<bool, String> {
     conn.query_row(
-        "select count(*) from sqlite_master where type = 'table' and name = 'clipboard'",
-        [],
+        "select count(*) from sqlite_master where type = 'table' and name = ?1",
+        [table],
         |row| row.get::<_, i64>(0),
     )
     .map(|count| count > 0)
     .map_err(|err| err.to_string())
+}
+
+fn clipboard_table_exists(conn: &rusqlite::Connection) -> Result<bool, String> {
+    database_table_exists(conn, "clipboard")
+}
+
+fn database_table_columns(conn: &rusqlite::Connection, table: &str) -> Result<Vec<String>, String> {
+    let mut statement = conn
+        .prepare(&format!("pragma table_info({table})"))
+        .map_err(|err| err.to_string())?;
+    let columns = statement
+        .query_map([], |row| row.get(1))
+        .map_err(|err| err.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())?;
+    Ok(columns)
 }
 
 fn rewrite_internal_storage_paths(value: String, source_dir: &str, target_dir: &str) -> String {
@@ -4670,8 +4686,9 @@ fn merge_clipboard_database(
     }
 
     let target_db = PathBuf::from(target_dir).join("vpaste.db");
-    let target_conn = rusqlite::Connection::open(target_db).map_err(|err| err.to_string())?;
+    let mut target_conn = rusqlite::Connection::open(target_db).map_err(|err| err.to_string())?;
     clipboard::db::init_schema(&target_conn).map_err(|err| err.to_string())?;
+    let transaction = target_conn.transaction().map_err(|err| err.to_string())?;
 
     let mut statement = source_conn
         .prepare(
@@ -4725,7 +4742,7 @@ fn merge_clipboard_database(
         source = rewrite_internal_storage_paths(source, rewrite_source_dir, target_dir);
         app_icon_path =
             rewrite_internal_storage_paths(app_icon_path, rewrite_source_dir, target_dir);
-        let changed = target_conn
+        let changed = transaction
             .execute(
                 "
                 insert or ignore into clipboard(
@@ -4754,7 +4771,7 @@ fn merge_clipboard_database(
             merged += 1;
         } else {
             skipped += 1;
-            target_conn
+            transaction
                 .execute(
                     "
                     update clipboard
@@ -4771,31 +4788,188 @@ fn merge_clipboard_database(
         }
     }
 
+    if database_table_exists(&source_conn, "tags")? {
+        let mut statement = source_conn
+            .prepare("select name, created_at, updated_at from tags order by id")
+            .map_err(|err| err.to_string())?;
+        let tags = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        for tag in tags {
+            let (name, created_at, updated_at) = tag.map_err(|err| err.to_string())?;
+            transaction
+                .execute(
+                    "insert or ignore into tags(name, created_at, updated_at)
+                     values(?1, ?2, ?3)",
+                    rusqlite::params![name, created_at, updated_at],
+                )
+                .map_err(|err| err.to_string())?;
+            transaction
+                .execute(
+                    "update tags
+                     set created_at = min(created_at, ?1), updated_at = max(updated_at, ?2)
+                     where name = ?3 collate nocase",
+                    rusqlite::params![created_at, updated_at, name],
+                )
+                .map_err(|err| err.to_string())?;
+        }
+    }
+
+    if database_table_exists(&source_conn, "clipboard_tags")?
+        && database_table_exists(&source_conn, "tags")?
+    {
+        let mut statement = source_conn
+            .prepare(
+                "select c.hash, t.name, ct.created_at
+                 from clipboard_tags ct
+                 join clipboard c on c.id = ct.clipboard_id
+                 join tags t on t.id = ct.tag_id
+                 order by ct.created_at, c.id, t.id",
+            )
+            .map_err(|err| err.to_string())?;
+        let associations = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        for association in associations {
+            let (hash, tag_name, created_at) = association.map_err(|err| err.to_string())?;
+            transaction
+                .execute(
+                    "insert or ignore into clipboard_tags(clipboard_id, tag_id, created_at)
+                     select c.id, t.id, ?1
+                     from clipboard c, tags t
+                     where c.hash = ?2 and t.name = ?3 collate nocase",
+                    rusqlite::params![created_at, hash, tag_name],
+                )
+                .map_err(|err| err.to_string())?;
+        }
+    }
+
+    if database_table_exists(&source_conn, "paste_queue")? {
+        let columns = database_table_columns(&source_conn, "paste_queue")?;
+        let has_full_payload = [
+            "position",
+            "queued_at",
+            "time",
+            "item_type",
+            "search_index",
+            "app_source",
+            "app_icon_path",
+            "title_color",
+            "label",
+        ]
+        .iter()
+        .all(|required| columns.iter().any(|column| column == required));
+        let queue_query = if has_full_payload {
+            "select hash, position, queued_at, time, content, preview_content, item_type,
+                    search_index, source, app_source, app_icon_path, title_color, label
+             from paste_queue order by position, rowid"
+        } else {
+            "select q.hash, row_number() over (order by q.rowid) - 1, 0,
+                    coalesce(c.time, 0), coalesce(q.content, ''),
+                    coalesce(q.preview_content, ''), coalesce(c.item_type, 'Text'),
+                    coalesce(c.search_index, 1), coalesce(q.source, ''),
+                    coalesce(c.app_source, ''), coalesce(c.app_icon_path, ''),
+                    coalesce(c.title_color, ''), coalesce(c.label, 0)
+             from paste_queue q left join clipboard c on c.hash = q.hash
+             order by q.rowid"
+        };
+        let mut statement = source_conn
+            .prepare(queue_query)
+            .map_err(|err| err.to_string())?;
+        let queue_items = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, u64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, i64>(12)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        let mut next_position = transaction
+            .query_row(
+                "select coalesce(max(position), -1) + 1 from paste_queue",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|err| err.to_string())?;
+        for queue_item in queue_items {
+            let (
+                hash,
+                queued_at,
+                time,
+                mut content,
+                mut preview_content,
+                item_type,
+                search_index,
+                mut source,
+                app_source,
+                mut app_icon_path,
+                title_color,
+                label,
+            ) = queue_item.map_err(|err| err.to_string())?;
+            content = rewrite_internal_storage_paths(content, rewrite_source_dir, target_dir);
+            preview_content =
+                rewrite_internal_storage_paths(preview_content, rewrite_source_dir, target_dir);
+            source = rewrite_internal_storage_paths(source, rewrite_source_dir, target_dir);
+            app_icon_path =
+                rewrite_internal_storage_paths(app_icon_path, rewrite_source_dir, target_dir);
+            let changed = transaction
+                .execute(
+                    "insert or ignore into paste_queue(
+                        hash, position, queued_at, time, content, preview_content, item_type,
+                        search_index, source, app_source, app_icon_path, title_color, label
+                     ) values(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    rusqlite::params![
+                        hash,
+                        next_position,
+                        queued_at,
+                        time,
+                        content,
+                        preview_content,
+                        item_type,
+                        search_index,
+                        source,
+                        app_source,
+                        app_icon_path,
+                        title_color,
+                        label
+                    ],
+                )
+                .map_err(|err| err.to_string())?;
+            if changed > 0 {
+                next_position += 1;
+            }
+        }
+    }
+
+    transaction.commit().map_err(|err| err.to_string())?;
+
     Ok((merged, skipped))
 }
 
 fn rebuild_current_search_index() -> Result<(), String> {
-    let conn = clipboard::db::db();
-    let mut statement = conn
-        .prepare("select id, hash, content, source from clipboard")
-        .map_err(|err| err.to_string())?;
-    let rows = statement
-        .query_map([], |row| {
-            let id = row.get::<_, u64>(0)?;
-            let hash = row.get::<_, String>(1)?;
-            let content = row.get::<_, Option<String>>(2)?.unwrap_or_default();
-            let source = row.get::<_, Option<String>>(3)?.unwrap_or_default();
-            let search_content = if source.trim().is_empty() || source.starts_with("vpaste-rich:") {
-                content
-            } else {
-                source
-            };
-            Ok((id, search_content, hash))
-        })
-        .map_err(|err| err.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| err.to_string())?;
-    search::engine::rebuild(rows)
+    clipboard::rebuild_search_index()
 }
 
 const HISTORY_ARCHIVE_METADATA: &str = "vpaste-export.json";
@@ -4999,6 +5173,7 @@ fn clear_legacy_history(app: tauri::AppHandle, confirmation: String) -> Result<(
         remove_managed_path(&PathBuf::from(app_runtime_dir(&[name])))?;
     }
     clipboard::db::init();
+    rebuild_current_search_index()?;
     LEGACY_HISTORY_BLOCKED.store(false, Ordering::SeqCst);
     initialize_paste_queue_worker(&app);
     if let Some(window) = app.get_webview_window("clipboard") {
@@ -5506,6 +5681,7 @@ fn import_history_archive_impl(
             serde_json::json!({ "tabs": tabs }),
         );
     }
+    paste_queue::emit_state(&app);
     progress.finish();
 
     Ok(HistoryArchiveInfo {
@@ -5592,6 +5768,99 @@ mod history_archive_v3_tests {
         assert!(validate_history_archive(trailing.path().to_str().unwrap())
             .unwrap_err()
             .contains("末尾"));
+    }
+
+    #[test]
+    fn database_merge_preserves_tags_and_paste_queue() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source_dir = workspace.path().join("source");
+        let target_dir = workspace.path().join("target");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::create_dir_all(&target_dir).unwrap();
+
+        let source_db = source_dir.join(HISTORY_ARCHIVE_DB);
+        let source_conn = rusqlite::Connection::open(&source_db).unwrap();
+        clipboard::db::init_schema(&source_conn).unwrap();
+        source_conn
+            .execute(
+                "insert into clipboard(
+                    id, hash, time, content, preview_content, item_type, search_index, source,
+                    app_source, app_icon_path, title_color, icon, label
+                 ) values(1, 'imported', 10, 'body', 'body', 'Text', 1, '', '', '', '', '', 0)",
+                [],
+            )
+            .unwrap();
+        source_conn
+            .execute(
+                "insert into tags(id, name, created_at, updated_at)
+                 values(7, 'important', 11, 12)",
+                [],
+            )
+            .unwrap();
+        source_conn
+            .execute(
+                "insert into clipboard_tags(clipboard_id, tag_id, created_at)
+                 values(1, 7, 13)",
+                [],
+            )
+            .unwrap();
+        source_conn
+            .execute(
+                "insert into paste_queue(
+                    hash, position, queued_at, time, content, preview_content, item_type,
+                    search_index, source, app_source, app_icon_path, title_color, label
+                 ) values('imported', 0, 14, 10, 'body', 'body', 'Text', 1, '', '', '', '', 0)",
+                [],
+            )
+            .unwrap();
+        drop(source_conn);
+
+        let target_db = target_dir.join(HISTORY_ARCHIVE_DB);
+        let target_conn = rusqlite::Connection::open(&target_db).unwrap();
+        clipboard::db::init_schema(&target_conn).unwrap();
+        target_conn
+            .execute(
+                "insert into paste_queue(
+                    hash, position, queued_at, time, content, preview_content, item_type,
+                    search_index, source, app_source, app_icon_path, title_color, label
+                 ) values('existing', 0, 1, 1, 'existing', 'existing', 'Text', 1, '', '', '', '', 0)",
+                [],
+            )
+            .unwrap();
+        drop(target_conn);
+
+        assert_eq!(
+            merge_clipboard_database(
+                source_dir.to_str().unwrap(),
+                target_dir.to_str().unwrap(),
+                "/old/history",
+            )
+            .unwrap(),
+            (1, 0)
+        );
+
+        let target_conn = rusqlite::Connection::open(target_db).unwrap();
+        let imported_tag: String = target_conn
+            .query_row(
+                "select t.name
+                 from clipboard_tags ct
+                 join clipboard c on c.id = ct.clipboard_id
+                 join tags t on t.id = ct.tag_id
+                 where c.hash = 'imported'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let imported_queue: (i64, String) = target_conn
+            .query_row(
+                "select position, content from paste_queue where hash = 'imported'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(imported_tag, "important");
+        assert_eq!(imported_queue, (1, "body".to_string()));
     }
 }
 
@@ -6557,6 +6826,7 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
     validate_shortcut_config(&config_struct)?;
 
     let previous_config = config::get();
+    let previous_history_dir = history_storage_dir();
     let previous_main_shortcut = match parse_optional_shortcut(
         previous_config.shortcut_keys.main_window.as_deref(),
         "当前唤起主窗口",
@@ -6624,6 +6894,11 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
     }
     clipboard::db::init();
     let target_dir = history_storage_dir();
+    if previous_history_dir != target_dir || !search::engine::is_ready() {
+        if let Err(err) = rebuild_current_search_index() {
+            error!("Failed to rebuild search index after changing history storage: {err}");
+        }
+    }
     Ok(StorageMigrationInfo {
         migrated: false,
         source_dir: target_dir.clone(),
@@ -8749,7 +9024,7 @@ async fn search(
         if !is_current() {
             return Err("search superseded".to_string());
         }
-        info!("begin search {} {} {} ", keywords, last_id, last_time);
+        info!("begin clipboard search {} {}", last_id, last_time);
         let start = Instant::now();
         let Some(mut page) = clipboard::search_with_cancellation(
             &keywords, last_id, last_time, limit, &label, is_current,
@@ -8763,8 +9038,10 @@ async fn search(
         };
         page.consumed = start.elapsed().as_millis();
         info!(
-            "search {} {} {} consumed {}",
-            keywords, last_id, last_time, page.consumed
+            "clipboard search completed consumed_ms={} results={} has_more={}",
+            page.consumed,
+            page.list.len(),
+            page.has_more
         );
         serde_json::to_string(&page).map_err(|err| err.to_string())
     })
@@ -9500,6 +9777,11 @@ fn main() {
             LEGACY_HISTORY_BLOCKED.store(legacy_history, Ordering::SeqCst);
             if !legacy_history {
                 clipboard::db::init();
+                if !search::engine::is_ready() {
+                    if let Err(err) = rebuild_current_search_index() {
+                        error!("Failed to initialize clipboard search index: {err}");
+                    }
+                }
             }
             let _ = build_clipboard_window(app.handle())?;
             let _ = build_paste_queue_window(app.handle())?;

@@ -145,7 +145,7 @@ Expected:
 Expected:
 
 - User history remains usable.
-- Import/export does not require plaintext history files.
+- Exported v3 history archives are plaintext and should be stored securely.
 - Toasts appear in the correct location and language.
 
 ## Release Smoke Test

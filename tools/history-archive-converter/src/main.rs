@@ -506,7 +506,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let db = workspace.path().join("vpaste.db");
         let conn = Connection::open(&db).unwrap();
-        conn.execute_batch("create table clipboard(id integer primary key, hash text, time integer, content text, preview_content text, source text); create table paste_queue(hash text primary key, content text, preview_content text, source text); create table tags(id integer primary key, name text);").unwrap();
+        conn.execute_batch("create table clipboard(id integer primary key, hash text, time integer, content text, preview_content text, source text); create table paste_queue(hash text primary key, content text, preview_content text, source text); create table tags(id integer primary key, name text, created_at integer, updated_at integer); create table clipboard_tags(clipboard_id integer, tag_id integer, created_at integer);").unwrap();
         conn.execute(
             "insert into clipboard values(1,'hash',10,?1,'plain',?2)",
             params![encrypted_text("body", key), encrypted_text("source", key)],
@@ -520,7 +520,9 @@ mod tests {
             ],
         )
         .unwrap();
-        conn.execute("insert into tags values(9,'kept')", [])
+        conn.execute("insert into tags values(9,'kept',11,12)", [])
+            .unwrap();
+        conn.execute("insert into clipboard_tags values(1,9,13)", [])
             .unwrap();
         drop(conn);
         let attachment_payload = if corrupt_file {
@@ -594,12 +596,20 @@ mod tests {
         let tag: String = conn
             .query_row("select name from tags where id=9", [], |row| row.get(0))
             .unwrap();
+        let tagged_hash: String = conn
+            .query_row(
+                "select c.hash from clipboard_tags ct join clipboard c on c.id=ct.clipboard_id where ct.tag_id=9",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(
             clipboard,
             ("body".into(), "plain".into(), "source".into(), 10)
         );
         assert_eq!(queue, ("queued".into(), "queue-source".into()));
         assert_eq!(tag, "kept");
+        assert_eq!(tagged_hash, "hash");
         assert_eq!(
             fs::read(extracted.path().join("data/item.bin")).unwrap(),
             b"file bytes"

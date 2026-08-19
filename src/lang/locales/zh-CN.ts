@@ -281,7 +281,7 @@ const zhCN: LanguagePack = {
         "settings.exportHistory": "导出数据",
         "settings.exportHistory.desc": "打包完整历史数据（导出包未加密，请妥善保管）",
         "settings.legacyHistory.title": "需要迁移旧版历史",
-        "settings.legacyHistory.desc": "请先在旧版导出历史，使用 vpaste-history-converter 转换为 v3。确认备份后清空旧本地历史，再导入转换后的文件。",
+        "settings.legacyHistory.desc": "请先在旧版导出历史。Windows 可把 v2 历史包拖到 vpaste-history-converter.exe 上，工具会在原文件旁生成 .v3.vphistory；确认备份后清空旧本地历史，再人工导入该文件。",
         "settings.legacyHistory.clear": "我已备份，清空旧历史",
         "settings.legacyHistory.confirm": "此操作会永久清空旧版剪贴板历史和附件。请确认已经导出并转换备份。是否继续？",
         "settings.importHistory": "导入数据",

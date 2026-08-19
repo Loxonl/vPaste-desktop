@@ -15,7 +15,7 @@ pub struct Page<T> {
     pub next_time: u64,
 }
 
-#[derive(serde::Serialize, Debug, Clone)]
+#[derive(serde::Serialize, Clone)]
 pub struct Item {
     pub id: usize,
     pub content: String,

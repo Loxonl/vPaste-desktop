@@ -24,7 +24,7 @@ vPaste is a Tauri 2 desktop client with a React UI and Rust native backend. The 
 ### Tauri / Rust Backend
 
 - `src-tauri/src/main.rs` registers windows, tray/menu bar behavior, global shortcuts, Tauri commands, updater, config, and app lifecycle.
-- `src-tauri/src/clipboard/` owns history records, storage, cleanup, migration, link previews, encryption helpers, and restore logic.
+- `src-tauri/src/clipboard/` owns history records, plaintext storage, cleanup, archive migration, link previews, and restore logic.
 - `src-tauri/src/clipboard/windows/` and `src-tauri/src/clipboard/macos/` contain platform-specific clipboard code.
 - `src-tauri/src/search/` owns Tantivy indexing and queries.
 - `src-tauri/src/config/` owns persisted settings and shortcut normalization.

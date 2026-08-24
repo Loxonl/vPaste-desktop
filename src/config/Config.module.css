@@ -13,7 +13,7 @@ body {
 }
 
 .settings-section-title {
-    margin: 0 0 6px 8px;
+    margin: 0 0 var(--ui-space-2) var(--ui-space-2);
 }
 
 .about-product-title {
@@ -21,75 +21,9 @@ body {
 }
 
 .about-product-subtitle {
-    margin-top: 3px;
+    margin-top: var(--ui-space-1);
     color: var(--settings-muted);
     line-height: 1.55;
-}
-
-.permission-status-button {
-    min-width: 94px;
-    height: 30px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 7px;
-    flex: 0 0 auto;
-    padding: 0 11px;
-    border: 1px solid transparent;
-    border-radius: 999px;
-    font: inherit;
-    font-size: 12px;
-    font-weight: 620;
-    transition:
-        background-color var(--motion-duration-quick) var(--motion-ease-standard),
-        border-color var(--motion-duration-quick) var(--motion-ease-standard),
-        box-shadow var(--motion-duration-quick) var(--motion-ease-standard),
-        transform var(--motion-duration-quick) var(--motion-ease-standard);
-}
-
-.permission-status-button:disabled {
-    opacity: 1;
-}
-
-.permission-status-button.enabled {
-    color: #16734b;
-    border-color: rgba(22, 145, 91, 0.14);
-    background: rgba(36, 176, 112, 0.10);
-    cursor: default;
-}
-
-.permission-status-button.required {
-    color: #8a5208;
-    border-color: rgba(219, 139, 23, 0.24);
-    background: rgba(255, 184, 72, 0.16);
-    box-shadow: 0 3px 10px rgba(173, 106, 10, 0.08);
-    cursor: pointer;
-}
-
-.permission-status-button.required:not(:disabled):hover {
-    border-color: rgba(219, 139, 23, 0.38);
-    background: rgba(255, 184, 72, 0.25);
-    box-shadow: 0 5px 14px rgba(173, 106, 10, 0.12);
-}
-
-.permission-status-button.required:not(:disabled):active {
-    transform: scale(0.98);
-}
-
-.permission-status-dot {
-    width: 7px;
-    height: 7px;
-    flex: 0 0 7px;
-    border-radius: 50%;
-    background: currentColor;
-}
-
-.permission-status-button.enabled .permission-status-dot {
-    box-shadow: 0 0 0 3px rgba(22, 145, 91, 0.10);
-}
-
-.permission-status-button.required .permission-status-dot {
-    box-shadow: 0 0 0 3px rgba(219, 139, 23, 0.12);
 }
 
 .shortcut-recorder {
@@ -145,6 +79,18 @@ body {
     box-shadow: 0 0 0 3px rgba(217, 48, 37, 0.14);
 }
 
+.shortcut-control {
+    width: 148px;
+    display: grid;
+    gap: var(--ui-space-1);
+}
+
+.shortcut-error-text {
+    color: var(--ui-danger);
+    font-size: 12px;
+    line-height: 1.35;
+}
+
 .shortcut-static {
     width: 148px;
     min-width: 148px;
@@ -163,69 +109,80 @@ body {
 .storage-migration-status {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
+    gap: var(--ui-space-2);
     min-height: 24px;
     width: fit-content;
     max-width: 100%;
     box-sizing: border-box;
-    padding: 4px 9px;
-    border-radius: 999px;
+    padding: var(--ui-space-1) var(--ui-space-2);
+    border-radius: var(--ui-radius-pill);
     font-size: 12px;
     line-height: 16px;
-    color: #4f5b66;
-    background: rgba(245, 247, 250, 0.72);
+    color: var(--ui-text-muted);
+    background: var(--ui-surface-muted);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
 }
 
 .storage-migration-status.success {
-    color: #23643d;
-    background: rgba(232, 247, 238, 0.96);
+    color: var(--ui-success);
+    background: var(--ui-success-soft);
 }
 
 .storage-migration-status.error {
-    color: #8a2525;
-    background: rgba(255, 235, 235, 0.96);
-}
-
-.privacy-app-help {
-    padding: 9px 11px;
-    border-radius: 10px;
-    color: #52606d;
-    background: rgba(30, 146, 238, 0.08);
-    box-shadow: inset 0 0 0 1px rgba(30, 146, 238, 0.10);
-    font-size: 12px;
-    line-height: 1.55;
+    color: var(--ui-danger);
+    background: var(--ui-danger-soft);
 }
 
 .privacy-app-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+    max-height: 120px;
+    overflow-y: auto;
+    padding-right: var(--ui-space-1);
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+.privacy-app-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.privacy-app-list::-webkit-scrollbar-thumb {
+    border-radius: var(--ui-radius-pill);
+    background: var(--ui-border-strong);
 }
 
 .privacy-app-chip {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    min-height: 42px;
-    padding: 7px 8px;
-    border-radius: 10px;
-    background: rgba(248, 249, 250, 0.78);
-    box-shadow: inset 0 0 0 1px rgba(26, 35, 46, 0.055);
+    gap: var(--ui-space-2);
+    min-height: 40px;
+    padding-block: var(--ui-space-2);
+}
+
+.privacy-app-chip + .privacy-app-chip {
+    border-top: 1px solid var(--ui-border);
 }
 
 .privacy-app-option-icon {
     width: 24px;
     height: 24px;
     flex: 0 0 24px;
-    border-radius: 7px;
+    object-fit: contain;
+}
+
+.privacy-app-option-icon.app-icon {
+    border-radius: 0;
+    background: transparent;
+}
+
+.privacy-app-option-icon.app-icon img {
     object-fit: contain;
 }
 
 .privacy-app-option-icon.placeholder {
-    display: inline-grid;
-    place-items: center;
+    border-radius: var(--ui-radius-control);
     color: #44515e;
     background: rgba(35, 43, 54, 0.08);
     font-size: 12px;
@@ -239,8 +196,7 @@ body {
     gap: 1px;
 }
 
-.privacy-app-chip__text strong,
-.privacy-app-chip__text small {
+.privacy-app-chip__text strong {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -253,100 +209,130 @@ body {
     font-weight: 560;
 }
 
-.privacy-app-chip__text small {
-    color: #8a929b;
-    font-size: 11px;
-}
-
-.privacy-app-remove {
-    flex: 0 0 auto;
-    border-radius: 999px;
-    padding: 4px 9px;
-    color: #8a2525;
-    background: rgba(255, 235, 235, 0.86);
-    font: inherit;
-    font-size: 12px;
-    cursor: pointer;
-}
-
-.privacy-app-remove:hover {
-    background: rgba(255, 220, 220, 0.98);
-}
-
-.privacy-app-empty {
-    padding: 12px;
-    border-radius: 10px;
-    color: #8a929b;
-    background: rgba(248, 249, 250, 0.56);
-    box-shadow: inset 0 0 0 1px rgba(26, 35, 46, 0.045);
-    font-size: 12px;
-    line-height: 1.5;
-    text-align: center;
-}
-
-.privacy-app-option {
-    display: inline-flex;
+.data-setting-row {
+    display: flex;
     align-items: center;
+    width: 100%;
     min-width: 0;
-    gap: 9px;
+    gap: var(--ui-space-3);
 }
 
-.privacy-app-menu-hint {
-    align-items: flex-start;
-    white-space: normal;
-    color: #7b8490;
-    font-size: 12px;
-    line-height: 1.45;
-    opacity: 1;
+.data-action-button {
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 
-.history-transfer-panel {
-    display: grid;
-    gap: 10px;
-    padding: 14px;
-    border-radius: 14px;
-    background: rgba(255, 255, 255, 0.72);
-    box-shadow: 0 8px 24px rgba(35, 43, 54, 0.045), 0 1px 2px rgba(35, 43, 54, 0.035);
+.privacy-app-heading {
+    display: flex;
+    align-items: center;
+    gap: var(--ui-space-3);
+    min-width: 0;
 }
 
-.history-transfer-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px;
+.privacy-app-heading > div:first-child {
+    min-width: 0;
+    flex: 1 1 auto;
 }
 
-.storage-path-input {
+.storage-path-value {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-family: Consolas, "SFMono-Regular", monospace;
     font-size: 13px;
 }
 
+.privacy-manager-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.privacy-manager-content {
+    min-height: 260px;
+}
+
+.privacy-manager-list {
+    max-height: 320px;
+    overflow-y: auto;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+.privacy-manager-loading {
+    display: grid;
+    min-height: 220px;
+    place-items: center;
+}
+
+.privacy-manager-item {
+    min-height: 48px;
+    gap: var(--ui-space-2);
+    padding: var(--ui-space-2) 0;
+}
+
+.privacy-manager-item + .privacy-manager-item {
+    border-top: 1px solid var(--ui-border);
+}
+
+.privacy-manager-copy {
+    min-width: 0;
+}
+
+.cleanup-button-group {
+    flex: 0 0 auto;
+}
+
+.data-list-copy {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.privacy-app-empty {
+    padding: 4px 0;
+    color: #8a929b;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.history-transfer-actions {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: var(--ui-space-2);
+}
+
 .history-transfer-progress {
     display: grid;
-    gap: 7px;
+    gap: var(--ui-space-2);
     max-width: 100%;
-    padding: 8px 10px;
-    border-radius: 10px;
+    padding: var(--ui-space-2) var(--ui-space-3);
+    border-radius: var(--ui-radius-control);
     font-size: 12px;
     line-height: 16px;
-    color: #4f5b66;
-    background: rgba(245, 247, 250, 0.72);
+    color: var(--ui-text-muted);
+    background: var(--ui-surface-muted);
     box-sizing: border-box;
 }
 
 .history-transfer-progress.success {
-    color: #23643d;
-    background: rgba(232, 247, 238, 0.96);
+    color: var(--ui-success);
+    background: var(--ui-success-soft);
 }
 
 .history-transfer-progress.error {
-    color: #8a2525;
-    background: rgba(255, 235, 235, 0.96);
+    color: var(--ui-danger);
+    background: var(--ui-danger-soft);
 }
 
 .history-transfer-progress__line {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: var(--ui-space-2);
     min-width: 0;
 }
 
@@ -357,16 +343,13 @@ body {
     white-space: nowrap;
 }
 
-.history-transfer-progress__bar {
-}
-
 .about-hero {
-    min-height: 172px;
+    min-height: 168px;
     display: flex;
     align-items: center;
-    gap: 22px;
-    padding: 28px;
-    border-radius: 14px;
+    gap: var(--ui-space-6);
+    padding: var(--ui-space-6);
+    border-radius: var(--ui-radius-surface);
     background: var(--settings-about-bg);
     box-shadow: var(--settings-card-shadow);
 }
@@ -401,8 +384,8 @@ body {
     display: inline-flex;
     align-items: center;
     min-height: 26px;
-    padding: 4px 11px;
-    border-radius: 999px;
+    padding: var(--ui-space-1) var(--ui-space-3);
+    border-radius: var(--ui-radius-pill);
     background: rgba(30, 146, 238, 0.11);
     color: #0b73d7;
     font-size: 12px;
@@ -411,65 +394,13 @@ body {
 }
 
 .about-update-status {
-    display: inline-flex;
-    align-items: center;
-    min-height: 24px;
-    margin-top: 8px;
-    padding: 4px 9px;
-    border-radius: 8px;
-    font-size: 12px;
-    line-height: 1.35;
-    background: rgba(30, 146, 238, 0.10);
-    color: #0b73d7;
-}
-
-.about-update-status.success {
-    background: rgba(40, 167, 69, 0.10);
-    color: #21833c;
-}
-
-.about-update-status.error {
-    background: rgba(214, 48, 49, 0.10);
-    color: #c22f2f;
+    margin-top: var(--ui-space-2);
 }
 
 .about-link-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
-}
-
-:root[data-theme="dark"] .history-transfer-progress {
-    color: var(--settings-muted);
-    background: rgba(255, 255, 255, 0.08);
-}
-
-:root[data-theme="dark"] .history-transfer-progress.success {
-    color: #90d9aa;
-    background: rgba(63, 161, 92, 0.16);
-}
-
-:root[data-theme="dark"] .history-transfer-progress.error {
-    color: #ffaaa5;
-    background: rgba(209, 75, 68, 0.16);
-}
-
-:root[data-theme="dark"] .permission-status-button.enabled {
-    color: #7ee2b5;
-    border-color: rgba(94, 211, 157, 0.16);
-    background: rgba(31, 137, 91, 0.22);
-}
-
-:root[data-theme="dark"] .permission-status-button.required {
-    color: #ffd58a;
-    border-color: rgba(255, 190, 89, 0.22);
-    background: rgba(173, 106, 10, 0.24);
-    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.16);
-}
-
-:root[data-theme="dark"] .permission-status-button.required:not(:disabled):hover {
-    border-color: rgba(255, 190, 89, 0.34);
-    background: rgba(173, 106, 10, 0.34);
 }
 
 :root[data-theme="dark"] .shortcut-recorder {
@@ -511,78 +442,41 @@ body {
     color: rgba(228, 232, 239, 0.82);
 }
 
-:root[data-theme="dark"] .storage-migration-status.success {
-    color: #8fe3b0;
-    background: rgba(30, 89, 58, 0.72);
-}
-
-:root[data-theme="dark"] .storage-migration-status.error {
-    color: #ffb4b4;
-    background: rgba(109, 35, 35, 0.72);
-}
-
-:root[data-theme="dark"] .history-transfer-panel {
-    background: var(--settings-card-bg);
-    box-shadow: var(--settings-card-shadow);
-}
-
-:root[data-theme="dark"] .privacy-app-help {
-    color: rgba(228, 232, 239, 0.78);
-    background: rgba(138, 180, 255, 0.12);
-    box-shadow: inset 0 0 0 1px rgba(138, 180, 255, 0.12);
-}
-
-:root[data-theme="dark"] .privacy-app-chip,
-:root[data-theme="dark"] .privacy-app-empty {
-    background: rgba(255, 255, 255, 0.06);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-}
-
 :root[data-theme="dark"] .privacy-app-option-icon.placeholder {
     color: rgba(228, 232, 239, 0.86);
     background: rgba(255, 255, 255, 0.10);
-}
-
-:root[data-theme="dark"] .privacy-app-menu-hint {
-    color: var(--settings-muted);
 }
 
 :root[data-theme="dark"] .privacy-app-chip__text strong {
     color: var(--settings-text);
 }
 
-:root[data-theme="dark"] .privacy-app-chip__text small,
-:root[data-theme="dark"] .privacy-app-empty {
-    color: var(--settings-muted);
-}
+@container settings-content (max-width: 460px) {
+    .data-setting-row {
+        flex-wrap: wrap;
+    }
 
-:root[data-theme="dark"] .privacy-app-remove {
-    color: #ffb4b4;
-    background: rgba(109, 35, 35, 0.64);
-}
+    .history-transfer-actions {
+        margin-left: auto;
+    }
 
-:root[data-theme="dark"] .privacy-app-remove:hover {
-    background: rgba(128, 42, 42, 0.74);
+    .data-list-copy {
+        flex: 1 1 100%;
+    }
+
+    .about-hero {
+        gap: var(--ui-space-4);
+        padding: var(--ui-space-4);
+    }
+
+    .about-link-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 :root[data-theme="dark"] .about-version-pill {
     color: #8ab4ff;
     background: rgba(138, 180, 255, 0.14);
-}
-
-:root[data-theme="dark"] .about-update-status {
-    color: #8ab4ff;
-    background: rgba(138, 180, 255, 0.14);
-}
-
-:root[data-theme="dark"] .about-update-status.success {
-    color: #8ed7a0;
-    background: rgba(88, 214, 141, 0.13);
-}
-
-:root[data-theme="dark"] .about-update-status.error {
-    color: #ff9f9f;
-    background: rgba(255, 107, 107, 0.14);
 }
 
 /* Custom Scrollbar */

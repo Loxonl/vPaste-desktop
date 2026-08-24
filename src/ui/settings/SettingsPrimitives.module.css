@@ -1,6 +1,7 @@
 .section {
   display: grid;
   gap: var(--ui-space-2);
+  container-type: inline-size;
 }
 
 .sectionTitle {
@@ -60,7 +61,7 @@
   align-items: center;
 }
 
-@media (max-width: 560px) {
+@container (max-width: 400px) {
   .row {
     align-items: flex-start;
     flex-wrap: wrap;

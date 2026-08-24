@@ -42,6 +42,8 @@
   --ui-radius-pill: 999px;
   --ui-focus-ring: 0 0 0 3px rgba(30, 146, 238, 0.24);
   --ui-danger-focus-ring: 0 0 0 3px rgba(217, 48, 37, 0.18);
+  --ui-field-focus-ring: 0 0 0 1px rgba(30, 146, 238, 0.20);
+  --ui-field-danger-focus-ring: 0 0 0 1px rgba(217, 48, 37, 0.16);
   --ui-font-family: "Segoe UI Variable", "Segoe UI", -apple-system, BlinkMacSystemFont, "Microsoft YaHei UI", Arial, sans-serif;
 
   /* Compatibility aliases consumed by existing pages during migration. */
@@ -55,8 +57,8 @@
   --theme-border: var(--ui-border);
   --theme-shadow: var(--ui-shadow);
   --theme-backdrop: rgba(238, 240, 235, 0.08);
-  --settings-bg: rgba(244, 245, 244, 0.82);
-  --settings-sidebar-bg: rgba(244, 245, 244, 0.14);
+  --settings-bg: rgba(251, 252, 253, 0.98);
+  --settings-sidebar-bg: rgba(246, 248, 251, 0.96);
   --settings-title: #15191f;
   --settings-section-title: var(--ui-text);
   --settings-text: var(--ui-text);
@@ -102,6 +104,8 @@
   --ui-backdrop: rgba(8, 8, 9, 0.62);
   --ui-focus-ring: 0 0 0 3px rgba(74, 168, 255, 0.30);
   --ui-danger-focus-ring: 0 0 0 3px rgba(255, 113, 104, 0.24);
+  --ui-field-focus-ring: 0 0 0 1px rgba(74, 168, 255, 0.24);
+  --ui-field-danger-focus-ring: 0 0 0 1px rgba(255, 113, 104, 0.20);
 
   --theme-accent: var(--ui-accent);
   --theme-bg: var(--ui-bg);

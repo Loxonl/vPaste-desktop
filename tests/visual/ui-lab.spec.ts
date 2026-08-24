@@ -52,9 +52,34 @@ test.describe("UI lab", () => {
         const thumbBox = await switchThumb.boundingBox();
 
         expect(rootBox).not.toBeNull();
-        expect(trackBox).toEqual(rootBox);
-        expect(thumbBox?.x).toBe(rootBox!.x + rootBox!.width - thumbBox!.width - 2);
-        expect(thumbBox?.y).toBe(rootBox!.y + 2);
+        expect(rootBox?.width).toBe(36);
+        expect(rootBox?.height).toBe(24);
+        expect(trackBox?.width).toBe(32);
+        expect(trackBox?.height).toBe(20);
+        expect(trackBox?.x).toBe(rootBox!.x + 2);
+        expect(trackBox?.y).toBe(rootBox!.y + 2);
+        expect(thumbBox?.width).toBe(16);
+        expect(thumbBox?.height).toBe(16);
+        expect(thumbBox?.x).toBe(rootBox!.x + rootBox!.width - thumbBox!.width - 4);
+        expect(thumbBox?.y).toBe(rootBox!.y + 4);
+        expect(thumbBox!.x - trackBox!.x).toBe(14);
+        expect(trackBox!.x + trackBox!.width - thumbBox!.x - thumbBox!.width).toBe(2);
+
+        const offSwitchRoot = page.locator(".MuiSwitch-root").nth(1);
+        const offTrackBox = await offSwitchRoot.locator(".MuiSwitch-track").boundingBox();
+        const offThumbBox = await offSwitchRoot.locator(".MuiSwitch-thumb").boundingBox();
+        expect(offTrackBox).not.toBeNull();
+        expect(offThumbBox).not.toBeNull();
+        expect(offThumbBox!.x - offTrackBox!.x).toBe(2);
+
+        const hoveredSelect = page.getByRole("combobox").nth(1).locator("xpath=..");
+        await hoveredSelect.hover();
+        await expect(hoveredSelect.locator("fieldset")).toHaveCSS("border-top-width", "1px");
+        await expect(hoveredSelect.locator("fieldset")).toHaveCSS(
+            "border-top-color",
+            "rgba(26, 35, 46, 0.16)",
+        );
+        await expect(hoveredSelect).toHaveScreenshot("ui-lab-select-hover.png");
 
         await page.getByRole("combobox").first().click();
         const selectedOption = page.getByRole("option", { name: "简体中文" });
@@ -105,10 +130,11 @@ test.describe("UI lab", () => {
         await expect(errorField).toHaveAttribute("aria-invalid", "true");
         await expect(errorField).toHaveAccessibleDescription("请输入有效的名称。");
         await errorField.focus();
-        await expect(errorField.locator("xpath=..")).toHaveCSS(
-            "box-shadow",
-            "rgba(217, 48, 37, 0.18) 0px 0px 0px 3px",
-        );
+        const errorFieldRoot = errorField.locator("xpath=..");
+        await expect(errorFieldRoot.locator("fieldset")).toHaveCSS("border-top-width", "1px");
+        await expect.poll(async () => errorFieldRoot.evaluate(
+            element => getComputedStyle(element).boxShadow,
+        )).not.toBe("none");
         await expect(page.getByRole("textbox", { name: "只读输入" })).toHaveAttribute("readonly", "");
         await expect(page.getByRole("textbox", { name: "禁用输入" })).toBeDisabled();
         await expect(page.getByRole("combobox", { name: "禁用选择" })).toBeDisabled();

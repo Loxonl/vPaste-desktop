@@ -14,10 +14,14 @@ export function SettingsSection({
 }
 
 export function SettingsRow({
+    labelId,
+    descriptionId,
     label,
     description,
     control,
 }: {
+    labelId?: string;
+    descriptionId?: string;
     label: ReactNode;
     description?: ReactNode;
     control: ReactNode;
@@ -25,8 +29,8 @@ export function SettingsRow({
     return (
         <div className={styles.row}>
             <div className={styles.copy}>
-                <span className={styles.label}>{label}</span>
-                {description ? <span className={styles.description}>{description}</span> : null}
+                <span id={labelId} className={styles.label}>{label}</span>
+                {description ? <span id={descriptionId} className={styles.description}>{description}</span> : null}
             </div>
             <div className={styles.control}>{control}</div>
         </div>

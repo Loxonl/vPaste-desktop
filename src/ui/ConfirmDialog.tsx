@@ -14,6 +14,7 @@ export type ConfirmDialogProps = {
     cancelLabel: string;
     confirmLabel: string;
     confirmDisabled?: boolean;
+    destructive?: boolean;
     onCancel: () => void;
     onConfirm: () => void;
 };
@@ -25,6 +26,7 @@ export function ConfirmDialog({
     cancelLabel,
     confirmLabel,
     confirmDisabled = false,
+    destructive = true,
     onCancel,
     onConfirm,
 }: ConfirmDialogProps) {
@@ -39,7 +41,7 @@ export function ConfirmDialog({
             aria-describedby={descriptionId}
             maxWidth={false}
             BackdropProps={{ className: styles.backdrop }}
-            PaperProps={{ className: styles.paper, role: "alertdialog" }}
+            PaperProps={{ className: styles.paper, role: destructive ? "alertdialog" : "dialog" }}
         >
             <DialogTitle id={titleId} className={styles.title}>
                 {title}
@@ -53,7 +55,7 @@ export function ConfirmDialog({
                 <Button onClick={onCancel}>{cancelLabel}</Button>
                 <Button
                     variant="contained"
-                    color="error"
+                    color={destructive ? "error" : "primary"}
                     disabled={confirmDisabled}
                     onClick={onConfirm}
                 >

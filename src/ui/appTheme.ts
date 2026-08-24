@@ -134,11 +134,26 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                         minHeight: "var(--ui-control-height)",
                         borderRadius: "var(--ui-radius-control)",
                         background: "var(--settings-input-bg)",
+                        "& .MuiOutlinedInput-notchedOutline": {
+                            borderWidth: 1,
+                            borderColor: "var(--settings-input-border)",
+                        },
+                        "&:hover:not(.Mui-disabled):not(.Mui-focused):not(.Mui-error) .MuiOutlinedInput-notchedOutline": {
+                            borderColor: "var(--ui-border-strong)",
+                        },
                         "&.Mui-focused": {
-                            boxShadow: "var(--ui-focus-ring)",
+                            boxShadow: "var(--ui-field-focus-ring)",
+                            "& .MuiOutlinedInput-notchedOutline": {
+                                borderWidth: 1,
+                                borderColor: "var(--ui-accent-strong)",
+                            },
                         },
                         "&.Mui-error.Mui-focused": {
-                            boxShadow: "var(--ui-danger-focus-ring)",
+                            boxShadow: "var(--ui-field-danger-focus-ring)",
+                            "& .MuiOutlinedInput-notchedOutline": {
+                                borderWidth: 1,
+                                borderColor: "var(--ui-danger)",
+                            },
                         },
                     },
                     input: {
@@ -155,18 +170,19 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
             MuiSwitch: {
                 styleOverrides: {
                     root: {
-                        width: 40,
+                        width: 36,
                         height: 24,
-                        padding: 0,
+                        padding: 2,
+                        overflow: "visible",
                     },
                     switchBase: {
-                        padding: 2,
+                        padding: 4,
                         transitionDuration: "var(--motion-duration-fast)",
                         "&:hover": {
                             backgroundColor: "transparent",
                         },
                         "&.Mui-checked": {
-                            transform: "translateX(16px)",
+                            transform: "translateX(12px)",
                             color: "#ffffff",
                             "& + .MuiSwitch-track": {
                                 backgroundColor: "var(--ui-accent)",
@@ -175,8 +191,8 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                         },
                     },
                     thumb: {
-                        width: 20,
-                        height: 20,
+                        width: 16,
+                        height: 16,
                         boxShadow: "0 1px 4px rgba(31, 42, 55, 0.20)",
                     },
                     track: {

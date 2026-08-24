@@ -9,6 +9,8 @@ import { restartReady, useAppUpdateState, type UpdateState } from "../../update"
 import type { SettingsSectionProps, TFunction } from "../settingsTypes";
 import ActionCard from "../../ui/ActionCard";
 import { classes } from "../../ui/classNames";
+import { ConfirmDialog } from "../../ui/ConfirmDialog";
+import StatusBadge from "../../ui/StatusBadge";
 import styles from "../Config.module.css";
 
 const APP_REPOSITORY_URL = "https://github.com/Loxonl/vPaste-desktop";
@@ -17,6 +19,7 @@ const APP_CHANGELOG_URL = `${APP_REPOSITORY_URL}/releases`;
 export default function AboutSettings({ bridge, t }: SettingsSectionProps & { dir: string }) {
     const { state: updateState, check, prepare, restartToUpdate } = useAppUpdateState(bridge);
     const [checkedManually, setCheckedManually] = React.useState(false);
+    const [manualReleaseUrl, setManualReleaseUrl] = React.useState<string | null>(null);
     const updateBusy = updateState.status === "checking"
         || updateState.status === "downloading"
         || updateState.status === "installing";
@@ -31,13 +34,8 @@ export default function AboutSettings({ bridge, t }: SettingsSectionProps & { di
             const next = await check();
             if (next.status === "available" && !next.portable) {
                 await prepare();
-            } else if (
-                next.status === "manualDownload"
-                && window.confirm(t("settings.updateOpenReleasePrompt", {
-                    version: next.availableVersion || "",
-                }))
-            ) {
-                openExternal(next.releaseUrl);
+            } else if (next.status === "manualDownload") {
+                setManualReleaseUrl(next.releaseUrl);
             }
         } catch (e) {
             error(`Failed to check update: ${e}`);
@@ -74,10 +72,10 @@ export default function AboutSettings({ bridge, t }: SettingsSectionProps & { di
     const statusText = updateStatusText(updateState, checkedManually, t);
 
     return (
-        <Stack spacing={2.25} className={classes(styles, "settings-page-stack")}>
+        <Stack spacing={6}>
             <Box className={classes(styles, "about-hero")}>
                 <div className={classes(styles, "about-logo-tile")}>
-                    <img src={aboutLogo} alt="vPaste" />
+                    <img src={aboutLogo} alt="" />
                 </div>
                 <div className={classes(styles, "about-copy")}>
                     <Typography variant="h5" className={classes(styles, "about-product-title")}>
@@ -91,8 +89,7 @@ export default function AboutSettings({ bridge, t }: SettingsSectionProps & { di
                             {t("common.version", { version: displayVersion })}
                         </span>
                         <Button
-                            variant="contained"
-                            color="inherit"
+                            variant="outlined"
                             size="small"
                             disabled={updateBusy || !updateState.feedEnabled}
                             onClick={handlePrimaryUpdateAction}
@@ -102,9 +99,14 @@ export default function AboutSettings({ bridge, t }: SettingsSectionProps & { di
                         </Button>
                     </div>
                     {statusText && (
-                        <div className={classes(styles, `about-update-status ${updateState.status === 'failed' ? 'error' : updateState.status === 'available' || updateState.status === 'manualDownload' ? 'success' : 'working'}`)}>
+                        <StatusBadge
+                            tone={updateState.status === 'failed' ? 'danger' : updateState.status === 'available' || updateState.status === 'manualDownload' || updateState.status === 'ready' ? 'success' : 'neutral'}
+                            role={updateState.status === 'failed' ? 'alert' : 'status'}
+                            aria-live={updateState.status === 'failed' ? 'assertive' : 'polite'}
+                            className={classes(styles, "about-update-status")}
+                        >
                             {statusText}
-                        </div>
+                        </StatusBadge>
                     )}
                 </div>
             </Box>
@@ -129,6 +131,22 @@ export default function AboutSettings({ bridge, t }: SettingsSectionProps & { di
                     />
                 </div>
             </Box>
+            <ConfirmDialog
+                open={manualReleaseUrl !== null}
+                title={t("settings.updateOpenReleaseTitle")}
+                description={t("settings.updateOpenReleasePrompt", {
+                    version: updateState.availableVersion || "",
+                })}
+                cancelLabel={t("common.cancel")}
+                confirmLabel={t("settings.updateOpenRelease")}
+                destructive={false}
+                onCancel={() => setManualReleaseUrl(null)}
+                onConfirm={() => {
+                    const releaseUrl = manualReleaseUrl;
+                    setManualReleaseUrl(null);
+                    if (releaseUrl) openExternal(releaseUrl);
+                }}
+            />
         </Stack>
     )
 }

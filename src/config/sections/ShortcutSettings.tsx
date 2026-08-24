@@ -1,9 +1,10 @@
 import * as React from "react";
-import { Box, ButtonBase, Divider, List, ListItem, ListItemText, Stack, Switch, Typography } from "@mui/material";
+import { ButtonBase, Stack, Switch } from "@mui/material";
 import { error } from "@tauri-apps/plugin-log";
 import { formatShortcutLabel, getModifierDisplayLabel, isMacPlatform } from "../../shortcutDisplay";
 import type { SettingsSectionProps, Shortcutkey, ShortcutRegistrationInfo, StorageMigrationInfo, TFunction } from "../settingsTypes";
 import { classes } from "../../ui/classNames";
+import { SettingsRow, SettingsSection } from "../../ui/settings/SettingsPrimitives";
 import styles from "../Config.module.css";
 
 function normalizeShortcutForPolicy(value: string) {
@@ -132,12 +133,8 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
     };
 
     return (
-        <Stack spacing={2.15} className={classes(styles, "settings-page-stack")}>
-            <Box>
-                <Typography variant="subtitle2" className={classes(styles, "settings-section-title")}>
-                    {t("settings.shortcuts.global")}
-                </Typography>
-                <List>
+        <Stack spacing={6}>
+            <SettingsSection title={t("settings.shortcuts.global")}>
                     <ShortcutItem
                         label={t("settings.shortcuts.main")}
                         value={config.shortcut_keys.main_window}
@@ -148,7 +145,6 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
                         validate={validateMainWindowShortcut}
                         t={t}
                     />
-                    <Divider component="li" />
                     <ShortcutItem
                         label={t("settings.shortcuts.pasteQueue")}
                         value={config.shortcut_keys.paste_queue_toggle}
@@ -159,47 +155,40 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
                         validate={validatePasteQueueShortcut}
                         t={t}
                     />
-                </List>
-            </Box>
-            <Box>
-                <Typography variant="subtitle2" className={classes(styles, "settings-section-title")}>
-                    {t("settings.shortcuts.mainWindow")}
-                </Typography>
-                <List>
+            </SettingsSection>
+            <SettingsSection title={t("settings.shortcuts.mainWindow")}>
                     <FixedShortcutItem
                         label={t("settings.shortcuts.quickSelect")}
                         value={t("settings.shortcuts.key.arrowsHorizontal")}
                     />
-                    <Divider component="li" />
-                    <ListItem sx={{ alignItems: 'center' }}>
-                        <ListItemText
-                            primary={t("settings.tabQuickSelectSupport")}
-                            secondary={t("settings.tabQuickSelect.desc")}
-                        />
-                        <span className={classes(styles, "shortcut-static")}>
+                    <SettingsRow
+                        labelId="settings-tab-quick-select-label"
+                        descriptionId="settings-tab-quick-select-description"
+                        label={t("settings.tabQuickSelectSupport")}
+                        description={t("settings.tabQuickSelect.desc")}
+                        control={<span className={classes(styles, "shortcut-static")}>
                             <Switch
                                 checked={config.tab_quick_select_enabled}
                                 onChange={handleTabQuickSelectChange}
-                                inputProps={{ "aria-label": t("settings.tabQuickSelectSupport") }}
+                                inputProps={{
+                                    "aria-labelledby": "settings-tab-quick-select-label",
+                                    "aria-describedby": "settings-tab-quick-select-description",
+                                }}
                             />
-                        </span>
-                    </ListItem>
-                    <Divider component="li" />
+                        </span>}
+                    />
                     <FixedShortcutItem
                         label={t("settings.shortcuts.actionMenu")}
                         value={t("settings.shortcuts.key.arrowDown")}
                     />
-                    <Divider component="li" />
                     <FixedShortcutItem
                         label={t("settings.shortcuts.search")}
                         value="Ctrl + F"
                     />
-                    <Divider component="li" />
                     <FixedShortcutItem
                         label={t("settings.shortcuts.preview")}
                         value={t("settings.shortcuts.key.space")}
                     />
-                    <Divider component="li" />
                     <ShortcutItem
                         label={t("settings.shortcuts.pasteText")}
                         value={config.shortcut_keys.paste_into_plain_text}
@@ -207,27 +196,23 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
                         validate={validatePasteAsTextShortcut}
                         t={t}
                     />
-                    <Divider component="li" />
                     <FixedShortcutItem
                         label={t("settings.shortcuts.quickInput")}
                         secondary={t("settings.quickInput.enabled.desc", { modifier: quickInputModifier })}
                         value={t("settings.shortcuts.key.holdAlt", { modifier: quickInputModifier })}
                     />
-                </List>
-            </Box>
+            </SettingsSection>
         </Stack>
     )
 }
 
 function FixedShortcutItem({ label, secondary, value }: { label: string, secondary?: string, value: string }) {
     return (
-        <ListItem sx={{ alignItems: 'center' }}>
-            <ListItemText
-                primary={label}
-                secondary={secondary}
-            />
-            <span className={classes(styles, "shortcut-static")}>{value}</span>
-        </ListItem>
+        <SettingsRow
+            label={label}
+            description={secondary}
+            control={<span className={classes(styles, "shortcut-static")}>{value}</span>}
+        />
     );
 }
 
@@ -244,6 +229,8 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
     const [recording, setRecording] = React.useState(false);
     const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
     const recorderRef = React.useRef<HTMLButtonElement | null>(null);
+    const labelId = React.useId();
+    const errorId = React.useId();
 
     React.useEffect(() => {
         if (recording) {
@@ -319,16 +306,21 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
             });
     };
 
+    const displayedValue = recording
+        ? t("settings.shortcut.recording")
+        : formatShortcutLabel(value) || t("settings.shortcut.clickToSet");
+
     return (
-        <ListItem sx={{ alignItems: 'center' }}>
-            <ListItemText
-                primary={label}
-            />
-            <div className={classes(styles, "shortcut-control")}>
+        <SettingsRow
+            labelId={labelId}
+            label={label}
+            control={<div className={classes(styles, "shortcut-control")}>
                 <ButtonBase
                     ref={recorderRef}
                     className={classes(styles, `shortcut-recorder ${recording ? "recording" : ""} ${value ? "" : "empty"} ${errorMessage ? "has-error" : ""}`)}
                     type="button"
+                    aria-label={`${label}: ${displayedValue}`}
+                    aria-describedby={errorMessage ? errorId : undefined}
                     onClick={startRecording}
                     onKeyDown={recording ? handleKeyDown : undefined}
                     onBlur={() => {
@@ -337,10 +329,10 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
                         }
                     }}
                 >
-                    {recording ? t("settings.shortcut.recording") : formatShortcutLabel(value) || t("settings.shortcut.clickToSet")}
+                    {displayedValue}
                 </ButtonBase>
-                {errorMessage && <span className={classes(styles, "shortcut-error-text")}>{errorMessage}</span>}
-            </div>
-        </ListItem>
+                {errorMessage && <span id={errorId} role="alert" className={classes(styles, "shortcut-error-text")}>{errorMessage}</span>}
+            </div>}
+        />
     );
 }

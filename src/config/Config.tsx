@@ -23,6 +23,7 @@ import StorageIcon from '@mui/icons-material/StorageOutlined'; // For Data
 import KeyboardIcon from '@mui/icons-material/Keyboard'; // For Shortcuts
 import InfoIcon from '@mui/icons-material/InfoOutlined'; // For About
 import CloseIcon from '@mui/icons-material/Close';
+import logoUrl from "../assets/vpaste-logo-master.svg";
 
 function startConfigWindowDrag(event: React.MouseEvent<HTMLElement>, bridge: SettingsBridge) {
     if (event.button !== 0) return;
@@ -166,10 +167,11 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
     };
 
     const isSettingsBlocked = blockingOperation !== null;
+    const isMac = isMacPlatform();
     const nativeWindowsPreview = import.meta.env.DEV
         && new URLSearchParams(window.location.search).get("platform") === "windows";
     const nativeWindowsSurface = nativeWindowsPreview
-        || ("__TAURI_INTERNALS__" in window && !isMacPlatform());
+        || ("__TAURI_INTERNALS__" in window && !isMac);
     const activeSection = [
         <GeneralSettings bridge={bridge} config={config} languages={languages} t={t} onSave={saveConfig} />,
         <DataSettings bridge={bridge} config={config} storagePaths={storagePaths} t={t} onSave={saveConfig} onBlockingOperationChange={setBlockingOperation} />,
@@ -190,8 +192,12 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
             >
                 <div className={layout.dragRegion} onMouseDown={event => startConfigWindowDrag(event, bridge)} />
                 <WindowControls bridge={bridge} />
-                <div className={layout.sidebar}>
+                <div className={`${layout.sidebar} ${isMac ? layout.sidebarMac : ""}`}>
                     <div className={layout.sidebarDragRegion} onMouseDown={event => startConfigWindowDrag(event, bridge)} />
+                    <div className={layout.sidebarBrand} aria-label={t("common.settings")}>
+                        <img src={logoUrl} alt="" />
+                        <span>{t("common.settings")}</span>
+                    </div>
                     <Tabs
                         orientation="vertical"
                         value={value}

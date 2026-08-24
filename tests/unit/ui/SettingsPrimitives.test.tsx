@@ -15,9 +15,18 @@ describe("Settings primitives", () => {
             <AppThemeProvider>
                 <SettingsSection title="General">
                     <SettingsRow
+                        labelId="launch-label"
+                        descriptionId="launch-description"
                         label="Launch at login"
                         description="Start vPaste automatically"
-                        control={<Switch inputProps={{ "aria-label": "Launch at login" }} />}
+                        control={(
+                            <Switch
+                                inputProps={{
+                                    "aria-labelledby": "launch-label",
+                                    "aria-describedby": "launch-description",
+                                }}
+                            />
+                        )}
                     />
                 </SettingsSection>
             </AppThemeProvider>,
@@ -27,6 +36,7 @@ describe("Settings primitives", () => {
         await user.click(toggle);
 
         expect(toggle).toBeChecked();
+        expect(toggle).toHaveAccessibleDescription("Start vPaste automatically");
         expect(screen.getByText("Start vPaste automatically")).toBeVisible();
     });
 });

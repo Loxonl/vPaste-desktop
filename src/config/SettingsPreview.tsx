@@ -8,11 +8,15 @@ function readPreviewConfig() {
     const params = new URLSearchParams(window.location.search);
     const theme = params.get("theme");
     const language = params.get("lang");
+    const privacyOverflow = params.get("privacy") === "overflow";
 
     return {
         ...DEFAULT_CONFIG,
         multilingual: language === "en-US" ? "English" : "Chinese",
         theme_mode: theme === "dark" ? "dark" as const : "light" as const,
+        ignored_app_sources: privacyOverflow
+            ? ["Code.exe", "chrome.exe", "msedge.exe", "firefox.exe"]
+            : [],
     };
 }
 

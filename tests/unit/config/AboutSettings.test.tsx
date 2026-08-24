@@ -80,4 +80,27 @@ describe("About update controls", () => {
             url: "https://github.com/Loxonl/vPaste-desktop/releases",
         });
     });
+
+    it("uses the shared confirmation dialog before opening a manual update download", async () => {
+        const manualState = {
+            ...baseState,
+            status: "manualDownload",
+            availableVersion: "1.7.0",
+        } as UpdateState;
+        const invoke = vi.fn(async (command: string) => {
+            if (command === "get_update_state") return baseState;
+            if (command === "check_for_app_update") return manualState;
+            return undefined;
+        });
+        renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
+
+        await userEvent.click(await screen.findByRole("button", { name: "settings.updateCheck" }));
+        const dialog = await screen.findByRole("dialog", { name: "settings.updateOpenReleaseTitle" });
+        await userEvent.click(screen.getByRole("button", { name: "settings.updateOpenRelease" }));
+
+        expect(dialog).not.toBeVisible();
+        expect(invoke).toHaveBeenCalledWith("open_url_in_browser", {
+            url: manualState.releaseUrl,
+        });
+    });
 });

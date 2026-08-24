@@ -18,8 +18,9 @@ Use `sx` only for a one-off layout relationship such as flex sizing, alignment, 
 
 - Use MUI for interactive controls such as buttons, selects, text fields, switches, tabs, menus, dialogs, and progress indicators.
 - Use the shared settings primitives for conventional label/description/control rows.
+- Give each `SettingsRow` a stable `labelId` (and `descriptionId` when present), then connect its MUI control with `aria-labelledby` and `aria-describedby`. Visible proximity alone is not an accessible label.
 - Use `ActionCard` for repeated product actions that need an icon, title, and description. Choose its fixed horizontal or vertical layout instead of recreating card markup in a feature module.
-- Use `ConfirmDialog` for destructive confirmation so focus lock, Escape handling, Portal rendering, and focus return stay consistent.
+- Use `ConfirmDialog` for confirmation so focus lock, Escape handling, Portal rendering, and focus return stay consistent. It is destructive by default; pass `destructive={false}` only for a non-destructive choice such as opening an external download page.
 - Use `InlineMenuSurface` with `InlineMenuItem` for coordinate-sensitive Tauri menus; the feature supplies only placement and width.
 - Use `StatusToast` for transient status with an optional action, and `ToolbarIconButton` for named icon-only toolbar actions.
 - Auxiliary webviews use MUI controls inside their existing CSS Module window shells. Keep `--ui-radius-window`, `--ui-window-shadow`, transparent gutters, and Tauri-owned placement intact instead of replacing the whole shell with a portal or generic page card.

@@ -34,7 +34,10 @@ test.describe("settings preview", () => {
         const tabs = page.getByRole("tab");
         await expect(tabs).toHaveCount(4);
 
-        await page.locator(".MuiSelect-select").first().click();
+        const languageSelect = page.locator(".MuiSelect-select").first();
+        await languageSelect.click();
+        const focusedSelect = languageSelect.locator("xpath=..");
+        await expect(focusedSelect.locator("fieldset")).toHaveCSS("border-top-width", "1px");
         const selectedLanguage = page.getByRole("option", {
             name: "简体中文 (大陆)",
             exact: true,
@@ -44,25 +47,24 @@ test.describe("settings preview", () => {
         await page.keyboard.press("Escape");
 
         await tabs.nth(1).click();
-        const recentSourceSelect = page.locator(".MuiSelect-select").first();
-        await recentSourceSelect.click();
+        await page.getByRole("button", { name: "管理保护应用" }).click();
+        const privacyDialog = page.getByRole("dialog", { name: "管理保护应用" });
+        await expect(privacyDialog).toBeVisible();
 
-        const menuPaper = page.locator(".MuiMenu-paper");
-        const menuCanScroll = await menuPaper.evaluate(
+        const managerList = privacyDialog.locator("[class*='privacy-manager-list']");
+        const menuCanScroll = await managerList.evaluate(
             element => element.scrollHeight > element.clientHeight,
         );
         expect(menuCanScroll).toBe(true);
-        await expect(menuPaper).toHaveCSS("overflow-y", "auto");
+        await expect(managerList).toHaveCSS("overflow-y", "auto");
 
-        await menuPaper.hover();
+        await managerList.hover();
         await page.mouse.wheel(0, 10_000);
 
-        const menuHint = page.getByRole("option", {
-            name: "如果没有看到目标应用，请先切换到该应用复制一次非敏感内容，再回到这里刷新并添加。",
-        });
-        await expect.poll(async () => menuPaper.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
-        await expect(menuHint).toBeInViewport();
-        await expect(page).toHaveScreenshot("settings-recent-source-menu-bottom.png");
+        const managerHelp = privacyDialog.getByText("如果没有看到目标应用，请先切换到该应用复制一次非敏感内容，再重新打开管理窗口。");
+        await expect.poll(async () => managerList.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+        await expect(managerHelp).toBeVisible();
+        await expect(page).toHaveScreenshot("settings-privacy-manager-bottom.png");
         await page.keyboard.press("Escape");
 
         await tabs.nth(3).click();
@@ -70,6 +72,37 @@ test.describe("settings preview", () => {
         await expect(page.getByText("版本 1.6.0")).toBeVisible();
         await expect(page.getByText("版本与更新")).toHaveCount(0);
         await expect(page).toHaveScreenshot("settings-about-switch.png");
+    });
+
+    test("data settings keep aligned actions and scroll protected apps after three rows", async ({ page }) => {
+        await page.setViewportSize({ width: 640, height: 520 });
+        await page.goto("/__settings-preview?theme=light&lang=zh-CN&privacy=overflow");
+        await page.getByRole("tab").nth(1).click();
+
+        const privacyHeading = page.locator("[class*='privacy-app-heading']");
+        await expect(privacyHeading).toHaveCSS("align-items", "center");
+        const privacyCopyBox = await privacyHeading.locator(".MuiListItemText-root").boundingBox();
+        const manageButtonBox = await privacyHeading.getByRole("button", { name: "管理保护应用" }).boundingBox();
+        expect(privacyCopyBox).not.toBeNull();
+        expect(manageButtonBox).not.toBeNull();
+        expect(Math.abs(
+            privacyCopyBox!.y + privacyCopyBox!.height / 2
+            - (manageButtonBox!.y + manageButtonBox!.height / 2),
+        )).toBeLessThan(1);
+
+        const protectedApps = page.locator("[class*='privacy-app-list']");
+        await expect(protectedApps).toHaveCSS("overflow-y", "auto");
+        expect(await protectedApps.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+        await expect(page).toHaveScreenshot("settings-data-protected-apps-overflow.png");
+
+        const importButton = page.getByRole("button", { name: "导入数据" });
+        const exportButton = page.getByRole("button", { name: "导出数据" });
+        await expect(importButton).toHaveClass(/MuiButton-outlined/);
+        await expect(exportButton).toHaveClass(/MuiButton-outlined/);
+
+        const historySection = page.getByText("历史数据", { exact: true }).locator("xpath=..");
+        await expect(historySection.getByText("数据迁移", { exact: true })).toBeVisible();
+        await expect(historySection.locator("ul")).toHaveCount(1);
     });
 
     test("Tab support switch stays centered in the shortcut key column", async ({ page }) => {

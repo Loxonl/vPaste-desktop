@@ -13,6 +13,7 @@ export type ConfirmDialogProps = {
     description: string;
     cancelLabel: string;
     confirmLabel: string;
+    backdropClassName?: string;
     confirmDisabled?: boolean;
     destructive?: boolean;
     onCancel: () => void;
@@ -25,6 +26,7 @@ export function ConfirmDialog({
     description,
     cancelLabel,
     confirmLabel,
+    backdropClassName,
     confirmDisabled = false,
     destructive = true,
     onCancel,
@@ -40,7 +42,9 @@ export function ConfirmDialog({
             aria-labelledby={titleId}
             aria-describedby={descriptionId}
             maxWidth={false}
-            BackdropProps={{ className: styles.backdrop }}
+            BackdropProps={{
+                className: [styles.backdrop, backdropClassName].filter(Boolean).join(" "),
+            }}
             PaperProps={{ className: styles.paper, role: destructive ? "alertdialog" : "dialog" }}
         >
             <DialogTitle id={titleId} className={styles.title}>

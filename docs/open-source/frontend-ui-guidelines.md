@@ -11,8 +11,10 @@ vPaste uses React 18 and MUI 5 as its component system. Tailwind is intentionall
 - Keep `src/theme.css` limited to token loading, root behavior, theme synchronization support, focus visibility, and reduced-motion protection.
 - Do not target `.Mui...` from page styles. If a MUI control needs a shared visual change, update the theme.
 - When DOM code looks up a CSS Module class with `closest`, `querySelector`, or a direct `className` assignment, use the imported module value rather than the unscoped source class name.
+- Files listed in `tokenizedCss` inside `scripts/ui-governance-baseline.json` have completed visual-token migration. They must not reintroduce literal colors, pixel radii, or component-local shadows; add a file to that list when its migration is complete.
 
 Use `sx` only for a one-off layout relationship such as flex sizing, alignment, or a calculated width. Do not put colors, font sizes, radii, shadows, or control heights in `sx`.
+`npm run check:styles` enforces this split for object-form `sx`; move visual values to `appTheme.ts` or the feature's CSS Module instead of weakening the check.
 
 ## Choosing Components
 
@@ -22,7 +24,7 @@ Use `sx` only for a one-off layout relationship such as flex sizing, alignment, 
 - Use `ActionCard` for repeated product actions that need an icon, title, and description. Choose its fixed horizontal or vertical layout instead of recreating card markup in a feature module.
 - Use `ConfirmDialog` for confirmation so focus lock, Escape handling, Portal rendering, and focus return stay consistent. It is destructive by default; pass `destructive={false}` only for a non-destructive choice such as opening an external download page.
 - Use `InlineMenuSurface` with `InlineMenuItem` for coordinate-sensitive Tauri menus; the feature supplies only placement and width.
-- Use `StatusToast` for transient status with an optional action, and `ToolbarIconButton` for named icon-only toolbar actions.
+- Use `StatusToast` for transient status with an optional action, `OperationStatus` for persistent working/success/error feedback, and `ToolbarIconButton` for named icon-only toolbar actions.
 - Auxiliary webviews use MUI controls inside their existing CSS Module window shells. Keep `--ui-radius-window`, `--ui-window-shadow`, transparent gutters, and Tauri-owned placement intact instead of replacing the whole shell with a portal or generic page card.
 - Use native buttons only for custom surfaces such as clipboard cards; they still need a visible focus state, a minimum 24×24 px target, disabled styling, and an accessible name.
 - Use semantic status components or text as well as color for success, warning, and error states.
@@ -37,11 +39,14 @@ Use this decision table before adding a control:
 | Modal confirmation | Shared `ConfirmDialog`, built on MUI `Dialog` | None; keep focus lock, Escape, Portal, and focus return |
 | Coordinate-sensitive desktop menu | Shared `InlineMenuSurface` and `InlineMenuItem` with feature-owned coordinates | Full MUI `Menu` only when its Portal cannot change Tauri coordinates |
 | Transient status with one optional action | Shared `StatusToast` | Persistent form errors stay next to the affected control |
+| Persistent operation progress or result | Shared `OperationStatus` | Use `compact` inline feedback or `block` feedback with optional MUI progress |
 | Icon-only toolbar action | Shared `ToolbarIconButton` with its required `label` | Product-specific drag handles may stay native |
 | Auxiliary-window fields and actions | MUI `TextField`, `Select`, `Button`, `ButtonBase`, and `MenuItem` | Keep the feature CSS Module only for layout, transparent-window geometry, and branded surfaces |
 | Repeated product pattern | A semantic shared component in `src/ui/` after the second consumer exists | Do not create wrappers for one use |
 
 The temporary raw-control inventory is stored in `scripts/ui-governance-baseline.json`. New raw `button`, `input`, or `select` elements fail `npm run check:styles`. When a module migrates to MUI, reduce its baseline entry in the same pull request; never increase the baseline to make a new control pass.
+
+The remaining native controls are deliberate special surfaces: `Config.tsx` owns the platform-shaped title-bar buttons, while `PasteQueue.tsx` owns its drag handle and full-row paste target. They keep native button semantics because MUI wrappers would add no accessibility benefit and could interfere with native window or pointer-drag behavior. Everything else, including development-only tools, uses MUI controls.
 
 ## Motion Ownership
 
@@ -88,6 +93,7 @@ The supported modes are `system`, `light`, and `dark`. Existing `data-theme` beh
 - compact controls: 28 px
 - settings rows: at least 52 px
 - control radius: 8 px
+- popover/menu radius: 10 px
 - surface radius: 14 px
 - spacing scale: 4 / 8 / 12 / 16 / 24 px
 

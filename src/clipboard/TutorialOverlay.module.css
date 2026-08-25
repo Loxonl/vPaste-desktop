@@ -6,7 +6,7 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  color: #1f242b;
+  color: var(--ui-tutorial-text);
   background: transparent;
 }
 
@@ -51,9 +51,9 @@
   bottom: 0;
   width: 86px;
   height: 4px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #2f8cff, #55c2ff);
-  box-shadow: 0 4px 16px rgba(30, 146, 238, 0.28);
+  border-radius: var(--ui-radius-pill);
+  background: var(--ui-tutorial-welcome-accent);
+  box-shadow: var(--ui-tutorial-welcome-shadow);
 }
 
 .tutorial-welcome h1 {
@@ -66,7 +66,7 @@
 .tutorial-welcome p {
   margin: 12px 0 0;
   font-size: 18px;
-  color: rgba(31, 36, 43, 0.68);
+  color: var(--ui-tutorial-description);
 }
 
 .tutorial-panel {
@@ -94,10 +94,10 @@
   min-width: 42px;
   display: inline-grid;
   place-items: center;
-  border: 1px solid rgba(31, 36, 43, 0.08);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.62);
-  color: rgba(31, 36, 43, 0.52);
+  border: 1px solid var(--ui-tutorial-border);
+  border-radius: var(--ui-radius-pill);
+  background: var(--ui-tutorial-soft-surface);
+  color: var(--ui-tutorial-subtle);
   font-size: 12px;
   font-weight: 760;
   font-variant-numeric: tabular-nums;
@@ -113,7 +113,7 @@
 
 .tutorial-step-copy p {
   margin: 0;
-  color: rgba(31, 36, 43, 0.62);
+  color: var(--ui-tutorial-muted);
   font-size: 13px;
   line-height: 1.38;
   text-wrap: pretty;
@@ -138,14 +138,10 @@
   flex-direction: column;
   gap: 9px;
   padding: 9px;
-  border: 1px solid rgba(31, 36, 43, 0.08);
-  border-radius: 15px;
-  background:
-    linear-gradient(155deg, rgba(255, 255, 255, 0.96), rgba(245, 248, 252, 0.74)),
-    rgba(255, 255, 255, 0.7);
-  box-shadow:
-    0 16px 38px rgba(35, 43, 54, 0.09),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  border: 1px solid var(--ui-tutorial-border);
+  border-radius: var(--ui-tutorial-radius-card);
+  background: var(--ui-tutorial-card-surface);
+  box-shadow: var(--ui-tutorial-card-shadow);
   backdrop-filter: blur(16px);
   overflow: hidden;
   transition:
@@ -155,20 +151,14 @@
 }
 
 .tutorial-permission-card:hover {
-  border-color: rgba(30, 146, 238, 0.16);
-  box-shadow:
-    0 20px 44px rgba(35, 43, 54, 0.13),
-    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  border-color: var(--ui-tutorial-card-hover-border);
+  box-shadow: var(--ui-tutorial-card-hover-shadow);
 }
 
 .tutorial-permission-card.done {
-  border-color: rgba(30, 146, 238, 0.24);
-  background:
-    linear-gradient(155deg, rgba(255, 255, 255, 0.98), rgba(236, 247, 255, 0.78)),
-    rgba(255, 255, 255, 0.76);
-  box-shadow:
-    0 18px 44px rgba(30, 146, 238, 0.13),
-    inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  border-color: var(--ui-tutorial-card-selected-border);
+  background: var(--ui-tutorial-card-selected-surface);
+  box-shadow: var(--ui-tutorial-card-selected-shadow);
 }
 
 .tutorial-permission-card.done::before {
@@ -176,7 +166,7 @@
   position: absolute;
   inset: -55% 42% 38% -28%;
   border-radius: 50%;
-  background: rgba(70, 177, 255, 0.12);
+  background: var(--ui-tutorial-card-selected-glow);
   filter: blur(24px);
   pointer-events: none;
 }
@@ -186,9 +176,9 @@
   flex: 0 0 92px;
   display: grid;
   place-items: center;
-  border: 1px solid rgba(31, 36, 43, 0.055);
-  border-radius: 11px;
-  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid var(--ui-tutorial-card-visual-border);
+  border-radius: var(--ui-tutorial-radius-inner);
+  background: var(--ui-tutorial-soft-surface);
   overflow: hidden;
 }
 
@@ -198,7 +188,7 @@
   height: 100%;
   object-fit: contain;
   display: block;
-  outline: 1px solid rgba(0, 0, 0, 0.035);
+  outline: 1px solid var(--ui-tutorial-card-visual-outline);
   outline-offset: -1px;
 }
 
@@ -241,7 +231,7 @@
 
 .tutorial-card-body p {
   margin: 4px 0 0;
-  color: rgba(31, 36, 43, 0.62);
+  color: var(--ui-tutorial-muted);
   font-size: 12px;
   line-height: 1.3;
   text-wrap: pretty;
@@ -257,11 +247,11 @@
   align-items: center;
   gap: 5px;
   padding: 0 8px;
-  border: 1px solid rgba(255, 255, 255, 0.58);
-  border-radius: 999px;
-  background: rgba(28, 35, 44, 0.7);
-  color: rgba(255, 255, 255, 0.86);
-  box-shadow: 0 7px 18px rgba(25, 31, 40, 0.16);
+  border: 1px solid var(--ui-tutorial-status-border);
+  border-radius: var(--ui-radius-pill);
+  background: var(--ui-tutorial-status-surface);
+  color: var(--ui-tutorial-status-text);
+  box-shadow: var(--ui-tutorial-status-shadow);
   backdrop-filter: blur(12px);
   font-size: 11px;
   font-weight: 730;
@@ -271,12 +261,10 @@
 }
 
 .tutorial-status-pill.done {
-  border-color: rgba(108, 197, 255, 0.46);
-  background: rgba(21, 124, 224, 0.88);
-  color: #fff;
-  box-shadow:
-    0 8px 22px rgba(30, 146, 238, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.24);
+  border-color: var(--ui-tutorial-status-selected-border);
+  background: var(--ui-tutorial-status-selected-surface);
+  color: var(--ui-tutorial-status-selected-text);
+  box-shadow: var(--ui-tutorial-status-selected-shadow);
 }
 
 .tutorial-status-pill svg {
@@ -294,7 +282,7 @@
   position: absolute;
   inset: -2px;
   z-index: 0;
-  border: 1px solid rgba(67, 172, 255, 0.7);
+  border: 1px solid var(--ui-tutorial-status-burst-border);
   border-radius: inherit;
   opacity: 0;
   pointer-events: none;
@@ -305,9 +293,9 @@
   width: 100%;
   padding: 0 11px 0 13px;
   border: 0;
-  border-radius: 9px;
-  background: linear-gradient(180deg, rgba(37, 43, 52, 0.94), rgba(20, 25, 32, 0.96));
-  color: #fff;
+  border-radius: var(--ui-tutorial-radius-action);
+  background: var(--ui-tutorial-action-surface);
+  color: var(--ui-tutorial-action-text);
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
@@ -315,7 +303,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  box-shadow: 0 7px 16px rgba(25, 31, 40, 0.16);
+  box-shadow: var(--ui-tutorial-action-shadow);
   transition:
     transform var(--motion-duration-quick) var(--motion-ease-standard),
     background-color var(--motion-duration-quick) var(--motion-ease-standard),
@@ -324,7 +312,7 @@
 
 .tutorial-card-action:hover {
   transform: translateY(-1px);
-  box-shadow: 0 10px 22px rgba(31, 36, 43, 0.22);
+  box-shadow: var(--ui-tutorial-action-hover-shadow);
 }
 
 .tutorial-card-action svg {
@@ -352,12 +340,10 @@
   justify-items: center;
   gap: 10px;
   padding: 14px 10px;
-  border: 1px solid rgba(31, 36, 43, 0.08);
-  border-radius: 12px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.56)),
-    rgba(255, 255, 255, 0.64);
-  box-shadow: 0 10px 28px rgba(35, 43, 54, 0.06);
+  border: 1px solid var(--ui-tutorial-border);
+  border-radius: var(--ui-radius-window);
+  background: var(--ui-tutorial-toggle-surface);
+  box-shadow: var(--ui-tutorial-toggle-shadow);
   font-size: 14px;
   font-weight: 700;
   cursor: pointer;
@@ -369,14 +355,12 @@
 }
 
 .tutorial-toggle:hover {
-  box-shadow: 0 14px 34px rgba(35, 43, 54, 0.085);
+  box-shadow: var(--ui-tutorial-toggle-hover-shadow);
 }
 
 .tutorial-toggle:has(input:checked) {
-  border-color: rgba(30, 146, 238, 0.24);
-  background:
-    linear-gradient(180deg, rgba(248, 252, 255, 0.9), rgba(236, 246, 255, 0.7)),
-    rgba(255, 255, 255, 0.72);
+  border-color: var(--ui-tutorial-card-selected-border);
+  background: var(--ui-tutorial-toggle-selected-surface);
 }
 
 .tutorial-toggle span {
@@ -396,7 +380,7 @@
 .tutorial-shortcut-art {
   grid-row: auto;
   min-height: 162px;
-  border-radius: 14px;
+  border-radius: var(--ui-radius-surface);
 }
 
 .tutorial-shortcut-keycap {
@@ -404,16 +388,14 @@
   justify-items: center;
   gap: 8px;
   padding: 20px 18px;
-  border: 1px solid rgba(31, 36, 43, 0.08);
-  border-radius: 14px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(245, 250, 255, 0.68)),
-    rgba(255, 255, 255, 0.72);
-  box-shadow: 0 14px 34px rgba(30, 146, 238, 0.1);
+  border: 1px solid var(--ui-tutorial-border);
+  border-radius: var(--ui-radius-surface);
+  background: var(--ui-tutorial-shortcut-surface);
+  box-shadow: var(--ui-tutorial-shortcut-shadow);
 }
 
 .tutorial-shortcut-keycap span {
-  color: rgba(31, 36, 43, 0.58);
+  color: var(--ui-tutorial-shortcut-label);
   font-size: 12px;
   font-weight: 720;
 }
@@ -434,7 +416,7 @@
 .tutorial-nav-button {
   min-height: 44px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--ui-radius-pill);
   font-size: 13px;
   font-weight: 760;
   cursor: pointer;
@@ -449,26 +431,26 @@
 .tutorial-primary {
   width: 100%;
   padding: 0 18px;
-  background: linear-gradient(180deg, #2f8cff, #1269df);
-  color: #fff;
-  box-shadow: 0 12px 28px rgba(30, 146, 238, 0.27);
+  background: var(--ui-tutorial-primary-surface);
+  color: var(--ui-tutorial-primary-text);
+  box-shadow: var(--ui-tutorial-primary-shadow);
 }
 
 .tutorial-primary:hover {
   transform: translateY(-1px);
-  box-shadow: 0 16px 32px rgba(30, 146, 238, 0.31);
+  box-shadow: var(--ui-tutorial-primary-hover-shadow);
 }
 
 .tutorial-back-action {
   min-width: 76px;
   margin-top: 6px;
   padding: 0 14px;
-  background: rgba(31, 36, 43, 0.075);
-  color: rgba(31, 36, 43, 0.68);
+  background: var(--ui-tutorial-secondary-surface);
+  color: var(--ui-tutorial-secondary-text);
 }
 
 .tutorial-back-action:hover {
-  background: rgba(31, 36, 43, 0.12);
+  background: var(--ui-tutorial-secondary-hover-surface);
 }
 
 .tutorial-guide-dialog {
@@ -480,14 +462,10 @@
   align-items: center;
   gap: 18px;
   padding: 22px 24px;
-  border: 1px solid rgba(255, 255, 255, 0.84);
-  border-radius: 24px;
-  background:
-    radial-gradient(circle at 54% 16%, rgba(81, 180, 255, 0.15), transparent 42%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(243, 248, 253, 0.96));
-  box-shadow:
-    0 28px 80px rgba(21, 31, 45, 0.26),
-    inset 0 1px 0 #fff;
+  border: 1px solid var(--ui-tutorial-guide-border);
+  border-radius: var(--ui-tutorial-radius-dialog);
+  background: var(--ui-tutorial-guide-surface);
+  box-shadow: var(--ui-tutorial-guide-shadow);
   overflow: hidden;
 }
 
@@ -499,7 +477,7 @@
   left: -95px;
   bottom: -145px;
   border-radius: 50%;
-  background: rgba(62, 168, 255, 0.11);
+  background: var(--ui-tutorial-guide-glow);
   filter: blur(12px);
   pointer-events: none;
 }
@@ -516,13 +494,13 @@
   padding: 0;
   border: 0;
   border-radius: 50%;
-  background: rgba(31, 36, 43, 0.075);
-  color: rgba(31, 36, 43, 0.62);
+  background: var(--ui-tutorial-guide-close-surface);
+  color: var(--ui-tutorial-guide-close-text);
   cursor: pointer;
 }
 
 .tutorial-guide-close:hover {
-  background: rgba(31, 36, 43, 0.13);
+  background: var(--ui-tutorial-guide-close-hover-surface);
 }
 
 .tutorial-guide-close svg {
@@ -564,7 +542,7 @@
 
 .tutorial-guide-copy p {
   margin: 8px 0 0;
-  color: rgba(31, 36, 43, 0.64);
+  color: var(--ui-tutorial-guide-description);
   font-size: 12px;
   line-height: 1.42;
   text-wrap: pretty;
@@ -576,14 +554,14 @@
   display: grid;
   place-items: center;
   padding: 11px;
-  border: 1px solid rgba(31, 36, 43, 0.07);
-  border-radius: 18px;
-  background: linear-gradient(145deg, #e8f5ff, #f5faff 52%, #e8f2ff);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  border: 1px solid var(--ui-tutorial-guide-art-border);
+  border-radius: var(--ui-tutorial-radius-guide-art);
+  background: var(--ui-tutorial-guide-art-surface);
+  box-shadow: var(--ui-tutorial-guide-art-shadow);
 }
 
 .tutorial-guide-art-background {
-  background: linear-gradient(145deg, #e8fbf3, #f8fffb 54%, #e9f7ff);
+  background: var(--ui-tutorial-guide-art-background-surface);
 }
 
 .tutorial-guide-art-permission-image {
@@ -608,10 +586,10 @@
   width: 100%;
   height: 100%;
   overflow: hidden;
-  border: 1px solid rgba(31, 36, 43, 0.1);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 14px 34px rgba(35, 50, 70, 0.16);
+  border: 1px solid var(--ui-tutorial-guide-mock-window-border);
+  border-radius: var(--ui-radius-surface);
+  background: var(--ui-tutorial-guide-mock-window-surface);
+  box-shadow: var(--ui-tutorial-guide-mock-window-shadow);
 }
 
 .tutorial-guide-toolbar {
@@ -620,9 +598,9 @@
   grid-template-columns: 58px 1fr 24px;
   align-items: center;
   padding: 0 10px;
-  border-bottom: 1px solid rgba(31, 36, 43, 0.07);
-  background: rgba(248, 250, 253, 0.9);
-  color: rgba(31, 36, 43, 0.76);
+  border-bottom: 1px solid var(--ui-tutorial-guide-mock-toolbar-border);
+  background: var(--ui-tutorial-guide-mock-toolbar-surface);
+  color: var(--ui-tutorial-guide-mock-toolbar-text);
 }
 
 .tutorial-guide-toolbar > strong {
@@ -648,15 +626,15 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #ff635d;
+  background: var(--ui-tutorial-guide-traffic-stop);
 }
 
 .tutorial-guide-traffic-lights i:nth-child(2) {
-  background: #f3bf4f;
+  background: var(--ui-tutorial-guide-traffic-wait);
 }
 
 .tutorial-guide-traffic-lights i:nth-child(3) {
-  background: #56c553;
+  background: var(--ui-tutorial-guide-traffic-go);
 }
 
 .tutorial-guide-system-body {
@@ -670,16 +648,16 @@
   align-content: start;
   gap: 5px;
   padding: 10px 8px;
-  border-right: 1px solid rgba(31, 36, 43, 0.06);
-  background: rgba(241, 245, 249, 0.78);
+  border-right: 1px solid var(--ui-tutorial-guide-sidebar-border);
+  background: var(--ui-tutorial-guide-sidebar-surface);
 }
 
 .tutorial-guide-system-body aside span,
 .tutorial-guide-system-body aside i {
   min-width: 0;
   padding: 5px 7px;
-  border-radius: 6px;
-  color: rgba(31, 36, 43, 0.48);
+  border-radius: var(--ui-tutorial-radius-sidebar-item);
+  color: var(--ui-tutorial-guide-sidebar-text);
   font-size: 8px;
   font-style: normal;
   overflow: hidden;
@@ -689,13 +667,13 @@
 
 .tutorial-guide-system-body aside span {
   margin-bottom: 2px;
-  background: rgba(31, 36, 43, 0.065);
+  background: var(--ui-tutorial-guide-sidebar-heading-surface);
 }
 
 .tutorial-guide-system-body aside i.active {
-  background: #2488ef;
-  color: #fff;
-  box-shadow: 0 4px 10px rgba(36, 136, 239, 0.2);
+  background: var(--ui-tutorial-guide-sidebar-active-surface);
+  color: var(--ui-tutorial-guide-sidebar-active-text);
+  box-shadow: var(--ui-tutorial-guide-sidebar-active-shadow);
 }
 
 .tutorial-guide-system-body main {
@@ -707,7 +685,7 @@
 }
 
 .tutorial-guide-system-body main > small {
-  color: rgba(31, 36, 43, 0.46);
+  color: var(--ui-tutorial-guide-mock-muted);
   font-size: 8px;
 }
 
@@ -724,10 +702,10 @@
   align-items: center;
   gap: 8px;
   padding: 9px 10px;
-  border: 1px solid rgba(31, 36, 43, 0.075);
-  border-radius: 11px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 9px 24px rgba(31, 45, 62, 0.1);
+  border: 1px solid var(--ui-tutorial-guide-settings-card-border);
+  border-radius: var(--ui-tutorial-radius-inner);
+  background: var(--ui-tutorial-guide-settings-card-surface);
+  box-shadow: var(--ui-tutorial-guide-settings-card-shadow);
 }
 
 .tutorial-guide-brand-icon {
@@ -735,8 +713,8 @@
   height: 32px;
   display: grid;
   place-items: center;
-  border-radius: 9px;
-  background: linear-gradient(145deg, #f7fcff, #e7f5ff);
+  border-radius: var(--ui-tutorial-radius-brand-icon);
+  background: var(--ui-tutorial-guide-brand-icon-surface);
 }
 
 .tutorial-guide-brand-icon img {
@@ -763,7 +741,7 @@
 }
 
 .tutorial-guide-setting-copy small {
-  color: rgba(31, 36, 43, 0.52);
+  color: var(--ui-tutorial-guide-setting-muted);
   font-size: 8px;
 }
 
@@ -771,9 +749,9 @@
   position: relative;
   width: 34px;
   height: 20px;
-  border-radius: 999px;
-  background: rgba(31, 36, 43, 0.16);
-  box-shadow: inset 0 1px 3px rgba(31, 36, 43, 0.1);
+  border-radius: var(--ui-radius-pill);
+  background: var(--ui-tutorial-guide-switch-surface);
+  box-shadow: var(--ui-tutorial-guide-switch-shadow);
 }
 
 .tutorial-guide-switch i {
@@ -783,12 +761,12 @@
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 2px 5px rgba(31, 36, 43, 0.2);
+  background: var(--ui-tutorial-guide-switch-thumb-surface);
+  box-shadow: var(--ui-tutorial-guide-switch-thumb-shadow);
 }
 
 .tutorial-guide-switch.on {
-  background: #278af2;
+  background: var(--ui-tutorial-guide-switch-selected-surface);
 }
 
 .tutorial-guide-switch.on i {
@@ -799,10 +777,10 @@
   position: absolute;
   right: 1px;
   bottom: -14px;
-  color: #182330;
+  color: var(--ui-tutorial-guide-cursor-text);
   font-size: 23px;
   font-weight: 900;
-  text-shadow: 0 1px 0 #fff;
+  text-shadow: var(--ui-tutorial-guide-cursor-shadow);
   transform: rotate(7deg);
 }
 
@@ -813,9 +791,7 @@
   align-content: center;
   gap: 7px;
   padding: 13px 32px 11px;
-  background:
-    radial-gradient(circle at 50% 0%, rgba(102, 213, 171, 0.22), transparent 50%),
-    linear-gradient(160deg, #f8fcff, #ecf8f3);
+  background: var(--ui-tutorial-guide-background-stage-surface);
 }
 
 .tutorial-guide-background-heading {
@@ -824,17 +800,17 @@
 }
 
 .tutorial-guide-background-heading small {
-  color: rgba(31, 36, 43, 0.46);
+  color: var(--ui-tutorial-guide-mock-muted);
   font-size: 7px;
 }
 
 .tutorial-guide-background-heading strong {
-  color: rgba(31, 36, 43, 0.88);
+  color: var(--ui-tutorial-guide-background-title);
   font-size: 12px;
 }
 
 .tutorial-guide-background-section {
-  color: rgba(31, 36, 43, 0.62);
+  color: var(--ui-tutorial-guide-background-section);
   font-size: 8px;
   font-weight: 720;
 }
@@ -843,16 +819,16 @@
   justify-self: start;
   padding: 0;
   background: transparent;
-  color: rgba(31, 36, 43, 0.5);
+  color: var(--ui-tutorial-guide-background-help);
   font-weight: 500;
 }
 
 .tutorial-guide-callout {
   justify-self: center;
   padding: 3px 9px;
-  border-radius: 999px;
-  background: rgba(34, 145, 100, 0.11);
-  color: #18805c;
+  border-radius: var(--ui-radius-pill);
+  background: var(--ui-tutorial-guide-callout-surface);
+  color: var(--ui-tutorial-guide-callout-text);
   font-size: 8px;
   font-weight: 720;
 }
@@ -868,7 +844,7 @@
 .tutorial-guide-later {
   min-height: 40px;
   border: 0;
-  border-radius: 11px;
+  border-radius: var(--ui-tutorial-radius-inner);
   font-size: 11px;
   font-weight: 740;
   cursor: pointer;
@@ -882,15 +858,15 @@
   justify-content: space-between;
   gap: 8px;
   padding: 0 12px 0 14px;
-  background: linear-gradient(180deg, #318fff, #176fdf);
-  color: #fff;
-  box-shadow: 0 11px 25px rgba(30, 129, 231, 0.28);
+  background: var(--ui-tutorial-guide-primary-surface);
+  color: var(--ui-tutorial-guide-primary-text);
+  box-shadow: var(--ui-tutorial-guide-primary-shadow);
   white-space: nowrap;
 }
 
 .tutorial-guide-primary:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 14px 29px rgba(30, 129, 231, 0.34);
+  box-shadow: var(--ui-tutorial-guide-primary-hover-shadow);
 }
 
 .tutorial-guide-primary svg {
@@ -902,7 +878,7 @@
 .tutorial-guide-later {
   min-height: 32px;
   background: transparent;
-  color: rgba(31, 36, 43, 0.56);
+  color: var(--ui-tutorial-guide-later-text);
 }
 
 .tutorial-guide-primary:disabled,
@@ -920,7 +896,7 @@
   display: grid;
   place-items: center;
   padding: 22px;
-  color: #1f242b;
+  color: var(--ui-tutorial-text);
   background: transparent;
   border: 0;
   border-radius: 0;
@@ -936,11 +912,8 @@
   grid-template-columns: 170px minmax(0, 1fr) 150px;
   gap: 12px;
   padding-inline: 18px;
-  border-color: rgba(57, 80, 107, 0.16);
-  box-shadow:
-    0 8px 18px rgba(21, 31, 45, 0.16),
-    0 1px 3px rgba(21, 31, 45, 0.1),
-    inset 0 1px 0 #fff;
+  border-color: var(--ui-tutorial-permission-border);
+  box-shadow: var(--ui-tutorial-permission-shadow);
 }
 
 .permission-guide-standalone-dialog .tutorial-guide-copy {
@@ -963,7 +936,7 @@
 }
 
 .permission-guide-standalone-dialog .tutorial-guide-copy h1 {
-  color: #187edc;
+  color: var(--ui-tutorial-permission-title);
   font-size: 15px;
   line-height: 1.2;
   letter-spacing: 0.015em;
@@ -1006,7 +979,7 @@
 
 .permission-guide-error {
   margin: 2px 0 0;
-  color: #c73d3d;
+  color: var(--ui-tutorial-permission-error);
   font-size: 10px;
   line-height: 1.35;
 }
@@ -1071,88 +1044,4 @@
   .tutorial-guide-art {
     width: 100%;
   }
-}
-
-:root[data-theme="dark"] .tutorial-root {
-  color: #eef2f8;
-  background: transparent;
-}
-
-:root[data-theme="dark"] .tutorial-step-index,
-:root[data-theme="dark"] .tutorial-permission-card,
-:root[data-theme="dark"] .tutorial-toggle,
-:root[data-theme="dark"] .tutorial-card-visual,
-:root[data-theme="dark"] .tutorial-shortcut-keycap {
-  border-color: rgba(255, 255, 255, 0.08);
-  background: rgba(31, 35, 42, 0.78);
-}
-
-:root[data-theme="dark"] .tutorial-welcome p,
-:root[data-theme="dark"] .tutorial-step-copy p,
-:root[data-theme="dark"] .tutorial-card-body p,
-:root[data-theme="dark"] .tutorial-shortcut-keycap span {
-  color: rgba(238, 242, 248, 0.66);
-}
-
-:root[data-theme="dark"] .tutorial-step-index,
-:root[data-theme="dark"] .tutorial-status-pill {
-  color: rgba(255, 255, 255, 0.88);
-}
-
-:root[data-theme="dark"] .tutorial-permission-card.done,
-:root[data-theme="dark"] .tutorial-toggle:has(input:checked) {
-  border-color: rgba(78, 166, 255, 0.22);
-  background: rgba(34, 42, 54, 0.82);
-}
-
-:root[data-theme="dark"] .tutorial-card-action {
-  background: rgba(238, 242, 248, 0.92);
-  color: #15191f;
-}
-
-:root[data-theme="dark"] .tutorial-back-action {
-  color: rgba(238, 242, 248, 0.72);
-  background: rgba(255, 255, 255, 0.11);
-}
-
-:root[data-theme="dark"] .tutorial-status-pill.done {
-  border-color: rgba(108, 197, 255, 0.4);
-  background: rgba(34, 132, 226, 0.86);
-  color: #fff;
-}
-
-:root[data-theme="dark"] .tutorial-card-visual > img,
-:root[data-theme="dark"] .tutorial-shortcut-art {
-  outline-color: rgba(255, 255, 255, 0.07);
-}
-
-:root[data-theme="dark"] .tutorial-guide-dialog {
-  border-color: rgba(255, 255, 255, 0.11);
-  background:
-    radial-gradient(circle at 54% 16%, rgba(55, 154, 236, 0.16), transparent 42%),
-    linear-gradient(145deg, rgba(33, 39, 49, 0.99), rgba(24, 29, 37, 0.98));
-  box-shadow: 0 30px 88px rgba(0, 0, 0, 0.42);
-}
-
-:root[data-theme="dark"] .permission-guide-window-root {
-  color: #eef2f8;
-  background: transparent;
-}
-
-:root[data-theme="dark"] .permission-guide-standalone-dialog {
-  border-color: rgba(255, 255, 255, 0.16);
-  box-shadow:
-    0 10px 22px rgba(0, 0, 0, 0.34),
-    0 1px 4px rgba(0, 0, 0, 0.22),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
-}
-
-:root[data-theme="dark"] .tutorial-guide-copy p,
-:root[data-theme="dark"] .tutorial-guide-later {
-  color: rgba(238, 242, 248, 0.64);
-}
-
-:root[data-theme="dark"] .tutorial-guide-close {
-  background: rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.72);
 }

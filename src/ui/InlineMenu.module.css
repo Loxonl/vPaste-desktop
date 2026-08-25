@@ -10,7 +10,7 @@
   color: var(--ui-text);
   background: color-mix(in srgb, var(--ui-surface-solid) 97%, transparent);
   border: 1px solid var(--ui-border-strong);
-  border-radius: 10px;
+  border-radius: var(--ui-radius-popover);
   box-shadow: var(--ui-shadow);
   backdrop-filter: blur(14px);
 }
@@ -46,7 +46,7 @@
   text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
-  border-radius: 7px;
+  border-radius: var(--ui-radius-control);
 }
 
 .item.item:hover {

@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Avatar, Box, Button, ButtonGroup, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Divider, IconButton, LinearProgress, List, ListItem, ListItemText, Menu, MenuItem, Stack, Switch, Typography } from "@mui/material";
+import { Avatar, Box, Button, ButtonGroup, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Divider, IconButton, List, ListItem, ListItemText, Menu, MenuItem, Stack, Switch, Typography } from "@mui/material";
 import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
 import AutoDeleteOutlinedIcon from "@mui/icons-material/AutoDeleteOutlined";
 import CloseIcon from "@mui/icons-material/Close";
@@ -11,9 +11,11 @@ import { displayAppSource, type AppSourceOption } from "../../clipboard/appSourc
 import type { HistoryArchiveInfo, HistoryArchiveProgressPayload, SettingsBlockingOperation, SettingsSectionProps, StorageCleanupInfo, StoragePaths, TFunction } from "../settingsTypes";
 import { classes } from "../../ui/classNames";
 import { ConfirmDialog } from "../../ui/ConfirmDialog";
+import { AnimatePresence, m, useMotionPreset } from "../../ui/motion";
+import { OperationStatus } from "../../ui/OperationStatus";
 import styles from "../Config.module.css";
 
-export default function DataSettings({ bridge, config, storagePaths, t, onSave, onBlockingOperationChange }: SettingsSectionProps & { storagePaths: StoragePaths | null, onBlockingOperationChange: (operation: SettingsBlockingOperation | null) => void }) {
+export default function DataSettings({ bridge, config, storagePaths, t, onSave, onBlockingOperationChange, dialogBackdropClassName }: SettingsSectionProps & { storagePaths: StoragePaths | null, onBlockingOperationChange: (operation: SettingsBlockingOperation | null) => void, dialogBackdropClassName?: string }) {
     const [legacyHistoryBlocked, setLegacyHistoryBlocked] = React.useState(false);
     const [storageDirDraft, setStorageDirDraft] = React.useState(config.storage_dir || "");
     const [cleanupDays, setCleanupDays] = React.useState<string>("");
@@ -38,6 +40,8 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
     const activeArchiveProgress = transferOperation && archiveProgress?.operation === transferOperation ? archiveProgress : null;
     const transferProgressValue = getHistoryArchiveProgressValue(activeArchiveProgress);
     const transferWorkingText = getHistoryArchiveProgressText(t, activeArchiveProgress, transferOperation);
+    const fadeMotion = useMotionPreset("fade");
+    const listItemMotion = useMotionPreset("listItem");
 
     React.useEffect(() => {
         setStorageDirDraft(config.storage_dir || "");
@@ -314,23 +318,57 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                     {t("settings.privacyApps.manage")}
                                 </Button>
                             </div>
-                            {ignoredAppSources.length > 0 ? (
-                                <List dense disablePadding className={styles["privacy-app-list"]}>
-                                    {ignoredAppSources.map(source => {
-                                        const option = recentAppSourceMap.get(source);
-                                        return (
-                                            <ListItem disableGutters className={styles["privacy-app-chip"]} key={source} title={source}>
-                                                {renderPrivacyAppIcon(source, option?.icon_path)}
-                                                <span className={classes(styles, "privacy-app-chip__text")}>
-                                                    <strong>{displayAppSource(source, t)}</strong>
-                                                </span>
-                                            </ListItem>
-                                        );
-                                    })}
-                                </List>
-                            ) : (
-                                <div className={classes(styles, "privacy-app-empty")}>{t("settings.privacyApps.empty")}</div>
-                            )}
+                            <AnimatePresence mode="wait" initial={false}>
+                                {ignoredAppSources.length > 0 ? (
+                                    <m.div
+                                        key="protected-app-list"
+                                        variants={fadeMotion}
+                                        initial="initial"
+                                        animate="animate"
+                                        exit="exit"
+                                        data-motion-preset="fade"
+                                    >
+                                        <List component="div" role="list" dense disablePadding className={styles["privacy-app-list"]}>
+                                            <AnimatePresence mode="sync" initial={false}>
+                                                {ignoredAppSources.map(source => {
+                                                    const option = recentAppSourceMap.get(source);
+                                                    return (
+                                                        <m.div
+                                                            key={source}
+                                                            role="listitem"
+                                                            className={styles["privacy-app-motion-item"]}
+                                                            variants={listItemMotion}
+                                                            initial="initial"
+                                                            animate="animate"
+                                                            exit="exit"
+                                                            data-motion-preset="listItem"
+                                                        >
+                                                            <ListItem component="div" disableGutters className={styles["privacy-app-chip"]} title={source}>
+                                                                {renderPrivacyAppIcon(source, option?.icon_path)}
+                                                                <span className={classes(styles, "privacy-app-chip__text")}>
+                                                                    <strong>{displayAppSource(source, t)}</strong>
+                                                                </span>
+                                                            </ListItem>
+                                                        </m.div>
+                                                    );
+                                                })}
+                                            </AnimatePresence>
+                                        </List>
+                                    </m.div>
+                                ) : (
+                                    <m.div
+                                        key="protected-app-empty"
+                                        className={styles["privacy-app-empty"]}
+                                        variants={fadeMotion}
+                                        initial="initial"
+                                        animate="animate"
+                                        exit="exit"
+                                        data-motion-preset="fade"
+                                    >
+                                        {t("settings.privacyApps.empty")}
+                                    </m.div>
+                                )}
+                            </AnimatePresence>
                         </Stack>
                     </ListItem>
                 </List>
@@ -374,16 +412,16 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                     {t("settings.storageDir.change")}
                                 </Button>
                             </div>
-                            {(historyWorkingArea === 'storage' || historyMessage) && (
-                                <div
-                                    className={classes(styles, `storage-migration-status ${historyMessage?.kind || 'working'}`)}
-                                    role={historyMessage?.kind === 'error' ? 'alert' : 'status'}
-                                    aria-live={historyMessage?.kind === 'error' ? 'assertive' : 'polite'}
-                                >
-                                    {historyWorkingArea === 'storage' && <CircularProgress size={14} thickness={5} aria-label={t("settings.historyWorking")} />}
-                                    <span>{historyWorkingArea === 'storage' ? t("settings.historyWorking") : historyMessage?.text}</span>
-                                </div>
-                            )}
+                            <AnimatePresence mode="wait" initial={false}>
+                                {(historyWorkingArea === 'storage' || historyMessage) && (
+                                    <OperationStatus
+                                        key={historyWorkingArea === 'storage' ? 'storage-working' : `storage-${historyMessage?.kind}-${historyMessage?.text}`}
+                                        busy={historyWorkingArea === 'storage'}
+                                        tone={historyMessage?.kind || 'neutral'}
+                                        message={historyWorkingArea === 'storage' ? t("settings.historyWorking") : historyMessage?.text}
+                                    />
+                                )}
+                            </AnimatePresence>
                         </Stack>
                     </ListItem>
                     <Divider component="li" />
@@ -445,25 +483,19 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                     </Button>
                                 </div>
                             </div>
-                            {(transferWorking || transferMessage) && (
-                                <div
-                                    className={classes(styles, `history-transfer-progress ${transferMessage?.kind || 'working'}`)}
-                                    role={transferMessage?.kind === 'error' ? 'alert' : 'status'}
-                                    aria-live={transferMessage?.kind === 'error' ? 'assertive' : 'polite'}
-                                >
-                                    <div className={classes(styles, "history-transfer-progress__line")}>
-                                        {transferWorking && <CircularProgress size={14} thickness={5} aria-hidden="true" />}
-                                        <span>{transferWorking ? transferWorkingText : transferMessage?.text}</span>
-                                    </div>
-                                    {transferWorking && (
-                                        <LinearProgress
-                                            variant={transferProgressValue != null ? "determinate" : "indeterminate"}
-                                            value={transferProgressValue ?? undefined}
-                                            aria-label={transferWorkingText}
-                                        />
-                                    )}
-                                </div>
-                            )}
+                            <AnimatePresence mode="wait" initial={false}>
+                                {(transferWorking || transferMessage) && (
+                                    <OperationStatus
+                                        key={transferWorking ? `transfer-${transferOperation}-working` : `transfer-${transferMessage?.kind}-${transferMessage?.text}`}
+                                        variant="block"
+                                        busy={transferWorking}
+                                        tone={transferMessage?.kind || 'neutral'}
+                                        message={transferWorking ? transferWorkingText : transferMessage?.text}
+                                        progress={transferWorking ? transferProgressValue : undefined}
+                                        progressLabel={transferWorking ? transferWorkingText : undefined}
+                                    />
+                                )}
+                            </AnimatePresence>
                         </Stack>
                     </ListItem>
                 </List>
@@ -474,6 +506,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                 fullWidth
                 maxWidth="xs"
                 aria-labelledby="privacy-manager-title"
+                BackdropProps={{ className: dialogBackdropClassName }}
             >
                 <DialogTitle id="privacy-manager-title" className={styles["privacy-manager-title"]}>
                     {t("settings.privacyApps.manage")}
@@ -483,29 +516,60 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                 </DialogTitle>
                 <DialogContent dividers className={styles["privacy-manager-content"]}>
                     <Stack spacing={2}>
-                        {privacyAppsLoading ? (
-                            <div className={styles["privacy-manager-loading"]}><CircularProgress size={24} aria-label={t("settings.privacyApps.loading")} /></div>
-                        ) : managedPrivacyApps.length > 0 ? (
-                            <List dense disablePadding className={styles["privacy-manager-list"]}>
-                                {managedPrivacyApps.map(option => {
-                                    const protectedApp = ignoredAppSources.includes(option.source);
-                                    return (
-                                        <ListItem key={option.source} className={styles["privacy-manager-item"]}>
-                                            {renderPrivacyAppIcon(option.source, option.icon_path)}
-                                            <ListItemText className={styles["privacy-manager-copy"]} primary={displayAppSource(option.source, t)} />
-                                            <Switch
-                                                checked={protectedApp}
-                                                disabled={privacyAppsSaving}
-                                                onChange={event => void handlePrivacyAppChange(option.source, event.target.checked)}
-                                                inputProps={{ "aria-label": displayAppSource(option.source, t) }}
-                                            />
-                                        </ListItem>
-                                    );
-                                })}
-                            </List>
-                        ) : (
-                            <div className={classes(styles, "privacy-app-empty")}>{t("settings.privacyApps.noOptions")}</div>
-                        )}
+                        <AnimatePresence mode="wait" initial={false}>
+                            {privacyAppsLoading ? (
+                                <m.div
+                                    key="privacy-manager-loading"
+                                    className={styles["privacy-manager-loading"]}
+                                    variants={fadeMotion}
+                                    initial="initial"
+                                    animate="animate"
+                                    exit="exit"
+                                    data-motion-preset="fade"
+                                >
+                                    <CircularProgress size={24} aria-label={t("settings.privacyApps.loading")} />
+                                </m.div>
+                            ) : managedPrivacyApps.length > 0 ? (
+                                <m.div
+                                    key="privacy-manager-list"
+                                    variants={fadeMotion}
+                                    initial="initial"
+                                    animate="animate"
+                                    exit="exit"
+                                    data-motion-preset="fade"
+                                >
+                                    <List dense disablePadding className={styles["privacy-manager-list"]}>
+                                        {managedPrivacyApps.map(option => {
+                                            const protectedApp = ignoredAppSources.includes(option.source);
+                                            return (
+                                                <ListItem key={option.source} className={styles["privacy-manager-item"]}>
+                                                    {renderPrivacyAppIcon(option.source, option.icon_path)}
+                                                    <ListItemText className={styles["privacy-manager-copy"]} primary={displayAppSource(option.source, t)} />
+                                                    <Switch
+                                                        checked={protectedApp}
+                                                        disabled={privacyAppsSaving}
+                                                        onChange={event => void handlePrivacyAppChange(option.source, event.target.checked)}
+                                                        inputProps={{ "aria-label": displayAppSource(option.source, t) }}
+                                                    />
+                                                </ListItem>
+                                            );
+                                        })}
+                                    </List>
+                                </m.div>
+                            ) : (
+                                <m.div
+                                    key="privacy-manager-empty"
+                                    className={styles["privacy-app-empty"]}
+                                    variants={fadeMotion}
+                                    initial="initial"
+                                    animate="animate"
+                                    exit="exit"
+                                    data-motion-preset="fade"
+                                >
+                                    {t("settings.privacyApps.noOptions")}
+                                </m.div>
+                            )}
+                        </AnimatePresence>
                         <Typography variant="body2" color="text.secondary">
                             {t("settings.privacyApps.help")}
                         </Typography>
@@ -532,6 +596,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                 description={t("settings.legacyHistory.confirm")}
                 cancelLabel={t("common.cancel")}
                 confirmLabel={t("settings.legacyHistory.clear")}
+                backdropClassName={dialogBackdropClassName}
                 onCancel={() => setLegacyCleanupConfirmOpen(false)}
                 onConfirm={() => void handleClearLegacyHistory()}
             />
@@ -541,6 +606,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                 description={t("settings.cleanup.confirm", { range: cleanupRangeLabel })}
                 cancelLabel={t("common.cancel")}
                 confirmLabel={t("common.cleanup")}
+                backdropClassName={dialogBackdropClassName}
                 confirmDisabled={cleanupWorking}
                 onCancel={() => setCleanupConfirmOpen(false)}
                 onConfirm={() => void handleCleanupStorage()}

@@ -24,7 +24,7 @@ body {
     width: 100%;
     height: auto;
     border-radius: var(--ui-radius-window);
-    background: rgba(250, 250, 249, 1);
+    background: var(--ui-window-surface);
     border: 0;
     box-shadow: var(--ui-window-shadow);
 }
@@ -45,31 +45,31 @@ body {
     width: 100%;
     height: 36px;
     border: 0;
-    border-radius: 8px;
+    border-radius: var(--ui-radius-control);
     padding: 0 8px;
     display: grid;
     grid-template-columns: 7px minmax(0, 1fr) auto;
     align-items: center;
     gap: 6px;
-    color: #22272e;
-    background: rgba(30, 146, 238, 0.08);
-    box-shadow: inset 0 0 0 1px rgba(30, 146, 238, 0.12);
+    color: var(--ui-text);
+    background: var(--ui-accent-soft);
+    box-shadow: var(--ui-shadow-inset-accent);
     font: inherit;
     text-align: left;
     cursor: pointer;
 }
 
 .tray-status-card.paused {
-    background: rgba(229, 57, 53, 0.09);
-    box-shadow: inset 0 0 0 1px rgba(229, 57, 53, 0.16);
+    background: var(--ui-danger-soft);
+    box-shadow: var(--ui-shadow-inset-danger);
 }
 
 .tray-status-card:hover {
-    background: rgba(30, 146, 238, 0.12);
+    background: var(--ui-accent-hover-soft);
 }
 
 .tray-status-card.paused:hover {
-    background: rgba(229, 57, 53, 0.13);
+    background: var(--ui-danger-hover-soft);
 }
 
 .tray-status-card:disabled {
@@ -80,14 +80,14 @@ body {
 .tray-status-indicator {
     width: 7px;
     height: 7px;
-    border-radius: 999px;
-    background: #18a058;
-    box-shadow: 0 0 0 3px rgba(24, 160, 88, 0.12);
+    border-radius: var(--ui-radius-pill);
+    background: var(--ui-success);
+    box-shadow: var(--ui-shadow-success-halo);
 }
 
 .tray-status-card.paused .tray-status-indicator {
-    background: #e53935;
-    box-shadow: 0 0 0 3px rgba(229, 57, 53, 0.13);
+    background: var(--ui-danger);
+    box-shadow: var(--ui-shadow-danger-halo);
 }
 
 .tray-status-copy {
@@ -102,26 +102,26 @@ body {
 
 .tray-status-state {
     padding: 1px 5px;
-    border-radius: 999px;
-    color: #0b73d7;
-    background: rgba(255, 255, 255, 0.62);
+    border-radius: var(--ui-radius-pill);
+    color: var(--ui-accent-strong);
+    background: var(--ui-surface-raised);
     font-size: 10px;
     font-weight: 650;
     line-height: 15px;
 }
 
 .tray-status-card.paused .tray-status-state {
-    color: #b3261e;
+    color: var(--ui-danger);
 }
 
 .tray-menu-item.tray-menu-item {
     width: 100%;
     height: 34px;
     border: 0;
-    border-radius: 8px;
+    border-radius: var(--ui-radius-control);
     padding: 0 10px;
     background: transparent;
-    color: #24272b;
+    color: var(--ui-text);
     font: inherit;
     font-size: 13px;
     font-weight: 540;
@@ -131,11 +131,11 @@ body {
 }
 
 .tray-menu-item:hover {
-    background: rgba(0, 0, 0, 0.07);
+    background: var(--ui-surface-hover);
 }
 
 .tray-menu-item:active {
-    background: rgba(0, 0, 0, 0.11);
+    background: var(--ui-surface-pressed);
 }
 
 .tray-menu-item.update-ready {
@@ -143,8 +143,8 @@ body {
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    color: #17683e;
-    background: rgba(24, 160, 88, 0.08);
+    color: var(--ui-success);
+    background: var(--ui-success-soft);
 }
 
 .tray-menu-item.update-ready strong {
@@ -153,58 +153,5 @@ body {
 }
 
 .tray-menu-item.update-ready:hover {
-    background: rgba(24, 160, 88, 0.14);
-}
-
-:root[data-theme="dark"] .tray-menu-shell {
-    background: rgba(31, 35, 42, 0.96);
-}
-
-:root[data-theme="dark"] .tray-status-card {
-    color: var(--theme-text);
-    background: rgba(138, 180, 255, 0.12);
-    box-shadow: inset 0 0 0 1px rgba(138, 180, 255, 0.12);
-}
-
-:root[data-theme="dark"] .tray-status-card.paused {
-    background: rgba(229, 57, 53, 0.16);
-    box-shadow: inset 0 0 0 1px rgba(229, 57, 53, 0.18);
-}
-
-:root[data-theme="dark"] .tray-status-card:hover {
-    background: rgba(138, 180, 255, 0.16);
-}
-
-:root[data-theme="dark"] .tray-status-card.paused:hover {
-    background: rgba(229, 57, 53, 0.20);
-}
-
-:root[data-theme="dark"] .tray-status-state {
-    color: #8ab4ff;
-    background: rgba(255, 255, 255, 0.08);
-}
-
-:root[data-theme="dark"] .tray-status-card.paused .tray-status-state {
-    color: #ffb4b4;
-}
-
-:root[data-theme="dark"] .tray-menu-item {
-    color: var(--theme-text);
-}
-
-:root[data-theme="dark"] .tray-menu-item:hover {
-    background: rgba(255, 255, 255, 0.08);
-}
-
-:root[data-theme="dark"] .tray-menu-item:active {
-    background: rgba(255, 255, 255, 0.12);
-}
-
-:root[data-theme="dark"] .tray-menu-item.update-ready {
-    color: #9ee0b8;
-    background: rgba(58, 156, 98, 0.16);
-}
-
-:root[data-theme="dark"] .tray-menu-item.update-ready:hover {
-    background: rgba(58, 156, 98, 0.24);
+    background: var(--ui-success-hover-soft);
 }

@@ -19,6 +19,7 @@ import { setThemePreview, type ResolvedTheme } from "../theme";
 import ActionCard from "./ActionCard";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { InlineMenuItem, InlineMenuSurface } from "./InlineMenu";
+import { OperationStatus } from "./OperationStatus";
 import StatusBadge from "./StatusBadge";
 import { StatusToast } from "./StatusToast";
 import Surface from "./Surface";
@@ -130,6 +131,8 @@ const copy = {
         progress: "进度反馈",
         determinate: "确定进度",
         indeterminate: "未知进度",
+        operationWorking: "正在同步历史数据",
+        operationSuccess: "历史数据同步完成",
         languageDesc: "更改 vPaste 内置界面的显示语言",
         importTitle: "导入历史记录",
         importDescription: "从 vPaste 归档恢复历史记录",
@@ -194,6 +197,8 @@ const copy = {
         progress: "Progress feedback",
         determinate: "Known progress",
         indeterminate: "Unknown progress",
+        operationWorking: "Syncing history data",
+        operationSuccess: "History data synced",
         languageDesc: "Choose the language used by the built-in vPaste interface",
         importTitle: "Import history",
         importDescription: "Restore history from a vPaste archive",
@@ -451,6 +456,14 @@ export default function UiLab() {
                                         variant="indeterminate"
                                     />
                                 </div>
+                                <OperationStatus
+                                    variant="block"
+                                    busy
+                                    message={text.operationWorking}
+                                    progress={58}
+                                    progressLabel={text.operationWorking}
+                                />
+                                <OperationStatus tone="success" message={text.operationSuccess} />
                             </div>
                         </div>
                     </div>

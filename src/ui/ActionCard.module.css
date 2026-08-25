@@ -2,9 +2,9 @@
     width: 100%;
     min-width: 0;
     box-sizing: border-box;
-    border: 1px solid rgba(35, 43, 54, 0.09);
-    background: rgba(255, 255, 255, 0.72);
-    color: #1f242b;
+    border: 1px solid var(--ui-border);
+    background: var(--ui-surface);
+    color: var(--ui-text);
     font: inherit;
     cursor: pointer;
     transition:
@@ -15,9 +15,9 @@
 }
 
 .root:hover {
-    border-color: rgba(30, 146, 238, 0.24);
-    background: rgba(255, 255, 255, 0.92);
-    box-shadow: 0 8px 22px rgba(35, 43, 54, 0.075);
+    border-color: var(--ui-border-accent);
+    background: var(--ui-surface-raised);
+    box-shadow: var(--ui-shadow-hover);
     transform: translateY(-1px);
 }
 
@@ -35,8 +35,8 @@
     align-items: center;
     gap: 12px;
     padding: 13px 14px;
-    border-radius: 12px;
-    box-shadow: 0 8px 24px rgba(35, 43, 54, 0.045), 0 1px 2px rgba(35, 43, 54, 0.035);
+    border-radius: var(--ui-radius-surface);
+    box-shadow: var(--ui-shadow-card);
     text-align: left;
 }
 
@@ -48,14 +48,14 @@
     justify-content: center;
     gap: 8px;
     padding: 18px;
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.56);
+    border-radius: var(--ui-radius-surface);
+    background: var(--ui-surface-muted);
     text-align: center;
 }
 
 .vertical:hover {
-    background: rgba(255, 255, 255, 0.88);
-    box-shadow: 0 6px 18px rgba(35, 43, 54, 0.065);
+    background: var(--ui-surface-raised);
+    box-shadow: var(--ui-shadow-hover);
 }
 
 .icon {
@@ -67,13 +67,13 @@
 .horizontal .icon {
     width: 34px;
     height: 34px;
-    border-radius: 10px;
-    color: #0b73d7;
-    background: rgba(30, 146, 238, 0.10);
+    border-radius: var(--ui-radius-control);
+    color: var(--ui-accent-strong);
+    background: var(--ui-accent-soft);
 }
 
 .vertical .icon {
-    color: #1f242b;
+    color: var(--ui-text);
 }
 
 .body {
@@ -94,7 +94,7 @@
 
 .description {
     overflow: hidden;
-    color: #7f7f7f;
+    color: var(--ui-text-muted);
     font-size: 12px;
     line-height: 1.35;
     text-overflow: ellipsis;
@@ -113,35 +113,5 @@
 .endAdornment {
     display: grid;
     place-items: center;
-    color: #7f8791;
-}
-
-:root[data-theme="dark"] .root {
-    color: var(--settings-text);
-    border-color: rgba(255, 255, 255, 0.10);
-    background: var(--settings-card-bg);
-}
-
-:root[data-theme="dark"] .root:hover {
-    border-color: rgba(138, 180, 255, 0.26);
-    background: rgba(255, 255, 255, 0.08);
-}
-
-:root[data-theme="dark"] .horizontal {
-    box-shadow: var(--settings-card-shadow);
-}
-
-:root[data-theme="dark"] .horizontal .icon {
-    color: #8ab4ff;
-    background: rgba(138, 180, 255, 0.14);
-}
-
-:root[data-theme="dark"] .vertical .icon,
-:root[data-theme="dark"] .vertical .title {
-    color: var(--settings-text);
-}
-
-:root[data-theme="dark"] .description,
-:root[data-theme="dark"] .endAdornment {
-    color: var(--settings-muted);
+    color: var(--ui-text-subtle);
 }

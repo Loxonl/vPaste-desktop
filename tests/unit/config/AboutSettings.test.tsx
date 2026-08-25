@@ -5,6 +5,7 @@ import AboutSettings from "../../../src/config/sections/AboutSettings";
 import type { SettingsBridge } from "../../../src/config/SettingsBridge";
 import { DEFAULT_CONFIG } from "../../../src/config/settingsTypes";
 import type { UpdateState } from "../../../src/update";
+import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
 
 afterEach(cleanup);
 
@@ -34,13 +35,15 @@ function createBridge(invoke: SettingsBridge["invoke"]): SettingsBridge {
 
 function renderAbout(bridge: SettingsBridge) {
     render(
-        <AboutSettings
-            bridge={bridge}
-            config={DEFAULT_CONFIG}
-            dir="ltr"
-            onSave={vi.fn()}
-            t={(key: string) => key}
-        />,
+        <MotionTestProvider>
+            <AboutSettings
+                bridge={bridge}
+                config={DEFAULT_CONFIG}
+                dir="ltr"
+                onSave={vi.fn()}
+                t={(key: string) => key}
+            />
+        </MotionTestProvider>,
     );
 }
 

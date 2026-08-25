@@ -9,6 +9,10 @@ const clipboardStyles = readFileSync(
     join(process.cwd(), "src", "clipboard", "Clipboard.module.css"),
     "utf8",
 );
+const uiTokens = readFileSync(
+    join(process.cwd(), "src", "ui", "tokens.css"),
+    "utf8",
+);
 const filePresentationStyles = readFileSync(
     join(process.cwd(), "src", "clipboard", "FileTypePresentation.module.css"),
     "utf8",
@@ -273,8 +277,10 @@ describe("ImagePreview", () => {
         expect(metadataRule).toContain("border-radius: var(--ui-radius-control)");
         expect(metadataRule).toContain("font-size: 11px");
         expect(metadataRule).toContain("font-weight: 500");
-        expect(metadataRule).toContain("color: rgba(30, 34, 40, 0.88)");
-        expect(metadataRule).toContain("background: rgba(248, 250, 252, 0.68)");
+        expect(metadataRule).toContain("color: var(--ui-clipboard-metadata-text)");
+        expect(metadataRule).toContain("background: var(--ui-clipboard-metadata-surface)");
+        expect(uiTokens).toContain("--ui-clipboard-metadata-text: rgba(30, 34, 40, 0.88)");
+        expect(uiTokens).toContain("--ui-clipboard-metadata-surface: rgba(248, 250, 252, 0.68)");
         expect(metadataRule).not.toContain("0 8px 22px");
         expect(colorRule).not.toContain("font-weight:");
     });
@@ -310,7 +316,8 @@ describe("ImagePreview", () => {
         expect(stage?.className).toContain("image-file-stage");
 
         const imageFileStageRule = clipboardStyles.match(/\.file-preview-stage:not\(\.image-file-stage\)\s*\{([^}]*)\}/)?.[1];
-        expect(imageFileStageRule).toContain("background: #fff");
+        expect(imageFileStageRule).toContain("background: var(--ui-clipboard-file-stage-surface)");
+        expect(uiTokens).toContain("--ui-clipboard-file-stage-surface: #ffffff");
     });
 
     it("renders the mapped icon with a close extension label for known files", async () => {

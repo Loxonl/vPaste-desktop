@@ -11,12 +11,13 @@ import ActionCard from "../../ui/ActionCard";
 import { classes } from "../../ui/classNames";
 import { ConfirmDialog } from "../../ui/ConfirmDialog";
 import StatusBadge from "../../ui/StatusBadge";
+import { AnimatePresence, m, useMotionPreset } from "../../ui/motion";
 import styles from "../Config.module.css";
 
 const APP_REPOSITORY_URL = "https://github.com/Loxonl/vPaste-desktop";
 const APP_CHANGELOG_URL = `${APP_REPOSITORY_URL}/releases`;
 
-export default function AboutSettings({ bridge, t }: SettingsSectionProps & { dir: string }) {
+export default function AboutSettings({ bridge, t, dialogBackdropClassName }: SettingsSectionProps & { dir: string, dialogBackdropClassName?: string }) {
     const { state: updateState, check, prepare, restartToUpdate } = useAppUpdateState(bridge);
     const [checkedManually, setCheckedManually] = React.useState(false);
     const [manualReleaseUrl, setManualReleaseUrl] = React.useState<string | null>(null);
@@ -70,6 +71,7 @@ export default function AboutSettings({ bridge, t }: SettingsSectionProps & { di
 
     const displayVersion = updateState.currentVersion || t("settings.versionUnknown");
     const statusText = updateStatusText(updateState, checkedManually, t);
+    const statusMotion = useMotionPreset("fade");
 
     return (
         <Stack spacing={6}>
@@ -98,16 +100,27 @@ export default function AboutSettings({ bridge, t }: SettingsSectionProps & { di
                             {primaryActionText}
                         </Button>
                     </div>
-                    {statusText && (
-                        <StatusBadge
-                            tone={updateState.status === 'failed' ? 'danger' : updateState.status === 'available' || updateState.status === 'manualDownload' || updateState.status === 'ready' ? 'success' : 'neutral'}
-                            role={updateState.status === 'failed' ? 'alert' : 'status'}
-                            aria-live={updateState.status === 'failed' ? 'assertive' : 'polite'}
-                            className={classes(styles, "about-update-status")}
-                        >
-                            {statusText}
-                        </StatusBadge>
-                    )}
+                    <AnimatePresence mode="wait" initial={false}>
+                        {statusText && (
+                            <m.div
+                                key={updateState.status}
+                                className={styles["about-update-status"]}
+                                variants={statusMotion}
+                                initial="initial"
+                                animate="animate"
+                                exit="exit"
+                                data-motion-preset="fade"
+                            >
+                                <StatusBadge
+                                    tone={updateState.status === 'failed' ? 'danger' : updateState.status === 'available' || updateState.status === 'manualDownload' || updateState.status === 'ready' ? 'success' : 'neutral'}
+                                    role={updateState.status === 'failed' ? 'alert' : 'status'}
+                                    aria-live={updateState.status === 'failed' ? 'assertive' : 'polite'}
+                                >
+                                    {statusText}
+                                </StatusBadge>
+                            </m.div>
+                        )}
+                    </AnimatePresence>
                 </div>
             </Box>
             <Box>
@@ -139,6 +152,7 @@ export default function AboutSettings({ bridge, t }: SettingsSectionProps & { di
                 })}
                 cancelLabel={t("common.cancel")}
                 confirmLabel={t("settings.updateOpenRelease")}
+                backdropClassName={dialogBackdropClassName}
                 destructive={false}
                 onCancel={() => setManualReleaseUrl(null)}
                 onConfirm={() => {

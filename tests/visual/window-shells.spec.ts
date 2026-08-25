@@ -28,6 +28,7 @@ const darkAuxiliaryWindows = windows.filter(window => (
     || window.name === "preview"
     || window.name === "tab-editor"
     || window.name === "permission"
+    || window.name === "clipboard"
 ));
 
 test.describe("window shells", () => {
@@ -70,12 +71,16 @@ test.describe("window shells", () => {
             { path: "/paste-fallback-notice", width: 560, height: 76, surface: "[role='status']" },
         ];
 
+        let sharedSurfaceColor = "";
         for (const popup of cases) {
             await page.setViewportSize({ width: popup.width, height: popup.height });
             await page.goto(popup.path);
             const surface = page.locator(popup.surface).first();
             await expect(surface).toHaveCSS("border-radius", "12px");
             await expect(surface).not.toHaveCSS("box-shadow", "none");
+            const surfaceColor = await surface.evaluate(element => getComputedStyle(element).backgroundColor);
+            if (!sharedSurfaceColor) sharedSurfaceColor = surfaceColor;
+            expect(surfaceColor).toBe(sharedSurfaceColor);
             await expect.poll(async () => (await surface.boundingBox())?.x ?? -1).toBeGreaterThanOrEqual(8);
             await expect.poll(async () => (await surface.boundingBox())?.y ?? -1).toBeGreaterThanOrEqual(8);
             const box = await surface.boundingBox();
@@ -83,6 +88,7 @@ test.describe("window shells", () => {
             expect(box!.x).toBeGreaterThanOrEqual(8);
             expect(box!.y).toBeGreaterThanOrEqual(8);
         }
+        await expect(page.getByRole("button").first()).toHaveCSS("border-radius", "8px");
     });
 
     test("tab editor uses the shared MUI select menu", async ({ page }) => {
@@ -208,9 +214,91 @@ test.describe("window shells", () => {
 
         await page.getByRole("button", { name: /添加标签|Add Tab/ }).click();
         const tagMenu = page.getByRole("menu");
-        await expect(tagMenu).toHaveCSS("border-radius", "10px");
+        const popoverRadius = await page.evaluate(() => (
+            getComputedStyle(document.documentElement).getPropertyValue("--ui-radius-popover").trim()
+        ));
+        await expect(tagMenu).toHaveCSS("border-radius", popoverRadius);
         await expect(tagMenu.getByRole("menuitem")).toHaveCount(2);
         await expect(page).toHaveScreenshot("clipboard-tag-create-menu.png");
+    });
+
+    test("clipboard distinguishes empty history from an empty search", async ({ page }) => {
+        await page.addInitScript(() => {
+            let callbackId = 0;
+            let listenerId = 0;
+            const searchCalls: Array<{ keywords?: string }> = [];
+            Object.assign(window, {
+                __clipboardSearchCalls: searchCalls,
+                __TAURI_INTERNALS__: {
+                    invoke: async (cmd: string, args: { keywords?: string } = {}) => {
+                        if (cmd === "search") {
+                            searchCalls.push(args);
+                            return JSON.stringify({
+                                list: [],
+                                consumed: 0,
+                                hasMore: false,
+                                nextId: 0,
+                                nextTime: 0,
+                            });
+                        }
+                        if (cmd === "get_config") {
+                            return JSON.stringify({
+                                multilingual: "Chinese",
+                                onboarding_completed: true,
+                            });
+                        }
+                        if (cmd === "list_item_tags") return [];
+                        if (cmd === "get_custom_tabs") return [];
+                        if (cmd === "get_developer_mode") return false;
+                        if (cmd === "get_paste_queue_state") {
+                            return { active: false, revision: 0 };
+                        }
+                        if (cmd === "get_update_state") {
+                            return {
+                                status: "disabled",
+                                currentVersion: "",
+                                downloadedBytes: 0,
+                                portable: false,
+                                feedEnabled: false,
+                                releaseUrl: "",
+                            };
+                        }
+                        if (cmd === "plugin:event|listen") return ++listenerId;
+                        return null;
+                    },
+                    transformCallback: () => ++callbackId,
+                    unregisterCallback: () => undefined,
+                    convertFileSrc: (value: string) => value,
+                    metadata: {
+                        currentWindow: { label: "clipboard" },
+                        currentWebview: { label: "clipboard" },
+                    },
+                },
+            });
+        });
+        await page.setViewportSize({ width: 960, height: 600 });
+        await page.goto("/clipboard");
+
+        await expect(page.getByText("剪贴板里还没有内容")).toBeVisible();
+        const searchLayout = page.getByTestId("clipboard-search-layout");
+        await expect(searchLayout).toHaveCSS("transform", "none");
+        await expect(searchLayout).toHaveCSS("transition-property", "width");
+        await expect(searchLayout).toHaveCSS("transition-duration", "0.18s");
+        await page.getByRole("button", { name: "搜索" }).click();
+        const searchInput = page.getByRole("textbox", { name: "搜索" });
+        await expect(searchInput).toBeVisible();
+        expect(await searchInput.evaluate(element => element.getBoundingClientRect().width)).toBe(276);
+        await expect(searchLayout).toHaveCSS("transform", "none");
+        await searchInput.fill("missing");
+        await expect.poll(() => page.evaluate(() => (
+            window as typeof window & { __clipboardSearchCalls?: Array<{ keywords?: string }> }
+        ).__clipboardSearchCalls?.some(call => call.keywords === "missing"))).toBe(true);
+        await expect(page.getByText("没有找到匹配内容")).toBeVisible();
+        await expect(page).toHaveScreenshot("clipboard-empty-search.png");
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await expect.poll(() => searchLayout.evaluate(element => (
+            Number.parseFloat(getComputedStyle(element).transitionDuration)
+        ))).toBeLessThan(0.001);
     });
 
     test("test room shows grouped cases and persistent sample tabs", async ({ page }) => {
@@ -455,6 +543,12 @@ test.describe("paste queue states", () => {
         await clearMenuItem.click();
         const dialog = page.getByRole("alertdialog", { name: /清空队列|Clear queue/ });
         await expect(dialog).toBeVisible();
+        const backdrop = page.locator(".MuiBackdrop-root");
+        await expect(backdrop).toHaveCSS("top", "10px");
+        await expect(backdrop).toHaveCSS("right", "10px");
+        await expect(backdrop).toHaveCSS("bottom", "10px");
+        await expect(backdrop).toHaveCSS("left", "10px");
+        await expect(backdrop).toHaveCSS("border-radius", "14px");
         await expect(page).toHaveScreenshot("paste-queue-clear-dialog.png");
         await page.keyboard.press("Escape");
         await expect(dialog).toBeHidden();

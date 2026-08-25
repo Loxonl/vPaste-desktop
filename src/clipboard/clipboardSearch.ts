@@ -12,3 +12,28 @@ export function shouldMaskSearchResults(
 ): boolean {
     return isSearching && Boolean(keywords.trim());
 }
+
+export type ClipboardEmptyState = "history" | "filtered" | null;
+export type LoadedClipboardRequest = {
+    keywords: string;
+    activeTab: string;
+};
+
+export function resolveClipboardEmptyState({
+    loadedRequest,
+    resultCount,
+    keywords,
+    activeTab,
+    isSearching,
+}: {
+    loadedRequest: LoadedClipboardRequest | null;
+    resultCount: number;
+    keywords: string;
+    activeTab: string;
+    isSearching: boolean;
+}): ClipboardEmptyState {
+    const currentRequestLoaded = loadedRequest?.keywords === keywords
+        && loadedRequest.activeTab === activeTab;
+    if (!currentRequestLoaded || isSearching || resultCount > 0) return null;
+    return keywords.trim() || activeTab !== "all" ? "filtered" : "history";
+}

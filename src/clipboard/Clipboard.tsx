@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Button from "@mui/material/Button";
+import InputBase from "@mui/material/InputBase";
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
 import { StatusToast, type StatusToastKind } from "../ui/StatusToast";
 import { ToolbarIconButton } from "../ui/ToolbarIconButton";
-import { AnimatePresence, m, motionSprings, useMotionPreset } from "../ui/motion";
+import { AnimatePresence, m, useMotionPreset } from "../ui/motion";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
@@ -12,6 +13,7 @@ import { Item, ItemTag, ItemType } from "./Item.ts";
 import { useLanguage } from "../lang";
 import { formatShortcutLabel, isMacPlatform } from "../shortcutDisplay";
 import SearchIcon from "@mui/icons-material/Search";
+import ContentPasteSearchOutlinedIcon from "@mui/icons-material/ContentPasteSearchOutlined";
 import TutorialOverlay from "./TutorialOverlay.tsx";
 import appIcon from "../../src-tauri/icons/source/vpaste-app-icon-1024.png";
 import { getResolvedTheme, setThemePreview, type ResolvedTheme } from "../theme";
@@ -33,8 +35,10 @@ import {
 } from "./customTabs";
 import { fetchSearchPage } from "./searchPagination";
 import {
+    resolveClipboardEmptyState,
     searchDebounceDelay,
     shouldMaskSearchResults,
+    type LoadedClipboardRequest,
 } from "./clipboardSearch";
 import ClipboardCard from "./ClipboardCard";
 import {
@@ -162,6 +166,7 @@ export default function Clipboard() {
     const [searchOpen, setSearchOpen] = useState<boolean>(false);
     const [isSearchComposing, setIsSearchComposing] = useState(false);
     const [isSearching, setIsSearching] = useState(false);
+    const [loadedHistoryRequest, setLoadedHistoryRequest] = useState<LoadedClipboardRequest | null>(null);
     const [activeTab, setActiveTab] = useState<string>("all");
     const [customTabs, setCustomTabs] = useState<CustomTab[]>(loadCustomTabs);
     const [tabOrder, setTabOrder] = useState<string[]>(loadTabOrder);
@@ -861,6 +866,7 @@ export default function Clipboard() {
             pageListRef.current = items;
             lastHistoryFetchRef.current = { keywords, tab };
             setPage(new ClipboardPage(items, page.consumed));
+            setLoadedHistoryRequest({ keywords, activeTab: tab });
             setHasMoreHistory(page.hasMore);
             const selectedIndex = items.findIndex((item: Item) => item.getHash() === selectedRef.current);
             if (options.selectFirst || selectedIndex === -1) {
@@ -1602,6 +1608,13 @@ export default function Clipboard() {
         : [];
     const selectedContextOption = contextMenuOptions[Math.max(0, Math.min(contextMenuIndex, contextMenuOptions.length - 1))];
     const selectedSubmenuOptions = selectedContextOption?.children || [];
+    const emptyState = resolveClipboardEmptyState({
+        loadedRequest: loadedHistoryRequest,
+        resultCount: clipboardPage.list.length,
+        keywords: searchWord as string,
+        activeTab,
+        isSearching,
+    });
     const submenuHeight = contextMenuHeight(selectedSubmenuOptions.length);
     const submenuTop = contextMenu
         ? clampToViewport(
@@ -1647,10 +1660,9 @@ export default function Clipboard() {
                 {tutorialActive ? (
                     <div className={classes(styles, "tutorial-header-spacer")} />
                 ) : (
-                    <m.div
+                    <div
                         className={classes(styles, `search-box ${searchOpen || searchWord ? 'open' : ''}`)}
-                        layout="size"
-                        transition={{ layout: motionSprings.layout }}
+                        data-testid="clipboard-search-layout"
                     >
                         <ToolbarIconButton
                             className={classes(styles, "search-button")}
@@ -1669,16 +1681,19 @@ export default function Clipboard() {
                                     animate="animate"
                                     exit="exit"
                                 >
-                                    <input
-                                        ref={searchInputRef}
-                                        type="text"
+                                    <InputBase
+                                        inputRef={searchInputRef}
                                         className={classes(styles, "search-input")}
+                                        inputProps={{
+                                            "aria-label": t("common.search"),
+                                            className: classes(styles, "search-input-field"),
+                                        }}
                                         placeholder={t("common.search")}
                                         value={searchWord as string}
                                         onChange={handleSearchChange}
                                         onCompositionStart={() => setIsSearchComposing(true)}
                                         onCompositionEnd={(event) => {
-                                            setSearchWord(event.currentTarget.value);
+                                            setSearchWord((event.target as HTMLInputElement).value);
                                             setIsSearchComposing(false);
                                         }}
                                         onBlur={() => {
@@ -1690,7 +1705,7 @@ export default function Clipboard() {
                                 </m.div>
                             )}
                         </AnimatePresence>
-                    </m.div>
+                    </div>
                 )}
                 <ClipboardTabBar
                     activeTab={activeTab}
@@ -1835,6 +1850,28 @@ export default function Clipboard() {
                             >
                                 <div className={classes(styles, "history-loading-card")}>{t("common.loading")}</div>
                             </m.div>
+                        ) : emptyState ? (
+                            <m.div
+                                key={`clipboard-empty-${emptyState}`}
+                                className={classes(styles, "cards-grid clipboard-empty-grid")}
+                                variants={fadeMotion}
+                                initial="initial"
+                                animate="animate"
+                                exit="exit"
+                            >
+                                <div
+                                    className={classes(styles, "clipboard-empty-state")}
+                                    role="status"
+                                    aria-live="polite"
+                                    aria-atomic="true"
+                                >
+                                    <span className={classes(styles, "clipboard-empty-icon")} aria-hidden="true">
+                                        <ContentPasteSearchOutlinedIcon />
+                                    </span>
+                                    <strong>{t(emptyState === "filtered" ? "clipboard.noResults" : "clipboard.emptyHistory")}</strong>
+                                    <span>{t(emptyState === "filtered" ? "clipboard.noResults.desc" : "clipboard.emptyHistory.desc")}</span>
+                                </div>
+                            </m.div>
                         ) : (
                             <m.div
                                 key="clipboard-results"
@@ -1867,6 +1904,8 @@ export default function Clipboard() {
                                         <m.div
                                             key="history-loading-more"
                                             className={classes(styles, "history-loading-card")}
+                                            role="status"
+                                            aria-live="polite"
                                             variants={listItemMotion}
                                             initial="initial"
                                             animate="animate"

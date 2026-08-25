@@ -10,6 +10,10 @@ const previewStyles = readFileSync(
     join(process.cwd(), "src", "clipboard", "Preview.module.css"),
     "utf8",
 );
+const uiTokens = readFileSync(
+    join(process.cwd(), "src", "ui", "tokens.css"),
+    "utf8",
+);
 
 function sourceBetween(start: string, end: string): string {
     const startIndex = mainSource.indexOf(start);
@@ -41,7 +45,8 @@ describe("preview window outer shell", () => {
         expect(creation).not.toContain("apply_windows_rounded_window_region");
         expect(showing).not.toContain("apply_windows_rounded_window_region");
         expect(preCloseWindowEvents).not.toContain('window.label() == "clipboardPreview"');
-        expect(shellRule).toContain("border-radius: 12px");
+        expect(shellRule).toContain("border-radius: var(--ui-radius-window)");
+        expect(uiTokens).toContain("--ui-radius-window: 12px");
         expect(shellRule).toContain("overflow: hidden");
     });
 });

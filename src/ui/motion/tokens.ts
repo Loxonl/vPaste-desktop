@@ -12,10 +12,14 @@ export const motionTokens = {
         standard: 10,
         emphasis: 16,
     },
+    continuous: {
+        marquee: 8,
+    },
     easing: {
         enter: [0.22, 1, 0.36, 1],
         exit: [0.4, 0, 1, 1],
         standard: [0.4, 0, 0.2, 1],
+        linear: "linear",
     },
 } as const;
 
@@ -40,7 +44,9 @@ export function syncMotionCssVariables(root: HTMLElement = document.documentElem
     root.style.setProperty("--motion-distance-subtle", `${motionTokens.distance.subtle}px`);
     root.style.setProperty("--motion-distance-standard", `${motionTokens.distance.standard}px`);
     root.style.setProperty("--motion-distance-emphasis", `${motionTokens.distance.emphasis}px`);
+    root.style.setProperty("--motion-duration-marquee", `${motionTokens.continuous.marquee}s`);
     root.style.setProperty("--motion-ease-enter", `cubic-bezier(${motionTokens.easing.enter.join(", ")})`);
     root.style.setProperty("--motion-ease-exit", `cubic-bezier(${motionTokens.easing.exit.join(", ")})`);
     root.style.setProperty("--motion-ease-standard", `cubic-bezier(${motionTokens.easing.standard.join(", ")})`);
+    root.style.setProperty("--motion-ease-linear", motionTokens.easing.linear);
 }

@@ -5,6 +5,7 @@ import DataSettings from "../../../src/config/sections/DataSettings";
 import type { SettingsBridge } from "../../../src/config/SettingsBridge";
 import { DEFAULT_CONFIG } from "../../../src/config/settingsTypes";
 import AppThemeProvider from "../../../src/ui/AppThemeProvider";
+import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
 
 afterEach(cleanup);
 
@@ -31,21 +32,23 @@ describe("Data settings actions", () => {
         const onSave = vi.fn(async () => null);
         const config = { ...DEFAULT_CONFIG, ignored_app_sources: ["Code.exe"] };
         render(
-            <AppThemeProvider>
-                <DataSettings
-                    bridge={bridge}
-                    config={config}
-                    storagePaths={null}
-                    onSave={onSave}
-                    onBlockingOperationChange={vi.fn()}
-                    t={key => key}
-                />
-            </AppThemeProvider>,
+            <MotionTestProvider>
+                <AppThemeProvider>
+                    <DataSettings
+                        bridge={bridge}
+                        config={config}
+                        storagePaths={null}
+                        onSave={onSave}
+                        onBlockingOperationChange={vi.fn()}
+                        t={key => key}
+                    />
+                </AppThemeProvider>
+            </MotionTestProvider>,
         );
         const user = userEvent.setup();
 
         await user.click(screen.getByRole("button", { name: "settings.privacyApps.manage" }));
-        await user.click(screen.getByRole("checkbox", { name: "Code" }));
+        await user.click(await screen.findByRole("checkbox", { name: "Code" }));
         expect(onSave).toHaveBeenCalledWith({ ...config, ignored_app_sources: [] });
 
         await user.click(screen.getAllByRole("button", { name: "common.close" })[0]);
@@ -65,21 +68,23 @@ describe("Data settings actions", () => {
         });
         const config = { ...DEFAULT_CONFIG, ignored_app_sources: ["Code.exe"] };
         render(
-            <AppThemeProvider>
-                <DataSettings
-                    bridge={bridge}
-                    config={config}
-                    storagePaths={null}
-                    onSave={onSave}
-                    onBlockingOperationChange={vi.fn()}
-                    t={key => key}
-                />
-            </AppThemeProvider>,
+            <MotionTestProvider>
+                <AppThemeProvider>
+                    <DataSettings
+                        bridge={bridge}
+                        config={config}
+                        storagePaths={null}
+                        onSave={onSave}
+                        onBlockingOperationChange={vi.fn()}
+                        t={key => key}
+                    />
+                </AppThemeProvider>
+            </MotionTestProvider>,
         );
         const user = userEvent.setup();
 
         await user.click(screen.getByRole("button", { name: "settings.privacyApps.manage" }));
-        const protectedAppSwitch = screen.getByRole("checkbox", { name: "Code" });
+        const protectedAppSwitch = await screen.findByRole("checkbox", { name: "Code" });
         expect(protectedAppSwitch).toBeChecked();
 
         await user.click(protectedAppSwitch);
@@ -100,16 +105,18 @@ describe("Data settings actions", () => {
         });
         const config = { ...DEFAULT_CONFIG, ignored_app_sources: ["Code.exe"] };
         const { container } = render(
-            <AppThemeProvider>
-                <DataSettings
-                    bridge={bridge}
-                    config={config}
-                    storagePaths={null}
-                    onSave={vi.fn(async () => null)}
-                    onBlockingOperationChange={vi.fn()}
-                    t={key => key}
-                />
-            </AppThemeProvider>,
+            <MotionTestProvider>
+                <AppThemeProvider>
+                    <DataSettings
+                        bridge={bridge}
+                        config={config}
+                        storagePaths={null}
+                        onSave={vi.fn(async () => null)}
+                        onBlockingOperationChange={vi.fn()}
+                        t={key => key}
+                    />
+                </AppThemeProvider>
+            </MotionTestProvider>,
         );
 
         await waitFor(() => expect(bridge.convertFileSrc).toHaveBeenCalledWith("C:\\icons\\code.png"));
@@ -130,19 +137,21 @@ describe("Data settings actions", () => {
         vi.mocked(bridge.open).mockResolvedValueOnce(null);
 
         render(
-            <AppThemeProvider>
-                <DataSettings
-                    bridge={bridge}
-                    config={DEFAULT_CONFIG}
-                    storagePaths={{
-                        app_data_dir: "C:\\Users\\demo\\AppData",
-                        history_storage_dir: "C:\\Users\\demo\\Documents\\vPaste",
-                    }}
-                    onSave={vi.fn(async () => null)}
-                    onBlockingOperationChange={vi.fn()}
-                    t={key => key}
-                />
-            </AppThemeProvider>,
+            <MotionTestProvider>
+                <AppThemeProvider>
+                    <DataSettings
+                        bridge={bridge}
+                        config={DEFAULT_CONFIG}
+                        storagePaths={{
+                            app_data_dir: "C:\\Users\\demo\\AppData",
+                            history_storage_dir: "C:\\Users\\demo\\Documents\\vPaste",
+                        }}
+                        onSave={vi.fn(async () => null)}
+                        onBlockingOperationChange={vi.fn()}
+                        t={key => key}
+                    />
+                </AppThemeProvider>
+            </MotionTestProvider>,
         );
         const user = userEvent.setup();
 
@@ -179,16 +188,18 @@ describe("Data settings actions", () => {
             return null;
         });
         render(
-            <AppThemeProvider>
-                <DataSettings
-                    bridge={bridge}
-                    config={DEFAULT_CONFIG}
-                    storagePaths={null}
-                    onSave={vi.fn(async () => null)}
-                    onBlockingOperationChange={vi.fn()}
-                    t={key => key}
-                />
-            </AppThemeProvider>,
+            <MotionTestProvider>
+                <AppThemeProvider>
+                    <DataSettings
+                        bridge={bridge}
+                        config={DEFAULT_CONFIG}
+                        storagePaths={null}
+                        onSave={vi.fn(async () => null)}
+                        onBlockingOperationChange={vi.fn()}
+                        t={key => key}
+                    />
+                </AppThemeProvider>
+            </MotionTestProvider>,
         );
 
         const user = userEvent.setup();

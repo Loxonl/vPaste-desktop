@@ -580,6 +580,7 @@ export default function PasteQueue() {
                     description={t("pasteQueue.clearConfirm")}
                     cancelLabel={t("pasteQueue.keep")}
                     confirmLabel={t("pasteQueue.clear")}
+                    backdropClassName={styles.dialogBackdrop}
                     confirmDisabled={state.busy}
                     onCancel={() => setConfirmingClear(false)}
                     onConfirm={clear}

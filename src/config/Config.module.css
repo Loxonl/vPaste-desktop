@@ -30,11 +30,11 @@ body {
     width: 148px;
     min-width: 148px;
     height: 32px;
-    border: 1px solid rgba(35, 43, 54, 0.10);
-    border-radius: 999px;
-    background: rgba(250, 251, 252, 0.86);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72), 0 1px 3px rgba(31, 42, 55, 0.055);
-    color: #202833;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-pill);
+    background: var(--ui-surface-control);
+    box-shadow: var(--ui-shadow-control);
+    color: var(--ui-text);
     font-family: inherit;
     font-size: 13px;
     font-weight: 410;
@@ -43,40 +43,40 @@ body {
 }
 
 .shortcut-recorder.empty {
-    color: #969ea8;
-    background: rgba(247, 248, 249, 0.54);
-    border-color: rgba(35, 43, 54, 0.06);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.56);
+    color: var(--ui-text-disabled);
+    background: var(--ui-surface-control-muted);
+    border-color: var(--ui-border);
+    box-shadow: var(--ui-shadow-inset);
 }
 
 .shortcut-recorder:hover {
-    border-color: rgba(47, 111, 237, 0.24);
-    background: rgba(255, 255, 255, 0.94);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 2px 6px rgba(31, 42, 55, 0.07);
+    border-color: var(--ui-border-accent);
+    background: var(--ui-surface-raised);
+    box-shadow: var(--ui-shadow-control-hover);
 }
 
 .shortcut-recorder:focus {
     outline: none;
-    border-color: rgba(30, 146, 238, 0.45);
-    box-shadow: 0 0 0 3px rgba(30, 146, 238, 0.12);
+    border-color: var(--ui-accent);
+    box-shadow: var(--ui-focus-ring);
 }
 
 .shortcut-recorder.recording {
-    color: #0b73d7;
-    background: rgba(232, 244, 255, 0.88);
+    color: var(--ui-accent-strong);
+    background: var(--ui-accent-soft);
 }
 
 .shortcut-recorder.has-error {
-    border-color: rgba(217, 48, 37, 0.72);
-    color: #9f1d14;
-    background: rgba(255, 246, 245, 0.92);
-    box-shadow: 0 0 0 3px rgba(217, 48, 37, 0.10);
+    border-color: var(--ui-border-danger);
+    color: var(--ui-danger);
+    background: var(--ui-danger-soft);
+    box-shadow: var(--ui-danger-focus-ring);
 }
 
 .shortcut-recorder.has-error:hover,
 .shortcut-recorder.has-error:focus {
-    border-color: rgba(217, 48, 37, 0.82);
-    box-shadow: 0 0 0 3px rgba(217, 48, 37, 0.14);
+    border-color: var(--ui-danger);
+    box-shadow: var(--ui-danger-focus-ring);
 }
 
 .shortcut-control {
@@ -98,40 +98,12 @@ body {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    color: #242c36;
+    color: var(--ui-text);
     font-size: 13px;
     font-weight: 410;
     line-height: 1.2;
     text-align: center;
     user-select: none;
-}
-
-.storage-migration-status {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--ui-space-2);
-    min-height: 24px;
-    width: fit-content;
-    max-width: 100%;
-    box-sizing: border-box;
-    padding: var(--ui-space-1) var(--ui-space-2);
-    border-radius: var(--ui-radius-pill);
-    font-size: 12px;
-    line-height: 16px;
-    color: var(--ui-text-muted);
-    background: var(--ui-surface-muted);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-}
-
-.storage-migration-status.success {
-    color: var(--ui-success);
-    background: var(--ui-success-soft);
-}
-
-.storage-migration-status.error {
-    color: var(--ui-danger);
-    background: var(--ui-danger-soft);
 }
 
 .privacy-app-list {
@@ -161,7 +133,7 @@ body {
     padding-block: var(--ui-space-2);
 }
 
-.privacy-app-chip + .privacy-app-chip {
+.privacy-app-motion-item + .privacy-app-motion-item {
     border-top: 1px solid var(--ui-border);
 }
 
@@ -183,8 +155,8 @@ body {
 
 .privacy-app-option-icon.placeholder {
     border-radius: var(--ui-radius-control);
-    color: #44515e;
-    background: rgba(35, 43, 54, 0.08);
+    color: var(--ui-text-subtle);
+    background: var(--ui-surface-hover);
     font-size: 12px;
     font-weight: 650;
 }
@@ -204,7 +176,7 @@ body {
 }
 
 .privacy-app-chip__text strong {
-    color: #1f242b;
+    color: var(--ui-text);
     font-size: 13px;
     font-weight: 560;
 }
@@ -294,7 +266,7 @@ body {
 
 .privacy-app-empty {
     padding: 4px 0;
-    color: #8a929b;
+    color: var(--ui-text-muted);
     font-size: 12px;
     line-height: 1.5;
 }
@@ -304,43 +276,6 @@ body {
     align-items: center;
     flex: 0 0 auto;
     gap: var(--ui-space-2);
-}
-
-.history-transfer-progress {
-    display: grid;
-    gap: var(--ui-space-2);
-    max-width: 100%;
-    padding: var(--ui-space-2) var(--ui-space-3);
-    border-radius: var(--ui-radius-control);
-    font-size: 12px;
-    line-height: 16px;
-    color: var(--ui-text-muted);
-    background: var(--ui-surface-muted);
-    box-sizing: border-box;
-}
-
-.history-transfer-progress.success {
-    color: var(--ui-success);
-    background: var(--ui-success-soft);
-}
-
-.history-transfer-progress.error {
-    color: var(--ui-danger);
-    background: var(--ui-danger-soft);
-}
-
-.history-transfer-progress__line {
-    display: flex;
-    align-items: center;
-    gap: var(--ui-space-2);
-    min-width: 0;
-}
-
-.history-transfer-progress__line span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
 }
 
 .about-hero {
@@ -386,8 +321,8 @@ body {
     min-height: 26px;
     padding: var(--ui-space-1) var(--ui-space-3);
     border-radius: var(--ui-radius-pill);
-    background: rgba(30, 146, 238, 0.11);
-    color: #0b73d7;
+    background: var(--ui-accent-soft);
+    color: var(--ui-accent-strong);
     font-size: 12px;
     font-weight: 620;
     line-height: 1.2;
@@ -401,50 +336,6 @@ body {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
-}
-
-:root[data-theme="dark"] .shortcut-recorder {
-    color: #e4e8ef;
-    border-color: rgba(255, 255, 255, 0.12);
-    background: rgba(10, 10, 10, 0.52);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 1px 3px rgba(0, 0, 0, 0.18);
-}
-
-:root[data-theme="dark"] .shortcut-recorder.empty {
-    color: rgba(228, 232, 239, 0.48);
-    background: rgba(10, 10, 10, 0.34);
-}
-
-:root[data-theme="dark"] .shortcut-recorder:hover {
-    border-color: rgba(138, 180, 255, 0.28);
-    background: rgba(255, 255, 255, 0.08);
-}
-
-:root[data-theme="dark"] .shortcut-recorder.recording {
-    color: #8ab4ff;
-    background: rgba(47, 111, 237, 0.16);
-}
-
-:root[data-theme="dark"] .shortcut-recorder.has-error {
-    color: #ffb4ab;
-    border-color: rgba(255, 138, 128, 0.74);
-    background: rgba(91, 29, 25, 0.46);
-    box-shadow: 0 0 0 3px rgba(255, 138, 128, 0.12);
-}
-
-:root[data-theme="dark"] .shortcut-recorder.has-error:hover,
-:root[data-theme="dark"] .shortcut-recorder.has-error:focus {
-    border-color: rgba(255, 171, 145, 0.86);
-    box-shadow: 0 0 0 3px rgba(255, 138, 128, 0.16);
-}
-
-:root[data-theme="dark"] .shortcut-static {
-    color: rgba(228, 232, 239, 0.82);
-}
-
-:root[data-theme="dark"] .privacy-app-option-icon.placeholder {
-    color: rgba(228, 232, 239, 0.86);
-    background: rgba(255, 255, 255, 0.10);
 }
 
 :root[data-theme="dark"] .privacy-app-chip__text strong {
@@ -474,11 +365,6 @@ body {
     }
 }
 
-:root[data-theme="dark"] .about-version-pill {
-    color: #8ab4ff;
-    background: rgba(138, 180, 255, 0.14);
-}
-
 /* Custom Scrollbar */
 ::-webkit-scrollbar {
     width: 8px;
@@ -489,14 +375,14 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-    background: rgba(150, 158, 168, 0.25);
-    border-radius: 999px;
+    background: var(--ui-border-strong);
+    border-radius: var(--ui-radius-pill);
     border: 2px solid transparent;
     background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: rgba(150, 158, 168, 0.36);
+    background: var(--ui-text-muted);
     border: 2px solid transparent;
     background-clip: content-box;
 }

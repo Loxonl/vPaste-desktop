@@ -148,5 +148,16 @@ test.describe("settings preview", () => {
         expect(rootBox!.x).toBe(8);
         expect(rootBox!.y).toBe(8);
         await expect(page).toHaveScreenshot("settings-windows-single-surface.png");
+
+        await page.getByRole("tab").nth(1).click();
+        await page.getByRole("button", { name: "管理保护应用" }).click();
+        await expect(page.getByRole("dialog", { name: "管理保护应用" })).toBeVisible();
+        const backdrop = page.locator(".MuiBackdrop-root");
+        await expect(backdrop).toHaveCSS("top", "8px");
+        await expect(backdrop).toHaveCSS("right", "8px");
+        await expect(backdrop).toHaveCSS("bottom", "8px");
+        await expect(backdrop).toHaveCSS("left", "8px");
+        await expect(backdrop).toHaveCSS("border-radius", "12px");
+        await expect(page).toHaveScreenshot("settings-windows-dialog-surface.png");
     });
 });

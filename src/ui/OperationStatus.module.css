@@ -1,0 +1,48 @@
+.root {
+  box-sizing: border-box;
+  max-width: 100%;
+  color: var(--ui-text-muted);
+  background: var(--ui-surface-muted);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.compact {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 24px;
+  align-items: center;
+  padding: var(--ui-space-1) var(--ui-space-2);
+  border-radius: var(--ui-radius-pill);
+}
+
+.block {
+  display: grid;
+  gap: var(--ui-space-2);
+  padding: var(--ui-space-2) var(--ui-space-3);
+  border-radius: var(--ui-radius-control);
+}
+
+.success {
+  color: var(--ui-success);
+  background: var(--ui-success-soft);
+}
+
+.error {
+  color: var(--ui-danger);
+  background: var(--ui-danger-soft);
+}
+
+.line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--ui-space-2);
+}
+
+.message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

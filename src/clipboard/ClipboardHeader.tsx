@@ -83,8 +83,8 @@ export function ClipboardTabBar({
 
     return (
         <div className={classes(styles, "header-tabs")} onDragOver={event => event.preventDefault()}>
-            <button
-                type="button"
+            <ButtonBase
+                disableRipple
                 className={classes(styles, `tab-item fixed ${activeTab === "all" ? 'active' : ''}`)}
                 onClick={() => selectTab("all")}
             >
@@ -92,9 +92,9 @@ export function ClipboardTabBar({
                 <AppsOutlinedIcon className={classes(styles, "tab-icon tab-icon-all")} fontSize="inherit" />
                 <span className={classes(styles, "tab-label")}>{t("tabs.all")}</span>
                 {altHintsVisible && <span className={classes(styles, "alt-tab-hint")}>A</span>}
-            </button>
-            <button
-                type="button"
+            </ButtonBase>
+            <ButtonBase
+                disableRipple
                 className={classes(styles, `tab-item fixed ${activeTab === "favorite" ? 'active' : ''}`)}
                 onClick={() => selectTab("favorite")}
             >
@@ -102,13 +102,13 @@ export function ClipboardTabBar({
                 <StarBorderOutlinedIcon className={classes(styles, "tab-icon tab-icon-favorite")} fontSize="inherit" />
                 <span className={classes(styles, "tab-label")}>{t("tabs.favorite")}</span>
                 {altHintsVisible && <span className={classes(styles, "alt-tab-hint")}>F</span>}
-            </button>
+            </ButtonBase>
             {dynamicTabs.map(entry => {
                 const label = entry.kind === "filter" ? entry.tab.name : entry.tag.name;
                 return (
-                    <button
+                    <ButtonBase
                         key={entry.id}
-                        type="button"
+                        disableRipple
                         className={classes(styles, `tab-item ${entry.kind === "filter" ? 'custom' : 'record'} ${tutorialActive ? 'tutorial-locked' : ''} ${activeTab === entry.id ? 'active' : ''} ${draggingTabId === entry.id ? 'dragging' : ''}`)}
                         draggable={!tutorialActive}
                         onClick={() => selectTab(entry.id)}
@@ -133,7 +133,7 @@ export function ClipboardTabBar({
                     >
                         {activeIndicator(activeTab === entry.id)}
                         <span className={classes(styles, "tab-label")}>{label}</span>
-                    </button>
+                    </ButtonBase>
                 );
             })}
             {!tutorialActive && (

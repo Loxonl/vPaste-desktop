@@ -11,7 +11,18 @@ const allowedGlobalCss = new Set([
 const governanceBaseline = JSON.parse(
     readFileSync(join(root, "scripts", "ui-governance-baseline.json"), "utf8"),
 );
+const tokenizedCss = new Set(governanceBaseline.tokenizedCss ?? []);
+const uiTokens = readFileSync(join(root, "src", "ui", "tokens.css"), "utf8");
+const tokenDefinitions = new Set(
+    [...uiTokens.matchAll(/^\s*(--(?:ui|settings)-[\w-]+)\s*:/gm)].map(match => match[1]),
+);
 const errors = [];
+
+for (const sourcePath of tokenizedCss) {
+    if (!existsSync(join(root, sourcePath))) {
+        errors.push(`${sourcePath}: tokenized CSS entry does not exist`);
+    }
+}
 
 function walk(directory) {
     return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
@@ -75,6 +86,40 @@ for (const path of walk(sourceRoot)) {
         }
 
         const source = readFileSync(path, "utf8");
+        if (tokenizedCss.has(sourcePath)) {
+            for (const match of source.matchAll(/#[\da-f]{3,8}\b|\b(?:rgb|hsl)a?\s*\(/gi)) {
+                errors.push(
+                    `${sourcePath}:${lineNumberAt(source, match.index)}: tokenized CSS must use semantic color variables from src/ui/tokens.css`,
+                );
+            }
+
+            for (const match of source.matchAll(/border-radius\s*:\s*([^;}{]+)/g)) {
+                const value = match[1].trim();
+                if (value !== "0" && value !== "50%" && value !== "inherit" && !value.startsWith("var(")) {
+                    errors.push(
+                        `${sourcePath}:${lineNumberAt(source, match.index)}: tokenized CSS must use a shared radius variable`,
+                    );
+                }
+            }
+
+            for (const match of source.matchAll(/box-shadow\s*:\s*([^;}{]+)/g)) {
+                const value = match[1].trim();
+                if (value !== "none" && !value.startsWith("var(")) {
+                    errors.push(
+                        `${sourcePath}:${lineNumberAt(source, match.index)}: tokenized CSS must use a shared shadow variable`,
+                    );
+                }
+            }
+
+            for (const match of source.matchAll(/var\((--(?:ui|settings)-[\w-]+)/g)) {
+                if (!tokenDefinitions.has(match[1])) {
+                    errors.push(
+                        `${sourcePath}:${lineNumberAt(source, match.index)}: ${match[1]} is not defined in src/ui/tokens.css`,
+                    );
+                }
+            }
+        }
+
         const motionDeclarations = [...source.matchAll(
             /\b(?:transition(?:-duration|-property|-timing-function)?|animation(?:-duration|-name|-timing-function)?)\s*:\s*[^;}{]+/g,
         )]
@@ -93,6 +138,39 @@ for (const path of walk(sourceRoot)) {
             if (!sourcePath.startsWith("src/ui/motion/")) {
                 errors.push(
                     `${sourcePath}:${lineNumberAt(source, match.index)}: import Motion only through src/ui/motion`,
+                );
+            }
+        }
+
+        const forbiddenSxProperties = [
+            "animation",
+            "background",
+            "backgroundColor",
+            "borderColor",
+            "borderRadius",
+            "boxShadow",
+            "color",
+            "fontFamily",
+            "fontSize",
+            "fontWeight",
+            "height",
+            "lineHeight",
+            "minHeight",
+            "padding",
+            "paddingBlock",
+            "paddingInline",
+            "transition",
+            "p",
+            "px",
+            "py",
+        ];
+        for (const match of source.matchAll(/\bsx\s*=\s*\{\{([\s\S]*?)\}\}/g)) {
+            const objectSource = match[1];
+            const propertyPattern = new RegExp(`(?:^|[,\\s{])(${forbiddenSxProperties.join("|")})\\s*:`, "m");
+            const property = objectSource.match(propertyPattern)?.[1];
+            if (property) {
+                errors.push(
+                    `${sourcePath}:${lineNumberAt(source, match.index)}: visual sx property "${property}" belongs in the shared MUI theme or a CSS Module`,
                 );
             }
         }
@@ -170,7 +248,6 @@ if (dependencies.motion && dependencies.motion !== "^13.1.0") {
 const mainRustPath = join(root, "src-tauri", "src", "main.rs");
 const mainRust = readFileSync(mainRustPath, "utf8");
 const buildRust = readFileSync(join(root, "src-tauri", "build.rs"), "utf8");
-const uiTokens = readFileSync(join(root, "src", "ui", "tokens.css"), "utf8");
 for (const label of ["clipboardPreview", "trayMenu", "emojiPicker", "tabEditor"]) {
     const builder = mainRust.match(
         new RegExp(`WebviewWindowBuilder::new\\([\\s\\S]{0,300}?"${label}"[\\s\\S]{0,3000}?\\.build\\(`),

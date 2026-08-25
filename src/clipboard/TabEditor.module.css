@@ -6,41 +6,8 @@
   overflow: hidden;
   background: transparent;
   font-family: var(--ui-font-family);
-  color: #202423;
+  color: var(--ui-text);
   user-select: none;
-}
-
-:root[data-theme="dark"] .tab-editor-panel {
-  color: var(--theme-text);
-  background: #1f232a;
-}
-
-:root[data-theme="dark"] .tab-editor-header strong,
-:root[data-theme="dark"] .app-source-trigger,
-:root[data-theme="dark"] .app-source-option,
-:root[data-theme="dark"] .emoji-prefix-trigger {
-  color: var(--theme-text);
-}
-
-:root[data-theme="dark"] .tab-editor-panel label {
-  color: var(--theme-muted);
-}
-
-:root[data-theme="dark"] .record-tag-hint {
-  color: var(--theme-muted);
-}
-
-:root[data-theme="dark"] .tab-editor-close,
-:root[data-theme="dark"] .app-source-trigger,
-:root[data-theme="dark"] .emoji-prefix-trigger {
-  background: rgba(46, 52, 61, 0.86);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-}
-
-:root[data-theme="dark"] .app-source-check,
-:root[data-theme="dark"] .emoji-prefix-trigger.selected {
-  color: #b9dcff;
-  background: rgba(74, 168, 255, 0.18);
 }
 
 .tab-editor-panel {
@@ -49,7 +16,8 @@
   padding: 10px 12px;
   overflow: hidden;
   border-radius: var(--ui-radius-window);
-  background: #fafaf8;
+  color: var(--ui-text);
+  background: var(--ui-window-surface);
   box-shadow: var(--ui-window-shadow);
 }
 
@@ -68,7 +36,7 @@
 
 .tab-editor-header strong {
   font-size: 14px;
-  color: #202423;
+  color: var(--ui-text);
 }
 
 .tab-editor-close {
@@ -76,8 +44,8 @@
   height: 24px;
   border: 0;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.05);
-  color: #4d5350;
+  background: var(--ui-surface-hover);
+  color: var(--ui-text-muted);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -96,14 +64,14 @@
   display: grid;
   gap: 4px;
   margin-bottom: 9px;
-  color: #69706d;
+  color: var(--ui-text-muted);
   font-size: 11.5px;
   font-weight: 620;
 }
 
 .record-tag-hint {
   margin: -2px 0 12px;
-  color: #69706d;
+  color: var(--ui-text-muted);
   font-size: 11.5px;
   line-height: 16px;
 }
@@ -138,7 +106,7 @@
 .emoji-prefix-trigger {
   box-sizing: border-box;
   border: 0;
-  color: #202423;
+  color: var(--ui-text);
   background: transparent;
   font-family: inherit;
   cursor: pointer;
@@ -150,16 +118,17 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 8px;
+  border-radius: var(--ui-radius-control);
   padding: 0;
-  background: rgba(238, 240, 235, 0.82);
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.05);
+  background: var(--ui-surface-muted);
+  box-shadow: var(--ui-shadow-inset);
   font-size: 15px;
   line-height: 1;
 }
 
 .emoji-prefix-trigger.selected {
-  background: rgba(45, 126, 210, 0.13);
+  color: var(--ui-accent-strong);
+  background: var(--ui-accent-soft);
 }
 
 .app-source-select {
@@ -183,11 +152,11 @@
 .app-source-trigger {
   height: 36px;
   justify-content: flex-start;
-  border-radius: 9px;
+  border-radius: var(--ui-radius-control);
   padding: 0 9px;
-  color: #202423;
-  background: rgba(238, 240, 235, 0.82);
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.05);
+  color: var(--ui-text);
+  background: var(--ui-surface-muted);
+  box-shadow: var(--ui-shadow-inset);
   font-size: 12.5px;
 }
 
@@ -216,16 +185,16 @@
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  color: #0f4f94;
-  background: rgba(45, 126, 210, 0.13);
+  color: var(--ui-accent-strong);
+  background: var(--ui-accent-soft);
   font-size: 13px;
   font-weight: 700;
 }
 
 .app-source-placeholder-icon {
-  border-radius: 7px;
-  background: linear-gradient(135deg, rgba(160, 166, 162, 0.32), rgba(210, 214, 209, 0.48));
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.035);
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-placeholder-background);
+  box-shadow: var(--ui-shadow-inset);
 }
 
 .app-source-trigger .app-source-label,
@@ -252,9 +221,9 @@
 
 .app-source-option {
   height: 40px;
-  border-radius: 8px;
+  border-radius: var(--ui-radius-control);
   padding: 0 8px;
-  color: #202423;
+  color: var(--ui-text);
   background: transparent;
   font-size: 12.5px;
 }

@@ -9,6 +9,7 @@ import MoreHorizRoundedIcon from "@mui/icons-material/MoreHorizRounded";
 import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
 import RestartAltRoundedIcon from "@mui/icons-material/RestartAltRounded";
 import Button from "@mui/material/Button";
+import ButtonBase from "@mui/material/ButtonBase";
 import CircularProgress from "@mui/material/CircularProgress";
 import InputAdornment from "@mui/material/InputAdornment";
 import Menu from "@mui/material/Menu";
@@ -350,29 +351,20 @@ export default function TestRoom() {
                     value={tab}
                     onChange={(_, value: number) => setTab(value)}
                     aria-label="测试间功能"
-                    sx={{
-                        "& .MuiTabs-scroller": { width: "auto" },
-                        "& .MuiTabs-flexContainer": { display: "inline-flex" },
-                        "& .MuiTab-root": {
-                            minWidth: 96,
-                            minHeight: 38,
-                            width: "auto",
-                            maxWidth: "none",
-                            px: "14px",
-                            py: "7px",
-                            justifyContent: "center",
-                        },
+                    classes={{
+                        scroller: styles.tabScroller,
+                        flexContainer: styles.tabList,
                     }}
                 >
-                    <Tab label="测试用例" />
-                    <Tab label="写入样板" />
+                    <Tab className={styles.tab} label="测试用例" />
+                    <Tab className={styles.tab} label="写入样板" />
                 </Tabs>
                 <Button
                     color="error"
                     variant="outlined"
                     startIcon={<DeleteOutlineRoundedIcon />}
                     disabled={busy}
-                    sx={{ minHeight: 40, flex: "0 0 auto" }}
+                    sx={{ flex: "0 0 auto" }}
                     onClick={() => window.confirm("确认清理全部写入样板历史和今天由测试用例生成的历史吗？真实历史和更早的测试用例历史不会被删除。")
                         && void operate(() => invoke("cleanup_test_room_history"))}
                 >清理测试历史</Button>
@@ -381,7 +373,7 @@ export default function TestRoom() {
             {(error || notice) && (
                 <div className={error ? styles.errorNotice : styles.notice} role={error ? "alert" : "status"}>
                     {error || notice}
-                    <button type="button" onClick={() => { setError(""); setNotice(""); }}>关闭</button>
+                    <ButtonBase disableRipple onClick={() => { setError(""); setNotice(""); }}>关闭</ButtonBase>
                 </div>
             )}
 
@@ -393,7 +385,6 @@ export default function TestRoom() {
                                 variant="contained"
                                 startIcon={busy ? <CircularProgress color="inherit" size={15} /> : <PlayArrowRoundedIcon />}
                                 disabled={busy}
-                                sx={{ minHeight: 40 }}
                                 onClick={() => void runCases(allCaseIds)}
                             >
                                 全部运行
@@ -426,7 +417,7 @@ export default function TestRoom() {
                                             <Button
                                                 size="small"
                                                 disabled={busy}
-                                                sx={{ minWidth: 76, minHeight: 40 }}
+                                                sx={{ minWidth: 76 }}
                                                 startIcon={running ? <CircularProgress size={14} /> : <PlayArrowRoundedIcon />}
                                                 onClick={() => void runCases([testCase.id])}
                                             >运行</Button>
@@ -444,28 +435,28 @@ export default function TestRoom() {
                     <aside className={styles.sidebar}>
                         <div className={styles.sidebarHeading}>
                             <strong>样板分组</strong>
-                            <button type="button" title="新建分组" aria-label="新建分组" onClick={addGroup}><AddRoundedIcon /></button>
+                            <ButtonBase disableRipple title="新建分组" aria-label="新建分组" onClick={addGroup}><AddRoundedIcon /></ButtonBase>
                         </div>
                         <div className={styles.groupList}>
                             {config?.groups.map(group => (
                                 <div className={styles.groupListItem} key={group.id}>
-                                    <button
-                                        type="button"
+                                    <ButtonBase
+                                        disableRipple
                                         className={group.id === selectedGroupId ? styles.selectedGroup : ""}
                                         onClick={() => setSelectedGroupId(group.id)}
                                     >
                                         <span>{group.name}</span>
                                         <small>{group.items.length}</small>
-                                    </button>
-                                    <button
-                                        type="button"
+                                    </ButtonBase>
+                                    <ButtonBase
+                                        disableRipple
                                         className={styles.groupMenuButton}
                                         aria-label={`管理分组 ${group.name}`}
                                         onClick={event => {
                                             setGroupMenuAnchor(event.currentTarget);
                                             setGroupMenuId(group.id);
                                         }}
-                                    ><MoreHorizRoundedIcon /></button>
+                                    ><MoreHorizRoundedIcon /></ButtonBase>
                                 </div>
                             ))}
                         </div>
@@ -504,7 +495,7 @@ export default function TestRoom() {
                                     <Button
                                         variant="contained"
                                         disabled={busy || selectedGroup.items.length === 0}
-                                        sx={{ minHeight: 40, flex: "0 0 auto" }}
+                                        sx={{ flex: "0 0 auto" }}
                                         onClick={() => void operate(() => invoke("write_test_room_groups", { groups: [selectedGroup] }))}
                                     >写入当前组</Button>
                                 </div>
@@ -549,8 +540,8 @@ export default function TestRoom() {
                                                             endAdornment: <InputAdornment position="end">秒</InputAdornment>,
                                                         }}
                                                     />
-                                                    <button type="button" aria-label={`上移 ${itemLabel}`} disabled={index === 0} onClick={() => moveItem(index, -1)}><ArrowUpwardRoundedIcon /></button>
-                                                    <button type="button" aria-label={`下移 ${itemLabel}`} disabled={index === selectedGroup.items.length - 1} onClick={() => moveItem(index, 1)}><ArrowDownwardRoundedIcon /></button>
+                                                    <ButtonBase disableRipple aria-label={`上移 ${itemLabel}`} disabled={index === 0} onClick={() => moveItem(index, -1)}><ArrowUpwardRoundedIcon /></ButtonBase>
+                                                    <ButtonBase disableRipple aria-label={`下移 ${itemLabel}`} disabled={index === selectedGroup.items.length - 1} onClick={() => moveItem(index, 1)}><ArrowDownwardRoundedIcon /></ButtonBase>
                                                 </div>
                                                 <div className={styles.itemFields}>
                                                     <TextField
@@ -647,15 +638,15 @@ export default function TestRoom() {
                                                     )}
                                                 </div>
                                                 <div className={styles.itemActions}>
-                                                    <button
-                                                        type="button"
+                                                    <ButtonBase
+                                                        disableRipple
                                                         aria-label={`写入剪贴板 ${itemLabel}`}
                                                         title="写入当前剪贴板"
                                                         disabled={busy}
                                                         onClick={() => void operate(() => invoke("copy_test_room_item_to_clipboard", { item }))}
-                                                    ><ContentCopyRoundedIcon /></button>
-                                                    <button
-                                                        type="button"
+                                                    ><ContentCopyRoundedIcon /></ButtonBase>
+                                                    <ButtonBase
+                                                        disableRipple
                                                         aria-label={`删除 ${itemLabel}`}
                                                         onClick={() => updateConfig(current => ({
                                                             ...current,
@@ -666,7 +657,7 @@ export default function TestRoom() {
                                                                 ? [...new Set([...current.deletedBuiltInItemIds, item.id])]
                                                                 : current.deletedBuiltInItemIds,
                                                         }))}
-                                                    ><DeleteOutlineRoundedIcon /></button>
+                                                    ><DeleteOutlineRoundedIcon /></ButtonBase>
                                                 </div>
                                             </article>
                                         );

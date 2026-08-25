@@ -15,17 +15,22 @@
       var(--settings-bg) 100%
     ),
     var(--settings-bg);
-  border-radius: 12px;
+  border-radius: var(--ui-radius-window);
   -webkit-app-region: no-drag;
 }
 
 .nativeWindowsSurface {
-  width: calc(100% - 16px);
-  height: calc(100vh - 16px);
-  margin: 8px;
+  width: calc(100% - (var(--ui-space-2) * 2));
+  height: calc(100vh - (var(--ui-space-2) * 2));
+  margin: var(--ui-space-2);
   background-color: var(--ui-bg);
   border-radius: var(--ui-radius-window);
   box-shadow: var(--ui-window-shadow);
+}
+
+.windowSurfaceBackdrop.windowSurfaceBackdrop {
+  inset: var(--ui-space-2);
+  border-radius: var(--ui-radius-window);
 }
 
 .dragRegion {
@@ -52,14 +57,14 @@
   width: 14px;
   height: 14px;
   padding: 0;
-  border: 1px solid rgba(0, 0, 0, 0.16);
+  border: 1px solid var(--ui-macos-traffic-light-border);
   border-radius: 50%;
-  background: #dedfdf;
+  background: var(--ui-macos-traffic-light-neutral);
 }
 
 .windowControl.close {
-  border-color: rgba(154, 22, 17, 0.32);
-  background: #ff6159;
+  border-color: var(--ui-macos-traffic-light-close-border);
+  background: var(--ui-macos-traffic-light-close);
 }
 
 .windowControl:hover {
@@ -69,8 +74,8 @@
 .windowControl:disabled {
   cursor: default;
   opacity: 1;
-  border-color: rgba(0, 0, 0, 0.14);
-  background: #dedfdf;
+  border-color: var(--ui-macos-traffic-light-disabled-border);
+  background: var(--ui-macos-traffic-light-neutral);
 }
 
 .windowControl b {
@@ -95,8 +100,8 @@
   left: 0;
   width: 8px;
   height: 1.2px;
-  border-radius: 1px;
-  background: rgba(87, 17, 14, 0.82);
+  border-radius: var(--ui-radius-hairline);
+  background: var(--ui-macos-traffic-light-close-glyph);
   content: "";
 }
 
@@ -134,12 +139,12 @@
 }
 
 .windowsControlsHoverReady .windowsWindowClose:hover {
-  color: #ffffff;
-  background: #d92f25;
+  color: var(--ui-windows-close-foreground);
+  background: var(--ui-windows-close-hover);
 }
 
 .windowsControlsHoverReady .windowsWindowClose:active {
-  background: #b8261f;
+  background: var(--ui-windows-close-pressed);
 }
 
 .windowsWindowClose:focus-visible {
@@ -158,7 +163,7 @@
   padding: 78px var(--ui-space-2) 0;
   overflow: hidden;
   background: var(--settings-sidebar-bg);
-  box-shadow: inset -1px 0 var(--theme-border);
+  box-shadow: var(--ui-shadow-divider-end);
   backdrop-filter: blur(28px) saturate(1.14);
   -webkit-backdrop-filter: blur(28px) saturate(1.14);
 }

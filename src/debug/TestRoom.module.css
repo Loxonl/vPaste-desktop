@@ -28,9 +28,26 @@
   flex: 0 0 auto;
   padding: 4px;
   border: 1px solid var(--ui-border);
-  border-radius: calc(var(--ui-radius-control) + 4px);
+  border-radius: var(--ui-radius-window);
   background: var(--ui-surface);
-  box-shadow: 0 1px 2px rgba(35, 43, 54, 0.035);
+  box-shadow: var(--ui-test-room-tabs-shadow);
+}
+
+.tabScroller {
+  width: auto;
+}
+
+.tabList {
+  display: inline-flex;
+}
+
+.tab {
+  min-width: 96px;
+  min-height: 38px;
+  width: auto;
+  max-width: none;
+  padding: 7px 14px;
+  justify-content: center;
 }
 
 .notice,
@@ -335,7 +352,7 @@
   place-items: center;
   width: 40px;
   height: 40px;
-  border-radius: 5px;
+  border-radius: var(--ui-test-room-radius-order-action);
 }
 
 .itemOrder button:hover:not(:disabled) {
@@ -387,7 +404,7 @@
   place-items: center;
   width: 28px;
   height: 28px;
-  border-radius: 6px;
+  border-radius: var(--ui-test-room-radius-item-action);
   color: var(--ui-text-muted);
 }
 

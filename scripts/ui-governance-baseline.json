@@ -1,20 +1,38 @@
 {
   "rawControls": {
-    "src/clipboard/Clipboard.tsx": { "input": 1 },
-    "src/clipboard/ClipboardHeader.tsx": { "button": 3 },
     "src/clipboard/PasteQueue.tsx": { "button": 2 },
-    "src/config/Config.tsx": { "button": 4 },
-    "src/debug/TestRoom.tsx": { "button": 8 }
+    "src/config/Config.tsx": { "button": 4 }
   },
   "cssMotion": {
-    "src/clipboard/Clipboard.module.css": {
-      "animation: cardItemTagsScroll 8s linear infinite": 1
-    },
     "src/theme.css": {
       "animation-duration: 0.01ms !important": 1,
       "transition-duration: 0.01ms !important": 1
     }
   },
   "scriptMotion": {},
-  "legacyWebAnimations": {}
+  "legacyWebAnimations": {},
+  "tokenizedCss": [
+    "src/clipboard/Clipboard.module.css",
+    "src/clipboard/EmojiPicker.module.css",
+    "src/clipboard/FileTypePresentation.module.css",
+    "src/clipboard/PasteFallbackNotice.module.css",
+    "src/clipboard/PasteQueue.module.css",
+    "src/clipboard/Preview.module.css",
+    "src/clipboard/TabEditor.module.css",
+    "src/clipboard/TutorialOverlay.module.css",
+    "src/config/Config.module.css",
+    "src/config/ConfigLayout.module.css",
+    "src/debug/TestRoom.module.css",
+    "src/tray/TrayMenu.module.css",
+    "src/ui/ActionCard.module.css",
+    "src/ui/ConfirmDialog.module.css",
+    "src/ui/InlineMenu.module.css",
+    "src/ui/OperationStatus.module.css",
+    "src/ui/RouteFallback.module.css",
+    "src/ui/StatusBadge.module.css",
+    "src/ui/StatusToast.module.css",
+    "src/ui/Surface.module.css",
+    "src/ui/UiLab.module.css",
+    "src/ui/settings/SettingsPrimitives.module.css"
+  ]
 }

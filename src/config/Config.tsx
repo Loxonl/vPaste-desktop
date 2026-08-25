@@ -174,9 +174,9 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
         || ("__TAURI_INTERNALS__" in window && !isMac);
     const activeSection = [
         <GeneralSettings bridge={bridge} config={config} languages={languages} t={t} onSave={saveConfig} />,
-        <DataSettings bridge={bridge} config={config} storagePaths={storagePaths} t={t} onSave={saveConfig} onBlockingOperationChange={setBlockingOperation} />,
+        <DataSettings bridge={bridge} config={config} storagePaths={storagePaths} t={t} onSave={saveConfig} onBlockingOperationChange={setBlockingOperation} dialogBackdropClassName={nativeWindowsSurface ? layout.windowSurfaceBackdrop : undefined} />,
         <ShortcutSettings bridge={bridge} config={config} t={t} onSave={saveConfig} />,
-        <AboutSettings bridge={bridge} config={config} dir={dir} t={t} onSave={saveConfig} />,
+        <AboutSettings bridge={bridge} config={config} dir={dir} t={t} onSave={saveConfig} dialogBackdropClassName={nativeWindowsSurface ? layout.windowSurfaceBackdrop : undefined} />,
     ][value];
 
     return (

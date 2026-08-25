@@ -25,6 +25,8 @@ describe("Motion system", () => {
         expect(root.style.getPropertyValue("--motion-distance-subtle")).toBe("6px");
         expect(root.style.getPropertyValue("--motion-distance-standard")).toBe("10px");
         expect(root.style.getPropertyValue("--motion-distance-emphasis")).toBe("16px");
+        expect(root.style.getPropertyValue("--motion-duration-marquee")).toBe("8s");
+        expect(root.style.getPropertyValue("--motion-ease-linear")).toBe("linear");
     });
 
     it("removes transform values from reduced-motion presets", () => {

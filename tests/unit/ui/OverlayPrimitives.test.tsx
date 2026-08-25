@@ -55,6 +55,7 @@ describe("overlay primitives", () => {
                 description="Clear every item?"
                 cancelLabel="Keep"
                 confirmLabel="Clear"
+                backdropClassName="window-surface-backdrop"
                 confirmDisabled
                 onCancel={onCancel}
                 onConfirm={onConfirm}
@@ -62,6 +63,7 @@ describe("overlay primitives", () => {
         );
 
         expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled();
+        expect(document.querySelector(".window-surface-backdrop")).toBeInTheDocument();
         expect(onConfirm).not.toHaveBeenCalled();
         await user.click(screen.getByRole("button", { name: "Keep" }));
         expect(onCancel).toHaveBeenCalledOnce();

@@ -12,6 +12,9 @@ export const motionTokens = {
         standard: 10,
         emphasis: 16,
     },
+    stagger: {
+        tight: 0.018,
+    },
     continuous: {
         marquee: 8,
     },

@@ -59,6 +59,7 @@ export function ClipboardTabBar({
     onAdd,
 }: ClipboardTabBarProps) {
     const selectionIndicator = useMotionPreset("selectionIndicator");
+    const shortcutHintMotion = useMotionPreset("shortcutHint");
 
     const activeIndicator = (active: boolean) => active ? (
         <m.span
@@ -72,6 +73,24 @@ export function ClipboardTabBar({
             aria-hidden="true"
         />
     ) : null;
+
+    const shortcutHint = (label: string) => (
+        <AnimatePresence mode="wait" initial={false}>
+            {altHintsVisible && (
+                <m.span
+                    key={label}
+                    className={classes(styles, "alt-tab-hint")}
+                    variants={shortcutHintMotion}
+                    data-motion-preset="shortcutHint"
+                    initial="initial"
+                    animate="animate"
+                    exit="exit"
+                >
+                    {label}
+                </m.span>
+            )}
+        </AnimatePresence>
+    );
 
     const selectTab = (tabId: string) => {
         if (tutorialActive) {
@@ -91,7 +110,7 @@ export function ClipboardTabBar({
                 {activeIndicator(activeTab === "all")}
                 <AppsOutlinedIcon className={classes(styles, "tab-icon tab-icon-all")} fontSize="inherit" />
                 <span className={classes(styles, "tab-label")}>{t("tabs.all")}</span>
-                {altHintsVisible && <span className={classes(styles, "alt-tab-hint")}>A</span>}
+                {shortcutHint("A")}
             </ButtonBase>
             <ButtonBase
                 disableRipple
@@ -101,7 +120,7 @@ export function ClipboardTabBar({
                 {activeIndicator(activeTab === "favorite")}
                 <StarBorderOutlinedIcon className={classes(styles, "tab-icon tab-icon-favorite")} fontSize="inherit" />
                 <span className={classes(styles, "tab-label")}>{t("tabs.favorite")}</span>
-                {altHintsVisible && <span className={classes(styles, "alt-tab-hint")}>F</span>}
+                {shortcutHint("F")}
             </ButtonBase>
             {dynamicTabs.map(entry => {
                 const label = entry.kind === "filter" ? entry.tab.name : entry.tag.name;

@@ -1,7 +1,7 @@
 import type { ReactElement } from "react";
-import { render as renderUi, screen } from "@testing-library/react";
+import { cleanup, render as renderUi, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     ClipboardContextMenus,
     DeleteConfirmDialog,
@@ -14,6 +14,8 @@ import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
 const render = (ui: ReactElement) => renderUi(<MotionTestProvider>{ui}</MotionTestProvider>);
 
 const t = (key: string) => key;
+
+afterEach(cleanup);
 
 describe("clipboard overlays", () => {
     it("reports the selected tag kind with the original click coordinates", async () => {
@@ -72,6 +74,39 @@ describe("clipboard overlays", () => {
         expect(onSelectedIndexChange).toHaveBeenCalledWith(0);
         expect(action).toHaveBeenCalledOnce();
         expect(childAction).toHaveBeenCalledOnce();
+        expect(screen.getByRole("menuitem", { name: "Work" }).closest('[data-motion-preset]')).toHaveAttribute(
+            "data-motion-preset",
+            "submenuRight",
+        );
+    });
+
+    it("opens a left-side submenu from its parent-menu edge", () => {
+        const item = new Item(1, "hash", ItemType.Text, "text", 0);
+        render(
+            <ClipboardContextMenus
+                state={{
+                    item,
+                    x: 210,
+                    y: 20,
+                    originX: 230,
+                    originY: 40,
+                    submenuSide: "left",
+                    itemTags: [],
+                    colorOptions: [],
+                }}
+                options={[{ label: "Tags", children: [{ label: "Work" }] }]}
+                selectedIndex={0}
+                submenuOptions={[{ label: "Work" }]}
+                submenuLeft={10}
+                submenuTop={100}
+                onSelectedIndexChange={vi.fn()}
+            />,
+        );
+
+        expect(screen.getByRole("menuitem", { name: "Work" }).closest('[data-motion-preset]')).toHaveAttribute(
+            "data-motion-preset",
+            "submenuLeft",
+        );
     });
 
     it("forwards tab edit and delete choices without changing tab state", async () => {

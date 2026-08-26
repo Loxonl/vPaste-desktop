@@ -7,7 +7,15 @@ import backgroundVisual from "../assets/tutorial/permission-background.svg";
 import pasteVisual from "../assets/tutorial/permission-paste.svg";
 import shortcutVisual from "../assets/tutorial/shortcut-popover.svg";
 import styles from "./TutorialOverlay.module.css";
-import { motionTokens, stagger, useAnimate, useReducedMotionConfig } from "../ui/motion";
+import {
+    AnimatePresence,
+    m,
+    motionTokens,
+    stagger,
+    useAnimate,
+    useMotionPreset,
+    useReducedMotionConfig,
+} from "../ui/motion";
 import type {
     TutorialFilterId,
     TutorialFilterTab,
@@ -35,6 +43,7 @@ type TutorialOverlayProps = {
     filters: TutorialFilterTab[];
     onPermissionAction: (id: TutorialPermissionId) => void | Promise<void>;
     onToggleFilter: (id: TutorialFilterId, enabled: boolean) => void;
+    onShortcutDemoAvailabilityChange: (enabled: boolean) => void;
     onComplete: () => void;
 };
 
@@ -68,10 +77,12 @@ export default function TutorialOverlay({
     filters,
     onPermissionAction,
     onToggleFilter,
+    onShortcutDemoAvailabilityChange,
     onComplete,
 }: TutorialOverlayProps) {
     const [scope, animate] = useAnimate();
     const reduceMotion = Boolean(useReducedMotionConfig());
+    const stateIndicatorMotion = useMotionPreset("stateIndicator");
     const [step, setStep] = React.useState(0);
     const previousPermissionState = React.useRef(
         new Map(permissions.map(permission => [permission.id, permission.done])),
@@ -184,16 +195,57 @@ export default function TutorialOverlay({
                     },
                 ));
             } else if (step === 3) {
-                track(animate(
-                    classSelector("tutorial-shortcut-art"),
-                    { opacity: [0, 1], x: [-motionTokens.distance.standard, 0] },
-                    { duration: motionTokens.duration.slow, ease: motionTokens.easing.enter },
-                ));
-                track(animate(
-                    classSelector("tutorial-shortcut-keycap"),
-                    { opacity: [0, 1], x: [motionTokens.distance.standard, 0] },
-                    { duration: motionTokens.duration.slow, ease: motionTokens.easing.enter },
-                ));
+                const playShortcutEmphasis = async () => {
+                    await Promise.all([
+                        track(animate(
+                            classSelector("tutorial-shortcut-art"),
+                            { opacity: [0, 1], x: [-motionTokens.distance.standard, 0] },
+                            { duration: motionTokens.duration.slow, ease: motionTokens.easing.enter },
+                        )),
+                        track(animate(
+                            classSelector("tutorial-shortcut-keycap"),
+                            { opacity: [0, 1], x: [motionTokens.distance.standard, 0] },
+                            { duration: motionTokens.duration.slow, ease: motionTokens.easing.enter },
+                        )),
+                    ]);
+                    if (cancelled) return;
+                    await Promise.all([
+                        track(animate(
+                            classSelector("tutorial-shortcut-keycap"),
+                            {
+                                y: motionTokens.distance.subtle,
+                                scale: 0.97,
+                            },
+                            {
+                                duration: motionTokens.duration.fast,
+                                delay: motionTokens.duration.slow,
+                                ease: motionTokens.easing.standard,
+                            },
+                        )),
+                        track(animate(
+                            classSelector("tutorial-shortcut-pulse"),
+                            {
+                                opacity: [0, 0.72, 0],
+                                scale: [0.94, 1.06, 1.12],
+                            },
+                            {
+                                duration: motionTokens.duration.slow,
+                                delay: motionTokens.duration.slow,
+                                ease: motionTokens.easing.enter,
+                            },
+                        )),
+                    ]);
+                    if (cancelled) return;
+                    await track(animate(
+                        classSelector("tutorial-shortcut-keycap"),
+                        { y: 0, scale: 1 },
+                        {
+                            duration: motionTokens.duration.fast,
+                            ease: motionTokens.easing.enter,
+                        },
+                    ));
+                };
+                void playShortcutEmphasis();
             }
         }
 
@@ -204,6 +256,12 @@ export default function TutorialOverlay({
             controls.forEach(control => control.stop());
         };
     }, [animate, hasPermissionStep, reduceMotion, scope, step]);
+
+    React.useEffect(() => {
+        if (step !== 3) return;
+        onShortcutDemoAvailabilityChange(true);
+        return () => onShortcutDemoAvailabilityChange(false);
+    }, [onShortcutDemoAvailabilityChange, step]);
 
     React.useEffect(() => {
         const currentState = new Map(permissions.map(permission => [permission.id, permission.done]));
@@ -316,10 +374,27 @@ export default function TutorialOverlay({
                                     <span className={styles["tutorial-card-brand"]} aria-hidden="true">
                                         <img src={logoSrc} alt="" />
                                     </span>
-                                    <span className={[styles["tutorial-status-pill"], permission.done ? styles.done : ""].join(" ")}>
+                                    <span
+                                        className={[styles["tutorial-status-pill"], permission.done ? styles.done : ""].join(" ")}
+                                        role="status"
+                                        aria-live="polite"
+                                    >
                                         <i className={styles["tutorial-status-burst"]} aria-hidden="true" />
-                                        {permission.done && <CheckCircleIcon fontSize="inherit" />}
-                                        <span>{permission.done ? t("tutorial.permission.ready") : t("tutorial.permission.pending")}</span>
+                                        <AnimatePresence mode="sync" initial={false}>
+                                            <m.span
+                                                key={permission.done ? "ready" : "pending"}
+                                                className={styles["tutorial-status-content"]}
+                                                data-motion-preset="stateIndicator"
+                                                data-motion-state="permission-status"
+                                                variants={stateIndicatorMotion}
+                                                initial="initial"
+                                                animate="animate"
+                                                exit="exit"
+                                            >
+                                                {permission.done && <CheckCircleIcon fontSize="inherit" />}
+                                                <span>{permission.done ? t("tutorial.permission.ready") : t("tutorial.permission.pending")}</span>
+                                            </m.span>
+                                        </AnimatePresence>
                                     </span>
                                 </div>
                                 <div className={styles["tutorial-card-body"]}>
@@ -375,7 +450,11 @@ export default function TutorialOverlay({
                     children: (
                     <div className={styles["tutorial-shortcut-stage"]}>
                         <img className={`${styles["tutorial-shortcut-art"]} ${styles["tutorial-orbit-item"]}`} src={shortcutVisual} alt="" aria-hidden="true" />
-                        <div className={`${styles["tutorial-shortcut-keycap"]} ${styles["tutorial-orbit-item"]}`}>
+                        <div
+                            className={`${styles["tutorial-shortcut-keycap"]} ${styles["tutorial-orbit-item"]}`}
+                            data-shortcut-emphasis={reduceMotion ? "reduced" : "press"}
+                        >
+                            <span className={styles["tutorial-shortcut-pulse"]} data-shortcut-pulse aria-hidden="true" />
                             <span>{t("tutorial.shortcut.default")}</span>
                             <strong>{shortcutText}</strong>
                         </div>

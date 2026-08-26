@@ -112,6 +112,7 @@ static PREVIEW_PINNED: AtomicBool = AtomicBool::new(false);
 static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static ONBOARDING_ACTIVE: AtomicBool = AtomicBool::new(false);
+static ONBOARDING_SHORTCUT_DEMO_ENABLED: AtomicBool = AtomicBool::new(false);
 static TRAY_MENU_WATCHING: AtomicBool = AtomicBool::new(false);
 static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
 static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
@@ -342,6 +343,23 @@ fn should_block_clipboard_hide(onboarding_active: bool) -> bool {
     onboarding_active
 }
 
+fn should_block_clipboard_hide_for_shortcut_demo(
+    onboarding_active: bool,
+    shortcut_demo_enabled: bool,
+) -> bool {
+    onboarding_active && !shortcut_demo_enabled
+}
+
+fn should_commit_clipboard_hide(
+    onboarding_active: bool,
+    allow_onboarding_shortcut_demo: bool,
+) -> bool {
+    !should_block_clipboard_hide_for_shortcut_demo(
+        onboarding_active,
+        allow_onboarding_shortcut_demo,
+    )
+}
+
 fn clipboard_hide_blocked() -> bool {
     should_block_clipboard_hide(ONBOARDING_ACTIVE.load(Ordering::SeqCst))
 }
@@ -350,8 +368,13 @@ fn should_finish_clipboard_hide(
     generation: u64,
     current_generation: u64,
     onboarding_active: bool,
+    allow_onboarding_shortcut_demo: bool,
 ) -> bool {
-    generation == current_generation && !should_block_clipboard_hide(onboarding_active)
+    generation == current_generation
+        && !should_block_clipboard_hide_for_shortcut_demo(
+            onboarding_active,
+            allow_onboarding_shortcut_demo,
+        )
 }
 
 fn clipboard_blur_hide_suppressed() -> bool {
@@ -1384,8 +1407,14 @@ fn animate_clipboard_window_y(
     }
 }
 
-fn finish_hide_window_locked(window: &tauri::WebviewWindow) -> Result<(), String> {
-    if clipboard_hide_blocked() {
+fn finish_hide_window_locked(
+    window: &tauri::WebviewWindow,
+    allow_onboarding_shortcut_demo: bool,
+) -> Result<(), String> {
+    if !should_commit_clipboard_hide(
+        ONBOARDING_ACTIVE.load(Ordering::SeqCst),
+        allow_onboarding_shortcut_demo,
+    ) {
         CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
         return Ok(());
     }
@@ -1410,12 +1439,13 @@ fn finish_hide_window(window: &tauri::WebviewWindow) -> Result<(), String> {
     let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    finish_hide_window_locked(window)
+    finish_hide_window_locked(window, false)
 }
 
 fn finish_animated_hide_window(
     window: &tauri::WebviewWindow,
     generation: u64,
+    allow_onboarding_shortcut_demo: bool,
 ) -> Result<(), String> {
     if generation == 0 {
         return Ok(());
@@ -1446,6 +1476,7 @@ fn finish_animated_hide_window(
         generation,
         CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst),
         ONBOARDING_ACTIVE.load(Ordering::SeqCst),
+        allow_onboarding_shortcut_demo,
     ) {
         if clipboard_hide_blocked() {
             CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
@@ -1455,7 +1486,7 @@ fn finish_animated_hide_window(
     if let Err(err) = animation_result {
         error!("Failed to animate clipboard window down: {}", err);
     }
-    finish_hide_window_locked(window)?;
+    finish_hide_window_locked(window, allow_onboarding_shortcut_demo)?;
     drop(_transition);
     restore_foreground_after_hide(generation);
     Ok(())
@@ -1465,6 +1496,7 @@ fn finish_animated_hide_window(
 mod clipboard_window_animation_tests {
     use super::{
         clipboard_window_animation_progress, should_block_clipboard_hide,
+        should_block_clipboard_hide_for_shortcut_demo, should_commit_clipboard_hide,
         should_finish_clipboard_hide, ClipboardWindowAnimation,
     };
 
@@ -1483,9 +1515,20 @@ mod clipboard_window_animation_tests {
     fn onboarding_blocks_new_and_in_flight_clipboard_hides() {
         assert!(!should_block_clipboard_hide(false));
         assert!(should_block_clipboard_hide(true));
-        assert!(should_finish_clipboard_hide(7, 7, false));
-        assert!(!should_finish_clipboard_hide(7, 7, true));
-        assert!(!should_finish_clipboard_hide(7, 8, false));
+        assert!(should_finish_clipboard_hide(7, 7, false, false));
+        assert!(!should_finish_clipboard_hide(7, 7, true, false));
+        assert!(should_finish_clipboard_hide(7, 7, true, true));
+        assert!(!should_finish_clipboard_hide(7, 8, false, false));
+    }
+
+    #[test]
+    fn onboarding_only_allows_hide_for_the_explicit_shortcut_demo() {
+        assert!(should_block_clipboard_hide_for_shortcut_demo(true, false));
+        assert!(!should_block_clipboard_hide_for_shortcut_demo(true, true));
+        assert!(!should_block_clipboard_hide_for_shortcut_demo(false, false));
+        assert!(!should_commit_clipboard_hide(true, false));
+        assert!(should_commit_clipboard_hide(true, true));
+        assert!(should_commit_clipboard_hide(false, false));
     }
 
     #[test]
@@ -1692,7 +1735,17 @@ fn focus_clipboard_window(window: &tauri::WebviewWindow, context: &str) {
 }
 
 fn hide_clipboard_window(window: &tauri::WebviewWindow) {
-    if clipboard_hide_blocked() {
+    hide_clipboard_window_with_onboarding_policy(window, false);
+}
+
+fn hide_clipboard_window_with_onboarding_policy(
+    window: &tauri::WebviewWindow,
+    allow_onboarding_shortcut_demo: bool,
+) {
+    if should_block_clipboard_hide_for_shortcut_demo(
+        ONBOARDING_ACTIVE.load(Ordering::SeqCst),
+        allow_onboarding_shortcut_demo,
+    ) {
         return;
     }
     remember_clipboard_monitor(window);
@@ -1700,7 +1753,10 @@ fn hide_clipboard_window(window: &tauri::WebviewWindow) {
         let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if clipboard_hide_blocked() {
+        if should_block_clipboard_hide_for_shortcut_demo(
+            ONBOARDING_ACTIVE.load(Ordering::SeqCst),
+            allow_onboarding_shortcut_demo,
+        ) {
             return;
         }
         if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
@@ -1718,7 +1774,9 @@ fn hide_clipboard_window(window: &tauri::WebviewWindow) {
 
     let window = window.clone();
     std::thread::spawn(move || {
-        if let Err(err) = finish_animated_hide_window(&window, generation) {
+        if let Err(err) =
+            finish_animated_hide_window(&window, generation, allow_onboarding_shortcut_demo)
+        {
             error!("Failed to hide clipboard window: {:?}", err);
         }
     });
@@ -1855,9 +1913,11 @@ async fn finish_hide_clipboard_window(
     window: tauri::WebviewWindow,
     generation: u64,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || finish_animated_hide_window(&window, generation))
-        .await
-        .map_err(|err| err.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        finish_animated_hide_window(&window, generation, false)
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
@@ -2065,6 +2125,7 @@ fn begin_onboarding_impl(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow,
         .get_webview_window("clipboard")
         .ok_or_else(|| "clipboard window not found".to_string())?;
     ONBOARDING_ACTIVE.store(true, Ordering::SeqCst);
+    ONBOARDING_SHORTCUT_DEMO_ENABLED.store(false, Ordering::SeqCst);
     show_clipboard_window(&window);
     Ok(window)
 }
@@ -2183,10 +2244,17 @@ fn notify_onboarding_permission_status_changed(
 fn complete_onboarding(app: tauri::AppHandle) -> Result<(), String> {
     mark_onboarding_completed(&app);
     ONBOARDING_ACTIVE.store(false, Ordering::SeqCst);
+    ONBOARDING_SHORTCUT_DEMO_ENABLED.store(false, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("clipboard") {
         let _ = window.emit("tutorial-completed", ());
     }
     Ok(())
+}
+
+#[tauri::command]
+fn set_onboarding_shortcut_demo_enabled(enabled: bool) {
+    let active = ONBOARDING_ACTIVE.load(Ordering::SeqCst);
+    ONBOARDING_SHORTCUT_DEMO_ENABLED.store(enabled && active, Ordering::SeqCst);
 }
 
 fn get_or_create_preview_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
@@ -4173,7 +4241,12 @@ fn toggle_clipboard_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("clipboard") {
         match window.is_visible() {
             Ok(true) => {
-                hide_clipboard_window(&window);
+                let allow_onboarding_shortcut_demo =
+                    ONBOARDING_SHORTCUT_DEMO_ENABLED.load(Ordering::SeqCst);
+                hide_clipboard_window_with_onboarding_policy(
+                    &window,
+                    allow_onboarding_shortcut_demo,
+                );
             }
             Ok(false) => {
                 show_clipboard_window(&window);
@@ -10109,6 +10182,7 @@ fn main() {
             begin_hide_clipboard_window,
             hide_clipboard_if_inactive,
             set_clipboard_blur_hide_suppressed,
+            set_onboarding_shortcut_demo_enabled,
             begin_onboarding,
             minimize_current_window,
             open_config_window,

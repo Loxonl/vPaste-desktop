@@ -41,7 +41,15 @@ const motionPresetNames: MotionPresetName[] = [
     "popover",
     "toast",
     "panel",
+    "panelForward",
+    "panelBackward",
     "listItem",
+    "gridItem",
+    "shortcutHint",
+    "stateIndicator",
+    "preview",
+    "submenuLeft",
+    "submenuRight",
     "selectionIndicator",
 ];
 
@@ -51,6 +59,7 @@ function MotionPresetTile({ name }: { name: MotionPresetName }) {
         <m.div
             className={styles.motionPresetTile}
             data-motion-preset={name}
+            custom={name === "preview" ? 1 : undefined}
             variants={variants}
             initial="initial"
             animate="animate"

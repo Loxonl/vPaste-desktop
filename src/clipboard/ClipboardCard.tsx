@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { forwardRef, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { error } from "@tauri-apps/plugin-log";
+import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
 import { formatRelativeTime } from "../lang";
@@ -12,17 +13,30 @@ import {
     WHITE_HEADER_TEXT_COLOR,
 } from "./clipboardHeaderColor";
 import { isSingleImageFileItem } from "./itemPresentation";
-import { m, useMotionPreset } from "../ui/motion";
+import {
+    AnimatePresence,
+    m,
+    motionSprings,
+    motionTokens,
+    useAnimate,
+    useMotionPreset,
+    useReducedMotionConfig,
+} from "../ui/motion";
+
+const FILTER_RESULT_STAGGER_GROUP_SIZE = 12;
 
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
 
 type ClipboardCardProps = {
     item: Item;
     selected: boolean;
+    selectionMode?: boolean;
     simulatedHover: boolean;
     refreshKey: number;
     searchQuery: string;
     shortcutHint?: string;
+    filterMotionRequestSeq?: number;
+    filterMotionIndex: number;
     mediaPlaybackReady: boolean;
     t: TFunction;
     onContextMenu: (item: Item, x: number, y: number) => void;
@@ -104,18 +118,25 @@ function dominantColorFromImage(image: HTMLImageElement): string | null {
     }
 }
 
-function ClipboardCardComponent({
+const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(function ClipboardCardComponent({
     item,
     selected,
+    selectionMode = false,
     simulatedHover,
     refreshKey,
     searchQuery,
     shortcutHint,
+    filterMotionRequestSeq,
+    filterMotionIndex,
     mediaPlaybackReady,
     t,
     onContextMenu,
-}: ClipboardCardProps) {
-    const cardMotion = useMotionPreset("listItem");
+}: ClipboardCardProps, ref) {
+    const cardMotion = useMotionPreset("gridItem");
+    const shortcutHintMotion = useMotionPreset("shortcutHint");
+    const stateIndicatorMotion = useMotionPreset("stateIndicator");
+    const reduceMotion = Boolean(useReducedMotionConfig());
+    const [filterMotionRef, animateFilterMotion] = useAnimate<HTMLDivElement>();
     const dragStateRef = useRef<{ x: number, y: number, dragging: boolean } | null>(null);
     const visualType = isSingleImageFileItem(item) ? ItemType.Image : item.getType();
     const typeLabel = getTypeLabel(visualType, t);
@@ -143,14 +164,48 @@ function ClipboardCardComponent({
         setHeaderColor(headerColorFromSource(item.getTitleColor()));
     }, [item.getHash(), item.getTitleColor()]);
 
+    useLayoutEffect(() => {
+        if (filterMotionRequestSeq === undefined || reduceMotion) {
+            filterMotionRef.current.style.transform = "";
+            return;
+        }
+
+        const controls = animateFilterMotion(
+            filterMotionRef.current,
+            { x: [motionTokens.distance.emphasis, 0] },
+            {
+                ...motionSprings.gentle,
+                delay: (filterMotionIndex % FILTER_RESULT_STAGGER_GROUP_SIZE) * motionTokens.stagger.tight,
+            },
+        );
+        return () => {
+            controls.stop();
+            filterMotionRef.current.style.transform = "";
+        };
+    }, [
+        animateFilterMotion,
+        filterMotionIndex,
+        filterMotionRef,
+        filterMotionRequestSeq,
+        reduceMotion,
+    ]);
+
     return (
         <m.div
+            ref={ref}
             className={classes(styles, "card-motion-item")}
             variants={cardMotion}
-            initial="initial"
+            data-motion-preset="gridItem"
+            data-card-hash={item.getHash() as string}
+            initial={filterMotionRequestSeq === undefined ? "initial" : false}
             animate="animate"
             exit="exit"
         >
+            <div
+                ref={filterMotionRef}
+                className={classes(styles, "card-filter-motion-item")}
+                data-filter-motion-hash={item.getHash() as string}
+            >
             <div
             className={classes(styles, `clipboard-card ${selected ? 'selected' : ''} ${simulatedHover ? 'simulated-hover' : ''}`)}
             data-hash={item.getHash() as string}
@@ -200,6 +255,23 @@ function ClipboardCardComponent({
                 onContextMenu(item, event.clientX, event.clientY);
             }}
         >
+            <AnimatePresence mode="wait" initial={false}>
+                {selectionMode && selected && (
+                    <m.span
+                        key="queue-selection"
+                        className={classes(styles, "queue-selection-indicator")}
+                        data-motion-preset="stateIndicator"
+                        data-motion-state="queue-selection"
+                        variants={stateIndicatorMotion}
+                        initial="initial"
+                        animate="animate"
+                        exit="exit"
+                        aria-hidden="true"
+                    >
+                        <CheckCircleRoundedIcon fontSize="inherit" />
+                    </m.span>
+                )}
+            </AnimatePresence>
             {itemTagList.length > 0 && (
                 <div className={classes(styles, `card-item-tags ${itemTagList.length > 2 ? 'scrolling' : ''}`)} title={itemTagList.map(tag => tag.name).join(", ")}>
                     <div className={classes(styles, "card-item-tags-track")}>
@@ -231,7 +303,23 @@ function ClipboardCardComponent({
                     <span className={classes(styles, "card-timestamp")}>{timestamp}</span>
                 </div>
                 <span className={classes(styles, "card-meta")}>
-                    {item.isFavorite() && <span className={classes(styles, "favorite-icon")} title={t("clipboard.favorite")}>★</span>}
+                    <AnimatePresence mode="wait" initial={false}>
+                        {item.isFavorite() && (
+                            <m.span
+                                key="favorite"
+                                className={classes(styles, "favorite-icon")}
+                                data-motion-preset="stateIndicator"
+                                data-motion-state="favorite"
+                                variants={stateIndicatorMotion}
+                                initial="initial"
+                                animate="animate"
+                                exit="exit"
+                                title={t("clipboard.favorite")}
+                            >
+                                ★
+                            </m.span>
+                        )}
+                    </AnimatePresence>
                 </span>
                 {appIconSrc && (
                     <div className={classes(styles, `app-icon-crop ${isMacosAppIcon ? 'macos-app-icon-crop' : ''}`)} title={t("clipboard.source", { source: item.getAppSource() || t("clipboard.unknownApp") })}>
@@ -258,20 +346,36 @@ function ClipboardCardComponent({
                     t={t}
                     onGifFormatChange={updateGifFormat}
                 />
-                {shortcutHint && <div className={classes(styles, "alt-card-hint")}>{shortcutHint}</div>}
+                {shortcutHint && (
+                    <m.div
+                        className={classes(styles, "alt-card-hint")}
+                        variants={shortcutHintMotion}
+                        data-motion-preset="shortcutHint"
+                        initial="initial"
+                        animate="animate"
+                    >
+                        {shortcutHint}
+                    </m.div>
+                )}
+            </div>
             </div>
             </div>
         </m.div>
     );
-}
+});
+
+ClipboardCardComponent.displayName = "ClipboardCardComponent";
 
 const ClipboardCard = React.memo(ClipboardCardComponent, (prev, next) => (
     prev.item === next.item
     && prev.selected === next.selected
+    && prev.selectionMode === next.selectionMode
     && prev.simulatedHover === next.simulatedHover
     && prev.refreshKey === next.refreshKey
     && prev.searchQuery === next.searchQuery
     && prev.shortcutHint === next.shortcutHint
+    && prev.filterMotionRequestSeq === next.filterMotionRequestSeq
+    && prev.filterMotionIndex === next.filterMotionIndex
     && prev.mediaPlaybackReady === next.mediaPlaybackReady
     && prev.t === next.t
 ));

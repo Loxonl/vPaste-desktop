@@ -42,6 +42,35 @@ describe("Motion system", () => {
         expect(reducedAnimate).not.toHaveProperty("scaleX");
     });
 
+    it("provides bounded presets for filtering, status, preview navigation, directional panels, and submenus", () => {
+        expect(motionPresetFor("gridItem", false).initial).toMatchObject({ opacity: 0, x: 16 });
+        expect(motionPresetFor("shortcutHint", false).initial).toMatchObject({ opacity: 0, scale: 0.9 });
+        expect(motionPresetFor("panelForward", false).initial).toMatchObject({ opacity: 0, x: 10 });
+        expect(motionPresetFor("panelBackward", false).initial).toMatchObject({ opacity: 0, x: -10 });
+        expect(motionPresetFor("submenuLeft", false).initial).toMatchObject({ opacity: 0, x: 6 });
+        expect(motionPresetFor("submenuRight", false).initial).toMatchObject({ opacity: 0, x: -6 });
+        expect(motionPresetFor("stateIndicator", false).initial).toMatchObject({ opacity: 0, scale: 0.86 });
+        expect(motionPresetFor("preview", false).initial).toEqual(expect.any(Function));
+        expect((motionPresetFor("preview", false).initial as (direction: number) => Record<string, unknown>)(-1))
+            .toMatchObject({ opacity: 0, x: -10 });
+        expect((motionPresetFor("preview", false).initial as (direction: number) => Record<string, unknown>)(1))
+            .toMatchObject({ opacity: 0, x: 10 });
+
+        for (const name of [
+            "gridItem",
+            "shortcutHint",
+            "panelForward",
+            "panelBackward",
+            "submenuLeft",
+            "submenuRight",
+            "stateIndicator",
+            "preview",
+        ] as const) {
+            const reduced = motionPresetFor(name, true).initial as Record<string, unknown>;
+            expect(reduced).toEqual({ opacity: 0 });
+        }
+    });
+
     it("uses the MotionConfig reduced-motion policy for shared presets", () => {
         function Harness() {
             const preset = useMotionPreset("popover");

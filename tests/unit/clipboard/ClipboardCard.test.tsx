@@ -41,6 +41,7 @@ describe("clipboard card header", () => {
                 simulatedHover={false}
                 refreshKey={0}
                 searchQuery=""
+                filterMotionIndex={0}
                 mediaPlaybackReady={false}
                 t={key => key}
                 onContextMenu={vi.fn()}
@@ -80,6 +81,7 @@ describe("clipboard card header", () => {
                 simulatedHover={false}
                 refreshKey={0}
                 searchQuery=""
+                filterMotionIndex={0}
                 mediaPlaybackReady={false}
                 t={key => key}
                 onContextMenu={vi.fn()}
@@ -89,5 +91,69 @@ describe("clipboard card header", () => {
         const header = screen.getByText("type.text").closest("[style]");
         expect(header).toHaveStyle({ background: adjustedColor });
         expect(screen.getByText("clipboard.richFormat")).toHaveStyle({ color: adjustedColor });
+    });
+
+    it("uses the shared grid motion and animates the Alt shortcut hint independently", () => {
+        const item = new Item(3, "motion-card", ItemType.Text, "content", Date.now());
+
+        render(
+            <ClipboardCard
+                item={item}
+                selected={false}
+                simulatedHover={false}
+                refreshKey={0}
+                searchQuery=""
+                shortcutHint="1"
+                filterMotionIndex={0}
+                mediaPlaybackReady={false}
+                t={key => key}
+                onContextMenu={vi.fn()}
+            />,
+        );
+
+        expect(document.querySelector('[data-motion-preset="gridItem"]')).toHaveAttribute(
+            "data-card-hash",
+            "motion-card",
+        );
+        expect(document.querySelector('[data-filter-motion-hash="motion-card"]')).toBeInTheDocument();
+        expect(screen.getByText("1")).toHaveAttribute("data-motion-preset", "shortcutHint");
+    });
+
+    it("uses shared state motion for favorite and paste-queue selection indicators", () => {
+        const favoriteItem = new Item(
+            4,
+            "favorite-motion-card",
+            ItemType.Text,
+            "content",
+            Date.now(),
+            undefined,
+            "",
+            "",
+            1,
+        );
+
+        render(
+            <ClipboardCard
+                item={favoriteItem}
+                selected
+                selectionMode
+                simulatedHover={false}
+                refreshKey={0}
+                searchQuery=""
+                filterMotionIndex={0}
+                mediaPlaybackReady={false}
+                t={key => key}
+                onContextMenu={vi.fn()}
+            />,
+        );
+
+        expect(document.querySelector('[data-motion-state="favorite"]')).toHaveAttribute(
+            "data-motion-preset",
+            "stateIndicator",
+        );
+        expect(document.querySelector('[data-motion-state="queue-selection"]')).toHaveAttribute(
+            "data-motion-preset",
+            "stateIndicator",
+        );
     });
 });

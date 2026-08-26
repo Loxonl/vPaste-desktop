@@ -32,6 +32,8 @@ type PreviewPayload = {
     richHtml?: string;
 };
 
+type PreviewNavigationDirection = -1 | 0 | 1;
+
 function parseFilePaths(content: string): string[] {
     try {
         const parsed = JSON.parse(content);
@@ -482,28 +484,43 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
 
 export default function Preview() {
     const { t } = useLanguage();
-    const contentMotion = useMotionPreset("fade");
+    const contentMotion = useMotionPreset("preview");
+    const waitingMotion = useMotionPreset("fade");
     const [payload, setPayload] = useState<PreviewPayload | null>(null);
+    const [payloadRevision, setPayloadRevision] = useState(0);
+    const [navigationDirection, setNavigationDirection] = useState<PreviewNavigationDirection>(0);
     const [pinned, setPinned] = useState(false);
     const openedAtRef = useRef(0);
     const pinnedRef = useRef(false);
+    const pendingNavigationDirectionRef = useRef<PreviewNavigationDirection>(0);
 
     useEffect(() => {
         const unlisten = listen<PreviewPayload>("preview-item", event => {
             openedAtRef.current = Date.now();
             pinnedRef.current = false;
             setPinned(false);
+            setNavigationDirection(pendingNavigationDirectionRef.current);
+            pendingNavigationDirectionRef.current = 0;
+            setPayloadRevision(revision => revision + 1);
             setPayload(event.payload);
         });
         const unlistenClear = listen("preview-clear", () => {
+            pendingNavigationDirectionRef.current = 0;
+            setNavigationDirection(0);
             setPayload(null);
         });
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === "ArrowRight" || event.key === "ArrowLeft" || event.key === "Tab") {
                 event.preventDefault();
                 const direction = event.key === "ArrowLeft" || (event.key === "Tab" && event.shiftKey) ? -1 : 1;
+                pendingNavigationDirectionRef.current = direction;
                 void emitTo("clipboard", "preview-navigate-selection", { direction, key: event.key })
-                    .catch(e => error(`Failed to navigate preview selection: ${e}`));
+                    .catch(e => {
+                        if (pendingNavigationDirectionRef.current === direction) {
+                            pendingNavigationDirectionRef.current = 0;
+                        }
+                        error(`Failed to navigate preview selection: ${e}`);
+                    });
                 return;
             }
             if (event.key === "Escape" || event.key === " ") {
@@ -538,11 +555,18 @@ export default function Preview() {
                 {pinned ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
             </ToolbarIconButton>
             <div className={styles["preview-content"]}>
-                <AnimatePresence mode="wait" initial={false}>
+                <AnimatePresence mode="wait" initial={false} custom={navigationDirection}>
                     <m.div
-                        key={payload ? "preview-content" : "preview-waiting"}
+                        key={payload ? `preview-content-${payloadRevision}` : "preview-waiting"}
                         className={styles["preview-state"]}
-                        variants={contentMotion}
+                        data-motion-preset={payload ? "preview" : "fade"}
+                        data-preview-direction={navigationDirection < 0
+                            ? "backward"
+                            : navigationDirection > 0
+                                ? "forward"
+                                : "neutral"}
+                        custom={navigationDirection}
+                        variants={payload ? contentMotion : waitingMotion}
                         initial="initial"
                         animate="animate"
                         exit="exit"

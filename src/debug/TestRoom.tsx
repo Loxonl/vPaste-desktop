@@ -91,6 +91,27 @@ const CASE_GROUPS = [
         ],
     },
     {
+        id: "paste-queue",
+        name: "粘贴队列",
+        cases: [
+            { id: "paste-queue-mixed", code: "TC-QUEUE-01", name: "多类型入队", description: "写入六种类型并打开真实队列。" },
+            { id: "paste-queue-order", code: "TC-QUEUE-02", name: "顺序与重新入队", description: "验证队列顺序和重复项移到队尾。" },
+            { id: "paste-queue-undo", code: "TC-QUEUE-03", name: "消耗与撤销", description: "验证消费后可在时限内恢复。" },
+            { id: "paste-queue-target", code: "TC-QUEUE-04", name: "外部目标与系统粘贴", description: "准备队列项，切换外部 App 后手动验证。" },
+        ],
+    },
+    {
+        id: "external-drag",
+        name: "拖拽复制",
+        cases: [
+            { id: "external-drag-values", code: "TC-DRAG-01", name: "文本、链接与颜色", description: "生成三种可拖出项，拖到外部 App 验证。" },
+            { id: "external-drag-png", code: "TC-DRAG-02", name: "PNG 图片", description: "生成 PNG，验证原生图片拖出。" },
+            { id: "external-drag-gif", code: "TC-DRAG-03", name: "GIF 动图", description: "生成 GIF，验证拖出后仍保留动画。" },
+            { id: "external-drag-single-file", code: "TC-DRAG-04", name: "单文件", description: "生成单文件项，验证原生文件拖出。" },
+            { id: "external-drag-multiple-files", code: "TC-DRAG-05", name: "多文件", description: "生成多文件项，验证全部路径一次拖出。" },
+        ],
+    },
+    {
         id: "boundary",
         name: "边界测试",
         cases: [

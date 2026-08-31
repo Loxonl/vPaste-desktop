@@ -549,6 +549,15 @@ test.describe("window shells", () => {
         await expect(page.getByText("TC-BOUNDARY-01 · 超长文本")).toBeVisible();
         await expect(page.getByText("TC-BOUNDARY-02 · 超大图片")).toBeVisible();
         await expect(page.getByText("TC-BOUNDARY-03 · 大型 GIF")).toBeVisible();
+        await expect(page.getByText("TC-QUEUE-01 · 多类型入队")).toBeVisible();
+        await expect(page.getByText("TC-QUEUE-02 · 顺序与重新入队")).toBeVisible();
+        await expect(page.getByText("TC-QUEUE-03 · 消耗与撤销")).toBeVisible();
+        await expect(page.getByText("TC-QUEUE-04 · 外部目标与系统粘贴")).toBeVisible();
+        await expect(page.getByText("TC-DRAG-01 · 文本、链接与颜色")).toBeVisible();
+        await expect(page.getByText("TC-DRAG-02 · PNG 图片")).toBeVisible();
+        await expect(page.getByText("TC-DRAG-03 · GIF 动图")).toBeVisible();
+        await expect(page.getByText("TC-DRAG-04 · 单文件")).toBeVisible();
+        await expect(page.getByText("TC-DRAG-05 · 多文件")).toBeVisible();
         await expect(page.locator("article h2").allTextContents()).resolves.toEqual([
             "文本与富文本",
             "Excel 与表格",
@@ -556,6 +565,8 @@ test.describe("window shells", () => {
             "链接",
             "文件",
             "颜色",
+            "粘贴队列",
+            "拖拽复制",
             "边界测试",
             "主窗口生命周期",
             "功能与元数据",

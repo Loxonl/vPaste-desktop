@@ -927,6 +927,48 @@ fn run_clipboard_case(case_id: &str) -> Result<String, String> {
     ))
 }
 
+fn test_case_sample(
+    id: &str,
+    name: &str,
+    item_type: &str,
+    value: &str,
+    app_source: &str,
+) -> SampleItem {
+    SampleItem {
+        id: id.to_string(),
+        name: name.to_string(),
+        item_type: item_type.to_string(),
+        value: value.to_string(),
+        preset_id: String::new(),
+        app_source: app_source.to_string(),
+        time_offset_ms: None,
+    }
+}
+
+fn insert_test_case_samples(
+    case_id: &str,
+    items: &[SampleItem],
+) -> Result<(u64, Vec<String>), String> {
+    let created_at_ms = clipboard::current_timestamp_millis();
+    let run_id = CASE_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let run_scope = format!("case-{}-{}-{}", case_id, created_at_ms, run_id);
+    let mut hashes = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        match insert_sample_item(&run_scope, item, created_at_ms.saturating_sub(index as u64)) {
+            Ok(hash) => hashes.push(hash),
+            Err(err) => {
+                let _ = delete_hashes(&hashes);
+                return Err(err);
+            }
+        }
+    }
+    if let Err(err) = record_test_case_history_hashes(created_at_ms, hashes.clone()) {
+        let _ = delete_hashes(&hashes);
+        return Err(format!("测试历史登记失败：{}", err));
+    }
+    Ok((created_at_ms, hashes))
+}
+
 fn case_history_identity(case_id: &str) -> (u64, String) {
     let created_at_ms = clipboard::current_timestamp_millis();
     let run_id = CASE_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1283,8 +1325,8 @@ fn animated_gif_bytes() -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn run_gif_history_case() -> Result<String, String> {
-    let (created_at_ms, hash) = case_history_identity("gif-history");
+fn run_gif_history_case(case_id: &str) -> Result<String, String> {
+    let (created_at_ms, hash) = case_history_identity(case_id);
     let gif = animated_gif_bytes()?;
     let path = clipboard::save_to_disk(&gif, &hash);
     let item = basic_item(hash.clone(), path, ItemType::Image, "QQ", created_at_ms);
@@ -1299,7 +1341,209 @@ fn run_gif_history_case() -> Result<String, String> {
     {
         return Err("GIF 格式或历史类型不正确".to_string());
     }
-    Ok("双帧 GIF 已写入，测试历史已保留".to_string())
+    if case_id == "external-drag-gif" {
+        Ok("GIF 已生成；请从主面板拖到外部 App，确认仍可播放".to_string())
+    } else {
+        Ok("双帧 GIF 已写入，测试历史已保留".to_string())
+    }
+}
+
+fn paste_queue_case_samples(case_id: &str) -> Result<Vec<SampleItem>, String> {
+    let samples = match case_id {
+        "paste-queue-mixed" => vec![
+            test_case_sample(
+                "text",
+                "队列文本",
+                "Text",
+                "vPaste 队列测试文本",
+                "Notepad3",
+            ),
+            test_case_sample(
+                "rich",
+                "队列富文本",
+                "RichText",
+                "rich-launch",
+                "Microsoft Word",
+            ),
+            test_case_sample("link", "队列链接", "Link", "link-vpaste", "Google Chrome"),
+            test_case_sample("color", "队列颜色", "Color", "color-indigo", "Figma"),
+            test_case_sample("image", "队列图片", "Image", "image-grid", "PixPin"),
+            test_case_sample("file", "队列文件", "File", "file-brief", "File Explorer"),
+        ],
+        "paste-queue-order" => (1..=3)
+            .map(|index| {
+                test_case_sample(
+                    &format!("order-{index}"),
+                    &format!("队列顺序 {index}"),
+                    "Text",
+                    &format!("vPaste 队列顺序测试 {index}"),
+                    "Notepad3",
+                )
+            })
+            .collect(),
+        "paste-queue-undo" => vec![test_case_sample(
+            "undo",
+            "队列撤销",
+            "Text",
+            "vPaste 队列消费与撤销测试",
+            "Notepad3",
+        )],
+        "paste-queue-target" => vec![
+            test_case_sample(
+                "target-first",
+                "外部目标 1",
+                "Text",
+                "vPaste 外部目标测试 · 第一项",
+                "Notepad3",
+            ),
+            test_case_sample(
+                "target-second",
+                "外部目标 2",
+                "Text",
+                "vPaste 外部目标测试 · 第二项",
+                "Notepad3",
+            ),
+        ],
+        _ => return Err(format!("未知粘贴队列测试用例：{}", case_id)),
+    };
+    Ok(samples)
+}
+
+fn run_paste_queue_case_with_active_queue(case_id: &str) -> Result<String, String> {
+    let samples = paste_queue_case_samples(case_id)?;
+    let (_, hashes) = insert_test_case_samples(case_id, &samples)?;
+    crate::paste_queue::run_user_operation(|| match case_id {
+        "paste-queue-mixed" | "paste-queue-target" => crate::paste_queue::add_items(&hashes),
+        "paste-queue-order" => {
+            crate::paste_queue::add_items(&hashes)?;
+            crate::paste_queue::add_items(&hashes[..1])?;
+            let expected = [&hashes[1..], &hashes[..1]].concat();
+            let actual = crate::paste_queue::ordered_hashes()?;
+            if !actual.ends_with(&expected) {
+                return Err("重复入队后未移动到队尾".to_string());
+            }
+            Ok(())
+        }
+        "paste-queue-undo" => {
+            crate::paste_queue::add_items(&hashes)?;
+            crate::paste_queue::consume(&hashes[0])?;
+            if crate::paste_queue::ordered_hashes()?.contains(&hashes[0]) {
+                return Err("队列项消费后仍然存在".to_string());
+            }
+            if !crate::paste_queue::undo_consume()?
+                || crate::paste_queue::ordered_hashes()?.first() != hashes.first()
+            {
+                return Err("队列项未能在撤销时限内恢复".to_string());
+            }
+            Ok(())
+        }
+        _ => unreachable!(),
+    })?;
+
+    match case_id {
+        "paste-queue-mixed" => Ok("六种粘贴项已写入并进入真实队列".to_string()),
+        "paste-queue-order" => Ok("三项按顺序入队，重复项已移动到队尾".to_string()),
+        "paste-queue-undo" => Ok("队列项已消费并在撤销时限内恢复".to_string()),
+        "paste-queue-target" => {
+            Ok("已准备两个队列项；请切换外部 App 后点击队列项或使用 Ctrl/Command+V".to_string())
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn run_paste_queue_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
+    crate::set_paste_queue_active_impl(app, true)?;
+    let message = run_paste_queue_case_with_active_queue(case_id)?;
+    crate::paste_queue::emit_state(app);
+    Ok(message)
+}
+
+fn external_drag_case_samples(case_id: &str) -> Result<Vec<SampleItem>, String> {
+    let samples = match case_id {
+        "external-drag-values" => vec![
+            test_case_sample("text", "拖拽文本", "Text", "vPaste 可拖拽文本", "Notepad3"),
+            test_case_sample("link", "拖拽链接", "Link", "link-vpaste", "Google Chrome"),
+            test_case_sample("color", "拖拽颜色", "Color", "color-indigo", "Figma"),
+        ],
+        "external-drag-png" => vec![test_case_sample(
+            "png",
+            "拖拽 PNG",
+            "Image",
+            "image-grid",
+            "PixPin",
+        )],
+        "external-drag-single-file" => vec![test_case_sample(
+            "single-file",
+            "拖拽单文件",
+            "File",
+            "file-brief",
+            "File Explorer",
+        )],
+        "external-drag-multiple-files" => vec![test_case_sample(
+            "multiple-files",
+            "拖拽多文件",
+            "File",
+            "file-assets",
+            "File Explorer",
+        )],
+        _ => return Err(format!("未知拖拽复制测试用例：{}", case_id)),
+    };
+    Ok(samples)
+}
+
+fn run_external_drag_case(case_id: &str) -> Result<String, String> {
+    if case_id == "external-drag-gif" {
+        return run_gif_history_case(case_id);
+    }
+    let samples = external_drag_case_samples(case_id)?;
+    let (_, hashes) = insert_test_case_samples(case_id, &samples)?;
+    let stored = hashes
+        .iter()
+        .map(|hash| {
+            clipboard::try_get_by_hash(hash)
+                .ok_or_else(|| "拖拽测试项未能从历史数据库读回".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    match case_id {
+        "external-drag-values" => {
+            let types = stored
+                .iter()
+                .map(|item| item.item_type.clone())
+                .collect::<Vec<_>>();
+            if types != [ItemType::Text, ItemType::Link, ItemType::Color] {
+                return Err("文本、链接或颜色拖拽项类型不正确".to_string());
+            }
+        }
+        "external-drag-png" => {
+            let bytes = crate::history_store::read_file(&stored[0].content)?;
+            if stored[0].item_type != ItemType::Image || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                return Err("PNG 拖拽项格式不正确".to_string());
+            }
+        }
+        "external-drag-single-file" | "external-drag-multiple-files" => {
+            let paths = serde_json::from_str::<Vec<String>>(&stored[0].content)
+                .map_err(|err| err.to_string())?;
+            let expected = if case_id == "external-drag-single-file" {
+                1
+            } else {
+                2
+            };
+            if paths.len() != expected || paths.iter().any(|path| !Path::new(path).is_file()) {
+                return Err("文件拖拽项路径不完整".to_string());
+            }
+        }
+        _ => unreachable!(),
+    }
+
+    let message = match case_id {
+        "external-drag-values" => "文本、链接和颜色已生成；请从主面板拖到外部 App",
+        "external-drag-png" => "PNG 已生成；请从主面板拖到外部 App",
+        "external-drag-single-file" => "单文件项已生成；请从主面板拖到外部 App",
+        "external-drag-multiple-files" => "多文件项已生成；请确认外部 App 一次收到全部文件",
+        _ => unreachable!(),
+    };
+    Ok(message.to_string())
 }
 
 fn write_test_room_groups_to_history(groups: Vec<SampleGroup>) -> Result<usize, String> {
@@ -1498,7 +1742,15 @@ fn run_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
         }
         "excel-chart" => run_excel_chart_case(),
         "qq-two-images" => run_qq_two_images_case(),
-        "gif-history" => run_gif_history_case(),
+        "gif-history" => run_gif_history_case(case_id),
+        "paste-queue-mixed" | "paste-queue-order" | "paste-queue-undo" | "paste-queue-target" => {
+            run_paste_queue_case(app, case_id)
+        }
+        "external-drag-values"
+        | "external-drag-png"
+        | "external-drag-gif"
+        | "external-drag-single-file"
+        | "external-drag-multiple-files" => run_external_drag_case(case_id),
         "boundary-long-text" => run_long_text_boundary_case(),
         "boundary-large-image" => run_large_image_boundary_case(),
         "boundary-large-gif" => run_large_gif_boundary_case(),
@@ -1589,6 +1841,108 @@ mod tests {
                 Some(expected_type)
             );
         }
+    }
+
+    #[test]
+    fn paste_queue_cases_use_the_real_queue_and_keep_their_history() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().to_string());
+        crate::config::save(crate::config::Config {
+            storage_dir: root.path().to_string_lossy().to_string(),
+            ..Default::default()
+        });
+        crate::clipboard::db::init();
+        crate::paste_queue::set_active(true);
+
+        let cases = [
+            "paste-queue-mixed",
+            "paste-queue-order",
+            "paste-queue-undo",
+            "paste-queue-target",
+        ];
+        for case_id in cases {
+            run_paste_queue_case_with_active_queue(case_id).unwrap();
+        }
+        let queued_hashes = crate::paste_queue::ordered_hashes().unwrap();
+        let manifest = load_case_history_manifest().unwrap();
+        let history_hashes = manifest
+            .runs
+            .iter()
+            .flat_map(|run| run.hashes.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+
+        crate::paste_queue::set_active(false);
+        assert_eq!(queued_hashes.len(), 12);
+        assert_eq!(manifest.runs.len(), 4);
+        assert_eq!(history_hashes.len(), 12);
+        assert!(history_hashes
+            .iter()
+            .all(|hash| clipboard::try_get_by_hash(hash).is_some()));
+        assert_eq!(
+            cleanup_test_case_history_for_date(&current_local_date()).unwrap(),
+            12
+        );
+        crate::config::save(crate::config::Config::default());
+    }
+
+    #[test]
+    fn external_drag_cases_write_real_draggable_history_items() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().to_string());
+        crate::config::save(crate::config::Config {
+            storage_dir: root.path().to_string_lossy().to_string(),
+            ..Default::default()
+        });
+        crate::clipboard::db::init();
+
+        for case_id in [
+            "external-drag-values",
+            "external-drag-png",
+            "external-drag-gif",
+            "external-drag-single-file",
+            "external-drag-multiple-files",
+        ] {
+            run_external_drag_case(case_id).unwrap();
+        }
+        let manifest = load_case_history_manifest().unwrap();
+        let run_sizes = manifest
+            .runs
+            .iter()
+            .map(|run| run.hashes.len())
+            .collect::<Vec<_>>();
+        let stored = manifest
+            .runs
+            .iter()
+            .flat_map(|run| run.hashes.iter())
+            .map(|hash| clipboard::try_get_by_hash(hash).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(run_sizes, [3, 1, 1, 1, 1]);
+        assert_eq!(stored.len(), 7);
+        assert_eq!(
+            stored
+                .iter()
+                .filter(|item| item.item_type == ItemType::File)
+                .count(),
+            2
+        );
+        assert_eq!(
+            stored
+                .iter()
+                .filter(|item| item.item_type == ItemType::Image)
+                .count(),
+            2
+        );
+        assert_eq!(
+            cleanup_test_case_history_for_date(&current_local_date()).unwrap(),
+            7
+        );
+        crate::config::save(crate::config::Config::default());
     }
 
     #[test]
@@ -1761,7 +2115,7 @@ mod tests {
         }
         run_excel_chart_case().unwrap();
         run_qq_two_images_case().unwrap();
-        run_gif_history_case().unwrap();
+        run_gif_history_case("gif-history").unwrap();
 
         let today = current_local_date();
         let mut manifest = load_case_history_manifest().unwrap();

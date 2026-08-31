@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    clampRetainedScrollLeft,
     loadClipboardBehaviorConfig,
     mainShortcutFromConfig,
     resolveClipboardShowPreferences,
+    resolveClipboardShowPlan,
 } from "../../../src/clipboard/clipboardBehavior";
 import {
     DEFAULT_MAIN_SHORTCUT,
@@ -100,5 +102,78 @@ describe("clipboard behavior preferences", () => {
             tabQuickSelectEnabled: false,
         });
         expect(mainShortcutFromConfig(config)).toBe("Ctrl+Space");
+    });
+
+    it("resets only the panel state whose retention setting is disabled", () => {
+        expect(resolveClipboardShowPlan({
+            activeTab: "all",
+            linkAutoPreview: true,
+            pasteAsTextShortcut: "Shift+Enter",
+            quickInputEnabled: true,
+            retainLastPosition: true,
+            retainSearchHistory: true,
+            retainTabPosition: true,
+            searchWord: "needle",
+            tabQuickSelectEnabled: true,
+        }, true)).toEqual({
+            clearSearch: false,
+            resetPosition: false,
+            resetTab: false,
+            restorePosition: true,
+            selectFirstWithoutScrolling: false,
+        });
+
+        expect(resolveClipboardShowPlan({
+            activeTab: "all",
+            linkAutoPreview: true,
+            pasteAsTextShortcut: "Shift+Enter",
+            quickInputEnabled: true,
+            retainLastPosition: false,
+            retainSearchHistory: false,
+            retainTabPosition: false,
+            searchWord: "",
+            tabQuickSelectEnabled: true,
+        }, true)).toEqual({
+            clearSearch: true,
+            resetPosition: true,
+            resetTab: true,
+            restorePosition: false,
+            selectFirstWithoutScrolling: false,
+        });
+
+        expect(resolveClipboardShowPlan({
+            activeTab: "favorites",
+            linkAutoPreview: true,
+            pasteAsTextShortcut: "Shift+Enter",
+            quickInputEnabled: true,
+            retainLastPosition: true,
+            retainSearchHistory: false,
+            retainTabPosition: true,
+            searchWord: "needle",
+            tabQuickSelectEnabled: true,
+        }, true)).toEqual({
+            clearSearch: true,
+            resetPosition: false,
+            resetTab: false,
+            restorePosition: true,
+            selectFirstWithoutScrolling: false,
+        });
+    });
+
+    it("keeps a valid retained scroll offset and selects without scrolling only when needed", () => {
+        const preferences = resolveClipboardShowPreferences(
+            { retain_last_position: true },
+            "",
+            "all",
+        );
+
+        expect(resolveClipboardShowPlan(preferences, false))
+            .toMatchObject({
+                restorePosition: true,
+                selectFirstWithoutScrolling: true,
+            });
+        expect(clampRetainedScrollLeft(420, 1200, 600)).toBe(420);
+        expect(clampRetainedScrollLeft(900, 1200, 600)).toBe(600);
+        expect(clampRetainedScrollLeft(-20, 1200, 600)).toBe(0);
     });
 });

@@ -20,6 +20,14 @@ export type ClipboardShowPreferences = {
     tabQuickSelectEnabled: boolean;
 };
 
+export type ClipboardShowPlan = {
+    clearSearch: boolean;
+    resetPosition: boolean;
+    resetTab: boolean;
+    restorePosition: boolean;
+    selectFirstWithoutScrolling: boolean;
+};
+
 export async function loadClipboardBehaviorConfig(): Promise<ClipboardBehaviorConfig> {
     try {
         return JSON.parse(
@@ -58,4 +66,27 @@ export function resolveClipboardShowPreferences(
         searchWord: retainSearchHistory ? currentSearchWord : "",
         tabQuickSelectEnabled: config.tab_quick_select_enabled !== false,
     };
+}
+
+export function resolveClipboardShowPlan(
+    preferences: ClipboardShowPreferences,
+    hasSelection: boolean,
+): ClipboardShowPlan {
+    return {
+        clearSearch: !preferences.retainSearchHistory,
+        resetPosition: !preferences.retainLastPosition,
+        resetTab: !preferences.retainTabPosition,
+        restorePosition: preferences.retainLastPosition,
+        selectFirstWithoutScrolling:
+            preferences.retainLastPosition && !hasSelection,
+    };
+}
+
+export function clampRetainedScrollLeft(
+    scrollLeft: number,
+    scrollWidth: number,
+    clientWidth: number,
+): number {
+    const maxScrollLeft = Math.max(0, scrollWidth - clientWidth);
+    return Math.max(0, Math.min(scrollLeft, maxScrollLeft));
 }

@@ -7223,7 +7223,7 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
     }
     sync_tray_visibility(&app, config_struct.display_tray_icon)?;
 
-    config::update(|current| {
+    let saved_config = config::update(|current| {
         config_struct.last_update_check_at = current.last_update_check_at.clone();
         *current = config_struct;
     });
@@ -7231,6 +7231,7 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
     sync_tray_theme_for_mode(&app, &next_theme_mode);
     let _ = app.emit("language-changed", next_language);
     let _ = app.emit("theme-changed", next_theme_mode);
+    let _ = app.emit("clipboard-behavior-config-changed", saved_config);
     if let Err(err) = ensure_history_storage_dirs() {
         error!(
             "Failed to prepare history storage dirs after saving config: {}",

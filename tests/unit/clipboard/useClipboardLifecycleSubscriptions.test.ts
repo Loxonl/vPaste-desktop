@@ -34,6 +34,7 @@ function handlers() {
         onMount: vi.fn(),
         onUnlistenError: vi.fn(),
         tauri: {
+            onBehaviorConfigChanged: vi.fn(),
             onClipboardChanged: vi.fn(),
             onCustomTabsChanged: vi.fn(),
             onItemTagsChanged: vi.fn(),
@@ -69,6 +70,7 @@ describe("useClipboardLifecycleSubscriptions", () => {
             "tutorial-started",
             "tutorial-completed",
             "onboarding-permission-status-changed",
+            "clipboard-behavior-config-changed",
             "custom-tabs-changed",
             "item-tags-changed",
             "preview-navigate-selection",
@@ -77,6 +79,9 @@ describe("useClipboardLifecycleSubscriptions", () => {
 
         act(() => {
             tauri.callbacks.get("window-show")?.({ payload: { x: 12, y: 24 } });
+            tauri.callbacks.get("clipboard-behavior-config-changed")?.({
+                payload: { link_auto_preview: false },
+            });
             tauri.callbacks.get("custom-tabs-changed")?.({
                 payload: JSON.stringify({ activeId: "work", tabs: [] }),
             });
@@ -90,6 +95,8 @@ describe("useClipboardLifecycleSubscriptions", () => {
         });
 
         expect(callbacks.tauri.onWindowShow).toHaveBeenCalledWith({ x: 12, y: 24 });
+        expect(callbacks.tauri.onBehaviorConfigChanged)
+            .toHaveBeenCalledWith({ link_auto_preview: false });
         expect(callbacks.tauri.onCustomTabsChanged)
             .toHaveBeenCalledWith({ activeId: "work", tabs: [] });
         expect(callbacks.tauri.onItemTagsChanged)

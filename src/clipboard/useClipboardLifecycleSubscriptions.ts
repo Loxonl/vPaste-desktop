@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import type { CustomTab } from "./customTabs";
 import type { ItemTagsChangedPayload } from "./clipboardTags";
+import type { ClipboardBehaviorConfig } from "./clipboardBehavior";
 
 export type WindowShowPayload = {
     x: number;
@@ -19,6 +20,7 @@ export type PreviewNavigationPayload = {
 };
 
 type ClipboardTauriEventHandlers = {
+    onBehaviorConfigChanged: (config: ClipboardBehaviorConfig) => void;
     onClipboardChanged: () => void;
     onCustomTabsChanged: (payload: CustomTabsChangedPayload) => void;
     onItemTagsChanged: (payload: ItemTagsChangedPayload) => void;
@@ -89,6 +91,12 @@ export function useClipboardLifecycleSubscriptions(
                 subscriptions.tauri.onPermissionStatusChanged();
             },
         );
+        const unlistenBehaviorConfigChanged = listen<ClipboardBehaviorConfig>(
+            "clipboard-behavior-config-changed",
+            event => {
+                subscriptions.tauri.onBehaviorConfigChanged(event.payload);
+            },
+        );
         const unlistenCustomTabs = listen<CustomTabsChangedPayload | string | null>(
             "custom-tabs-changed",
             event => {
@@ -150,6 +158,10 @@ export function useClipboardLifecycleSubscriptions(
             removeTauriListener(
                 unlistenPermissionStatusChanged,
                 "onboarding permission status",
+            );
+            removeTauriListener(
+                unlistenBehaviorConfigChanged,
+                "clipboard behavior config",
             );
             window.removeEventListener(
                 "mousemove",

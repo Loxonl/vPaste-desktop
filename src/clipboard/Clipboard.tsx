@@ -87,8 +87,11 @@ import {
 import { useClipboardListInteractions } from "./useClipboardListInteractions";
 import { useClipboardAltHints } from "./useClipboardAltHints";
 import {
+    clampRetainedScrollLeft,
     loadClipboardBehaviorConfig,
     resolveClipboardShowPreferences,
+    resolveClipboardShowPlan,
+    type ClipboardShowPreferences,
 } from "./clipboardBehavior";
 import {
     DEFAULT_MAIN_SHORTCUT,
@@ -224,6 +227,7 @@ export default function Clipboard() {
     const [animationState, setAnimationState] = useState<'hidden' | 'entering' | 'entered' | 'exiting'>('entered');
     const containerRef = useRef<HTMLDivElement>(null);
     const cardsContainerRef = useRef<HTMLDivElement>(null);
+    const retainedScrollLeftRef = useRef(0);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const addTabButtonRef = useRef<HTMLButtonElement>(null);
     const toastTimerRef = useRef<number | null>(null);
@@ -350,6 +354,19 @@ export default function Clipboard() {
         if (scroll && cardsContainerRef.current) {
             cardsContainerRef.current.scrollLeft = 0;
         }
+    };
+
+    const restoreRetainedScrollPosition = () => {
+        const retainedScrollLeft = retainedScrollLeftRef.current;
+        window.requestAnimationFrame(() => {
+            const container = cardsContainerRef.current;
+            if (!container) return;
+            container.scrollLeft = clampRetainedScrollLeft(
+                retainedScrollLeft,
+                container.scrollWidth,
+                container.clientWidth,
+            );
+        });
     };
 
     useEffect(() => {
@@ -993,13 +1010,9 @@ export default function Clipboard() {
         void fetchHistory();
     };
 
-    const applyShowPreferences = async () => {
-        const config = await loadClipboardBehaviorConfig();
-        const preferences = resolveClipboardShowPreferences(
-            config,
-            searchWordRef.current,
-            activeTabRef.current,
-        );
+    const applyRuntimeBehaviorPreferences = (
+        preferences: ClipboardShowPreferences,
+    ) => {
         pasteAsTextShortcutRef.current = preferences.pasteAsTextShortcut;
         quickInputEnabledRef.current = preferences.quickInputEnabled;
         if (!quickInputEnabledRef.current) {
@@ -1007,23 +1020,34 @@ export default function Clipboard() {
         }
         tabQuickSelectEnabledRef.current = preferences.tabQuickSelectEnabled;
         linkAutoPreviewRef.current = preferences.linkAutoPreview;
+    };
 
-        if (!preferences.retainSearchHistory) {
+    const applyShowPreferences = async () => {
+        const config = await loadClipboardBehaviorConfig();
+        const preferences = resolveClipboardShowPreferences(
+            config,
+            searchWordRef.current,
+            activeTabRef.current,
+        );
+        const plan = resolveClipboardShowPlan(
+            preferences,
+            Boolean(selectedRef.current),
+        );
+        applyRuntimeBehaviorPreferences(preferences);
+
+        if (plan.clearSearch) {
             setSearchWord("");
             setSearchOpen(false);
         }
 
-        if (!preferences.retainTabPosition) {
+        if (plan.resetTab) {
             activeTabRef.current = "all";
             setActiveTab("all");
         }
 
-        if (!preferences.retainLastPosition) {
-            if (cardsContainerRef.current) {
-                cardsContainerRef.current.scrollLeft = 0;
-            }
+        if (plan.resetPosition) {
             selectFirstLoadedItem(true);
-        } else if (!selectedRef.current) {
+        } else if (plan.selectFirstWithoutScrolling) {
             selectFirstLoadedItem(false);
         }
 
@@ -1033,6 +1057,9 @@ export default function Clipboard() {
             && cachedFetch?.tab === preferences.activeTab
             && pageListRef.current.length > 0
         ) {
+            if (plan.restorePosition) {
+                restoreRetainedScrollPosition();
+            }
             return;
         }
 
@@ -1041,13 +1068,22 @@ export default function Clipboard() {
             preferences.activeTab,
             { selectFirst: !preferences.retainLastPosition },
         );
+        if (plan.restorePosition) {
+            restoreRetainedScrollPosition();
+        }
     };
 
     useClipboardLifecycleSubscriptions({
         tauri: {
+            onBehaviorConfigChanged: config => {
+                applyRuntimeBehaviorPreferences(resolveClipboardShowPreferences(
+                    config,
+                    searchWordRef.current,
+                    activeTabRef.current,
+                ));
+            },
             onWindowShow: payload => {
                 resetCardsPointerState();
-                selectFirstLoadedItem(true);
                 void applyShowPreferences();
                 if (payload) {
                     window.requestAnimationFrame(() => {
@@ -1069,6 +1105,7 @@ export default function Clipboard() {
                 setAnimationState("entered");
             },
             onWindowHide: () => {
+                retainedScrollLeftRef.current = cardsContainerRef.current?.scrollLeft ?? 0;
                 resetCardsPointerState();
                 searchRequestSeqRef.current += 1;
                 if (scrollRefreshTimerRef.current !== null) {

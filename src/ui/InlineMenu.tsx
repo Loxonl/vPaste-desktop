@@ -7,18 +7,19 @@ import MenuItem, { type MenuItemProps } from "@mui/material/MenuItem";
 import MenuList from "@mui/material/MenuList";
 import Paper, { type PaperProps } from "@mui/material/Paper";
 import { classes } from "./classNames";
-import { m, useMotionPreset } from "./motion";
+import { m, useMotionPreset, type MotionPresetName } from "./motion";
 import styles from "./InlineMenu.module.css";
 
 export type InlineMenuSurfaceProps = Omit<PaperProps, "children"> & {
     children: ReactNode;
     listClassName?: string;
+    motionPreset?: MotionPresetName;
     scrollable?: boolean;
 };
 
 export const InlineMenuSurface = forwardRef<HTMLDivElement, InlineMenuSurfaceProps>(
-    function InlineMenuSurface({ children, className, listClassName, scrollable = false, onClick, onMouseDown, style, ...props }, ref) {
-        const variants = useMotionPreset("popover");
+    function InlineMenuSurface({ children, className, listClassName, motionPreset = "popover", scrollable = false, onClick, onMouseDown, style, ...props }, ref) {
+        const variants = useMotionPreset(motionPreset);
         const stopClick: MouseEventHandler<HTMLDivElement> = event => {
             event.stopPropagation();
             onClick?.(event);
@@ -34,7 +35,7 @@ export const InlineMenuSurface = forwardRef<HTMLDivElement, InlineMenuSurfacePro
                 className={classes(styles, `motionRoot ${className ?? ""}`)}
                 style={style}
                 variants={variants}
-                data-motion-preset="popover"
+                data-motion-preset={motionPreset}
                 initial="initial"
                 animate="animate"
                 exit="exit"

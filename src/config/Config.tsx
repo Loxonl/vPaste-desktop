@@ -68,10 +68,14 @@ function a11yProps(index: number) {
 
 export default function Config({ bridge = tauriSettingsBridge }: { bridge?: SettingsBridge }) {
     const { t, languages, setLanguageCode } = useLanguage(bridge);
-    const panelMotion = useMotionPreset("panel");
+    const [value, setValue] = React.useState(0);
+    const previousValueRef = React.useRef(value);
+    const panelMotionName = value < previousValueRef.current
+        ? "panelBackward"
+        : "panelForward";
+    const panelMotion = useMotionPreset(panelMotionName);
     const fadeMotion = useMotionPreset("fade");
     const popoverMotion = useMotionPreset("popover");
-    const [value, setValue] = React.useState(0);
     const [dir, setDir] = React.useState("");
     const [config, setConfig] = React.useState<ConfigData>(DEFAULT_CONFIG);
     const [storagePaths, setStoragePaths] = React.useState<StoragePaths | null>(null);
@@ -82,6 +86,10 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
     React.useEffect(() => {
         blockingOperationRef.current = blockingOperation;
     }, [blockingOperation]);
+
+    React.useEffect(() => {
+        previousValueRef.current = value;
+    }, [value]);
 
     React.useEffect(() => {
         bridge.invoke('get_app_data_dir', {}).then(v => {
@@ -228,6 +236,7 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
                                     role="tabpanel"
                                     id={`vertical-tabpanel-${value}`}
                                     aria-labelledby={`vertical-tab-${value}`}
+                                    data-motion-preset={panelMotionName}
                                     variants={panelMotion}
                                     initial="initial"
                                     animate="animate"

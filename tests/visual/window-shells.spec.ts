@@ -301,6 +301,186 @@ test.describe("window shells", () => {
         ))).toBeLessThan(0.001);
     });
 
+    test("clipboard filters recent and older loaded results with one bounded staggered motion", async ({ page }) => {
+        await page.addInitScript(() => {
+            let callbackId = 0;
+            let listenerId = 0;
+            const now = Date.now();
+            const filteredHistory = Array.from({ length: 36 }, (_, index) => ({
+                id: index + 1,
+                hash: `motion-${index + 1}`,
+                itemType: "Text",
+                content: `Motion item ${index + 1}`,
+                time: index < 3
+                    ? now - index * 60_000
+                    : now - (2 * 24 * 60 * 60 * 1_000) - index * 60_000,
+                previewContent: "",
+                textContent: `Motion item ${index + 1}`,
+                label: 0,
+                appSource: "",
+                appIconPath: "",
+                richHtml: "",
+                tags: [],
+            }));
+            const initialHistory = [
+                ...filteredHistory.slice(0, 3),
+                ...Array.from({ length: 33 }, (_, index) => ({
+                    ...filteredHistory[index + 3],
+                    id: 100 + index,
+                    hash: `filler-${index + 1}`,
+                    content: `Filler item ${index + 1}`,
+                    textContent: `Filler item ${index + 1}`,
+                    time: now - (index + 3) * 60_000,
+                })),
+            ];
+            let releaseFilteredSearch: (() => void) | null = null;
+            Object.assign(window, {
+                __filteredSearchPending: false,
+                __releaseFilteredSearch: () => releaseFilteredSearch?.(),
+                __TAURI_INTERNALS__: {
+                    invoke: async (cmd: string, args: { keywords?: string; label?: string } = {}) => {
+                        if (cmd === "search") {
+                            if (args.label === "__favorite") {
+                                return JSON.stringify({
+                                    list: filteredHistory,
+                                    consumed: 36,
+                                    hasMore: false,
+                                    nextId: 0,
+                                    nextTime: 0,
+                                });
+                            }
+                            if (args.keywords === "match") {
+                                await new Promise<void>(resolve => {
+                                    releaseFilteredSearch = resolve;
+                                    Object.assign(window, { __filteredSearchPending: true });
+                                });
+                                return JSON.stringify({
+                                    list: filteredHistory,
+                                    consumed: 36,
+                                    hasMore: false,
+                                    nextId: 0,
+                                    nextTime: 0,
+                                });
+                            }
+                            return JSON.stringify({
+                                list: initialHistory,
+                                consumed: initialHistory.length,
+                                hasMore: false,
+                                nextId: 0,
+                                nextTime: 0,
+                            });
+                        }
+                        if (cmd === "get_config") return JSON.stringify({ multilingual: "Chinese", onboarding_completed: true });
+                        if (cmd === "list_item_tags" || cmd === "get_custom_tabs") return [];
+                        if (cmd === "get_developer_mode") return false;
+                        if (cmd === "get_paste_queue_state") return { active: false, revision: 0 };
+                        if (cmd === "get_update_state") return { status: "disabled", currentVersion: "", downloadedBytes: 0, portable: false, feedEnabled: false, releaseUrl: "" };
+                        if (cmd === "plugin:event|listen") return ++listenerId;
+                        return null;
+                    },
+                    transformCallback: () => ++callbackId,
+                    unregisterCallback: () => undefined,
+                    convertFileSrc: (value: string) => value,
+                    metadata: {
+                        currentWindow: { label: "clipboard" },
+                        currentWebview: { label: "clipboard" },
+                    },
+                },
+            });
+        });
+        await page.setViewportSize({ width: 960, height: 600 });
+        await page.goto("/clipboard");
+
+        const cards = page.locator('[data-motion-preset="gridItem"]');
+        const startMotionSampling = () => page.evaluate(() => {
+            const motionSamples: Record<string, number> = {};
+            Object.assign(window, { __filterMotionSamples: motionSamples });
+            const startedAt = performance.now();
+            const sample = () => {
+                document.querySelectorAll<HTMLElement>('[data-filter-motion-hash]').forEach(card => {
+                    const matrix = new DOMMatrixReadOnly(getComputedStyle(card).transform);
+                    const hash = card.dataset.filterMotionHash || "";
+                    motionSamples[hash] = Math.max(motionSamples[hash] || 0, Math.abs(matrix.m41));
+                });
+                if (performance.now() - startedAt < 900) requestAnimationFrame(sample);
+            };
+            requestAnimationFrame(sample);
+        });
+        const readMotionOffsets = () => page.evaluate(() => {
+            const samples = (window as typeof window & { __filterMotionSamples?: Record<string, number> })
+                .__filterMotionSamples || {};
+            return Array.from({ length: 36 }, (_, index) => samples[`motion-${index + 1}`] || 0);
+        });
+        const readCurrentOffsets = () => page.evaluate(() => (
+            Array.from(document.querySelectorAll<HTMLElement>('[data-filter-motion-hash]')).map(card => (
+                Math.abs(new DOMMatrixReadOnly(getComputedStyle(card).transform).m41)
+            ))
+        ));
+        await expect(cards).toHaveCount(36);
+        await page.getByRole("button", { name: "搜索" }).click();
+        await page.getByRole("textbox", { name: "搜索" }).fill("match");
+
+        const results = page.getByTestId("clipboard-results");
+        await expect(page.getByRole("status", { name: "" }).filter({ hasText: "加载中" })).toBeVisible();
+        await expect(results).toHaveAttribute("aria-hidden", "true");
+        await expect(cards).toHaveCount(36);
+        await expect.poll(() => page.evaluate(() => (
+            window as typeof window & { __filteredSearchPending?: boolean }
+        ).__filteredSearchPending)).toBe(true);
+
+        await page.evaluate(() => {
+            const state = window as typeof window & { __filterOverlapDetected?: boolean };
+            state.__filterOverlapDetected = false;
+            const detectOverlap = () => {
+                const oldCard = document.querySelector('[data-card-hash="filler-1"]');
+                const newCard = document.querySelector('[data-card-hash="motion-4"]');
+                if (oldCard && newCard) state.__filterOverlapDetected = true;
+            };
+            new MutationObserver(detectOverlap).observe(document.body, { childList: true, subtree: true });
+            detectOverlap();
+        });
+        await startMotionSampling();
+        await page.evaluate(() => (
+            window as typeof window & { __releaseFilteredSearch?: () => void }
+        ).__releaseFilteredSearch?.());
+        await expect(cards).toHaveCount(36);
+        await page.waitForTimeout(950);
+        const maximumOffsets = await readMotionOffsets();
+        expect(maximumOffsets).toHaveLength(36);
+        expect(maximumOffsets.every(offset => offset >= 4 && offset <= 17)).toBe(true);
+        expect((await readCurrentOffsets()).every(offset => offset < 0.1)).toBe(true);
+        expect(await page.evaluate(() => (
+            window as typeof window & { __filterOverlapDetected?: boolean }
+        ).__filterOverlapDetected)).toBe(false);
+        await expect(page.getByText("Motion item 1", { exact: true })).toBeVisible();
+        await expect(page.getByText("Motion item 36")).toBeAttached();
+        await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+
+        await page.getByRole("textbox", { name: "搜索" }).fill("");
+        await expect(page.getByText("Filler item 1", { exact: true })).toBeAttached();
+        await page.waitForTimeout(950);
+        await startMotionSampling();
+        await page.getByRole("button", { name: "收藏" }).click();
+        await expect(page.getByText("Motion item 36")).toBeAttached();
+        await page.waitForTimeout(950);
+        const tabMaximumOffsets = await readMotionOffsets();
+        expect(tabMaximumOffsets.every(offset => offset >= 4 && offset <= 17)).toBe(true);
+        expect((await readCurrentOffsets()).every(offset => offset < 0.1)).toBe(true);
+        expect(await page.evaluate(() => (
+            window as typeof window & { __filterOverlapDetected?: boolean }
+        ).__filterOverlapDetected)).toBe(false);
+    });
+
+    test("settings content follows forward and backward tab direction", async ({ page }) => {
+        await page.goto("/__settings-preview?lang=zh&theme=light");
+
+        const tabs = page.getByRole("tab");
+        await tabs.nth(1).click();
+        await expect(page.getByRole("tabpanel")).toHaveAttribute("data-motion-preset", "panelForward");
+        await tabs.nth(0).click();
+        await expect(page.getByRole("tabpanel")).toHaveAttribute("data-motion-preset", "panelBackward");
+    });
+
     test("test room shows grouped cases and persistent sample tabs", async ({ page }) => {
         await page.addInitScript(() => {
             let callbackId = 0;

@@ -1,5 +1,5 @@
 import type { ReactElement } from "react";
-import { cleanup, render as renderUi, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as renderUi, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import EmojiPicker from "../../../src/clipboard/EmojiPicker";
@@ -104,6 +104,52 @@ describe("auxiliary window controls", () => {
         await user.click(pin);
         expect(tauri.invoke).toHaveBeenLastCalledWith("set_preview_pinned", { pinned: true });
         expect(screen.getByRole("button", { name: "preview.unpin" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("uses the requested direction when preview content moves backward and forward", async () => {
+        const listeners = new Map<string, (event: { payload: unknown }) => void>();
+        tauri.listen.mockImplementation(async (event: string, callback: (event: { payload: unknown }) => void) => {
+            listeners.set(event, callback);
+            return () => undefined;
+        });
+        render(<Preview />);
+        await waitFor(() => expect(listeners.has("preview-item")).toBe(true));
+
+        act(() => {
+            listeners.get("preview-item")?.({
+                payload: { itemType: "Text", content: "First preview" },
+            });
+        });
+        expect((await screen.findByText("First preview")).closest("[data-preview-direction]"))
+            .toHaveAttribute("data-preview-direction", "neutral");
+
+        fireEvent.keyDown(window, { key: "ArrowLeft" });
+        expect(tauri.emitTo).toHaveBeenLastCalledWith(
+            "clipboard",
+            "preview-navigate-selection",
+            { direction: -1, key: "ArrowLeft" },
+        );
+        act(() => {
+            listeners.get("preview-item")?.({
+                payload: { itemType: "Text", content: "Previous preview" },
+            });
+        });
+
+        await waitFor(() => expect(screen.getByText("Previous preview")).toBeVisible());
+        expect(screen.getByText("Previous preview").closest("[data-preview-direction]"))
+            .toHaveAttribute("data-preview-direction", "backward");
+        expect(screen.getByText("Previous preview").closest("[data-motion-preset]"))
+            .toHaveAttribute("data-motion-preset", "preview");
+
+        fireEvent.keyDown(window, { key: "ArrowRight" });
+        act(() => {
+            listeners.get("preview-item")?.({
+                payload: { itemType: "Text", content: "Next preview" },
+            });
+        });
+        await waitFor(() => expect(screen.getByText("Next preview")).toBeVisible());
+        expect(screen.getByText("Next preview").closest("[data-preview-direction]"))
+            .toHaveAttribute("data-preview-direction", "forward");
     });
 
     it("keeps the Emoji picker anchored to the editor trigger rectangle", async () => {

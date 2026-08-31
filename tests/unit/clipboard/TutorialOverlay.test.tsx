@@ -27,14 +27,15 @@ const filters = [
     { id: "image" as const, name: "Image", enabled: true },
 ];
 
-function renderTutorial(platform: "windows" | "mac") {
+function renderTutorial(platform: "windows" | "mac", reducedMotion: "always" | "never" = "always") {
     const callbacks = {
         onPermissionAction: vi.fn(),
         onToggleFilter: vi.fn(),
         onComplete: vi.fn(),
+        onShortcutDemoAvailabilityChange: vi.fn(),
     };
     renderUi(
-        <MotionTestProvider reducedMotion="always">
+        <MotionTestProvider reducedMotion={reducedMotion}>
             <TutorialOverlay
                 t={t}
                 logoSrc="logo.png"
@@ -93,5 +94,64 @@ describe("TutorialOverlay", () => {
         expect(screen.getByRole("heading", { name: "tutorial.filters.title" })).toBeVisible();
         fireEvent.click(screen.getByRole("button", { name: "tutorial.back" }));
         expect(screen.getByRole("heading", { name: "tutorial.permissions.title" })).toBeVisible();
+    });
+
+    it("crossfades the permission status content when authorization succeeds", async () => {
+        const callbacks = {
+            onPermissionAction: vi.fn(),
+            onToggleFilter: vi.fn(),
+            onComplete: vi.fn(),
+            onShortcutDemoAvailabilityChange: vi.fn(),
+        };
+        const view = renderUi(
+            <MotionTestProvider reducedMotion="always">
+                <TutorialOverlay
+                    t={t}
+                    logoSrc="logo.png"
+                    shortcutText="Alt+V"
+                    platform="mac"
+                    permissions={permissions}
+                    filters={filters}
+                    {...callbacks}
+                />
+            </MotionTestProvider>,
+        );
+        await finishReducedMotionWelcome();
+        vi.useRealTimers();
+
+        view.rerender(
+            <MotionTestProvider reducedMotion="always">
+                <TutorialOverlay
+                    t={t}
+                    logoSrc="logo.png"
+                    shortcutText="Alt+V"
+                    platform="mac"
+                    permissions={[{ ...permissions[0], done: true }, permissions[1]]}
+                    filters={filters}
+                    {...callbacks}
+                />
+            </MotionTestProvider>,
+        );
+
+        const success = await screen.findByText("tutorial.permission.ready");
+        expect(success.closest("[data-motion-state='permission-status']")).toHaveAttribute(
+            "data-motion-preset",
+            "stateIndicator",
+        );
+    });
+
+    it("marks the final shortcut for a finite press emphasis and keeps a reduced-motion fallback", async () => {
+        const callbacks = renderTutorial("windows", "always");
+
+        await finishReducedMotionWelcome();
+        fireEvent.click(screen.getByRole("button", { name: "tutorial.continue" }));
+
+        const shortcut = screen.getByText("Alt+V").closest("[data-shortcut-emphasis]");
+        expect(shortcut).toHaveAttribute("data-shortcut-emphasis", "reduced");
+        expect(shortcut?.querySelector("[data-shortcut-pulse]")).toBeInTheDocument();
+        expect(callbacks.onShortcutDemoAvailabilityChange).toHaveBeenLastCalledWith(true);
+
+        fireEvent.click(screen.getByRole("button", { name: "tutorial.back" }));
+        expect(callbacks.onShortcutDemoAvailabilityChange).toHaveBeenLastCalledWith(false);
     });
 });

@@ -133,6 +133,7 @@ export function ClipboardContextMenus({
                     <InlineMenuSurface
                         key="context-submenu"
                         className={classes(styles, "context-submenu")}
+                        motionPreset={state.submenuSide === "left" ? "submenuLeft" : "submenuRight"}
                         style={{ left: submenuLeft, top: submenuTop }}
                         scrollable
                     >

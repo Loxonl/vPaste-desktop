@@ -7,11 +7,13 @@ import { useAppUpdateState } from "../../update";
 import type { LanguageOption, PermissionId, PermissionStatus, SettingsSectionProps } from "../settingsTypes";
 import { SettingsRow, SettingsSection } from "../../ui/settings/SettingsPrimitives";
 import StatusBadge from "../../ui/StatusBadge";
+import { AnimatePresence, m, useMotionPreset } from "../../ui/motion";
 
 const PENDING_PERMISSION_WINDOW_KEY = "vpaste.pendingOnboardingPermission.v1";
 
 export default function GeneralSettings({ bridge, config, languages, t, onSave }: SettingsSectionProps & { languages: LanguageOption[] }) {
     const [permissionStatus, setPermissionStatus] = React.useState<PermissionStatus | null>(null);
+    const permissionStatusMotion = useMotionPreset("stateIndicator");
     const { state: updateState } = useAppUpdateState(bridge);
     const languageChoices = languages.some(language => language.value === config.multilingual)
         ? languages
@@ -172,13 +174,27 @@ export default function GeneralSettings({ bridge, config, languages, t, onSave }
                             <SettingsRow
                                 key={permission}
                                 label={t(`settings.permissions.${permission}`)}
-                                control={done || permissionStatus === null
-                                    ? <StatusBadge tone={done ? "success" : "neutral"} role="status">{label}</StatusBadge>
-                                    : (
-                                        <Button color="warning" variant="outlined" size="small" onClick={() => openPermissionGuide(permission)}>
-                                            {label}
-                                        </Button>
-                                    )}
+                                control={(
+                                    <AnimatePresence mode="wait" initial={false}>
+                                        <m.div
+                                            key={permissionStatus === null ? "checking" : done ? "enabled" : "required"}
+                                            data-motion-preset="stateIndicator"
+                                            data-motion-state={done ? "permission-granted" : "permission-status"}
+                                            variants={permissionStatusMotion}
+                                            initial="initial"
+                                            animate="animate"
+                                            exit="exit"
+                                        >
+                                            {done || permissionStatus === null
+                                                ? <StatusBadge tone={done ? "success" : "neutral"} role="status">{label}</StatusBadge>
+                                                : (
+                                                    <Button color="warning" variant="outlined" size="small" onClick={() => openPermissionGuide(permission)}>
+                                                        {label}
+                                                    </Button>
+                                                )}
+                                        </m.div>
+                                    </AnimatePresence>
+                                )}
                             />
                         );
                     })}

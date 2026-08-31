@@ -89,6 +89,8 @@ describe("clipboard header", () => {
         expect(onDragEnd).toHaveBeenCalledOnce();
         expect(onDrop).toHaveBeenCalledWith("record:7");
         expect(onAdd).toHaveBeenCalledWith(300, 80);
+        expect(screen.getByText("A")).toHaveAttribute("data-motion-preset", "shortcutHint");
+        expect(screen.getByText("F")).toHaveAttribute("data-motion-preset", "shortcutHint");
     });
 
     it("blocks tab navigation and hides mutable actions during the tutorial", async () => {

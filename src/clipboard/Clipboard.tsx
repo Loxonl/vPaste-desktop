@@ -1,11 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Button from "@mui/material/Button";
+import CircularProgress from "@mui/material/CircularProgress";
 import InputBase from "@mui/material/InputBase";
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
 import { StatusToast, type StatusToastKind } from "../ui/StatusToast";
 import { ToolbarIconButton } from "../ui/ToolbarIconButton";
-import { AnimatePresence, m, useMotionPreset } from "../ui/motion";
+import {
+    AnimatePresence,
+    m,
+    useMotionPreset,
+    useReducedMotionConfig,
+} from "../ui/motion";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
@@ -161,11 +167,16 @@ export default function Clipboard() {
     const { state: updateState, restartToUpdate } = useAppUpdateState();
     const fadeMotion = useMotionPreset("fade");
     const listItemMotion = useMotionPreset("listItem");
+    const stateIndicatorMotion = useMotionPreset("stateIndicator");
     const [selected, setSelected] = useState<String>("");
     const [searchWord, setSearchWord] = useState<String>("");
     const [searchOpen, setSearchOpen] = useState<boolean>(false);
     const [isSearchComposing, setIsSearchComposing] = useState(false);
     const [isSearching, setIsSearching] = useState(false);
+    const [filterMotionRequest, setFilterMotionRequest] = useState<{
+        requestSeq: number;
+        hashes: string[];
+    } | null>(null);
     const [loadedHistoryRequest, setLoadedHistoryRequest] = useState<LoadedClipboardRequest | null>(null);
     const [activeTab, setActiveTab] = useState<string>("all");
     const [customTabs, setCustomTabs] = useState<CustomTab[]>(loadCustomTabs);
@@ -198,6 +209,7 @@ export default function Clipboard() {
     const [clipboardPage, setPage] = useState(() => {
         return new ClipboardPage([], 0);
     });
+    const reduceMotion = Boolean(useReducedMotionConfig());
 
     useEffect(() => {
         if (!import.meta.env.DEV) return;
@@ -863,8 +875,25 @@ export default function Clipboard() {
             );
             if (!page) return;
             const items = page.items;
+            const previousRequest = lastHistoryFetchRef.current;
+            const filterChanged = previousRequest !== null
+                && (previousRequest.keywords !== keywords || previousRequest.tab !== tab);
+            const shouldAnimateFilteredResults = !options.background
+                && !reduceMotion
+                && filterChanged
+                && pageListRef.current.length > 0
+                && !arraysEqual(
+                    pageListRef.current.map(item => item.getHash()),
+                    items.map(item => item.getHash()),
+                );
             pageListRef.current = items;
             lastHistoryFetchRef.current = { keywords, tab };
+            setFilterMotionRequest(shouldAnimateFilteredResults
+                ? {
+                    requestSeq,
+                    hashes: items.map(item => item.getHash() as string),
+                }
+                : null);
             setPage(new ClipboardPage(items, page.consumed));
             setLoadedHistoryRequest({ keywords, activeTab: tab });
             setHasMoreHistory(page.hasMore);
@@ -1596,6 +1625,11 @@ export default function Clipboard() {
         showToast(t("tutorial.finishFirst"), "info", 2200);
     };
 
+    const setTutorialShortcutDemoAvailability = useCallback((enabled: boolean) => {
+        void invoke("set_onboarding_shortcut_demo_enabled", { enabled })
+            .catch(reason => error(`Failed to update tutorial shortcut demo state: ${reason}`));
+    }, []);
+
     const tutorialPermissions = buildTutorialPermissions(
         tutorialPermissionStatus,
         t,
@@ -1615,6 +1649,10 @@ export default function Clipboard() {
         activeTab,
         isSearching,
     });
+    const filteringResults = shouldMaskSearchResults(searchWord as string, isSearching);
+    const resultsMotionKey = loadedHistoryRequest
+        ? `clipboard-results:${loadedHistoryRequest.activeTab}:${loadedHistoryRequest.keywords}`
+        : "clipboard-results:initial";
     const submenuHeight = contextMenuHeight(selectedSubmenuOptions.length);
     const submenuTop = contextMenu
         ? clampToViewport(
@@ -1802,6 +1840,7 @@ export default function Clipboard() {
             <div
                 className={classes(styles, `cards-container${queueSelectionMode ? " queue-selection-mode" : ""}`)}
                 ref={cardsContainerRef}
+                aria-busy={filteringResults}
                 onScroll={() => {
                     if (!tutorialActive) maybeLoadMoreHistory();
                 }}
@@ -1833,24 +1872,12 @@ export default function Clipboard() {
                         filters={tutorialFilters}
                         onPermissionAction={handleTutorialPermissionAction}
                         onToggleFilter={handleTutorialFilterToggle}
+                        onShortcutDemoAvailabilityChange={setTutorialShortcutDemoAvailability}
                         onComplete={completeTutorial}
                     />
                 ) : (
                     <AnimatePresence mode="wait" initial={false}>
-                        {shouldMaskSearchResults(searchWord as string, isSearching) ? (
-                            <m.div
-                                key="search-loading"
-                                className={classes(styles, "cards-grid")}
-                                role="status"
-                                aria-live="polite"
-                                variants={fadeMotion}
-                                initial="initial"
-                                animate="animate"
-                                exit="exit"
-                            >
-                                <div className={classes(styles, "history-loading-card")}>{t("common.loading")}</div>
-                            </m.div>
-                        ) : emptyState ? (
+                        {emptyState ? (
                             <m.div
                                 key={`clipboard-empty-${emptyState}`}
                                 className={classes(styles, "cards-grid clipboard-empty-grid")}
@@ -1874,14 +1901,16 @@ export default function Clipboard() {
                             </m.div>
                         ) : (
                             <m.div
-                                key="clipboard-results"
+                                key={resultsMotionKey}
                                 className={classes(styles, "cards-grid")}
+                                data-testid="clipboard-results"
                                 variants={fadeMotion}
                                 initial="initial"
                                 animate="animate"
                                 exit="exit"
+                                aria-hidden={filteringResults || undefined}
                             >
-                                <AnimatePresence mode="sync" initial={false}>
+                                <AnimatePresence mode="popLayout" initial={false}>
                                     {clipboardPage.list.map((item, index) => (
                                         <ClipboardCard
                                             key={item.getHash() as string}
@@ -1889,10 +1918,15 @@ export default function Clipboard() {
                                             selected={queueSelectionMode
                                                 ? queueSelectedHashes.includes(item.getHash() as string)
                                                 : selected === item.getHash()}
+                                            selectionMode={queueSelectionMode}
                                             simulatedHover={simulatedHoverHash === item.getHash()}
                                             refreshKey={fileRefreshKey}
                                             searchQuery={searchWord as string}
                                             shortcutHint={altHintsVisible && index < 9 ? String(index + 1) : undefined}
+                                            filterMotionRequestSeq={filterMotionRequest?.hashes.includes(item.getHash() as string)
+                                                ? filterMotionRequest.requestSeq
+                                                : undefined}
+                                            filterMotionIndex={index}
                                             mediaPlaybackReady={animationState === 'entered'}
                                             t={t}
                                             onContextMenu={openClipboardContextMenu}
@@ -1919,6 +1953,25 @@ export default function Clipboard() {
                         )}
                     </AnimatePresence>
                 )}
+                <AnimatePresence mode="wait" initial={false}>
+                    {!tutorialActive && filteringResults && (
+                        <m.div
+                            key="search-filtering-overlay"
+                            className={classes(styles, "search-filtering-overlay")}
+                            role="status"
+                            aria-live="polite"
+                            variants={fadeMotion}
+                            initial="initial"
+                            animate="animate"
+                            exit="exit"
+                        >
+                            <span className={classes(styles, "search-filtering-status")}>
+                                <CircularProgress size={18} thickness={5} aria-hidden="true" />
+                                <span>{t("common.loading")}</span>
+                            </span>
+                        </m.div>
+                    )}
+                </AnimatePresence>
             </div>
             <AnimatePresence mode="wait" initial={false}>
                 {queueSelectionMode && (
@@ -1940,7 +1993,18 @@ export default function Clipboard() {
                             exit="exit"
                         >
                             <strong>{t("pasteQueue.selectTitle")}</strong>
-                            <span>{queueSelectedHashes.length}</span>
+                            <AnimatePresence mode="wait" initial={false}>
+                                <m.span
+                                    key={queueSelectedHashes.length}
+                                    data-motion-preset="stateIndicator"
+                                    variants={stateIndicatorMotion}
+                                    initial="initial"
+                                    animate="animate"
+                                    exit="exit"
+                                >
+                                    {queueSelectedHashes.length}
+                                </m.span>
+                            </AnimatePresence>
                             <Button variant="contained" className={classes(styles, "primary")} onClick={() => void addSelectedItemsToPasteQueue()}>
                                 {t("pasteQueue.addSelected", { count: queueSelectedHashes.length })}
                             </Button>

@@ -4,6 +4,7 @@ import GeneralSettings from "../../../src/config/sections/GeneralSettings";
 import type { SettingsBridge } from "../../../src/config/SettingsBridge";
 import { DEFAULT_CONFIG } from "../../../src/config/settingsTypes";
 import AppThemeProvider from "../../../src/ui/AppThemeProvider";
+import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
 
 afterEach(() => {
     cleanup();
@@ -38,18 +39,20 @@ const bridge: SettingsBridge = {
 describe("General settings accessibility", () => {
     it("associates standard switches and selects with their visible setting labels", async () => {
         render(
-            <AppThemeProvider>
-                <GeneralSettings
-                    bridge={bridge}
-                    config={DEFAULT_CONFIG}
-                    languages={[
-                        { value: "zh-CN", label: "简体中文 (大陆)" },
-                        { value: "en-US", label: "English (US)" },
-                    ]}
-                    onSave={vi.fn(async () => null)}
-                    t={key => key}
-                />
-            </AppThemeProvider>,
+            <MotionTestProvider>
+                <AppThemeProvider>
+                    <GeneralSettings
+                        bridge={bridge}
+                        config={DEFAULT_CONFIG}
+                        languages={[
+                            { value: "zh-CN", label: "简体中文 (大陆)" },
+                            { value: "en-US", label: "English (US)" },
+                        ]}
+                        onSave={vi.fn(async () => null)}
+                        t={key => key}
+                    />
+                </AppThemeProvider>
+            </MotionTestProvider>,
         );
 
         expect(await screen.findByRole("checkbox", { name: "settings.startup" })).toBeInTheDocument();
@@ -88,18 +91,25 @@ describe("General settings accessibility", () => {
         };
 
         render(
-            <AppThemeProvider>
-                <GeneralSettings
-                    bridge={macBridge}
-                    config={DEFAULT_CONFIG}
-                    languages={[]}
-                    onSave={vi.fn(async () => null)}
-                    t={key => key}
-                />
-            </AppThemeProvider>,
+            <MotionTestProvider>
+                <AppThemeProvider>
+                    <GeneralSettings
+                        bridge={macBridge}
+                        config={DEFAULT_CONFIG}
+                        languages={[]}
+                        onSave={vi.fn(async () => null)}
+                        t={key => key}
+                    />
+                </AppThemeProvider>
+            </MotionTestProvider>,
         );
 
-        expect(await screen.findByRole("status")).toHaveTextContent("settings.permissions.enabled");
+        const enabled = await screen.findByRole("status");
+        expect(enabled).toHaveTextContent("settings.permissions.enabled");
+        expect(enabled.closest("[data-motion-state='permission-granted']")).toHaveAttribute(
+            "data-motion-preset",
+            "stateIndicator",
+        );
         expect(screen.getByRole("button", { name: "settings.permissions.required" })).toHaveClass("MuiButton-outlinedWarning");
     });
 });

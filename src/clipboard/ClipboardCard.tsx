@@ -1,6 +1,5 @@
 import React, { forwardRef, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { error } from "@tauri-apps/plugin-log";
 import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
@@ -13,6 +12,12 @@ import {
     WHITE_HEADER_TEXT_COLOR,
 } from "./clipboardHeaderColor";
 import { isSingleImageFileItem } from "./itemPresentation";
+import {
+    configureClipboardDrag,
+    isExternalDragExcludedTarget,
+    externalDragFilePaths,
+    isNativeFileDragItem,
+} from "./clipboardDrag";
 import {
     AnimatePresence,
     m,
@@ -31,6 +36,7 @@ type ClipboardCardProps = {
     item: Item;
     selected: boolean;
     selectionMode?: boolean;
+    dragDisabled?: boolean;
     simulatedHover: boolean;
     refreshKey: number;
     searchQuery: string;
@@ -40,6 +46,7 @@ type ClipboardCardProps = {
     mediaPlaybackReady: boolean;
     t: TFunction;
     onContextMenu: (item: Item, x: number, y: number) => void;
+    onActivate?: (hash: string, plainText: boolean) => void;
 };
 
 function getTypeLabel(type: ItemType, t: TFunction): string {
@@ -122,6 +129,7 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
     item,
     selected,
     selectionMode = false,
+    dragDisabled = false,
     simulatedHover,
     refreshKey,
     searchQuery,
@@ -131,14 +139,20 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
     mediaPlaybackReady,
     t,
     onContextMenu,
+    onActivate,
 }: ClipboardCardProps, ref) {
     const cardMotion = useMotionPreset("gridItem");
     const shortcutHintMotion = useMotionPreset("shortcutHint");
     const stateIndicatorMotion = useMotionPreset("stateIndicator");
     const reduceMotion = Boolean(useReducedMotionConfig());
     const [filterMotionRef, animateFilterMotion] = useAnimate<HTMLDivElement>();
-    const dragStateRef = useRef<{ x: number, y: number, dragging: boolean } | null>(null);
+    const [dragging, setDragging] = useState(false);
+    const [dragCompleted, setDragCompleted] = useState(false);
+    const dragFeedbackTimerRef = useRef<number | null>(null);
+    const dragStartedRef = useRef(false);
+    const nativeDragStateRef = useRef<{ x: number; y: number; started: boolean } | null>(null);
     const visualType = isSingleImageFileItem(item) ? ItemType.Image : item.getType();
+    const nativeFileDrag = isNativeFileDragItem(item);
     const typeLabel = getTypeLabel(visualType, t);
     const timestamp = formatRelativeTime(item.getTime(), t);
     const itemTagList = item.getTags();
@@ -158,6 +172,43 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
     const previewActive = selected || hovered || simulatedHover;
     const updateGifFormat = useCallback((gif: boolean) => {
         setIsGifFormat(gif);
+    }, []);
+
+    const showDragCompleted = useCallback(() => {
+        setDragCompleted(true);
+        if (dragFeedbackTimerRef.current !== null) {
+            window.clearTimeout(dragFeedbackTimerRef.current);
+        }
+        dragFeedbackTimerRef.current = window.setTimeout(() => {
+            setDragCompleted(false);
+            dragFeedbackTimerRef.current = null;
+        }, 420);
+    }, []);
+
+    const startNativeFileDrag = useCallback((): boolean => {
+        if (!nativeFileDrag) return false;
+        const paths = externalDragFilePaths(item);
+        if (paths.length === 0) return false;
+
+        void invoke<boolean>("native_drag_file", {
+            paths,
+            isImage: item.getType() === ItemType.Image,
+        })
+            .then((dropped) => {
+                if (dropped) showDragCompleted();
+            })
+            .catch((error) => console.warn("Native file drag failed", error))
+            .finally(() => {
+                setDragging(false);
+                nativeDragStateRef.current = null;
+            });
+        return true;
+    }, [item, nativeFileDrag, showDragCompleted]);
+
+    useEffect(() => () => {
+        if (dragFeedbackTimerRef.current !== null) {
+            window.clearTimeout(dragFeedbackTimerRef.current);
+        }
     }, []);
 
     useEffect(() => {
@@ -207,47 +258,93 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                 data-filter-motion-hash={item.getHash() as string}
             >
             <div
-            className={classes(styles, `clipboard-card ${selected ? 'selected' : ''} ${simulatedHover ? 'simulated-hover' : ''}`)}
+            className={classes(styles, `clipboard-card ${selected ? 'selected' : ''} ${simulatedHover ? 'simulated-hover' : ''} ${dragging ? 'external-dragging' : ''}`)}
             data-hash={item.getHash() as string}
+            data-external-dragging={dragging || undefined}
+            data-native-file-drag={nativeFileDrag ? "true" : undefined}
             tabIndex={-1}
-            draggable={false}
+            draggable={!dragDisabled && !selectionMode && !nativeFileDrag}
             onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
+            onMouseLeave={() => {
+                setHovered(false);
+                if (!nativeDragStateRef.current?.started) {
+                    nativeDragStateRef.current = null;
+                }
+            }}
             onMouseDown={(event) => {
-                if (item.getType() === ItemType.Image && event.button === 0) {
-                    dragStateRef.current = {
+                dragStartedRef.current = false;
+                nativeDragStateRef.current = null;
+                if (
+                    nativeFileDrag
+                    && !dragDisabled
+                    && !selectionMode
+                    && event.button === 0
+                    && !isExternalDragExcludedTarget(event.target)
+                ) {
+                    event.stopPropagation();
+                    nativeDragStateRef.current = {
                         x: event.clientX,
                         y: event.clientY,
-                        dragging: false,
+                        started: false,
                     };
                 }
             }}
             onMouseMove={(event) => {
-                const dragState = dragStateRef.current;
-                if (!dragState || dragState.dragging || item.getType() !== ItemType.Image) return;
-                if ((event.buttons & 1) !== 1) {
-                    dragStateRef.current = null;
+                const state = nativeDragStateRef.current;
+                if (!nativeFileDrag || !state || state.started) return;
+                if (event.buttons !== 0 && (event.buttons & 1) !== 1) {
+                    nativeDragStateRef.current = null;
+                    return;
+                }
+                const distance = Math.hypot(event.clientX - state.x, event.clientY - state.y);
+                if (distance < 6) return;
+                event.preventDefault();
+                event.stopPropagation();
+                if (!startNativeFileDrag()) {
+                    nativeDragStateRef.current = null;
+                    return;
+                }
+                state.started = true;
+                dragStartedRef.current = true;
+                setDragCompleted(false);
+                setDragging(true);
+            }}
+            onMouseUp={() => {
+                nativeDragStateRef.current = null;
+                setDragging(false);
+            }}
+            onClick={(event) => {
+                if (dragDisabled || selectionMode || isExternalDragExcludedTarget(event.target)) return;
+                if (dragStartedRef.current) {
+                    dragStartedRef.current = false;
+                    return;
+                }
+                event.preventDefault();
+                onActivate?.(item.getHash() as string, event.shiftKey);
+            }}
+            onDragStart={(event) => {
+                if (dragDisabled || selectionMode || isExternalDragExcludedTarget(event.target)) {
+                    event.preventDefault();
                     return;
                 }
 
-                const deltaX = event.clientX - dragState.x;
-                const deltaY = event.clientY - dragState.y;
-                const distance = Math.hypot(deltaX, deltaY);
-                if (distance < 6) return;
-                if (Math.abs(deltaX) > Math.abs(deltaY)) return;
+                setDragCompleted(false);
+                setDragging(true);
+                dragStartedRef.current = true;
+                configureClipboardDrag(event, item);
 
-                event.preventDefault();
-                dragState.dragging = true;
-                void invoke('native_drag_file', { path: item.getPreviewContent() })
-                    .catch(e => error(`Native image drag failed: ${e}`))
-                    .finally(() => {
-                        dragStateRef.current = null;
-                    });
+                const dragImage = document.createElement("div");
+                dragImage.className = classes(styles, "clipboard-drag-preview");
+                dragImage.dataset.type = visualType.toLowerCase();
+                dragImage.textContent = t("clipboard.dragging");
+                document.body.appendChild(dragImage);
+                event.dataTransfer.setDragImage?.(dragImage, 18, 18);
+                window.requestAnimationFrame(() => dragImage.remove());
             }}
-            onMouseUp={() => {
-                if (dragStateRef.current && !dragStateRef.current.dragging) {
-                    dragStateRef.current = null;
-                }
+            onDragEnd={(event) => {
+                setDragging(false);
+                if (event.dataTransfer.dropEffect === "none") return;
+                showDragCompleted();
             }}
             onContextMenu={(event) => {
                 event.preventDefault();
@@ -262,6 +359,21 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                         className={classes(styles, "queue-selection-indicator")}
                         data-motion-preset="stateIndicator"
                         data-motion-state="queue-selection"
+                        variants={stateIndicatorMotion}
+                        initial="initial"
+                        animate="animate"
+                        exit="exit"
+                        aria-hidden="true"
+                    >
+                        <CheckCircleRoundedIcon fontSize="inherit" />
+                    </m.span>
+                )}
+                {dragCompleted && (
+                    <m.span
+                        key="external-drag-complete"
+                        className={classes(styles, "external-drag-success")}
+                        data-motion-preset="stateIndicator"
+                        data-motion-state="external-drag-complete"
                         variants={stateIndicatorMotion}
                         initial="initial"
                         animate="animate"
@@ -370,6 +482,7 @@ const ClipboardCard = React.memo(ClipboardCardComponent, (prev, next) => (
     prev.item === next.item
     && prev.selected === next.selected
     && prev.selectionMode === next.selectionMode
+    && prev.dragDisabled === next.dragDisabled
     && prev.simulatedHover === next.simulatedHover
     && prev.refreshKey === next.refreshKey
     && prev.searchQuery === next.searchQuery
@@ -378,6 +491,7 @@ const ClipboardCard = React.memo(ClipboardCardComponent, (prev, next) => (
     && prev.filterMotionIndex === next.filterMotionIndex
     && prev.mediaPlaybackReady === next.mediaPlaybackReady
     && prev.t === next.t
+    && prev.onActivate === next.onActivate
 ));
 
 export default ClipboardCard;

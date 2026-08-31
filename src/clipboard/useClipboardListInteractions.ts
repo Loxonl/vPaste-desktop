@@ -171,6 +171,7 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
         const { cardSelector, contextMenuSelector } = optionsRef.current;
         if (target.closest("button") || target.closest(contextMenuSelector)) return;
         const targetCard = target.closest<HTMLElement>(cardSelector);
+        if (targetCard?.draggable || targetCard?.dataset.nativeFileDrag === "true") return;
 
         optionsRef.current.onPointerStart();
         event.currentTarget.setPointerCapture(event.pointerId);

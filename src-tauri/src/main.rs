@@ -3418,48 +3418,320 @@ fn quit_app(app: tauri::AppHandle) {
 }
 
 #[cfg(target_os = "windows")]
-#[tauri::command]
-fn native_drag_file(path: String) -> Result<(), String> {
+fn shell_compatible_windows_path(path: &str) -> String {
+    if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{path}")
+    } else if let Some(path) = path.strip_prefix(r"\\?\") {
+        path.to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn create_shell_file_data_object(
+    paths: &[String],
+) -> Result<windows::Win32::System::Com::IDataObject, String> {
+    use windows::Win32::System::Com::IBindCtx;
+    use windows::Win32::UI::Shell::BHID_DataObject;
+
+    let items = create_shell_file_item_array(paths)?;
+    items
+        .BindToHandler(None::<&IBindCtx>, &BHID_DataObject)
+        .map_err(|err| format!("create Shell file data object failed: {err}"))
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn create_shell_file_item_array(
+    paths: &[String],
+) -> Result<windows::Win32::UI::Shell::IShellItemArray, String> {
     use windows::core::HSTRING;
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::Com::IDataObject;
-    use windows::Win32::System::Ole::{IDropSource, DROPEFFECT_COPY};
-    use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHCreateDataObject, SHDoDragDrop};
+    use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHCreateShellItemArrayFromIDLists};
 
-    let path = PathBuf::from(path)
-        .canonicalize()
-        .map_err(|err| format!("resolve drag file path failed: {}", err))?;
-    let path = path
-        .to_str()
-        .ok_or_else(|| "drag file path is not valid unicode".to_string())?
-        .to_string();
+    if paths.is_empty() {
+        return Err("native drag requires at least one file".to_string());
+    }
 
-    unsafe {
-        let path_w = HSTRING::from(path);
-        let pidl = ILCreateFromPathW(&path_w);
+    let mut pidls = Vec::with_capacity(paths.len());
+    for path in paths {
+        let path = HSTRING::from(path);
+        let pidl = ILCreateFromPathW(&path);
         if pidl.is_null() {
-            return Err("create drag item failed".to_string());
+            for pidl in pidls {
+                ILFree(Some(pidl));
+            }
+            return Err("create Shell drag item failed".to_string());
+        }
+        pidls.push(pidl);
+    }
+
+    let pidl_refs = pidls
+        .iter()
+        .map(|pidl| *pidl as *const _)
+        .collect::<Vec<_>>();
+    let result = SHCreateShellItemArrayFromIDLists(&pidl_refs)
+        .map_err(|err| format!("create Shell drag item array failed: {err}"));
+
+    for pidl in pidls {
+        ILFree(Some(pidl));
+    }
+    result
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn materialize_native_drag_image(path: &str) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+
+    let source_bytes = history_store::read_file(path)?;
+    let is_gif = image_mime_from_bytes(&source_bytes) == "image/gif";
+    let (extension, drag_bytes) = if is_gif {
+        ("gif", source_bytes)
+    } else {
+        let png_bytes = png_clipboard_bytes_from_image_bytes(source_bytes)
+            .ok_or_else(|| "convert dragged image to PNG failed".to_string())?;
+        ("png", png_bytes)
+    };
+
+    let mut hasher = Sha256::new();
+    hasher.update(path.as_bytes());
+    hasher.update(&drag_bytes);
+    let cache_path = PathBuf::from(app_runtime_dir(&["image_clipboard_cache"])).join(format!(
+        "{}.{}",
+        hex::encode(hasher.finalize()),
+        extension
+    ));
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    if !cache_path.exists() {
+        fs::write(&cache_path, drag_bytes)
+            .map_err(|err| format!("write native drag image failed: {err}"))?;
+    }
+    Ok(cache_path.to_string_lossy().to_string())
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod native_file_drag_tests {
+    use super::{
+        create_shell_file_data_object, create_shell_file_item_array, shell_compatible_windows_path,
+    };
+
+    #[test]
+    fn removes_the_verbatim_prefix_from_local_paths_for_the_shell() {
+        assert_eq!(
+            shell_compatible_windows_path(r"\\?\D:\Clipboard\photo.png"),
+            r"D:\Clipboard\photo.png"
+        );
+    }
+
+    #[test]
+    fn converts_verbatim_unc_paths_to_regular_unc_paths_for_the_shell() {
+        assert_eq!(
+            shell_compatible_windows_path(r"\\?\UNC\server\share\file.txt"),
+            r"\\server\share\file.txt"
+        );
+    }
+
+    #[test]
+    fn preserves_paths_that_are_already_shell_compatible() {
+        assert_eq!(
+            shell_compatible_windows_path(r"C:\Clipboard\file.txt"),
+            r"C:\Clipboard\file.txt"
+        );
+    }
+
+    #[test]
+    fn shell_file_data_object_exposes_every_file_through_cf_hdrop() {
+        use std::fs;
+        use std::ptr;
+        use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL};
+        use windows::Win32::System::Ole::{OleInitialize, OleUninitialize, CF_HDROP};
+
+        let first_path = std::env::temp_dir().join(format!(
+            "vpaste-native-drag-test-{}-first.txt",
+            std::process::id()
+        ));
+        let second_path = std::env::temp_dir().join(format!(
+            "vpaste-native-drag-test-{}-second.txt",
+            std::process::id()
+        ));
+        fs::write(&first_path, b"vPaste native drag test one")
+            .expect("create first native drag test file");
+        fs::write(&second_path, b"vPaste native drag test two")
+            .expect("create second native drag test file");
+        let paths = vec![
+            first_path.to_string_lossy().to_string(),
+            second_path.to_string_lossy().to_string(),
+        ];
+
+        unsafe {
+            OleInitialize(None).expect("initialize OLE for native drag test");
+            let item_array =
+                create_shell_file_item_array(&paths).expect("create Shell file item array");
+            assert_eq!(item_array.GetCount().expect("count Shell file items"), 2);
+            let data_object =
+                create_shell_file_data_object(&paths).expect("create Shell file data object");
+            let format = FORMATETC {
+                cfFormat: CF_HDROP.0,
+                ptd: ptr::null_mut(),
+                dwAspect: DVASPECT_CONTENT.0,
+                lindex: -1,
+                tymed: TYMED_HGLOBAL.0 as u32,
+            };
+
+            assert!(data_object.QueryGetData(&format).is_ok());
+            drop(data_object);
+            drop(item_array);
+            OleUninitialize();
         }
 
-        let result = (|| {
-            let pidls = [pidl as *const _];
-            let data_object: IDataObject =
-                SHCreateDataObject(None, Some(&pidls), None::<&IDataObject>)
-                    .map_err(|err| format!("create drag data object failed: {}", err))?;
-            SHDoDragDrop(HWND(0), &data_object, None::<&IDropSource>, DROPEFFECT_COPY)
-                .map_err(|err| format!("native drag failed: {}", err))?;
-            Ok(())
-        })();
+        fs::remove_file(first_path).expect("remove first native drag test file");
+        fs::remove_file(second_path).expect("remove second native drag test file");
+    }
+}
 
-        ILFree(Some(pidl));
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn native_drag_file(paths: Vec<String>, is_image: bool) -> Result<bool, String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Ole::{
+        IDropSource, OleInitialize, OleUninitialize, DROPEFFECT_COPY, DROPEFFECT_NONE,
+    };
+    use windows::Win32::UI::Shell::SHDoDragDrop;
+
+    if paths.is_empty() {
+        return Err("native drag requires at least one file".to_string());
+    }
+    if is_image && paths.len() != 1 {
+        return Err("image drag requires exactly one source file".to_string());
+    }
+    info!(
+        "[native-file-drag] stage=command-received is_image={is_image} count={}",
+        paths.len()
+    );
+    let mut paths = paths
+        .into_iter()
+        .map(|path| {
+            let path = PathBuf::from(path).canonicalize().map_err(|err| {
+                error!("[native-file-drag] stage=canonicalize-failed error={err}");
+                format!("resolve drag file path failed: {err}")
+            })?;
+            let path = path
+                .to_str()
+                .ok_or_else(|| "drag file path is not valid unicode".to_string())?;
+            Ok(shell_compatible_windows_path(path))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    info!(
+        "[native-file-drag] stage=canonicalized count={}",
+        paths.len()
+    );
+    if is_image {
+        paths[0] = materialize_native_drag_image(&paths[0]).map_err(|err| {
+            error!("[native-file-drag] stage=image-materialize-failed error={err}");
+            err
+        })?;
+        info!("[native-file-drag] stage=image-materialized");
+    }
+    info!("[native-file-drag] stage=shell-path-ready");
+
+    unsafe {
+        OleInitialize(None).map_err(|err| {
+            error!("[native-file-drag] stage=ole-initialize-failed error={err}");
+            format!("initialize Windows OLE failed: {err}")
+        })?;
+        info!("[native-file-drag] stage=ole-initialized");
+        let result = (|| {
+            let data_object = create_shell_file_data_object(&paths).map_err(|err| {
+                error!("[native-file-drag] stage=data-object-create-failed error={err}");
+                err
+            })?;
+            info!("[native-file-drag] stage=data-object-created format=shell-item");
+            info!("[native-file-drag] stage=shell-drag-starting");
+            let effect = SHDoDragDrop(HWND(0), &data_object, None::<&IDropSource>, DROPEFFECT_COPY)
+                .map_err(|err| {
+                    error!("[native-file-drag] stage=shell-drag-failed error={err}");
+                    format!("native drag failed: {err}")
+                })?;
+            info!(
+                "[native-file-drag] stage=shell-drag-finished effect={}",
+                effect.0
+            );
+            Ok(effect != DROPEFFECT_NONE)
+        })();
+        OleUninitialize();
+        info!("[native-file-drag] stage=ole-uninitialized result={result:?}");
         result
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 #[tauri::command]
-fn native_drag_file(_path: String) -> Result<(), String> {
-    Err("native file drag is only implemented on Windows".to_string())
+async fn native_drag_file(
+    window: tauri::WebviewWindow,
+    paths: Vec<String>,
+    is_image: bool,
+) -> Result<bool, String> {
+    use drag::{DragItem, DragResult, Image, Options};
+
+    if paths.is_empty() {
+        return Err("native drag requires at least one file".to_string());
+    }
+    if is_image && paths.len() != 1 {
+        return Err("image drag requires exactly one source file".to_string());
+    }
+    info!(
+        "[native-file-drag] stage=command-received platform=macos is_image={is_image} count={}",
+        paths.len()
+    );
+    let mut paths = paths
+        .into_iter()
+        .map(|path| {
+            PathBuf::from(path)
+                .canonicalize()
+                .map_err(|err| format!("resolve drag file path failed: {err}"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if is_image {
+        let path = paths[0]
+            .to_str()
+            .ok_or_else(|| "drag file path is not valid unicode".to_string())?;
+        paths[0] = PathBuf::from(materialize_native_drag_image(path)?);
+        info!("[native-file-drag] stage=image-materialized platform=macos");
+    }
+
+    let app = window.app_handle().clone();
+    let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel::<Result<bool, String>>();
+    app.run_on_main_thread(move || {
+        let drop_tx = result_tx.clone();
+        let start_result = drag::start_drag(
+            &window,
+            DragItem::Files(paths),
+            Image::Raw(include_bytes!("../icons/128x128.png").to_vec()),
+            move |result, _cursor_position| {
+                let dropped = matches!(result, DragResult::Dropped);
+                let _ = drop_tx.send(Ok(dropped));
+            },
+            Options::default(),
+        );
+        if let Err(err) = start_result {
+            let _ = result_tx.send(Err(format!("native macOS drag failed: {err}")));
+        }
+    })
+    .map_err(|err| format!("schedule native macOS drag failed: {err}"))?;
+
+    let result = result_rx
+        .recv()
+        .await
+        .ok_or_else(|| "native macOS drag ended without a result".to_string())?;
+    info!("[native-file-drag] stage=drag-finished platform=macos result={result:?}");
+    result
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[tauri::command]
+fn native_drag_file(_paths: Vec<String>, _is_image: bool) -> Result<(), String> {
+    Err("native file drag is only implemented on Windows and macOS".to_string())
 }
 
 fn parse_file_clipboard_content(content: &str) -> Result<Vec<String>, String> {
@@ -7119,7 +7391,7 @@ fn mark_image_not_png(dib_cache_path: &Path) {
     let _ = fs::write(marker_path, []);
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn png_clipboard_bytes_from_image_bytes(bytes: Vec<u8>) -> Option<Vec<u8>> {
     let mime = image_mime_from_bytes(&bytes);
     if mime == "image/gif" {

@@ -37,6 +37,7 @@ const zhCN: LanguagePack = {
         "time.yearsAgo": "{count}年前",
 
         "clipboard.favorite": "已收藏",
+        "clipboard.dragging": "正在拖动",
         "clipboard.source": "来源：{source}",
         "clipboard.unknownApp": "未知程序",
         "clipboard.emptyHistory": "剪贴板里还没有内容",

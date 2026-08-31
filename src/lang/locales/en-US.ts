@@ -37,6 +37,7 @@ const enUS: LanguagePack = {
         "time.yearsAgo": "{count}y ago",
 
         "clipboard.favorite": "Favorite",
+        "clipboard.dragging": "Dragging",
         "clipboard.source": "Source: {source}",
         "clipboard.unknownApp": "Unknown app",
         "clipboard.emptyHistory": "Your clipboard is empty",

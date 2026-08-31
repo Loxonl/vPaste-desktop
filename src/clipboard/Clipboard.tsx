@@ -1919,6 +1919,7 @@ export default function Clipboard() {
                                                 ? queueSelectedHashes.includes(item.getHash() as string)
                                                 : selected === item.getHash()}
                                             selectionMode={queueSelectionMode}
+                                            dragDisabled={tutorialActive}
                                             simulatedHover={simulatedHoverHash === item.getHash()}
                                             refreshKey={fileRefreshKey}
                                             searchQuery={searchWord as string}
@@ -1930,6 +1931,7 @@ export default function Clipboard() {
                                             mediaPlaybackReady={animationState === 'entered'}
                                             t={t}
                                             onContextMenu={openClipboardContextMenu}
+                                            onActivate={activateClipboardCard}
                                         />
                                     ))}
                                 </AnimatePresence>

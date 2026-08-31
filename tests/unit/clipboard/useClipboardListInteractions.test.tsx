@@ -5,6 +5,7 @@ import { useClipboardListInteractions } from "../../../src/clipboard/useClipboar
 
 type HarnessProps = {
     tutorialActive?: boolean;
+    draggableCard?: boolean;
     onActivateCard?: (hash: string, plainText: boolean) => void;
     onLoadMore?: (force?: boolean) => void;
     onPointerStart?: () => void;
@@ -13,6 +14,7 @@ type HarnessProps = {
 
 function Harness({
     tutorialActive = false,
+    draggableCard = false,
     onActivateCard = () => undefined,
     onLoadMore = () => undefined,
     onPointerStart = () => undefined,
@@ -43,7 +45,7 @@ function Harness({
             onLostPointerCapture={interactions.finishPointerDrag}
             onClickCapture={interactions.handleClickCapture}
         >
-            <div className="card" data-hash="item-1">Card</div>
+            <div className="card" data-hash="item-1" draggable={draggableCard}>Card</div>
         </div>
     );
 }
@@ -114,6 +116,23 @@ describe("useClipboardListInteractions", () => {
         expect(onActivateCard).toHaveBeenCalledWith("item-1", true);
         expect(onPointerStart).toHaveBeenCalledOnce();
         expect(onWheelStart).not.toHaveBeenCalled();
+    });
+
+    it("leaves pointer ownership to a draggable card", () => {
+        const onPointerStart = vi.fn();
+        render(<Harness draggableCard onPointerStart={onPointerStart} />);
+        const card = screen.getByText("Card");
+
+        fireEvent.pointerDown(card, {
+            isPrimary: true,
+            button: 0,
+            pointerId: 70,
+            clientX: 100,
+            clientY: 20,
+        });
+
+        expect(onPointerStart).not.toHaveBeenCalled();
+        expect(HTMLElement.prototype.setPointerCapture).not.toHaveBeenCalled();
     });
 
     it("applies pending horizontal drag distance and requests more history", () => {

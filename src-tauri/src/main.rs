@@ -9712,6 +9712,41 @@ fn build_test_room_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
     Ok(window)
 }
 
+fn build_paste_fallback_notice_window(
+    handle: &tauri::AppHandle,
+) -> tauri::Result<tauri::WebviewWindow> {
+    #[cfg(target_os = "macos")]
+    let route = "paste-fallback-notice";
+    #[cfg(not(target_os = "macos"))]
+    let route = "paste-failure-notice";
+
+    let window = WebviewWindowBuilder::new(handle, "pasteFallbackNotice", App(route.into()))
+        .title("vPaste")
+        .visible(false)
+        .focused(false)
+        .focusable(false)
+        .decorations(false)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .accept_first_mouse(true)
+        .resizable(false)
+        .minimizable(false)
+        .maximizable(false)
+        .shadow(false)
+        .inner_size(PASTE_FALLBACK_NOTICE_WIDTH, PASTE_FALLBACK_NOTICE_HEIGHT)
+        .build()?;
+    let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    let _ = window.set_shadow(false);
+    #[cfg(target_os = "macos")]
+    {
+        set_macos_window_level(&window, 102);
+        configure_macos_transparent_window(&window);
+    }
+    Ok(window)
+}
+
 fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     let (screen_x, screen_y, screen_width, screen_height) =
         if let Ok(Some(monitor)) = handle.primary_monitor() {
@@ -10169,6 +10204,8 @@ fn main() {
                 let clipboard_window = handle
                     .get_webview_window("clipboard")
                     .unwrap_or_else(|| build_clipboard_window(&handle).unwrap());
+                let _paste_fallback_notice_window =
+                    build_paste_fallback_notice_window(&handle).unwrap();
 
                 let config_window =
                     WebviewWindowBuilder::new(&handle, "config", App("config".into()))
@@ -10257,37 +10294,6 @@ fn main() {
                 {
                     set_macos_window_level(&onboarding_permission_window, 102);
                     configure_macos_transparent_window(&onboarding_permission_window);
-                }
-
-                #[cfg(target_os = "macos")]
-                {
-                    let paste_fallback_notice_window = WebviewWindowBuilder::new(
-                        &handle,
-                        "pasteFallbackNotice",
-                        App("paste-fallback-notice".into()),
-                    )
-                    .title("vPaste")
-                    .visible(false)
-                    .focused(false)
-                    .focusable(false)
-                    .decorations(false)
-                    .transparent(true)
-                    .background_color(tauri::window::Color(0, 0, 0, 0))
-                    .skip_taskbar(true)
-                    .always_on_top(true)
-                    .accept_first_mouse(true)
-                    .resizable(false)
-                    .minimizable(false)
-                    .maximizable(false)
-                    .shadow(false)
-                    .inner_size(PASTE_FALLBACK_NOTICE_WIDTH, PASTE_FALLBACK_NOTICE_HEIGHT)
-                    .build()
-                    .unwrap();
-                    let _ = paste_fallback_notice_window
-                        .set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                    let _ = paste_fallback_notice_window.set_shadow(false);
-                    set_macos_window_level(&paste_fallback_notice_window, 102);
-                    configure_macos_transparent_window(&paste_fallback_notice_window);
                 }
 
                 let tray_menu_window =

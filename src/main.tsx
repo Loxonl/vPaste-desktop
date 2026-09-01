@@ -87,6 +87,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
                         <Route path="/tab-editor" element={<TabEditor />} />
                         <Route path="/onboarding-permission" element={<OnboardingPermissionWindow />} />
                         <Route path="/paste-fallback-notice" element={<PasteFallbackNotice />} />
+                        <Route path="/paste-failure-notice" element={<PasteFallbackNotice showSettingsAction={false} />} />
                         <Route path="/paste-queue" element={<PasteQueue />} />
                         <Route path="/config" element={<Config />} />
                         <Route path="/tray-menu" element={<TrayMenu />} />

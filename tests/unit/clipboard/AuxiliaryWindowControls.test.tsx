@@ -74,12 +74,21 @@ describe("auxiliary window controls", () => {
         const user = userEvent.setup();
         render(<PasteFallbackNotice />);
 
-        await user.click(screen.getByRole("button", { name: "clipboard.enableAutoPaste" }));
+        await user.click(screen.getByRole("button", { name: "common.settings" }));
 
         expect(tauri.invoke.mock.calls.slice(-2)).toEqual([
             ["hide_paste_fallback_notice"],
             ["open_config_window", { target: "permissions" }],
         ]);
+    });
+
+    it("renders generic paste failure guidance without a permission action", () => {
+        render(<PasteFallbackNotice showSettingsAction={false} />);
+
+        expect(screen.getByRole("status")).toHaveTextContent(
+            "clipboard.copyFallbackNotice",
+        );
+        expect(screen.queryByRole("button")).not.toBeInTheDocument();
     });
 
     it("keeps Emoji selection on the existing event and close path", async () => {

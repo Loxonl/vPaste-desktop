@@ -5,7 +5,13 @@ import { error } from "@tauri-apps/plugin-log";
 import { useLanguage } from "../lang";
 import styles from "./PasteFallbackNotice.module.css";
 
-export default function PasteFallbackNotice() {
+type PasteFallbackNoticeProps = {
+    showSettingsAction?: boolean;
+};
+
+export default function PasteFallbackNotice({
+    showSettingsAction = true,
+}: PasteFallbackNoticeProps) {
     const { t } = useLanguage();
 
     const openPermissionCenter = async () => {
@@ -26,9 +32,11 @@ export default function PasteFallbackNotice() {
                 <span className={styles["paste-fallback-notice-message"]}>
                     {t("clipboard.copyFallbackNotice")}
                 </span>
-                <Button variant="contained" className={styles["paste-fallback-notice-action"]} onClick={() => void openPermissionCenter()}>
-                    {t("clipboard.enableAutoPaste")}
-                </Button>
+                {showSettingsAction ? (
+                    <Button variant="contained" className={styles["paste-fallback-notice-action"]} onClick={() => void openPermissionCenter()}>
+                        {t("common.settings")}
+                    </Button>
+                ) : null}
             </section>
         </main>
     );

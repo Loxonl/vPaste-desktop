@@ -95,6 +95,32 @@ describe("clipboard paste runtime", () => {
         expect(callbacks.refreshHistory).toHaveBeenCalledOnce();
     });
 
+    it("shows the copy-only fallback when native paste fails", async () => {
+        const target = item();
+        const callbacks = options([target]);
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "check_paste_accessibility_permission") {
+                return { granted: true, needs_settings: false };
+            }
+            if (command === "paste") {
+                throw new Error("native paste failed");
+            }
+            return undefined;
+        });
+        const runtime = createClipboardPasteRuntime(callbacks);
+
+        await runtime.pasteItem(target.getHash());
+
+        expect(tauri.invoke).toHaveBeenCalledWith(
+            "show_paste_fallback_notice",
+        );
+        expect(callbacks.refreshHistory).not.toHaveBeenCalled();
+        expect(callbacks.showToast).toHaveBeenCalledWith(
+            "clipboard.actionFailed",
+            "error",
+        );
+    });
+
     it("uses the copy-only fallback when accessibility is unavailable", async () => {
         const target = item();
         const callbacks = options([target]);

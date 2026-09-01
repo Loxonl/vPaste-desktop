@@ -6704,6 +6704,12 @@ mod shortcut_policy_tests {
     use super::*;
 
     #[test]
+    fn normal_paste_command_exposes_failures_to_tauri() {
+        type PasteCommand = fn(&str, Option<bool>, Option<String>) -> Result<(), String>;
+        let _: PasteCommand = paste;
+    }
+
+    #[test]
     fn normalizes_modifier_aliases_for_policy_checks() {
         assert_eq!(shortcut_policy_key("Control+V"), "ctrl+v");
         assert_eq!(shortcut_policy_key("Ctrl+V"), "ctrl+v");
@@ -9264,10 +9270,12 @@ fn undo_paste_queue_consume(app: tauri::AppHandle) -> Result<paste_queue::PasteQ
 }
 
 #[tauri::command]
-fn paste(_hash: &str, restore_alt: Option<bool>, trigger_key: Option<String>) {
-    if ensure_history_ready().is_err() {
-        return;
-    }
+fn paste(
+    _hash: &str,
+    restore_alt: Option<bool>,
+    trigger_key: Option<String>,
+) -> Result<(), String> {
+    ensure_history_ready()?;
     let restore_alt = restore_alt.unwrap_or(false);
     let trigger_key = trigger_key.as_deref();
     if !_hash.is_empty() {
@@ -9302,7 +9310,9 @@ fn paste(_hash: &str, restore_alt: Option<bool>, trigger_key: Option<String>) {
 
     if let Err(err) = simulate_paste_shortcut() {
         error!("Failed to simulate paste shortcut: {}", err);
+        return Err(err);
     }
+    Ok(())
 }
 
 #[tauri::command]

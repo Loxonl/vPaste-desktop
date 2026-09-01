@@ -13,6 +13,12 @@ type PasteAccessibilityPermissionStatus = {
     needs_settings: boolean;
 };
 
+type PasteCommandArgs = {
+    hash: string;
+    restoreAlt?: boolean;
+    triggerKey: string;
+};
+
 type ClipboardPasteRuntimeOptions = {
     closeContextMenu: () => void;
     getItems: () => Item[];
@@ -66,10 +72,23 @@ export function createClipboardPasteRuntime(
         return false;
     };
 
-    const finishCopyWithoutAutoPaste = async () => {
+    const showPasteFallbackNotice = async () => {
         await invoke("show_paste_fallback_notice").catch(noticeError => {
             error(`Failed to show paste fallback notice: ${noticeError}`);
         });
+    };
+
+    const invokePaste = async (args: PasteCommandArgs) => {
+        try {
+            await invoke("paste", args);
+        } catch (pasteError) {
+            await showPasteFallbackNotice();
+            throw pasteError;
+        }
+    };
+
+    const finishCopyWithoutAutoPaste = async () => {
+        await showPasteFallbackNotice();
         try {
             await options.hideWindow();
         } finally {
@@ -144,7 +163,7 @@ export function createClipboardPasteRuntime(
                 await finishCopyWithoutAutoPaste();
                 return;
             }
-            await invoke("paste", { hash, restoreAlt, triggerKey });
+            await invokePaste({ hash, restoreAlt, triggerKey });
             await options.refreshHistory();
         } catch (pasteError) {
             error(`Failed to copy/paste: ${pasteError}`);
@@ -171,7 +190,7 @@ export function createClipboardPasteRuntime(
                 return;
             }
             await options.hideWindow();
-            await invoke("paste", { hash: item.getHash(), triggerKey: "" });
+            await invokePaste({ hash: item.getHash(), triggerKey: "" });
         } catch (pasteError) {
             error(`Failed to paste plain text: ${pasteError}`);
             options.showToast(

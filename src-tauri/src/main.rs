@@ -5191,6 +5191,53 @@ fn rewrite_internal_storage_paths(value: String, source_dir: &str, target_dir: &
         .replace(&source_slash_encoded, &target_slash_encoded)
 }
 
+#[cfg(test)]
+#[path = "history_import_tests.rs"]
+mod history_import_tests;
+
+fn relocate_imported_rich_source(
+    source: String,
+    archive_dir: &str,
+    old_dir: &str,
+    target_dir: &str,
+) -> String {
+    let Some(json) = source.strip_prefix("vpaste-rich:") else {
+        return rewrite_internal_storage_paths(source, old_dir, target_dir);
+    };
+    let Ok(mut meta) = serde_json::from_str::<serde_json::Value>(json) else {
+        return source;
+    };
+    let prefix = format!("{}/", old_dir.replace('\\', "/").trim_end_matches('/'));
+    if old_dir.is_empty() {
+        return source;
+    }
+    for field in ["html_path", "rtf_path", "png_path"] {
+        let Some(path) = meta.get(field).and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let normalized = path.replace('\\', "/");
+        let Some(relative) = normalized.strip_prefix(&prefix) else {
+            continue;
+        };
+        let parts: Vec<_> = relative.split('/').collect();
+        if parts.len() < 2
+            || !HISTORY_ARCHIVE_DIRS.contains(&parts[0])
+            || parts
+                .iter()
+                .any(|part| part.is_empty() || *part == "." || *part == ".." || part.contains(':'))
+        {
+            continue;
+        }
+        let relative: PathBuf = parts.iter().collect();
+        let target = Path::new(target_dir).join(&relative);
+        // Only rebind attachments actually carried by this archive and copied to the target.
+        if Path::new(archive_dir).join(&relative).is_file() && target.is_file() {
+            meta[field] = serde_json::Value::String(target.to_string_lossy().into_owned());
+        }
+    }
+    format!("vpaste-rich:{meta}")
+}
+
 fn merge_clipboard_database(
     source_dir: &str,
     target_dir: &str,
@@ -5257,10 +5304,12 @@ fn merge_clipboard_database(
             icon,
             label,
         ) = row.map_err(|err| err.to_string())?;
-        content = rewrite_internal_storage_paths(content, rewrite_source_dir, target_dir);
-        preview_content =
-            rewrite_internal_storage_paths(preview_content, rewrite_source_dir, target_dir);
-        source = rewrite_internal_storage_paths(source, rewrite_source_dir, target_dir);
+        if !(item_type == "Text" && source.starts_with("vpaste-rich:")) {
+            content = rewrite_internal_storage_paths(content, rewrite_source_dir, target_dir);
+            preview_content =
+                rewrite_internal_storage_paths(preview_content, rewrite_source_dir, target_dir);
+        }
+        source = relocate_imported_rich_source(source, source_dir, rewrite_source_dir, target_dir);
         app_icon_path =
             rewrite_internal_storage_paths(app_icon_path, rewrite_source_dir, target_dir);
         let changed = transaction
@@ -5449,10 +5498,13 @@ fn merge_clipboard_database(
                 title_color,
                 label,
             ) = queue_item.map_err(|err| err.to_string())?;
-            content = rewrite_internal_storage_paths(content, rewrite_source_dir, target_dir);
-            preview_content =
-                rewrite_internal_storage_paths(preview_content, rewrite_source_dir, target_dir);
-            source = rewrite_internal_storage_paths(source, rewrite_source_dir, target_dir);
+            if !(item_type == "Text" && source.starts_with("vpaste-rich:")) {
+                content = rewrite_internal_storage_paths(content, rewrite_source_dir, target_dir);
+                preview_content =
+                    rewrite_internal_storage_paths(preview_content, rewrite_source_dir, target_dir);
+            }
+            source =
+                relocate_imported_rich_source(source, source_dir, rewrite_source_dir, target_dir);
             app_icon_path =
                 rewrite_internal_storage_paths(app_icon_path, rewrite_source_dir, target_dir);
             let changed = transaction

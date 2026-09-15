@@ -4277,17 +4277,62 @@ fn export_image_item(source_path: String, target_path: String) -> Result<(), Str
     if !source.exists() {
         return Err("图片缓存不存在或已被清理".to_string());
     }
+    let image = if file_extension(&source.to_string_lossy()) == "SVG" {
+        rasterize_svg_for_export(&source)?
+    } else {
+        image_reader_secure(&source)?
+    };
+    let format = image::ImageFormat::from_path(&target).map_err(|err| err.to_string())?;
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut encoded, format)
+        .map_err(|err| err.to_string())?;
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
+    fs::write(&target, encoded.into_inner()).map_err(|err| err.to_string())
+}
 
-    if let Ok(image) = image_reader_secure(&source) {
-        image.save(&target).map_err(|err| err.to_string())?;
-        return Ok(());
+fn rasterize_svg_for_export(source: &Path) -> Result<image::DynamicImage, String> {
+    if fs::metadata(source).map_err(|err| err.to_string())?.len()
+        > image_preview::CARD_PREVIEW_MAX_SOURCE_BYTES
+    {
+        return Err("SVG source exceeds the 32 MiB export limit".to_string());
     }
-
-    let bytes = history_store::read_file(&source)?;
-    fs::write(&target, bytes).map_err(|err| err.to_string())
+    let mut options = resvg::usvg::Options {
+        resources_dir: source.parent().map(Path::to_path_buf),
+        ..Default::default()
+    };
+    options.fontdb_mut().load_system_fonts();
+    let bytes = history_store::read_file(source)?;
+    let tree = resvg::usvg::Tree::from_data(&bytes, &options).map_err(|err| err.to_string())?;
+    let size = tree.size().to_int_size();
+    if size.width() > 16_384
+        || size.height() > 16_384
+        || u64::from(size.width()) * u64::from(size.height())
+            > image_preview::CARD_PREVIEW_MAX_PIXELS
+    {
+        return Err("SVG dimensions exceed the export pixel limit".to_string());
+    }
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())
+        .ok_or_else(|| "Cannot allocate SVG export image".to_string())?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::identity(),
+        &mut pixmap.as_mut(),
+    );
+    // tiny-skia pixels are premultiplied; image encoders expect straight alpha.
+    let pixels = pixmap
+        .pixels()
+        .iter()
+        .flat_map(|pixel| {
+            let color = pixel.demultiply();
+            [color.red(), color.green(), color.blue(), color.alpha()]
+        })
+        .collect();
+    let rgba = image::RgbaImage::from_raw(size.width(), size.height(), pixels)
+        .ok_or_else(|| "Invalid SVG export pixel buffer".to_string())?;
+    Ok(image::DynamicImage::ImageRgba8(rgba))
 }
 
 #[tauri::command]
@@ -4295,6 +4340,137 @@ async fn file_preview_info(content: String) -> Result<FilePreviewInfo, String> {
     tauri::async_runtime::spawn_blocking(move || build_file_preview_info(content))
         .await
         .map_err(|err| err.to_string())?
+}
+
+#[cfg(test)]
+mod image_export_tests {
+    use super::*;
+
+    #[test]
+    fn svg_text_is_rendered() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("text.svg");
+        let target = root.path().join("text.png");
+        fs::write(&source, r#"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><text x="4" y="30" font-size="24" font-family="Arial">Test</text></svg>"#).unwrap();
+        export_image_item(
+            source.to_string_lossy().into_owned(),
+            target.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        let decoded = image::open(target).unwrap().to_rgba8();
+        assert!(decoded.pixels().filter(|pixel| pixel.0[3] > 0).count() > 30);
+    }
+
+    #[test]
+    fn oversized_source_and_invalid_target_format_preserve_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("large.svg");
+        fs::File::create(&source)
+            .unwrap()
+            .set_len(image_preview::CARD_PREVIEW_MAX_SOURCE_BYTES + 1)
+            .unwrap();
+        let target = root.path().join("output.png");
+        fs::write(&target, b"existing output").unwrap();
+        assert!(export_image_item(
+            source.to_string_lossy().into_owned(),
+            target.to_string_lossy().into_owned()
+        )
+        .is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"existing output");
+
+        let source = root.path().join("source.png");
+        image::RgbaImage::new(2, 2).save(&source).unwrap();
+        let target = root.path().join("output.unknown");
+        fs::write(&target, b"existing output").unwrap();
+        assert!(export_image_item(
+            source.to_string_lossy().into_owned(),
+            target.to_string_lossy().into_owned()
+        )
+        .is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"existing output");
+    }
+
+    #[test]
+    fn svg_exports_are_real_raster_images() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("drawing.svg");
+        fs::write(&source, br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#ff0000"/></svg>"##).unwrap();
+        for (ext, format) in [
+            ("png", image::ImageFormat::Png),
+            ("jpg", image::ImageFormat::Jpeg),
+            ("webp", image::ImageFormat::WebP),
+            ("bmp", image::ImageFormat::Bmp),
+        ] {
+            let target = root.path().join(format!("output.{ext}"));
+            export_image_item(
+                source.to_string_lossy().into_owned(),
+                target.to_string_lossy().into_owned(),
+            )
+            .unwrap();
+            let bytes = fs::read(target).unwrap();
+            assert_eq!(image::guess_format(&bytes).unwrap(), format);
+            let decoded = image::load_from_memory(&bytes).unwrap().to_rgba8();
+            assert_eq!(decoded.dimensions(), (16, 16));
+            let pixel = decoded.get_pixel(8, 8).0;
+            assert!(pixel[0] >= 250 && pixel[1] <= 5 && pixel[2] <= 5);
+        }
+    }
+
+    #[test]
+    fn invalid_or_oversized_svg_preserves_existing_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("drawing.svg");
+        let target = root.path().join("output.png");
+        for svg in [
+            "not an image",
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="100000" height="100000"/>"#,
+        ] {
+            fs::write(&source, svg).unwrap();
+            fs::write(&target, b"existing output").unwrap();
+            assert!(export_image_item(
+                source.to_string_lossy().into_owned(),
+                target.to_string_lossy().into_owned()
+            )
+            .is_err());
+            assert_eq!(fs::read(&target).unwrap(), b"existing output");
+        }
+    }
+
+    #[test]
+    fn svg_png_export_preserves_straight_alpha() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("alpha.svg");
+        let target = root.path().join("output.png");
+        fs::write(&source, br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="8" height="16" fill="#ff0000" opacity="0.5"/></svg>"##).unwrap();
+        export_image_item(
+            source.to_string_lossy().into_owned(),
+            target.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        let decoded = image::open(target).unwrap().to_rgba8();
+        let pixel = decoded.get_pixel(4, 8).0;
+        assert_eq!(pixel[0], 255);
+        assert!((127..=128).contains(&pixel[3]));
+        assert_eq!(decoded.get_pixel(12, 8).0[3], 0);
+    }
+
+    #[test]
+    fn ordinary_raster_export_still_converts_formats() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.png");
+        image::RgbaImage::from_pixel(16, 16, image::Rgba([255, 0, 0, 255]))
+            .save(&source)
+            .unwrap();
+        for ext in ["png", "jpg", "webp", "bmp"] {
+            let target = root.path().join(format!("output.{ext}"));
+            export_image_item(
+                source.to_string_lossy().into_owned(),
+                target.to_string_lossy().into_owned(),
+            )
+            .unwrap();
+            assert_eq!(image::open(target).unwrap().width(), 16);
+        }
+    }
 }
 
 fn build_file_preview_info(content: String) -> Result<FilePreviewInfo, String> {

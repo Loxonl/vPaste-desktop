@@ -1,6 +1,7 @@
 import { render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ItemType } from "../../../src/clipboard/Item";
+import { Item, ItemType } from "../../../src/clipboard/Item";
+import { createClipboardPreviewRuntime } from "../../../src/clipboard/clipboardPreviewRuntime";
 import { PreviewBody } from "../../../src/clipboard/Preview";
 
 const tauri = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -20,6 +21,24 @@ vi.mock("@tauri-apps/plugin-log", () => ({ error: vi.fn() }));
 const t = (key: string) => key;
 
 describe("PreviewBody transparency", () => {
+    it("renders the complete long text delivered by the preview runtime", async () => {
+        const body = "line of saved text\n".repeat(1200) + "FINAL LINE";
+        const path = "C:\\history\\data\\long-text";
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "plain_text_content") return body;
+            return undefined;
+        });
+        await createClipboardPreviewRuntime({
+            closeContextMenu: vi.fn(), requestSequence: { current: 0 },
+            selectItem: vi.fn(), showToast: vi.fn(), t,
+        }).openPreviewItem(new Item(1, "long-text", ItemType.TextFile, path, 0, undefined, body.slice(0, 1800)));
+        const call = tauri.invoke.mock.calls.find(([command]) => command === "show_preview_window");
+        expect(call).toBeDefined();
+        const { container } = render(<PreviewBody payload={call![1]} t={t} />);
+        expect(container.querySelector("pre")?.textContent).toBe(body);
+        expect(container).not.toHaveTextContent(path);
+    });
+
     beforeEach(() => {
         tauri.invoke.mockReset();
         tauri.invoke.mockImplementation(async (command: string) => {

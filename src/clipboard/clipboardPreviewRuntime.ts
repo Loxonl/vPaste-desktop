@@ -86,15 +86,20 @@ export function createClipboardPreviewRuntime(
         if (requestSeq !== options.requestSequence.current) return;
         options.selectItem(item.getHash());
         try {
+            const textContent = item.getType() === "TextFile"
+                ? await invoke<string>("plain_text_content", { hash: item.getHash() })
+                : item.getTextContent();
+            if (requestSeq !== options.requestSequence.current) return;
             await invoke("show_preview_window", {
                 itemType: item.getType(),
                 content: item.getContent(),
                 previewContent: item.getPreviewContent(),
-                textContent: item.getTextContent(),
+                textContent,
                 richHtml: item.getRichHtml(),
                 appSource: item.getAppSource(),
             });
         } catch (previewError) {
+            if (requestSeq !== options.requestSequence.current) return;
             error(`Failed to open preview: ${previewError}`);
             options.showToast(
                 options.t("clipboard.previewFailed", {

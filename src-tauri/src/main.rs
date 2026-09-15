@@ -8056,9 +8056,10 @@ fn image_preview_asset_path(path: &str) -> Result<String, String> {
     let bytes = history_store::read_file(path)?;
     let extension = image_extension_from_bytes(&bytes);
     let mut hasher = DefaultHasher::new();
-    "preview-asset-v2".hash(&mut hasher);
+    "preview-asset-v3".hash(&mut hasher);
     path.hash(&mut hasher);
-    bytes.len().hash(&mut hasher);
+    // The URL must change even when an edited file retains the same byte length.
+    bytes.hash(&mut hasher);
     let cache_dir = PathBuf::from(app_runtime_dir(&["image_preview_cache"]));
     fs::create_dir_all(&cache_dir).map_err(|err| err.to_string())?;
     let cache_path = cache_dir.join(format!("{:x}.{}", hasher.finish(), extension));
@@ -8211,6 +8212,54 @@ fn image_card_preview_asset_path(path: &str) -> Result<String, String> {
 #[cfg(test)]
 mod image_cache_tests {
     use super::*;
+
+    #[test]
+    fn file_preview_refreshes_equal_size_image_replacements() {
+        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(root.path().to_string_lossy().into_owned());
+        let source = root.path().join("drawing.bmp");
+        let content = serde_json::to_string(&vec![source.to_string_lossy()]).unwrap();
+        let preview = || {
+            let info = build_file_preview_info(content.clone()).unwrap();
+            assert_eq!(info.kind, "single-preview");
+            tauri::async_runtime::block_on(history_file_preview_asset_path(info.preview_path))
+                .unwrap()
+        };
+
+        image::RgbImage::from_pixel(16, 16, image::Rgb([255, 0, 0]))
+            .save(&source)
+            .unwrap();
+        let original_len = fs::metadata(&source).unwrap().len();
+        let red = preview();
+        assert_eq!(preview(), red);
+        let modified = fs::metadata(&red).unwrap().modified().unwrap();
+        assert_eq!(preview(), red);
+        assert_eq!(fs::metadata(&red).unwrap().modified().unwrap(), modified);
+
+        image::RgbImage::from_pixel(16, 16, image::Rgb([0, 0, 255]))
+            .save(&source)
+            .unwrap();
+        assert_eq!(fs::metadata(&source).unwrap().len(), original_len);
+        let blue = preview();
+        assert_ne!(blue, red, "changed content needs a fresh webview asset URL");
+        assert_eq!(
+            image::open(&blue).unwrap().to_rgb8().get_pixel(0, 0).0,
+            [0, 0, 255]
+        );
+        assert_eq!(fs::read(&blue).unwrap(), fs::read(&source).unwrap());
+        assert_eq!(preview(), blue);
+
+        image::RgbImage::from_pixel(17, 16, image::Rgb([0, 255, 0]))
+            .save(&source)
+            .unwrap();
+        let green = preview();
+        assert_ne!(green, blue);
+        assert_eq!(
+            image::open(green).unwrap().to_rgb8().get_pixel(0, 0).0,
+            [0, 255, 0]
+        );
+    }
 
     #[test]
     fn history_image_metadata_uses_persistent_cache() {

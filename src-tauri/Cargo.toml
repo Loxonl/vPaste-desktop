@@ -23,6 +23,7 @@ tauri-build = { version = "2", features = [] }
 resvg = { version = "0.47.0", default-features = false }
 
 [dependencies]
+resvg = "0.47.0"
 tauri = { version = "=2.11.2", features = ["macos-private-api", "tray-icon", "protocol-asset", "unstable"] }
 tauri-plugin-global-shortcut = "=2.3.1"
 tauri-plugin-log = "=2.8.0"

@@ -36,6 +36,47 @@ function options() {
 }
 
 describe("clipboard preview runtime", () => {
+    it("loads the full disk-backed text before opening its preview", async () => {
+        const callbacks = options();
+        const body = "long text\n".repeat(2000) + "THE END";
+        const target = new Item(2, "long-text", ItemType.TextFile, "C:\\history\\data\\long-text", 0, undefined, body.slice(0, 1800));
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "plain_text_content") return body;
+            return undefined;
+        });
+        await createClipboardPreviewRuntime(callbacks).openPreviewItem(target);
+        expect(tauri.invoke).toHaveBeenCalledWith("plain_text_content", { hash: "long-text" });
+        expect(tauri.invoke).toHaveBeenLastCalledWith("show_preview_window", expect.objectContaining({ textContent: body }));
+        expect(target.getPreviewContent()).toBe(body.slice(0, 1800));
+    });
+
+    it("reports a missing text body without opening a path-only preview", async () => {
+        const callbacks = options();
+        tauri.invoke.mockRejectedValue(new Error("history file missing"));
+        await createClipboardPreviewRuntime(callbacks).openPreviewItem(item(ItemType.TextFile));
+        expect(tauri.invoke).toHaveBeenCalledWith("plain_text_content", { hash: "preview-hash" });
+        expect(tauri.invoke).not.toHaveBeenCalledWith("show_preview_window", expect.anything());
+        expect(callbacks.showToast).toHaveBeenCalledWith("clipboard.previewFailed", "error");
+    });
+
+    it.each([false, true])("ignores an obsolete text read (reject: %s)", async reject => {
+        const callbacks = options();
+        let finish: () => void = () => undefined;
+        tauri.invoke.mockImplementation((command: string) => {
+            if (command === "plain_text_content") return new Promise((resolve, fail) => {
+                finish = () => reject ? fail(new Error("old read failed")) : resolve("old body");
+            });
+            return Promise.resolve(undefined);
+        });
+        const runtime = createClipboardPreviewRuntime(callbacks);
+        const pending = runtime.openPreviewItem(item(ItemType.TextFile));
+        await runtime.openPreviewItem(item());
+        finish();
+        await pending;
+        expect(tauri.invoke.mock.calls.filter(([command]) => command === "show_preview_window")).toHaveLength(1);
+        expect(callbacks.showToast).not.toHaveBeenCalled();
+    });
+
     beforeEach(() => {
         tauri.invoke.mockReset();
         logger.error.mockReset();

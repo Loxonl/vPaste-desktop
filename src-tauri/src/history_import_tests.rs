@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn custom_tab_import_merges_without_losing_local_filters() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("import.json");
+    let target = root.path().join("local.json");
+    let local = r#"[{"id":"local","name":"Local","filter":{}},{"id":"shared","name":"Local shared","filter":{"itemType":"Text"}}]"#;
+    fs::write(&target, local).unwrap();
+    assert!(!import_custom_tabs(&source, &target, None).unwrap());
+    assert_eq!(fs::read_to_string(&target).unwrap(), local);
+    fs::write(&source, "[]").unwrap();
+    import_custom_tabs(&source, &target, None).unwrap();
+    assert_eq!(fs::read_to_string(&target).unwrap(), local);
+    fs::write(&source, r#"[{"id":"shared","name":"Imported conflict","filter":{}},{"id":"new","name":"New","filter":{"favorite":"yes"}}]"#).unwrap();
+    assert!(import_custom_tabs(&source, &target, None).unwrap());
+    let merged = fs::read_to_string(&target).unwrap();
+    let tabs: serde_json::Value = serde_json::from_str(&merged).unwrap();
+    assert_eq!(tabs.as_array().unwrap().len(), 3);
+    assert_eq!(tabs[0]["id"], "local");
+    assert_eq!(tabs[1]["name"], "Local shared");
+    assert_eq!(tabs[1]["filter"]["itemType"], "Text");
+    assert_eq!(tabs[2]["id"], "new");
+    import_custom_tabs(&source, &target, None).unwrap();
+    assert_eq!(fs::read_to_string(&target).unwrap(), merged);
+}
+
+#[test]
 fn plain_text_import_preserves_literal_paths_and_hashes() {
     for old in [r"C:\old\history", "/old/history"] {
         let root = tempfile::tempdir().unwrap();
@@ -34,6 +59,37 @@ fn plain_text_import_preserves_literal_paths_and_hashes() {
             assert_eq!(stored, (text.clone(), preview.clone(), "text".to_string()));
         }
     }
+}
+
+#[test]
+fn custom_tab_import_handles_new_targets_and_rejects_invalid_data_without_overwrite() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("import.json");
+    let target = root.path().join("nested/local.json");
+    let payload = r#"[{"id":"new","name":"First","filter":{}},{"id":"new","name":"Duplicate"}]"#;
+    fs::write(&source, payload).unwrap();
+    let mut progress =
+        HistoryArchiveProgressState::new(None, "import", HistoryArchiveTotals::empty());
+    assert!(import_custom_tabs(&source, &target, Some(&mut progress)).unwrap());
+    assert_eq!(progress.processed_files, 1);
+    assert_eq!(progress.processed_bytes, payload.len() as u64);
+    let saved = fs::read(&target).unwrap();
+    let tabs: Vec<serde_json::Value> = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(tabs.len(), 1);
+    assert_eq!(tabs[0]["name"], "First");
+    for invalid in [
+        "not json",
+        "{}",
+        r#"[{"id":"valid","name":"Valid"},{"name":"Missing ID"}]"#,
+    ] {
+        fs::write(&source, invalid).unwrap();
+        assert!(import_custom_tabs(&source, &target, None).is_err());
+        assert_eq!(fs::read(&target).unwrap(), saved);
+    }
+    fs::write(&source, payload).unwrap();
+    fs::write(&target, "invalid local data").unwrap();
+    assert!(import_custom_tabs(&source, &target, None).is_err());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "invalid local data");
 }
 
 #[test]

@@ -6191,6 +6191,51 @@ fn extract_history_archive(
     Ok(())
 }
 
+fn import_custom_tabs(
+    source: &Path,
+    target: &Path,
+    progress: Option<&mut HistoryArchiveProgressState>,
+) -> Result<bool, String> {
+    if !source.is_file() {
+        return Ok(false);
+    }
+    let bytes = history_store::read_file(source)?;
+    let imported: Vec<serde_json::Value> = serde_json::from_slice(&bytes)
+        .map_err(|err| format!("Invalid imported custom tabs: {err}"))?;
+    let mut local: Vec<serde_json::Value> = if target.exists() {
+        serde_json::from_slice(&history_store::read_file(target)?)
+            .map_err(|err| format!("Invalid local custom tabs: {err}"))?
+    } else {
+        Vec::new()
+    };
+    let mut ids: std::collections::HashSet<String> = local
+        .iter()
+        .filter_map(|tab| tab.get("id").and_then(|id| id.as_str()).map(str::to_owned))
+        .collect();
+    let mut changed = false;
+    for tab in imported {
+        let id = tab
+            .get("id")
+            .and_then(|id| id.as_str())
+            .ok_or_else(|| "Imported custom tab is missing a string id".to_string())?;
+        if tab.get("name").and_then(|name| name.as_str()).is_none() {
+            return Err("Imported custom tab is missing a string name".to_string());
+        }
+        if ids.insert(id.to_owned()) {
+            local.push(tab);
+            changed = true;
+        }
+    }
+    if changed {
+        let merged = serde_json::to_vec_pretty(&local).map_err(|err| err.to_string())?;
+        history_store::write_file(target, &merged)?;
+    }
+    if let Some(progress) = progress {
+        progress.add_file(bytes.len() as u64);
+    }
+    Ok(changed)
+}
+
 fn import_history_archive_impl(
     app: tauri::AppHandle,
     archive_path: String,
@@ -6215,10 +6260,9 @@ fn import_history_archive_impl(
     let mut copied_files = 0_usize;
     for file_name in HISTORY_ARCHIVE_FILES {
         let source_path = temp_dir.path().join(file_name);
-        if copy_history_file_with_progress(
+        if import_custom_tabs(
             &source_path,
             &PathBuf::from(&target_dir).join(file_name),
-            true,
             Some(&mut progress),
         )? {
             copied_files += 1;

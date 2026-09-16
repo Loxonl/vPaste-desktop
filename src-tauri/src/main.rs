@@ -5304,7 +5304,7 @@ fn merge_clipboard_database(
             icon,
             label,
         ) = row.map_err(|err| err.to_string())?;
-        if !(item_type == "Text" && source.starts_with("vpaste-rich:")) {
+        if item_type != "Text" {
             content = rewrite_internal_storage_paths(content, rewrite_source_dir, target_dir);
             preview_content =
                 rewrite_internal_storage_paths(preview_content, rewrite_source_dir, target_dir);
@@ -5498,7 +5498,7 @@ fn merge_clipboard_database(
                 title_color,
                 label,
             ) = queue_item.map_err(|err| err.to_string())?;
-            if !(item_type == "Text" && source.starts_with("vpaste-rich:")) {
+            if item_type != "Text" {
                 content = rewrite_internal_storage_paths(content, rewrite_source_dir, target_dir);
                 preview_content =
                     rewrite_internal_storage_paths(preview_content, rewrite_source_dir, target_dir);

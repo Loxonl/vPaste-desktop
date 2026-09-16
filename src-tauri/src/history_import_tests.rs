@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn plain_text_import_preserves_literal_paths_and_hashes() {
+    for old in [r"C:\old\history", "/old/history"] {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        let text = format!(
+            "Keep verbatim: {old}\nC:%5Cold%5Chistory /old/history-backup %2Fold%2Fhistory 中文"
+        );
+        let preview = format!("Preview: {old}");
+        let db = rusqlite::Connection::open(source.join("vpaste.db")).unwrap();
+        clipboard::db::init_schema(&db).unwrap();
+        db.execute("insert into clipboard(hash,time,content,preview_content,item_type,source) values('text',1,?1,?2,'Text','')", rusqlite::params![text, preview]).unwrap();
+        db.execute("insert into paste_queue(hash,position,queued_at,time,content,preview_content,item_type,source) values('text',0,1,1,?1,?2,'Text','')", rusqlite::params![text, preview]).unwrap();
+        drop(db);
+        assert_eq!(
+            merge_clipboard_database(source.to_str().unwrap(), target.to_str().unwrap(), old)
+                .unwrap(),
+            (1, 0)
+        );
+        let db = rusqlite::Connection::open(target.join("vpaste.db")).unwrap();
+        for table in ["clipboard", "paste_queue"] {
+            let stored: (String, String, String) = db
+                .query_row(
+                    &format!("select content,preview_content,hash from {table}"),
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(stored, (text.clone(), preview.clone(), "text".to_string()));
+        }
+    }
+}
+
+#[test]
 fn rich_import_relocates_only_packaged_attachments() {
     for old in [r"C:\Users\old\History", "/Users/old/History"] {
         let root = tempfile::tempdir().unwrap();

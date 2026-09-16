@@ -1,6 +1,68 @@
 use super::*;
 
 #[test]
+fn managed_import_paths_follow_destination_not_source_separators() {
+    assert_eq!(
+        rewrite_internal_storage_paths(r"C:\old\data\item".into(), r"C:\old", "/Users/new/history"),
+        "/Users/new/history/data/item"
+    );
+    assert_eq!(
+        rewrite_internal_storage_paths("/old/data/item".into(), "/old", r"D:\new"),
+        "D:/new/data/item"
+    );
+    assert_eq!(
+        rewrite_internal_storage_paths(r"C:\old\rich_formats\a.html".into(), r"C:\old", "/new"),
+        "/new/rich_formats/a.html"
+    );
+}
+
+#[test]
+fn cross_platform_image_and_textfile_merge_preserves_readable_payloads_and_external_files() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let target = root.path().join("target");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(target.join("data")).unwrap();
+    fs::write(target.join("data/item"), b"payload").unwrap();
+    let db = rusqlite::Connection::open(source.join("vpaste.db")).unwrap();
+    clipboard::db::init_schema(&db).unwrap();
+    let external = r#"["C:/old/data/user-file.txt"]"#;
+    for (position, kind) in ["Image", "TextFile", "File"].into_iter().enumerate() {
+        let content = if kind == "File" {
+            external
+        } else {
+            r"C:\old\data\item"
+        };
+        db.execute("insert into clipboard(hash,time,content,preview_content,item_type,source) values(?1,1,?2,?2,?1,'')", rusqlite::params![kind, content]).unwrap();
+        db.execute("insert into paste_queue(hash,position,queued_at,time,content,preview_content,item_type,source) values(?1,?3,1,1,?2,?2,?1,'')", rusqlite::params![kind, content, position]).unwrap();
+    }
+    drop(db);
+    merge_clipboard_database(
+        source.to_str().unwrap(),
+        target.to_str().unwrap(),
+        r"C:\old",
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open(target.join("vpaste.db")).unwrap();
+    for table in ["clipboard", "paste_queue"] {
+        for kind in ["Image", "TextFile", "File"] {
+            let content: String = db
+                .query_row(
+                    &format!("select content from {table} where hash=?1"),
+                    [kind],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if kind == "File" {
+                assert_eq!(content, external);
+            } else {
+                assert_eq!(fs::read(content).unwrap(), b"payload");
+            }
+        }
+    }
+}
+
+#[test]
 fn custom_tab_import_merges_without_losing_local_filters() {
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("import.json");

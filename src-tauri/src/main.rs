@@ -5162,6 +5162,27 @@ fn rewrite_internal_storage_paths(value: String, source_dir: &str, target_dir: &
     if value.is_empty() {
         return value;
     }
+    // Managed file references are filesystem paths, not strings whose original
+    // platform's separators should survive relocation. '/' also works on Windows.
+    let normalized = value.replace('\\', "/");
+    let root = source_dir.replace('\\', "/");
+    if !root.is_empty() {
+        if let Some(relative) = normalized.strip_prefix(&format!("{}/", root.trim_end_matches('/')))
+        {
+            if relative.starts_with("data/") || relative.starts_with("rich_formats/") {
+                if relative.split('/').any(|part| {
+                    part.is_empty() || part == "." || part == ".." || part.contains(':')
+                }) {
+                    return value;
+                }
+                return format!(
+                    "{}/{}",
+                    target_dir.replace('\\', "/").trim_end_matches('/'),
+                    relative
+                );
+            }
+        }
+    }
     let source_backslash = source_dir.trim_end_matches(['\\', '/']).replace('/', "\\");
     let target_backslash = target_dir.trim_end_matches(['\\', '/']).replace('/', "\\");
     let source_slash = source_dir.trim_end_matches(['\\', '/']).replace('\\', "/");
@@ -5304,7 +5325,7 @@ fn merge_clipboard_database(
             icon,
             label,
         ) = row.map_err(|err| err.to_string())?;
-        if item_type != "Text" {
+        if !matches!(item_type.as_str(), "Text" | "File") {
             content = rewrite_internal_storage_paths(content, rewrite_source_dir, target_dir);
             preview_content =
                 rewrite_internal_storage_paths(preview_content, rewrite_source_dir, target_dir);
@@ -5498,7 +5519,7 @@ fn merge_clipboard_database(
                 title_color,
                 label,
             ) = queue_item.map_err(|err| err.to_string())?;
-            if item_type != "Text" {
+            if !matches!(item_type.as_str(), "Text" | "File") {
                 content = rewrite_internal_storage_paths(content, rewrite_source_dir, target_dir);
                 preview_content =
                     rewrite_internal_storage_paths(preview_content, rewrite_source_dir, target_dir);

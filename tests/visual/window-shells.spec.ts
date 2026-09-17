@@ -299,6 +299,11 @@ test.describe("window shells", () => {
         await expect.poll(() => searchLayout.evaluate(element => (
             Number.parseFloat(getComputedStyle(element).transitionDuration)
         ))).toBeLessThan(0.001);
+        await searchInput.fill("");
+        await expect(page.getByText("剪贴板里还没有内容")).toBeVisible();
+        await searchInput.fill("missing-again");
+        await expect(page.getByText("没有找到匹配内容")).toBeVisible();
+        await expect(page.getByTestId("clipboard-results")).not.toHaveAttribute("aria-hidden", "true");
     });
 
     test("clipboard filters recent and older loaded results with one bounded staggered motion", async ({ page }) => {

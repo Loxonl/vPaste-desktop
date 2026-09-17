@@ -1290,9 +1290,9 @@ export default function Clipboard() {
                     const firstHash = pageListRef.current[0]?.getHash() as string | undefined;
                     if (firstHash) {
                         if (queueSelectionMode) {
-                            activateClipboardCardRef.current(firstHash, false);
+                            activateClipboardCardRef.current(firstHash, action.plainText);
                         } else {
-                            void clickClipboardItem(firstHash, false);
+                            void clickClipboardItem(firstHash, action.plainText);
                         }
                     }
                     return;
@@ -1914,15 +1914,17 @@ export default function Clipboard() {
                     />
                 ) : (
                     <AnimatePresence mode="wait" initial={false}>
-                        {emptyState ? (
-                            <m.div
-                                key={`clipboard-empty-${emptyState}`}
-                                className={classes(styles, "cards-grid clipboard-empty-grid")}
-                                variants={fadeMotion}
-                                initial="initial"
-                                animate="animate"
-                                exit="exit"
-                            >
+                        <m.div
+                            key={resultsMotionKey}
+                            className={classes(styles, `cards-grid${emptyState ? " clipboard-empty-grid" : ""}`)}
+                            data-testid="clipboard-results"
+                            variants={fadeMotion}
+                            initial="initial"
+                            animate="animate"
+                            exit="exit"
+                            aria-hidden={filteringResults || undefined}
+                        >
+                            {emptyState ? (
                                 <div
                                     className={classes(styles, "clipboard-empty-state")}
                                     role="status"
@@ -1935,61 +1937,52 @@ export default function Clipboard() {
                                     <strong>{t(emptyState === "filtered" ? "clipboard.noResults" : "clipboard.emptyHistory")}</strong>
                                     <span>{t(emptyState === "filtered" ? "clipboard.noResults.desc" : "clipboard.emptyHistory.desc")}</span>
                                 </div>
-                            </m.div>
-                        ) : (
-                            <m.div
-                                key={resultsMotionKey}
-                                className={classes(styles, "cards-grid")}
-                                data-testid="clipboard-results"
-                                variants={fadeMotion}
-                                initial="initial"
-                                animate="animate"
-                                exit="exit"
-                                aria-hidden={filteringResults || undefined}
-                            >
-                                <AnimatePresence mode="popLayout" initial={false}>
-                                    {clipboardPage.list.map((item, index) => (
-                                        <ClipboardCard
-                                            key={item.getHash() as string}
-                                            item={item}
-                                            selected={queueSelectionMode
-                                                ? queueSelectedHashes.includes(item.getHash() as string)
-                                                : selected === item.getHash()}
-                                            selectionMode={queueSelectionMode}
-                                            dragDisabled={tutorialActive}
-                                            simulatedHover={simulatedHoverHash === item.getHash()}
-                                            refreshKey={fileRefreshKey}
-                                            searchQuery={searchWord as string}
-                                            shortcutHint={altHintsVisible && index < 9 ? String(index + 1) : undefined}
-                                            filterMotionRequestSeq={filterMotionRequest?.hashes.includes(item.getHash() as string)
-                                                ? filterMotionRequest.requestSeq
-                                                : undefined}
-                                            filterMotionIndex={index}
-                                            mediaPlaybackReady={animationState === 'entered'}
-                                            t={t}
-                                            onContextMenu={openClipboardContextMenu}
-                                            onActivate={activateClipboardCard}
-                                        />
-                                    ))}
-                                </AnimatePresence>
-                                <AnimatePresence mode="wait" initial={false}>
-                                    {isLoadingMore && (
-                                        <m.div
-                                            key="history-loading-more"
-                                            className={classes(styles, "history-loading-card")}
-                                            role="status"
-                                            aria-live="polite"
-                                            variants={listItemMotion}
-                                            initial="initial"
-                                            animate="animate"
-                                            exit="exit"
-                                        >
-                                            {t("common.loading")}
-                                        </m.div>
-                                    )}
-                                </AnimatePresence>
-                            </m.div>
-                        )}
+                            ) : (
+                                <>
+                                    <AnimatePresence mode="popLayout" initial={false}>
+                                        {clipboardPage.list.map((item, index) => (
+                                            <ClipboardCard
+                                                key={item.getHash() as string}
+                                                item={item}
+                                                selected={queueSelectionMode
+                                                    ? queueSelectedHashes.includes(item.getHash() as string)
+                                                    : selected === item.getHash()}
+                                                selectionMode={queueSelectionMode}
+                                                dragDisabled={tutorialActive}
+                                                simulatedHover={simulatedHoverHash === item.getHash()}
+                                                refreshKey={fileRefreshKey}
+                                                searchQuery={searchWord as string}
+                                                shortcutHint={altHintsVisible && index < 9 ? String(index + 1) : undefined}
+                                                filterMotionRequestSeq={filterMotionRequest?.hashes.includes(item.getHash() as string)
+                                                    ? filterMotionRequest.requestSeq
+                                                    : undefined}
+                                                filterMotionIndex={index}
+                                                mediaPlaybackReady={animationState === 'entered'}
+                                                t={t}
+                                                onContextMenu={openClipboardContextMenu}
+                                                onActivate={activateClipboardCard}
+                                            />
+                                        ))}
+                                    </AnimatePresence>
+                                    <AnimatePresence mode="wait" initial={false}>
+                                        {isLoadingMore && (
+                                            <m.div
+                                                key="history-loading-more"
+                                                className={classes(styles, "history-loading-card")}
+                                                role="status"
+                                                aria-live="polite"
+                                                variants={listItemMotion}
+                                                initial="initial"
+                                                animate="animate"
+                                                exit="exit"
+                                            >
+                                                {t("common.loading")}
+                                            </m.div>
+                                        )}
+                                    </AnimatePresence>
+                                </>
+                            )}
+                        </m.div>
                     </AnimatePresence>
                 )}
                 <AnimatePresence mode="wait" initial={false}>

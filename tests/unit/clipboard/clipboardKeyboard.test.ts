@@ -62,7 +62,7 @@ describe("clipboardKeyDownAction", () => {
         expect(clipboardKeyDownAction(
             keyDown("Enter", {}, searchInput),
             context({ searchInput }),
-        )).toEqual({ type: "submit-search", stopPropagation: true });
+        )).toEqual({ type: "submit-search", plainText: false, stopPropagation: true });
         expect(clipboardKeyDownAction(
             keyDown("Escape", {}, searchInput),
             context({ searchInput, searchOpen: true, searchHasText: true }),
@@ -73,11 +73,30 @@ describe("clipboardKeyDownAction", () => {
         )).toEqual({ type: "dismiss-search", clear: false });
     });
 
-    it("does not treat IME confirmation as a search submission", () => {
+    it("preserves the paste-as-text shortcut when search has focus", () => {
+        const searchInput = document.createElement("input");
+        expect(clipboardKeyDownAction(
+            keyDown("Enter", { shiftKey: true }, searchInput),
+            context({ searchInput }),
+        )).toEqual({ type: "submit-search", plainText: true, stopPropagation: true });
+        expect(clipboardKeyDownAction(
+            keyDown("p", { ctrlKey: true, shiftKey: true }, searchInput),
+            context({ searchInput, pasteAsTextShortcut: "Ctrl+Shift+P" }),
+        )).toEqual({ type: "submit-search", plainText: true, stopPropagation: true });
+    });
+
+    it("does not activate paste-as-text inside unrelated inputs", () => {
+        expect(clipboardKeyDownAction(
+            keyDown("Enter", { shiftKey: true }, document.createElement("input")),
+            context({ searchInput: document.createElement("input") }),
+        )).toBeNull();
+    });
+
+    it.each([false, true])("does not treat IME confirmation as a search submission (shift=%s)", shiftKey => {
         const searchInput = document.createElement("input");
         const composingEnter = keyDown(
             "Enter",
-            { isComposing: true },
+            { isComposing: true, shiftKey },
             searchInput,
         );
         const legacyImeEnter = keyDown("Enter", {}, searchInput);

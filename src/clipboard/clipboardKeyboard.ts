@@ -9,7 +9,7 @@ export type ClipboardKeyDownAction =
     | { type: "quick-tab"; tabId: "all" | "favorite" }
     | { type: "quick-item"; index: number }
     | { type: "focus-search" }
-    | { type: "submit-search"; stopPropagation: true }
+    | { type: "submit-search"; plainText: boolean; stopPropagation: true }
     | { type: "dismiss-search"; clear: boolean }
     | { type: "move-context-menu-selection"; direction: -1 | 1 }
     | { type: "activate-context-menu-option" }
@@ -71,8 +71,9 @@ export function clipboardKeyDownAction(
     }
 
     if (targetIsTextInput) {
-        if (event.key === "Enter" && event.target === context.searchInput) {
-            return { type: "submit-search", stopPropagation: true };
+        const plainText = matchesKeyboardShortcut(event, context.pasteAsTextShortcut);
+        if ((event.key === "Enter" || plainText) && event.target === context.searchInput) {
+            return { type: "submit-search", plainText, stopPropagation: true };
         }
         if (event.key === "Escape" && context.searchOpen) {
             return { type: "dismiss-search", clear: context.searchHasText };

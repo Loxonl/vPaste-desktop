@@ -62,6 +62,7 @@ export function clipboardKeyDownAction(
             return { type: "quick-tab", tabId: action.tabId };
         }
         if (action?.kind === "item") {
+            if (event.repeat) return null;
             return { type: "quick-item", index: action.index };
         }
     }

@@ -29,6 +29,30 @@ function context(overrides: Partial<Parameters<typeof clipboardKeyDownAction>[1]
 }
 
 describe("clipboardKeyDownAction", () => {
+    it.each([false, true])("ignores held quick-item repeats (mac=%s)", isMac => {
+        const searchInput = document.createElement("input");
+        for (const target of [undefined, searchInput]) {
+            const settings = context({ isMac, searchInput });
+            const init = { altKey: true, code: "Digit1" };
+            expect(clipboardKeyDownAction(keyDown("1", init, target), settings))
+                .toEqual({ type: "quick-item", index: 0 });
+            expect(clipboardKeyDownAction(keyDown("1", { ...init, repeat: true }, target), settings))
+                .toBeNull();
+            expect(clipboardKeyDownAction(keyDown("1", init, target), settings))
+                .toEqual({ type: "quick-item", index: 0 });
+        }
+    });
+
+    it("preserves repeated selection and context-menu navigation", () => {
+        for (const key of ["ArrowRight", "Tab"]) {
+            expect(clipboardKeyDownAction(keyDown(key, { repeat: true }), context()))
+                .toEqual({ type: "navigate-selection", direction: 1 });
+        }
+        expect(clipboardKeyDownAction(
+            keyDown("ArrowDown", { repeat: true }), context({ contextMenuOpen: true }),
+        )).toEqual({ type: "move-context-menu-selection", direction: 1 });
+    });
+
     it("always handles Alt while only showing hints when quick input is enabled", () => {
         expect(clipboardKeyDownAction(keyDown("Alt"), context()))
             .toEqual({ type: "alt-press", showHints: true, stopPropagation: true });

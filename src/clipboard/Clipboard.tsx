@@ -247,6 +247,7 @@ export default function Clipboard() {
     const pageListRef = useRef<Item[]>([]);
     const pasteAsTextShortcutRef = useRef(DEFAULT_PASTE_AS_TEXT_SHORTCUT);
     const quickInputEnabledRef = useRef(true);
+    const quickPasteInFlightRef = useRef(false);
     const tabQuickSelectEnabledRef = useRef(true);
     const linkAutoPreviewRef = useRef(true);
     const linkPreviewRefreshingRef = useRef(false);
@@ -1411,6 +1412,7 @@ export default function Clipboard() {
         pasteItem: clickClipboardItem,
         pastePlainTextItem,
     } = createClipboardPasteRuntime({
+        quickPasteInFlight: quickPasteInFlightRef,
         closeContextMenu: () => setContextMenu(null),
         getItems: () => pageListRef.current,
         hideWindow: hideCurrentWindowWithAnimation,

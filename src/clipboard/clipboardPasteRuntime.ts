@@ -20,6 +20,7 @@ type PasteCommandArgs = {
 };
 
 type ClipboardPasteRuntimeOptions = {
+    quickPasteInFlight: { current: boolean };
     closeContextMenu: () => void;
     getItems: () => Item[];
     hideWindow: () => Promise<void>;
@@ -87,10 +88,10 @@ export function createClipboardPasteRuntime(
         }
     };
 
-    const finishCopyWithoutAutoPaste = async () => {
+    const finishCopyWithoutAutoPaste = async (alreadyHidden = false) => {
         await showPasteFallbackNotice();
         try {
-            await options.hideWindow();
+            if (!alreadyHidden) await options.hideWindow();
         } finally {
             await invoke("restore_foreground_app").catch(restoreError => {
                 error(`Failed to restore foreground app: ${restoreError}`);
@@ -98,7 +99,7 @@ export function createClipboardPasteRuntime(
         }
     };
 
-    const pasteItem = async (
+    const performPasteItem = async (
         hash: string,
         plainText: boolean = false,
         restoreAlt: boolean = false,
@@ -139,6 +140,7 @@ export function createClipboardPasteRuntime(
         try {
             const copyHash = plainText ? null : hash;
             if (restoreAlt) {
+                await options.hideWindow();
                 await waitForQuickInputModifierRelease(triggerKey);
             }
             if (copyFromHistory) {
@@ -146,21 +148,21 @@ export function createClipboardPasteRuntime(
                     hash: item.getHash(),
                     plainText,
                 });
-                if (hasPermission) {
+                if (hasPermission && !restoreAlt) {
                     await options.hideWindow();
                 }
-            } else if (itemType === "Image" && hasPermission) {
+            } else if (itemType === "Image" && hasPermission && !restoreAlt) {
                 const hidePromise = options.hideWindow();
                 await invoke("copy", { item: content, itemType, hash: copyHash });
                 await hidePromise;
             } else {
                 await invoke("copy", { item: content, itemType, hash: copyHash });
-                if (hasPermission) {
+                if (hasPermission && !restoreAlt) {
                     await options.hideWindow();
                 }
             }
             if (!hasPermission) {
-                await finishCopyWithoutAutoPaste();
+                await finishCopyWithoutAutoPaste(restoreAlt);
                 return;
             }
             await invokePaste({ hash, restoreAlt, triggerKey });
@@ -173,6 +175,23 @@ export function createClipboardPasteRuntime(
                 }),
                 "error",
             );
+        }
+    };
+
+    const pasteItem = async (
+        hash: string,
+        plainText = false,
+        restoreAlt = false,
+        triggerKey = "",
+    ) => {
+        if (!restoreAlt) return performPasteItem(hash, plainText, restoreAlt, triggerKey);
+        // Shared with successive React renders; claim before the first await.
+        if (options.quickPasteInFlight.current) return;
+        options.quickPasteInFlight.current = true;
+        try {
+            await performPasteItem(hash, plainText, restoreAlt, triggerKey);
+        } finally {
+            options.quickPasteInFlight.current = false;
         }
     };
 

@@ -8,7 +8,8 @@ type ProbeWindow = Window & {
 const commandCount = (page: Page, command: string) => page.evaluate(command =>
     (window as ProbeWindow).__pasteCalls.filter(call => call.command === command).length, command);
 
-test("held quick input pastes once and a later independent press still works", async ({ page }) => {
+for (const separatePresses of [false, true]) {
+test(`quick input hides before release and pastes once (${separatePresses ? "separate presses" : "auto repeat"})`, async ({ page }) => {
     await page.addInitScript(() => {
         let callbackId = 0;
         let held = true;
@@ -20,6 +21,7 @@ test("held quick input pastes once and a later independent press still works", a
                 invoke: async (command: string, args: Record<string, unknown> = {}) => {
                     calls.push({ command, args });
                     if (command === "is_quick_input_modifier_pressed") return held;
+                    if (command === "begin_hide_clipboard_window") return 1;
                     if (command === "search") return JSON.stringify({
                         list: [{
                             id: 1, hash: "rich-search-result", itemType: "Text",
@@ -56,8 +58,12 @@ test("held quick input pastes once and a later independent press still works", a
     await page.goto("/clipboard");
     await expect(page.getByText("Search paste regression", { exact: true }).first()).toBeVisible();
     await page.keyboard.down("Alt");
-    for (let index = 0; index < 5; index++) await page.keyboard.down("1");
+    for (let index = 0; index < 5; index++) {
+        await page.keyboard.down("1");
+        if (separatePresses) await page.keyboard.up("1");
+    }
     await expect.poll(() => commandCount(page, "is_quick_input_modifier_pressed")).toBeGreaterThan(0);
+    expect(await commandCount(page, "finish_hide_clipboard_window")).toBe(1);
     expect(await commandCount(page, "copy")).toBe(0);
     expect(await commandCount(page, "paste")).toBe(0);
     await page.keyboard.up("1");
@@ -67,6 +73,7 @@ test("held quick input pastes once and a later independent press still works", a
     expect(await commandCount(page, "check_paste_accessibility_permission")).toBe(1);
     expect(await commandCount(page, "copy")).toBe(1);
     expect(await commandCount(page, "paste")).toBe(1);
+    expect(await commandCount(page, "finish_hide_clipboard_window")).toBe(1);
 
     await page.evaluate(() => (window as ProbeWindow).__setHeld(true));
     await page.keyboard.down("Alt");
@@ -79,3 +86,4 @@ test("held quick input pastes once and a later independent press still works", a
     await expect.poll(() => commandCount(page, "paste")).toBe(2);
     expect(await commandCount(page, "copy")).toBe(2);
 });
+}

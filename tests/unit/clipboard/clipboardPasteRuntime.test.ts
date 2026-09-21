@@ -27,6 +27,7 @@ function item(
 
 function options(items: Item[]) {
     return {
+        quickPasteInFlight: { current: false },
         closeContextMenu: vi.fn(),
         getItems: vi.fn(() => items),
         hideWindow: vi.fn(async () => undefined),
@@ -41,6 +42,89 @@ describe("clipboard paste runtime", () => {
     beforeEach(() => {
         tauri.invoke.mockReset();
         logger.error.mockReset();
+    });
+
+    it("coalesces quick presses across runtime recreation and unlocks after completion", async () => {
+        const target = item();
+        const callbacks = options([target]);
+        let release!: (pressed: boolean) => void;
+        const held = new Promise<boolean>(resolve => { release = resolve; });
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "check_paste_accessibility_permission") return { granted: true };
+            if (command === "is_quick_input_modifier_pressed") return held;
+        });
+        const first = createClipboardPasteRuntime(callbacks).pasteItem(target.getHash(), false, true, "1");
+        const second = createClipboardPasteRuntime(callbacks).pasteItem(target.getHash(), false, true, "1");
+        release(false);
+        await Promise.all([first, second]);
+        expect(tauri.invoke.mock.calls.filter(([command]) => command === "paste")).toHaveLength(1);
+        expect(callbacks.hideWindow).toHaveBeenCalledTimes(1);
+        await createClipboardPasteRuntime(callbacks).pasteItem(target.getHash(), false, true, "1");
+        expect(tauri.invoke.mock.calls.filter(([command]) => command === "paste")).toHaveLength(2);
+    });
+
+    it.each([ItemType.Text, ItemType.TextFile, ItemType.Image])(
+        "hides quick input before waiting without changing the copy path for %s",
+        async type => {
+            const target = item(type);
+            const callbacks = options([target]);
+            const calls: string[] = [];
+            callbacks.hideWindow.mockImplementation(async () => { calls.push("hide"); });
+            tauri.invoke.mockImplementation(async (command: string) => {
+                if (command === "check_paste_accessibility_permission") return { granted: true };
+                calls.push(command);
+                return false;
+            });
+            await createClipboardPasteRuntime(callbacks).pasteItem(target.getHash(), false, true, "1");
+            expect(calls).toEqual([
+                "hide", "is_quick_input_modifier_pressed",
+                type === ItemType.TextFile ? "copy_history_item" : "copy", "paste",
+            ]);
+        },
+    );
+
+    it("keeps quick input locked during native paste and unlocks after failure", async () => {
+        const target = item();
+        const callbacks = options([target]);
+        let rejectPaste!: (reason: Error) => void;
+        let pasteStarted!: () => void;
+        const started = new Promise<void>(resolve => { pasteStarted = resolve; });
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "check_paste_accessibility_permission") return { granted: true };
+            if (command === "is_quick_input_modifier_pressed") return false;
+            if (command === "paste") {
+                pasteStarted();
+                return new Promise<void>((_, reject) => { rejectPaste = reject; });
+            }
+        });
+        const first = createClipboardPasteRuntime(callbacks).pasteItem(target.getHash(), false, true, "1");
+        await started;
+        await createClipboardPasteRuntime(callbacks).pasteItem(target.getHash(), false, true, "1");
+        expect(tauri.invoke.mock.calls.filter(([command]) => command === "paste")).toHaveLength(1);
+        rejectPaste(new Error("native paste failed"));
+        await first;
+        expect(callbacks.quickPasteInFlight.current).toBe(false);
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "check_paste_accessibility_permission") return { granted: true };
+            return false;
+        });
+        await createClipboardPasteRuntime(callbacks).pasteItem(target.getHash(), false, true, "1");
+        expect(tauri.invoke.mock.calls.filter(([command]) => command === "paste")).toHaveLength(2);
+    });
+
+    it("does not hide invalid quick input or leave it locked", async () => {
+        const target = item(ItemType.File, "missing.txt");
+        const callbacks = options([target]);
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "check_paste_accessibility_permission") return { granted: true };
+            if (command === "validate_file_item") return ["missing.txt"];
+        });
+        const runtime = createClipboardPasteRuntime(callbacks);
+        await runtime.pasteItem(target.getHash(), false, true, "1");
+        await runtime.pasteItem("unknown-hash", false, true, "1");
+        expect(callbacks.hideWindow).not.toHaveBeenCalled();
+        expect(callbacks.quickPasteInFlight.current).toBe(false);
+        expect(callbacks.showToast).toHaveBeenCalledWith("clipboard.sourceMissingOne", "warning");
     });
 
     it("validates file sources and stops before copying missing files", async () => {

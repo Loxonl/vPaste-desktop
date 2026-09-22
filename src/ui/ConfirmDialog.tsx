@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, type ReactNode } from "react";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
@@ -14,7 +14,9 @@ export type ConfirmDialogProps = {
     cancelLabel: string;
     confirmLabel: string;
     backdropClassName?: string;
+    cancelDisabled?: boolean;
     confirmDisabled?: boolean;
+    status?: ReactNode;
     destructive?: boolean;
     onCancel: () => void;
     onConfirm: () => void;
@@ -27,7 +29,9 @@ export function ConfirmDialog({
     cancelLabel,
     confirmLabel,
     backdropClassName,
+    cancelDisabled = false,
     confirmDisabled = false,
+    status,
     destructive = true,
     onCancel,
     onConfirm,
@@ -54,9 +58,10 @@ export function ConfirmDialog({
                 <DialogContentText id={descriptionId} className={styles.description}>
                     {description}
                 </DialogContentText>
+                {status}
             </DialogContent>
             <DialogActions className={styles.actions}>
-                <Button onClick={onCancel}>{cancelLabel}</Button>
+                <Button disabled={cancelDisabled} onClick={onCancel}>{cancelLabel}</Button>
                 <Button
                     variant="contained"
                     color={destructive ? "error" : "primary"}

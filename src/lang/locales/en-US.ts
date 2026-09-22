@@ -291,6 +291,8 @@ const enUS: LanguagePack = {
         "settings.legacyHistory.clear": "Backup confirmed, clear legacy history",
         "settings.legacyHistory.confirm": "This permanently clears legacy clipboard history and attachments. Confirm that you exported and converted a backup. Continue?",
         "settings.legacyHistory.confirmTitle": "Clear legacy history?",
+        "settings.legacyHistory.clearing": "Clearing legacy history…",
+        "settings.legacyHistory.clearFailed": "Failed to clear legacy history: {error}",
         "settings.importHistory": "Import Data",
         "settings.importHistory.desc": "Merge a history archive",
         "settings.historyTransfer": "Data migration",

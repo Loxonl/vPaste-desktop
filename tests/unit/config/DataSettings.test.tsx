@@ -212,4 +212,80 @@ describe("Data settings actions", () => {
         }));
     });
 
+    it("shows progress and prevents duplicate confirmation while legacy history is clearing", async () => {
+        const bridge = createBridge();
+        let finishClear: (() => void) | undefined;
+        vi.mocked(bridge.invoke).mockImplementation(async (command: string) => {
+            if (command === "list_recent_app_source_options") return [];
+            if (command === "estimate_storage_cleanup") return { bytes: 0, items: 0 };
+            if (command === "get_history_format_status") return { migration_required: true };
+            if (command === "clear_legacy_history") {
+                await new Promise<void>(resolve => {
+                    finishClear = resolve;
+                });
+            }
+            return null;
+        });
+        render(
+            <MotionTestProvider>
+                <AppThemeProvider>
+                    <DataSettings
+                        bridge={bridge}
+                        config={DEFAULT_CONFIG}
+                        storagePaths={null}
+                        onSave={vi.fn(async () => null)}
+                        onBlockingOperationChange={vi.fn()}
+                        t={key => key}
+                    />
+                </AppThemeProvider>
+            </MotionTestProvider>,
+        );
+
+        const user = userEvent.setup();
+        await user.click(await screen.findByRole("button", { name: "settings.legacyHistory.clear" }));
+        const confirmButton = screen.getByRole("button", { name: "settings.legacyHistory.clear" });
+        await user.click(confirmButton);
+
+        expect(screen.getByRole("alertdialog", { name: "settings.legacyHistory.confirmTitle" })).toBeVisible();
+        expect(confirmButton).toBeDisabled();
+        expect(screen.getByRole("button", { name: "common.cancel" })).toBeDisabled();
+        expect(screen.getByRole("alertdialog")).toHaveTextContent("settings.legacyHistory.clearing");
+
+        finishClear?.();
+        await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    });
+
+    it("keeps the confirmation available and shows the backend error when legacy clearing fails", async () => {
+        const bridge = createBridge();
+        vi.mocked(bridge.invoke).mockImplementation(async (command: string) => {
+            if (command === "list_recent_app_source_options") return [];
+            if (command === "estimate_storage_cleanup") return { bytes: 0, items: 0 };
+            if (command === "get_history_format_status") return { migration_required: true };
+            if (command === "clear_legacy_history") throw new Error("database is locked");
+            return null;
+        });
+        render(
+            <MotionTestProvider>
+                <AppThemeProvider>
+                    <DataSettings
+                        bridge={bridge}
+                        config={DEFAULT_CONFIG}
+                        storagePaths={null}
+                        onSave={vi.fn(async () => null)}
+                        onBlockingOperationChange={vi.fn()}
+                        t={(key, values) => values?.error ? `${key}: ${values.error}` : key}
+                    />
+                </AppThemeProvider>
+            </MotionTestProvider>,
+        );
+
+        const user = userEvent.setup();
+        await user.click(await screen.findByRole("button", { name: "settings.legacyHistory.clear" }));
+        await user.click(screen.getByRole("button", { name: "settings.legacyHistory.clear" }));
+
+        expect(await screen.findByRole("alert")).toHaveTextContent("settings.legacyHistory.clearFailed: Error: database is locked");
+        expect(screen.getByRole("alertdialog", { name: "settings.legacyHistory.confirmTitle" })).toBeVisible();
+        expect(screen.getByRole("button", { name: "settings.legacyHistory.clear" })).toBeEnabled();
+    });
+
 });

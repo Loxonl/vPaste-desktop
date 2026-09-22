@@ -339,7 +339,16 @@ fn clear_legacy_payload_with_conn(conn: &mut Connection) -> Result<()> {
     let transaction = conn.transaction()?;
     transaction.execute("DELETE FROM clipboard_tags", [])?;
     transaction.execute("DELETE FROM clipboard", [])?;
-    transaction.execute("DELETE FROM paste_queue", [])?;
+    let has_paste_queue = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'paste_queue'
+         )",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if has_paste_queue {
+        transaction.execute("DELETE FROM paste_queue", [])?;
+    }
     transaction.commit()
 }
 
@@ -510,6 +519,30 @@ mod tests {
             .query_row("select count(*) from paste_queue", [], |row| row.get(0))
             .unwrap();
         assert_eq!((tags, clipboard, queue), (1, 0, 0));
+    }
+
+    #[test]
+    fn legacy_clear_accepts_databases_created_before_paste_queue_existed() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "create table clipboard(id integer primary key, content text);
+                 create table clipboard_tags(clipboard_id integer, tag_id integer);
+                 insert into clipboard(content) values('vpaste-secure:v2:cipher');
+                 insert into clipboard_tags values(1, 1);",
+            )
+            .unwrap();
+
+        clear_legacy_payload_with_conn(&mut connection)
+            .expect("legacy databases without paste_queue must still be clearable");
+
+        let clipboard: i64 = connection
+            .query_row("select count(*) from clipboard", [], |row| row.get(0))
+            .unwrap();
+        let clipboard_tags: i64 = connection
+            .query_row("select count(*) from clipboard_tags", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!((clipboard, clipboard_tags), (0, 0));
     }
 
     #[test]

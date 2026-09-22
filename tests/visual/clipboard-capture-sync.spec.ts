@@ -6,7 +6,7 @@ type ProbeWindow = Window & { __syncProbe: {
     release: (fail: boolean) => void;
 } };
 
-for (const outcome of ["ready", "failed", "hide", "blur", "navigate", "retained", "filtered", "refresh-failed", "refocus", "late-show"] as const) {
+for (const outcome of ["ready", "failed", "hide", "blur", "navigate", "retained", "filtered", "refresh-failed", "refocus", "late-show", "deleted", "missing-required"] as const) {
     test(`rapid Enter waits for fresh capture: ${outcome}`, async ({ page }) => {
         await page.addInitScript(scenario => {
             let nextId = 0;
@@ -14,9 +14,9 @@ for (const outcome of ["ready", "failed", "hide", "blur", "navigate", "retained"
             const callbacks = new Map<number, (event: unknown) => void>();
             const listeners = new Map<string, number>();
             const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
-            let resolveCapture!: (hash: string) => void;
+            let resolveCapture!: (hash: string | null) => void;
             let rejectCapture!: (error: Error) => void;
-            const capture = new Promise<string>((resolve, reject) => {
+            const capture = new Promise<string | null>((resolve, reject) => {
                 resolveCapture = resolve;
                 rejectCapture = reject;
             });
@@ -27,7 +27,7 @@ for (const outcome of ["ready", "failed", "hide", "blur", "navigate", "retained"
                     release: (fail: boolean) => {
                         fresh = !fail;
                         if (fail) rejectCapture(new Error("Capture timed out"));
-                        else resolveCapture("new");
+                        else resolveCapture(scenario === "deleted" ? null : "new");
                     },
                 },
                 __TAURI_INTERNALS__: {
@@ -36,7 +36,7 @@ for (const outcome of ["ready", "failed", "hide", "blur", "navigate", "retained"
                         if (command === "wait_for_clipboard_capture") return capture;
                         if (command === "search" && fresh && scenario === "refresh-failed") throw new Error("Search failed");
                         if (command === "search") return JSON.stringify({
-                            list: (fresh && !args.keywords ? ["new", "old"] : ["old"]).map((hash, index) => ({
+                            list: (fresh && !args.keywords && scenario !== "deleted" && scenario !== "missing-required" ? ["new", "old"] : ["old"]).map((hash, index) => ({
                                 id: 2 - index, hash, itemType: "Text", content: `${hash} content`,
                                 previewContent: "", textContent: "", time: 2 - index,
                                 label: 0, appSource: "", appIconPath: "", tags: [],
@@ -85,9 +85,9 @@ for (const outcome of ["ready", "failed", "hide", "blur", "navigate", "retained"
         if (outcome === "blur") await page.evaluate(() => window.dispatchEvent(new Event("blur")));
         if (outcome === "navigate") await page.keyboard.press("ArrowRight");
         await page.evaluate(fail => (window as ProbeWindow).__syncProbe.release(fail), outcome === "failed");
-        if (["ready", "retained", "filtered", "refocus", "late-show"].includes(outcome)) {
+        if (["ready", "retained", "filtered", "refocus", "late-show", "deleted"].includes(outcome)) {
             await expect.poll(pastes).toHaveLength(1);
-            expect((await pastes())[0].args.hash).toBe(outcome === "retained" || outcome === "filtered" ? "old" : "new");
+            expect((await pastes())[0].args.hash).toBe(outcome === "retained" || outcome === "filtered" || outcome === "deleted" ? "old" : "new");
         } else {
             await page.waitForTimeout(150);
             expect(await pastes()).toEqual([]);

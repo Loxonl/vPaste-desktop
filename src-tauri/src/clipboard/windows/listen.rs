@@ -49,6 +49,25 @@ fn complete_capture(sequence: u32, result: Result<Option<String>, String>) {
         Some(CaptureCompletion { sequence, result });
 }
 
+fn retained_capture_result(
+    result: Result<Option<String>, String>,
+    history: &rusqlite::Connection,
+) -> Result<Option<String>, String> {
+    let Some(hash) = result? else {
+        return Ok(None);
+    };
+    // Capture completion outlives history deletion/cleanup while the OS clipboard
+    // sequence stays unchanged. Only require records that are still retained.
+    let retained: bool = history
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM clipboard WHERE hash = ?1)",
+            [&hash],
+            |row| row.get(0),
+        )
+        .map_err(|err| err.to_string())?;
+    Ok(retained.then_some(hash))
+}
+
 pub(crate) fn wait_for_capture() -> Result<Option<String>, String> {
     let started = Instant::now();
     loop {
@@ -56,14 +75,16 @@ pub(crate) fn wait_for_capture() -> Result<Option<String>, String> {
         if sequence == 0 {
             return Err("Could not verify the current clipboard sequence".into());
         }
-        if let Some(completion) = CAPTURE_COMPLETION
+        let completed = CAPTURE_COMPLETION
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .as_ref()
-        {
-            if let Some(result) = completion.result_for(sequence) {
-                return result;
+            .and_then(|completion| completion.result_for(sequence));
+        if let Some(result) = completed {
+            if matches!(&result, Ok(Some(_))) {
+                return retained_capture_result(result, &clipboard::db::db());
             }
+            return result;
         }
         if started.elapsed() >= Duration::from_secs(3) {
             return Err(
@@ -1541,6 +1562,58 @@ mod tests {
         should_ignore_excel_blank_bitmap_phase, should_prefer_bitmap_for_rich_content,
         ClipboardSequenceDeduper,
     };
+
+    #[test]
+    fn completed_capture_does_not_require_deleted_history() {
+        for delete_sql in [
+            "DELETE FROM clipboard WHERE hash = 'latest'",
+            "DELETE FROM clipboard",
+            "DELETE FROM clipboard WHERE item_type = 'Image'",
+        ] {
+            let history = rusqlite::Connection::open_in_memory().unwrap();
+            history
+                .execute_batch(
+                    "CREATE TABLE clipboard (hash TEXT PRIMARY KEY, item_type TEXT);
+                     INSERT INTO clipboard VALUES ('latest', 'Image'), ('older', 'Text');",
+                )
+                .unwrap();
+            let completed = super::CaptureCompletion {
+                sequence: 41,
+                result: Ok(Some("latest".into())),
+            };
+            assert_eq!(
+                super::retained_capture_result(completed.result_for(41).unwrap(), &history),
+                Ok(Some("latest".into()))
+            );
+            history.execute_batch(delete_sql).unwrap();
+            assert_eq!(
+                super::retained_capture_result(completed.result_for(41).unwrap(), &history),
+                Ok(None),
+                "{delete_sql}"
+            );
+            // Deletion must not acknowledge a newer clipboard sequence.
+            assert_eq!(completed.result_for(42), None);
+            // A later capture of the same content must be required again.
+            history
+                .execute("INSERT INTO clipboard VALUES ('latest', 'Image')", [])
+                .unwrap();
+            assert_eq!(
+                super::retained_capture_result(completed.result_for(41).unwrap(), &history),
+                Ok(Some("latest".into()))
+            );
+        }
+    }
+
+    #[test]
+    fn retained_capture_preserves_capture_and_database_errors() {
+        let history = rusqlite::Connection::open_in_memory().unwrap();
+        assert_eq!(
+            super::retained_capture_result(Err("capture failed".into()), &history),
+            Err("capture failed".into())
+        );
+        assert_eq!(super::retained_capture_result(Ok(None), &history), Ok(None));
+        assert!(super::retained_capture_result(Ok(Some("latest".into())), &history).is_err());
+    }
 
     #[test]
     fn capture_completion_does_not_acknowledge_another_sequence() {

@@ -292,6 +292,8 @@ const zhCN: LanguagePack = {
         "settings.legacyHistory.clear": "我已备份，清空旧历史",
         "settings.legacyHistory.confirm": "此操作会永久清空旧版剪贴板历史和附件。请确认已经导出并转换备份。是否继续？",
         "settings.legacyHistory.confirmTitle": "清空旧版历史？",
+        "settings.legacyHistory.clearing": "正在清空旧版历史，请稍候…",
+        "settings.legacyHistory.clearFailed": "清空旧版历史失败：{error}",
         "settings.importHistory": "导入数据",
         "settings.importHistory.desc": "合并历史数据包",
         "settings.historyTransfer": "数据迁移",

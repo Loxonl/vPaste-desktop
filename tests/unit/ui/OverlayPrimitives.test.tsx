@@ -3,6 +3,7 @@ import { cleanup, render as renderUi, screen, waitFor } from "@testing-library/r
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConfirmDialog } from "../../../src/ui/ConfirmDialog";
+import { OperationStatus } from "../../../src/ui/OperationStatus";
 import { InlineMenuItem, InlineMenuSurface } from "../../../src/ui/InlineMenu";
 import { StatusToast } from "../../../src/ui/StatusToast";
 import { ToolbarIconButton } from "../../../src/ui/ToolbarIconButton";
@@ -81,6 +82,25 @@ describe("overlay primitives", () => {
         );
         await user.click(screen.getByRole("button", { name: "Clear" }));
         expect(onConfirm).toHaveBeenCalledOnce();
+    });
+
+    it("renders operation feedback inside the confirmation dialog", () => {
+        render(
+            <ConfirmDialog
+                open
+                title="Clear history"
+                description="This cannot be undone"
+                cancelLabel="Cancel"
+                confirmLabel="Clear"
+                status={<OperationStatus busy message="Clearing history…" />}
+                onCancel={() => undefined}
+                onConfirm={() => undefined}
+            />,
+        );
+
+        const dialog = screen.getByRole("alertdialog", { name: "Clear history" });
+        expect(dialog).toContainElement(screen.getByRole("status"));
+        expect(dialog).toHaveTextContent("Clearing history…");
     });
 
     it("provides menu navigation and selection semantics without a portal", async () => {

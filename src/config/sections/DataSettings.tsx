@@ -29,6 +29,8 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
     const [cleanupMenuAnchor, setCleanupMenuAnchor] = React.useState<HTMLElement | null>(null);
     const [cleanupConfirmOpen, setCleanupConfirmOpen] = React.useState(false);
     const [legacyCleanupConfirmOpen, setLegacyCleanupConfirmOpen] = React.useState(false);
+    const [legacyCleanupWorking, setLegacyCleanupWorking] = React.useState(false);
+    const [legacyCleanupError, setLegacyCleanupError] = React.useState<string | null>(null);
     const [cleanupWorking, setCleanupWorking] = React.useState(false);
     const [historyWorkingArea, setHistoryWorkingArea] = React.useState<'storage' | 'export' | 'import' | null>(null);
     const [historyMessage, setHistoryMessage] = React.useState<{ kind: 'success' | 'error', text: string } | null>(null);
@@ -90,13 +92,19 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
     }, [bridge]);
 
     const handleClearLegacyHistory = async () => {
-        setLegacyCleanupConfirmOpen(false);
+        if (legacyCleanupWorking) return;
+        setLegacyCleanupWorking(true);
+        setLegacyCleanupError(null);
         try {
             await bridge.invoke('clear_legacy_history', { confirmation: 'CLEAR_LEGACY_HISTORY' });
             setLegacyHistoryBlocked(false);
+            setLegacyCleanupConfirmOpen(false);
             refreshStorageSummary();
         } catch (e) {
-            error(`Failed to clear legacy history: ${e}`);
+            void error(`Failed to clear legacy history: ${e}`).catch(() => undefined);
+            setLegacyCleanupError(t("settings.legacyHistory.clearFailed", { error: String(e) }));
+        } finally {
+            setLegacyCleanupWorking(false);
         }
     };
 
@@ -597,7 +605,19 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                 cancelLabel={t("common.cancel")}
                 confirmLabel={t("settings.legacyHistory.clear")}
                 backdropClassName={dialogBackdropClassName}
-                onCancel={() => setLegacyCleanupConfirmOpen(false)}
+                cancelDisabled={legacyCleanupWorking}
+                confirmDisabled={legacyCleanupWorking}
+                status={(legacyCleanupWorking || legacyCleanupError) ? (
+                    <OperationStatus
+                        busy={legacyCleanupWorking}
+                        tone={legacyCleanupError ? "error" : "neutral"}
+                        message={legacyCleanupError ?? t("settings.legacyHistory.clearing")}
+                        variant="block"
+                    />
+                ) : undefined}
+                onCancel={() => {
+                    if (!legacyCleanupWorking) setLegacyCleanupConfirmOpen(false);
+                }}
                 onConfirm={() => void handleClearLegacyHistory()}
             />
             <ConfirmDialog

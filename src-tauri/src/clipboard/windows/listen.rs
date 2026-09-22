@@ -31,6 +31,48 @@ const CLIPBOARD_SETTLE_DELAY_MS: u64 = 120;
 pub(crate) const VPASTE_INTERNAL_CLIPBOARD_FORMAT: &str = "vPaste Internal Clipboard";
 
 static APP_SOURCE_CACHE: OnceLock<Mutex<HashMap<String, AppSource>>> = OnceLock::new();
+static CAPTURE_COMPLETION: Mutex<Option<CaptureCompletion>> = Mutex::new(None);
+
+struct CaptureCompletion {
+    sequence: u32,
+    result: Result<Option<String>, String>,
+}
+
+impl CaptureCompletion {
+    fn result_for(&self, sequence: u32) -> Option<Result<Option<String>, String>> {
+        (sequence != 0 && self.sequence == sequence).then(|| self.result.clone())
+    }
+}
+
+fn complete_capture(sequence: u32, result: Result<Option<String>, String>) {
+    *CAPTURE_COMPLETION.lock().unwrap_or_else(|err| err.into_inner()) =
+        Some(CaptureCompletion { sequence, result });
+}
+
+pub(crate) fn wait_for_capture() -> Result<Option<String>, String> {
+    let started = Instant::now();
+    loop {
+        let sequence = clipboard_sequence_number();
+        if sequence == 0 {
+            return Err("Could not verify the current clipboard sequence".into());
+        }
+        if let Some(completion) = CAPTURE_COMPLETION
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .as_ref()
+        {
+            if let Some(result) = completion.result_for(sequence) {
+                return result;
+            }
+        }
+        if started.elapsed() >= Duration::from_secs(3) {
+            return Err(
+                "Clipboard capture timed out; select an item explicitly to paste history".into(),
+            );
+        }
+        thread::sleep(Duration::from_millis(16));
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 struct AppSource {
@@ -93,13 +135,16 @@ pub fn start(window: WebviewWindow) {
             }
         };
         let mut sequence_deduper = ClipboardSequenceDeduper::default();
+        complete_capture(clipboard_sequence_number(), Ok(None));
 
         while matches!(monitor.recv(), Ok(true)) {
             if should_skip_internal_clipboard_change() {
+                complete_capture(clipboard_sequence_number(), Ok(None));
                 info!("skip internal clipboard change");
                 continue;
             }
             if is_clipboard_history_paused() {
+                complete_capture(clipboard_sequence_number(), Ok(None));
                 info!("skip clipboard history while recording is paused");
                 continue;
             }
@@ -111,6 +156,7 @@ pub fn start(window: WebviewWindow) {
             }
             let app_source = clipboard_app_source().unwrap_or_default();
             if is_ignored_app_source(&app_source.name) {
+                complete_capture(sequence, Ok(None));
                 info!(
                     "skip clipboard history from ignored app source: {}",
                     app_source.name
@@ -119,7 +165,10 @@ pub fn start(window: WebviewWindow) {
             }
             let start = Instant::now();
             let queue_only = crate::paste_queue::is_active();
-            if let Some(hash) = parse_with_retry(&app_source, queue_only) {
+            let result = parse_with_retry(&app_source, queue_only);
+            // Never acknowledge a newer sequence using an older read's result.
+            complete_capture(sequence, result.clone());
+            if let Ok(Some(hash)) = result {
                 info!("clipboard parsed in {}ms", start.elapsed().as_millis());
                 info!("captured clipboard hash: {hash}");
                 if queue_only {
@@ -138,10 +187,10 @@ pub fn start(window: WebviewWindow) {
     });
 }
 
-fn parse_with_retry(app_source: &AppSource, queue_only: bool) -> Option<String> {
+fn parse_with_retry(app_source: &AppSource, queue_only: bool) -> Result<Option<String>, String> {
     for attempt in 0..READ_ATTEMPTS {
         match parse(attempt + 1 < READ_ATTEMPTS, app_source, queue_only) {
-            Ok(hash) => return hash,
+            Ok(hash) => return Ok(hash),
             Err(err) => {
                 let delay = (INITIAL_RETRY_DELAY_MS * (attempt as u64 + 1)).min(MAX_RETRY_DELAY_MS);
                 info!(
@@ -157,7 +206,7 @@ fn parse_with_retry(app_source: &AppSource, queue_only: bool) -> Option<String> 
     }
 
     error!("clipboard read failed after {} attempts", READ_ATTEMPTS);
-    None
+    Err("Clipboard could not be read after retries".into())
 }
 
 fn parse(
@@ -1492,6 +1541,26 @@ mod tests {
         should_ignore_excel_blank_bitmap_phase, should_prefer_bitmap_for_rich_content,
         ClipboardSequenceDeduper,
     };
+
+    #[test]
+    fn capture_completion_does_not_acknowledge_another_sequence() {
+        let completed = super::CaptureCompletion {
+            sequence: 41,
+            result: Ok(Some("fresh".into())),
+        };
+        assert_eq!(completed.result_for(41), Some(Ok(Some("fresh".into()))));
+        assert_eq!(completed.result_for(42), None);
+        assert_eq!(completed.result_for(0), None);
+    }
+
+    #[test]
+    fn capture_completion_preserves_failure_instead_of_returning_old_history() {
+        let completed = super::CaptureCompletion {
+            sequence: 42,
+            result: Err("read failed".into()),
+        };
+        assert_eq!(completed.result_for(42), Some(Err("read failed".into())));
+    }
 
     #[test]
     fn repeated_stable_clipboard_sequence_is_processed_once() {

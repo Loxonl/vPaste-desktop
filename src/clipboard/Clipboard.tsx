@@ -120,6 +120,7 @@ import {
 } from "./clipboardTags";
 import { createClipboardItemActions } from "./clipboardItemActions";
 import { createClipboardPasteRuntime } from "./clipboardPasteRuntime";
+import { createClipboardShowGate } from "./clipboardShowGate";
 import { createClipboardPreviewRuntime } from "./clipboardPreviewRuntime";
 import { parsePasteQueueState } from "./pasteQueueState";
 
@@ -248,6 +249,13 @@ export default function Clipboard() {
     const pasteAsTextShortcutRef = useRef(DEFAULT_PASTE_AS_TEXT_SHORTCUT);
     const quickInputEnabledRef = useRef(true);
     const quickPasteInFlightRef = useRef(false);
+    const showGateRef = useRef<ReturnType<typeof createClipboardShowGate> | null>(null);
+    if (!showGateRef.current) {
+        showGateRef.current = createClipboardShowGate(reason => {
+            error(`Failed to synchronize clipboard on show: ${reason}`);
+            showToast(t("clipboard.actionFailed", { error: String(reason) }), "error");
+        });
+    }
     const tabQuickSelectEnabledRef = useRef(true);
     const linkAutoPreviewRef = useRef(true);
     const linkPreviewRefreshingRef = useRef(false);
@@ -875,7 +883,8 @@ export default function Clipboard() {
         }, 900);
     };
 
-    async function fetchHistoryWith(keywords: string, tab: string, options: { selectFirst?: boolean, background?: boolean } = {}) {
+    async function fetchHistoryWith(keywords: string, tab: string, options: { selectFirst?: boolean, background?: boolean, isCurrent?: () => boolean } = {}) {
+        if (showGateRef.current!.pending && !options.isCurrent) return false;
         const requestSeq = ++searchRequestSeqRef.current;
         if (!options.background && keywords.trim()) {
             setIsSearching(true);
@@ -889,9 +898,9 @@ export default function Clipboard() {
                 0,
                 0,
                 HISTORY_PAGE_LIMIT,
-                () => requestSeq === searchRequestSeqRef.current,
+                () => requestSeq === searchRequestSeqRef.current && (options.isCurrent?.() ?? true),
             );
-            if (!page) return;
+            if (!page || !(options.isCurrent?.() ?? true)) return false;
             const items = page.items;
             const previousRequest = lastHistoryFetchRef.current;
             const filterChanged = previousRequest !== null
@@ -930,6 +939,7 @@ export default function Clipboard() {
                 scheduleLinkPreviewRefresh(items);
                 scheduleImageClipboardCachePrewarm(items);
             }
+            return true;
         } catch (e) {
             if (requestSeq === searchRequestSeqRef.current) {
                 error(`Failed to fetch history: ${e}`);
@@ -1023,8 +1033,9 @@ export default function Clipboard() {
         linkAutoPreviewRef.current = preferences.linkAutoPreview;
     };
 
-    const applyShowPreferences = async () => {
+    const applyShowPreferences = async (isCurrent: () => boolean) => {
         const config = await loadClipboardBehaviorConfig();
+        if (!isCurrent()) return;
         const preferences = resolveClipboardShowPreferences(
             config,
             searchWordRef.current,
@@ -1052,23 +1063,20 @@ export default function Clipboard() {
             selectFirstLoadedItem(false);
         }
 
-        const cachedFetch = lastHistoryFetchRef.current;
-        if (
-            cachedFetch?.keywords === preferences.searchWord
-            && cachedFetch?.tab === preferences.activeTab
-            && pageListRef.current.length > 0
-        ) {
-            if (plan.restorePosition) {
-                restoreRetainedScrollPosition();
-            }
-            return;
-        }
-
-        await fetchHistoryWith(
+        const capturedHash = await invoke<string | null>("wait_for_clipboard_capture");
+        if (!isCurrent()) return;
+        const refreshed = await fetchHistoryWith(
             preferences.searchWord,
             preferences.activeTab,
-            { selectFirst: !preferences.retainLastPosition },
+            { selectFirst: !preferences.retainLastPosition, isCurrent },
         );
+        if (!isCurrent()) return;
+        if (!refreshed) throw new Error("Clipboard history refresh did not complete");
+        if (capturedHash && !preferences.retainLastPosition
+            && !preferences.searchWord.trim() && preferences.activeTab === "all"
+            && !pageListRef.current.some(item => item.getHash() === capturedHash)) {
+            throw new Error("The latest clipboard item is not available in history");
+        }
         if (plan.restorePosition) {
             restoreRetainedScrollPosition();
         }
@@ -1085,7 +1093,10 @@ export default function Clipboard() {
             },
             onWindowShow: payload => {
                 resetCardsPointerState();
-                void applyShowPreferences();
+                if (!showGateRef.current!.pending) {
+                    searchRequestSeqRef.current += 1;
+                    showGateRef.current!.start(applyShowPreferences);
+                }
                 if (payload) {
                     window.requestAnimationFrame(() => {
                         const card = document
@@ -1106,6 +1117,7 @@ export default function Clipboard() {
                 setAnimationState("entered");
             },
             onWindowHide: () => {
+                showGateRef.current!.cancel(true);
                 retainedScrollLeftRef.current = cardsContainerRef.current?.scrollLeft ?? 0;
                 resetCardsPointerState();
                 searchRequestSeqRef.current += 1;
@@ -1136,6 +1148,7 @@ export default function Clipboard() {
                 setAnimationState("hidden");
             },
             onClipboardChanged: () => {
+                if (showGateRef.current!.pending) return;
                 void fetchHistory();
             },
             onTutorialStarted: () => {
@@ -1186,6 +1199,7 @@ export default function Clipboard() {
                 }
             },
             onBlur: () => {
+                showGateRef.current!.cancel(true);
                 setContextMenu(null);
                 setTabContextMenu(null);
                 window.setTimeout(() => {
@@ -1203,6 +1217,7 @@ export default function Clipboard() {
             initializeTutorial();
         },
         onBeforeCleanup: () => {
+            showGateRef.current!.cancel(true);
             if (toastTimerRef.current !== null) {
                 window.clearTimeout(toastTimerRef.current);
             }
@@ -1270,6 +1285,24 @@ export default function Clipboard() {
             event.preventDefault();
             if ("stopPropagation" in action && action.stopPropagation) {
                 event.stopPropagation();
+            }
+
+            if (action.type === "paste-selected" || action.type === "submit-search" || action.type === "quick-item") {
+                if (showGateRef.current!.needsSync) {
+                    showGateRef.current!.start(applyShowPreferences);
+                }
+                if (showGateRef.current!.defer(() => {
+                    const item = action.type === "quick-item"
+                        ? pageListRef.current[action.index]
+                        : action.type === "submit-search" ? pageListRef.current[0]
+                            : pageListRef.current.find(item => item.getHash() === selectedRef.current) || pageListRef.current[0];
+                    if (!item) return;
+                    if (queueSelectionMode) activateClipboardCardRef.current(item.getHash(), "plainText" in action && action.plainText);
+                    else void clickClipboardItem(item.getHash(), "plainText" in action && action.plainText,
+                        action.type === "quick-item", action.type === "quick-item" ? String(action.index + 1) : "");
+                })) return;
+            } else if (action.type !== "alt-press") {
+                showGateRef.current!.cancel();
             }
 
             switch (action.type) {
@@ -1405,6 +1438,7 @@ export default function Clipboard() {
     }, [searchOpen, searchWord, isSearchComposing, contextMenu, contextMenuIndex, queueSelectionMode, t]);
 
     const handleSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        showGateRef.current!.cancel();
         setSearchWord(event.target.value);
     };
 
@@ -1426,6 +1460,7 @@ export default function Clipboard() {
     });
 
     activateClipboardCardRef.current = (hash: string, plainText: boolean) => {
+        showGateRef.current!.cancel();
         if (queueSelectionMode) {
             setQueueSelectedHashes(current => (
                 current.includes(hash)
@@ -1438,6 +1473,7 @@ export default function Clipboard() {
     };
 
     const openContextMenu = async (item: Item, clientX: number, clientY: number) => {
+        showGateRef.current!.cancel();
         selectedRef.current = item.getHash() as string;
         setSelected(item.getHash());
         const currentItemTags = await loadItemTags();
@@ -1792,7 +1828,10 @@ export default function Clipboard() {
                     altHintsVisible={altHintsVisible}
                     addButtonRef={addTabButtonRef}
                     t={t}
-                    onSelectTab={setActiveTab}
+                    onSelectTab={tab => {
+                        showGateRef.current!.cancel();
+                        setActiveTab(tab);
+                    }}
                     onBlockedNavigation={blockTutorialNavigation}
                     onEditTab={(entry, anchor) => {
                         if (entry.kind === "filter") {

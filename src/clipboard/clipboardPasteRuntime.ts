@@ -20,7 +20,7 @@ type PasteCommandArgs = {
 };
 
 type ClipboardPasteRuntimeOptions = {
-    quickPasteInFlight: { current: boolean };
+    pasteInFlight: { current: boolean };
     closeContextMenu: () => void;
     getItems: () => Item[];
     hideWindow: () => Promise<void>;
@@ -178,24 +178,25 @@ export function createClipboardPasteRuntime(
         }
     };
 
-    const pasteItem = async (
+    const withPasteLock = async (operation: () => Promise<void>) => {
+        // Shared with successive React renders; claim before the first await.
+        if (options.pasteInFlight.current) return;
+        options.pasteInFlight.current = true;
+        try {
+            await operation();
+        } finally {
+            options.pasteInFlight.current = false;
+        }
+    };
+
+    const pasteItem = (
         hash: string,
         plainText = false,
         restoreAlt = false,
         triggerKey = "",
-    ) => {
-        if (!restoreAlt) return performPasteItem(hash, plainText, restoreAlt, triggerKey);
-        // Shared with successive React renders; claim before the first await.
-        if (options.quickPasteInFlight.current) return;
-        options.quickPasteInFlight.current = true;
-        try {
-            await performPasteItem(hash, plainText, restoreAlt, triggerKey);
-        } finally {
-            options.quickPasteInFlight.current = false;
-        }
-    };
+    ) => withPasteLock(() => performPasteItem(hash, plainText, restoreAlt, triggerKey));
 
-    const pastePlainTextItem = async (item: Item) => {
+    const pastePlainTextItem = (item: Item) => withPasteLock(async () => {
         const hasPermission = await checkAccessibilityPermission();
         options.closeContextMenu();
         options.selectItem(item.getHash());
@@ -219,7 +220,7 @@ export function createClipboardPasteRuntime(
                 "error",
             );
         }
-    };
+    });
 
     return {
         pasteItem,

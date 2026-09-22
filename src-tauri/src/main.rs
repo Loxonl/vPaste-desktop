@@ -4685,6 +4685,18 @@ fn create_file_thumbnail(_path: &str) -> Result<String, String> {
     Ok(String::new())
 }
 
+#[tauri::command]
+async fn wait_for_clipboard_capture() -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        return tauri::async_runtime::spawn_blocking(clipboard::windows::listen::wait_for_capture)
+            .await
+            .map_err(|err| err.to_string())?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    Ok(None)
+}
+
 fn toggle_clipboard_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("clipboard") {
         match window.is_visible() {
@@ -10747,6 +10759,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            wait_for_clipboard_capture,
             copy,
             copy_history_item,
             record_text_history,

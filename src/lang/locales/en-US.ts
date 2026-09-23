@@ -38,6 +38,7 @@ const enUS: LanguagePack = {
 
         "clipboard.favorite": "Favorite",
         "clipboard.dragging": "Dragging",
+        "clipboard.dragTextPreparing": "The full text is not ready. Please try dragging again shortly.",
         "clipboard.source": "Source: {source}",
         "clipboard.unknownApp": "Unknown app",
         "clipboard.emptyHistory": "Your clipboard is empty",

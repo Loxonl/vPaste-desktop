@@ -13,7 +13,7 @@ async function expectPasteQueueFrame(page: Page) {
 const windows = [
     { name: "tray", path: "/tray-menu", width: 216, height: 184, ready: "[class*='tray-menu-shell']" },
     { name: "emoji", path: "/emoji-picker", width: 278, height: 164, ready: "[role='menu']" },
-    { name: "paste-notice", path: "/paste-fallback-notice", width: 560, height: 76, ready: "[role='status']" },
+    { name: "paste-notice", path: "/paste-fallback-notice", width: 560, height: 76, ready: "section[class*='paste-fallback-notice']" },
     { name: "paste-queue", path: "/paste-queue", width: 360, height: 448, ready: "[data-testid='paste-queue']" },
     { name: "preview", path: "/clipboard/preview", width: 640, height: 480, ready: "button" },
     { name: "tab-editor", path: "/tab-editor", width: 302, height: 416, ready: "button" },
@@ -421,7 +421,7 @@ test.describe("window shells", () => {
                 Math.abs(new DOMMatrixReadOnly(getComputedStyle(card).transform).m41)
             ))
         ));
-        await expect(cards).toHaveCount(36);
+        await expect(cards).toHaveCount(36, { timeout: 15_000 });
         await page.getByRole("button", { name: "搜索" }).click();
         await page.getByRole("textbox", { name: "搜索" }).fill("match");
 

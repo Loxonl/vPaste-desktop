@@ -79,12 +79,12 @@ function mimeTypeFromPath(path: string): string {
     return "application/octet-stream";
 }
 
-function itemPlainText(item: Item): string {
+function itemPlainText(item: Item, textFileContent?: string): string {
     switch (item.getType()) {
         case ItemType.Link:
             return parseLinkContent(item.getContent()).url.trim();
         case ItemType.TextFile:
-            return (item.getTextContent() || item.getPreviewContent() || item.getContent()).trim();
+            return textFileContent ?? "";
         case ItemType.Text:
         case ItemType.Color:
             return (item.getTextContent() || item.getContent()).trim();
@@ -117,11 +117,12 @@ function itemFileUris(item: Item): string[] {
 export function configureClipboardDrag(
     event: Pick<DragEvent, "dataTransfer">,
     item: Item,
-): void {
+    textFileContent?: string,
+): boolean {
     const transfer = event.dataTransfer;
-    if (!transfer) return;
+    if (!transfer || (item.getType() === ItemType.TextFile && textFileContent === undefined)) return false;
 
-    const plainText = itemPlainText(item);
+    const plainText = itemPlainText(item, textFileContent);
     transfer.effectAllowed = "copy";
     transfer.setData("text/plain", plainText);
 
@@ -163,6 +164,7 @@ export function configureClipboardDrag(
         hash: item.getHash(),
         type: item.getType(),
     }));
+    return true;
 }
 
 export function isExternalDragExcludedTarget(target: EventTarget | null): boolean {

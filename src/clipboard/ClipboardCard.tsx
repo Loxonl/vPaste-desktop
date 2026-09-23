@@ -47,6 +47,7 @@ type ClipboardCardProps = {
     t: TFunction;
     onContextMenu: (item: Item, x: number, y: number) => void;
     onActivate?: (hash: string, plainText: boolean) => void;
+    onDragUnavailable?: () => void;
 };
 
 function getTypeLabel(type: ItemType, t: TFunction): string {
@@ -140,6 +141,7 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
     t,
     onContextMenu,
     onActivate,
+    onDragUnavailable,
 }: ClipboardCardProps, ref) {
     const cardMotion = useMotionPreset("gridItem");
     const shortcutHintMotion = useMotionPreset("shortcutHint");
@@ -150,6 +152,9 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
     const [dragCompleted, setDragCompleted] = useState(false);
     const dragFeedbackTimerRef = useRef<number | null>(null);
     const dragStartedRef = useRef(false);
+    const dragTextRef = useRef<string | null>(null);
+    const dragTextLoadRef = useRef<Promise<void> | null>(null);
+    const dragTextHoveredRef = useRef(false);
     const nativeDragStateRef = useRef<{ x: number; y: number; started: boolean } | null>(null);
     const visualType = isSingleImageFileItem(item) ? ItemType.Image : item.getType();
     const nativeFileDrag = isNativeFileDragItem(item);
@@ -173,6 +178,16 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
     const updateGifFormat = useCallback((gif: boolean) => {
         setIsGifFormat(gif);
     }, []);
+
+    const prepareDragText = useCallback(() => {
+        if (item.getType() !== ItemType.TextFile || dragTextRef.current !== null || dragTextLoadRef.current) return;
+        dragTextLoadRef.current = invoke<string>("plain_text_content", { hash: item.getHash() })
+            .then(text => {
+                if (dragTextHoveredRef.current) dragTextRef.current = text;
+            })
+            .catch(error => console.warn("Could not prepare full text for dragging", error))
+            .finally(() => { dragTextLoadRef.current = null; });
+    }, [item]);
 
     const showDragCompleted = useCallback(() => {
         setDragCompleted(true);
@@ -264,9 +279,15 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
             data-native-file-drag={nativeFileDrag ? "true" : undefined}
             tabIndex={-1}
             draggable={!dragDisabled && !selectionMode && !nativeFileDrag}
-            onMouseEnter={() => setHovered(true)}
+            onMouseEnter={() => {
+                setHovered(true);
+                dragTextHoveredRef.current = true;
+                if (!dragDisabled && !selectionMode) prepareDragText();
+            }}
             onMouseLeave={() => {
                 setHovered(false);
+                dragTextHoveredRef.current = false;
+                dragTextRef.current = null;
                 if (!nativeDragStateRef.current?.started) {
                     nativeDragStateRef.current = null;
                 }
@@ -274,6 +295,10 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
             onMouseDown={(event) => {
                 dragStartedRef.current = false;
                 nativeDragStateRef.current = null;
+                if (!dragDisabled && !selectionMode && event.button === 0) {
+                    dragTextHoveredRef.current = true;
+                    prepareDragText();
+                }
                 if (
                     nativeFileDrag
                     && !dragDisabled
@@ -328,10 +353,16 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                     return;
                 }
 
+                if (!configureClipboardDrag(event, item, dragTextRef.current ?? undefined)) {
+                    event.preventDefault();
+                    prepareDragText();
+                    onDragUnavailable?.();
+                    return;
+                }
+
                 setDragCompleted(false);
                 setDragging(true);
                 dragStartedRef.current = true;
-                configureClipboardDrag(event, item);
 
                 const dragImage = document.createElement("div");
                 dragImage.className = classes(styles, "clipboard-drag-preview");

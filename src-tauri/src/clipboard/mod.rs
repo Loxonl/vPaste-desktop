@@ -2238,15 +2238,10 @@ fn insert_rich_text_from_app_impl(
         );
     }
 
-    let normalized_plain_text = plain_text.trim().to_string();
-    if !normalized_plain_text.is_empty() && convert_type(&normalized_plain_text) == ItemType::Link {
-        return insert_text_from_app_impl(
-            normalized_plain_text,
-            app_source,
-            app_icon_path,
-            queue_only,
-        );
-    }
+    let normalized_plain_text = plain_text.trim();
+    let link_url = (!normalized_plain_text.is_empty()
+        && convert_type(normalized_plain_text) == ItemType::Link)
+        .then(|| normalized_plain_text.to_string());
 
     let hash = rich_text_history_hash(&plain_text, html.as_deref(), rtf.as_deref(), png.as_deref());
     let storage_key = rich_format_storage_key(
@@ -2282,6 +2277,8 @@ fn insert_rich_text_from_app_impl(
             save_to_disk(plain_text.as_bytes(), &hash),
             ItemType::TextFile,
         )
+    } else if let Some(url) = link_url {
+        (url, ItemType::Link)
     } else {
         (plain_text.clone(), convert_type(&plain_text))
     };
@@ -3500,6 +3497,43 @@ mod tests {
         let second = rich_text_history_hash("OK", Some(&second_html), None, None);
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn rich_url_keeps_hyperlink_target_separate_from_plain_url() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        crate::config::save(crate::config::Config {
+            storage_dir: app_data.path().to_string_lossy().to_string(),
+            ..Default::default()
+        });
+        crate::clipboard::db::init();
+
+        let visible_url = "https://visible.example/path";
+        let html = format!("<a href=\"https://target.example/path\">{visible_url}</a>");
+        let plain_hash = insert_text_from_app(visible_url.to_string(), "Browser", "").unwrap();
+        let rich_hash = insert_rich_text_from_app(
+            visible_url.to_string(),
+            Some(html.as_bytes().to_vec()),
+            None,
+            None,
+            "Browser",
+            "",
+        )
+        .unwrap();
+
+        assert_ne!(plain_hash, rich_hash);
+        assert!(rich_clipboard_meta(&plain_hash).is_none());
+        let rich_meta = rich_clipboard_meta(&rich_hash).expect("rich URL should retain HTML");
+        assert_eq!(
+            history_store::read_file(&rich_meta.html_path).unwrap(),
+            html.as_bytes()
+        );
+        assert_eq!(plain_text_content(&rich_hash).unwrap(), visible_url);
+        assert_eq!(search("", 0, 0, 10, "__type:Link").unwrap().list.len(), 2);
+        reset_test_storage_config();
     }
 
     #[test]

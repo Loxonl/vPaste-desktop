@@ -45,8 +45,9 @@ impl CaptureCompletion {
 }
 
 fn complete_capture(sequence: u32, result: Result<Option<String>, String>) {
-    *CAPTURE_COMPLETION.lock().unwrap_or_else(|err| err.into_inner()) =
-        Some(CaptureCompletion { sequence, result });
+    *CAPTURE_COMPLETION
+        .lock()
+        .unwrap_or_else(|err| err.into_inner()) = Some(CaptureCompletion { sequence, result });
 }
 
 fn retained_capture_result(

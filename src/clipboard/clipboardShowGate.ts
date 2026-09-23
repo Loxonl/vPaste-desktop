@@ -1,5 +1,5 @@
-// One deferred keyboard intent per window opening. Never replay it after hide,
-// explicit navigation, a newer opening, or failed capture/list synchronization.
+// One deferred keyboard intent per capture/search synchronization. Never replay
+// it after hide, explicit navigation/editing, or failed synchronization.
 export function createClipboardShowGate(onError: (error: unknown) => void) {
     let generation = 0;
     let pending = false;
@@ -8,6 +8,7 @@ export function createClipboardShowGate(onError: (error: unknown) => void) {
     let deferred: (() => void) | undefined;
     return {
         get pending() { return pending; },
+        get failed() { return failed; },
         get needsSync() { return needsSync; },
         start(work: (isCurrent: () => boolean) => Promise<void>) {
             const current = ++generation;

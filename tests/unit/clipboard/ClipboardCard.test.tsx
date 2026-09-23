@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ClipboardCard from "../../../src/clipboard/ClipboardCard";
 import { ensureWhiteTextContrast } from "../../../src/clipboard/clipboardHeaderColor";
@@ -196,6 +196,48 @@ describe("clipboard card header", () => {
         fireEvent.dragEnd(card, { dataTransfer });
         expect(card).not.toHaveAttribute("data-external-dragging");
         expect(document.querySelector('[data-motion-state="external-drag-complete"]')).toBeInTheDocument();
+    });
+
+    it("never drags a long-text preview instead of the full stored text", async () => {
+        const fullText = `  ${"long text\n".repeat(1500)}  `;
+        const item = new Item(7, "long-text-drag", ItemType.TextFile, "C:\\history\\long-text-drag", Date.now(), undefined, fullText.slice(0, 1800));
+        let resolveText!: (text: string) => void;
+        invokeMock.mockReturnValue(new Promise<string>(resolve => { resolveText = resolve; }));
+        const onDragUnavailable = vi.fn();
+        const values = new Map<string, string>();
+        const dataTransfer = {
+            effectAllowed: "",
+            dropEffect: "none",
+            setData: (type: string, value: string) => values.set(type, value),
+            setDragImage: vi.fn(),
+        };
+
+        render(
+            <ClipboardCard
+                item={item}
+                selected={false}
+                simulatedHover={false}
+                refreshKey={0}
+                searchQuery=""
+                filterMotionIndex={0}
+                mediaPlaybackReady={false}
+                t={key => key}
+                onContextMenu={vi.fn()}
+                onDragUnavailable={onDragUnavailable}
+            />,
+        );
+
+        const card = document.querySelector('[data-hash="long-text-drag"]') as HTMLElement;
+        fireEvent.mouseEnter(card);
+        expect(invokeMock).toHaveBeenCalledWith("plain_text_content", { hash: "long-text-drag" });
+
+        expect(fireEvent.dragStart(card, { dataTransfer })).toBe(false);
+        expect(values.has("text/plain")).toBe(false);
+        expect(onDragUnavailable).toHaveBeenCalledOnce();
+
+        await act(async () => { resolveText(fullText); });
+        fireEvent.dragStart(card, { dataTransfer });
+        expect(values.get("text/plain")).toBe(fullText);
     });
 
     it("disables external drag while paste-queue selection mode is active", () => {

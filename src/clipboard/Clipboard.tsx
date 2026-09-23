@@ -2022,6 +2022,7 @@ export default function Clipboard() {
                                                 t={t}
                                                 onContextMenu={openClipboardContextMenu}
                                                 onActivate={activateClipboardCard}
+                                                onDragUnavailable={() => showToast(t("clipboard.dragTextPreparing"), "warning")}
                                             />
                                         ))}
                                     </AnimatePresence>

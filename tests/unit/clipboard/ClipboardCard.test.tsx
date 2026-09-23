@@ -198,6 +198,36 @@ describe("clipboard card header", () => {
         expect(document.querySelector('[data-motion-state="external-drag-complete"]')).toBeInTheDocument();
     });
 
+    it("preserves leading and trailing whitespace when dragging ordinary text", () => {
+        const originalText = "    print('x')  \r\nnext line \r\n";
+        const item = new Item(7, "short-text-drag", ItemType.Text, originalText, Date.now());
+        const values = new Map<string, string>();
+        const dataTransfer = {
+            effectAllowed: "",
+            dropEffect: "none",
+            setData: (type: string, value: string) => values.set(type, value),
+            setDragImage: vi.fn(),
+        };
+
+        render(
+            <ClipboardCard
+                item={item}
+                selected={false}
+                simulatedHover={false}
+                refreshKey={0}
+                searchQuery=""
+                filterMotionIndex={0}
+                mediaPlaybackReady={false}
+                t={key => key}
+                onContextMenu={vi.fn()}
+            />,
+        );
+
+        const card = document.querySelector('[data-hash="short-text-drag"]') as HTMLElement;
+        fireEvent.dragStart(card, { dataTransfer });
+        expect(values.get("text/plain")).toBe(originalText);
+    });
+
     it("never drags a long-text preview instead of the full stored text", async () => {
         const fullText = `  ${"long text\n".repeat(1500)}  `;
         const item = new Item(7, "long-text-drag", ItemType.TextFile, "C:\\history\\long-text-drag", Date.now(), undefined, fullText.slice(0, 1800));

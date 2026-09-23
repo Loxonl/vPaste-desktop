@@ -86,6 +86,7 @@ function itemPlainText(item: Item, textFileContent?: string): string {
         case ItemType.TextFile:
             return textFileContent ?? "";
         case ItemType.Text:
+            return item.getTextContent() || item.getContent();
         case ItemType.Color:
             return (item.getTextContent() || item.getContent()).trim();
         default:

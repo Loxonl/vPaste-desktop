@@ -2659,8 +2659,59 @@ mod paste_queue_menu_tests {
     use super::{
         should_dismiss_paste_queue_menu, should_prepare_paste_queue_click_target,
         should_refresh_paste_queue_click_target, should_track_paste_queue_foreground_target,
-        PasteQueueRequestOrigin,
+        wait_for_empty_paste_queue_capture, PasteQueueRequestOrigin,
     };
+
+    #[test]
+    fn empty_queue_shortcut_waits_for_the_new_capture() {
+        let mut waited = false;
+        let result = wait_for_empty_paste_queue_capture(
+            PasteQueueRequestOrigin::Shortcut,
+            None,
+            || Ok(None),
+            || {
+                waited = true;
+                Ok(Some("new-item".to_string()))
+            },
+        );
+        assert_eq!(result, Ok(()));
+        assert!(waited);
+    }
+
+    #[test]
+    fn existing_queue_item_and_queue_window_click_do_not_wait_for_capture() {
+        assert_eq!(
+            wait_for_empty_paste_queue_capture(
+                PasteQueueRequestOrigin::Shortcut,
+                None,
+                || Ok(Some("first-item".to_string())),
+                || panic!("existing FIFO head must not wait"),
+            ),
+            Ok(()),
+        );
+        assert_eq!(
+            wait_for_empty_paste_queue_capture(
+                PasteQueueRequestOrigin::QueueWindow,
+                Some("selected-item"),
+                || panic!("queue click must not inspect the head"),
+                || panic!("queue click must not wait"),
+            ),
+            Ok(()),
+        );
+    }
+
+    #[test]
+    fn empty_queue_capture_failure_does_not_fall_through_to_paste() {
+        assert_eq!(
+            wait_for_empty_paste_queue_capture(
+                PasteQueueRequestOrigin::Shortcut,
+                None,
+                || Ok(None),
+                || Err("capture failed".to_string()),
+            ),
+            Err("capture failed".to_string()),
+        );
+    }
 
     #[test]
     fn only_an_outside_mouse_press_dismisses_an_open_menu() {
@@ -9052,6 +9103,22 @@ fn prepare_paste_queue_click_target(app: &tauri::AppHandle, origin: PasteQueueRe
     std::thread::sleep(std::time::Duration::from_millis(40));
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn wait_for_empty_paste_queue_capture(
+    origin: PasteQueueRequestOrigin,
+    requested_hash: Option<&str>,
+    current_target: impl FnOnce() -> Result<Option<String>, String>,
+    wait_for_capture: impl FnOnce() -> Result<Option<String>, String>,
+) -> Result<(), String> {
+    if origin == PasteQueueRequestOrigin::Shortcut
+        && requested_hash.is_none()
+        && current_target()?.is_none()
+    {
+        let _ = wait_for_capture()?;
+    }
+    Ok(())
+}
+
 fn process_paste_queue_request_inner(app: &tauri::AppHandle, request: PasteQueueRequest) {
     if !paste_queue::is_active() || request.activation_epoch != paste_queue::activation_epoch() {
         return;
@@ -9102,6 +9169,24 @@ fn process_paste_queue_request_inner(app: &tauri::AppHandle, request: PasteQueue
 }
 
 fn process_paste_queue_request(app: &tauri::AppHandle, request: PasteQueueRequest) {
+    #[cfg(target_os = "windows")]
+    if paste_queue::is_active() && request.activation_epoch == paste_queue::activation_epoch() {
+        // Capture needs the queue operation lock, so settle it before acquiring that lock.
+        if let Err(err) = wait_for_empty_paste_queue_capture(
+            request.origin,
+            request.hash.as_deref(),
+            || paste_queue::paste_target(None),
+            clipboard::windows::listen::wait_for_capture,
+        ) {
+            if paste_queue::is_active()
+                && request.activation_epoch == paste_queue::activation_epoch()
+            {
+                paste_queue::set_error(request.hash.clone(), err);
+                paste_queue::emit_state(app);
+            }
+            return;
+        }
+    }
     paste_queue::run_paste_operation(|| process_paste_queue_request_inner(app, request));
 }
 

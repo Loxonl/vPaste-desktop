@@ -252,7 +252,7 @@ export default function Clipboard() {
     const showGateRef = useRef<ReturnType<typeof createClipboardShowGate> | null>(null);
     if (!showGateRef.current) {
         showGateRef.current = createClipboardShowGate(reason => {
-            error(`Failed to synchronize clipboard on show: ${reason}`);
+            error(`Failed to synchronize clipboard before activation: ${reason}`);
             showToast(t("clipboard.actionFailed", { error: String(reason) }), "error");
         });
     }
@@ -1290,6 +1290,26 @@ export default function Clipboard() {
             if (action.type === "paste-selected" || action.type === "submit-search" || action.type === "quick-item") {
                 if (showGateRef.current!.needsSync) {
                     showGateRef.current!.start(applyShowPreferences);
+                } else if (!showGateRef.current!.pending && !showGateRef.current!.failed && (
+                    isSearching
+                    || lastHistoryFetchRef.current?.keywords !== searchWordRef.current
+                    || lastHistoryFetchRef.current?.tab !== activeTabRef.current
+                )) {
+                    const keywords = searchWordRef.current;
+                    const tab = activeTabRef.current;
+                    if (searchDebounceTimerRef.current !== null) {
+                        window.clearTimeout(searchDebounceTimerRef.current);
+                        searchDebounceTimerRef.current = null;
+                    }
+                    showGateRef.current!.start(async isCurrent => {
+                        const refreshed = await fetchHistoryWith(keywords, tab, {
+                            selectFirst: true,
+                            isCurrent,
+                        });
+                        if (isCurrent() && !refreshed) {
+                            throw new Error("Clipboard search did not complete");
+                        }
+                    });
                 }
                 if (showGateRef.current!.defer(() => {
                     const item = action.type === "quick-item"
@@ -1435,7 +1455,7 @@ export default function Clipboard() {
             window.removeEventListener('keyup', handleKeyUp, true);
             window.removeEventListener('blur', handleBlur);
         };
-    }, [searchOpen, searchWord, isSearchComposing, contextMenu, contextMenuIndex, queueSelectionMode, t]);
+    }, [searchOpen, searchWord, isSearching, isSearchComposing, contextMenu, contextMenuIndex, queueSelectionMode, t]);
 
     const handleSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         showGateRef.current!.cancel();

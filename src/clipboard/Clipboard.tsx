@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Button from "@mui/material/Button";
 import CircularProgress from "@mui/material/CircularProgress";
 import InputBase from "@mui/material/InputBase";
@@ -246,6 +246,7 @@ export default function Clipboard() {
     const tutorialActiveRef = useRef(false);
     const selectedRef = useRef("");
     const pageListRef = useRef<Item[]>([]);
+    const retainLastPositionRef = useRef<boolean | null>(null);
     const pasteAsTextShortcutRef = useRef(DEFAULT_PASTE_AS_TEXT_SHORTCUT);
     const quickInputEnabledRef = useRef(true);
     const pasteInFlightRef = useRef(false);
@@ -446,6 +447,17 @@ export default function Clipboard() {
     useEffect(() => {
         pageListRef.current = clipboardPage.list;
     }, [clipboardPage]);
+
+    useLayoutEffect(() => {
+        if (queueSelectionMode || !selected) return;
+        const focused = document.activeElement;
+        if (focused !== document.body && focused !== containerRef.current
+            && !(focused instanceof HTMLElement && focused.classList.contains(styles["clipboard-card"]))) return;
+        const selectedCard = Array.from(
+            cardsContainerRef.current?.querySelectorAll<HTMLElement>(`.${styles["clipboard-card"]}`) ?? [],
+        ).find(card => card.dataset.hash === selected);
+        if (selectedCard && selectedCard !== focused) selectedCard.focus({ preventScroll: true });
+    }, [selected, clipboardPage, queueSelectionMode]);
 
     useEffect(() => {
         hasMoreHistoryRef.current = hasMoreHistory;
@@ -1041,6 +1053,7 @@ export default function Clipboard() {
             searchWordRef.current,
             activeTabRef.current,
         );
+        retainLastPositionRef.current = preferences.retainLastPosition;
         const plan = resolveClipboardShowPlan(
             preferences,
             Boolean(selectedRef.current),
@@ -1085,14 +1098,19 @@ export default function Clipboard() {
     useClipboardLifecycleSubscriptions({
         tauri: {
             onBehaviorConfigChanged: config => {
-                applyRuntimeBehaviorPreferences(resolveClipboardShowPreferences(
+                const preferences = resolveClipboardShowPreferences(
                     config,
                     searchWordRef.current,
                     activeTabRef.current,
-                ));
+                );
+                retainLastPositionRef.current = preferences.retainLastPosition;
+                applyRuntimeBehaviorPreferences(preferences);
             },
             onWindowShow: payload => {
                 resetCardsPointerState();
+                if (retainLastPositionRef.current === false) {
+                    selectFirstLoadedItem(true);
+                }
                 if (!showGateRef.current!.pending) {
                     searchRequestSeqRef.current += 1;
                     showGateRef.current!.start(applyShowPreferences);
@@ -1214,6 +1232,11 @@ export default function Clipboard() {
             },
         },
         onMount: () => {
+            void loadClipboardBehaviorConfig().then(config => {
+                if (retainLastPositionRef.current === null) {
+                    retainLastPositionRef.current = Boolean(config.retain_last_position);
+                }
+            });
             initializeTutorial();
         },
         onBeforeCleanup: () => {
@@ -1321,6 +1344,10 @@ export default function Clipboard() {
                     else void clickClipboardItem(item.getHash(), "plainText" in action && action.plainText,
                         action.type === "quick-item", action.type === "quick-item" ? String(action.index + 1) : "");
                 })) return;
+            } else if (action.type === "navigate-selection" && showGateRef.current!.queueNavigation(() => {
+                navigateSelectedCard(action.direction);
+            })) {
+                return;
             } else if (action.type !== "alt-press") {
                 showGateRef.current!.cancel();
             }

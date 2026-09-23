@@ -64,4 +64,49 @@ describe("clipboard show synchronization", () => {
         finishSecond();
         await vi.waitFor(() => expect(newPaste).toHaveBeenCalledOnce());
     });
+
+    it("replays navigation after synchronization and cancels an earlier Enter", async () => {
+        let finish!: () => void;
+        const work = new Promise<void>(resolve => { finish = resolve; });
+        const gate = createClipboardShowGate(vi.fn());
+        const actions: string[] = [];
+        gate.start(async () => work);
+        gate.defer(() => actions.push("paste"));
+        expect(gate.queueNavigation(() => actions.push("right"))).toBe(true);
+        expect(gate.queueNavigation(() => actions.push("left"))).toBe(true);
+        gate.defer(() => actions.push("paste-after-navigation"));
+        finish();
+        await vi.waitFor(() => expect(actions).toEqual(["right", "left", "paste-after-navigation"]));
+    });
+
+    it("discards queued navigation when the window is hidden", async () => {
+        let finish!: () => void;
+        const work = new Promise<void>(resolve => { finish = resolve; });
+        const gate = createClipboardShowGate(vi.fn());
+        const navigate = vi.fn();
+        gate.start(async () => work);
+        gate.queueNavigation(navigate);
+        gate.cancel(true);
+        finish();
+        await work;
+        await Promise.resolve();
+        expect(navigate).not.toHaveBeenCalled();
+        expect(gate.needsSync).toBe(true);
+    });
+
+    it("still allows navigation when synchronization fails without replaying Enter", async () => {
+        let fail!: (error: Error) => void;
+        const work = new Promise<void>((_, reject) => { fail = reject; });
+        const onError = vi.fn();
+        const gate = createClipboardShowGate(onError);
+        const navigate = vi.fn();
+        const paste = vi.fn();
+        gate.start(async () => work);
+        gate.queueNavigation(navigate);
+        gate.defer(paste);
+        fail(new Error("capture timeout"));
+        await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+        expect(navigate).toHaveBeenCalledOnce();
+        expect(paste).not.toHaveBeenCalled();
+    });
 });

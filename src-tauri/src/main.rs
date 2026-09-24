@@ -9756,10 +9756,36 @@ fn paste(
 
 #[tauri::command]
 fn record_text_history(content: String) {
+    let Some(content) =
+        recordable_text_history_content(content, CLIPBOARD_HISTORY_PAUSED.load(Ordering::SeqCst))
+    else {
+        return;
+    };
     if ensure_history_ready().is_err() {
         return;
     }
     clipboard::insert_text(content);
+}
+
+fn recordable_text_history_content(content: String, paused: bool) -> Option<String> {
+    (!paused).then_some(content)
+}
+
+#[cfg(test)]
+mod record_text_history_tests {
+    use super::recordable_text_history_content;
+
+    #[test]
+    fn explicit_copy_only_records_while_history_is_active() {
+        assert_eq!(
+            recordable_text_history_content("copied path".to_string(), false),
+            Some("copied path".to_string())
+        );
+        assert_eq!(
+            recordable_text_history_content("copied path".to_string(), true),
+            None
+        );
+    }
 }
 
 #[tauri::command]

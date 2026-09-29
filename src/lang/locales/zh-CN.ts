@@ -116,7 +116,7 @@ const zhCN: LanguagePack = {
         "menu.pastePlainText": "粘贴为纯文本",
         "menu.deleteRecord": "删除记录",
 
-        "tabs.all": "所有",
+        "tabs.all": "全部",
         "tabs.favorite": "收藏",
         "tabs.add": "添加标签",
         "tabs.edit": "编辑标签",

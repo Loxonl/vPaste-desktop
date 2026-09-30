@@ -1101,6 +1101,12 @@ body {
   box-shadow: none;
 }
 
+.tab-item:focus-visible,
+:root[data-theme="dark"] .tab-item:focus-visible {
+  outline: none;
+  background: var(--ui-clipboard-tab-hover-surface);
+}
+
 :root[data-theme="dark"] .tab-add-button:hover {
   color: var(--ui-clipboard-tab-add-hover-text);
   background: var(--ui-clipboard-tab-add-hover-surface);

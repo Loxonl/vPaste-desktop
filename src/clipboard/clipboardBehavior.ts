@@ -31,7 +31,7 @@ export type ClipboardShowPlan = {
 export async function loadClipboardBehaviorConfig(): Promise<ClipboardBehaviorConfig> {
     try {
         return JSON.parse(
-            await invoke<string>("get_config"),
+            await invoke<string>("get_config", { skipAutostartRefresh: true }),
         ) as ClipboardBehaviorConfig;
     } catch (loadError) {
         error(`Failed to load clipboard behavior config: ${loadError}`);

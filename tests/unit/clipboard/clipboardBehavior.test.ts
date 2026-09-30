@@ -33,7 +33,7 @@ describe("clipboard behavior preferences", () => {
         logger.error.mockReset();
     });
 
-    it("loads the existing get_config payload without changing its shape", async () => {
+    it("loads saved clipboard behavior without querying system login item status", async () => {
         tauri.invoke.mockResolvedValue(JSON.stringify({
             onboarding_completed: true,
             retain_search_history: true,
@@ -45,7 +45,9 @@ describe("clipboard behavior preferences", () => {
             retain_search_history: true,
             shortcut_keys: { main_window: "Ctrl+Space" },
         });
-        expect(tauri.invoke).toHaveBeenCalledWith("get_config");
+        expect(tauri.invoke).toHaveBeenCalledWith("get_config", {
+            skipAutostartRefresh: true,
+        });
     });
 
     it("keeps the previous empty fallback when config cannot be read", async () => {

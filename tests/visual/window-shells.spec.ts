@@ -63,6 +63,18 @@ test.describe("window shells", () => {
         );
     });
 
+    test("clipboard tab keyboard focus does not draw a clipped blue edge", async ({ page }) => {
+        await page.setViewportSize({ width: 960, height: 600 });
+        await page.goto("/clipboard");
+        const allTab = page.locator("[class*='tab-item']").first();
+        await allTab.focus();
+        await page.keyboard.press("Shift+Tab");
+        await page.keyboard.press("Tab");
+        await expect(allTab).toBeFocused();
+        await expect(allTab).toHaveCSS("outline-style", "none");
+        await expect(allTab).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    });
+
     test("auxiliary popups share one inset rounded surface", async ({ page }) => {
         const cases = [
             { path: "/tray-menu", width: 216, height: 184, surface: "[class*='tray-menu-shell']" },

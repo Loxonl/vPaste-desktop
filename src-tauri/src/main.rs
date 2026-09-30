@@ -6716,9 +6716,11 @@ async fn cleanup_storage_history(days: u64) -> Result<StorageCleanupInfo, String
 }
 
 #[tauri::command]
-fn get_config(app: tauri::AppHandle) -> String {
-    if let Err(err) = refresh_stored_autostart_from_system(&app) {
-        error!("Failed to refresh stored autostart status: {}", err);
+fn get_config(app: tauri::AppHandle, skip_autostart_refresh: Option<bool>) -> String {
+    if skip_autostart_refresh != Some(true) {
+        if let Err(err) = refresh_stored_autostart_from_system(&app) {
+            error!("Failed to refresh stored autostart status: {}", err);
+        }
     }
     serde_json::to_string(&config::get()).unwrap()
 }

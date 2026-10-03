@@ -12,7 +12,7 @@ use crate::{app_runtime_dir, history_store};
 pub const CARD_PREVIEW_MAX_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 pub const CARD_PREVIEW_MAX_PIXELS: u64 = 40_000_000;
 pub const ANIMATED_PREVIEW_MAX_SOURCE_BYTES: u64 = 20 * 1024 * 1024;
-const CARD_PREVIEW_MAX_DIMENSION: u32 = 16_384;
+pub(crate) const CARD_PREVIEW_MAX_DIMENSION: u32 = 16_384;
 const CARD_PREVIEW_MAX_ALLOCATION_BYTES: u64 = 192 * 1024 * 1024;
 const CARD_PREVIEW_CACHE_VERSION: &str = "card-preview-v5";
 

@@ -58,6 +58,10 @@ mod config;
 mod history_store;
 mod image_preview;
 mod maintenance;
+#[cfg(target_os = "macos")]
+mod native_drag_preview;
+#[cfg(target_os = "macos")]
+mod native_drag_snapshot;
 mod paste_queue;
 mod runtime_mode;
 mod search;
@@ -3718,12 +3722,43 @@ fn native_drag_file(paths: Vec<String>, is_image: bool) -> Result<bool, String> 
 
 #[cfg(target_os = "macos")]
 #[tauri::command]
+async fn capture_native_drag_preview(
+    window: tauri::WebviewWindow,
+    rect: native_drag_snapshot::CardRect,
+) -> Result<Vec<u8>, String> {
+    if window.label() != "clipboard" {
+        return Err("drag card snapshots require the clipboard window".into());
+    }
+    rect.validate()?;
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    window
+        .with_webview(move |webview| unsafe {
+            native_drag_snapshot::capture(webview.inner().cast(), rect, move |result| {
+                let _ = sender.send(result);
+            });
+        })
+        .map_err(|error| format!("schedule drag card snapshot failed: {error}"))?;
+    tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
+        .await
+        .map_err(|_| "drag card snapshot timed out".to_string())?
+        .ok_or_else(|| "drag card snapshot ended without a result".to_string())?
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn capture_native_drag_preview() -> Result<Vec<u8>, String> {
+    Err("native drag card snapshots are only needed on macOS".into())
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
 async fn native_drag_file(
     window: tauri::WebviewWindow,
     paths: Vec<String>,
     is_image: bool,
+    preview_png: Option<Vec<u8>>,
 ) -> Result<bool, String> {
-    use drag::{DragItem, DragResult, Image, Options};
+    use drag::{DragItem, DragResult, Options};
 
     if paths.is_empty() {
         return Err("native drag requires at least one file".to_string());
@@ -3743,6 +3778,7 @@ async fn native_drag_file(
                 .map_err(|err| format!("resolve drag file path failed: {err}"))
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let drag_image = native_drag_preview::for_drag(&paths, preview_png.as_deref())?;
     if is_image {
         let path = paths[0]
             .to_str()
@@ -3758,7 +3794,7 @@ async fn native_drag_file(
         let start_result = drag::start_drag(
             &window,
             DragItem::Files(paths),
-            Image::Raw(include_bytes!("../icons/128x128.png").to_vec()),
+            drag_image,
             move |result, _cursor_position| {
                 let dropped = matches!(result, DragResult::Dropped);
                 let _ = drop_tx.send(Ok(dropped));
@@ -10971,6 +11007,7 @@ fn main() {
             apply_custom_tabs_from_editor,
             quit_app,
             native_drag_file,
+            capture_native_drag_preview,
             validate_file_item,
             file_preview_info,
             containing_folder_path,

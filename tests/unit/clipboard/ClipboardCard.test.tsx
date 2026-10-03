@@ -19,6 +19,7 @@ afterEach(() => {
     cleanup();
     invokeMock.mockReset();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
 });
 
 describe("clipboard card header", () => {
@@ -198,6 +199,70 @@ describe("clipboard card header", () => {
         expect(document.querySelector('[data-motion-state="external-drag-complete"]')).toBeInTheDocument();
     });
 
+    it("uses the dragged card content as its drag thumbnail", () => {
+        const item = new Item(6, "thumbnail-text", ItemType.Text, "git clone example", Date.now());
+        const dataTransfer = { effectAllowed: "", setData: vi.fn(), setDragImage: vi.fn() };
+        render(
+            <ClipboardCard
+                item={item}
+                selected
+                simulatedHover
+                refreshKey={0}
+                searchQuery=""
+                shortcutHint="1"
+                filterMotionIndex={0}
+                mediaPlaybackReady={false}
+                t={key => key}
+                onContextMenu={vi.fn()}
+            />,
+        );
+        const card = document.querySelector('[data-hash="thumbnail-text"]') as HTMLElement;
+        card.querySelector('[data-testid="card-preview"]')!.textContent = "git clone example";
+
+        fireEvent.dragStart(card, { dataTransfer });
+        const thumbnail = dataTransfer.setDragImage.mock.calls[0][0] as HTMLElement;
+        expect(thumbnail).toHaveTextContent("git clone example");
+        expect(thumbnail).not.toHaveTextContent("clipboard.dragging");
+        expect(thumbnail).toHaveAttribute("aria-hidden", "true");
+        expect(thumbnail.inert).toBe(true);
+        expect(thumbnail.querySelector('[data-hash], [data-external-dragging]')).toBeNull();
+        expect(thumbnail.querySelector('[data-motion-preset="shortcutHint"]')).toBeNull();
+        expect(thumbnail.querySelector('[class*="selected"], [class*="simulated-hover"]')).toBeNull();
+        expect(card).toHaveAttribute("data-external-dragging", "true");
+    });
+
+    it("preserves the visible image in the browser drag thumbnail and removes the temporary preview", () => {
+        const item = new Item(6, "thumbnail-image", ItemType.Image, "", Date.now(), undefined, "/preview.png");
+        const dataTransfer = { effectAllowed: "", setData: vi.fn(), setDragImage: vi.fn() };
+        render(
+            <ClipboardCard
+                item={item}
+                selected={false}
+                simulatedHover={false}
+                refreshKey={0}
+                searchQuery=""
+                filterMotionIndex={0}
+                mediaPlaybackReady={false}
+                t={key => key}
+                onContextMenu={vi.fn()}
+            />,
+        );
+        const card = document.querySelector('[data-hash="thumbnail-image"]') as HTMLElement;
+        const image = document.createElement("img");
+        image.src = "data:image/png;base64,visible-image";
+        card.querySelector('[data-testid="card-preview"]')!.appendChild(image);
+        const frame = vi.spyOn(window, "requestAnimationFrame");
+        const previousFrames = frame.mock.calls.length;
+
+        fireEvent.dragStart(card, { dataTransfer });
+        const thumbnail = dataTransfer.setDragImage.mock.calls[0][0] as HTMLElement;
+        expect(thumbnail.querySelector("img")?.src).toBe(image.src);
+        expect(thumbnail.isConnected).toBe(true);
+        frame.mock.calls.slice(previousFrames).forEach(([callback]) => callback(0));
+        expect(thumbnail.isConnected).toBe(false);
+        frame.mockRestore();
+    });
+
     it("preserves leading and trailing whitespace when dragging ordinary text", () => {
         const originalText = "    print('x')  \r\nnext line \r\n";
         const item = new Item(7, "short-text-drag", ItemType.Text, originalText, Date.now());
@@ -266,8 +331,41 @@ describe("clipboard card header", () => {
         expect(onDragUnavailable).toHaveBeenCalledOnce();
 
         await act(async () => { resolveText(fullText); });
-        fireEvent.dragStart(card, { dataTransfer });
+        fireEvent.mouseDown(card, { button: 0 });
+        fireEvent.mouseLeave(card);
+        expect(fireEvent.dragStart(card, { dataTransfer })).toBe(true);
         expect(values.get("text/plain")).toBe(fullText);
+        expect(dataTransfer.setDragImage).toHaveBeenCalledOnce();
+    });
+
+    it.each(["mouseup", "blur"])("discards prepared long-text gesture data after %s outside the card", async (cancelEvent) => {
+        const fullText = "stored full text";
+        const item = new Item(7, "cancel-long-text-drag", ItemType.TextFile, "/history/long-text", Date.now(), undefined, "preview");
+        invokeMock.mockResolvedValue(fullText);
+        const dataTransfer = { effectAllowed: "", setData: vi.fn(), setDragImage: vi.fn() };
+        render(
+            <ClipboardCard
+                item={item}
+                selected={false}
+                simulatedHover={false}
+                refreshKey={0}
+                searchQuery=""
+                filterMotionIndex={0}
+                mediaPlaybackReady={false}
+                t={key => key}
+                onContextMenu={vi.fn()}
+            />,
+        );
+        const card = document.querySelector('[data-hash="cancel-long-text-drag"]') as HTMLElement;
+        await act(async () => { fireEvent.mouseEnter(card); });
+        fireEvent.mouseDown(card, { button: 0 });
+        fireEvent.mouseLeave(card);
+        if (cancelEvent === "mouseup") fireEvent.mouseUp(document.body);
+        else fireEvent.blur(window);
+
+        expect(fireEvent.dragStart(card, { dataTransfer })).toBe(false);
+        expect(dataTransfer.setData).not.toHaveBeenCalled();
+        expect(dataTransfer.setDragImage).not.toHaveBeenCalled();
     });
 
     it("disables external drag while paste-queue selection mode is active", () => {
@@ -423,13 +521,97 @@ describe("clipboard card header", () => {
         });
     });
 
-    it("passes the complete file list to the native drag command on macOS too", () => {
+    it.each([
+        { name: "image", type: ItemType.Image, paths: ["/history/image.png"], title: "type.image" },
+        { name: "image file", type: ItemType.File, paths: ["/history/image.png"], title: "type.image" },
+        { name: "document", type: ItemType.File, paths: ["/history/report.pdf"], title: "type.file" },
+        { name: "folder", type: ItemType.File, paths: ["/history/project"], title: "type.file" },
+        { name: "multiple files", type: ItemType.File, paths: ["/history/report.pdf", "/history/notes.txt"], title: "type.file" },
+    ])("captures the complete macOS $name card before native dragging", async ({ type, paths, title }) => {
+        vi.stubGlobal("navigator", { userAgent: "Macintosh", platform: "MacIntel" });
+        vi.stubGlobal("__TAURI_INTERNALS__", {});
+        let finishCapture!: (bytes: number[]) => void;
+        let finishDrag!: (dropped: boolean) => void;
+        const readStyle = window.getComputedStyle.bind(window);
+        vi.spyOn(window, "getComputedStyle").mockImplementation(element => {
+            const style = readStyle(element);
+            if (element.hasAttribute("data-native-drag-preview")) {
+                Object.defineProperty(style, "borderTopLeftRadius", { value: "8.4px" });
+            }
+            return style;
+        });
+        invokeMock.mockImplementation((command: string) => command === "capture_native_drag_preview"
+            ? new Promise<number[]>(resolve => { finishCapture = resolve; })
+            : new Promise<boolean>(resolve => { finishDrag = resolve; }));
+        const item = new Item(12, "mac-card-preview", type, type === ItemType.File ? JSON.stringify(paths) : paths[0], Date.now());
+        render(<ClipboardCard item={item} selected simulatedHover refreshKey={0} searchQuery=""
+            filterMotionIndex={0} mediaPlaybackReady={false} shortcutHint="1" t={key => key} onContextMenu={vi.fn()} />);
+        const card = document.querySelector('[data-hash="mac-card-preview"]') as HTMLElement;
+        if (title === "type.image") {
+            card.querySelector('[data-testid="card-preview"]')!.innerHTML = '<img src="data:image/png;base64,source-image" />';
+        } else {
+            card.querySelector('[data-testid="card-preview"]')!.textContent = paths.join("\n");
+        }
+        fireEvent.mouseDown(card, { button: 0, clientX: 10, clientY: 80 });
+        fireEvent.mouseMove(card, { buttons: 1, clientX: 18, clientY: 80 });
+        await waitFor(() => expect(document.querySelector('[data-native-drag-preview]')).not.toBeNull());
+        const copy = document.querySelector('[data-native-drag-preview]') as HTMLElement;
+        expect(copy).toHaveTextContent(title);
+        if (title === "type.image") expect(copy.querySelector("img")?.src).toContain("source-image");
+        else for (const path of paths) expect(copy).toHaveTextContent(path);
+        expect(copy.querySelector('[data-hash], [class*="selected"], [data-motion-preset="shortcutHint"]')).toBeNull();
+        await waitFor(() => expect(finishCapture).toBeTypeOf("function"));
+        expect(invokeMock).toHaveBeenCalledWith("capture_native_drag_preview", {
+            rect: expect.objectContaining({ cornerRadius: 8.4 }),
+        });
+        await act(async () => finishCapture([137, 80, 78, 71]));
+        expect(copy.isConnected).toBe(false);
+        expect(invokeMock).toHaveBeenLastCalledWith("native_drag_file", {
+            paths, isImage: type === ItemType.Image, previewPng: [137, 80, 78, 71],
+        });
+        await act(async () => finishDrag(false));
+        expect(card).not.toHaveAttribute("data-external-dragging");
+    });
+
+    it.each([
+        { type: ItemType.Image, cancel: "release" }, { type: ItemType.Image, cancel: "blur" }, { type: ItemType.Image, cancel: "unmount" },
+        { type: ItemType.File, cancel: "release" }, { type: ItemType.File, cancel: "blur" }, { type: ItemType.File, cancel: "unmount" },
+    ])("cancels a pending macOS $type card snapshot on $cancel", async ({ type, cancel }) => {
+        vi.stubGlobal("navigator", { userAgent: "Macintosh", platform: "MacIntel" });
+        vi.stubGlobal("__TAURI_INTERNALS__", {});
+        let finishCapture!: (bytes: number[]) => void;
+        invokeMock.mockImplementation(() => new Promise<number[]>(resolve => { finishCapture = resolve; }));
+        const item = new Item(13, "mac-card-cancel", type, type === ItemType.File ? JSON.stringify(["/history/report.pdf"]) : "/history/image.png", Date.now());
+        const view = render(<ClipboardCard item={item} selected={false} simulatedHover={false} refreshKey={0} searchQuery=""
+            filterMotionIndex={0} mediaPlaybackReady={false} t={key => key} onContextMenu={vi.fn()} />);
+        const card = document.querySelector('[data-hash="mac-card-cancel"]') as HTMLElement;
+        fireEvent.mouseDown(card, { button: 0, clientX: 10, clientY: 80 });
+        fireEvent.mouseMove(card, { buttons: 1, clientX: 18, clientY: 80 });
+        await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("capture_native_drag_preview", expect.anything()));
+        if (cancel === "release") {
+            fireEvent.mouseLeave(card);
+            fireEvent.mouseUp(document.body);
+        } else if (cancel === "blur") {
+            fireEvent.blur(window);
+        } else {
+            view.unmount();
+        }
+        expect(document.querySelector('[data-native-drag-preview]')).toBeNull();
+        await act(async () => finishCapture([137, 80, 78, 71]));
+        expect(document.querySelector('[data-native-drag-preview]')).toBeNull();
+        expect(invokeMock.mock.calls.some(([command]) => command === "native_drag_file")).toBe(false);
+        if (cancel !== "unmount") expect(card).not.toHaveAttribute("data-external-dragging");
+    });
+
+    it("passes the complete file list with the shared card preview on macOS", async () => {
         vi.stubGlobal("navigator", {
             userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)",
             platform: "MacIntel",
         });
         vi.stubGlobal("__TAURI_INTERNALS__", {});
-        invokeMock.mockResolvedValue(true);
+        invokeMock.mockImplementation((command: string) => Promise.resolve(
+            command === "capture_native_drag_preview" ? [137, 80, 78, 71] : true,
+        ));
 
         const item = new Item(
             9,
@@ -456,10 +638,11 @@ describe("clipboard card header", () => {
         fireEvent.mouseDown(card, { button: 0, clientX: 0, clientY: 0 });
         fireEvent.mouseMove(card, { buttons: 1, clientX: 8, clientY: 0 });
 
-        expect(invokeMock).toHaveBeenCalledWith("native_drag_file", {
+        await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("native_drag_file", {
             paths: ["/Users/demo/clip.txt", "/Volumes/Shared/second.pdf"],
             isImage: false,
-        });
+            previewPng: [137, 80, 78, 71],
+        }));
     });
 
     it("restores a native file card after a canceled drop", async () => {

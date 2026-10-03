@@ -7605,6 +7605,7 @@ dependencies = [
  "arboard",
  "backtrace",
  "base64 0.22.1",
+ "block",
  "chrono",
  "clipboard-win",
  "cocoa 0.25.0",

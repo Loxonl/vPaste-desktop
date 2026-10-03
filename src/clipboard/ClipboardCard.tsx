@@ -12,11 +12,13 @@ import {
     WHITE_HEADER_TEXT_COLOR,
 } from "./clipboardHeaderColor";
 import { isSingleImageFileItem } from "./itemPresentation";
+import { captureNativeClipboardDragPreview, createClipboardDragPreview } from "./clipboardDragPreview";
 import {
     configureClipboardDrag,
     isExternalDragExcludedTarget,
     externalDragFilePaths,
     isNativeFileDragItem,
+    isMacOSPlatform,
 } from "./clipboardDrag";
 import {
     AnimatePresence,
@@ -153,9 +155,10 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
     const dragFeedbackTimerRef = useRef<number | null>(null);
     const dragStartedRef = useRef(false);
     const dragTextRef = useRef<string | null>(null);
+    const dragTextGestureRef = useRef<string | null>(null);
     const dragTextLoadRef = useRef<Promise<void> | null>(null);
     const dragTextHoveredRef = useRef(false);
-    const nativeDragStateRef = useRef<{ x: number; y: number; started: boolean } | null>(null);
+    const nativeDragStateRef = useRef<{ x: number; y: number; started: boolean; previewAbort?: AbortController } | null>(null);
     const visualType = isSingleImageFileItem(item) ? ItemType.Image : item.getType();
     const nativeFileDrag = isNativeFileDragItem(item);
     const typeLabel = getTypeLabel(visualType, t);
@@ -179,6 +182,12 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
         setIsGifFormat(gif);
     }, []);
 
+    const clearDragTextGesture = useCallback(() => {
+        dragTextGestureRef.current = null;
+        window.removeEventListener("mouseup", clearDragTextGesture, true);
+        window.removeEventListener("blur", clearDragTextGesture);
+    }, []);
+
     const prepareDragText = useCallback(() => {
         if (item.getType() !== ItemType.TextFile || dragTextRef.current !== null || dragTextLoadRef.current) return;
         dragTextLoadRef.current = invoke<string>("plain_text_content", { hash: item.getHash() })
@@ -200,31 +209,72 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
         }, 420);
     }, []);
 
-    const startNativeFileDrag = useCallback((): boolean => {
+    const startNativeFileDrag = useCallback((card: HTMLElement): boolean => {
         if (!nativeFileDrag) return false;
         const paths = externalDragFilePaths(item);
         if (paths.length === 0) return false;
 
-        void invoke<boolean>("native_drag_file", {
-            paths,
-            isImage: item.getType() === ItemType.Image,
-        })
-            .then((dropped) => {
+        const gesture = nativeDragStateRef.current;
+        void (async () => {
+            try {
+                let previewPng: number[] | undefined;
+                if (isMacOSPlatform()) {
+                    try {
+                        const abort = new AbortController();
+                        if (gesture) gesture.previewAbort = abort;
+                        const cancelPreview = () => {
+                            abort.abort();
+                            if (nativeDragStateRef.current === gesture) {
+                                nativeDragStateRef.current = null;
+                                setDragging(false);
+                            }
+                        };
+                        const stopWatching = () => {
+                            window.removeEventListener("mouseup", cancelPreview, true);
+                            window.removeEventListener("blur", cancelPreview);
+                        };
+                        window.addEventListener("mouseup", cancelPreview, true);
+                        window.addEventListener("blur", cancelPreview);
+                        abort.signal.addEventListener("abort", stopWatching, { once: true });
+                        try {
+                            previewPng = await captureNativeClipboardDragPreview(card, abort.signal);
+                        } finally {
+                            stopWatching();
+                            abort.signal.removeEventListener("abort", stopWatching);
+                        }
+                    } catch (error) {
+                        if (!gesture?.previewAbort?.signal.aborted) {
+                            console.warn("Could not capture native drag card preview", error);
+                        }
+                    }
+                    if (nativeDragStateRef.current !== gesture) return;
+                }
+                const dropped = await invoke<boolean>("native_drag_file", {
+                    paths,
+                    isImage: item.getType() === ItemType.Image,
+                    ...(previewPng ? { previewPng } : {}),
+                });
                 if (dropped) showDragCompleted();
-            })
-            .catch((error) => console.warn("Native file drag failed", error))
-            .finally(() => {
-                setDragging(false);
-                nativeDragStateRef.current = null;
-            });
+            } catch (error) {
+                console.warn("Native file drag failed", error);
+            } finally {
+                if (nativeDragStateRef.current === gesture) {
+                    setDragging(false);
+                    nativeDragStateRef.current = null;
+                }
+            }
+        })();
         return true;
     }, [item, nativeFileDrag, showDragCompleted]);
 
     useEffect(() => () => {
+        clearDragTextGesture();
+        nativeDragStateRef.current?.previewAbort?.abort();
+        nativeDragStateRef.current = null;
         if (dragFeedbackTimerRef.current !== null) {
             window.clearTimeout(dragFeedbackTimerRef.current);
         }
-    }, []);
+    }, [clearDragTextGesture]);
 
     useEffect(() => {
         setHeaderColor(headerColorFromSource(item.getTitleColor()));
@@ -293,11 +343,19 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                 }
             }}
             onMouseDown={(event) => {
+                clearDragTextGesture();
                 dragStartedRef.current = false;
+                nativeDragStateRef.current?.previewAbort?.abort();
                 nativeDragStateRef.current = null;
                 if (!dragDisabled && !selectionMode && event.button === 0) {
                     dragTextHoveredRef.current = true;
                     prepareDragText();
+                    if (item.getType() === ItemType.TextFile && !isExternalDragExcludedTarget(event.target)) {
+                        // A fast drag can leave the card before the browser dispatches dragstart.
+                        dragTextGestureRef.current = dragTextRef.current;
+                        window.addEventListener("mouseup", clearDragTextGesture, true);
+                        window.addEventListener("blur", clearDragTextGesture);
+                    }
                 }
                 if (
                     nativeFileDrag
@@ -325,7 +383,7 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                 if (distance < 6) return;
                 event.preventDefault();
                 event.stopPropagation();
-                if (!startNativeFileDrag()) {
+                if (!startNativeFileDrag(event.currentTarget)) {
                     nativeDragStateRef.current = null;
                     return;
                 }
@@ -335,6 +393,7 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                 setDragging(true);
             }}
             onMouseUp={() => {
+                nativeDragStateRef.current?.previewAbort?.abort();
                 nativeDragStateRef.current = null;
                 setDragging(false);
             }}
@@ -348,12 +407,14 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                 onActivate?.(item.getHash() as string, event.shiftKey);
             }}
             onDragStart={(event) => {
+                const dragText = dragTextGestureRef.current ?? dragTextRef.current ?? undefined;
+                clearDragTextGesture();
                 if (dragDisabled || selectionMode || isExternalDragExcludedTarget(event.target)) {
                     event.preventDefault();
                     return;
                 }
 
-                if (!configureClipboardDrag(event, item, dragTextRef.current ?? undefined)) {
+                if (!configureClipboardDrag(event, item, dragText)) {
                     event.preventDefault();
                     prepareDragText();
                     onDragUnavailable?.();
@@ -364,10 +425,7 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                 setDragging(true);
                 dragStartedRef.current = true;
 
-                const dragImage = document.createElement("div");
-                dragImage.className = classes(styles, "clipboard-drag-preview");
-                dragImage.dataset.type = visualType.toLowerCase();
-                dragImage.textContent = t("clipboard.dragging");
+                const dragImage = createClipboardDragPreview(event.currentTarget);
                 document.body.appendChild(dragImage);
                 event.dataTransfer.setDragImage?.(dragImage, 18, 18);
                 window.requestAnimationFrame(() => dragImage.remove());

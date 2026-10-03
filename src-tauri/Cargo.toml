@@ -78,6 +78,7 @@ cocoa = "0.25"
 objc = "0.2.7"
 core-graphics = "0.19.2"
 drag = "=2.1.1"
+block = "=0.1.6"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

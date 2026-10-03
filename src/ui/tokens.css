@@ -372,6 +372,7 @@
   --ui-radius-control: 8px;
   --ui-radius-popover: 10px;
   --ui-radius-surface: 14px;
+  --ui-radius-drag-preview: calc(var(--ui-radius-surface) * 0.6);
   --ui-radius-shortcut-pulse: 18px;
   --ui-radius-window: 12px;
   --ui-radius-hairline: 1px;

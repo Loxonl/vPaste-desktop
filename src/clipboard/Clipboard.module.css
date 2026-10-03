@@ -1464,56 +1464,28 @@ body {
   top: -1000px;
   left: -1000px;
   z-index: 10000;
-  min-width: 112px;
-  height: 36px;
-  box-sizing: border-box;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--ui-space-2);
-  padding: 0 var(--ui-space-3);
-  border: 1px solid var(--ui-border);
-  border-radius: var(--ui-radius-control);
-  color: var(--ui-text);
-  background: var(--ui-surface);
-  box-shadow: var(--ui-shadow);
-  font-size: 12px;
-  font-weight: 620;
-  opacity: 0.9;
+  width: 132px;
+  height: 138px;
+  overflow: hidden;
+  border-radius: var(--ui-radius-drag-preview);
+  background: var(--ui-clipboard-card-surface);
+  box-shadow: var(--ui-clipboard-card-shadow);
   pointer-events: none;
 }
 
-.clipboard-drag-preview::before {
-  width: 20px;
-  height: 20px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--ui-radius-control);
-  color: var(--theme-accent);
-  background: var(--ui-accent-soft);
-  font-size: 12px;
-  font-weight: 720;
+.clipboard-drag-preview-card {
+  transform: scale(0.6);
+  transform-origin: top left;
+  content-visibility: visible;
+  outline: none;
+  box-shadow: none;
+  opacity: 1;
 }
 
-.clipboard-drag-preview[data-type="text"]::before,
-.clipboard-drag-preview[data-type="textfile"]::before {
-  content: "T";
-}
-
-.clipboard-drag-preview[data-type="image"]::before {
-  content: "▧";
-}
-
-.clipboard-drag-preview[data-type="link"]::before {
-  content: "↗";
-}
-
-.clipboard-drag-preview[data-type="color"]::before {
-  content: "◆";
-}
-
-.clipboard-drag-preview[data-type="file"]::before {
-  content: "▤";
+.clipboard-drag-preview-card,
+.clipboard-drag-preview-card * {
+  animation-play-state: paused;
+  transition: none;
 }
 
 .card-content {

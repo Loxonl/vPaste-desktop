@@ -762,21 +762,33 @@ fn rich_preview_text(html: Option<&[u8]>, rtf: Option<&[u8]>) -> Option<String> 
         }
     }
 
-    rtf.map(|bytes| String::from_utf8_lossy(bytes).to_string())
-        .map(|text| {
-            text.replace("\\par", "\n")
-                .replace(['{', '}'], "")
-                .split_whitespace()
-                .take(80)
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .filter(|text| !text.is_empty())
+    rtf.and_then(|bytes| unsafe {
+        let data: id = msg_send![class!(NSData), dataWithBytes:bytes.as_ptr() length:bytes.len()];
+        let attributed: id = msg_send![class!(NSAttributedString), alloc];
+        let attributed: id =
+            msg_send![attributed, initWithRTF:data documentAttributes:std::ptr::null_mut::<id>()];
+        if attributed == nil {
+            return None;
+        }
+        let value: id = msg_send![attributed, string];
+        let result = nsstring_to_string(value).filter(|text| !text.trim().is_empty());
+        let _: () = msg_send![attributed, release];
+        result
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{pasteboard_file_value_to_path, push_file_path};
+    use super::{pasteboard_file_value_to_path, push_file_path, rich_preview_text};
+
+    #[test]
+    fn rtf_only_preview_contains_readable_text_without_control_words() {
+        let rtf = br"{\rtf1\ansi\deff0{\fonttbl{\f0 Helvetica;}}\f0\fs24 Hello\par world}";
+        assert_eq!(
+            rich_preview_text(None, Some(rtf)),
+            Some("Hello\nworld".into())
+        );
+    }
 
     #[test]
     fn converts_file_url_to_path() {

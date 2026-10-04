@@ -623,7 +623,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
             <ConfirmDialog
                 open={cleanupConfirmOpen}
                 title={t("settings.cleanup.confirmTitle")}
-                description={t("settings.cleanup.confirm", { range: cleanupRangeLabel })}
+                description={t("settings.cleanup.confirm", { range: cleanupRangeLabel, items: cleanupInfo?.items ?? 0 })}
                 cancelLabel={t("common.cancel")}
                 confirmLabel={t("common.cleanup")}
                 backdropClassName={dialogBackdropClassName}

@@ -107,6 +107,33 @@ pub fn delete(hash: &str) {
     }
 }
 
+pub fn delete_many(hashes: &[&str]) {
+    if hashes.is_empty() {
+        return;
+    }
+    if let Err(err) = delete_many_inner(hashes) {
+        invalidate();
+        error!("failed to delete clipboard search index entries: {err}");
+    }
+}
+
+fn delete_many_inner(hashes: &[&str]) -> Result<(), String> {
+    let _guard = ENGINE_LOCK
+        .lock()
+        .map_err(|_| "search index lock is poisoned".to_string())?;
+    if !is_ready() {
+        return Ok(());
+    }
+    let index = get_or_create_index()?;
+    let mut index_writer: IndexWriter<TantivyDocument> =
+        index.writer(50_000_000).map_err(|err| err.to_string())?;
+    for hash in hashes {
+        index_writer.delete_term(Term::from_field_text(*HASH_FIELD, hash));
+    }
+    index_writer.commit().map_err(|err| err.to_string())?;
+    Ok(())
+}
+
 fn delete_inner(hash: &str) -> Result<(), String> {
     let _guard = ENGINE_LOCK
         .lock()
@@ -254,6 +281,24 @@ fn rebuilt_index_returns_unicode_phrase_matches() {
         search_page("迁移的中文", 0, 10).unwrap().hashes,
         vec!["match"]
     );
+}
+
+#[test]
+fn bulk_delete_removes_selected_documents_and_keeps_other_search_results() {
+    let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+    let temp_dir = tempfile::tempdir().unwrap();
+    *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+        Some(temp_dir.path().to_string_lossy().to_string());
+    rebuild(vec![
+        (1, 1, "cleanup needle".to_string(), "remove-a".to_string()),
+        (2, 2, "cleanup needle".to_string(), "remove-b".to_string()),
+        (3, 3, "cleanup needle".to_string(), "keep".to_string()),
+    ])
+    .unwrap();
+
+    delete_many(&["remove-a", "remove-b"]);
+
+    assert_eq!(search_page("needle", 0, 10).unwrap().hashes, vec!["keep"]);
 }
 
 #[test]

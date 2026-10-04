@@ -2,6 +2,8 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import DataSettings from "../../../src/config/sections/DataSettings";
+import enUS from "../../../src/lang/locales/en-US";
+import zhCN from "../../../src/lang/locales/zh-CN";
 import type { SettingsBridge } from "../../../src/config/SettingsBridge";
 import { DEFAULT_CONFIG } from "../../../src/config/settingsTypes";
 import AppThemeProvider from "../../../src/ui/AppThemeProvider";
@@ -27,6 +29,19 @@ function createBridge(): SettingsBridge {
 }
 
 describe("Data settings actions", () => {
+    it("explains protected records and the estimated count in both cleanup translations", () => {
+        const english = enUS.translations["settings.cleanup.confirm"];
+        const chinese = zhCN.translations["settings.cleanup.confirm"];
+        expect(english).toContain("{items}");
+        expect(english).toMatch(/favorite/i);
+        expect(english).toMatch(/tag/i);
+        expect(chinese).toContain("{items}");
+        expect(chinese).toContain("收藏");
+        expect(chinese).toContain("标签");
+        expect(enUS.translations["settings.cleanupSummary"]).toMatch(/cleanup/i);
+        expect(zhCN.translations["settings.cleanupSummary"]).toContain("可清理");
+    });
+
     it("keeps managed privacy apps, import, and export wired to their existing handlers", async () => {
         const bridge = createBridge();
         const onSave = vi.fn(async () => null);
@@ -148,7 +163,7 @@ describe("Data settings actions", () => {
                         }}
                         onSave={vi.fn(async () => null)}
                         onBlockingOperationChange={vi.fn()}
-                        t={key => key}
+                        t={(key, params) => key === "settings.cleanup.confirm" ? `Delete ${params?.items} from ${params?.range}; protected records stay` : key}
                     />
                 </AppThemeProvider>
             </MotionTestProvider>,
@@ -170,7 +185,7 @@ describe("Data settings actions", () => {
         await waitFor(() => expect(cleanupButton).toBeEnabled());
 
         await user.click(cleanupButton);
-        expect(screen.getByRole("alertdialog", { name: "settings.cleanup.confirmTitle" })).toBeVisible();
+        expect(screen.getByRole("alertdialog", { name: "settings.cleanup.confirmTitle" })).toHaveTextContent("Delete 4 from settings.cleanup.30; protected records stay");
         await user.click(screen.getByRole("button", { name: "common.cancel", exact: true }));
         expect(bridge.invoke).not.toHaveBeenCalledWith("cleanup_storage_history", expect.anything());
 

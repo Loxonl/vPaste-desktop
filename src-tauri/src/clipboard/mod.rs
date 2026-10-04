@@ -1679,15 +1679,16 @@ pub(crate) fn internal_paths_for_stored_item(stored: &StoredItem) -> HashSet<Pat
     .collect()
 }
 
-fn cleanup_candidates(days: u64) -> Result<Vec<CleanupCandidate>, String> {
+fn cleanup_candidates(days: u64, include_protected: bool) -> Result<Vec<CleanupCandidate>, String> {
     let conn = db();
-    let query = if days == 0 {
-        "SELECT id, hash, item_type, content, source FROM clipboard".to_string()
-    } else {
-        "SELECT id, hash, item_type, content, source FROM clipboard
-         WHERE time < ?1"
-            .to_string()
-    };
+    let mut query =
+        "SELECT id, hash, item_type, content, source FROM clipboard WHERE 1=1".to_string();
+    if !include_protected {
+        query.push_str(" AND coalesce(label, 0) != 1 AND NOT EXISTS (SELECT 1 FROM clipboard_tags WHERE clipboard_id = clipboard.id)");
+    }
+    if days != 0 {
+        query.push_str(" AND time < ?1");
+    }
     let mut statement = conn.prepare(&query).map_err(|err| err.to_string())?;
     let map_row = |row: &Row<'_>| {
         Ok(CleanupCandidate {
@@ -1735,7 +1736,7 @@ fn internal_paths_referenced_by_survivors(
         .map(|candidate| candidate.id)
         .collect::<HashSet<_>>();
     let mut retained_paths = HashSet::new();
-    for candidate in cleanup_candidates(0)? {
+    for candidate in cleanup_candidates(0, true)? {
         if candidate_ids.contains(&candidate.id) {
             continue;
         }
@@ -1812,7 +1813,7 @@ fn cleanup_estimate_for_candidates(
 }
 
 pub fn cleanup_estimate(days: u64) -> Result<CleanupEstimate, String> {
-    let candidates = cleanup_candidates(days)?;
+    let candidates = cleanup_candidates(days, false)?;
     let paths = internal_paths_for_candidates(&candidates);
     let retained_paths = internal_paths_referenced_by_survivors(&candidates, &paths)?;
     Ok(cleanup_estimate_for_candidates(
@@ -1823,7 +1824,7 @@ pub fn cleanup_estimate(days: u64) -> Result<CleanupEstimate, String> {
 }
 
 pub fn cleanup_older_than(days: u64) -> Result<CleanupEstimate, String> {
-    let candidates = cleanup_candidates(days)?;
+    let candidates = cleanup_candidates(days, false)?;
     let paths_to_delete = internal_paths_for_candidates(&candidates);
     let retained_paths = internal_paths_referenced_by_survivors(&candidates, &paths_to_delete)?;
     let estimate = cleanup_estimate_for_candidates(&candidates, &paths_to_delete, &retained_paths);
@@ -1831,9 +1832,11 @@ pub fn cleanup_older_than(days: u64) -> Result<CleanupEstimate, String> {
         return Ok(estimate);
     }
 
-    for candidate in &candidates {
-        engine::delete(&candidate.hash);
-    }
+    let hashes = candidates
+        .iter()
+        .map(|candidate| candidate.hash.as_str())
+        .collect::<Vec<_>>();
+    engine::delete_many(&hashes);
 
     let ids = candidates
         .iter()
@@ -3992,6 +3995,96 @@ mod tests {
         assert!(old_item_removed);
         assert!(retained_item_exists);
         assert!(final_owner_removed_file);
+    }
+
+    #[test]
+    fn cleanup_preserves_favorites_and_tagged_records_in_estimate_and_delete() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        crate::config::save(crate::config::Config {
+            storage_dir: app_data.path().to_string_lossy().to_string(),
+            ..Default::default()
+        });
+        db::init();
+        for (hash, favorite) in [
+            ("ordinary", 0),
+            ("favorite", 1),
+            ("tagged", 0),
+            ("tagged-favorite", 1),
+        ] {
+            db().execute(
+                "insert into clipboard(hash, time, content, preview_content, item_type, search_index, source, app_source, app_icon_path, title_color, icon, label)
+                 values(?1, 1, 'body', 'body', 'Text', 1, '', '', '', '', '', ?2)",
+                rusqlite::params![hash, favorite],
+            ).unwrap();
+        }
+        let tag = create_tag("Keep").unwrap();
+        assign_tag("tagged", tag.id).unwrap();
+        assign_tag("tagged-favorite", tag.id).unwrap();
+
+        assert_eq!(cleanup_estimate(30).unwrap().items, 1);
+        assert_eq!(cleanup_estimate(0).unwrap().items, 1);
+        assert_eq!(cleanup_older_than(30).unwrap().items, 1);
+        assert_eq!(cleanup_estimate(0).unwrap().items, 0);
+        assert!(try_get_by_hash(&"ordinary".to_string()).is_none());
+        for hash in ["favorite", "tagged", "tagged-favorite"] {
+            assert!(try_get_by_hash(&hash.to_string()).is_some());
+        }
+        assert_eq!(list_tags().unwrap().len(), 1);
+        reset_test_storage_config();
+    }
+
+    #[test]
+    fn cleanup_keeps_attachment_referenced_by_a_protected_record() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let preview_path = seed_shared_link_preview(&app_data, 1);
+        set_favorite("new-link", true).unwrap();
+
+        assert_eq!(cleanup_estimate(0).unwrap().items, 1);
+        assert_eq!(cleanup_estimate(0).unwrap().bytes, 0);
+        assert_eq!(cleanup_older_than(0).unwrap().items, 1);
+        assert!(try_get_by_hash(&"old-link".to_string()).is_none());
+        assert!(try_get_by_hash(&"new-link".to_string()).is_some());
+        assert!(preview_path.exists());
+        reset_test_storage_config();
+    }
+
+    #[test]
+    fn cleanup_many_indexed_records_finishes_and_preserves_protected_results() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(app_data.path().to_string_lossy().to_string());
+        crate::config::save(crate::config::Config {
+            storage_dir: app_data.path().to_string_lossy().to_string(),
+            ..Default::default()
+        });
+        db::init();
+        for index in 0..100 {
+            db().execute(
+                "insert into clipboard(hash, time, content, preview_content, item_type, search_index, source, app_source, app_icon_path, title_color, icon, label)
+                 values(?1, 1, 'cleanup benchmark', 'cleanup benchmark', 'Text', 1, '', '', '', '', '', 0)",
+                [format!("cleanup-benchmark-{index}")],
+            ).unwrap();
+        }
+        db().execute(
+            "insert into clipboard(hash, time, content, preview_content, item_type, search_index, source, app_source, app_icon_path, title_color, icon, label)
+             values('cleanup-protected', 1, 'cleanup benchmark', 'cleanup benchmark', 'Text', 1, '', '', '', '', '', 1)",
+            [],
+        ).unwrap();
+        rebuild_search_index().unwrap();
+        let start = std::time::Instant::now();
+        assert_eq!(cleanup_older_than(0).unwrap().items, 100);
+        eprintln!("cleanup 100 indexed records: {:?}", start.elapsed());
+        assert!(try_get_by_hash(&"cleanup-protected".to_string()).is_some());
+        assert_eq!(
+            engine::search_page("benchmark", 0, 10).unwrap().hashes,
+            vec!["cleanup-protected"]
+        );
+        reset_test_storage_config();
     }
 
     #[test]

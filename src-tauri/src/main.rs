@@ -8658,25 +8658,75 @@ fn copy_rich_to_clipboard(text: &str, meta: &clipboard::RichClipboardMeta) -> Re
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn write_macos_pasteboard_file(
-    pasteboard: cocoa::base::id,
-    pasteboard_type: &str,
-    path: &str,
-) -> Result<(), String> {
-    if path.is_empty() {
-        return Ok(());
-    }
-    let bytes = history_store::read_file(path).map_err(|err| {
-        format!(
-            "read {} rich clipboard file failed: {}",
-            pasteboard_type, err
-        )
-    })?;
-    if bytes.is_empty() {
-        return Ok(());
+#[cfg(all(test, target_os = "macos"))]
+mod macos_rich_restore_tests {
+    use super::*;
+
+    #[test]
+    fn missing_rich_attachment_is_reported_before_clipboard_write() {
+        let root = tempfile::tempdir().unwrap();
+        let meta = clipboard::RichClipboardMeta {
+            version: 1,
+            html_path: root
+                .path()
+                .join("missing.html")
+                .to_string_lossy()
+                .into_owned(),
+            ..Default::default()
+        };
+        assert!(prepare_macos_rich_formats(&meta).is_err());
     }
 
+    #[test]
+    fn existing_rich_attachments_keep_their_original_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let html = root.path().join("source.html");
+        let rtf = root.path().join("source.rtf");
+        std::fs::write(&html, b"<b>Hello</b>").unwrap();
+        std::fs::write(&rtf, br"{\rtf1 Hello}").unwrap();
+        let meta = clipboard::RichClipboardMeta {
+            version: 1,
+            html_path: html.to_string_lossy().into_owned(),
+            rtf_path: rtf.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        assert_eq!(
+            prepare_macos_rich_formats(&meta).unwrap(),
+            vec![
+                ("public.html", b"<b>Hello</b>".to_vec()),
+                ("public.rtf", br"{\rtf1 Hello}".to_vec()),
+            ]
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_macos_rich_formats(
+    meta: &clipboard::RichClipboardMeta,
+) -> Result<Vec<(&'static str, Vec<u8>)>, String> {
+    [
+        ("public.html", meta.html_path.as_str()),
+        ("public.rtf", meta.rtf_path.as_str()),
+    ]
+    .into_iter()
+    .filter(|(_, path)| !path.is_empty())
+    .map(|(pasteboard_type, path)| {
+        let bytes = history_store::read_file(path)
+            .map_err(|err| format!("read {pasteboard_type} rich clipboard file failed: {err}"))?;
+        if bytes.is_empty() {
+            return Err(format!("{pasteboard_type} rich clipboard file is empty"));
+        }
+        Ok((pasteboard_type, bytes))
+    })
+    .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn write_macos_pasteboard_data(
+    pasteboard: cocoa::base::id,
+    pasteboard_type: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
     unsafe {
         use cocoa::base::nil;
         use cocoa::foundation::NSString;
@@ -8699,6 +8749,7 @@ fn write_macos_pasteboard_file(
 
 #[cfg(target_os = "macos")]
 fn copy_rich_to_clipboard(text: &str, meta: &clipboard::RichClipboardMeta) -> Result<(), String> {
+    let formats = prepare_macos_rich_formats(meta)?;
     unsafe {
         use cocoa::base::{id, nil};
         use cocoa::foundation::NSString;
@@ -8720,13 +8771,8 @@ fn copy_rich_to_clipboard(text: &str, meta: &clipboard::RichClipboardMeta) -> Re
             return Err("write public.utf8-plain-text failed".to_string());
         }
 
-        for (pasteboard_type, path) in [
-            ("public.html", meta.html_path.as_str()),
-            ("public.rtf", meta.rtf_path.as_str()),
-        ] {
-            if let Err(err) = write_macos_pasteboard_file(pasteboard, pasteboard_type, path) {
-                error!("{}", err);
-            }
+        for (pasteboard_type, bytes) in formats {
+            write_macos_pasteboard_data(pasteboard, pasteboard_type, &bytes)?;
         }
     }
     Ok(())

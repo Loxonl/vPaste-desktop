@@ -941,13 +941,30 @@ body {
   background: var(--ui-clipboard-queue-primary-surface);
 }
 
+.cards-results-stack {
+  display: grid;
+  position: relative;
+  min-width: 100%;
+  min-height: 100%;
+}
+
 .cards-grid {
+  grid-area: 1 / 1;
+  z-index: 1;
   display: flex;
   gap: 16px;
   width: max-content;
   min-width: 100%;
   min-height: 100%;
   align-items: center;
+}
+
+.cards-grid[data-results-active="false"] {
+  z-index: 0;
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  pointer-events: none;
 }
 
 .card-motion-item {

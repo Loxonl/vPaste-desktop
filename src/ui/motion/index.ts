@@ -6,6 +6,7 @@ export {
     MotionConfig,
     stagger,
     useAnimate,
+    useIsPresent,
     useReducedMotion,
     useReducedMotionConfig,
 } from "motion/react";

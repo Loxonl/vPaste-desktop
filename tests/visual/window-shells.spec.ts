@@ -318,8 +318,14 @@ test.describe("window shells", () => {
         await expect(page.getByTestId("clipboard-results")).not.toHaveAttribute("aria-hidden", "true");
     });
 
-    test("clipboard filters recent and older loaded results with one bounded staggered motion", async ({ page }) => {
-        await page.addInitScript(() => {
+    async function verifyResultTransitions(page: Page, reducedMotion: boolean, platform: "MacIntel" | "Win32") {
+        await page.emulateMedia({ reducedMotion: reducedMotion ? "reduce" : "no-preference" });
+        await page.addInitScript((platform: string) => {
+            Object.defineProperty(navigator, "platform", { configurable: true, get: () => platform });
+            Object.defineProperty(navigator, "userAgentData", {
+                configurable: true,
+                get: () => ({ platform }),
+            });
             let callbackId = 0;
             let listenerId = 0;
             const now = Date.now();
@@ -404,14 +410,19 @@ test.describe("window shells", () => {
                     },
                 },
             });
-        });
+        }, platform);
         await page.setViewportSize({ width: 960, height: 600 });
         await page.goto("/clipboard");
 
         const cards = page.locator('[data-motion-preset="gridItem"]');
         const startMotionSampling = () => page.evaluate(() => {
             const motionSamples: Record<string, number> = {};
-            Object.assign(window, { __filterMotionSamples: motionSamples });
+            const coverage: number[] = [];
+            Object.assign(window, {
+                __filterMotionSamples: motionSamples,
+                __resultCoverage: coverage,
+                __interactiveOutgoingResult: false,
+            });
             const startedAt = performance.now();
             const sample = () => {
                 document.querySelectorAll<HTMLElement>('[data-filter-motion-hash]').forEach(card => {
@@ -419,6 +430,12 @@ test.describe("window shells", () => {
                     const hash = card.dataset.filterMotionHash || "";
                     motionSamples[hash] = Math.max(motionSamples[hash] || 0, Math.abs(matrix.m41));
                 });
+                const surfaces = Array.from(document.querySelectorAll<HTMLElement>('[class*="cards-grid"]'));
+                coverage.push(surfaces.reduce((sum, surface) => sum + Number(getComputedStyle(surface).opacity), 0));
+                const outgoing = surfaces.filter(surface => surface.dataset.resultsActive === "false");
+                if (outgoing.some(surface => !surface.inert || surface.getAttribute("aria-hidden") !== "true")) {
+                    Object.assign(window, { __interactiveOutgoingResult: true });
+                }
                 if (performance.now() - startedAt < 900) requestAnimationFrame(sample);
             };
             requestAnimationFrame(sample);
@@ -464,7 +481,7 @@ test.describe("window shells", () => {
         await page.waitForTimeout(950);
         const maximumOffsets = await readMotionOffsets();
         expect(maximumOffsets).toHaveLength(36);
-        expect(maximumOffsets.every(offset => offset >= 4 && offset <= 17)).toBe(true);
+        expect(maximumOffsets.every(offset => reducedMotion ? offset < 0.1 : offset >= 4 && offset <= 17)).toBe(true);
         expect((await readCurrentOffsets()).every(offset => offset < 0.1)).toBe(true);
         expect(await page.evaluate(() => (
             window as typeof window & { __filterOverlapDetected?: boolean }
@@ -476,17 +493,70 @@ test.describe("window shells", () => {
         await page.getByRole("textbox", { name: "搜索" }).fill("");
         await expect(page.getByText("Filler item 1", { exact: true })).toBeAttached();
         await page.waitForTimeout(950);
+        await page.evaluate(() => Object.assign(window, { __filterOverlapDetected: false }));
         await startMotionSampling();
-        await page.getByRole("button", { name: "收藏" }).click();
+        const favoritesTab = page.getByRole("button", { name: "收藏" });
+        await favoritesTab.click();
         await expect(page.getByText("Motion item 36")).toBeAttached();
         await page.waitForTimeout(950);
+        await expect(favoritesTab).toBeFocused();
         const tabMaximumOffsets = await readMotionOffsets();
-        expect(tabMaximumOffsets.every(offset => offset >= 4 && offset <= 17)).toBe(true);
+        expect(tabMaximumOffsets.every(offset => reducedMotion ? offset < 0.1 : offset >= 4 && offset <= 17)).toBe(true);
         expect((await readCurrentOffsets()).every(offset => offset < 0.1)).toBe(true);
         expect(await page.evaluate(() => (
             window as typeof window & { __filterOverlapDetected?: boolean }
         ).__filterOverlapDetected)).toBe(false);
-    });
+        const transition = await page.evaluate(() => {
+            const state = window as typeof window & {
+                __resultCoverage?: number[];
+                __interactiveOutgoingResult?: boolean;
+            };
+            return { coverage: state.__resultCoverage || [], interactiveOutgoing: state.__interactiveOutgoingResult };
+        });
+        expect(transition.coverage.length).toBeGreaterThan(5);
+        expect(transition.coverage.some(opacity => opacity > 0.1 && opacity < 0.9)).toBe(true);
+        expect(transition.interactiveOutgoing).toBe(false);
+
+        // Repeatedly switch tabs, including reusing an earlier result key.
+        const activeCards = page.locator('[data-results-active="true"] [class*="clipboard-card"][data-hash]');
+        await activeCards.first().focus();
+        await expect(activeCards.first()).toBeFocused();
+        await startMotionSampling();
+        await page.getByRole("button", { name: "全部", exact: true }).evaluate(button => (button as HTMLElement).click());
+        await expect(page.locator('[data-results-active="true"] [data-hash="filler-1"]')).toHaveCount(1);
+        await expect(page.locator('[data-results-active="true"] [data-hash="motion-1"]')).toBeFocused();
+        await page.getByRole("button", { name: "收藏" }).evaluate(button => (button as HTMLElement).click());
+        await expect(page.locator('[data-results-active="true"] [data-hash="motion-36"]')).toHaveCount(1);
+        await page.getByRole("button", { name: "全部", exact: true }).evaluate(button => (button as HTMLElement).click());
+        await expect(page.locator('[data-results-active="true"] [data-hash="filler-1"]')).toHaveCount(1);
+        await activeCards.first().focus();
+        await page.keyboard.press("ArrowRight");
+        await expect(activeCards.nth(1)).toBeFocused();
+        await expect(activeCards.nth(1)).toHaveClass(/selected/);
+        await page.waitForTimeout(250);
+        expect(await page.evaluate(() => (
+            window as typeof window & { __interactiveOutgoingResult?: boolean }
+        ).__interactiveOutgoingResult)).toBe(false);
+        await expect(page.locator('[data-results-active="false"]')).toHaveCount(0);
+        await expect(activeCards).toHaveCount(36);
+
+        for (let index = 0; index < 6; index += 1) await page.keyboard.press("ArrowRight");
+        await expect(activeCards.nth(7)).toBeFocused();
+        const scrollPosition = await activeCards.nth(7).evaluate(card => {
+            const container = card.closest('[class*="cards-container"]')!;
+            return { card: card.getBoundingClientRect().toJSON(), container: container.getBoundingClientRect().toJSON() };
+        });
+        expect(scrollPosition.card.left).toBeGreaterThanOrEqual(scrollPosition.container.left);
+        expect(scrollPosition.card.right).toBeLessThanOrEqual(scrollPosition.container.right);
+    }
+
+    for (const platform of ["MacIntel", "Win32"] as const) {
+        for (const reducedMotion of [false, true]) {
+            test(`clipboard result transitions stay visible and disable outgoing cards (platform: ${platform}, reduced: ${reducedMotion})`, async ({ page }) => {
+                await verifyResultTransitions(page, reducedMotion, platform);
+            });
+        }
+    }
 
     test("settings content follows forward and backward tab direction", async ({ page }) => {
         await page.goto("/__settings-preview?lang=zh&theme=light");

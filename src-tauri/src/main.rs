@@ -1353,13 +1353,34 @@ fn set_macos_clipboard_window_position(
     x: f64,
     y: f64,
 ) -> Result<(), String> {
+    use objc::{class, msg_send, sel, sel_impl};
+
+    fn apply_on_main_thread(window: &tauri::WebviewWindow, x: f64, y: f64) -> Result<(), String> {
+        use cocoa::appkit::NSWindow;
+        use cocoa::base::{id, nil};
+        use cocoa::foundation::NSPoint;
+        use core_graphics::display::CGDisplay;
+
+        let ns_window = window.ns_window().map_err(|err| err.to_string())? as id;
+        if ns_window == nil {
+            return Err("macOS clipboard window has no native handle".to_string());
+        }
+        // Match Tao's top-left screen coordinates, but commit this frame before returning.
+        let top_left = NSPoint::new(x, CGDisplay::main().pixels_high() as f64 - y);
+        unsafe { ns_window.setFrameTopLeftPoint_(top_left) };
+        Ok(())
+    }
+
+    let on_main_thread: bool = unsafe { msg_send![class!(NSThread), isMainThread] };
+    if on_main_thread {
+        return apply_on_main_thread(window, x, y);
+    }
+
     let animation_window = window.clone();
     let (positioned_tx, positioned_rx) = std::sync::mpsc::sync_channel(1);
     window
         .run_on_main_thread(move || {
-            let result = animation_window
-                .set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }))
-                .map_err(|err| err.to_string());
+            let result = apply_on_main_thread(&animation_window, x, y);
             let _ = positioned_tx.send(result);
         })
         .map_err(|err| err.to_string())?;
@@ -1381,12 +1402,7 @@ fn animate_clipboard_window_y(
         if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
             return Ok(false);
         }
-        window
-            .set_position(tauri::Position::Logical(tauri::LogicalPosition {
-                x: motion.x,
-                y: motion.to_y,
-            }))
-            .map_err(|err| err.to_string())?;
+        set_macos_clipboard_window_position(window, motion.x, motion.to_y)?;
         return Ok(true);
     }
 

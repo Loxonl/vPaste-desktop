@@ -47,6 +47,7 @@ import {
     type LoadedClipboardRequest,
 } from "./clipboardSearch";
 import ClipboardCard from "./ClipboardCard";
+import { ClipboardResultsSurface } from "./ClipboardResultsSurface";
 import {
     parseLinkContent,
 } from "./itemPresentation";
@@ -245,6 +246,7 @@ export default function Clipboard() {
     const activeTabRef = useRef("all");
     const tutorialActiveRef = useRef(false);
     const selectedRef = useRef("");
+    const restoreFocusedResultRef = useRef(false);
     const pageListRef = useRef<Item[]>([]);
     const retainLastPositionRef = useRef<boolean | null>(null);
     const pasteAsTextShortcutRef = useRef(DEFAULT_PASTE_AS_TEXT_SHORTCUT);
@@ -448,13 +450,28 @@ export default function Clipboard() {
         pageListRef.current = clipboardPage.list;
     }, [clipboardPage]);
 
+    const rememberFocusedResultExit = useCallback(() => {
+        restoreFocusedResultRef.current = true;
+    }, []);
+
+    const restoreFocusedResult = useCallback((surface: HTMLDivElement) => {
+        if (!restoreFocusedResultRef.current) return;
+        restoreFocusedResultRef.current = false;
+        if (queueSelectionMode) return;
+        const focused = document.activeElement;
+        if (focused !== document.body && focused !== containerRef.current) return;
+        const selectedCard = Array.from(surface.querySelectorAll<HTMLElement>(`.${styles["clipboard-card"]}`))
+            .find(card => card.dataset.hash === selectedRef.current);
+        selectedCard?.focus({ preventScroll: true });
+    }, [queueSelectionMode]);
+
     useLayoutEffect(() => {
         if (queueSelectionMode || !selected) return;
         const focused = document.activeElement;
         if (focused !== document.body && focused !== containerRef.current
             && !(focused instanceof HTMLElement && focused.classList.contains(styles["clipboard-card"]))) return;
         const selectedCard = Array.from(
-            cardsContainerRef.current?.querySelectorAll<HTMLElement>(`.${styles["clipboard-card"]}`) ?? [],
+            cardsContainerRef.current?.querySelectorAll<HTMLElement>(`[data-results-active="true"] .${styles["clipboard-card"]}`) ?? [],
         ).find(card => card.dataset.hash === selected);
         if (selectedCard && selectedCard !== focused) selectedCard.focus({ preventScroll: true });
     }, [selected, clipboardPage, queueSelectionMode]);
@@ -782,11 +799,15 @@ export default function Clipboard() {
     const scrollCardIntoView = (index: number, behavior: ScrollBehavior = 'auto') => {
         stopWheelScroll();
         const container = cardsContainerRef.current;
-        const cards = container?.querySelectorAll<HTMLElement>(`.${styles["clipboard-card"]}`);
+        const cards = container?.querySelectorAll<HTMLElement>(`[data-results-active="true"] .${styles["clipboard-card"]}`);
         const card = cards?.item(index);
         if (!container || !card) return;
 
-        const cardLeft = card.offsetLeft;
+        // Use layout coordinates so the filter animation does not shift the scroll target.
+        let cardLeft = 0;
+        for (let element: HTMLElement | null = card; element && element !== container; element = element.offsetParent as HTMLElement | null) {
+            cardLeft += element.offsetLeft;
+        }
         const cardRight = cardLeft + card.offsetWidth;
         const visibleLeft = container.scrollLeft;
         const visibleRight = visibleLeft + container.clientWidth;
@@ -1556,7 +1577,7 @@ export default function Clipboard() {
             || pageListRef.current[0];
         if (!item) return;
 
-        const cards = cardsContainerRef.current?.querySelectorAll<HTMLElement>(`.${styles["clipboard-card"]}`);
+        const cards = cardsContainerRef.current?.querySelectorAll<HTMLElement>(`[data-results-active="true"] .${styles["clipboard-card"]}`);
         const index = pageListRef.current.findIndex(i => i.getHash() === item.getHash());
         const rect = cards?.item(Math.max(0, index))?.getBoundingClientRect();
         if (rect) {
@@ -2001,78 +2022,77 @@ export default function Clipboard() {
                         onComplete={completeTutorial}
                     />
                 ) : (
-                    <AnimatePresence mode="wait" initial={false}>
-                        <m.div
-                            key={resultsMotionKey}
-                            className={classes(styles, `cards-grid${emptyState ? " clipboard-empty-grid" : ""}`)}
-                            data-testid="clipboard-results"
-                            variants={fadeMotion}
-                            initial="initial"
-                            animate="animate"
-                            exit="exit"
-                            aria-hidden={filteringResults || undefined}
-                        >
-                            {emptyState ? (
-                                <div
-                                    className={classes(styles, "clipboard-empty-state")}
-                                    role="status"
-                                    aria-live="polite"
-                                    aria-atomic="true"
-                                >
-                                    <span className={classes(styles, "clipboard-empty-icon")} aria-hidden="true">
-                                        <ContentPasteSearchOutlinedIcon />
-                                    </span>
-                                    <strong>{t(emptyState === "filtered" ? "clipboard.noResults" : "clipboard.emptyHistory")}</strong>
-                                    <span>{t(emptyState === "filtered" ? "clipboard.noResults.desc" : "clipboard.emptyHistory.desc")}</span>
-                                </div>
-                            ) : (
-                                <>
-                                    <AnimatePresence mode="popLayout" initial={false}>
-                                        {clipboardPage.list.map((item, index) => (
-                                            <ClipboardCard
-                                                key={item.getHash() as string}
-                                                item={item}
-                                                selected={queueSelectionMode
-                                                    ? queueSelectedHashes.includes(item.getHash() as string)
-                                                    : selected === item.getHash()}
-                                                selectionMode={queueSelectionMode}
-                                                dragDisabled={tutorialActive}
-                                                simulatedHover={simulatedHoverHash === item.getHash()}
-                                                refreshKey={fileRefreshKey}
-                                                searchQuery={searchWord as string}
-                                                shortcutHint={altHintsVisible && index < 9 ? String(index + 1) : undefined}
-                                                filterMotionRequestSeq={filterMotionRequest?.hashes.includes(item.getHash() as string)
-                                                    ? filterMotionRequest.requestSeq
-                                                    : undefined}
-                                                filterMotionIndex={index}
-                                                mediaPlaybackReady={animationState === 'entered'}
-                                                t={t}
-                                                onContextMenu={openClipboardContextMenu}
-                                                onActivate={activateClipboardCard}
-                                                onDragUnavailable={() => showToast(t("clipboard.dragTextPreparing"), "warning")}
-                                            />
-                                        ))}
-                                    </AnimatePresence>
-                                    <AnimatePresence mode="wait" initial={false}>
-                                        {isLoadingMore && (
-                                            <m.div
-                                                key="history-loading-more"
-                                                className={classes(styles, "history-loading-card")}
-                                                role="status"
-                                                aria-live="polite"
-                                                variants={listItemMotion}
-                                                initial="initial"
-                                                animate="animate"
-                                                exit="exit"
-                                            >
-                                                {t("common.loading")}
-                                            </m.div>
-                                        )}
-                                    </AnimatePresence>
-                                </>
-                            )}
-                        </m.div>
-                    </AnimatePresence>
+                    <div className={styles["cards-results-stack"]}>
+                        <AnimatePresence mode="wait" initial={false}>
+                            <ClipboardResultsSurface
+                                key={resultsMotionKey}
+                                className={classes(styles, `cards-grid${emptyState ? " clipboard-empty-grid" : ""}`)}
+                                masked={filteringResults}
+                                onFocusedExit={rememberFocusedResultExit}
+                                onActiveMount={restoreFocusedResult}
+                            >
+                                {emptyState ? (
+                                    <div
+                                        className={classes(styles, "clipboard-empty-state")}
+                                        role="status"
+                                        aria-live="polite"
+                                        aria-atomic="true"
+                                    >
+                                        <span className={classes(styles, "clipboard-empty-icon")} aria-hidden="true">
+                                            <ContentPasteSearchOutlinedIcon />
+                                        </span>
+                                        <strong>{t(emptyState === "filtered" ? "clipboard.noResults" : "clipboard.emptyHistory")}</strong>
+                                        <span>{t(emptyState === "filtered" ? "clipboard.noResults.desc" : "clipboard.emptyHistory.desc")}</span>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <AnimatePresence mode="popLayout" initial={false}>
+                                            {clipboardPage.list.map((item, index) => (
+                                                <ClipboardCard
+                                                    key={item.getHash() as string}
+                                                    item={item}
+                                                    selected={queueSelectionMode
+                                                        ? queueSelectedHashes.includes(item.getHash() as string)
+                                                        : selected === item.getHash()}
+                                                    selectionMode={queueSelectionMode}
+                                                    dragDisabled={tutorialActive}
+                                                    simulatedHover={simulatedHoverHash === item.getHash()}
+                                                    refreshKey={fileRefreshKey}
+                                                    searchQuery={searchWord as string}
+                                                    shortcutHint={altHintsVisible && index < 9 ? String(index + 1) : undefined}
+                                                    filterMotionRequestSeq={filterMotionRequest?.hashes.includes(item.getHash() as string)
+                                                        ? filterMotionRequest.requestSeq
+                                                        : undefined}
+                                                    filterMotionIndex={index}
+                                                    mediaPlaybackReady={animationState === 'entered'}
+                                                    t={t}
+                                                    onContextMenu={openClipboardContextMenu}
+                                                    onActivate={activateClipboardCard}
+                                                    onDragUnavailable={() => showToast(t("clipboard.dragTextPreparing"), "warning")}
+                                                />
+                                            ))}
+                                        </AnimatePresence>
+                                        <AnimatePresence mode="wait" initial={false}>
+                                            {isLoadingMore && (
+                                                <m.div
+                                                    key="history-loading-more"
+                                                    className={classes(styles, "history-loading-card")}
+                                                    role="status"
+                                                    aria-live="polite"
+                                                    variants={listItemMotion}
+                                                    initial="initial"
+                                                    animate="animate"
+                                                    exit="exit"
+                                                >
+                                                    {t("common.loading")}
+                                                </m.div>
+                                            )}
+                                        </AnimatePresence>
+                                    </>
+                                )}
+                            </ClipboardResultsSurface>
+                        </AnimatePresence>
+                    </div>
                 )}
                 <AnimatePresence mode="wait" initial={false}>
                     {!tutorialActive && filteringResults && (

@@ -4,6 +4,8 @@
 
 Security fixes target the latest published stable release and the `main` branch. Older releases may be asked to upgrade before a fix is provided.
 
+See [Dependency Security](docs/open-source/dependency-security.md) for known dependency advisory status and upstream remediation constraints.
+
 ## Reporting Security Issues
 
 Please do not open a public issue with sensitive security details.

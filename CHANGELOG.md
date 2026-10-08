@@ -11,6 +11,7 @@ All notable public changes to vPaste Desktop will be documented in this file.
 
 ### Fixed
 
+- Removed the unused MQTT dependency and its vulnerable TLS stack; updated the application's updater TLS dependencies to patched releases.
 - Fixed macOS rich-content previews failing to cache images referenced by local file URLs, including paths with spaces or non-ASCII characters.
 - Derived every application version source from the release tag before building Stable or RC packages.
 - Derived the macOS signing identity from the imported Developer ID certificate and made its temporary keychain discoverable to `codesign`.

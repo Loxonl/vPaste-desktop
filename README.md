@@ -24,7 +24,10 @@ A visual clipboard manager for Windows and macOS. Keep text, images, links, colo
 
 <div align="center">
 
-https://github.com/user-attachments/assets/12f6e93f-f7bd-4254-9731-35bff6160501
+
+
+https://github.com/user-attachments/assets/900054a3-de8b-48e8-92f4-60d6ba3196e8
+
 
 </div>
 <p align="center"><strong>vPaste feature demo</strong></p>

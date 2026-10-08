@@ -84,6 +84,7 @@ Expected:
 - Copy a OneNote block.
 - Copy text + image from QQ/WeChat or another chat app.
 - Copy a web article fragment with links and images.
+- Preview rich HTML containing a local image whose filename includes spaces, `#`, or non-ASCII characters; remove the source image and open the preview again.
 - Copy the same short emoji or symbol, such as `❓`, from Chrome several times.
 
 Expected:
@@ -92,6 +93,7 @@ Expected:
 - Rich text tag is shown where appropriate.
 - On macOS, `public.html`/`public.rtf` content is detected before the plain text fallback.
 - Preview uses HTML/RTF where available.
+- Local file images remain visible in the cached rich HTML preview after the source image is removed, on Windows and macOS.
 - Card previews show rich tables at natural width and clip overflow instead of squeezing columns into unreadable vertical text.
 - Re-copying the same short emoji or symbol from Chrome updates the existing record instead of creating repeated records caused by volatile rich clipboard payloads.
 - Restore preserves rich formats where supported.

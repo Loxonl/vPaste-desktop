@@ -1358,24 +1358,33 @@ fn file_url_to_path(src: &str) -> Option<PathBuf> {
         return None;
     }
 
-    let mut path = if lower.starts_with("file:///") {
-        src[8..].to_string()
-    } else if lower.starts_with("file://") {
-        src[7..].to_string()
-    } else {
-        src[5..].to_string()
-    };
-    path = percent_decode(&path);
-    if path.len() >= 3
-        && path.as_bytes()[0] == b'/'
-        && path.as_bytes()[2] == b':'
-        && path.as_bytes()[1].is_ascii_alphabetic()
+    #[cfg(not(windows))]
     {
-        path.remove(0);
+        reqwest::Url::parse(src).ok()?.to_file_path().ok()
     }
-    Some(PathBuf::from(path.replace('/', "\\")))
+
+    #[cfg(windows)]
+    {
+        let mut path = if lower.starts_with("file:///") {
+            src[8..].to_string()
+        } else if lower.starts_with("file://") {
+            src[7..].to_string()
+        } else {
+            src[5..].to_string()
+        };
+        path = percent_decode(&path);
+        if path.len() >= 3
+            && path.as_bytes()[0] == b'/'
+            && path.as_bytes()[2] == b':'
+            && path.as_bytes()[1].is_ascii_alphabetic()
+        {
+            path.remove(0);
+        }
+        Some(PathBuf::from(path.replace('/', "\\")))
+    }
 }
 
+#[cfg(windows)]
 fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut output = Vec::with_capacity(bytes.len());
@@ -3602,14 +3611,56 @@ mod tests {
     }
 
     #[test]
+    fn local_file_url_round_trips_encoded_image_path() {
+        let root = tempfile::tempdir().unwrap();
+        let image_path = root.path().join("excel temp # 中文.png");
+        let image_url = reqwest::Url::from_file_path(&image_path).unwrap();
+
+        assert_eq!(file_url_to_path(image_url.as_str()), Some(image_path));
+    }
+
+    #[test]
+    fn local_file_url_rejects_other_schemes() {
+        assert_eq!(file_url_to_path("https://example.com/image.png"), None);
+        assert_eq!(file_url_to_path("data:image/png;base64,AA=="), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_file_url_keeps_windows_drive_path_variants() {
+        for image_url in [
+            "file:///C:/Temp/excel%20temp.png",
+            "file://C:/Temp/excel%20temp.png",
+            "file:/C:/Temp/excel%20temp.png",
+            "file:C:/Temp/excel%20temp.png",
+        ] {
+            assert_eq!(
+                file_url_to_path(image_url),
+                Some(PathBuf::from(r"C:\Temp\excel temp.png"))
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn local_file_url_keeps_unix_root_and_separators() {
+        assert_eq!(
+            file_url_to_path("file:///tmp/excel%20temp.png"),
+            Some(PathBuf::from("/tmp/excel temp.png"))
+        );
+        assert_eq!(
+            file_url_to_path("file://localhost/tmp/excel%20temp.png"),
+            Some(PathBuf::from("/tmp/excel temp.png"))
+        );
+        assert_eq!(file_url_to_path("file://remote-host/tmp/image.png"), None);
+    }
+
+    #[test]
     fn rich_html_cache_keeps_inlined_local_image_after_source_is_removed() {
         let root = tempfile::tempdir().unwrap();
-        let image_path = root.path().join("excel-temp.png");
+        let image_path = root.path().join("excel temp # 中文.png");
         fs::write(&image_path, include_bytes!("../../icons/32x32.png")).unwrap();
-        let image_url = format!(
-            "file:///{}",
-            image_path.to_string_lossy().replace('\\', "/")
-        );
+        let image_url = reqwest::Url::from_file_path(&image_path).unwrap();
         let html = format!(
             "<html><body><!--StartFragment--><img src=\"{}\"><!--EndFragment--></body></html>",
             image_url

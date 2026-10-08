@@ -54,7 +54,7 @@
     "motion": "^13.1.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "6.30.4"
+    "react-router-dom": "7.18.3"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.0",

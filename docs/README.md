@@ -13,7 +13,7 @@ Public documentation for vPaste Desktop.
 - [macOS Adaptation Plan](open-source/platform/macos.md)
 - [Clipboard Test Cases](open-source/testing/clipboard-cases.md)
 - [PR Check Rules](open-source/testing/pr-check-rules.md)
-- [README Assets](assets/readme/) - public screenshots used by the README
+- [README Maintenance and Media](assets/readme/) - bilingual structure, demo videos, and image assets
 
 ## Release Flow
 

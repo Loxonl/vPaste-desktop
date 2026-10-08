@@ -11,6 +11,7 @@ All notable public changes to vPaste Desktop will be documented in this file.
 
 ### Fixed
 
+- Fixed macOS rich-content previews failing to cache images referenced by local file URLs, including paths with spaces or non-ASCII characters.
 - Derived every application version source from the release tag before building Stable or RC packages.
 - Derived the macOS signing identity from the imported Developer ID certificate and made its temporary keychain discoverable to `codesign`.
 - Moved updater-manifest verification out of the desktop Cargo package so its CLI is not embedded as unsigned nested code in macOS app bundles.

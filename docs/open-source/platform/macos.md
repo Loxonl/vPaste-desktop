@@ -41,6 +41,7 @@ Current implementation notes:
 - The listener polls `NSPasteboard.changeCount` to process each clipboard change once.
 - Finder file URLs and legacy filename lists are detected before plain text so copied files, folders, and multi-file selections stay as File records.
 - `public.html` and `public.rtf` are read before plain text so rich table/link/color snippets are stored as rich records instead of flattened text.
+- Rich HTML previews resolve local `file:` URLs with macOS path separators and URL decoding, then cache readable images inline so previews survive removal of the source file. Windows drive-path handling remains platform-specific.
 - Plain text and image capture remain fallbacks when no supported file or rich format is present.
 
 ### Clipboard Restore

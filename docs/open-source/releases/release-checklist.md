@@ -9,9 +9,9 @@ Use this checklist together with the detailed [Windows Packaging Runbook](window
 3. Windows packages are currently released without Authenticode signing. Do not configure Windows certificate secrets; release notes must retain the Unknown publisher and SmartScreen warning.
 4. Add macOS certificate secrets `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, and `APPLE_KEYCHAIN_PASSWORD` when public signing is enabled. The workflow derives `APPLE_SIGNING_IDENTITY` from the imported Developer ID certificate.
 5. Add App Store Connect secrets `APPLE_API_ISSUER`, `APPLE_API_KEY`, and `APPLE_API_PRIVATE_KEY`; the tag workflow writes the private `.p8` key to the runner temporarily and exposes its path through `APPLE_API_KEY_PATH`.
-6. Add `VPASTE_WEBSITE_RELEASE_TOKEN` with contents read/write access only to `Loxonl/vPaste-website`; the final tag release job uses it to commit updater manifests to website `main`.
-7. Verify the updater private key matches `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`, and keep an encrypted offline backup.
-8. Keep Actions tokens read-only by default. Only final release-publication jobs may use `contents: write` or the website release token.
+6. Verify the updater private key matches `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`, and keep an encrypted offline backup.
+7. Keep Actions tokens read-only by default. Only jobs that create private Draft Releases or upload assets may use `contents: write`.
+8. Keep immutable GitHub Releases disabled while packages are uploaded after publication; GitHub rejects asset uploads to immutable published releases.
 9. Before commercial use, review the current Inno Setup terms and purchase the requested commercial license so release builds are not marked non-commercial.
 
 ## Prepare a version
@@ -40,17 +40,14 @@ npm run build:windows
 
 The workflow creates a Draft Release only. It never creates a tag-triggered release, commits code, or opens a Bot PR.
 
-## Build and publish a tag release
+## Build packages for a published release
 
-1. Push a reviewed tag matching `vX.Y.Z` for Stable or `vX.Y.Z-rc.N` for RC.
-2. Approve the protected `release` Environment for platform signing and final publication.
-3. Wait for `.github/workflows/tag-release.yml` to build Windows, Apple silicon macOS, and Intel macOS packages.
-4. Confirm the merged updater manifest contains `windows-x86_64`, `darwin-aarch64`, and `darwin-x86_64` entries with non-empty signatures.
-5. Confirm the workflow committed exactly one website file:
-   - Stable: `Loxonl/vPaste-website:download/stable/latest.json`, served as `https://vpaste.app/download/stable/latest.json`
-   - RC: `Loxonl/vPaste-website:download/rc/latest.json`, served as `https://vpaste.app/download/rc/latest.json`
-6. Confirm the GitHub Release was published only after the website manifest commit succeeded.
-7. Smoke-test a previous build and verify it discovers the update through the matching channel URL.
+1. Merge the workflow and upload script before choosing the source commit. Create a GitHub Release with a reviewed tag matching `vX.Y.Z` for Stable or `vX.Y.Z-rc.N` for RC, and add the release title and notes. The notes must include the Windows Unknown publisher and SmartScreen warning.
+2. Publish the Release to trigger `.github/workflows/tag-release.yml`. Pushing a tag alone does not start this workflow.
+3. Approve the protected `release` Environment for platform signing and asset upload.
+4. Wait for Windows, Apple silicon macOS, and Intel macOS packages to be attached to that same Release. Existing assets with different contents are never replaced.
+5. Confirm the merged updater manifest contains `windows-x86_64`, `darwin-aarch64`, and `darwin-x86_64` entries with non-empty signatures. Website `latest.json` publication is deferred.
+6. Smoke-test the attached packages before advertising the Release. The source repository is currently private, so unauthenticated users cannot download its Release assets.
 
 ## Windows validation
 
@@ -64,5 +61,5 @@ The workflow creates a Draft Release only. It never creates a tag-triggered rele
 ## Publish review
 
 - Private drafts contain the Windows installer/Portable, two macOS DMGs, checksums, SBOM, dependency inventory, notices, GPL license, and source archives.
-- Public packages must additionally include updater archives/signatures and a merged updater manifest published through `Loxonl/vPaste-website`; macOS packages must also pass platform signature and notarization checks.
-- Publish only after smoke tests; never replace assets under an already published version.
+- Packages must include updater archives/signatures; macOS packages must also pass platform signature and notarization checks. Publishing the merged website updater manifest is a separate future step.
+- Never replace assets under an already published version; create a new version for changed package bytes.

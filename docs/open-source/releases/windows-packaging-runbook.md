@@ -211,7 +211,7 @@ record.
 
 ## Update validation
 
-Private Draft Releases keep public update delivery disabled. Public tag releases enable the updater feed only in `.github/workflows/tag-release.yml`, after protected environment approval. Never embed a GitHub token in the client; the final workflow job uses `VPASTE_WEBSITE_RELEASE_TOKEN` only on the runner to commit `download/stable/latest.json` or `download/rc/latest.json` to `Loxonl/vPaste-website`. The GitHub Release stays draft until that website commit succeeds.
+Private Draft Releases keep public update delivery disabled. Publishing a new Release triggers `.github/workflows/tag-release.yml`, which builds signed updater payloads and attaches them to the existing Release after protected environment approval. The website `latest.json` is not updated by this workflow. Never embed a GitHub token in the client; public updater delivery also requires anonymously downloadable packages, which the current private source repository does not provide.
 
 For a debug-only local signed feed:
 
@@ -252,7 +252,7 @@ If Authenticode signing is enabled in the future, preserve this order:
 Changing a signed artifact after step 4 invalidates the downstream signature,
 checksum, and manifest. Rebuild the entire chain instead of patching an asset.
 
-The current public tag workflow intentionally skips steps 2 and 4. It verifies
+The current Release workflow intentionally skips steps 2 and 4. It verifies
 that both Windows artifacts are unsigned, then generates the updater signature
 and checksums from the final installer bytes. Release notes must retain the
 Unknown publisher and SmartScreen warning while this policy is active.
@@ -269,30 +269,29 @@ The GitHub Actions workflow is intentionally manual:
 6. Download and smoke-test the actual attached artifacts.
 7. Compare every artifact with `SHA256SUMS.txt`.
 8. Review the SBOM, dependency inventory, licenses, and release notes.
-9. Publish manually only after the checklist is complete.
+9. Keep this staging Release separate from the public Release; publishing it also triggers the package workflow and may encounter same-name assets from the staging build.
 
-The public tag workflow must not use `workflow_run` or `pull_request_target`, create Bot pull requests, or publish a manifest before every platform artifact has been verified. Build jobs are read-only except for protected release publishing; only final publication receives `contents: write` and the scoped website token.
+For the public flow, create and publish a new Release with the reviewed tag, title, and notes. The `release.published` event starts the package workflow; pushing the tag alone does not. The workflow must not use `workflow_run` or `pull_request_target`, create Bot pull requests, or update the website manifest. Build jobs are read-only; only the final asset-upload job receives `contents: write`.
 
 The release should contain:
 
 - Windows installer and Portable ZIP
 - Apple silicon and Intel macOS artifacts
-- shared updater metadata and updater signatures when public updating is
-  enabled; the merged `latest.json` is committed to `Loxonl/vPaste-website`
-  under `download/stable/` or `download/rc/`
+- updater archives and signatures; the merged `latest.json` is validated in
+  the workflow but its website publication is deferred
 - `SHA256SUMS.txt`
 - SBOM and dependency/license inventory
 - third-party notices and GPL license
 - GitHub source archives
 
 Submit WinGet metadata manually only after the corresponding Stable GitHub
-Release is public and immutable.
+Release packages have been attached and verified.
 
 ## Failure handling
 
 If any quality gate or manual test fails:
 
-1. keep the Draft Release unpublished;
+1. record whether the failing Release is a private-stage Draft or an already published public Release;
 2. preserve the failing installer log and exact artifact hash;
 3. fix the source or packaging definition;
 4. create a new RC version;

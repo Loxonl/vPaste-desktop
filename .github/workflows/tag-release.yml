@@ -1,22 +1,20 @@
-name: Build and publish release from tag
+name: Build packages for published release
 
 on:
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
-      - "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"
+  release:
+    types: [published]
 
 permissions:
   contents: read
 
 concurrency:
-  group: tag-release-${{ github.ref_name }}
+  group: release-assets-${{ github.event.release.tag_name }}
   cancel-in-progress: false
 
 env:
   NODE_VERSION: 24.11.1
   RUST_VERSION: 1.91.1
-  RELEASE_TAG: ${{ github.ref_name }}
+  RELEASE_TAG: ${{ github.event.release.tag_name }}
 
 jobs:
   validate:
@@ -25,7 +23,6 @@ jobs:
     outputs:
       release-version: ${{ steps.release.outputs.release-version }}
       channel: ${{ steps.release.outputs.channel }}
-      website-manifest-path: ${{ steps.release.outputs.website-manifest-path }}
     steps:
       - name: Check out tagged source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -49,17 +46,14 @@ jobs:
           release_version="${RELEASE_TAG#v}"
           if [[ "$RELEASE_TAG" == *-rc.* ]]; then
             channel="rc"
-            website_manifest_path="download/rc/latest.json"
           else
             channel="stable"
-            website_manifest_path="download/stable/latest.json"
           fi
           node scripts/set-release-version.mjs "$release_version"
           node scripts/check-release-version.mjs "$RELEASE_TAG"
           {
             echo "release-version=$release_version"
             echo "channel=$channel"
-            echo "website-manifest-path=$website_manifest_path"
           } >> "$GITHUB_OUTPUT"
 
   windows:
@@ -419,8 +413,8 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/vpaste-signing.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/vpaste-developer-id.p12" "$RUNNER_TEMP/AuthKey.p8"
 
-  publish-updater-manifest:
-    name: Publish updater manifest
+  upload-release-assets:
+    name: Upload packages to published release
     needs: [validate, windows, macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -429,8 +423,6 @@ jobs:
       contents: write
     env:
       RELEASE_VERSION: ${{ needs.validate.outputs.release-version }}
-      CHANNEL: ${{ needs.validate.outputs.channel }}
-      WEBSITE_MANIFEST_PATH: ${{ needs.validate.outputs.website-manifest-path }}
     steps:
       - name: Check out tagged source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -524,66 +516,12 @@ jobs:
             sha256sum ./* | sed 's#  \./#  #' > SHA256SUMS.txt
           )
 
-      - name: Generate release notes
-        shell: bash
-        run: |
-          {
-            echo "Source commit: $GITHUB_SHA"
-            echo
-            echo "> [!WARNING]"
-            echo "> Windows packages are not Authenticode signed. Windows may show an Unknown publisher or SmartScreen warning. Updater packages remain cryptographically signed for integrity."
-            echo
-            awk -v prefix="## $RELEASE_VERSION " '
-              index($0, prefix) == 1 { capture = 1 }
-              capture && /^## / && index($0, prefix) != 1 { exit }
-              capture { print }
-            ' CHANGELOG.md
-          } > RELEASE_NOTES.md
-
-      - name: Create or update GitHub Release assets
+      - name: Upload packages to existing GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          set -euo pipefail
-          tag="$RELEASE_TAG"
-          mapfile -t assets < <(find release-assets -maxdepth 1 -type f -print | sort)
-          if [[ "${#assets[@]}" -eq 0 ]]; then
-            echo "No release assets were staged." >&2
-            exit 1
-          fi
-
-          prerelease_args=()
-          if [[ "$CHANNEL" == "rc" ]]; then
-            prerelease_args+=(--prerelease)
-          fi
-
-          error_file="$(mktemp)"
-          if release_json="$(gh release view "$tag" --json isDraft,isImmutable,targetCommitish,assets 2>"$error_file")"; then
-            is_draft="$(jq -r '.isDraft' <<<"$release_json")"
-            is_immutable="$(jq -r '.isImmutable' <<<"$release_json")"
-            target_commitish="$(jq -r '.targetCommitish' <<<"$release_json")"
-            if [[ "$is_immutable" == "true" ]]; then
-              echo "Refusing to modify immutable release $tag." >&2
-              exit 1
-            fi
-            if [[ "$is_draft" != "true" ]]; then
-              echo "Refusing to modify published release $tag. Create a new version tag instead." >&2
-              exit 1
-            fi
-            if [[ "${target_commitish,,}" != "${GITHUB_SHA,,}" ]]; then
-              echo "Release $tag targets $target_commitish instead of $GITHUB_SHA." >&2
-              exit 1
-            fi
-            gh release edit "$tag" --draft --target "$GITHUB_SHA" --title "vPaste $RELEASE_VERSION" --notes-file RELEASE_NOTES.md "${prerelease_args[@]}"
-            gh release upload "$tag" "${assets[@]}" --clobber
-          else
-            if ! grep -qi 'release not found' "$error_file"; then
-              cat "$error_file" >&2
-              exit 1
-            fi
-            gh release create "$tag" "${assets[@]}" --draft --target "$GITHUB_SHA" --title "vPaste $RELEASE_VERSION" --notes-file RELEASE_NOTES.md "${prerelease_args[@]}"
-          fi
+          bash scripts/upload-published-release-assets.sh "$RELEASE_TAG" release-assets
 
       - name: Verify release assets referenced by manifest
         env:
@@ -596,74 +534,3 @@ jobs:
             --tag "$RELEASE_TAG" \
             --platforms windows-x86_64,darwin-aarch64,darwin-x86_64 \
             --verify-release-assets Loxonl/vPaste-desktop
-
-      - name: Publish GitHub Release
-        id: publish-release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          args=(--draft=false)
-          if [[ "$CHANNEL" == "rc" ]]; then
-            args+=(--prerelease)
-          else
-            args+=(--latest)
-          fi
-          gh release edit "$RELEASE_TAG" "${args[@]}"
-
-      - name: Verify public updater asset downloads
-        shell: bash
-        run: |
-          set -euo pipefail
-          node -e '
-            const fs = require("fs");
-            const manifest = JSON.parse(fs.readFileSync("merged/latest.json", "utf8"));
-            for (const entry of Object.values(manifest.platforms)) console.log(entry.url);
-          ' | while IFS= read -r url; do
-            curl --fail --location --silent --show-error --head "$url" >/dev/null
-          done
-
-      - name: Check out vPaste website
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: Loxonl/vPaste-website
-          ref: main
-          path: vpaste-website
-          token: ${{ secrets.VPASTE_WEBSITE_RELEASE_TOKEN }}
-          persist-credentials: true
-
-      - name: Commit updater manifest to website
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd vpaste-website
-          mkdir -p "$(dirname "$WEBSITE_MANIFEST_PATH")"
-          cp ../merged/latest.json "$WEBSITE_MANIFEST_PATH"
-          node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))" "$WEBSITE_MANIFEST_PATH"
-          git config user.name "vPaste Release Bot"
-          git config user.email "actions@users.noreply.github.com"
-          git add "$WEBSITE_MANIFEST_PATH"
-          if git diff --cached --quiet -- "$WEBSITE_MANIFEST_PATH"; then
-            echo "Website updater manifest is already current."
-          else
-            git commit -m "release: publish vPaste $CHANNEL updater manifest $RELEASE_TAG"
-            for attempt in 1 2; do
-              git pull --rebase origin main
-              if git push origin HEAD:main; then
-                exit 0
-              fi
-              echo "Push failed; retrying after rebase ($attempt/2)." >&2
-              sleep 2
-            done
-            exit 1
-          fi
-
-      - name: Revert GitHub Release to draft after website publish failure
-        if: failure() && steps.publish-release.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' | grep -Fxq false; then
-            gh release edit "$RELEASE_TAG" --draft=true
-          fi

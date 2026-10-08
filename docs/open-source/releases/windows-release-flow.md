@@ -26,7 +26,7 @@ For public tag releases, the tag is the effective application version. Each isol
 
 ## Updater package
 
-`npm run build:windows:signed-updater` signs the final Inno EXE with the updater key and writes `latest.windows.json`. The public tag workflow uses that fragment with the macOS fragments to publish the merged channel manifest through `Loxonl/vPaste-website`:
+`npm run build:windows:signed-updater` signs the final Inno EXE with the updater key and writes `latest.windows.json`. The Release workflow merges and validates that fragment with the macOS fragments. Publication of the merged channel manifest through `Loxonl/vPaste-website` is deferred:
 
 - Stable: `download/stable/latest.json` → `https://vpaste.app/download/stable/latest.json`
 - RC: `download/rc/latest.json` → `https://vpaste.app/download/rc/latest.json`
@@ -37,4 +37,4 @@ Authenticode and updater signing are separate. Authenticode establishes Windows 
 
 Run `.github/workflows/release.yml` manually with the exact version and full source SHA. Build jobs are read-only. Only the final job has `contents: write`, and it can only create or update a Draft Release. The workflow does not push code, create branches, or open pull requests.
 
-Private-stage drafts leave the public updater feed disabled and are marked unsigned. Public tag releases are handled by `.github/workflows/tag-release.yml`, which verifies that Windows artifacts are unsigned, signs updater payloads, uploads release assets to a draft GitHub Release, commits the merged updater manifest directly to `Loxonl/vPaste-website` using the protected `VPASTE_WEBSITE_RELEASE_TOKEN`, and only then publishes the GitHub Release. WinGet submission remains a separate manual review after the GitHub Release is public.
+Private-stage drafts leave the public updater feed disabled and are marked unsigned. Publishing a new GitHub Release triggers `.github/workflows/tag-release.yml`, which verifies that Windows artifacts are unsigned, signs updater payloads, and attaches packages to the existing Release. It does not create or edit the Release or update the website manifest. WinGet submission remains a separate manual review after packages have been verified.

@@ -8,7 +8,7 @@ Use this checklist before requesting review.
 - Do not merge directly from local work into `main`; open a GitHub PR.
 - Use the PR title format `vPaste-#<issue-number>: <english summary>`. For PRs without a related issue, use `MINOR: <english summary>`.
 - Request maintainer review.
-- Wait for GitHub Actions before merging. `Check` and all three `Build` matrix jobs should pass. After the repository is public, `Dependency Review` and `CodeQL` should also pass.
+- Wait for GitHub Actions before merging. Require the `PR checks passed` check from the `PR checks` workflow. Code changes run frontend checks and Rust checks on Windows and macOS; documentation-only changes skip build/test jobs but still report the final check. Review CodeQL results as well.
 - Keep the change focused.
 - Fill in `.github/pull_request_template.md`.
 - Explain user-facing behavior.
@@ -38,6 +38,10 @@ gh pr view --json number,title,state,reviewDecision,reviews,comments,statusCheck
 Use GitHub GraphQL for unresolved review thread details when `gh pr view` is not enough. If unrelated work needs to start while a PR still has active feedback, create a new branch from updated `main`.
 
 ## Required Commands By Change Type
+
+The ordinary PR workflow uses `pull_request` with a read-only token, checks the PR merge commit, and does not use release environments or signing secrets. It runs frontend style checks, build/types, the full unit suite, release-version consistency, and license inventory on Ubuntu. Windows and macOS jobs check Rust formatting, compilation, and tests, including the updater-manifest verifier. A failed, cancelled, or unexpectedly skipped build/test job prevents the final check from passing.
+
+Only changes confined to Markdown, `docs/`, `LICENSE`, issue forms, and `CODEOWNERS` skip build/test jobs. Workflow, source, configuration, script, and lockfile changes run the checks. Visual tests and native clipboard smoke tests remain local; the hosted checks do not launch the desktop UI, build installers, or publish a release.
 
 | Change Type | Required Check |
 |---|---|

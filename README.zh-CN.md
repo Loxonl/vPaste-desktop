@@ -24,7 +24,10 @@
 
 <div align="center">
 
-https://github.com/user-attachments/assets/3faad9fb-020b-4ca3-b691-a4aae34a7f2e
+
+
+https://github.com/user-attachments/assets/0bb0b660-d7ca-4742-a2b1-731f4378a58f
+
 
 </div>
 <p align="center"><strong>vPaste 功能演示</strong></p>

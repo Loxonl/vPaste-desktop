@@ -15,7 +15,7 @@ The local configuration uses ad-hoc identity `-` and disables updater artifacts.
 
 ## Official packages
 
-Pushing a matching `v<version>` tag starts `.github/workflows/tag-release.yml`, including both macOS matrix jobs. Each macOS job:
+Publishing a GitHub Release with a matching `v<version>` tag starts `.github/workflows/tag-release.yml`, including both macOS matrix jobs. Each macOS job:
 
 1. Installs the pinned Rust target and npm lockfile.
 2. Imports a `Developer ID Application` certificate into an ephemeral keychain.
@@ -34,6 +34,6 @@ For both `aarch64` and `x86_64`:
 - `.app.tar.gz` updater package
 - Matching `.app.tar.gz.sig`
 
-The shared Release also contains `SHA256SUMS.txt`, `THIRD_PARTY_LICENSES.json`, `SBOM.cdx.json`, `LICENSE`, and GitHub-generated source archives. After every platform artifact and signature has passed review, `.github/workflows/tag-release.yml` merges the Windows and macOS manifest fragments and commits the combined manifest to `Loxonl/vPaste-website` at `download/stable/latest.json` or `download/rc/latest.json`, served as `https://vpaste.app/download/stable/latest.json` or `https://vpaste.app/download/rc/latest.json`. The manifest points to immutable GitHub Release assets; keeping the manifest URL on the vPaste website domain avoids coupling installed clients to one download host.
+The shared Release also contains `SHA256SUMS.txt`, `THIRD_PARTY_LICENSES.json`, `SBOM.cdx.json`, `LICENSE`, and GitHub-generated source archives. The workflow merges and validates the Windows and macOS manifest fragments locally, then attaches packages to the already published Release. It does not update the website `latest.json`; public updater delivery remains deferred. Keep GitHub's immutable Release setting disabled while attaching assets after publication.
 
 Do not publish a package that requires users to remove quarantine or bypass Gatekeeper. Those commands are only useful when testing a package built locally from trusted source.

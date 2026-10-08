@@ -13,6 +13,19 @@ const workflows = [".github/workflows/tag-release.yml", ".github/workflows/tag-b
 }));
 
 describe("tag release signing workflow", () => {
+  it("builds only after a release is published and attaches to that release", () => {
+    expect(releaseWorkflow).toMatch(/^on:\n  release:\n    types: \[published\]/m);
+    expect(releaseWorkflow).not.toMatch(/^  push:/m);
+    expect(releaseWorkflow).toContain("scripts/upload-published-release-assets.sh");
+    expect(releaseWorkflow).not.toContain("gh release create");
+    expect(releaseWorkflow).not.toContain("gh release edit");
+  });
+
+  it("does not publish the website updater manifest while JSON publication is deferred", () => {
+    expect(releaseWorkflow).not.toContain("VPASTE_WEBSITE_RELEASE_TOKEN");
+    expect(releaseWorkflow).not.toContain("Commit updater manifest to website");
+  });
+
   it.each(workflows)("derives the macOS signing identity in $path", ({ contents }) => {
     expect(contents).not.toContain("secrets.APPLE_SIGNING_IDENTITY");
     expect(contents).toContain('security list-keychains -d user -s "$keychain_path"');

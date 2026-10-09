@@ -6,7 +6,7 @@ The root [English README](../../../README.md) is the default entry point; the [S
 
 ## Structure and sources
 
-Keep the order: centered introduction and badges → prominent website domain → bold language switch → regular section navigation → localized demo → features → download table → short FAQ → development → contribution and license. Give the website and language switch separate centered lines. Keep the visible `vpaste.app` domain, with localized destinations.
+Keep the order: localized header artwork → prominent language switch → a single main heading combining the product name and localized slogan → introduction and badges → prominent website domain → regular section navigation → localized demo → features → download table → short FAQ → development → contribution and license. Center the header content and keep the language switch directly below the artwork. Keep the visible `vpaste.app` domain on its own line, with localized destinations.
 
 Features use plain descriptions grouped into content types (a five-row table), search and organization, preview and paste, keyboard shortcuts, interface settings, and local storage/privacy. Include first-use instructions within these groups rather than maintaining separate quick-start or privacy sections. Keep downloads to a platform table linking to Releases.
 
@@ -23,6 +23,10 @@ Features use plain descriptions grouped into content types (a five-row table), s
 Use the release listing rather than a hardcoded version, artifact name, or `/releases/latest` URL. The release badge includes prereleases, so it remains useful before the first stable release. Shields cannot read a private repository; verify the badge after the repository becomes public. Do not add download counts, stars, sponsor blocks, or a copy of the full changelog.
 
 下载入口指向 Release 列表，避免绑定版本号或安装包文件名。发布徽章包含预发布版本；仓库公开后检查其显示。README 不重复维护完整更新日志，也不添加下载量、关注量或赞助模块。
+
+## Header artwork
+
+Use [header-en.png](header-en.png) in the English README and [header-zh-CN.png](header-zh-CN.png) in the Simplified Chinese README. Both are the approved 1800 × 600 PNG artwork supplied for the README header. Keep each language's artwork, slogan, and switch links aligned when updating the header.
 
 ## Demo videos
 

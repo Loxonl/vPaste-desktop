@@ -1,8 +1,10 @@
 <div align="center">
 
-# vPaste
+<img src="docs/assets/readme/header-zh-CN.png" alt="vPaste — 适用于 Windows 和 macOS 的剪贴板管理器">
 
-**剪贴捷径，一键即达。**
+<h3><a href="README.md">English</a> · 简体中文</h3>
+
+# vPaste: 剪贴捷径，一键即达
 
 面向 Windows 和 macOS 的可视化剪贴板管理器。把复制过的文本、图片、链接、颜色与文件保存在清晰的卡片里，随时搜索、预览、再次粘贴。历史记录留在你的设备上。
 
@@ -15,8 +17,6 @@
 </p>
 
 <h3><a href="https://vpaste.app/zh/">vpaste.app</a></h3>
-
-<p><strong><a href="README.md">English</a> · 简体中文</strong></p>
 
 [下载](#下载) · [功能](#功能) · [更新日志](CHANGELOG.md) · [参与贡献](#参与贡献)
 

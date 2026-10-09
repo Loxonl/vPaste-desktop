@@ -27,12 +27,13 @@ env:
 
 jobs:
   validate:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     steps:
       - name: Check out requested source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Validate inputs, source, and version
         shell: bash
@@ -45,6 +46,7 @@ jobs:
             echo "source_sha must be a full 40-character commit SHA" >&2
             exit 1
           fi
+          node scripts/validate-release-source.mjs
           test "$(git rev-parse HEAD)" = "${SOURCE_SHA,,}"
           node scripts/check-release-version.mjs "v$RELEASE_VERSION"
       - name: Set up Node.js
@@ -104,7 +106,7 @@ jobs:
       - name: Check out requested source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -189,7 +191,7 @@ jobs:
       - name: Check out requested source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -234,7 +236,7 @@ jobs:
       - name: Check out requested source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020

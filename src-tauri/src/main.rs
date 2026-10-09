@@ -3118,15 +3118,14 @@ fn resize_preview_image_window(
 async fn fetch_link_preview_document(url: String) -> Result<LinkPreviewDocument, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let parsed = reqwest::Url::parse(url.trim()).map_err(|err| err.to_string())?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            return Err("unsupported url scheme".to_string());
+        if !clipboard::is_previewable_domain_link(parsed.as_str()) {
+            return Err("unsupported link preview destination".to_string());
         }
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(8))
-            .redirect(reqwest::redirect::Policy::limited(6))
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 vPaste/1.0")
-            .build()
-            .map_err(|err| err.to_string())?;
+        let client = clipboard::preview_http_client(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 vPaste/1.0",
+            6,
+            false,
+        )?;
         let response = client
             .get(parsed.clone())
             .send()

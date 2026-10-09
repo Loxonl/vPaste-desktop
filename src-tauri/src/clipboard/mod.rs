@@ -2579,7 +2579,7 @@ fn save_rich_format_to_disk(data: &[u8], hash: &str, extension: &str) -> String 
     native_path_string(&file_path)
 }
 
-fn is_previewable_domain_link(url: &str) -> bool {
+pub(crate) fn is_previewable_domain_link(url: &str) -> bool {
     let parsed = match reqwest::Url::parse(url.trim()) {
         Ok(parsed) => parsed,
         Err(_) => return false,
@@ -2593,10 +2593,92 @@ fn is_previewable_domain_link(url: &str) -> bool {
     if host.parse::<std::net::IpAddr>().is_ok() {
         return false;
     }
+    let host = host.trim_end_matches('.');
+    if ["localhost", "local", "internal", "test", "invalid"]
+        .iter()
+        .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")))
+    {
+        return false;
+    }
     host.contains('.')
         && host
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '.')
+}
+
+fn is_public_preview_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(address) => {
+            let [a, b, c, _] = address.octets();
+            !matches!(a, 0 | 10 | 127 | 224..=255)
+                && !(a == 100 && (64..=127).contains(&b))
+                && !(a == 169 && b == 254)
+                && !(a == 172 && (16..=31).contains(&b))
+                && !(a == 192
+                    && (b == 168 || (b == 0 && matches!(c, 0 | 2)) || (b == 88 && c == 99)))
+                && !(a == 198 && (matches!(b, 18 | 19) || (b == 51 && c == 100)))
+                && !(a == 203 && b == 0 && c == 113)
+        }
+        std::net::IpAddr::V6(address) => {
+            let octets = address.octets();
+            octets[0] & 0xe0 == 0x20
+                && !(octets[0] == 0x20 && octets[1] == 0x02)
+                && !(octets[0] == 0x20
+                    && octets[1] == 0x01
+                    && octets[2] == 0x00
+                    && octets[3] == 0x00)
+                && !(octets[0] == 0x20
+                    && octets[1] == 0x01
+                    && octets[2] == 0x0d
+                    && octets[3] == 0xb8)
+        }
+    }
+}
+
+struct PublicPreviewResolver;
+
+impl reqwest::dns::Resolve for PublicPreviewResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addresses = tokio::net::lookup_host((host.as_str(), 0))
+                .await?
+                .filter(|address| is_public_preview_ip(address.ip()))
+                .collect::<Vec<_>>();
+            if addresses.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "link preview hostname has no public address",
+                )
+                .into());
+            }
+            Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+pub(crate) fn preview_http_client(
+    user_agent: &str,
+    max_redirects: usize,
+    cookie_store: bool,
+) -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .no_proxy()
+        .dns_resolver(std::sync::Arc::new(PublicPreviewResolver))
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= max_redirects
+                || !is_previewable_domain_link(attempt.url().as_str())
+            {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
+        .cookie_store(cookie_store)
+        .user_agent(user_agent)
+        .build()
+        .map_err(|err| err.to_string())
 }
 
 fn meta_content(document: &scraper::Html, selector: &str) -> String {
@@ -2679,7 +2761,7 @@ fn fetch_preview_image(
     let Ok(resolved_image_url) = base_url.join(image_url.trim()) else {
         return String::new();
     };
-    if !matches!(resolved_image_url.scheme(), "https" | "http") {
+    if !is_previewable_domain_link(resolved_image_url.as_str()) {
         return String::new();
     }
     let Ok(image_response) = client
@@ -2857,13 +2939,11 @@ fn fetch_link_preview(url: &str) -> Result<LinkPreviewUpdate, String> {
     }
     let preview_url = reqwest::Url::parse(url.trim()).map_err(|err| err.to_string())?;
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(8))
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .cookie_store(true)
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 vPaste/1.1")
-        .build()
-        .map_err(|err| err.to_string())?;
+    let client = preview_http_client(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 vPaste/1.1",
+        10,
+        true,
+    )?;
 
     let response = match client
         .get(preview_url.clone())
@@ -3227,6 +3307,50 @@ pub fn save_to_disk(data: &[u8], hash: &String) -> String {
 mod tests {
     use super::*;
     use rusqlite::params;
+
+    #[test]
+    fn link_preview_rejects_internal_destinations() {
+        for url in [
+            "https://printer.local/status",
+            "https://service.localhost/run",
+            "https://api.internal/action",
+            "https://127.0.0.1/run",
+            "http://example.com/redirect",
+        ] {
+            assert!(!is_previewable_domain_link(url), "accepted {url}");
+        }
+        assert!(is_previewable_domain_link("https://example.com/page"));
+    }
+
+    #[test]
+    fn link_preview_resolver_only_allows_public_ips() {
+        for address in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.1.1",
+            "100.100.100.100",
+            "192.0.0.1",
+            "198.18.0.1",
+            "0.0.0.0",
+            "224.0.0.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+            "2001::1",
+            "2002:c0a8:101::1",
+            "2001:db8::1",
+        ] {
+            let ip = address.parse().unwrap();
+            assert!(!is_public_preview_ip(ip), "accepted {address}");
+        }
+        for address in ["8.8.8.8", "2606:4700:4700::1111"] {
+            let ip = address.parse().unwrap();
+            assert!(is_public_preview_ip(ip), "rejected {address}");
+        }
+    }
 
     fn dominant_color_for_test_image(image: image::RgbaImage) -> Option<String> {
         let root = tempfile::tempdir().unwrap();

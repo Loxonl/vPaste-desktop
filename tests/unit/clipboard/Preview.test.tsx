@@ -21,6 +21,53 @@ vi.mock("@tauri-apps/plugin-log", () => ({ error: vi.fn() }));
 const t = (key: string) => key;
 
 describe("PreviewBody transparency", () => {
+    it("sanitizes clipboard rich HTML in the separate preview window", () => {
+        const { container } = render(
+            <PreviewBody
+                payload={{
+                    item_type: ItemType.Text,
+                    content: "fallback",
+                    rich_html: '<svg><animate attributeName="href" values="javascript:alert(1)" /></svg><img src="data:text/html,attack"><p>Safe text</p>',
+                }}
+                t={t}
+            />,
+        );
+
+        expect(container.querySelector("svg, animate, img")).toBeNull();
+        expect(container).toHaveTextContent("Safe text");
+    });
+
+    it("keeps the full preview's wider rich-text layout", () => {
+        const { container } = render(
+            <PreviewBody
+                payload={{ item_type: ItemType.Text, content: "fallback", rich_html: '<p style="width: 500px">Wide text</p>' }}
+                t={t}
+            />,
+        );
+
+        expect(container.querySelector("p")?.style.width).toBe("500px");
+    });
+
+    it("prevents link preview HTML from requesting local or remote subresources", async () => {
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "fetch_link_preview_document") {
+                return {
+                    url: "https://example.com/page",
+                    html: '<html><head><style>body { background: url(http://127.0.0.1/run) }</style></head><body><img src="http://127.0.0.1/run"><p>Article</p></body></html>',
+                };
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+        const { container } = render(
+            <PreviewBody payload={{ item_type: ItemType.Link, content: "https://example.com/page" }} t={t} />,
+        );
+
+        await waitFor(() => expect(container.querySelector("iframe")?.getAttribute("srcdoc")).toContain("default-src 'none'"));
+        const frame = container.querySelector("iframe")!;
+        expect(frame.getAttribute("srcdoc")).toContain("img-src data:");
+        expect(frame.getAttribute("sandbox")).toBe("");
+    });
+
     it("renders the complete long text delivered by the preview runtime", async () => {
         const body = "line of saved text\n".repeat(1200) + "FINAL LINE";
         const path = "C:\\history\\data\\long-text";

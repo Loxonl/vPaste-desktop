@@ -1,9 +1,23 @@
-export function sanitizeRichHtml(html: string): string {
+const SAFE_RICH_ATTRIBUTES = new Set([
+    "alt", "align", "border", "cellpadding", "cellspacing", "class", "colspan",
+    "dir", "height", "lang", "rowspan", "style", "title", "valign", "width",
+]);
+
+function safeRichImageSource(value: string): boolean {
+    const source = value.trim();
+    return /^data:image\/(?:png|jpeg|gif|webp|bmp|avif|x-icon);base64,[a-z0-9+/=]+$/i.test(source);
+}
+
+function hasExternalCssResource(value: string): boolean {
+    return /\\|\/\*|url\s*\(|image-set\s*\(|expression\s*\(|@import/i.test(value);
+}
+
+export function sanitizeRichHtml(html: string, maxWidthPx = 160): string {
     if (!html.trim()) return "";
     const document = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
-    document
-        .querySelectorAll("script, iframe, object, embed, link, meta, base")
-        .forEach(node => node.remove());
+    document.querySelectorAll(
+        "script, iframe, frame, object, embed, link, meta, base, svg, math, template, audio, video, source, track, canvas, input, button, select, textarea",
+    ).forEach(node => node.remove());
     document.querySelectorAll("style").forEach(node => {
         node.textContent = (node.textContent || "")
             .replace(/mso-pattern\s*:[^;{}]+;?/gi, "");
@@ -14,40 +28,23 @@ export function sanitizeRichHtml(html: string): string {
     applyRichClassStyles(document);
     document.querySelectorAll("style").forEach(node => node.remove());
     document.querySelectorAll<HTMLElement>("*").forEach(element => {
+        const tag = element.tagName.toLowerCase();
         Array.from(element.attributes).forEach(attribute => {
             const name = attribute.name.toLowerCase();
-            const value = attribute.value.trim().toLowerCase();
-            const tag = element.tagName.toLowerCase();
-            if (
-                name.startsWith("on")
-                || [
-                    "srcdoc",
-                    "contenteditable",
-                    "tabindex",
-                    "autofocus",
-                    "draggable",
-                    "accesskey",
-                    "popover",
-                    "autoplay",
-                ].includes(name)
-                || value.startsWith("javascript:")
-            ) {
-                element.removeAttribute(attribute.name);
+            if (tag === "img" && name === "src" && !safeRichImageSource(attribute.value)) {
+                element.remove();
+                return;
             }
-            if (
-                (
-                    ["a", "area"].includes(tag)
-                    && ["href", "xlink:href", "target", "download", "ping"].includes(name)
-                )
-                || name === "formaction"
-            ) {
+            if (name === "style" && hasExternalCssResource(attribute.value)) {
                 element.removeAttribute(attribute.name);
+                return;
             }
-            if (name === "style" && /url\s*\(/i.test(attribute.value)) {
+            if (!(tag === "img" && name === "src" && safeRichImageSource(attribute.value))
+                && !SAFE_RICH_ATTRIBUTES.has(name)) {
                 element.removeAttribute(attribute.name);
             }
         });
-        normalizeRichPreviewStyle(element);
+        normalizeRichPreviewStyle(element, maxWidthPx);
     });
     const root = document.body.firstElementChild;
     if (root) {
@@ -57,7 +54,7 @@ export function sanitizeRichHtml(html: string): string {
     return document.body.firstElementChild?.innerHTML || "";
 }
 
-function normalizeRichPreviewStyle(element: HTMLElement) {
+function normalizeRichPreviewStyle(element: HTMLElement, maxWidthPx: number) {
     const style = element.getAttribute("style");
     if (!style) return;
     const nextStyle = style
@@ -75,7 +72,7 @@ function normalizeRichPreviewStyle(element: HTMLElement) {
             if (
                 name === "width"
                 && value.endsWith("px")
-                && Number.parseFloat(value) > 160
+                && Number.parseFloat(value) > maxWidthPx
             ) {
                 return false;
             }
@@ -109,7 +106,7 @@ function extractRichClassStyles(document: Document): Map<string, string[]> {
                     const [rawName, ...rawValue] = rule.split(":");
                     const name = rawName.trim().toLowerCase();
                     const value = rawValue.join(":").trim();
-                    if (!name || !value || /url\s*\(/i.test(value)) return false;
+                    if (!name || !value || hasExternalCssResource(value)) return false;
                     return [
                         "background",
                         "background-color",

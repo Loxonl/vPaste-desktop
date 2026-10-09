@@ -8,6 +8,7 @@ import { ToolbarIconButton } from "../ui/ToolbarIconButton";
 import { ItemType } from "./Item";
 import { FileTypePresentation } from "./FileTypePresentation";
 import { isImagePath, type FilePreviewInfo } from "./itemPresentation";
+import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
 import { useLanguage } from "../lang";
 import { AnimatePresence, m, useMotionPreset } from "../ui/motion";
 import styles from "./Preview.module.css";
@@ -82,12 +83,19 @@ function payloadRichHtml(payload: PreviewPayload): string {
 function disableDocumentNavigation(html: string): string {
     if (!html.trim()) return "";
     const parsed = new DOMParser().parseFromString(html, "text/html");
+    const policy = parsed.createElement("meta");
+    policy.setAttribute("http-equiv", "Content-Security-Policy");
+    policy.setAttribute(
+        "content",
+        "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'; base-uri 'none'",
+    );
+    parsed.head.prepend(policy);
     parsed.querySelectorAll("meta[http-equiv]").forEach(node => {
         if (node.getAttribute("http-equiv")?.trim().toLowerCase() === "refresh") {
             node.remove();
         }
     });
-    parsed.querySelectorAll("base").forEach(node => node.removeAttribute("target"));
+    parsed.querySelectorAll("base").forEach(node => node.remove());
     parsed.querySelectorAll("a, area").forEach(node => {
         ["href", "xlink:href", "target", "download", "ping"].forEach(name => {
             node.removeAttribute(name);
@@ -104,136 +112,6 @@ function disableDocumentNavigation(html: string): string {
     return `<!doctype html>${parsed.documentElement.outerHTML}`;
 }
 
-function normalizeRichPreviewStyle(element: HTMLElement) {
-    const style = element.getAttribute("style");
-    if (!style) return;
-    const nextStyle = style
-        .split(";")
-        .map(rule => rule.trim())
-        .filter(Boolean)
-        .filter(rule => {
-            const [rawName, ...rawValue] = rule.split(":");
-            const name = rawName.trim().toLowerCase();
-            const value = rawValue.join(":").trim().toLowerCase();
-            if (name === "width" && value.endsWith("in")) return false;
-            if (name === "min-width" && value.endsWith("in")) return false;
-            if (name === "max-width" && value.endsWith("in")) return false;
-            if (name === "width" && value.endsWith("pt")) return false;
-            if (name === "width" && value.endsWith("px") && Number.parseFloat(value) > 720) return false;
-            if (name === "margin-left" && value.endsWith("in")) return false;
-            if (name === "margin-right" && value.endsWith("in")) return false;
-            if (name === "text-indent" && value.startsWith("-")) return false;
-            if (name === "border-width" && value.includes("%")) return false;
-            return true;
-        })
-        .join("; ");
-    if (nextStyle) {
-        element.setAttribute("style", nextStyle);
-    } else {
-        element.removeAttribute("style");
-    }
-}
-
-function isEmptyLeadingRichBlock(element: Element): boolean {
-    const tag = element.tagName.toLowerCase();
-    if (!["p", "div", "span"].includes(tag)) return false;
-    if (element.querySelector("img,svg,table,canvas,video")) return false;
-    return (element.textContent || "").replace(/\u00a0/g, "").trim().length === 0;
-}
-
-function trimLeadingEmptyRichBlocks(container: Element) {
-    let changed = true;
-    while (changed) {
-        changed = false;
-        const firstContentChild = Array.from(container.children)
-            .find(child => child.tagName.toLowerCase() !== "style");
-        if (!firstContentChild) return;
-
-        if (isEmptyLeadingRichBlock(firstContentChild)) {
-            firstContentChild.remove();
-            changed = true;
-            continue;
-        }
-
-        const tag = firstContentChild.tagName.toLowerCase();
-        if (["div", "section", "article", "blockquote", "ul", "ol"].includes(tag)) {
-            const before = firstContentChild.innerHTML;
-            trimLeadingEmptyRichBlocks(firstContentChild);
-            if (before !== firstContentChild.innerHTML) {
-                changed = true;
-            }
-            if (isEmptyLeadingRichBlock(firstContentChild)) {
-                firstContentChild.remove();
-                changed = true;
-            }
-        }
-    }
-}
-
-function unwrapSingleLeadingLayoutContainers(container: Element) {
-    let current = container.firstElementChild;
-    while (current && current.tagName.toLowerCase() === "div") {
-        const children = Array.from(current.children).filter(child => child.tagName.toLowerCase() !== "style");
-        const text = (current.textContent || "").replace(/\u00a0/g, "").trim();
-        const style = (current.getAttribute("style") || "").toLowerCase();
-        const layoutOnly = !text && children.length === 1 && /direction|width|margin-left|border-width/.test(style);
-        if (!layoutOnly) break;
-        const child = children[0];
-        current.replaceWith(child);
-        current = child;
-    }
-}
-
-function sanitizeRichHtml(html: string): string {
-    if (!html.trim()) return "";
-    const parsed = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
-    parsed.querySelectorAll("script, iframe, object, embed, link, meta, base").forEach(node => node.remove());
-    parsed.querySelectorAll("style").forEach(node => {
-        node.textContent = (node.textContent || "")
-            .replace(/mso-pattern\s*:[^;{}]+;?/gi, "");
-    });
-    parsed.querySelectorAll("form").forEach(node => {
-        node.replaceWith(...Array.from(node.childNodes));
-    });
-    parsed.querySelectorAll<HTMLElement>("*").forEach(element => {
-        Array.from(element.attributes).forEach(attribute => {
-            const name = attribute.name.toLowerCase();
-            const value = attribute.value.trim().toLowerCase();
-            const tag = element.tagName.toLowerCase();
-            if (name.startsWith("on") || name === "srcdoc" || value.startsWith("javascript:")) {
-                element.removeAttribute(attribute.name);
-            }
-            if (
-                (["a", "area"].includes(tag) && ["href", "xlink:href", "target", "download", "ping"].includes(name))
-                || name === "formaction"
-            ) {
-                element.removeAttribute(attribute.name);
-            }
-            if (name === "style" && /url\s*\(/i.test(attribute.value)) {
-                element.removeAttribute(attribute.name);
-            }
-        });
-        normalizeRichPreviewStyle(element);
-    });
-    const root = parsed.body.firstElementChild;
-    if (root) {
-        unwrapSingleLeadingLayoutContainers(root);
-        trimLeadingEmptyRichBlocks(root);
-    }
-    return parsed.body.firstElementChild?.innerHTML || "";
-}
-
-function richHtmlHasVisibleContent(html: string): boolean {
-    if (!html.trim()) return false;
-    const parsed = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
-    const root = parsed.body.firstElementChild;
-    if (!root) return false;
-    const cloned = root.cloneNode(true) as HTMLElement;
-    cloned.querySelectorAll("style").forEach(node => node.remove());
-    return Boolean(cloned.textContent?.trim())
-        || Boolean(cloned.querySelector("table,img,svg,canvas,video"));
-}
-
 export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: string, params?: Record<string, string | number>) => string }) {
     const [fileInfo, setFileInfo] = useState<FilePreviewInfo | null>(null);
     const [fileError, setFileError] = useState("");
@@ -244,7 +122,7 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
     const [linkError, setLinkError] = useState("");
     const type = payloadType(payload);
     const linkUrl = type === ItemType.Link ? normalizeLinkUrl(payload.content.split("|||")[0]) : "";
-    const richHtml = useMemo(() => sanitizeRichHtml(payloadRichHtml(payload)), [payload]);
+    const richHtml = useMemo(() => sanitizeRichHtml(payloadRichHtml(payload), 720), [payload]);
     const linkPreviewHtml = useMemo(
         () => linkDocument ? disableDocumentNavigation(linkDocument.html) : "",
         [linkDocument],
@@ -400,7 +278,7 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
                         className={styles["preview-link-frame"]}
                         srcDoc={linkPreviewHtml}
                         title={linkDocument.url}
-                        referrerPolicy="no-referrer-when-downgrade"
+                        referrerPolicy="no-referrer"
                         sandbox=""
                     />
                 ) : (

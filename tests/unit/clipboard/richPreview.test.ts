@@ -14,6 +14,46 @@ function firstElement(html: string): HTMLElement {
 }
 
 describe("rich clipboard preview", () => {
+    it("drops executable URL surfaces while keeping raster clipboard images", () => {
+        const html = sanitizeRichHtml(`
+            <svg><animate attributeName="href" values="javascript:alert(1)" /></svg>
+            <img src="data:text/html,&lt;script&gt;alert(1)&lt;/script&gt;" alt="bad data">
+            <img src="vbscript:msgbox(1)" alt="bad scheme">
+            <img src="data:image/svg+xml;base64,PHN2Zy8+" alt="svg image">
+            <img src="data:image/png;base64,AA==" alt="safe image">
+            <p>Visible text</p>
+        `);
+
+        const document = new DOMParser().parseFromString(html, "text/html");
+        expect(document.querySelector("svg, animate")).toBeNull();
+        expect(document.querySelectorAll("img")).toHaveLength(1);
+        expect(document.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,AA==");
+        expect(document.body.textContent).toContain("Visible text");
+    });
+
+    it("does not carry CSS resource loads from copied markup", () => {
+        const html = sanitizeRichHtml(`
+            <style>.remote { background: image-set(url(https://example.com/track.png)); }</style>
+            <p class="remote" style="background-image: u\\72l(https://example.com/track.png)">Text</p>
+        `);
+
+        const paragraph = firstElement(html);
+        expect(paragraph.getAttribute("style")).toBeNull();
+        expect(paragraph.textContent).toBe("Text");
+    });
+
+    it("does not request remote or local-network images while displaying copied rich text", () => {
+        const html = sanitizeRichHtml(`
+            <img src="http://127.0.0.1:8080/run" alt="local">
+            <img src="https://example.com/track.png" alt="remote">
+            <img src="data:image/png;base64,AA==" alt="embedded">
+        `);
+
+        const images = new DOMParser().parseFromString(html, "text/html").querySelectorAll("img");
+        expect(images).toHaveLength(1);
+        expect(images[0].getAttribute("alt")).toBe("embedded");
+    });
+
     it("removes active content and interaction attributes", () => {
         const html = sanitizeRichHtml(`
             <script>alert("x")</script>

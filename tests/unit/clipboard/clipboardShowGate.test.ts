@@ -94,6 +94,38 @@ describe("clipboard show synchronization", () => {
         expect(gate.needsSync).toBe(true);
     });
 
+    it("discards blurred keyboard intents without canceling the opening's work", async () => {
+        let finish!: () => void;
+        const work = new Promise<void>(resolve => { finish = resolve; });
+        const gate = createClipboardShowGate(vi.fn());
+        const synchronized = vi.fn();
+        let current!: () => boolean;
+        gate.start(async isCurrent => {
+            current = isCurrent;
+            await work;
+            if (isCurrent()) synchronized();
+        });
+        const navigate = vi.fn();
+        const paste = vi.fn();
+        gate.queueNavigation(navigate);
+        gate.defer(paste);
+
+        gate.discardIntents();
+        expect(gate.pending).toBe(true);
+        expect(current()).toBe(true);
+        finish();
+        await vi.waitFor(() => expect(synchronized).toHaveBeenCalledOnce());
+        expect(navigate).not.toHaveBeenCalled();
+        expect(paste).not.toHaveBeenCalled();
+    });
+
+    it("requires fresh synchronization after an idle focus loss", () => {
+        const gate = createClipboardShowGate(vi.fn());
+        gate.cancel();
+        gate.discardIntents();
+        expect(gate.needsSync).toBe(true);
+    });
+
     it("still allows navigation when synchronization fails without replaying Enter", async () => {
         let fail!: (error: Error) => void;
         const work = new Promise<void>((_, reject) => { fail = reject; });

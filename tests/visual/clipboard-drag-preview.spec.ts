@@ -16,8 +16,9 @@ async function openDragCard(page: Page, kind: DragKind, options: {
     const { native = false, captureFails = false, fileCase = "document", rich = false } = options;
     await page.addInitScript(({ kind, text, richHtml, imageSrc, native, captureFails, fileCase, paths, rich }) => {
         let callbackId = 0;
-        Object.defineProperty(navigator, "platform", { value: native ? "MacIntel" : "Linux" });
-        Object.defineProperty(navigator, "userAgent", { value: native ? "Macintosh native drag fixture" : "Linux browser drag fixture" });
+        Object.defineProperty(navigator, "platform", { value: native ? "MacIntel" : "" });
+        Object.defineProperty(navigator, "userAgent", { value: native ? "Macintosh native drag fixture" : "Browser drag fixture" });
+        Object.defineProperty(navigator, "userAgentData", { value: { platform: native ? "macOS" : "" } });
         const content = kind === "Text" ? text : kind === "TextFile" ? "/full-text-data"
             : kind === "Link" ? "https://example.test||||||Example repository"
             : kind === "Color" ? "#1b83ff" : kind === "File" ? JSON.stringify(paths) : "/image.png";

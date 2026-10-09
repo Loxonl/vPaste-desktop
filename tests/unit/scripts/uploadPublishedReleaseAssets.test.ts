@@ -62,7 +62,7 @@ if (args[1] === "view") {
 }
 
 function upload(assetsDir: string, env: NodeJS.ProcessEnv) {
-  return execFileSync("bash", [uploadScript, tag, assetsDir], { env, encoding: "utf8", stdio: "pipe" });
+  return execFileSync("bash", [uploadScript, tag, assetsDir.replace(/\\/g, "/")], { env, encoding: "utf8", stdio: "pipe" });
 }
 
 describe("published release asset upload", () => {

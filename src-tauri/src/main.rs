@@ -10737,6 +10737,9 @@ fn main() {
                         error!("Failed to initialize clipboard search index: {err}");
                     }
                 }
+                if let Err(err) = search::engine::resume_pending_updates() {
+                    error!("Failed to resume clipboard search index updates: {err}");
+                }
             }
             let _ = build_clipboard_window(app.handle())?;
             let _ = build_paste_queue_window(app.handle())?;

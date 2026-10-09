@@ -746,7 +746,7 @@ fn search_index_session(keywords: &str) -> Result<engine::SearchSession, String>
     }
 }
 
-fn stored_item_search_content(stored: &StoredItem) -> String {
+pub(crate) fn stored_item_search_content(stored: &StoredItem) -> String {
     let content = if stored.item_type == ItemType::TextFile.to_string() {
         history_store::read_file(&stored.content)
             .ok()
@@ -788,7 +788,8 @@ pub(crate) fn rebuild_search_index() -> Result<(), String> {
             )
         })
         .collect();
-    engine::rebuild(documents)
+    engine::rebuild(documents)?;
+    engine::resume_pending_updates()
 }
 
 fn parse_search_filter(label: &str) -> SearchFilter {
@@ -1942,6 +1943,7 @@ fn insert_history_item(
         let state = conn.execute(
             "update clipboard
                 set time = ?1,
+                    search_index = 0,
                     app_source = case when ?2 <> '' then ?2 else app_source end,
                     app_icon_path = case when ?3 <> '' then ?3 else app_icon_path end,
                     source = case when ?5 = 'Image' then ?4 when ?4 <> '' then ?4 else source end,
@@ -2004,7 +2006,7 @@ fn insert_history_item(
             (":source", &stored_source),
             (":app_source", &app_source.to_string()),
             (":app_icon_path", &app_icon_path.to_string()),
-            (":search_index", &"1".to_string()),
+            (":search_index", &"0".to_string()),
         ])
     };
     if let Err(err) = state {
@@ -2039,15 +2041,30 @@ fn captured_item_search_content(
     .join("\n")
 }
 
+#[derive(Clone, Copy)]
+pub struct CaptureContext {
+    pub(crate) time: u64,
+    pub(crate) queue_epoch: Option<u64>,
+}
+
+impl From<bool> for CaptureContext {
+    fn from(queue_only: bool) -> Self {
+        Self {
+            time: current_timestamp_millis(),
+            queue_epoch: queue_only.then(crate::paste_queue::activation_epoch),
+        }
+    }
+}
+
 fn store_captured_item(
     item: &Item,
     search_content: &str,
     source: &str,
     app_source: &str,
     app_icon_path: &str,
-    queue_only: bool,
+    context: CaptureContext,
 ) -> bool {
-    if queue_only {
+    if let Some(epoch) = context.queue_epoch {
         let replacement_paths = internal_paths_for_cleanup(
             &item.item_type.to_string(),
             &item.hash,
@@ -2067,10 +2084,14 @@ fn store_captured_item(
             .flatten();
         let history_stored =
             insert_history_item(item, search_content, source, app_source, app_icon_path);
-        let queue_stored = match crate::paste_queue::capture_item(item, source) {
+        let queue_stored = match crate::paste_queue::capture_item_for_epoch(item, source, epoch) {
             Ok(()) => true,
             Err(err) => {
-                crate::paste_queue::set_error(Some(item.hash.clone()), err);
+                if crate::paste_queue::is_active()
+                    && crate::paste_queue::activation_epoch() == epoch
+                {
+                    crate::paste_queue::set_error(Some(item.hash.clone()), err);
+                }
                 false
             }
         };
@@ -2177,7 +2198,7 @@ pub fn insert_text_from_app(
     app_source: &str,
     app_icon_path: &str,
 ) -> Option<String> {
-    insert_text_from_app_impl(content, app_source, app_icon_path, false)
+    insert_text_from_app_impl(content, app_source, app_icon_path, false.into())
 }
 
 pub fn insert_rich_text_from_app(
@@ -2188,16 +2209,24 @@ pub fn insert_rich_text_from_app(
     app_source: &str,
     app_icon_path: &str,
 ) -> Option<String> {
-    insert_rich_text_from_app_impl(plain_text, html, rtf, png, app_source, app_icon_path, false)
+    insert_rich_text_from_app_impl(
+        plain_text,
+        html,
+        rtf,
+        png,
+        app_source,
+        app_icon_path,
+        false.into(),
+    )
 }
 
 pub fn capture_text_from_app(
     content: String,
     app_source: &str,
     app_icon_path: &str,
-    queue_only: bool,
+    context: impl Into<CaptureContext>,
 ) -> Option<String> {
-    insert_text_from_app_impl(content, app_source, app_icon_path, queue_only)
+    insert_text_from_app_impl(content, app_source, app_icon_path, context.into())
 }
 
 pub fn capture_rich_text_from_app(
@@ -2207,7 +2236,7 @@ pub fn capture_rich_text_from_app(
     png: Option<Vec<u8>>,
     app_source: &str,
     app_icon_path: &str,
-    queue_only: bool,
+    context: impl Into<CaptureContext>,
 ) -> Option<String> {
     insert_rich_text_from_app_impl(
         plain_text,
@@ -2216,7 +2245,7 @@ pub fn capture_rich_text_from_app(
         png,
         app_source,
         app_icon_path,
-        queue_only,
+        context.into(),
     )
 }
 
@@ -2227,7 +2256,7 @@ fn insert_rich_text_from_app_impl(
     png: Option<Vec<u8>>,
     app_source: &str,
     app_icon_path: &str,
-    queue_only: bool,
+    context: CaptureContext,
 ) -> Option<String> {
     let payload_bytes = plain_text
         .len()
@@ -2246,7 +2275,7 @@ fn insert_rich_text_from_app_impl(
             normalized_color.to_string(),
             app_source,
             app_icon_path,
-            queue_only,
+            context,
         );
     }
 
@@ -2261,7 +2290,7 @@ fn insert_rich_text_from_app_impl(
         html.as_deref(),
         rtf.as_deref(),
         png.as_deref(),
-        queue_only,
+        context.queue_epoch.is_some(),
     );
     let meta = RichClipboardMeta {
         version: 1,
@@ -2305,7 +2334,7 @@ fn insert_rich_text_from_app_impl(
         hash,
         title_color: String::new(),
         item_type,
-        time: Utc::now().timestamp_millis() as u64,
+        time: context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
@@ -2317,7 +2346,7 @@ fn insert_rich_text_from_app_impl(
         &source,
         app_source,
         app_icon_path,
-        queue_only,
+        context,
     )
     .then_some(hash)
 }
@@ -2372,7 +2401,7 @@ fn insert_text_from_app_impl(
     content: String,
     app_source: &str,
     app_icon_path: &str,
-    queue_only: bool,
+    context: CaptureContext,
 ) -> Option<String> {
     if is_semantically_blank_text(&content) {
         return None;
@@ -2405,13 +2434,13 @@ fn insert_text_from_app_impl(
         hash,
         title_color: String::from(""),
         item_type,
-        time: Utc::now().timestamp_millis() as u64,
+        time: context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
     };
     let hash = item.hash.clone();
-    store_captured_item(&item, &content, "", app_source, app_icon_path, queue_only).then_some(hash)
+    store_captured_item(&item, &content, "", app_source, app_icon_path, context).then_some(hash)
 }
 
 #[allow(dead_code)]
@@ -2431,7 +2460,13 @@ pub fn insert_image_with_text_and_app(
     app_source: &str,
     app_icon_path: &str,
 ) -> Option<String> {
-    insert_image_with_text_and_app_impl(content, text_content, app_source, app_icon_path, false)
+    insert_image_with_text_and_app_impl(
+        content,
+        text_content,
+        app_source,
+        app_icon_path,
+        false.into(),
+    )
 }
 
 pub fn capture_image_with_text_and_app(
@@ -2439,14 +2474,14 @@ pub fn capture_image_with_text_and_app(
     text_content: &str,
     app_source: &str,
     app_icon_path: &str,
-    queue_only: bool,
+    context: impl Into<CaptureContext>,
 ) -> Option<String> {
     insert_image_with_text_and_app_impl(
         content,
         text_content,
         app_source,
         app_icon_path,
-        queue_only,
+        context.into(),
     )
 }
 
@@ -2455,7 +2490,7 @@ fn insert_image_with_text_and_app_impl(
     text_content: &str,
     app_source: &str,
     app_icon_path: &str,
-    queue_only: bool,
+    context: CaptureContext,
 ) -> Option<String> {
     if content.len() > MAX_AUTOMATIC_CAPTURE_BYTES {
         error!(
@@ -2478,7 +2513,7 @@ fn insert_image_with_text_and_app_impl(
         hash,
         title_color: String::from(""),
         item_type: ItemType::Image,
-        time: Utc::now().timestamp_millis() as u64,
+        time: context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
@@ -2490,7 +2525,7 @@ fn insert_image_with_text_and_app_impl(
         text_content,
         app_source,
         app_icon_path,
-        queue_only,
+        context,
     )
     .then_some(hash)
 }
@@ -2506,23 +2541,23 @@ pub fn insert_file_from_app(
     app_source: &str,
     app_icon_path: &str,
 ) -> Option<String> {
-    insert_file_from_app_impl(content, app_source, app_icon_path, false)
+    insert_file_from_app_impl(content, app_source, app_icon_path, false.into())
 }
 
 pub fn capture_file_from_app(
     content: &Vec<String>,
     app_source: &str,
     app_icon_path: &str,
-    queue_only: bool,
+    context: impl Into<CaptureContext>,
 ) -> Option<String> {
-    insert_file_from_app_impl(content, app_source, app_icon_path, queue_only)
+    insert_file_from_app_impl(content, app_source, app_icon_path, context.into())
 }
 
 fn insert_file_from_app_impl(
     content: &Vec<String>,
     app_source: &str,
     app_icon_path: &str,
-    queue_only: bool,
+    context: CaptureContext,
 ) -> Option<String> {
     let content = serde_json::to_string(content).unwrap();
     let hash = calculate_xxhash64(&content.clone().into_bytes());
@@ -2537,13 +2572,13 @@ fn insert_file_from_app_impl(
         app_icon_path: app_icon_path.to_string(),
         title_color: "".to_string(),
         item_type: ItemType::File,
-        time: Utc::now().timestamp_millis() as u64,
+        time: context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
     };
     let hash = item.hash.clone();
-    store_captured_item(&item, &content, "", app_source, app_icon_path, queue_only).then_some(hash)
+    store_captured_item(&item, &content, "", app_source, app_icon_path, context).then_some(hash)
 }
 fn native_path_string(path: &Path) -> String {
     let value = path.to_string_lossy().into_owned();
@@ -3250,7 +3285,7 @@ pub fn refresh_link_previews(urls: Vec<String>) -> Result<Vec<LinkPreviewUpdate>
         let stored_next_content = next_content.clone();
 
         db().execute(
-            "update clipboard set content = ?1 where hash = ?2 and item_type = ?3",
+            "update clipboard set content = ?1, search_index = 0 where hash = ?2 and item_type = ?3",
             [
                 &stored_next_content,
                 &record.hash,
@@ -3394,6 +3429,7 @@ mod tests {
     }
 
     fn reset_test_storage_config() {
+        engine::shutdown_runtime_for_tests();
         crate::config::save(crate::config::Config::default());
     }
 

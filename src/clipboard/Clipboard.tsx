@@ -92,6 +92,7 @@ import {
     loadClipboardBehaviorConfig,
     resolveClipboardShowPreferences,
     resolveClipboardShowPlan,
+    type ClipboardBehaviorConfig,
     type ClipboardShowPreferences,
 } from "./clipboardBehavior";
 import {
@@ -248,6 +249,7 @@ export default function Clipboard() {
     const selectedRef = useRef("");
     const restoreFocusedResultRef = useRef(false);
     const pageListRef = useRef<Item[]>([]);
+    const clipboardBehaviorConfigRef = useRef<ClipboardBehaviorConfig | null>(null);
     const retainLastPositionRef = useRef<boolean | null>(null);
     const pasteAsTextShortcutRef = useRef(DEFAULT_PASTE_AS_TEXT_SHORTCUT);
     const quickInputEnabledRef = useRef(true);
@@ -1066,11 +1068,34 @@ export default function Clipboard() {
         linkAutoPreviewRef.current = preferences.linkAutoPreview;
     };
 
-    const applyShowPreferences = async (isCurrent: () => boolean) => {
-        const config = await loadClipboardBehaviorConfig();
+    const synchronizeClipboardHistory = async (isCurrent: () => boolean) => {
+        const capturedHash = await invoke<string | null>("wait_for_clipboard_capture");
         if (!isCurrent()) return;
+        const keywords = searchWordRef.current;
+        const tab = activeTabRef.current;
+        const retainLastPosition = Boolean(retainLastPositionRef.current);
+        const refreshed = await fetchHistoryWith(
+            keywords,
+            tab,
+            { selectFirst: !retainLastPosition, isCurrent },
+        );
+        if (!isCurrent()) return;
+        if (!refreshed) throw new Error("Clipboard history refresh did not complete");
+        if (capturedHash && !retainLastPosition
+            && !keywords.trim() && tab === "all"
+            && !pageListRef.current.some(item => item.getHash() === capturedHash)) {
+            throw new Error("The latest clipboard item is not available in history");
+        }
+    };
+
+    const applyShowPreferences = async (isCurrent: () => boolean) => {
+        const config = clipboardBehaviorConfigRef.current ?? await loadClipboardBehaviorConfig();
+        if (!isCurrent()) return;
+        if (Object.keys(config).length > 0) {
+            clipboardBehaviorConfigRef.current ??= config;
+        }
         const preferences = resolveClipboardShowPreferences(
-            config,
+            clipboardBehaviorConfigRef.current ?? config,
             searchWordRef.current,
             activeTabRef.current,
         );
@@ -1082,6 +1107,7 @@ export default function Clipboard() {
         applyRuntimeBehaviorPreferences(preferences);
 
         if (plan.clearSearch) {
+            searchWordRef.current = "";
             setSearchWord("");
             setSearchOpen(false);
         }
@@ -1097,20 +1123,8 @@ export default function Clipboard() {
             selectFirstLoadedItem(false);
         }
 
-        const capturedHash = await invoke<string | null>("wait_for_clipboard_capture");
+        await synchronizeClipboardHistory(isCurrent);
         if (!isCurrent()) return;
-        const refreshed = await fetchHistoryWith(
-            preferences.searchWord,
-            preferences.activeTab,
-            { selectFirst: !preferences.retainLastPosition, isCurrent },
-        );
-        if (!isCurrent()) return;
-        if (!refreshed) throw new Error("Clipboard history refresh did not complete");
-        if (capturedHash && !preferences.retainLastPosition
-            && !preferences.searchWord.trim() && preferences.activeTab === "all"
-            && !pageListRef.current.some(item => item.getHash() === capturedHash)) {
-            throw new Error("The latest clipboard item is not available in history");
-        }
         if (plan.restorePosition) {
             restoreRetainedScrollPosition();
         }
@@ -1119,6 +1133,7 @@ export default function Clipboard() {
     useClipboardLifecycleSubscriptions({
         tauri: {
             onBehaviorConfigChanged: config => {
+                clipboardBehaviorConfigRef.current = config;
                 const preferences = resolveClipboardShowPreferences(
                     config,
                     searchWordRef.current,
@@ -1238,7 +1253,7 @@ export default function Clipboard() {
                 }
             },
             onBlur: () => {
-                showGateRef.current!.cancel(true);
+                showGateRef.current!.discardIntents();
                 setContextMenu(null);
                 setTabContextMenu(null);
                 window.setTimeout(() => {
@@ -1254,8 +1269,11 @@ export default function Clipboard() {
         },
         onMount: () => {
             void loadClipboardBehaviorConfig().then(config => {
+                if (Object.keys(config).length > 0) {
+                    clipboardBehaviorConfigRef.current ??= config;
+                }
                 if (retainLastPositionRef.current === null) {
-                    retainLastPositionRef.current = Boolean(config.retain_last_position);
+                    retainLastPositionRef.current = Boolean((clipboardBehaviorConfigRef.current ?? config).retain_last_position);
                 }
             });
             initializeTutorial();
@@ -1333,7 +1351,7 @@ export default function Clipboard() {
 
             if (action.type === "paste-selected" || action.type === "submit-search" || action.type === "quick-item") {
                 if (showGateRef.current!.needsSync) {
-                    showGateRef.current!.start(applyShowPreferences);
+                    showGateRef.current!.start(synchronizeClipboardHistory);
                 } else if (!showGateRef.current!.pending && !showGateRef.current!.failed && (
                     isSearching
                     || lastHistoryFetchRef.current?.keywords !== searchWordRef.current

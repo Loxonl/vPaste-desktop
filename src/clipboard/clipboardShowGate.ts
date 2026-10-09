@@ -50,6 +50,11 @@ export function createClipboardShowGate(onError: (error: unknown) => void) {
             navigation.push(action);
             return true;
         },
+        discardIntents() {
+            deferred = undefined;
+            navigation = [];
+            if (!pending) needsSync = true;
+        },
         cancel(requireSync = false) {
             generation += 1;
             pending = false;

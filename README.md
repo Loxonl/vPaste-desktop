@@ -1,8 +1,10 @@
 <div align="center">
 
-# vPaste
+<img src="docs/assets/readme/header-en.png" alt="vPaste — Clipboard manager for Windows &amp; macOS">
 
-**Your clipboard, one shortcut away.**
+<h3>English · <a href="README.zh-CN.md">简体中文</a></h3>
+
+# vPaste: Your clipboard, one shortcut away
 
 A visual clipboard manager for Windows and macOS. Keep text, images, links, colors, and files in searchable cards, ready to preview and paste. Your history stays on your device.
 
@@ -15,8 +17,6 @@ A visual clipboard manager for Windows and macOS. Keep text, images, links, colo
 </p>
 
 <h3><a href="https://vpaste.app/en/">vpaste.app</a></h3>
-
-<p><strong>English · <a href="README.zh-CN.md">简体中文</a></strong></p>
 
 [Download](#download) · [Features](#features) · [Changelog](CHANGELOG.md) · [Contributing](#contributing)
 

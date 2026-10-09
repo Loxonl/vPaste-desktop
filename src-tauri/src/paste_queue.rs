@@ -406,9 +406,12 @@ pub fn add_items(hashes: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-pub fn capture_item(item: &Item, source: &str) -> Result<(), String> {
+pub(crate) fn capture_item_for_epoch(
+    item: &Item,
+    source: &str,
+    expected_epoch: u64,
+) -> Result<(), String> {
     let incoming = record_from_capture(item, source);
-    let expected_epoch = activation_epoch();
     let result = if !is_active() {
         Err("粘贴队列未开启".to_string())
     } else {
@@ -742,6 +745,31 @@ mod tests {
                 .unwrap();
         }
         transaction.commit().unwrap();
+    }
+
+    #[test]
+    fn buffered_capture_from_an_old_activation_stays_out_of_the_new_queue() {
+        with_test_database(|| {
+            set_active(true);
+            let context = clipboard::CaptureContext {
+                time: 1234,
+                queue_epoch: Some(activation_epoch()),
+            };
+            set_active(false);
+            set_active(true);
+
+            let hash = clipboard::capture_text_from_app(
+                "old session snapshot".to_string(),
+                "Browser",
+                "",
+                context,
+            )
+            .unwrap();
+
+            assert!(ordered_hashes().unwrap().is_empty());
+            assert_eq!(clipboard::try_get_by_hash(&hash).unwrap().time, 1234);
+            assert!(state().unwrap().error.is_none());
+        });
     }
 
     #[test]

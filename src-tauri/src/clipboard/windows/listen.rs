@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 
 use clipboard_win::formats;
 use clipboard_win::formats::{CF_DIB, CF_DIBV5};
-use clipboard_win::get_clipboard;
 use clipboard_win::is_format_avail;
 use clipboard_win::monitor::Monitor;
+use clipboard_win::{get, Clipboard};
 use log::{error, info};
 use tauri::{Emitter, Manager, WebviewWindow};
 
@@ -19,19 +19,21 @@ use crate::{
     CLIPBOARD_IGNORE_NEXT_CHANGE, CLIPBOARD_INTERNAL_MARKER,
 };
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
 const INTERNAL_CLIPBOARD_MARKER_BYTES: usize = 16;
 
 const READ_ATTEMPTS: usize = 10;
-const INITIAL_RETRY_DELAY_MS: u64 = 40;
-const MAX_RETRY_DELAY_MS: u64 = 250;
-const CLIPBOARD_SETTLE_DELAY_MS: u64 = 120;
+const INITIAL_RETRY_DELAY_MS: u64 = 8;
+const MAX_RETRY_DELAY_MS: u64 = 40;
+const MAX_BUFFERED_CAPTURE_BYTES: usize = 256 * 1024 * 1024;
+const MAX_BUFFERED_CAPTURES: usize = 128;
 pub(crate) const VPASTE_INTERNAL_CLIPBOARD_FORMAT: &str = "vPaste Internal Clipboard";
 
 static APP_SOURCE_CACHE: OnceLock<Mutex<HashMap<String, AppSource>>> = OnceLock::new();
 static CAPTURE_COMPLETION: Mutex<Option<CaptureCompletion>> = Mutex::new(None);
+static LATEST_CAPTURE_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
 struct CaptureCompletion {
     sequence: u32,
@@ -45,9 +47,13 @@ impl CaptureCompletion {
 }
 
 fn complete_capture(sequence: u32, result: Result<Option<String>, String>) {
-    *CAPTURE_COMPLETION
+    let mut completion = CAPTURE_COMPLETION
         .lock()
-        .unwrap_or_else(|err| err.into_inner()) = Some(CaptureCompletion { sequence, result });
+        .unwrap_or_else(|err| err.into_inner());
+    if LATEST_CAPTURE_SEQUENCE.load(Ordering::SeqCst) != sequence {
+        return;
+    }
+    *completion = Some(CaptureCompletion { sequence, result });
 }
 
 fn retained_capture_result(
@@ -100,6 +106,79 @@ pub(crate) fn wait_for_capture() -> Result<Option<String>, String> {
 struct AppSource {
     name: String,
     icon_path: String,
+    exe_path: PathBuf,
+}
+
+#[derive(Default)]
+struct ClipboardSnapshot {
+    sequence: u32,
+    context: Option<clipboard::CaptureContext>,
+    app_source: AppSource,
+    text: Option<String>,
+    html: Option<Vec<u8>>,
+    rtf: Option<Vec<u8>>,
+    png: Option<Vec<u8>>,
+    gif: Option<Vec<u8>>,
+    dib_v5: Option<Vec<u8>>,
+    dib: Option<Vec<u8>>,
+    files: Option<Vec<String>>,
+}
+
+impl ClipboardSnapshot {
+    fn byte_size(&self) -> usize {
+        [
+            self.html.as_ref(),
+            self.rtf.as_ref(),
+            self.png.as_ref(),
+            self.gif.as_ref(),
+            self.dib_v5.as_ref(),
+            self.dib.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(Vec::len)
+        .sum::<usize>()
+        .saturating_add(self.text.as_ref().map(String::len).unwrap_or(0))
+        .saturating_add(
+            self.files
+                .as_ref()
+                .map(|files| files.iter().map(String::len).sum())
+                .unwrap_or(0),
+        )
+    }
+}
+
+struct BufferedSnapshot {
+    snapshot: ClipboardSnapshot,
+    byte_size: usize,
+    buffered_bytes: Arc<Mutex<usize>>,
+}
+
+impl Drop for BufferedSnapshot {
+    fn drop(&mut self) {
+        *self.buffered_bytes.lock().unwrap() -= self.byte_size;
+    }
+}
+
+fn buffer_snapshot(
+    snapshot: ClipboardSnapshot,
+    sender: &mpsc::SyncSender<BufferedSnapshot>,
+    buffered_bytes: &Arc<Mutex<usize>>,
+) -> Result<(), String> {
+    let byte_size = snapshot.byte_size();
+    let mut bytes = buffered_bytes.lock().unwrap();
+    if bytes.saturating_add(byte_size) > MAX_BUFFERED_CAPTURE_BYTES {
+        return Err("复制内容处理缓冲区已满，请稍后再复制".to_string());
+    }
+    *bytes += byte_size;
+    drop(bytes);
+    sender
+        .try_send(BufferedSnapshot {
+            snapshot,
+            byte_size,
+            buffered_bytes: buffered_bytes.clone(),
+        })
+        .map_err(|_| "复制内容处理缓冲区已满，请稍后再复制".to_string())
 }
 
 #[derive(Default)]
@@ -156,64 +235,111 @@ pub fn start(window: WebviewWindow) {
                 return;
             }
         };
+        let (sender, receiver) = mpsc::sync_channel::<BufferedSnapshot>(MAX_BUFFERED_CAPTURES);
+        let buffered_bytes = Arc::new(Mutex::new(0));
+        let worker_window = window.clone();
+        thread::spawn(move || {
+            while let Ok(mut buffered) = receiver.recv() {
+                let snapshot = &mut buffered.snapshot;
+                let sequence = snapshot.sequence;
+                let epoch = snapshot.context.unwrap().queue_epoch;
+                let started = Instant::now();
+                resolve_app_source_icon(&mut snapshot.app_source);
+                let result = parse_snapshot(snapshot);
+                complete_capture(sequence, result.clone());
+                info!(
+                    "clipboard snapshot processed in {}ms",
+                    started.elapsed().as_millis()
+                );
+                if let Err(err) = &result {
+                    error!("failed to process clipboard snapshot: {err}");
+                }
+                if epoch.is_some_and(|epoch| {
+                    crate::paste_queue::is_active()
+                        && crate::paste_queue::activation_epoch() == epoch
+                }) {
+                    if let Err(err) = &result {
+                        crate::paste_queue::set_error(None, err.clone());
+                    }
+                    crate::paste_queue::emit_state(worker_window.app_handle());
+                }
+                if let Ok(Some(hash)) = result {
+                    info!("captured clipboard hash: {hash}");
+                    if let Err(err) = worker_window.emit("listen_new_clipboard", "") {
+                        error!("failed to emit clipboard refresh event: {err}");
+                    }
+                }
+            }
+        });
         let mut sequence_deduper = ClipboardSequenceDeduper::default();
+        LATEST_CAPTURE_SEQUENCE.store(clipboard_sequence_number(), Ordering::SeqCst);
         complete_capture(clipboard_sequence_number(), Ok(None));
 
         while matches!(monitor.recv(), Ok(true)) {
-            if should_skip_internal_clipboard_change() {
-                complete_capture(clipboard_sequence_number(), Ok(None));
-                info!("skip internal clipboard change");
-                continue;
-            }
-            if is_clipboard_history_paused() {
-                complete_capture(clipboard_sequence_number(), Ok(None));
-                info!("skip clipboard history while recording is paused");
-                continue;
-            }
-            thread::sleep(Duration::from_millis(CLIPBOARD_SETTLE_DELAY_MS));
             let sequence = clipboard_sequence_number();
             if !sequence_deduper.should_process(sequence) {
                 info!("skip duplicate clipboard sequence {}", sequence);
                 continue;
             }
-            let app_source = clipboard_app_source().unwrap_or_default();
-            if is_ignored_app_source(&app_source.name) {
+            LATEST_CAPTURE_SEQUENCE.store(sequence, Ordering::SeqCst);
+            if is_clipboard_history_paused() {
                 complete_capture(sequence, Ok(None));
-                info!(
-                    "skip clipboard history from ignored app source: {}",
-                    app_source.name
-                );
                 continue;
             }
             let start = Instant::now();
-            let queue_only = crate::paste_queue::is_active();
-            let result = parse_with_retry(&app_source, queue_only);
-            // Never acknowledge a newer sequence using an older read's result.
-            complete_capture(sequence, result.clone());
-            if let Ok(Some(hash)) = result {
-                info!("clipboard parsed in {}ms", start.elapsed().as_millis());
-                info!("captured clipboard hash: {hash}");
-                if queue_only {
-                    crate::paste_queue::emit_state(window.app_handle());
+            let context = clipboard::CaptureContext::from(crate::paste_queue::is_active());
+            let result = match read_snapshot_with_retry(sequence, context) {
+                Ok(Some(snapshot)) => {
+                    let sequence = snapshot.sequence;
+                    sequence_deduper.last_processed = Some(sequence);
+                    LATEST_CAPTURE_SEQUENCE.store(sequence, Ordering::SeqCst);
+                    info!(
+                        "clipboard snapshot read in {}ms",
+                        start.elapsed().as_millis()
+                    );
+                    buffer_snapshot(snapshot, &sender, &buffered_bytes)
                 }
-                if let Err(err) = window.emit("listen_new_clipboard", "") {
-                    error!("failed to emit clipboard refresh event: {:?}", err);
+                Ok(None) => {
+                    complete_capture(sequence, Ok(None));
+                    Ok(())
                 }
-            } else {
-                info!("clipboard ignored in {}ms", start.elapsed().as_millis());
-                if queue_only {
-                    crate::paste_queue::emit_state(window.app_handle());
+                Err(err) => Err(err),
+            };
+            if let Err(err) = result {
+                complete_capture(
+                    LATEST_CAPTURE_SEQUENCE.load(Ordering::SeqCst),
+                    Err(err.clone()),
+                );
+                error!("failed to capture clipboard snapshot: {err}");
+                if context.queue_epoch.is_some_and(|epoch| {
+                    crate::paste_queue::is_active()
+                        && crate::paste_queue::activation_epoch() == epoch
+                }) {
+                    crate::paste_queue::set_error(None, err);
+                    let app = window.app_handle().clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        crate::paste_queue::emit_state(&app)
+                    });
                 }
             }
         }
     });
 }
 
-fn parse_with_retry(app_source: &AppSource, queue_only: bool) -> Result<Option<String>, String> {
+fn read_snapshot_with_retry(
+    sequence: u32,
+    context: clipboard::CaptureContext,
+) -> Result<Option<ClipboardSnapshot>, String> {
     for attempt in 0..READ_ATTEMPTS {
-        match parse(attempt + 1 < READ_ATTEMPTS, app_source, queue_only) {
-            Ok(hash) => return Ok(hash),
+        if clipboard_sequence_number() != sequence {
+            return Err("剪贴板内容在读取前被后续复制覆盖".to_string());
+        }
+        match read_snapshot(attempt + 1 < READ_ATTEMPTS, context) {
+            Ok(snapshot) => return Ok(snapshot),
             Err(err) => {
+                if err.starts_with("复制内容超过") {
+                    return Err(err);
+                }
                 let delay = (INITIAL_RETRY_DELAY_MS * (attempt as u64 + 1)).min(MAX_RETRY_DELAY_MS);
                 info!(
                     "clipboard read failed on attempt {}/{}: {}; retrying in {}ms",
@@ -227,44 +353,160 @@ fn parse_with_retry(app_source: &AppSource, queue_only: bool) -> Result<Option<S
         }
     }
 
-    error!("clipboard read failed after {} attempts", READ_ATTEMPTS);
-    Err("Clipboard could not be read after retries".into())
+    Err("剪贴板暂时无法读取，请重新复制".into())
 }
 
-fn parse(
+fn read_snapshot(
     should_retry_file_hint: bool,
-    app_source: &AppSource,
-    queue_only: bool,
-) -> Result<Option<String>, String> {
+    context: clipboard::CaptureContext,
+) -> Result<Option<ClipboardSnapshot>, String> {
+    let _clipboard = Clipboard::new_attempts(2).map_err(|err| err.to_string())?;
+    let app_source = clipboard_app_source().unwrap_or_default();
+    let internal_requested = should_skip_internal_clipboard_change();
     if has_internal_clipboard_marker() {
         info!("skip vPaste internal clipboard payload");
         return Ok(None);
     }
-
-    if is_internal_clipboard_window_active() && is_vpaste_app_source(&app_source.name) {
+    if (internal_requested || is_internal_clipboard_window_active())
+        && is_vpaste_app_source(&app_source.name)
+    {
         info!("skip vPaste foreground clipboard payload during internal window");
         return Ok(None);
     }
 
-    if is_internal_clipboard_window_active() {
-        info!("internal clipboard window active without vPaste marker; parsing clipboard payload");
+    if is_ignored_app_source(&app_source.name) {
+        return Ok(None);
     }
-
     if config::get().sensitive_content_protection && has_sensitive_clipboard_marker() {
         info!("skip clipboard history item marked as sensitive by system clipboard formats");
         return Ok(None);
     }
 
-    let text_content: Option<String> = if is_format_avail(formats::Unicode.into()) {
-        get_clipboard::<String, _>(formats::Unicode).ok()
+    let text: Option<String> = if is_format_avail(formats::Unicode.into()) {
+        check_snapshot_format_size(formats::Unicode.into(), MAX_BUFFERED_CAPTURE_BYTES)?;
+        Some(get::<String, _>(formats::Unicode).map_err(|err| err.to_string())?)
     } else {
         None
     }
     .filter(|text| !looks_like_cf_html_header_text(text));
-    let html = read_registered_raw_format("HTML Format");
-    let rtf = read_registered_raw_format("Rich Text Format");
-    let png = read_registered_raw_format("PNG");
-    let gif = read_registered_raw_format("GIF").or_else(|| read_registered_raw_format("image/gif"));
+    let mut remaining_bytes = MAX_BUFFERED_CAPTURE_BYTES;
+    reserve_snapshot_bytes(
+        text.as_ref().map(String::len).unwrap_or(0),
+        &mut remaining_bytes,
+    )?;
+    let gif = match read_snapshot_registered_format("GIF", &mut remaining_bytes)? {
+        Some(bytes) => Some(bytes),
+        None => read_snapshot_registered_format("image/gif", &mut remaining_bytes)?,
+    };
+    if gif.as_deref().is_some_and(is_gif_bytes) {
+        let snapshot = ClipboardSnapshot {
+            sequence: clipboard_sequence_number(),
+            context: Some(context),
+            app_source,
+            text,
+            gif,
+            ..Default::default()
+        };
+        if snapshot.byte_size() > MAX_BUFFERED_CAPTURE_BYTES {
+            return Err("复制内容超过安全大小限制，未加入记录".to_string());
+        }
+        return Ok(Some(snapshot));
+    }
+    let html = read_snapshot_registered_format("HTML Format", &mut remaining_bytes)?;
+    let rtf = read_snapshot_registered_format("Rich Text Format", &mut remaining_bytes)?;
+    let png = read_snapshot_registered_format("PNG", &mut remaining_bytes)?;
+    let dib_v5 = read_snapshot_raw_format(CF_DIBV5, &mut remaining_bytes)?;
+    let dib = if dib_v5.is_none() {
+        read_snapshot_raw_format(CF_DIB, &mut remaining_bytes)?
+    } else {
+        None
+    };
+    let files = if is_format_avail(formats::FileList.into()) {
+        check_snapshot_format_size(formats::FileList.into(), remaining_bytes)?;
+        Some(get(formats::FileList).map_err(|err| format!("read file list failed: {err}"))?)
+    } else {
+        None
+    };
+    if should_retry_file_hint
+        && files.is_none()
+        && text
+            .as_deref()
+            .is_some_and(is_probable_file_clipboard_placeholder)
+    {
+        return Err("file list format is not ready yet".to_string());
+    }
+    let snapshot = ClipboardSnapshot {
+        sequence: clipboard_sequence_number(),
+        context: Some(context),
+        app_source,
+        text,
+        html,
+        rtf,
+        png,
+        gif,
+        dib_v5,
+        dib,
+        files,
+    };
+    if snapshot.byte_size() > MAX_BUFFERED_CAPTURE_BYTES {
+        return Err("复制内容超过安全大小限制，未加入记录".to_string());
+    }
+    Ok(Some(snapshot))
+}
+
+fn reserve_snapshot_bytes(size: usize, remaining_bytes: &mut usize) -> Result<(), String> {
+    *remaining_bytes = remaining_bytes
+        .checked_sub(size)
+        .ok_or_else(|| "复制内容超过安全大小限制，未加入记录".to_string())?;
+    Ok(())
+}
+
+fn check_snapshot_format_size(format: u32, remaining_bytes: usize) -> Result<(), String> {
+    if clipboard_win::size(format).is_some_and(|size| size.get() > remaining_bytes) {
+        return Err("复制内容超过安全大小限制，未加入记录".to_string());
+    }
+    Ok(())
+}
+
+fn read_snapshot_raw_format(
+    format: u32,
+    remaining_bytes: &mut usize,
+) -> Result<Option<Vec<u8>>, String> {
+    if !is_format_avail(format) {
+        return Ok(None);
+    }
+    check_snapshot_format_size(format, *remaining_bytes)?;
+    let bytes: Vec<u8> = get(formats::RawData(format)).map_err(|err| err.to_string())?;
+    reserve_snapshot_bytes(bytes.len(), remaining_bytes)?;
+    Ok(Some(bytes))
+}
+
+fn read_snapshot_registered_format(
+    name: &str,
+    remaining_bytes: &mut usize,
+) -> Result<Option<Vec<u8>>, String> {
+    match registered_format_code(name) {
+        Some(format) => match read_snapshot_raw_format(format, remaining_bytes) {
+            Ok(bytes) => Ok(bytes.filter(|bytes| !bytes.is_empty())),
+            Err(err) if err.starts_with("复制内容超过") => Err(err),
+            Err(err) => {
+                info!("skip unreadable optional clipboard format {name}: {err}");
+                Ok(None)
+            }
+        },
+        None => Ok(None),
+    }
+}
+
+fn parse_snapshot(snapshot: &mut ClipboardSnapshot) -> Result<Option<String>, String> {
+    let app_source = snapshot.app_source.clone();
+    let app_source = &app_source;
+    let context = snapshot.context.unwrap();
+    let text_content = snapshot.text.take();
+    let html = snapshot.html.take();
+    let rtf = snapshot.rtf.take();
+    let png = snapshot.png.take();
+    let gif = snapshot.gif.take();
 
     if let Some(gif) = gif {
         if is_gif_bytes(&gif) {
@@ -273,7 +515,7 @@ fn parse(
                 text_content.as_deref().unwrap_or(""),
                 &app_source.name,
                 &app_source.icon_path,
-                queue_only,
+                context,
             ));
         }
     }
@@ -348,11 +590,11 @@ fn parse(
             local_images.len(),
             has_local_gif,
         ) {
-            if is_format_avail(CF_DIBV5) {
-                return read_bitmap(CF_DIBV5, "CF_DIBV5", None, app_source, queue_only);
+            if let Some(raw) = snapshot.dib_v5.take() {
+                return read_bitmap(raw, "CF_DIBV5", None, app_source, context);
             }
-            if is_format_avail(CF_DIB) {
-                return read_bitmap(CF_DIB, "CF_DIB", None, app_source, queue_only);
+            if let Some(raw) = snapshot.dib.take() {
+                return read_bitmap(raw, "CF_DIB", None, app_source, context);
             }
             if let Some(png) = png.as_ref() {
                 return Ok(clipboard::capture_image_with_text_and_app(
@@ -360,7 +602,7 @@ fn parse(
                     "",
                     &app_source.name,
                     &app_source.icon_path,
-                    queue_only,
+                    context,
                 ));
             }
         }
@@ -379,7 +621,7 @@ fn parse(
                 "",
                 &app_source.name,
                 &app_source.icon_path,
-                queue_only,
+                context,
             ));
         }
 
@@ -390,7 +632,7 @@ fn parse(
                     "",
                     &app_source.name,
                     &app_source.icon_path,
-                    queue_only,
+                    context,
                 ));
             }
         }
@@ -407,29 +649,23 @@ fn parse(
                 png,
                 &app_source.name,
                 &app_source.icon_path,
-                queue_only,
+                context,
             ));
         }
     }
 
-    if is_format_avail(CF_DIBV5.into()) {
+    if let Some(raw) = snapshot.dib_v5.take() {
         return read_bitmap(
-            CF_DIBV5,
+            raw,
             "CF_DIBV5",
             text_content.as_deref(),
             &app_source,
-            queue_only,
+            context,
         );
     }
 
-    if is_format_avail(CF_DIB.into()) {
-        return read_bitmap(
-            CF_DIB,
-            "CF_DIB",
-            text_content.as_deref(),
-            &app_source,
-            queue_only,
-        );
+    if let Some(raw) = snapshot.dib.take() {
+        return read_bitmap(raw, "CF_DIB", text_content.as_deref(), &app_source, context);
     }
 
     if let Some(png) = png {
@@ -438,37 +674,28 @@ fn parse(
             text_content.as_deref().unwrap_or(""),
             &app_source.name,
             &app_source.icon_path,
-            queue_only,
+            context,
         ));
     }
 
-    if is_format_avail(formats::FileList.into()) {
-        let files = get_clipboard(formats::FileList)
-            .map_err(|err| format!("read file list failed: {:?}", err))?;
+    if let Some(files) = snapshot.files.take() {
         return Ok(clipboard::capture_file_from_app(
             &files,
             &app_source.name,
             &app_source.icon_path,
-            queue_only,
+            context,
         ));
     }
 
-    if is_format_avail(formats::Unicode.into()) {
-        let text: String = text_content
-            .map(Ok)
-            .unwrap_or_else(|| get_clipboard(formats::Unicode))
-            .map_err(|err| format!("read unicode text failed: {:?}", err))?;
+    if let Some(text) = text_content {
         if !has_visible_text(Some(&text)) {
             return Ok(None);
-        }
-        if should_retry_file_hint && is_probable_file_clipboard_placeholder(&text) {
-            return Err("file list format is not ready yet".to_string());
         }
         return Ok(clipboard::capture_text_from_app(
             text,
             &app_source.name,
             &app_source.icon_path,
-            queue_only,
+            context,
         ));
     }
 
@@ -485,7 +712,7 @@ fn read_registered_raw_format(name: &str) -> Option<Vec<u8>> {
     if !is_format_avail(format) {
         return None;
     }
-    get_clipboard(formats::RawData(format))
+    get(formats::RawData(format))
         .ok()
         .filter(|bytes: &Vec<u8>| !bytes.is_empty())
 }
@@ -956,14 +1183,12 @@ fn is_probable_file_clipboard_placeholder(text: &str) -> bool {
 }
 
 fn read_bitmap(
-    format: u32,
+    raw: Vec<u8>,
     name: &str,
     text_content: Option<&str>,
     app_source: &AppSource,
-    queue_only: bool,
+    context: clipboard::CaptureContext,
 ) -> Result<Option<String>, String> {
-    let raw = get_clipboard(formats::RawData(format))
-        .map_err(|err| format!("read {} bitmap failed: {:?}", name, err))?;
     let png = image_convert::convert_bitmap_to_png(raw.as_slice())
         .map_err(|err| format!("convert {} bitmap failed: {}", name, err))?;
 
@@ -972,7 +1197,7 @@ fn read_bitmap(
         text_content.unwrap_or(""),
         &app_source.name,
         &app_source.icon_path,
-        queue_only,
+        context,
     ))
 }
 
@@ -1077,19 +1302,36 @@ fn clipboard_app_source() -> Option<AppSource> {
         .and_then(|name| name.to_str())
         .map(clean_app_source)
         .filter(|name| !name.is_empty());
-    let source = app_name.map(|name| AppSource {
-        icon_path: extract_process_icon_png(&exe_path).unwrap_or_default(),
+    app_name.map(|name| AppSource {
+        icon_path: String::new(),
+        exe_path,
         name,
-    });
-    if let Some(source) = source.clone() {
-        if let Ok(mut cache) = APP_SOURCE_CACHE
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-        {
-            cache.insert(exe_key, source);
+    })
+}
+
+fn resolve_app_source_icon(source: &mut AppSource) {
+    if source.exe_path.as_os_str().is_empty() || !source.icon_path.is_empty() {
+        return;
+    }
+    let exe_key = source.exe_path.to_string_lossy().to_string();
+    if let Some(cached) = APP_SOURCE_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(&exe_key).cloned())
+    {
+        if cached.icon_path.is_empty() || PathBuf::from(&cached.icon_path).is_file() {
+            *source = cached;
+            return;
         }
     }
-    source
+    source.icon_path = extract_process_icon_png(&source.exe_path).unwrap_or_default();
+    if let Ok(mut cache) = APP_SOURCE_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        cache.insert(exe_key, source.clone());
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1558,6 +1800,168 @@ fn is_vpaste_exe(exe_path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn buffered_snapshots_preserve_every_copy_while_processing_is_blocked() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().to_string());
+        crate::config::save(crate::config::Config::default());
+        clipboard::db::init();
+        crate::paste_queue::set_active(true);
+        let epoch = crate::paste_queue::activation_epoch();
+        let (sender, receiver) = mpsc::sync_channel::<BufferedSnapshot>(MAX_BUFFERED_CAPTURES);
+        let buffered_bytes = Arc::new(Mutex::new(0));
+        let (release, blocked) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            blocked.recv().unwrap();
+            receiver
+                .into_iter()
+                .map(|mut buffered| parse_snapshot(&mut buffered.snapshot).unwrap().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let started = Instant::now();
+        for index in 0..20 {
+            buffer_snapshot(
+                ClipboardSnapshot {
+                    sequence: index + 1,
+                    context: Some(clipboard::CaptureContext {
+                        time: 1000 + index as u64,
+                        queue_epoch: Some(epoch),
+                    }),
+                    text: Some(format!("copied snapshot {index}")),
+                    ..Default::default()
+                },
+                &sender,
+                &buffered_bytes,
+            )
+            .unwrap();
+        }
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(*buffered_bytes.lock().unwrap() > 0);
+        release.send(()).unwrap();
+        drop(sender);
+        let hashes = worker.join().unwrap();
+        assert_eq!(crate::paste_queue::ordered_hashes().unwrap(), hashes);
+        assert_eq!(hashes.len(), 20);
+        for (index, hash) in hashes.iter().enumerate() {
+            let item = clipboard::try_get_by_hash(hash).unwrap();
+            assert_eq!(item.content, format!("copied snapshot {index}"));
+            assert_eq!(item.time, 1000 + index as u64);
+        }
+        crate::paste_queue::set_active(false);
+        assert_eq!(*buffered_bytes.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn snapshot_buffer_overflow_is_explicit_and_releases_its_byte_budget() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let bytes = Arc::new(Mutex::new(0));
+        let make_snapshot = || ClipboardSnapshot {
+            text: Some("snapshot".to_string()),
+            ..Default::default()
+        };
+        buffer_snapshot(make_snapshot(), &sender, &bytes).unwrap();
+        assert!(buffer_snapshot(make_snapshot(), &sender, &bytes)
+            .unwrap_err()
+            .contains("缓冲区已满"));
+        assert_eq!(*bytes.lock().unwrap(), 8);
+        drop(receiver.recv().unwrap());
+        assert_eq!(*bytes.lock().unwrap(), 0);
+        *bytes.lock().unwrap() = MAX_BUFFERED_CAPTURE_BYTES;
+        assert!(buffer_snapshot(make_snapshot(), &sender, &bytes).is_err());
+        assert_eq!(*bytes.lock().unwrap(), MAX_BUFFERED_CAPTURE_BYTES);
+        let mut remaining_bytes = 10;
+        reserve_snapshot_bytes(6, &mut remaining_bytes).unwrap();
+        assert!(reserve_snapshot_bytes(5, &mut remaining_bytes).is_err());
+        assert_eq!(remaining_bytes, 4);
+    }
+
+    #[test]
+    fn an_older_worker_cannot_overwrite_a_newer_ignored_capture_completion() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let previous_sequence = LATEST_CAPTURE_SEQUENCE.swap(42, Ordering::SeqCst);
+        let previous_completion = CAPTURE_COMPLETION.lock().unwrap().take();
+        complete_capture(42, Ok(None));
+        complete_capture(41, Ok(Some("old".to_string())));
+        assert_eq!(
+            CAPTURE_COMPLETION
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .result_for(42),
+            Some(Ok(None))
+        );
+        *CAPTURE_COMPLETION.lock().unwrap() = previous_completion;
+        LATEST_CAPTURE_SEQUENCE.store(previous_sequence, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn staged_gif_rich_text_and_excel_blank_keep_the_existing_format_rules() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().to_string());
+        crate::config::save(crate::config::Config::default());
+        clipboard::db::init();
+        crate::paste_queue::set_active(true);
+        let context = clipboard::CaptureContext::from(true);
+        let mut gif = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut gif);
+            for color in [image::Rgba([255, 0, 0, 255]), image::Rgba([0, 0, 255, 255])] {
+                encoder
+                    .encode_frame(image::Frame::new(image::RgbaImage::from_pixel(2, 2, color)))
+                    .unwrap();
+            }
+        }
+        let gif_hash = parse_snapshot(&mut ClipboardSnapshot {
+            context: Some(context),
+            gif: Some(gif.clone()),
+            png: Some(include_bytes!("../../../icons/32x32.png").to_vec()),
+            ..Default::default()
+        })
+        .unwrap()
+        .unwrap();
+        let stored_gif = clipboard::try_get_by_hash(&gif_hash).unwrap();
+        assert_eq!(
+            crate::history_store::read_file(&stored_gif.content).unwrap(),
+            gif
+        );
+        assert_eq!(stored_gif.item_type, clipboard::item::ItemType::Image);
+
+        let rich_hash = parse_snapshot(&mut ClipboardSnapshot {
+            context: Some(context),
+            text: Some("rich snapshot".to_string()),
+            html: Some(b"<b>rich snapshot</b>".to_vec()),
+            ..Default::default()
+        })
+        .unwrap()
+        .unwrap();
+        assert!(clipboard::rich_clipboard_meta(&rich_hash).is_some());
+
+        let blank = parse_snapshot(&mut ClipboardSnapshot {
+            context: Some(context),
+            app_source: AppSource {
+                name: "EXCEL".to_string(),
+                ..Default::default()
+            },
+            text: Some("\t\r\n".to_string()),
+            dib: Some(vec![0]),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(blank.is_none());
+        assert_eq!(
+            crate::paste_queue::ordered_hashes().unwrap(),
+            vec![gif_hash, rich_hash]
+        );
+        crate::paste_queue::set_active(false);
+    }
+
     use super::{
         preferred_rich_plain_text, rtf_plain_text, should_ignore_empty_rich_content,
         should_ignore_excel_blank_bitmap_phase, should_prefer_bitmap_for_rich_content,

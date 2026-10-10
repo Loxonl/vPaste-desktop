@@ -24,6 +24,7 @@ use tauri::{Emitter, Manager, WebviewWindow};
 const READ_ATTEMPTS: usize = 3;
 const INITIAL_RETRY_DELAY_MS: u64 = 25;
 const CLIPBOARD_POLL_INTERVAL_MS: u64 = 500;
+const PASTE_QUEUE_CLIPBOARD_POLL_INTERVAL_MS: u64 = 100;
 
 const HTML_PASTEBOARD_TYPES: &[&str] = &[
     "public.html",
@@ -69,6 +70,7 @@ pub fn start(window: WebviewWindow) {
         };
 
         let mut last_change_count = autoreleasepool(pasteboard_change_count);
+        let mut last_queue_state_emit: Option<Instant> = None;
 
         loop {
             // Cocoa returns autoreleased pasteboard, workspace, image, and data objects.
@@ -78,12 +80,25 @@ pub fn start(window: WebviewWindow) {
             });
             if let Some((hash, queue_only)) = captured {
                 emit_clipboard_event(&window, queue_only);
+                if queue_only {
+                    last_queue_state_emit = Some(Instant::now());
+                }
                 info!("captured clipboard hash: {hash}");
-            } else if crate::paste_queue::is_active() {
+            } else if crate::paste_queue::is_active()
+                && last_queue_state_emit.map_or(true, |last| {
+                    last.elapsed() >= Duration::from_millis(CLIPBOARD_POLL_INTERVAL_MS)
+                })
+            {
                 crate::paste_queue::emit_state(window.app_handle());
+                last_queue_state_emit = Some(Instant::now());
             }
 
-            thread::sleep(Duration::from_millis(CLIPBOARD_POLL_INTERVAL_MS));
+            let poll_interval_ms = if crate::paste_queue::is_active() {
+                PASTE_QUEUE_CLIPBOARD_POLL_INTERVAL_MS
+            } else {
+                CLIPBOARD_POLL_INTERVAL_MS
+            };
+            thread::sleep(Duration::from_millis(poll_interval_ms));
         }
     });
 }

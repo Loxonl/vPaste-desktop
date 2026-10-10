@@ -895,6 +895,88 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
+    fn rapid_shortcuts_resolve_distinct_items_when_the_serial_worker_consumes_them() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, VK_V};
+
+        with_test_database(|| {
+            let hashes = (0..5)
+                .map(|index| format!("rapid-paste-{index}"))
+                .collect::<Vec<_>>();
+            seed_history(&hashes);
+            set_active(true);
+            add_items(&hashes).unwrap();
+            let mut input_state = crate::PasteQueueInputState {
+                control: true,
+                ..Default::default()
+            };
+            let (sender, receiver) = std::sync::mpsc::channel::<crate::PasteQueueRequest>();
+            for _ in &hashes {
+                let (intercept, trigger) = crate::handle_paste_queue_windows_key_event(
+                    &mut input_state,
+                    VK_V.0 as u32,
+                    true,
+                    0,
+                    true,
+                );
+                assert!(intercept && trigger);
+                sender
+                    .send(crate::PasteQueueRequest {
+                        hash: None,
+                        activation_epoch: activation_epoch(),
+                        origin: crate::PasteQueueRequestOrigin::Shortcut,
+                    })
+                    .unwrap();
+                for input in crate::paste_shortcut_inputs() {
+                    let key = unsafe { input.Anonymous.ki };
+                    assert_eq!(
+                        crate::handle_paste_queue_windows_key_event(
+                            &mut input_state,
+                            key.wVk.0 as u32,
+                            !key.dwFlags.contains(KEYEVENTF_KEYUP),
+                            key.dwExtraInfo,
+                            true,
+                        ),
+                        (false, false)
+                    );
+                }
+                assert_eq!(
+                    crate::handle_paste_queue_windows_key_event(
+                        &mut input_state,
+                        VK_V.0 as u32,
+                        false,
+                        0,
+                        true,
+                    ),
+                    (true, false)
+                );
+            }
+            drop(sender);
+            let consumed = receiver
+                .into_iter()
+                .map(|request| {
+                    run_paste_operation(|| {
+                        assert_eq!(request.activation_epoch, activation_epoch());
+                        let hash = paste_target(request.hash.as_deref()).unwrap().unwrap();
+                        consume(&hash).unwrap();
+                        hash
+                    })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(consumed, hashes);
+            assert!(ordered_hashes().unwrap().is_empty());
+            assert!(hashes
+                .iter()
+                .all(|hash| clipboard::try_get_by_hash(hash).is_some()));
+            assert!(undo_consume().unwrap());
+            assert_eq!(
+                ordered_hashes().unwrap(),
+                vec![hashes.last().unwrap().clone()]
+            );
+        });
+    }
+
+    #[test]
     fn undo_restores_the_consumed_snapshot_without_history() {
         with_test_database(|| {
             seed_history(&["saved".to_string()]);

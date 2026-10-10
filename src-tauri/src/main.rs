@@ -123,6 +123,7 @@ static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
 static PASTE_FALLBACK_NOTICE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PASTE_QUEUE_INTERCEPTOR_READY: AtomicBool = AtomicBool::new(false);
 static PASTE_QUEUE_INTERCEPTOR_STARTING: AtomicBool = AtomicBool::new(false);
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 static PASTE_QUEUE_INTERNAL_PASTE: AtomicBool = AtomicBool::new(false);
 static PASTE_QUEUE_MENU_OPEN: AtomicBool = AtomicBool::new(false);
 static PASTE_QUEUE_MENU_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -152,6 +153,8 @@ const PASTE_QUEUE_WINDOW_WIDTH: f64 = 360.0;
 const PASTE_QUEUE_WINDOW_HEIGHT: f64 = 448.0;
 #[cfg(target_os = "macos")]
 const PASTE_QUEUE_MAC_EVENT_MARKER: i64 = 0x5650_4153_5445_5155;
+#[cfg(target_os = "windows")]
+const PASTE_QUEUE_WINDOWS_EVENT_MARKER: usize = 0x5650_5155;
 const PASTE_FALLBACK_NOTICE_TOP_INSET: f64 = 18.0;
 const PASTE_FALLBACK_NOTICE_DURATION_MS: u64 = 4_000;
 const AUXILIARY_WINDOW_GUTTER: f64 = 8.0;
@@ -7208,36 +7211,27 @@ mod shortcut_policy_tests {
             state.control = true;
         }
 
-        assert_eq!(
-            begin_paste_queue_v_press(&mut state, true, false),
-            (true, true)
-        );
-        assert_eq!(
-            begin_paste_queue_v_press(&mut state, true, false),
-            (true, false)
-        );
+        assert_eq!(begin_paste_queue_v_press(&mut state, true), (true, true));
+        assert_eq!(begin_paste_queue_v_press(&mut state, true), (true, false));
 
         state.v_down = false;
         state.swallow_v = false;
         assert_eq!(
-            begin_paste_queue_v_press(&mut state, true, true),
+            handle_paste_queue_key_event(&mut state, rdev::Key::KeyV, true, true, true),
             (false, false)
         );
-        assert_eq!(
-            begin_paste_queue_v_press(&mut state, false, false),
-            (false, false)
-        );
+        assert_eq!(begin_paste_queue_v_press(&mut state, false), (false, false));
     }
 
     #[test]
     fn macos_paste_queue_interceptor_uses_raw_key_events() {
         assert_eq!(
-            paste_queue_interceptor_backend_for_platform(true),
+            paste_queue_interceptor_backend_for_platform(true, false),
             PasteQueueInterceptorBackend::RawMacEventTap
         );
         assert_eq!(
-            paste_queue_interceptor_backend_for_platform(false),
-            PasteQueueInterceptorBackend::RdevGrab
+            paste_queue_interceptor_backend_for_platform(false, true),
+            PasteQueueInterceptorBackend::RawWindowsKeyboardHook
         );
     }
 
@@ -7927,6 +7921,7 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
     })?;
 
     let clipboard_start = Instant::now();
+    let _access = clipboard::windows::lock_clipboard_access();
     let _clipboard = Clipboard::new_attempts(10).map_err(|err| format!("{:?}", err))?;
     mark_next_clipboard_change_as_internal();
     clipboard_win::raw::empty().map_err(|err| {
@@ -8019,6 +8014,7 @@ fn copy_gif_bytes_to_clipboard_as_file(path: &str, bytes: &[u8]) -> Result<bool,
     fs::write(&cache_path, bytes).map_err(|err| err.to_string())?;
 
     let files = vec![cache_path.to_string_lossy().to_string()];
+    let _access = clipboard::windows::lock_clipboard_access();
     let _clipboard = Clipboard::new_attempts(10).map_err(|err| format!("{:?}", err))?;
     mark_next_clipboard_change_as_internal();
     clipboard_win::raw::empty().map_err(|err| {
@@ -8114,6 +8110,26 @@ fn prewarm_image_preview_cache(paths: Vec<String>) {
 #[cfg(target_os = "windows")]
 fn registered_clipboard_format(name: &str) -> Option<u32> {
     clipboard_win::raw::register_format(name).map(|code| code.get())
+}
+
+#[cfg(target_os = "windows")]
+fn copy_text_to_windows_clipboard(text: &str) -> Result<(), String> {
+    let _access = clipboard::windows::lock_clipboard_access();
+    // Preserve arboard's previous short retries when another app owns the clipboard.
+    let mut opened = clipboard_win::Clipboard::new();
+    for _ in 0..5 {
+        if opened.is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        opened = clipboard_win::Clipboard::new();
+    }
+    let _clipboard = opened.map_err(|err| err.to_string())?;
+    clipboard_win::raw::set_string(text).map_err(|err| err.to_string())?;
+    // Publish the payload and origin marker in the same clipboard transaction.
+    // Otherwise the listener can enqueue our own text between the two writes.
+    write_internal_clipboard_marker_without_open();
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -8658,6 +8674,7 @@ fn write_registered_clipboard_file(format_name: &str, path: &str) -> Result<(), 
 fn copy_rich_to_clipboard(text: &str, meta: &clipboard::RichClipboardMeta) -> Result<(), String> {
     use clipboard_win::Clipboard;
 
+    let _access = clipboard::windows::lock_clipboard_access();
     let _clipboard = Clipboard::new_attempts(10).map_err(|err| format!("{:?}", err))?;
     clipboard_win::raw::set_string(text).map_err(|err| format!("{:?}", err))?;
     for (format_name, path) in [
@@ -8956,6 +8973,7 @@ fn copy_with_rich_meta(
                 let bytes = rgba.into_vec();
                 let image = tauri::image::Image::new(&bytes, width, height);
                 mark_internal();
+                let _access = clipboard::windows::lock_clipboard_access();
                 app.clipboard().write_image(&image).map_err(|e| {
                     error!("Failed to set image: {}", e);
                     e.to_string()
@@ -9004,12 +9022,13 @@ fn copy_with_rich_meta(
                 return Err(format!("源文件不存在：{}", missing_paths.join(", ")));
             }
             mark_internal();
+            let _access = clipboard::windows::lock_clipboard_access();
             let _clipboard = Clipboard::new_attempts(10).map_err(|e| format!("{:?}", e))?;
             FileList.write_clipboard(&files).map_err(|e| {
                 error!("Failed to set file list: {:?}", e);
                 format!("{:?}", e)
             })?;
-            write_internal_clipboard_marker();
+            write_internal_clipboard_marker_without_open();
         }
         #[cfg(target_os = "macos")]
         {
@@ -9041,12 +9060,13 @@ fn copy_with_rich_meta(
         }
         info!("Copying text payload: {} bytes", item.len());
         mark_internal();
+        #[cfg(target_os = "windows")]
+        copy_text_to_windows_clipboard(&item)?;
+        #[cfg(not(target_os = "windows"))]
         app.clipboard().write_text(item).map_err(|e| {
             error!("Failed to set text: {}", e);
             e.to_string()
         })?;
-        #[cfg(target_os = "windows")]
-        write_internal_clipboard_marker();
     }
     info!("Copy successful");
     Ok(())
@@ -9103,9 +9123,9 @@ fn simulate_paste_shortcut() -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn simulate_paste_shortcut() -> Result<(), String> {
+fn paste_shortcut_inputs() -> [windows::Win32::UI::Input::KeyboardAndMouse::INPUT; 4] {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
         VIRTUAL_KEY, VK_CONTROL, VK_V,
     };
 
@@ -9118,18 +9138,25 @@ fn simulate_paste_shortcut() -> Result<(), String> {
                     wScan: 0,
                     dwFlags: flags,
                     time: 0,
-                    dwExtraInfo: 0,
+                    dwExtraInfo: PASTE_QUEUE_WINDOWS_EVENT_MARKER,
                 },
             },
         }
     }
 
-    let inputs = [
+    [
         keyboard_input(VK_CONTROL, KEYBD_EVENT_FLAGS(0)),
         keyboard_input(VK_V, KEYBD_EVENT_FLAGS(0)),
         keyboard_input(VK_V, KEYEVENTF_KEYUP),
         keyboard_input(VK_CONTROL, KEYEVENTF_KEYUP),
-    ];
+    ]
+}
+
+#[cfg(target_os = "windows")]
+fn simulate_paste_shortcut() -> Result<(), String> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT};
+
+    let inputs = paste_shortcut_inputs();
     let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
     if sent != inputs.len() as u32 {
         return Err(format!(
@@ -9240,9 +9267,12 @@ fn process_paste_queue_request_inner(app: &tauri::AppHandle, request: PasteQueue
     paste_queue::emit_state(app);
     let result = restore_paste_queue_item(app.clone(), &hash).and_then(|_| {
         prepare_paste_queue_click_target(app, request.origin);
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         PASTE_QUEUE_INTERNAL_PASTE.store(true, Ordering::SeqCst);
         let result = simulate_paste_shortcut();
+        // Let the target read this clipboard payload before restoring the next item.
         std::thread::sleep(std::time::Duration::from_millis(24));
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         PASTE_QUEUE_INTERNAL_PASTE.store(false, Ordering::SeqCst);
         result
     });
@@ -9364,12 +9394,8 @@ fn exact_paste_queue_modifier_for_platform(state: &PasteQueueInputState, macos: 
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
-fn begin_paste_queue_v_press(
-    state: &mut PasteQueueInputState,
-    active: bool,
-    internal: bool,
-) -> (bool, bool) {
-    let intercept = active && !internal && exact_paste_queue_modifier(state);
+fn begin_paste_queue_v_press(state: &mut PasteQueueInputState, active: bool) -> (bool, bool) {
+    let intercept = active && exact_paste_queue_modifier(state);
     let trigger = intercept && !state.v_down;
     state.v_down = true;
     if intercept {
@@ -9378,15 +9404,150 @@ fn begin_paste_queue_v_press(
     (intercept, trigger)
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
+fn handle_paste_queue_key_event(
+    state: &mut PasteQueueInputState,
+    key: rdev::Key,
+    down: bool,
+    active: bool,
+    internal_event: bool,
+) -> (bool, bool) {
+    if internal_event {
+        return (false, false);
+    }
+    if down {
+        update_paste_queue_modifier(state, key, true);
+        if key == rdev::Key::KeyV {
+            return begin_paste_queue_v_press(state, active);
+        }
+    } else {
+        if key == rdev::Key::KeyV {
+            state.v_down = false;
+            let swallow = std::mem::take(&mut state.swallow_v);
+            return (swallow, false);
+        }
+        update_paste_queue_modifier(state, key, false);
+    }
+    (false, false)
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod paste_queue_keyboard_regression_tests {
+    use super::*;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, VK_CONTROL, VK_V};
+
+    #[test]
+    fn internal_paste_input_builder_tags_every_key() {
+        for input in paste_shortcut_inputs() {
+            assert_eq!(
+                unsafe { input.Anonymous.ki.dwExtraInfo },
+                PASTE_QUEUE_WINDOWS_EVENT_MARKER,
+                "the actual SendInput payload must identify every internal key event"
+            );
+        }
+    }
+
+    #[test]
+    fn real_paste_press_between_internal_events_still_enters_queue() {
+        let mut state = PasteQueueInputState {
+            control: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            handle_paste_queue_windows_key_event(
+                &mut state,
+                VK_CONTROL.0 as u32,
+                true,
+                PASTE_QUEUE_WINDOWS_EVENT_MARKER,
+                true,
+            ),
+            (false, false)
+        );
+
+        assert_eq!(
+            handle_paste_queue_windows_key_event(&mut state, VK_V.0 as u32, true, 0, true),
+            (true, true),
+            "a real press must not bypass the serial paste worker during injection"
+        );
+    }
+
+    #[test]
+    fn internal_paste_events_do_not_release_the_users_held_keys() {
+        let mut state = PasteQueueInputState {
+            control: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            handle_paste_queue_windows_key_event(&mut state, VK_V.0 as u32, true, 0, true),
+            (true, true)
+        );
+        for input in paste_shortcut_inputs() {
+            let key = unsafe { input.Anonymous.ki };
+            assert_eq!(
+                handle_paste_queue_windows_key_event(
+                    &mut state,
+                    key.wVk.0 as u32,
+                    !key.dwFlags.contains(KEYEVENTF_KEYUP),
+                    key.dwExtraInfo,
+                    true,
+                ),
+                (false, false)
+            );
+        }
+        assert!(state.control);
+        assert!(state.v_down);
+        assert!(state.swallow_v);
+        assert_eq!(
+            handle_paste_queue_windows_key_event(&mut state, VK_V.0 as u32, true, 0, true),
+            (true, false),
+            "holding V must still enqueue only one request"
+        );
+        assert_eq!(
+            handle_paste_queue_windows_key_event(&mut state, VK_V.0 as u32, false, 0, true),
+            (true, false)
+        );
+        assert_eq!(
+            handle_paste_queue_windows_key_event(&mut state, VK_V.0 as u32, true, 0, true),
+            (true, true),
+            "the next real V press must enqueue the next item while Ctrl stays held"
+        );
+    }
+
+    #[test]
+    fn windows_queue_hook_can_be_installed_and_removed() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
+        };
+
+        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
+        unsafe {
+            let hook = SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                Some(paste_queue_windows_keyboard_callback),
+                None,
+                0,
+            )
+            .expect("the Windows queue interceptor must install on this desktop");
+            UnhookWindowsHookEx(hook).unwrap();
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PasteQueueInterceptorBackend {
     RawMacEventTap,
+    RawWindowsKeyboardHook,
     RdevGrab,
 }
 
-fn paste_queue_interceptor_backend_for_platform(macos: bool) -> PasteQueueInterceptorBackend {
+fn paste_queue_interceptor_backend_for_platform(
+    macos: bool,
+    windows: bool,
+) -> PasteQueueInterceptorBackend {
     if macos {
         PasteQueueInterceptorBackend::RawMacEventTap
+    } else if windows {
+        PasteQueueInterceptorBackend::RawWindowsKeyboardHook
     } else {
         PasteQueueInterceptorBackend::RdevGrab
     }
@@ -9494,9 +9655,7 @@ unsafe extern "C" fn paste_queue_macos_event_callback(
         let flags = CGEventGetFlags(event);
         let exact_command = flags & FLAG_COMMAND != 0
             && flags & (FLAG_SHIFT | FLAG_CONTROL | FLAG_ALTERNATE | FLAG_SECONDARY_FN) == 0;
-        let intercept = paste_queue::is_active()
-            && !PASTE_QUEUE_INTERNAL_PASTE.load(Ordering::SeqCst)
-            && exact_command;
+        let intercept = paste_queue::is_active() && exact_command;
         let trigger = intercept && !state.v_down;
         state.v_down = true;
         if intercept {
@@ -9552,7 +9711,136 @@ fn run_paste_queue_interceptor() -> Result<(), String> {
     Err("macOS Event Tap 已停止".to_string())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+static PASTE_QUEUE_WINDOWS_INPUT_STATE: Mutex<PasteQueueInputState> =
+    Mutex::new(PasteQueueInputState {
+        control: false,
+        meta: false,
+        shift: false,
+        alt: false,
+        v_down: false,
+        swallow_v: false,
+    });
+
+#[cfg(target_os = "windows")]
+fn handle_paste_queue_windows_key_event(
+    state: &mut PasteQueueInputState,
+    virtual_key: u32,
+    down: bool,
+    extra_info: usize,
+    active: bool,
+) -> (bool, bool) {
+    use rdev::Key;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        VIRTUAL_KEY, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL,
+        VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_V,
+    };
+
+    let key = match VIRTUAL_KEY(virtual_key as u16) {
+        VK_CONTROL | VK_LCONTROL | VK_RCONTROL => Key::ControlLeft,
+        VK_LWIN | VK_RWIN => Key::MetaLeft,
+        VK_SHIFT | VK_LSHIFT | VK_RSHIFT => Key::ShiftLeft,
+        VK_MENU | VK_LMENU | VK_RMENU => Key::Alt,
+        VK_V => Key::KeyV,
+        _ => return (false, false),
+    };
+    handle_paste_queue_key_event(
+        state,
+        key,
+        down,
+        active,
+        extra_info == PASTE_QUEUE_WINDOWS_EVENT_MARKER,
+    )
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn paste_queue_windows_keyboard_callback(
+    code: i32,
+    message: windows::Win32::Foundation::WPARAM,
+    data: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::LRESULT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, HC_ACTION, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
+        WM_SYSKEYUP,
+    };
+
+    if code == HC_ACTION as i32 {
+        let down = match message.0 as u32 {
+            WM_KEYDOWN | WM_SYSKEYDOWN => Some(true),
+            WM_KEYUP | WM_SYSKEYUP => Some(false),
+            _ => None,
+        };
+        if let Some(down) = down {
+            let event = &*(data.0 as *const KBDLLHOOKSTRUCT);
+            let mut state = PASTE_QUEUE_WINDOWS_INPUT_STATE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (intercept, trigger) = handle_paste_queue_windows_key_event(
+                &mut state,
+                event.vkCode,
+                down,
+                event.dwExtraInfo,
+                paste_queue::is_active(),
+            );
+            if trigger {
+                let _ = enqueue_paste_queue_request(None, PasteQueueRequestOrigin::Shortcut);
+            }
+            if intercept {
+                return LRESULT(1);
+            }
+        }
+    }
+    CallNextHookEx(None, code, message, data)
+}
+
+#[cfg(target_os = "windows")]
+fn run_paste_queue_interceptor() -> Result<(), String> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
+        MSG, WH_KEYBOARD_LL,
+    };
+
+    unsafe {
+        *PASTE_QUEUE_WINDOWS_INPUT_STATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = PasteQueueInputState {
+            control: GetAsyncKeyState(VK_CONTROL.0 as i32) < 0,
+            meta: GetAsyncKeyState(VK_LWIN.0 as i32) < 0 || GetAsyncKeyState(VK_RWIN.0 as i32) < 0,
+            shift: GetAsyncKeyState(VK_SHIFT.0 as i32) < 0,
+            alt: GetAsyncKeyState(VK_MENU.0 as i32) < 0,
+            ..Default::default()
+        };
+        let hook = SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(paste_queue_windows_keyboard_callback),
+            None,
+            0,
+        )
+        .map_err(|err| err.to_string())?;
+        PASTE_QUEUE_INTERCEPTOR_READY.store(true, Ordering::SeqCst);
+        let mut message = MSG::default();
+        loop {
+            let status = GetMessageW(&mut message, None, 0, 0).0;
+            if status <= 0 {
+                let error = if status < 0 {
+                    windows::core::Error::from_win32().to_string()
+                } else {
+                    "Windows keyboard hook stopped".to_string()
+                };
+                let _ = UnhookWindowsHookEx(hook);
+                return Err(error);
+            }
+            let _ = TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 fn run_paste_queue_interceptor() -> Result<(), String> {
     let input_state = Mutex::new(PasteQueueInputState::default());
     PASTE_QUEUE_INTERCEPTOR_READY.store(true, Ordering::SeqCst);
@@ -9566,8 +9854,8 @@ fn run_paste_queue_interceptor() -> Result<(), String> {
                 if key == rdev::Key::KeyV {
                     let (intercept, trigger) = begin_paste_queue_v_press(
                         &mut state,
-                        paste_queue::is_active(),
-                        PASTE_QUEUE_INTERNAL_PASTE.load(Ordering::SeqCst),
+                        paste_queue::is_active()
+                            && !PASTE_QUEUE_INTERNAL_PASTE.load(Ordering::SeqCst),
                     );
                     if intercept {
                         if trigger {
@@ -9606,7 +9894,10 @@ fn ensure_paste_queue_interceptor(app: &tauri::AppHandle) -> Result<(), String> 
         std::thread::spawn(move || {
             info!(
                 "starting paste queue interceptor: {:?}",
-                paste_queue_interceptor_backend_for_platform(cfg!(target_os = "macos"))
+                paste_queue_interceptor_backend_for_platform(
+                    cfg!(target_os = "macos"),
+                    cfg!(target_os = "windows")
+                )
             );
             let result = run_paste_queue_interceptor();
             PASTE_QUEUE_INTERCEPTOR_READY.store(false, Ordering::SeqCst);

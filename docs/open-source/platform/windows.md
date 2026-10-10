@@ -52,6 +52,8 @@ Implementation expectations:
 - For browser image copies, continue probing bitmap formats when HTML only describes an image.
 - Treat very long text as text semantically even if stored in an asset file internally.
 - Refresh duplicate items by recency instead of silently ignoring the copy.
+- Capture raw snapshots immediately, but allow a plain-text-only snapshot up to 50ms for an adjacent rich-format completion with identical text, source, and queue session. Preserve different copies in order; do not globally deduplicate rich text by its plain fallback.
+- Serialize native clipboard reads and restores with the shared process-level clipboard lock. Publish text and the internal marker before releasing it; keep decoding and database work outside this lock. Do not assume `OpenClipboard(NULL)` coordinates our own threads (see the [Windows Terminal clipboard implementation](https://github.com/microsoft/terminal/blob/main/src/cascadia/TerminalApp/TerminalPage.cpp)).
 - When pasting a selected history item, record the foreground window before showing vPaste, restore it after hiding vPaste, then send native Ctrl+V. Browser page inputs are more focus-sensitive than address bars or chat boxes.
 
 ## Windows Release

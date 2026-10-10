@@ -135,6 +135,25 @@ Expected:
 - No global shortcut should steal common app shortcuts like Ctrl+F.
 - UI remains responsive during navigation and search.
 
+## Paste Queue Rapid Paste
+
+- Enable the paste queue and copy five distinct values in order.
+- Hold Ctrl on Windows or Command on macOS and rapidly tap V five times in Notepad/TextEdit and a browser input.
+- Repeat while releasing the modifier between presses, then repeat with mixed text and image items.
+- In QQ, select and copy `1`, `2`, `3`, `4`, `5` once each; compare with copying five values from a browser.
+- Paste the queue into QQ repeatedly. Watch for a consumed item disappearing and returning at the tail; then deliberately copy that value again.
+- Hold V without releasing it, test another application's Ctrl/Command+Shift+V, and undo the last queue paste.
+
+Expected:
+
+- Each separate Ctrl/Command+V press consumes the next queue item once, without repeating the current clipboard value or leaving an already-pasted item in the queue.
+- Auto-repeat while V stays held does not consume additional items; other paste shortcuts are not intercepted.
+- Undo restores the last consumed item, and pasted items remain in history. A failed restore keeps the item in the queue.
+- QQ's plain-text and immediately following rich-text phases produce one rich item per copy, in both the queue and history. Different text, source apps, queue sessions, or already-rich formatting variants remain distinct captures.
+- vPaste's clipboard restore must not re-enter the queue. A deliberate external re-copy is still captured; no time-based blanket suppression of external copies is used.
+
+Automated Windows coverage replays the plain/rich QQ phases through the buffered worker and database. The native concurrent read/restore test runs in a child process with an isolated window station, so it cannot overwrite the user's clipboard.
+
 ## Settings And Migration
 
 - Change language.

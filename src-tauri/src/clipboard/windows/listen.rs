@@ -27,6 +27,9 @@ const INTERNAL_CLIPBOARD_MARKER_BYTES: usize = 16;
 const READ_ATTEMPTS: usize = 10;
 const INITIAL_RETRY_DELAY_MS: u64 = 8;
 const MAX_RETRY_DELAY_MS: u64 = 40;
+// QQ can publish Unicode text first, then HTML for the same copy 10–22ms later.
+// Keep both raw captures; only delay finalizing a plain-text candidate briefly.
+const TEXT_FORMAT_COMPLETION_GRACE: Duration = Duration::from_millis(50);
 const MAX_BUFFERED_CAPTURE_BYTES: usize = 256 * 1024 * 1024;
 const MAX_BUFFERED_CAPTURES: usize = 128;
 pub(crate) const VPASTE_INTERNAL_CLIPBOARD_FORMAT: &str = "vPaste Internal Clipboard";
@@ -125,6 +128,36 @@ struct ClipboardSnapshot {
 }
 
 impl ClipboardSnapshot {
+    fn is_plain_text_candidate(&self) -> bool {
+        self.text.as_ref().is_some_and(|text| !text.is_empty())
+            && self.html.is_none()
+            && self.rtf.is_none()
+            && self.png.is_none()
+            && self.gif.is_none()
+            && self.dib_v5.is_none()
+            && self.dib.is_none()
+            && self.files.is_none()
+    }
+
+    fn is_rich_completion_of(&self, earlier: &Self) -> bool {
+        let (Some(current), Some(previous)) = (self.context, earlier.context) else {
+            return false;
+        };
+        earlier.is_plain_text_candidate()
+            && self.text == earlier.text
+            && (self.html.is_some() || self.rtf.is_some())
+            && self.gif.is_none()
+            && self.files.is_none()
+            && !self.app_source.name.is_empty()
+            && self.app_source.name == earlier.app_source.name
+            && self.app_source.exe_path == earlier.app_source.exe_path
+            && current.queue_epoch == previous.queue_epoch
+            && current
+                .time
+                .checked_sub(previous.time)
+                .is_some_and(|gap| gap <= TEXT_FORMAT_COMPLETION_GRACE.as_millis() as u64)
+    }
+
     fn byte_size(&self) -> usize {
         [
             self.html.as_ref(),
@@ -150,6 +183,7 @@ impl ClipboardSnapshot {
 
 struct BufferedSnapshot {
     snapshot: ClipboardSnapshot,
+    captured_at: Instant,
     byte_size: usize,
     buffered_bytes: Arc<Mutex<usize>>,
 }
@@ -175,10 +209,39 @@ fn buffer_snapshot(
     sender
         .try_send(BufferedSnapshot {
             snapshot,
+            captured_at: Instant::now(),
             byte_size,
             buffered_bytes: buffered_bytes.clone(),
         })
         .map_err(|_| "复制内容处理缓冲区已满，请稍后再复制".to_string())
+}
+
+fn next_buffered_snapshot(
+    receiver: &mpsc::Receiver<BufferedSnapshot>,
+    pending: &mut Option<BufferedSnapshot>,
+) -> Option<BufferedSnapshot> {
+    let first = pending.take().or_else(|| receiver.recv().ok())?;
+    if !first.snapshot.is_plain_text_candidate() {
+        return Some(first);
+    }
+    // An already-buffered follow-up must still be inspected after a slow earlier
+    // item. The deadline only limits waiting for an event that has not arrived.
+    let remaining = TEXT_FORMAT_COMPLETION_GRACE.saturating_sub(first.captured_at.elapsed());
+    let Ok(mut next) = receiver.recv_timeout(remaining) else {
+        return Some(first);
+    };
+    if next.snapshot.is_rich_completion_of(&first.snapshot) {
+        info!(
+            "coalesced clipboard text format phases: sequence {} -> {}",
+            first.snapshot.sequence, next.snapshot.sequence
+        );
+        next.snapshot.context.as_mut().unwrap().time = first.snapshot.context.unwrap().time;
+        Some(next)
+    } else {
+        // Never discard a different copy, even if it arrived inside the grace period.
+        *pending = Some(next);
+        Some(first)
+    }
 }
 
 #[derive(Default)]
@@ -239,7 +302,8 @@ pub fn start(window: WebviewWindow) {
         let buffered_bytes = Arc::new(Mutex::new(0));
         let worker_window = window.clone();
         thread::spawn(move || {
-            while let Ok(mut buffered) = receiver.recv() {
+            let mut pending = None;
+            while let Some(mut buffered) = next_buffered_snapshot(&receiver, &mut pending) {
                 let snapshot = &mut buffered.snapshot;
                 let sequence = snapshot.sequence;
                 let epoch = snapshot.context.unwrap().queue_epoch;
@@ -360,6 +424,7 @@ fn read_snapshot(
     should_retry_file_hint: bool,
     context: clipboard::CaptureContext,
 ) -> Result<Option<ClipboardSnapshot>, String> {
+    let _access = super::lock_clipboard_access();
     let _clipboard = Clipboard::new_attempts(2).map_err(|err| err.to_string())?;
     let app_source = clipboard_app_source().unwrap_or_default();
     let internal_requested = should_skip_internal_clipboard_change();
@@ -1803,6 +1868,254 @@ mod tests {
     use super::*;
 
     #[test]
+    fn internal_text_is_never_visible_without_its_marker() {
+        // A separate process/window station owns a separate clipboard. Never run
+        // this writer/reader race against the user's desktop or clipboard history.
+        const CHILD_FLAG: &str = "VPASTE_ISOLATED_CLIPBOARD_TEST";
+        if std::env::var_os(CHILD_FLAG).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "clipboard::windows::listen::tests::internal_text_is_never_visible_without_its_marker",
+                    "--nocapture",
+                ])
+                .env(CHILD_FLAG, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child status: {}\n{}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        #[link(name = "user32")]
+        extern "system" {
+            fn CreateWindowStationW(
+                name: *const u16,
+                flags: u32,
+                access: u32,
+                security: *const std::ffi::c_void,
+            ) -> isize;
+            fn SetProcessWindowStation(station: isize) -> i32;
+            fn CreateDesktopW(
+                name: *const u16,
+                device: *const u16,
+                mode: *const std::ffi::c_void,
+                flags: u32,
+                access: u32,
+                security: *const std::ffi::c_void,
+            ) -> isize;
+            fn SetThreadDesktop(desktop: isize) -> i32;
+        }
+        let name = format!("vPaste-clipboard-test-{}\0", std::process::id())
+            .encode_utf16()
+            .collect::<Vec<_>>();
+        unsafe {
+            let station = CreateWindowStationW(name.as_ptr(), 0, 0x37f, std::ptr::null());
+            assert_ne!(station, 0, "cannot create isolated clipboard station");
+            assert_ne!(SetProcessWindowStation(station), 0);
+            let desktop_name = "Default\0".encode_utf16().collect::<Vec<_>>();
+            let desktop = CreateDesktopW(
+                desktop_name.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                0x1ff,
+                std::ptr::null(),
+            );
+            assert_ne!(desktop, 0);
+            assert_ne!(SetThreadDesktop(desktop), 0);
+        }
+        // Handles are released when this short-lived child exits; its other tests
+        // must never run after switching the process-wide window station.
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().to_string());
+        crate::config::save(crate::config::Config::default());
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_done = done.clone();
+        let (ready, started) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            ready.send(()).unwrap();
+            let mut unmarked = 0;
+            let mut marked = 0;
+            while !reader_done.load(Ordering::SeqCst) {
+                match read_snapshot(
+                    false,
+                    clipboard::CaptureContext {
+                        time: 1,
+                        queue_epoch: None,
+                    },
+                ) {
+                    Ok(Some(snapshot)) if snapshot.text.is_some() => unmarked += 1,
+                    Ok(None) => marked += 1,
+                    _ => {}
+                }
+                thread::yield_now();
+            }
+            (unmarked, marked)
+        });
+        started.recv().unwrap();
+        let mut successful_writes = 0;
+        for _ in 0..500 {
+            if crate::copy_text_to_windows_clipboard("internal queue text").is_ok() {
+                successful_writes += 1;
+            }
+            thread::yield_now();
+        }
+        done.store(true, Ordering::SeqCst);
+        let (unmarked, marked) = reader.join().unwrap();
+        assert!(
+            successful_writes > 0 && marked > 0,
+            "native reader/writer did not run"
+        );
+        assert_eq!(
+            unmarked, 0,
+            "a capture can re-enqueue vPaste's own text before its marker is written"
+        );
+    }
+
+    fn qq_text_snapshot(sequence: u32, text: &str, rich: bool) -> ClipboardSnapshot {
+        ClipboardSnapshot {
+            sequence,
+            context: Some(clipboard::CaptureContext {
+                time: 1000 + u64::from(sequence) * 10,
+                queue_epoch: None,
+            }),
+            app_source: AppSource {
+                name: "QQ".to_string(),
+                exe_path: PathBuf::from("QQ.exe"),
+                ..Default::default()
+            },
+            text: Some(text.to_string()),
+            html: rich.then(|| format!("<b>{text}</b>").into_bytes()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn qq_plain_then_rich_phases_produce_one_complete_queue_item_per_copy() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().to_string());
+        crate::config::save(crate::config::Config::default());
+        clipboard::db::init();
+        crate::paste_queue::set_active(true);
+        let epoch = crate::paste_queue::activation_epoch();
+        let (sender, receiver) = mpsc::sync_channel(MAX_BUFFERED_CAPTURES);
+        let bytes = Arc::new(Mutex::new(0));
+        for number in 1..=5 {
+            for rich in [false, true] {
+                let mut snapshot =
+                    qq_text_snapshot(number * 2 + u32::from(rich), &number.to_string(), rich);
+                snapshot.context.as_mut().unwrap().queue_epoch = Some(epoch);
+                buffer_snapshot(snapshot, &sender, &bytes).unwrap();
+            }
+        }
+        drop(sender);
+        let mut pending = None;
+        let mut processed = Vec::new();
+        while let Some(mut buffered) = next_buffered_snapshot(&receiver, &mut pending) {
+            processed.push(parse_snapshot(&mut buffered.snapshot).unwrap().unwrap());
+        }
+        let queue = crate::paste_queue::ordered_hashes().unwrap();
+        crate::paste_queue::set_active(false);
+        assert_eq!(
+            processed.len(),
+            5,
+            "one QQ copy must not persist both format phases"
+        );
+        assert_eq!(queue, processed);
+        for (index, hash) in processed.iter().enumerate() {
+            let item = clipboard::try_get_by_hash(hash).unwrap();
+            assert_eq!(item.content, (index + 1).to_string());
+            assert!(clipboard::rich_clipboard_meta(hash).is_some());
+        }
+        let count: usize = clipboard::db::db()
+            .query_row("SELECT COUNT(*) FROM clipboard", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 5,
+            "history must not retain the incomplete plain phase either"
+        );
+        assert_eq!(*bytes.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn text_phase_coalescing_preserves_distinct_copies_and_formats() {
+        let first = qq_text_snapshot(1, "1", false);
+        let rich = qq_text_snapshot(2, "1", true);
+        assert!(rich.is_rich_completion_of(&first));
+        for change in 0..8 {
+            let mut next = qq_text_snapshot(2, "1", true);
+            match change {
+                0 => next.text = Some("2".to_string()),
+                1 => next.app_source.name = "Chrome".to_string(),
+                2 => next.app_source.exe_path = PathBuf::from("other.exe"),
+                3 => next.context.as_mut().unwrap().queue_epoch = Some(2),
+                4 => next.context.as_mut().unwrap().time += 100,
+                5 => next.context.as_mut().unwrap().time = 0,
+                6 => next.html = None,
+                _ => next.gif = Some(b"GIF89a".to_vec()),
+            }
+            let (sender, receiver) = mpsc::sync_channel(2);
+            let bytes = Arc::new(Mutex::new(0));
+            buffer_snapshot(qq_text_snapshot(1, "1", false), &sender, &bytes).unwrap();
+            buffer_snapshot(next, &sender, &bytes).unwrap();
+            drop(sender);
+            let mut pending = None;
+            assert_eq!(
+                next_buffered_snapshot(&receiver, &mut pending)
+                    .unwrap()
+                    .snapshot
+                    .sequence,
+                1
+            );
+            assert_eq!(
+                next_buffered_snapshot(&receiver, &mut pending)
+                    .unwrap()
+                    .snapshot
+                    .sequence,
+                2
+            );
+            assert!(next_buffered_snapshot(&receiver, &mut pending).is_none());
+            assert_eq!(*bytes.lock().unwrap(), 0);
+        }
+        // Distinct rich formatting remains meaningful; do not deduplicate all text.
+        let mut other_rich = qq_text_snapshot(3, "1", true);
+        other_rich.html = Some(b"<i>1</i>".to_vec());
+        assert!(!other_rich.is_rich_completion_of(&rich));
+    }
+
+    #[test]
+    fn plain_text_is_finalized_without_a_followup_and_backlogs_do_not_add_waits() {
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let bytes = Arc::new(Mutex::new(0));
+        buffer_snapshot(qq_text_snapshot(1, "1", false), &sender, &bytes).unwrap();
+        let mut pending = None;
+        let started = Instant::now();
+        let first = next_buffered_snapshot(&receiver, &mut pending).unwrap();
+        assert_eq!(first.snapshot.sequence, 1);
+        assert!(started.elapsed() < Duration::from_millis(500));
+        drop(first);
+
+        buffer_snapshot(qq_text_snapshot(3, "2", false), &sender, &bytes).unwrap();
+        let mut first = receiver.recv().unwrap();
+        first.captured_at -= Duration::from_secs(1);
+        pending = Some(first);
+        buffer_snapshot(qq_text_snapshot(4, "2", true), &sender, &bytes).unwrap();
+        let complete = next_buffered_snapshot(&receiver, &mut pending).unwrap();
+        assert_eq!(complete.snapshot.sequence, 4);
+        assert!(complete.snapshot.html.is_some());
+        drop(complete);
+        assert_eq!(*bytes.lock().unwrap(), 0);
+    }
+
+    #[test]
     fn buffered_snapshots_preserve_every_copy_while_processing_is_blocked() {
         let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
         let root = tempfile::tempdir().unwrap();
@@ -1817,10 +2130,12 @@ mod tests {
         let (release, blocked) = mpsc::channel();
         let worker = thread::spawn(move || {
             blocked.recv().unwrap();
-            receiver
-                .into_iter()
-                .map(|mut buffered| parse_snapshot(&mut buffered.snapshot).unwrap().unwrap())
-                .collect::<Vec<_>>()
+            let mut pending = None;
+            let mut hashes = Vec::new();
+            while let Some(mut buffered) = next_buffered_snapshot(&receiver, &mut pending) {
+                hashes.push(parse_snapshot(&mut buffered.snapshot).unwrap().unwrap());
+            }
+            hashes
         });
         let started = Instant::now();
         for index in 0..20 {

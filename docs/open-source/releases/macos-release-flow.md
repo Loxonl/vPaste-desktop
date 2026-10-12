@@ -11,17 +11,19 @@ npm ci
 npm run build:macos
 ```
 
-The local configuration uses ad-hoc identity `-` and disables updater artifacts. It is suitable for development smoke tests only; downloads will not have Developer ID trust or notarization.
+The local configuration uses ad-hoc identity `-` and disables updater artifacts. It is suitable for development smoke tests only; downloads will not have Developer ID trust or notarization. The first build installs pinned `dmgbuild` into `src-tauri/target/.macos-dmg-venv` using Python 3.10 or newer.
+
+The installer artwork lives in `src-tauri/macos/dmg/background.svg`. Run `npm run generate:macos-dmg-background` after editing it to refresh the 1× and 2× PNG files. `layout.json` is the single source for the 660 × 400 point window, 128 point icons, and icon positions. The packaging script checks both PNG sizes and mounts each generated DMG to verify the app signature, Applications link, two-resolution background, and Finder layout records. Signed releases also validate the stapled ticket on the app inside the DMG.
 
 ## Official packages
 
 Publishing a GitHub Release with a matching `v<version>` tag starts `.github/workflows/tag-release.yml`, including both macOS matrix jobs. Each macOS job:
 
-1. Installs the pinned Rust target and npm lockfile.
+1. Installs the pinned Rust target, npm lockfile, Python 3.12, and pinned `dmgbuild`.
 2. Imports a `Developer ID Application` certificate into an ephemeral keychain.
 3. Writes the App Store Connect API key to an ephemeral runner file.
-4. Builds a DMG and Tauri updater archive for one architecture.
-5. Signs the app, submits it for notarization, and staples the notarization result.
+4. Builds the Tauri app and updater archive for one architecture, signs the app, submits it for notarization, and staples the notarization result.
+5. Builds the DMG from the notarized app with the shared Finder layout, signs the DMG with the same Developer ID identity, and verifies the mounted contents.
 6. Verifies the bundle with `codesign` and Gatekeeper `spctl`.
 7. Creates updater signatures, checksums, and build provenance.
 8. Removes the temporary keychain and key files even if the build fails.

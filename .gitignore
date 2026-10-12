@@ -48,6 +48,7 @@ resource/*.db
 *.log
 *.tmp
 *.bak
+__pycache__/
 *.local
 *.pdb
 *.msi

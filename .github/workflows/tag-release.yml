@@ -226,6 +226,11 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      - name: Set up Python for DMG packaging
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+
       - name: Set release version from tag
         shell: bash
         run: |

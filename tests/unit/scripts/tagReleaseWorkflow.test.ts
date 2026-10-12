@@ -21,6 +21,16 @@ describe("tag release signing workflow", () => {
     expect(releaseWorkflow).not.toContain("gh release edit");
   });
 
+  it.each([
+    ".github/workflows/tag-release.yml",
+    ".github/workflows/tag-build-windows.yml",
+    ".github/workflows/tag-build-macos.yml",
+  ])("does not save tag-scoped caches that later releases cannot restore in %s", path => {
+    const contents = readFileSync(path, "utf8");
+    expect(contents).not.toContain("actions/cache");
+    expect(contents).not.toMatch(/^\s+cache: npm$/m);
+  });
+
   it("does not publish the website updater manifest while JSON publication is deferred", () => {
     expect(releaseWorkflow).not.toContain("VPASTE_WEBSITE_RELEASE_TOKEN");
     expect(releaseWorkflow).not.toContain("Commit updater manifest to website");

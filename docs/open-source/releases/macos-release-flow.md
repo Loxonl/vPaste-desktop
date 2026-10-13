@@ -1,6 +1,8 @@
 # macOS Release Flow
 
-Official releases provide separate Apple silicon (`aarch64`) and Intel (`x86_64`) packages. Both target macOS 11 Big Sur or newer.
+Official releases provide separate Apple silicon (`aarch64`) and Intel (`x86_64`) packages, plus a download-only universal DMG that runs natively on both. All target macOS 11 Big Sur or newer.
+
+The universal DMG is meant for website downloads. It has no updater archive and is not in `latest.json`: each slice of the universal binary reports its own architecture, so the first update moves an installed universal app onto the matching `darwin-aarch64` or `darwin-x86_64` package.
 
 ## Local package
 
@@ -17,12 +19,12 @@ The installer artwork lives in `src-tauri/macos/dmg/background.svg`. Run `npm ru
 
 ## Official packages
 
-Publishing a GitHub Release with a matching `v<version>` tag starts `.github/workflows/tag-release.yml`, including both macOS matrix jobs. Each macOS job:
+Publishing a GitHub Release with a matching `v<version>` tag starts `.github/workflows/tag-release.yml`, including the `aarch64`, `x86_64`, and `universal` macOS matrix jobs. Each macOS job:
 
 1. Installs the pinned Rust target, npm lockfile, Python 3.12, and pinned `dmgbuild`.
 2. Imports a `Developer ID Application` certificate into an ephemeral keychain.
 3. Writes the App Store Connect API key to an ephemeral runner file.
-4. Builds the Tauri app and updater archive for one architecture, signs the app, submits it for notarization, and staples the notarization result.
+4. Builds the Tauri app and updater archive for one architecture (the universal job builds both architectures with `SKIP_UPDATER=1` and verifies both slices with `lipo`), signs the app, submits it for notarization, and staples the notarization result.
 5. Builds the DMG from the notarized app with the shared Finder layout, signs the DMG with the same Developer ID identity, and verifies the mounted contents.
 6. Verifies the bundle with `codesign` and Gatekeeper `spctl`.
 7. Creates updater signatures, checksums, and build provenance.
@@ -35,6 +37,8 @@ For both `aarch64` and `x86_64`:
 - Signed and notarized `.dmg`
 - `.app.tar.gz` updater package
 - Matching `.app.tar.gz.sig`
+
+For `universal`: a signed and notarized `.dmg` only.
 
 The shared Release also contains `SHA256SUMS.txt`, `THIRD_PARTY_LICENSES.json`, `SBOM.cdx.json`, `LICENSE`, and GitHub-generated source archives. The workflow merges and validates the Windows and macOS manifest fragments locally, then attaches packages to the already published Release. It then publishes the channel's website `latest.json` (Stable or RC, from the tag); see [update-feed-publication.md](update-feed-publication.md). Keep GitHub's immutable Release setting disabled while attaching assets after publication.
 

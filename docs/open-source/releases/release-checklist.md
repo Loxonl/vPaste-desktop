@@ -45,7 +45,7 @@ The workflow creates a Draft Release only. It never creates a tag-triggered rele
 1. Merge the workflow and upload script before choosing the source commit. Create a GitHub Release with a reviewed tag matching `vX.Y.Z` for Stable or `vX.Y.Z-rc.N` for RC, and add the release title and notes. The notes must include the Windows Unknown publisher and SmartScreen warning.
 2. Publish the Release to trigger `.github/workflows/tag-release.yml`. Pushing a tag alone does not start this workflow.
 3. Approve the protected `release` Environment for platform signing and asset upload.
-4. Wait for Windows, Apple silicon macOS, and Intel macOS packages to be attached to that same Release. Existing assets with different contents are never replaced.
+4. Wait for Windows, Apple silicon macOS, Intel macOS, and universal macOS packages to be attached to that same Release. Existing assets with different contents are never replaced.
 5. Confirm the merged updater manifest contains `windows-x86_64`, `darwin-aarch64`, and `darwin-x86_64` entries with non-empty signatures. The workflow then publishes the channel manifest (`download/stable/latest.json` for `vX.Y.Z`, `download/rc/latest.json` for `vX.Y.Z-rc.N`) to the website; confirm the public URL serves the new version. See [update-feed-publication.md](update-feed-publication.md).
 6. Smoke-test the attached packages before advertising the Release. The source repository is currently private, so unauthenticated users cannot download its Release assets.
 
@@ -60,6 +60,6 @@ The workflow creates a Draft Release only. It never creates a tag-triggered rele
 
 ## Publish review
 
-- Private drafts contain the Windows installer/Portable, two macOS DMGs, checksums, SBOM, dependency inventory, notices, GPL license, and source archives.
+- Private drafts contain the Windows installer/Portable, three macOS DMGs (Apple silicon, Intel, universal), checksums, SBOM, dependency inventory, notices, GPL license, and source archives.
 - Packages must include updater archives/signatures; macOS packages must also pass platform signature and notarization checks. Publishing the merged website updater manifest is a separate future step.
 - Never replace assets under an already published version; create a new version for changed package bytes.

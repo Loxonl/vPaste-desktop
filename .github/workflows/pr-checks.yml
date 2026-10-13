@@ -18,6 +18,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.changes.outputs.code }}
+      rust: ${{ steps.changes.outputs.rust }}
     steps:
       - name: Check out the PR merge commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,13 +34,18 @@ jobs:
         run: |
           git diff --name-only --no-renames -z "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/pr-changed-files"
           code=false
+          rust=false
           while IFS= read -r -d '' changed_path; do
             case "$changed_path" in
               *.md|docs/*|LICENSE|.github/ISSUE_TEMPLATE/*|.github/CODEOWNERS) ;;
-              *) code=true ;;
+              # Frontend-only paths cannot change Rust compilation or tests, so the
+              # Windows and macOS Rust jobs are skipped when nothing else changed.
+              src/*|tests/*|index.html|vite.config.ts|vitest.config.ts|playwright*.config.ts|tsconfig*.json) code=true ;;
+              *) code=true; rust=true ;;
             esac
           done < "$RUNNER_TEMP/pr-changed-files"
           echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
 
   frontend:
     name: Frontend checks
@@ -75,7 +81,7 @@ jobs:
   rust:
     name: Rust checks (${{ matrix.platform }})
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -139,6 +145,7 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           CODE_CHANGED: ${{ needs.changes.outputs.code }}
+          RUST_CHANGED: ${{ needs.changes.outputs.rust }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           RUST_RESULT: ${{ needs.rust.result }}
         run: |
@@ -149,5 +156,10 @@ jobs:
           else
             test "$CODE_CHANGED" = true
             test "$FRONTEND_RESULT" = success
-            test "$RUST_RESULT" = success
+            if [ "$RUST_CHANGED" = false ]; then
+              test "$RUST_RESULT" = skipped
+            else
+              test "$RUST_CHANGED" = true
+              test "$RUST_RESULT" = success
+            fi
           fi

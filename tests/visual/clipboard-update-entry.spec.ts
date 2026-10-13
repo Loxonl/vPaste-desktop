@@ -103,7 +103,7 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
 
         expect(await commandCount(page, "copy")).toBe(0);
         expect(await commandCount(page, "paste")).toBe(0);
-        await expect(page.locator("[class*='preview']").filter({ hasText: "Selected clipboard item" })).toHaveCount(0);
+        expect(await commandCount(page, "show_preview_window")).toBe(0);
     });
 }
 

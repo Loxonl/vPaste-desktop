@@ -196,6 +196,20 @@ export function TabContextMenu({
     );
 }
 
+type UpdateConfirmDialogProps = {
+    open: boolean;
+    title: string;
+    description: string;
+    cancelLabel: string;
+    confirmLabel: string;
+    onCancel: () => void;
+    onConfirm: () => void;
+};
+
+export function UpdateConfirmDialog(props: UpdateConfirmDialogProps) {
+    return <ConfirmDialog {...props} destructive={false} keyboardPassthrough />;
+}
+
 type DeleteConfirmDialogProps = {
     title: string;
     description: string;

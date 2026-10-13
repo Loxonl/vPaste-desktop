@@ -20,10 +20,9 @@ body {
     font-weight: 700;
 }
 
-.about-product-subtitle {
+.about-version {
     margin-top: var(--ui-space-1);
     color: var(--settings-muted);
-    line-height: 1.55;
 }
 
 .shortcut-recorder {
@@ -307,29 +306,21 @@ body {
     min-width: 0;
 }
 
-.about-version-actions {
+.about-update-actions {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 8px;
-    margin-top: 12px;
-}
-
-.about-version-pill {
-    display: inline-flex;
-    align-items: center;
-    min-height: 26px;
-    padding: var(--ui-space-1) var(--ui-space-3);
-    border-radius: var(--ui-radius-pill);
-    background: var(--ui-accent-soft);
-    color: var(--ui-accent-strong);
-    font-size: 12px;
-    font-weight: 620;
-    line-height: 1.2;
+    gap: var(--ui-space-2);
+    margin-top: var(--ui-space-3);
 }
 
 .about-update-status {
     margin-top: var(--ui-space-2);
+    color: var(--settings-muted);
+}
+
+.about-update-status.is-error {
+    color: var(--ui-danger);
 }
 
 .about-link-grid {

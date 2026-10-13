@@ -35,10 +35,11 @@ export type ClipboardKeyboardContext = {
 /**
  * Controls marked with `data-keyboard-passthrough` handle Enter and Space
  * themselves (native button activation) rather than pasting or previewing
- * the selected card.
+ * the selected card. Dialogs marked with `data-keyboard-passthrough="dialog"`
+ * handle every key, including Escape and Tab.
  */
-function isKeyboardPassthroughTarget(target: EventTarget | null): boolean {
-    return target instanceof Element && target.closest("[data-keyboard-passthrough]") !== null;
+function isKeyboardPassthroughTarget(target: EventTarget | null, selector = "[data-keyboard-passthrough]"): boolean {
+    return target instanceof Element && target.closest(selector) !== null;
 }
 
 export function clipboardKeyDownAction(
@@ -46,6 +47,10 @@ export function clipboardKeyDownAction(
     context: ClipboardKeyboardContext,
 ): ClipboardKeyDownAction | null {
     if (context.searchComposing || event.isComposing || event.keyCode === 229) {
+        return null;
+    }
+
+    if (isKeyboardPassthroughTarget(event.target, '[data-keyboard-passthrough="dialog"]')) {
         return null;
     }
 

@@ -68,6 +68,7 @@ import {
 import {
     ClipboardContextMenus,
     DeleteConfirmDialog,
+    UpdateConfirmDialog,
     TabContextMenu,
     TagCreateChoicePopover,
     type ColorCopyOption,
@@ -195,6 +196,7 @@ export default function Clipboard() {
     const [tagCreateChoice, setTagCreateChoice] = useState<TagCreateChoiceState>(null);
     const [deleteConfirmTab, setDeleteConfirmTab] = useState<CustomTab | null>(null);
     const [deleteConfirmRecordTag, setDeleteConfirmRecordTag] = useState<ItemTag | null>(null);
+    const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
     const [itemTags, setItemTags] = useState<ItemTag[]>([]);
     const [hasMoreHistory, setHasMoreHistory] = useState(true);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -1980,7 +1982,9 @@ export default function Clipboard() {
                     onOpenSettings={tutorialActive ? blockTutorialNavigation : openConfigWindow}
                     updateReadyVersion={updateEntryVisible(updateState) ? updateState.availableVersion || "" : null}
                     updateInstalling={updateState.status === "installing"}
-                    onRestartToUpdate={() => void restartForUpdate()}
+                    onRestartToUpdate={() => {
+                        if (restartReady(updateState)) setUpdateConfirmOpen(true);
+                    }}
                 />
             </div>
 
@@ -2213,6 +2217,18 @@ export default function Clipboard() {
                     onConfirm={() => deleteCustomTab(deleteConfirmTab)}
                 />
             )}
+            <UpdateConfirmDialog
+                open={updateConfirmOpen && restartReady(updateState)}
+                title={t("clipboard.updateConfirmTitle")}
+                description={t("clipboard.updateConfirmDesc", { version: updateState.availableVersion || "" })}
+                cancelLabel={t("common.cancel")}
+                confirmLabel={t("clipboard.updateReadyAction")}
+                onCancel={() => setUpdateConfirmOpen(false)}
+                onConfirm={() => {
+                    setUpdateConfirmOpen(false);
+                    void restartForUpdate();
+                }}
+            />
             {deleteConfirmRecordTag && (
                 <DeleteConfirmDialog
                     title={t("tabs.deleteConfirmTitle")}

@@ -403,7 +403,7 @@ body {
 }
 
 .settings-button.app-update-button:focus-visible {
-  outline: 2px solid var(--ui-clipboard-update-text);
+  outline: 2px solid var(--ui-clipboard-update-focus-ring);
   outline-offset: 2px;
 }
 

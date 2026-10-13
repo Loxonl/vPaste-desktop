@@ -18,6 +18,8 @@ export type ConfirmDialogProps = {
     confirmDisabled?: boolean;
     status?: ReactNode;
     destructive?: boolean;
+    /** Lets the dialog handle every key itself inside windows with global shortcuts. */
+    keyboardPassthrough?: boolean;
     onCancel: () => void;
     onConfirm: () => void;
 };
@@ -33,6 +35,7 @@ export function ConfirmDialog({
     confirmDisabled = false,
     status,
     destructive = true,
+    keyboardPassthrough = false,
     onCancel,
     onConfirm,
 }: ConfirmDialogProps) {
@@ -46,6 +49,7 @@ export function ConfirmDialog({
             aria-labelledby={titleId}
             aria-describedby={descriptionId}
             maxWidth={false}
+            data-keyboard-passthrough={keyboardPassthrough ? "dialog" : undefined}
             BackdropProps={{
                 className: [styles.backdrop, backdropClassName].filter(Boolean).join(" "),
             }}

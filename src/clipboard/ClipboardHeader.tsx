@@ -10,7 +10,7 @@ import PlaylistAddCheckRoundedIcon from "@mui/icons-material/PlaylistAddCheckRou
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
 import StarBorderOutlinedIcon from "@mui/icons-material/StarBorderOutlined";
-import SystemUpdateAltOutlinedIcon from "@mui/icons-material/SystemUpdateAltOutlined";
+import SyncRoundedIcon from "@mui/icons-material/SyncRounded";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import WindowOutlinedIcon from "@mui/icons-material/WindowOutlined";
@@ -337,16 +337,14 @@ export function ClipboardHeaderActions({
             {!tutorialActive && updateReadyVersion !== null && onRestartToUpdate && (
                 <ToolbarIconButton
                     className={classes(styles, "settings-button app-update-button")}
-                    label={t(updateInstalling ? "clipboard.updateInstallingAction" : "clipboard.updateReadyAction", {
-                        version: updateReadyVersion,
-                    })}
+                    label={t(updateInstalling ? "clipboard.updateInstallingAction" : "clipboard.updateReadyAction")}
                     disabled={updateInstalling}
                     // Enter and Space activate this button natively instead of
                     // pasting or previewing the selected card.
                     data-keyboard-passthrough="true"
                     onClick={onRestartToUpdate}
                 >
-                    <SystemUpdateAltOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
+                    <SyncRoundedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
                 </ToolbarIconButton>
             )}
         </div>

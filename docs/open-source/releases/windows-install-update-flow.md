@@ -20,7 +20,7 @@ Windows 官方交付物为 Inno Setup 6.7.3 编译的 x64 当前用户安装包�
 
 - Stable feed 使用 Tauri updater 检查 `latest.json` 并验证 minisign。
 - Windows 把验签后的 Inno EXE 先写入临时文件、从磁盘复验后再原子提交 `pending.json` 元数据；下次启动在后台离线复核缓存签名、版本和平台，再恢复“重启更新”状态，不重复下载。
-- 默认启动 60 秒后检查，此后在上次成功检查 24 小时后再检查并静默下载；失败按 15 分钟 → 1 小时 → 6 小时退避，不记为成功检查。下载完成并验签落盘后，设置页、主面板（设置按钮右侧的圆形图标）和托盘提供同一个“重启更新”操作，系统通知同一版本最多提醒一次。
+- 默认启动 60 秒后检查，此后在上次成功检查 24 小时后再检查并静默下载；失败按 15 分钟 → 1 小时 → 6 小时退避，不记为成功检查。下载完成并验签落盘后，设置页、主面板（设置按钮右侧的蓝色圆形更新图标，点击后先确认）和托盘提供同一个“更新并重启”操作，系统通知同一版本最多提醒一次。
 - 用户点击“重启更新”后，应用先复验缓存，再以静默参数启动安装器并退出；安装器无法启动时不退出，缓存仍有效时可直接重试；安装器完成替换后使用 `--updated-from` 启动新版本。
 - Stable 使用 `https://vpaste.app/download/stable/latest.json`；RC 构建使用 `https://vpaste.app/download/rc/latest.json`，由 Release workflow 写入 `VPASTE_UPDATE_CHANNEL=rc` 选择。发布 Release 后，合并的 `latest.json` 经匿名下载校验后写入 `Loxonl/vPaste-website` 对应通道，详见 [update-feed-publication.md](update-feed-publication.md)。
 - 私有 Draft Release 仍硬性禁用公共 feed。Debug 可通过 `VPASTE_DEBUG_UPDATE_ENDPOINT` 使用本地签名测试源。

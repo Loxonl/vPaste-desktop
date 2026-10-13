@@ -10,7 +10,6 @@ import type { SettingsSectionProps, TFunction } from "../settingsTypes";
 import ActionCard from "../../ui/ActionCard";
 import { classes } from "../../ui/classNames";
 import { ConfirmDialog } from "../../ui/ConfirmDialog";
-import StatusBadge from "../../ui/StatusBadge";
 import { AnimatePresence, m, useMotionPreset } from "../../ui/motion";
 import styles from "../Config.module.css";
 
@@ -51,25 +50,29 @@ export default function AboutSettings({ bridge, t, dialogBackdropClassName }: Se
         }
     };
 
+    const handleCheckAction = () => {
+        void handleCheckUpdate();
+    };
+
     const handlePrimaryUpdateAction = () => {
         if (restartReady(updateState)) {
             void handleRestartToUpdate();
         } else if (updateState.status === "available" && !updateState.portable) {
             void prepare().catch(e => error(`Failed to download update: ${e}`));
-        } else {
-            void handleCheckUpdate();
         }
     };
 
+    const checkActionText = updateState.status === "checking"
+        ? t("settings.updateChecking")
+        : updateState.status === "failed"
+            ? t("settings.updateRetry")
+            : t("settings.updateCheck");
+    // The filled button only appears when there is something to install or download.
     const primaryActionText = restartReady(updateState)
         ? t("settings.updateRestart")
-        : updateState.status === "checking"
-            ? t("settings.updateChecking")
-            : updateState.status === "available" && !updateState.portable
-                ? t("settings.updateDownload")
-                : updateState.status === "failed"
-                    ? t("settings.updateRetry")
-                    : t("settings.updateCheck");
+        : updateState.status === "available" && !updateState.portable
+            ? t("settings.updateDownload")
+            : null;
 
     const displayVersion = updateState.currentVersion || t("settings.versionUnknown");
     const statusText = updateStatusText(updateState, checkedManually, t);
@@ -87,41 +90,48 @@ export default function AboutSettings({ bridge, t, dialogBackdropClassName }: Se
                     <Typography variant="h5" className={classes(styles, "about-product-title")}>
                         vPaste
                     </Typography>
-                    <Typography variant="body2" className={classes(styles, "about-product-subtitle")}>
-                        {t("settings.about.subtitle")}
+                    <Typography variant="body2" className={classes(styles, "about-version")}>
+                        {t("common.version", { version: displayVersion })}
                     </Typography>
-                    <div className={classes(styles, "about-version-actions")}>
-                        <span className={classes(styles, "about-version-pill")}>
-                            {t("common.version", { version: displayVersion })}
-                        </span>
+                    <div className={classes(styles, "about-update-actions")}>
                         <Button
                             variant="outlined"
                             size="small"
                             disabled={updateBusy || !updateState.feedEnabled}
-                            onClick={handlePrimaryUpdateAction}
-                            sx={{ flex: '0 0 auto' }}
+                            onClick={handleCheckAction}
                         >
-                            {primaryActionText}
+                            {checkActionText}
                         </Button>
+                        {primaryActionText && (
+                            <Button
+                                variant="contained"
+                                size="small"
+                                disableElevation
+                                disabled={updateBusy}
+                                onClick={handlePrimaryUpdateAction}
+                            >
+                                {primaryActionText}
+                            </Button>
+                        )}
                     </div>
                     <AnimatePresence mode="wait" initial={false}>
                         {statusText && (
                             <m.div
                                 key={`${updateState.status}-${updateState.errorStage ?? ""}`}
-                                className={styles["about-update-status"]}
                                 variants={statusMotion}
                                 initial="initial"
                                 animate="animate"
                                 exit="exit"
                                 data-motion-preset="fade"
                             >
-                                <StatusBadge
-                                    tone={updateHasError ? 'danger' : updateState.status === 'available' || updateState.status === 'manualDownload' || updateState.status === 'ready' ? 'success' : 'neutral'}
-                                    role={updateHasError ? 'alert' : 'status'}
-                                    aria-live={updateHasError ? 'assertive' : 'polite'}
+                                <Typography
+                                    variant="body2"
+                                    className={classes(styles, `about-update-status${updateHasError ? " is-error" : ""}`)}
+                                    role={updateHasError ? "alert" : "status"}
+                                    aria-live={updateHasError ? "assertive" : "polite"}
                                 >
                                     {statusText}
-                                </StatusBadge>
+                                </Typography>
                             </m.div>
                         )}
                     </AnimatePresence>

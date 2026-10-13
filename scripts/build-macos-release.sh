@@ -47,7 +47,7 @@ if [[ -z "${BASE_URL}" ]]; then
   BASE_URL="https://github.com/Loxonl/vPaste-desktop/releases/download/v${VERSION}"
 fi
 
-build_args=(tauri build --ci -b app,dmg)
+build_args=(tauri build --ci -b app)
 if [[ -n "${MACOS_BUILD_TARGET}" ]]; then
   build_args+=("--target" "${MACOS_BUILD_TARGET}")
 fi
@@ -55,7 +55,7 @@ if [[ "${SKIP_STAPLING}" == "1" || "${SKIP_STAPLING}" == "true" ]]; then
   build_args+=("--skip-stapling")
 fi
 if [[ "${unsigned_build}" == true ]]; then
-  build_args+=("--config" '{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"-","hardenedRuntime":false,"dmg":{"windowSize":{"width":660,"height":420},"appPosition":{"x":170,"y":170},"applicationFolderPosition":{"x":490,"y":170}}}}}')
+  build_args+=("--config" '{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"-","hardenedRuntime":false}}}')
 fi
 
 release_dir="src-tauri/target/release"
@@ -104,11 +104,24 @@ if [[ ! -d "${bundle_dir}" ]]; then
   exit 1
 fi
 
-dmg_artifact="$(find "${bundle_dir}" -type f -path "*/dmg/*.dmg" -print | sort | tail -n 1)"
-if [[ -z "${dmg_artifact}" ]]; then
-  echo "DMG artifact not found under ${bundle_dir}" >&2
+app_artifact="${bundle_dir}/macos/vPaste.app"
+if [[ ! -d "${app_artifact}" ]]; then
+  echo "App artifact not found: ${app_artifact}" >&2
   exit 1
 fi
+host_arch="$(uname -m)"
+artifact_arch="${MACOS_BUILD_TARGET:-${host_arch}}"
+artifact_arch="${artifact_arch%%-*}"
+if [[ "${artifact_arch}" == "arm64" ]]; then artifact_arch="aarch64"; fi
+dmg_artifact="${bundle_dir}/dmg/vPaste_${VERSION}_${artifact_arch}.dmg"
+signing_identity="${APPLE_SIGNING_IDENTITY:-}"
+if [[ "${unsigned_build}" == true ]]; then
+  signing_identity="-"
+elif [[ -z "${signing_identity}" ]]; then
+  echo "APPLE_SIGNING_IDENTITY is required to sign the DMG." >&2
+  exit 1
+fi
+bash scripts/package-macos-dmg.sh "${app_artifact}" "${dmg_artifact}" "${signing_identity}"
 echo "DMG artifact: ${dmg_artifact}"
 
 if [[ "${unsigned_build}" == true ]]; then

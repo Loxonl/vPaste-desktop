@@ -23,7 +23,7 @@ import ContentPasteSearchOutlinedIcon from "@mui/icons-material/ContentPasteSear
 import TutorialOverlay from "./TutorialOverlay.tsx";
 import appIcon from "../../src-tauri/icons/source/vpaste-app-icon-1024.png";
 import { getResolvedTheme, setThemePreview, type ResolvedTheme } from "../theme";
-import { restartReady, useAppUpdateState } from "../update";
+import { restartReady, updateEntryVisible, useAppUpdateState } from "../update";
 import {
     arraysEqual,
     customTabFilterPayload,
@@ -78,7 +78,6 @@ import {
 import {
     ClipboardHeaderActions,
     ClipboardTabBar,
-    ClipboardUpdateBanner,
 } from "./ClipboardHeader";
 import { clipboardKeyDownAction } from "./clipboardKeyboard";
 import { buildClipboardContextMenuOptions } from "./clipboardContextMenu";
@@ -1739,6 +1738,7 @@ export default function Clipboard() {
     };
 
     const restartForUpdate = async () => {
+        if (!restartReady(updateState)) return;
         try {
             await restartToUpdate();
         } catch (e) {
@@ -1978,27 +1978,11 @@ export default function Clipboard() {
                     onOpenUiLab={openUiLab}
                     onOpenTestRoom={openTestRoom}
                     onOpenSettings={tutorialActive ? blockTutorialNavigation : openConfigWindow}
+                    updateReadyVersion={updateEntryVisible(updateState) ? updateState.availableVersion || "" : null}
+                    updateInstalling={updateState.status === "installing"}
+                    onRestartToUpdate={() => void restartForUpdate()}
                 />
             </div>
-
-            <AnimatePresence mode="wait" initial={false}>
-                {!tutorialActive && restartReady(updateState) && (
-                    <m.div
-                        key="clipboard-update-banner"
-                        className={classes(styles, "app-update-motion")}
-                        variants={listItemMotion}
-                        initial="initial"
-                        animate="animate"
-                        exit="exit"
-                    >
-                        <ClipboardUpdateBanner
-                            version={updateState.availableVersion || ""}
-                            t={t}
-                            onRestart={() => void restartForUpdate()}
-                        />
-                    </m.div>
-                )}
-            </AnimatePresence>
 
             {/* Cards Grid */}
             <div

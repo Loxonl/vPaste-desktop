@@ -534,3 +534,28 @@ jobs:
             --tag "$RELEASE_TAG" \
             --platforms windows-x86_64,darwin-aarch64,darwin-x86_64 \
             --verify-release-assets Loxonl/vPaste-desktop
+
+      # Website manifest publication stays off until a maintainer sets the
+      # repository variable VPASTE_PUBLISH_UPDATE_FEED=1. The script verifies
+      # every package anonymously before writing download/<channel>/latest.json.
+      - name: Publish website updater manifest
+        if: vars.VPASTE_PUBLISH_UPDATE_FEED == '1'
+        env:
+          UPDATE_CHANNEL: ${{ needs.validate.outputs.channel }}
+          VPASTE_WEBSITE_RELEASE_TOKEN: ${{ secrets.VPASTE_WEBSITE_RELEASE_TOKEN }}
+        shell: bash
+        run: |
+          node scripts/publish-updater-manifest.mjs \
+            --manifest merged/latest.json \
+            --tag "$RELEASE_TAG" \
+            --channel "$UPDATE_CHANNEL" \
+            --assets-dir release-assets \
+            --website-repo Loxonl/vPaste-website \
+            --branch main \
+            --public-url "https://vpaste.app/download/${UPDATE_CHANNEL}/latest.json"
+
+      - name: Report deferred website updater manifest
+        if: vars.VPASTE_PUBLISH_UPDATE_FEED != '1'
+        shell: bash
+        run: |
+          echo "::notice::Website updater manifest publication is disabled (VPASTE_PUBLISH_UPDATE_FEED is not 1); latest.json was not changed."

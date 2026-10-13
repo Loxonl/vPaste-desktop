@@ -183,6 +183,8 @@ type ClipboardHeaderActionsProps = {
     developerTheme: "light" | "dark";
     t: TFunction;
     pasteQueueActive: boolean;
+    updateReadyVersion?: string | null;
+    updateInstalling?: boolean;
     onOpenPasteQueue: () => void;
     onOpenPermissionCenter: () => void;
     onOpenTutorial: (platform: TutorialPlatform) => void;
@@ -191,6 +193,7 @@ type ClipboardHeaderActionsProps = {
     onOpenUiLab: () => void;
     onOpenTestRoom: () => void;
     onOpenSettings: () => void;
+    onRestartToUpdate?: () => void;
 };
 
 export function ClipboardHeaderActions({
@@ -203,6 +206,8 @@ export function ClipboardHeaderActions({
     developerTheme,
     t,
     pasteQueueActive,
+    updateReadyVersion = null,
+    updateInstalling = false,
     onOpenPasteQueue,
     onOpenPermissionCenter,
     onOpenTutorial,
@@ -211,6 +216,7 @@ export function ClipboardHeaderActions({
     onOpenUiLab,
     onOpenTestRoom,
     onOpenSettings,
+    onRestartToUpdate,
 }: ClipboardHeaderActionsProps) {
     const [developerToolsVisible, setDeveloperToolsVisible] = useState(true);
     const statusMotion = useMotionPreset("listItem");
@@ -328,26 +334,21 @@ export function ClipboardHeaderActions({
             >
                 <SettingsOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
             </ToolbarIconButton>
+            {!tutorialActive && updateReadyVersion !== null && onRestartToUpdate && (
+                <ToolbarIconButton
+                    className={classes(styles, "settings-button app-update-button")}
+                    label={t(updateInstalling ? "clipboard.updateInstallingAction" : "clipboard.updateReadyAction", {
+                        version: updateReadyVersion,
+                    })}
+                    disabled={updateInstalling}
+                    // Enter and Space activate this button natively instead of
+                    // pasting or previewing the selected card.
+                    data-keyboard-passthrough="true"
+                    onClick={onRestartToUpdate}
+                >
+                    <SystemUpdateAltOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
+                </ToolbarIconButton>
+            )}
         </div>
-    );
-}
-
-type ClipboardUpdateBannerProps = {
-    version: string;
-    t: TFunction;
-    onRestart: () => void;
-};
-
-export function ClipboardUpdateBanner({
-    version,
-    t,
-    onRestart,
-}: ClipboardUpdateBannerProps) {
-    return (
-        <ButtonBase className={classes(styles, "app-update-banner")} onClick={onRestart}>
-            <SystemUpdateAltOutlinedIcon fontSize="inherit" />
-            <span>{t("clipboard.updateDownloaded", { version })}</span>
-            <strong>{t("clipboard.updateRestart")}</strong>
-        </ButtonBase>
     );
 }

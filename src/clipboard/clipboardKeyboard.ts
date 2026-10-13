@@ -32,6 +32,15 @@ export type ClipboardKeyboardContext = {
     tabQuickSelectEnabled: boolean;
 };
 
+/**
+ * Controls marked with `data-keyboard-passthrough` handle Enter and Space
+ * themselves (native button activation) rather than pasting or previewing
+ * the selected card.
+ */
+function isKeyboardPassthroughTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && target.closest("[data-keyboard-passthrough]") !== null;
+}
+
 export function clipboardKeyDownAction(
     event: KeyboardEvent,
     context: ClipboardKeyboardContext,
@@ -79,6 +88,13 @@ export function clipboardKeyDownAction(
         if (event.key === "Escape" && context.searchOpen) {
             return { type: "dismiss-search", clear: context.searchHasText };
         }
+        return null;
+    }
+
+    if (
+        isKeyboardPassthroughTarget(event.target)
+        && (event.key === "Enter" || event.key === " " || event.key === "Spacebar")
+    ) {
         return null;
     }
 

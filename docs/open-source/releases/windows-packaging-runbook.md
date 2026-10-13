@@ -211,7 +211,7 @@ record.
 
 ## Update validation
 
-Private Draft Releases keep public update delivery disabled. Publishing a new Release triggers `.github/workflows/tag-release.yml`, which builds signed updater payloads and attaches them to the existing Release after protected environment approval. The website `latest.json` is not updated by this workflow. Never embed a GitHub token in the client; public updater delivery also requires anonymously downloadable packages, which the current private source repository does not provide.
+Private Draft Releases keep public update delivery disabled. Publishing a new Release triggers `.github/workflows/tag-release.yml`, which builds signed updater payloads and attaches them to the existing Release after protected environment approval. The website `latest.json` is only updated when the repository variable `VPASTE_PUBLISH_UPDATE_FEED` is `1` (off by default), after every package passes an anonymous download check; see [update-feed-publication.md](update-feed-publication.md). Never embed a GitHub token in the client; public updater delivery also requires anonymously downloadable packages, which the current private source repository does not provide.
 
 For a debug-only local signed feed:
 

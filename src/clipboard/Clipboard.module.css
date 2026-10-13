@@ -317,39 +317,6 @@ body {
   height: 48px;
 }
 
-.app-update-banner {
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 34px;
-  padding: 0 28px;
-  border: 0;
-  border-bottom: 1px solid var(--ui-clipboard-update-border);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  flex: 0 0 auto;
-  color: var(--ui-clipboard-update-text);
-  background: var(--ui-clipboard-update-surface);
-  font: inherit;
-  font-size: 12px;
-  line-height: 1.3;
-  cursor: pointer;
-}
-
-.app-update-banner > svg {
-  flex: 0 0 auto;
-  font-size: 16px;
-}
-
-.app-update-banner strong {
-  font-weight: 680;
-}
-
-.app-update-banner:hover {
-  background: var(--ui-clipboard-update-hover-surface);
-}
-
 .search-box {
   flex: 0 0 auto;
   position: relative;
@@ -420,6 +387,34 @@ body {
   min-width: 16px;
   min-height: 16px;
   display: block;
+}
+
+/* Ready-to-install update entry, shown right of the settings button. */
+.settings-button.app-update-button,
+:root[data-theme="dark"] .settings-button.app-update-button {
+  color: var(--ui-clipboard-update-text);
+  background: var(--ui-clipboard-update-surface);
+  box-shadow: var(--ui-clipboard-update-shadow);
+}
+
+.settings-button.app-update-button:hover,
+:root[data-theme="dark"] .settings-button.app-update-button:hover {
+  background: var(--ui-clipboard-update-hover-surface);
+}
+
+.settings-button.app-update-button:focus-visible {
+  outline: 2px solid var(--ui-clipboard-update-text);
+  outline-offset: 2px;
+}
+
+.settings-button.app-update-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.settings-button.app-update-button > svg.settings-icon,
+:root[data-theme="dark"] .settings-button.app-update-button > svg.settings-icon {
+  color: var(--ui-clipboard-update-text);
 }
 
 .search-input {
@@ -903,10 +898,6 @@ body {
   transform: translateX(-50%);
 }
 
-.app-update-motion {
-  width: 100%;
-}
-
 :root[data-theme="dark"] .paste-queue-selection-bar {
   background: var(--ui-clipboard-queue-bar-surface);
   box-shadow: var(--ui-clipboard-queue-bar-shadow);
@@ -1007,16 +998,6 @@ body {
   background: var(--ui-clipboard-header-surface);
   border-bottom-color: var(--ui-clipboard-header-border);
   box-shadow: var(--ui-clipboard-header-shadow);
-}
-
-:root[data-theme="dark"] .app-update-banner {
-  color: var(--ui-clipboard-update-text);
-  border-bottom-color: var(--ui-clipboard-update-border);
-  background: var(--ui-clipboard-update-surface);
-}
-
-:root[data-theme="dark"] .app-update-banner:hover {
-  background: var(--ui-clipboard-update-hover-surface);
 }
 
 :root[data-theme="dark"] .search-button,

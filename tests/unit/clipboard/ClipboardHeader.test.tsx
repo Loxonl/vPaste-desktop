@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     ClipboardHeaderActions,
     ClipboardTabBar,
-    ClipboardUpdateBanner,
 } from "../../../src/clipboard/ClipboardHeader";
 import { type DynamicTabEntry } from "../../../src/clipboard/customTabs";
 
@@ -220,20 +219,84 @@ describe("clipboard header", () => {
         expect(screen.getByRole("group", { name: "tutorial.debug.tools" })).toBeVisible();
     });
 
-    it("renders the update text and forwards its action", async () => {
-        const user = userEvent.setup();
-        const onRestart = vi.fn();
-        render(
-            <ClipboardUpdateBanner
-                version="2.0.0"
-                t={t}
-                onRestart={onRestart}
+    function renderUpdateActions(props: {
+        updateReadyVersion?: string | null;
+        updateInstalling?: boolean;
+        tutorialActive?: boolean;
+        onRestartToUpdate?: () => void;
+    }) {
+        const tVersion = (key: string, params?: Record<string, string | number>) =>
+            params?.version ? `${key}:${params.version}` : key;
+        return render(
+            <ClipboardHeaderActions
+                isMac={false}
+                tutorialActive={props.tutorialActive ?? false}
+                tutorialPlatform="windows"
+                permissionIncomplete={false}
+                showDeveloperToolbar={false}
+                languageCode="English"
+                developerTheme="light"
+                t={tVersion}
+                pasteQueueActive={false}
+                updateReadyVersion={props.updateReadyVersion}
+                updateInstalling={props.updateInstalling}
+                onOpenPasteQueue={vi.fn()}
+                onOpenPermissionCenter={vi.fn()}
+                onOpenTutorial={vi.fn()}
+                onToggleLanguage={vi.fn()}
+                onToggleTheme={vi.fn()}
+                onOpenUiLab={vi.fn()}
+                onOpenTestRoom={vi.fn()}
+                onOpenSettings={vi.fn()}
+                onRestartToUpdate={props.onRestartToUpdate ?? vi.fn()}
             />,
         );
+    }
 
-        expect(screen.getByText("clipboard.updateDownloaded")).toBeInTheDocument();
-        expect(screen.getByText("clipboard.updateRestart")).toBeInTheDocument();
-        await user.click(screen.getByRole("button"));
-        expect(onRestart).toHaveBeenCalledOnce();
+    it("shows the ready update as a round toolbar icon right of settings", async () => {
+        const user = userEvent.setup();
+        const onRestartToUpdate = vi.fn();
+        const { container } = renderUpdateActions({ updateReadyVersion: "1.7.0", onRestartToUpdate });
+
+        const updateButton = screen.getByRole("button", { name: "clipboard.updateReadyAction:1.7.0" });
+        expect(updateButton).toHaveAttribute("title", "clipboard.updateReadyAction:1.7.0");
+        expect(updateButton).toHaveAttribute("data-keyboard-passthrough", "true");
+        const actions = container.firstElementChild!;
+        const buttons = Array.from(actions.children);
+        const settingsIndex = buttons.indexOf(screen.getByRole("button", { name: "common.settings" }));
+        expect(buttons.indexOf(updateButton)).toBe(settingsIndex + 1);
+
+        await user.click(updateButton);
+        expect(onRestartToUpdate).toHaveBeenCalledOnce();
+    });
+
+    it("activates the update icon once from the keyboard", async () => {
+        const user = userEvent.setup();
+        const onRestartToUpdate = vi.fn();
+        renderUpdateActions({ updateReadyVersion: "1.7.0", onRestartToUpdate });
+
+        screen.getByRole("button", { name: "clipboard.updateReadyAction:1.7.0" }).focus();
+        await user.keyboard("{Enter}");
+        expect(onRestartToUpdate).toHaveBeenCalledTimes(1);
+        await user.keyboard(" ");
+        expect(onRestartToUpdate).toHaveBeenCalledTimes(2);
+    });
+
+    it("disables the update icon while installing and hides it otherwise", async () => {
+        const onRestartToUpdate = vi.fn();
+        renderUpdateActions({
+            updateReadyVersion: "1.7.0",
+            updateInstalling: true,
+            onRestartToUpdate,
+        });
+        expect(screen.getByRole("button", { name: "clipboard.updateInstallingAction:1.7.0" })).toBeDisabled();
+
+        cleanup();
+        renderUpdateActions({ updateReadyVersion: null });
+        expect(screen.queryByRole("button", { name: /clipboard\.update/ })).not.toBeInTheDocument();
+
+        cleanup();
+        renderUpdateActions({ updateReadyVersion: "1.7.0", tutorialActive: true });
+        expect(screen.queryByRole("button", { name: /clipboard\.update/ })).not.toBeInTheDocument();
     });
 });

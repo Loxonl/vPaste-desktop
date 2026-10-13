@@ -67,11 +67,15 @@ export default function AboutSettings({ bridge, t, dialogBackdropClassName }: Se
             ? t("settings.updateChecking")
             : updateState.status === "available" && !updateState.portable
                 ? t("settings.updateDownload")
-                : t("settings.updateCheck");
+                : updateState.status === "failed"
+                    ? t("settings.updateRetry")
+                    : t("settings.updateCheck");
 
     const displayVersion = updateState.currentVersion || t("settings.versionUnknown");
     const statusText = updateStatusText(updateState, checkedManually, t);
     const statusMotion = useMotionPreset("fade");
+    const updateHasError = updateState.status === "failed"
+        || (updateState.status === "ready" && Boolean(updateState.error));
 
     return (
         <Stack spacing={6}>
@@ -103,7 +107,7 @@ export default function AboutSettings({ bridge, t, dialogBackdropClassName }: Se
                     <AnimatePresence mode="wait" initial={false}>
                         {statusText && (
                             <m.div
-                                key={updateState.status}
+                                key={`${updateState.status}-${updateState.errorStage ?? ""}`}
                                 className={styles["about-update-status"]}
                                 variants={statusMotion}
                                 initial="initial"
@@ -112,9 +116,9 @@ export default function AboutSettings({ bridge, t, dialogBackdropClassName }: Se
                                 data-motion-preset="fade"
                             >
                                 <StatusBadge
-                                    tone={updateState.status === 'failed' ? 'danger' : updateState.status === 'available' || updateState.status === 'manualDownload' || updateState.status === 'ready' ? 'success' : 'neutral'}
-                                    role={updateState.status === 'failed' ? 'alert' : 'status'}
-                                    aria-live={updateState.status === 'failed' ? 'assertive' : 'polite'}
+                                    tone={updateHasError ? 'danger' : updateState.status === 'available' || updateState.status === 'manualDownload' || updateState.status === 'ready' ? 'success' : 'neutral'}
+                                    role={updateHasError ? 'alert' : 'status'}
+                                    aria-live={updateHasError ? 'assertive' : 'polite'}
                                 >
                                     {statusText}
                                 </StatusBadge>
@@ -184,11 +188,25 @@ function updateStatusText(state: UpdateState, checkedManually: boolean, t: TFunc
                 })
                 : t("settings.updateProgressUnknown", { downloaded: formatUpdateBytes(state.downloadedBytes) });
         case "ready":
-            return t("settings.updateReady", { version });
+            // An install that failed to start leaves the verified package ready to retry.
+            return state.errorStage === "install" && state.error
+                ? t("settings.updateReadyInstallFailed", { error: state.error })
+                : t("settings.updateReady", { version });
         case "installing":
             return t("settings.updateInstalling");
-        case "failed":
-            return t("settings.updateCheckFailed", { error: state.error || t("common.unknown") });
+        case "failed": {
+            const error = state.error || t("common.unknown");
+            switch (state.errorStage) {
+                case "download":
+                    return t("settings.updateDownloadFailed", { error });
+                case "restore":
+                    return t("settings.updateRestoreFailed", { error });
+                case "install":
+                    return t("settings.updateInstallFailed", { error });
+                default:
+                    return t("settings.updateCheckFailed", { error });
+            }
+        }
         case "idle":
             return checkedManually ? t("settings.updateLatest") : "";
     }

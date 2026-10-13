@@ -53,17 +53,18 @@ async function openClipboardWithUpdate(page: Page, status: "ready" | "downloadin
     await expect(page.getByText("Selected clipboard item", { exact: true }).first()).toBeVisible();
 }
 
-const updateButtonName = /1\.7\.0/;
+const updateButtonName = "Update and restart";
 
-test("ready update shows a round icon right of settings without growing the header", async ({ page }) => {
+test("ready update shows a round blue icon right of settings without growing the header", async ({ page }) => {
     await page.setViewportSize({ width: 960, height: 600 });
     await openClipboardWithUpdate(page, "ready");
 
     const settings = page.getByRole("button", { name: "Settings", exact: true });
-    const update = page.getByRole("button", { name: updateButtonName });
+    const update = page.getByRole("button", { name: updateButtonName, exact: true });
     await expect(update).toBeVisible();
-    await expect(update).toHaveAttribute("title", /1\.7\.0/);
+    await expect(update).toHaveAttribute("title", updateButtonName);
     await expect(update).toHaveCSS("border-radius", "50%");
+    await expect(update.locator("[data-testid='SyncRoundedIcon']")).toBeVisible();
 
     const settingsBox = (await settings.boundingBox())!;
     const updateBox = (await update.boundingBox())!;
@@ -73,33 +74,51 @@ test("ready update shows a round icon right of settings without growing the head
     expect(updateBox.height).toBe(settingsBox.height);
     await expect(page.locator("[class*='clipboard-header']").first()).toHaveCSS("height", "48px");
 
-    const settingsBackground = await settings.evaluate(element => getComputedStyle(element).backgroundColor);
-    await expect(update).not.toHaveCSS("background-color", settingsBackground);
+    const accent = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--ui-accent").trim());
+    expect(accent).toBe("#1e92ee");
+    await expect(update).toHaveCSS("background-color", "rgb(30, 146, 238)");
 });
 
-test("update icon stays readable in the dark theme", async ({ page }) => {
+test("update icon stays blue and readable in the dark theme", async ({ page }) => {
     await page.emulateMedia({ colorScheme: "dark" });
     await openClipboardWithUpdate(page, "ready");
-    const update = page.getByRole("button", { name: updateButtonName });
-    const settings = page.getByRole("button", { name: "Settings", exact: true });
-    const settingsBackground = await settings.evaluate(element => getComputedStyle(element).backgroundColor);
-    await expect(update).not.toHaveCSS("background-color", settingsBackground);
+    const update = page.getByRole("button", { name: updateButtonName, exact: true });
+    await expect(update).toHaveCSS("background-color", "rgb(47, 140, 255)");
     await expect(update).toHaveCSS("border-radius", "50%");
 });
 
 for (const reducedMotion of ["no-preference", "reduce"] as const) {
-    test(`Enter, Space and click install without pasting (reduced motion: ${reducedMotion})`, async ({ page }) => {
+    test(`the icon asks before installing and never pastes (reduced motion: ${reducedMotion})`, async ({ page }) => {
         await page.emulateMedia({ reducedMotion });
         await openClipboardWithUpdate(page, "ready");
-        const update = page.getByRole("button", { name: updateButtonName });
+        const update = page.getByRole("button", { name: updateButtonName, exact: true });
+        const dialog = page.getByRole("dialog", { name: "Update and restart?" });
 
+        // Enter opens the confirmation; Escape closes it without hiding the panel.
         await update.focus();
         await page.keyboard.press("Enter");
-        await expect.poll(() => commandCount(page, "restart_and_install_app_update")).toBe(1);
+        await expect(dialog).toBeVisible();
+        await expect(dialog).toContainText("1.7.0");
+        await page.keyboard.press("Escape");
+        await expect(dialog).toBeHidden();
+        expect(await commandCount(page, "begin_hide_clipboard_window")).toBe(0);
+        expect(await commandCount(page, "restart_and_install_app_update")).toBe(0);
+
+        // Space opens it too; Cancel installs nothing.
+        await update.focus();
         await page.keyboard.press(" ");
-        await expect.poll(() => commandCount(page, "restart_and_install_app_update")).toBe(2);
+        await expect(dialog).toBeVisible();
+        await dialog.getByRole("button", { name: "Cancel" }).click();
+        await expect(dialog).toBeHidden();
+        expect(await commandCount(page, "restart_and_install_app_update")).toBe(0);
+
+        // Click, then confirm with the keyboard: exactly one install.
         await update.click();
-        await expect.poll(() => commandCount(page, "restart_and_install_app_update")).toBe(3);
+        await expect(dialog).toBeVisible();
+        await dialog.getByRole("button", { name: updateButtonName }).focus();
+        await page.keyboard.press("Enter");
+        await expect.poll(() => commandCount(page, "restart_and_install_app_update")).toBe(1);
+        await expect(dialog).toBeHidden();
 
         expect(await commandCount(page, "copy")).toBe(0);
         expect(await commandCount(page, "paste")).toBe(0);
@@ -110,5 +129,5 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
 test("a download in progress does not show the install icon", async ({ page }) => {
     await openClipboardWithUpdate(page, "downloading");
     await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: updateButtonName })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: updateButtonName, exact: true })).toHaveCount(0);
 });

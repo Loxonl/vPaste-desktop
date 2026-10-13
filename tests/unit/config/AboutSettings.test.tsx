@@ -157,4 +157,31 @@ describe("About update controls", () => {
         expect(screen.queryByText("settings.updateLatest")).not.toBeInTheDocument();
         expect(screen.getByRole("button", { name: "settings.updateCheck" })).toBeDisabled();
     });
+
+    it("shows the version as text and only the check and install actions as buttons", async () => {
+        const readyState = { ...baseState, status: "ready", availableVersion: "1.7.0" } as UpdateState;
+        const invoke = vi.fn(async (command: string) => {
+            if (command === "get_update_state") return readyState;
+            return undefined;
+        });
+        renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
+
+        const restart = await screen.findByRole("button", { name: "settings.updateRestart" });
+        expect(screen.getByText("common.version")).not.toHaveAttribute("role", "button");
+        expect(screen.queryByText("settings.about.subtitle")).not.toBeInTheDocument();
+        const updateButtons = [screen.getByRole("button", { name: "settings.updateCheck" }), restart];
+        expect(updateButtons.map(button => button.textContent)).toEqual(["settings.updateCheck", "settings.updateRestart"]);
+    });
+
+    it("offers only the check button when no update is waiting", async () => {
+        const invoke = vi.fn(async (command: string) => {
+            if (command === "get_update_state") return baseState;
+            return undefined;
+        });
+        renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
+
+        expect(await screen.findByRole("button", { name: "settings.updateCheck" })).toBeEnabled();
+        expect(screen.queryByRole("button", { name: "settings.updateRestart" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "settings.updateDownload" })).not.toBeInTheDocument();
+    });
 });

@@ -258,8 +258,8 @@ describe("clipboard header", () => {
         const onRestartToUpdate = vi.fn();
         const { container } = renderUpdateActions({ updateReadyVersion: "1.7.0", onRestartToUpdate });
 
-        const updateButton = screen.getByRole("button", { name: "clipboard.updateReadyAction:1.7.0" });
-        expect(updateButton).toHaveAttribute("title", "clipboard.updateReadyAction:1.7.0");
+        const updateButton = screen.getByRole("button", { name: "clipboard.updateReadyAction" });
+        expect(updateButton).toHaveAttribute("title", "clipboard.updateReadyAction");
         expect(updateButton).toHaveAttribute("data-keyboard-passthrough", "true");
         const actions = container.firstElementChild!;
         const buttons = Array.from(actions.children);
@@ -275,7 +275,7 @@ describe("clipboard header", () => {
         const onRestartToUpdate = vi.fn();
         renderUpdateActions({ updateReadyVersion: "1.7.0", onRestartToUpdate });
 
-        screen.getByRole("button", { name: "clipboard.updateReadyAction:1.7.0" }).focus();
+        screen.getByRole("button", { name: "clipboard.updateReadyAction" }).focus();
         await user.keyboard("{Enter}");
         expect(onRestartToUpdate).toHaveBeenCalledTimes(1);
         await user.keyboard(" ");
@@ -289,7 +289,7 @@ describe("clipboard header", () => {
             updateInstalling: true,
             onRestartToUpdate,
         });
-        expect(screen.getByRole("button", { name: "clipboard.updateInstallingAction:1.7.0" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "clipboard.updateInstallingAction" })).toBeDisabled();
 
         cleanup();
         renderUpdateActions({ updateReadyVersion: null });

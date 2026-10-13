@@ -106,9 +106,9 @@ before publishing a Stable Release.
   notes). `pending.json` is replaced only after the package is complete, so an
   interrupted write keeps the previous valid cache. Older caches are removed
   once a newer one is committed or the app already runs that version.
-- When ready, a round highlighted icon appears right of the settings button in
-  the main panel; settings and the tray offer the same "Restart to update"
-  action. All three use one backend operation lock, so only one check,
+- When ready, a round blue sync icon appears right of the settings button in
+  the main panel; clicking it asks for confirmation before installing. Settings
+  and the tray offer the same "Update and restart" action. All three use one backend operation lock, so only one check,
   download, or install runs at a time.
 - Installing re-verifies the cached package first. Windows launches the cached
   Inno Setup installer with the existing silent arguments and exits only after

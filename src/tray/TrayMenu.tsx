@@ -129,8 +129,7 @@ export default function TrayMenu() {
                         className={`${styles["tray-menu-item"]} ${styles["update-ready"]}`}
                         onClick={() => void restartForUpdate()}
                     >
-                        <span>{t("tray.updateReady", { version: updateState.availableVersion || "" })}</span>
-                        <strong>{t("tray.updateRestart")}</strong>
+                        {t("tray.updateRestart")}
                     </MenuItem>
                 )}
                 {items.map(item => (

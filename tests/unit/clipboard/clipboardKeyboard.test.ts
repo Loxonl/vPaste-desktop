@@ -200,4 +200,16 @@ describe("clipboardKeyDownAction", () => {
         expect(clipboardKeyDownAction(keyDown("Enter", {}, ordinaryButton), context()))
             .toEqual({ type: "paste-selected", plainText: false });
     });
+
+    it("leaves every key to a passthrough dialog, including Escape and Tab", () => {
+        const dialog = document.createElement("div");
+        dialog.dataset.keyboardPassthrough = "dialog";
+        const confirm = document.createElement("button");
+        dialog.append(confirm);
+
+        for (const key of ["Enter", " ", "Escape", "Tab", "ArrowRight", "ArrowDown"]) {
+            expect(clipboardKeyDownAction(keyDown(key, {}, confirm), context())).toBeNull();
+        }
+        expect(clipboardKeyDownAction(keyDown("1", { altKey: true, code: "Digit1" }, confirm), context())).toBeNull();
+    });
 });

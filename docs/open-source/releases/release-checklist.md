@@ -54,7 +54,7 @@ The workflow creates a Draft Release only. It never creates a tag-triggered rele
 - Windows 10 22H2 and Windows 11; Chinese/English; light/dark; 100/150/200% DPI.
 - Fresh install, custom writable directory, desktop shortcut, missing WebView2, same-version repair, blocked downgrade, and running-app update.
 - Upgrade local 1.5.0 NSIS in place and preserve history, settings, startup preference, shortcuts, and install directory.
-- Test background download, restart-to-update from settings, the main panel update icon (mouse, Enter, Space), and the tray, restart recovery from a verified cached installer while offline, the ready notification appearing once per version across restarts, bad signature, interrupted download, low disk, locked file, a cache deleted or modified before installing, an installer that fails to start, and recovery.
+- Test background download, restart-to-update from settings, the main panel update icon and its confirmation dialog (mouse, Enter, Space, Escape), and the tray, restart recovery from a verified cached installer while offline, the ready notification appearing once per version across restarts, bad signature, interrupted download, low disk, locked file, a cache deleted or modified before installing, an installer that fails to start, and recovery.
 - Uninstall while preserving data, deleting default data, confirming managed deletion in a custom history directory, and silent uninstall preserving data.
 - Move Portable between writable directories and confirm no AppData, uninstall registry, or startup residue.
 

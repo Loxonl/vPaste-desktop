@@ -21,6 +21,16 @@ describe("tag release signing workflow", () => {
     expect(releaseWorkflow).not.toContain("gh release edit");
   });
 
+  it.each([
+    ".github/workflows/tag-release.yml",
+    ".github/workflows/tag-build-windows.yml",
+    ".github/workflows/tag-build-macos.yml",
+  ])("does not save tag-scoped caches that later releases cannot restore in %s", path => {
+    const contents = readFileSync(path, "utf8");
+    expect(contents).not.toContain("actions/cache");
+    expect(contents).not.toMatch(/^\s+cache: npm$/m);
+  });
+
   it("publishes the website updater manifest only behind the default-off gate after asset verification", () => {
     const publishStep = releaseWorkflow.indexOf("- name: Publish website updater manifest");
     expect(publishStep).toBeGreaterThan(releaseWorkflow.indexOf("- name: Verify release assets referenced by manifest"));

@@ -178,4 +178,26 @@ describe("clipboardKeyDownAction", () => {
             context(),
         )).toEqual({ type: "paste-selected", plainText: false });
     });
+
+    it("lets Enter and Space activate a passthrough toolbar button instead of pasting or previewing", () => {
+        const toolbar = document.createElement("div");
+        const updateButton = document.createElement("button");
+        updateButton.dataset.keyboardPassthrough = "true";
+        const icon = document.createElement("span");
+        updateButton.append(icon);
+        toolbar.append(updateButton);
+
+        for (const target of [updateButton, icon]) {
+            for (const key of ["Enter", " ", "Spacebar"]) {
+                expect(clipboardKeyDownAction(keyDown(key, {}, target), context())).toBeNull();
+            }
+            expect(clipboardKeyDownAction(keyDown("Enter", { shiftKey: true }, target), context())).toBeNull();
+            expect(clipboardKeyDownAction(keyDown("Escape", {}, target), context()))
+                .toEqual({ type: "hide-window" });
+        }
+
+        const ordinaryButton = document.createElement("button");
+        expect(clipboardKeyDownAction(keyDown("Enter", {}, ordinaryButton), context()))
+            .toEqual({ type: "paste-selected", plainText: false });
+    });
 });

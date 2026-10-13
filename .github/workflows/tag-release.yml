@@ -494,3 +494,21 @@ jobs:
             --tag "$RELEASE_TAG" \
             --platforms windows-x86_64,darwin-aarch64,darwin-x86_64 \
             --verify-release-assets Loxonl/vPaste-desktop
+
+      # Stable tags (vX.Y.Z) publish download/stable/latest.json and RC tags
+      # (vX.Y.Z-rc.N) publish download/rc/latest.json. The script verifies
+      # every package anonymously before writing the channel manifest.
+      - name: Publish website updater manifest
+        env:
+          UPDATE_CHANNEL: ${{ needs.validate.outputs.channel }}
+          VPASTE_WEBSITE_RELEASE_TOKEN: ${{ secrets.VPASTE_WEBSITE_RELEASE_TOKEN }}
+        shell: bash
+        run: |
+          node scripts/publish-updater-manifest.mjs \
+            --manifest merged/latest.json \
+            --tag "$RELEASE_TAG" \
+            --channel "$UPDATE_CHANNEL" \
+            --assets-dir release-assets \
+            --website-repo Loxonl/vPaste-website \
+            --branch main \
+            --public-url "https://vpaste.app/download/${UPDATE_CHANNEL}/latest.json"

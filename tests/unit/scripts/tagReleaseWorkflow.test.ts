@@ -31,12 +31,14 @@ describe("tag release signing workflow", () => {
     expect(contents).not.toMatch(/^\s+cache: npm$/m);
   });
 
-  it("publishes the website updater manifest only behind the default-off gate after asset verification", () => {
+  it("publishes the channel updater manifest for every published release after asset verification", () => {
     const publishStep = releaseWorkflow.indexOf("- name: Publish website updater manifest");
     expect(publishStep).toBeGreaterThan(releaseWorkflow.indexOf("- name: Verify release assets referenced by manifest"));
     expect(publishStep).toBeGreaterThan(releaseWorkflow.indexOf("scripts/upload-published-release-assets.sh"));
     const step = releaseWorkflow.slice(publishStep, releaseWorkflow.indexOf("- name:", publishStep + 1));
-    expect(step).toContain("if: vars.VPASTE_PUBLISH_UPDATE_FEED == '1'");
+    expect(step).not.toContain("if:");
+    expect(step).toContain("UPDATE_CHANNEL: ${{ needs.validate.outputs.channel }}");
+    expect(step).toContain('--public-url "https://vpaste.app/download/${UPDATE_CHANNEL}/latest.json"');
     expect(step).toContain("VPASTE_WEBSITE_RELEASE_TOKEN: ${{ secrets.VPASTE_WEBSITE_RELEASE_TOKEN }}");
     expect(step).not.toContain("GH_TOKEN");
     expect(step).toContain("scripts/publish-updater-manifest.mjs");

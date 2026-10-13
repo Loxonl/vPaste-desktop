@@ -211,7 +211,7 @@ record.
 
 ## Update validation
 
-Private Draft Releases keep public update delivery disabled. Publishing a new Release triggers `.github/workflows/tag-release.yml`, which builds signed updater payloads and attaches them to the existing Release after protected environment approval. The website `latest.json` is only updated when the repository variable `VPASTE_PUBLISH_UPDATE_FEED` is `1` (off by default), after every package passes an anonymous download check; see [update-feed-publication.md](update-feed-publication.md). Never embed a GitHub token in the client; public updater delivery also requires anonymously downloadable packages, which the current private source repository does not provide.
+Private Draft Releases keep public update delivery disabled. Publishing a new Release triggers `.github/workflows/tag-release.yml`, which builds signed updater payloads and attaches them to the existing Release after protected environment approval. After every package passes an anonymous download check, it publishes the channel's website `latest.json` (Stable or RC, from the tag); see [update-feed-publication.md](update-feed-publication.md). Never embed a GitHub token in the client; public updater delivery also requires anonymously downloadable packages, which the current private source repository does not provide.
 
 For a debug-only local signed feed:
 
@@ -271,14 +271,14 @@ The GitHub Actions workflow is intentionally manual:
 8. Review the SBOM, dependency inventory, licenses, and release notes.
 9. Keep this staging Release separate from the public Release; publishing it also triggers the package workflow and may encounter same-name assets from the staging build.
 
-For the public flow, create and publish a new Release with the reviewed tag, title, and notes. The `release.published` event starts the package workflow; pushing the tag alone does not. The workflow must not use `workflow_run` or `pull_request_target`, create Bot pull requests, or update the website manifest. Build jobs are read-only; only the final asset-upload job receives `contents: write`.
+For the public flow, create and publish a new Release with the reviewed tag, title, and notes. The `release.published` event starts the package workflow; pushing the tag alone does not. The workflow must not use `workflow_run` or `pull_request_target`, create Bot pull requests, or update the website manifest outside the verified publish step. Build jobs are read-only; only the final asset-upload job receives `contents: write`.
 
 The release should contain:
 
 - Windows installer and Portable ZIP
 - Apple silicon and Intel macOS artifacts
 - updater archives and signatures; the merged `latest.json` is validated in
-  the workflow but its website publication is deferred
+  the workflow and then published to the channel's website manifest
 - `SHA256SUMS.txt`
 - SBOM and dependency/license inventory
 - third-party notices and GPL license

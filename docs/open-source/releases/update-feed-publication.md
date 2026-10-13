@@ -1,15 +1,24 @@
 # Update Feed Publication and Client Update Behavior
 
 This page covers how a published Release reaches the public updater manifest
-and how the desktop client prepares and installs updates. Publication is
-**disabled by default**; nothing here means the public feed is live.
+and how the desktop client prepares and installs updates.
 
-## Two separate switches
+## Channels
 
-| Switch | Where | Effect |
-| --- | --- | --- |
-| `VPASTE_PUBLIC_UPDATE_FEED=1` | Compile-time env, set by `tag-release.yml` for published Releases | The built client checks the public feed. Private Draft and normal local builds leave it unset, so the client reports "online updates are not enabled" and never contacts production. |
-| `VPASTE_PUBLISH_UPDATE_FEED=1` | Repository **variable** | `tag-release.yml` writes the verified manifest to the website. Unset or any other value: the workflow only logs a notice. |
+| Tag | Channel | Website file | Public URL |
+| --- | --- | --- | --- |
+| `vX.Y.Z` | Stable | `download/stable/latest.json` | `https://vpaste.app/download/stable/latest.json` |
+| `vX.Y.Z-rc.N` | RC (testing) | `download/rc/latest.json` | `https://vpaste.app/download/rc/latest.json` |
+
+The channel comes from the tag, and the client built from that tag checks the
+same channel (`VPASTE_UPDATE_CHANNEL`). Publishing a Release always updates
+that channel's manifest; there is no separate publication switch. Users have no
+channel setting.
+
+`VPASTE_PUBLIC_UPDATE_FEED=1` is a compile-time env set by `tag-release.yml`
+for published Releases so the built client checks the public feed. Private
+Draft and normal local builds leave it unset, so the client reports "online
+updates are not enabled" and never contacts production.
 
 Debug builds keep using `VPASTE_DEBUG_UPDATE_ENDPOINT` for a locally signed
 test feed. Do not point it at, or modify, the production manifests to simulate
@@ -23,8 +32,7 @@ an upgrade.
    updater manifest fragments; verify every package signature locally.
 2. Upload the packages to the published GitHub Release and confirm the Release
    lists every asset the manifest references.
-3. Only when `vars.VPASTE_PUBLISH_UPDATE_FEED == '1'`:
-   `scripts/publish-updater-manifest.mjs`
+3. `scripts/publish-updater-manifest.mjs`:
    - rejects channel mismatches (Stable never publishes `-rc` versions, RC only
      publishes `-rc` versions);
    - compares each manifest entry with the staged package and its `.sig`;
@@ -40,28 +48,28 @@ an upgrade.
 
 Any failing step stops the job before the website manifest changes.
 
-## Enabling publication
+## One-time setup
 
-Do these only after the release candidate has passed the manual validation in
-[release-checklist.md](release-checklist.md), and only with maintainer approval.
+The workflow's own `GITHUB_TOKEN` cannot write to another repository, so the
+website write needs its own credential. Without it, the publish step fails and
+the website manifest stays unchanged.
 
-1. Confirm the Release assets are anonymously downloadable. While the source
-   repository is private, the anonymous download check fails by design and
-   nothing is published.
-2. Re-check how `Loxonl/vPaste-website` is deployed (it previously served
-   GitHub Pages from the root of `main`). If the branch or folder changed,
-   update `--branch` in `tag-release.yml` first.
-3. Create a fine-grained token limited to `Loxonl/vPaste-website` with
+1. Create a fine-grained token limited to `Loxonl/vPaste-website` with
    **Contents: read and write** and nothing else. Store it as the `release`
-   environment secret `VPASTE_WEBSITE_RELEASE_TOKEN`. It is passed only to the
-   publish step and only sent to `api.github.com`; never place it in source,
-   artifacts, or logs.
-4. Set the repository variable `VPASTE_PUBLISH_UPDATE_FEED` to `1`.
-5. Publish (or re-run) the Release workflow, then confirm the public manifest,
-   each package URL, and a real client upgrade on Windows and both macOS
-   architectures.
+   environment secret `VPASTE_WEBSITE_RELEASE_TOKEN` in this repository. It is
+   passed only to the publish step and only sent to `api.github.com`; never
+   place it in source, artifacts, or logs. Replace it before it expires.
+2. The token's owner must be allowed to push directly to the website's `main`
+   branch (no rule that requires a pull request for that path).
+3. Confirm how `Loxonl/vPaste-website` is deployed (it previously served
+   GitHub Pages from the root of `main`). If the branch or folder changes,
+   update `--branch` in `tag-release.yml`.
+4. Release assets must be anonymously downloadable; otherwise the anonymous
+   download check fails and nothing is published.
 
-To pause publication, delete the variable or set it to `0`.
+Because publishing a Release now updates its channel immediately, run the
+manual validation in [release-checklist.md](release-checklist.md) on RC builds
+before publishing a Stable Release.
 
 ## Recovering from a failed publication
 

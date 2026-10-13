@@ -34,6 +34,6 @@ For both `aarch64` and `x86_64`:
 - `.app.tar.gz` updater package
 - Matching `.app.tar.gz.sig`
 
-The shared Release also contains `SHA256SUMS.txt`, `THIRD_PARTY_LICENSES.json`, `SBOM.cdx.json`, `LICENSE`, and GitHub-generated source archives. The workflow merges and validates the Windows and macOS manifest fragments locally, then attaches packages to the already published Release. It updates the website `latest.json` only when the repository variable `VPASTE_PUBLISH_UPDATE_FEED` is `1`, which is off by default; see [update-feed-publication.md](update-feed-publication.md). Keep GitHub's immutable Release setting disabled while attaching assets after publication.
+The shared Release also contains `SHA256SUMS.txt`, `THIRD_PARTY_LICENSES.json`, `SBOM.cdx.json`, `LICENSE`, and GitHub-generated source archives. The workflow merges and validates the Windows and macOS manifest fragments locally, then attaches packages to the already published Release. It then publishes the channel's website `latest.json` (Stable or RC, from the tag); see [update-feed-publication.md](update-feed-publication.md). Keep GitHub's immutable Release setting disabled while attaching assets after publication.
 
 Do not publish a package that requires users to remove quarantine or bypass Gatekeeper. Those commands are only useful when testing a package built locally from trusted source.

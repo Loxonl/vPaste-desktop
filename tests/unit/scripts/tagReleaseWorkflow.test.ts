@@ -63,6 +63,45 @@ describe("tag release signing workflow", () => {
     expect(contents).not.toContain('xcrun stapler validate "$dmg"');
   });
 
+  it.each(workflows)("adds a download-only universal DMG beside the per-architecture packages in $path", ({ contents }) => {
+    expect(contents).toContain("- target: aarch64-apple-darwin\n            arch: aarch64\n            updater-platform: darwin-aarch64");
+    expect(contents).toContain("- target: x86_64-apple-darwin\n            arch: x86_64\n            updater-platform: darwin-x86_64");
+    expect(contents).toContain('- target: universal-apple-darwin\n            arch: universal\n            updater-platform: ""');
+    expect(contents).toContain("rustup target add aarch64-apple-darwin x86_64-apple-darwin");
+    expect(contents).toContain('SKIP_UPDATER="$skip_updater"');
+    expect(contents).toContain('lipo "$app/Contents/MacOS/vPaste" -verify_arch arm64 x86_64');
+    const staging = contents.slice(contents.indexOf("- name: Verify and stage macOS packages"));
+    expect(staging.indexOf('cp "$dmg" "$staged_dmg"')).toBeLessThan(staging.indexOf('if [[ -n "$updater_platform" ]]; then\n            staged_updater='));
+    expect(staging.indexOf('if [[ -n "$updater_platform" ]]; then\n            staged_updater=')).toBeLessThan(
+      staging.indexOf("scripts/generate-updater-manifest.mjs"),
+    );
+  });
+
+  it("keeps the universal DMG out of the updater feed", () => {
+    expect(releaseWorkflow).toContain(
+      "for fragment in latest.windows.json latest.macos-aarch64.json latest.macos-x86_64.json; do",
+    );
+    expect(releaseWorkflow).not.toContain("latest.macos-universal.json");
+    expect(releaseWorkflow.match(/--platforms windows-x86_64,darwin-aarch64,darwin-x86_64/g)).toHaveLength(3);
+  });
+
+  it("builds an unsigned universal DMG in the draft release workflow", () => {
+    expect(draftReleaseWorkflow).toContain("- target: universal-apple-darwin\n            arch: universal");
+    expect(draftReleaseWorkflow).toContain("rustup target add aarch64-apple-darwin x86_64-apple-darwin");
+    expect(draftReleaseWorkflow).toContain(
+      'lipo "$bundle/macos/vPaste.app/Contents/MacOS/vPaste" -verify_arch arm64 x86_64',
+    );
+  });
+
+  it("lets signed macOS builds skip updater artifacts without the updater key", () => {
+    expect(macOSReleaseScript).toContain('if [[ "${unsigned_build}" == true || "${SKIP_UPDATER}" == "1" || "${SKIP_UPDATER}" == "true" ]]; then');
+    expect(macOSReleaseScript).toContain('if [[ "${skip_updater}" == false && -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then');
+    expect(macOSReleaseScript).toContain(`build_args+=("--config" '{"bundle":{"createUpdaterArtifacts":false}}')`);
+    const skipExit = macOSReleaseScript.indexOf('if [[ "${skip_updater}" == true ]]; then\n  echo "Signed macOS package build complete."');
+    expect(skipExit).toBeGreaterThan(macOSReleaseScript.indexOf('bash scripts/package-macos-dmg.sh'));
+    expect(skipExit).toBeLessThan(macOSReleaseScript.indexOf('updater_artifact="$(find'));
+  });
+
   it("keeps the updater manifest verifier out of desktop application binary targets", () => {
     const metadata = JSON.parse(
       execFileSync(

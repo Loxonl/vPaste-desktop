@@ -33,6 +33,10 @@ jobs:
           - target: x86_64-apple-darwin
             arch: x86_64
             updater-platform: darwin-x86_64
+          # Download-only universal DMG; updates stay on the per-architecture packages.
+          - target: universal-apple-darwin
+            arch: universal
+            updater-platform: ""
 
     steps:
       - name: Check out tagged source
@@ -71,7 +75,11 @@ jobs:
         run: |
           rustup toolchain install "$RUST_VERSION" --profile minimal
           rustup default "$RUST_VERSION"
-          rustup target add "${{ matrix.target }}"
+          if [[ "${{ matrix.target }}" == "universal-apple-darwin" ]]; then
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          else
+            rustup target add "${{ matrix.target }}"
+          fi
 
       - name: Install dependencies
         run: npm ci
@@ -159,12 +167,20 @@ jobs:
             exit 1
           fi
 
+          skip_updater=""
+          if [[ -z "${{ matrix.updater-platform }}" ]]; then
+            skip_updater=1
+          fi
+
           VERSION="$RELEASE_VERSION" \
           MACOS_BUILD_TARGET="${{ matrix.target }}" \
+          SKIP_UPDATER="$skip_updater" \
           OUTPUT_PATH="$RUNNER_TEMP/latest.macos.json" \
           npm run build:macos-release
 
-          cargo build --release --locked --target "${{ matrix.target }}" --manifest-path tools/history-archive-converter/Cargo.toml
+          if [[ -n "${{ matrix.updater-platform }}" ]]; then
+            cargo build --release --locked --target "${{ matrix.target }}" --manifest-path tools/history-archive-converter/Cargo.toml
+          fi
 
       - name: Verify and stage macOS packages
         shell: bash
@@ -172,14 +188,22 @@ jobs:
           bundle="src-tauri/target/${{ matrix.target }}/release/bundle"
           app="$(find "$bundle" -type d -path '*/macos/*.app' -print | sort | tail -n 1)"
           dmg="$(find "$bundle" -type f -path '*/dmg/*.dmg' -print | sort | tail -n 1)"
-          updater="$(find "$bundle" -type f -name '*.app.tar.gz' -print | sort | tail -n 1)"
+          updater_platform="${{ matrix.updater-platform }}"
+          expected=("$app" "$dmg")
+          if [[ -n "$updater_platform" ]]; then
+            updater="$(find "$bundle" -type f -name '*.app.tar.gz' -print | sort | tail -n 1)"
+            expected+=("$updater" "${updater}.sig")
+          fi
 
-          for artifact in "$app" "$dmg" "$updater" "${updater}.sig"; do
+          for artifact in "${expected[@]}"; do
             if [[ -z "$artifact" || ! -e "$artifact" ]]; then
               echo "Expected macOS artifact was not found: $artifact" >&2
               exit 1
             fi
           done
+          if [[ "${{ matrix.arch }}" == "universal" ]]; then
+            lipo "$app/Contents/MacOS/vPaste" -verify_arch arm64 x86_64
+          fi
 
           codesign --verify --deep --strict --verbose=2 "$app"
           spctl --assess --type execute --verbose=2 "$app"
@@ -189,18 +213,20 @@ jobs:
 
           mkdir -p release-assets
           staged_dmg="release-assets/vPaste_${RELEASE_VERSION}_macos_${{ matrix.arch }}.dmg"
-          staged_updater="release-assets/vPaste_${RELEASE_VERSION}_macos_${{ matrix.arch }}.app.tar.gz"
           cp "$dmg" "$staged_dmg"
-          cp "$updater" "$staged_updater"
-          cp "${updater}.sig" "${staged_updater}.sig"
-          cp "tools/history-archive-converter/target/${{ matrix.target }}/release/vpaste-history-converter" "release-assets/vpaste-history-converter_macos_${{ matrix.arch }}"
-          node scripts/generate-updater-manifest.mjs \
-            --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}" \
-            --version "$RELEASE_VERSION" \
-            --artifact "$staged_updater" \
-            --signature "${staged_updater}.sig" \
-            --platforms "${{ matrix.updater-platform }}" \
-            --output "release-assets/latest.macos-${{ matrix.arch }}.json"
+          if [[ -n "$updater_platform" ]]; then
+            staged_updater="release-assets/vPaste_${RELEASE_VERSION}_macos_${{ matrix.arch }}.app.tar.gz"
+            cp "$updater" "$staged_updater"
+            cp "${updater}.sig" "${staged_updater}.sig"
+            cp "tools/history-archive-converter/target/${{ matrix.target }}/release/vpaste-history-converter" "release-assets/vpaste-history-converter_macos_${{ matrix.arch }}"
+            node scripts/generate-updater-manifest.mjs \
+              --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}" \
+              --version "$RELEASE_VERSION" \
+              --artifact "$staged_updater" \
+              --signature "${staged_updater}.sig" \
+              --platforms "$updater_platform" \
+              --output "release-assets/latest.macos-${{ matrix.arch }}.json"
+          fi
           (
             cd release-assets
             shasum -a 256 ./* > SHA256SUMS.txt

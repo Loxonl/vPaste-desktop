@@ -187,6 +187,9 @@ jobs:
             arch: aarch64
           - target: x86_64-apple-darwin
             arch: x86_64
+          # Download-only universal DMG; the history converter stays per-architecture.
+          - target: universal-apple-darwin
+            arch: universal
     steps:
       - name: Check out requested source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -209,14 +212,20 @@ jobs:
         run: |
           rustup toolchain install "$RUST_VERSION" --profile minimal
           rustup default "$RUST_VERSION"
-          rustup target add "${{ matrix.target }}"
+          if [[ '${{ matrix.target }}' == universal-apple-darwin ]]; then
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          else
+            rustup target add '${{ matrix.target }}'
+          fi
       - name: Install dependencies
         run: npm ci
       - name: Build macOS assets
         shell: bash
         run: |
           VERSION="$RELEASE_VERSION" MACOS_BUILD_TARGET='${{ matrix.target }}' UNSIGNED=1 npm run build:macos-release
-          cargo build --release --locked --target '${{ matrix.target }}' --manifest-path tools/history-archive-converter/Cargo.toml
+          if [[ '${{ matrix.arch }}' != universal ]]; then
+            cargo build --release --locked --target '${{ matrix.target }}' --manifest-path tools/history-archive-converter/Cargo.toml
+          fi
       - name: Stage macOS assets
         shell: bash
         run: |
@@ -224,7 +233,11 @@ jobs:
           bundle="src-tauri/target/${{ matrix.target }}/release/bundle"
           dmg="$(find "$bundle" -type f -name '*.dmg' | head -n 1)"
           cp "$dmg" "release-assets/vPaste_${RELEASE_VERSION}_macos_${{ matrix.arch }}.dmg"
-          cp "tools/history-archive-converter/target/${{ matrix.target }}/release/vpaste-history-converter" "release-assets/vpaste-history-converter_macos_${{ matrix.arch }}"
+          if [[ '${{ matrix.arch }}' == universal ]]; then
+            lipo "$bundle/macos/vPaste.app/Contents/MacOS/vPaste" -verify_arch arm64 x86_64
+          else
+            cp "tools/history-archive-converter/target/${{ matrix.target }}/release/vpaste-history-converter" "release-assets/vpaste-history-converter_macos_${{ matrix.arch }}"
+          fi
       - name: Upload macOS assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

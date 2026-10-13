@@ -10,8 +10,10 @@ export MACOSX_DEPLOYMENT_TARGET
 OUTPUT_PATH="${OUTPUT_PATH:-}"
 SKIP_STAPLING="${SKIP_STAPLING:-}"
 UNSIGNED="${UNSIGNED:-}"
+SKIP_UPDATER="${SKIP_UPDATER:-}"
 MACOS_RELEASE_LTO="${MACOS_RELEASE_LTO:-false}"
 unsigned_build=false
+skip_updater=false
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "macOS release packages must be built on macOS." >&2
@@ -21,13 +23,18 @@ fi
 if [[ "${UNSIGNED}" == "1" || "${UNSIGNED}" == "true" ]]; then
   unsigned_build=true
 fi
+# SKIP_UPDATER builds a signed and notarized download-only package (the
+# universal DMG); updater archives stay per-architecture.
+if [[ "${unsigned_build}" == true || "${SKIP_UPDATER}" == "1" || "${SKIP_UPDATER}" == "true" ]]; then
+  skip_updater=true
+fi
 
-if [[ "${unsigned_build}" == false && -n "${TAURI_SIGNING_PRIVATE_KEY:-}" && -f "${TAURI_SIGNING_PRIVATE_KEY}" ]]; then
+if [[ "${skip_updater}" == false && -n "${TAURI_SIGNING_PRIVATE_KEY:-}" && -f "${TAURI_SIGNING_PRIVATE_KEY}" ]]; then
   private_key_path="${TAURI_SIGNING_PRIVATE_KEY}"
   export TAURI_SIGNING_PRIVATE_KEY="$(< "${private_key_path}")"
 fi
 
-if [[ "${unsigned_build}" == false && -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+if [[ "${skip_updater}" == false && -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
   default_key="${HOME}/.tauri/vpaste-updater-ci.key"
   if [[ -f "${default_key}" ]]; then
     private_key_path="${default_key}"
@@ -56,19 +63,27 @@ if [[ "${SKIP_STAPLING}" == "1" || "${SKIP_STAPLING}" == "true" ]]; then
 fi
 if [[ "${unsigned_build}" == true ]]; then
   build_args+=("--config" '{"bundle":{"createUpdaterArtifacts":false,"macOS":{"signingIdentity":"-","hardenedRuntime":false}}}')
+elif [[ "${skip_updater}" == true ]]; then
+  build_args+=("--config" '{"bundle":{"createUpdaterArtifacts":false}}')
 fi
 
-release_dir="src-tauri/target/release"
-if [[ -n "${MACOS_BUILD_TARGET}" ]]; then
-  release_dir="src-tauri/target/${MACOS_BUILD_TARGET}/release"
+release_dirs=("src-tauri/target/release")
+if [[ "${MACOS_BUILD_TARGET}" == "universal-apple-darwin" ]]; then
+  # Universal builds compile each architecture in its own target directory.
+  release_dirs=("src-tauri/target/aarch64-apple-darwin/release" "src-tauri/target/x86_64-apple-darwin/release")
+elif [[ -n "${MACOS_BUILD_TARGET}" ]]; then
+  release_dirs=("src-tauri/target/${MACOS_BUILD_TARGET}/release")
 fi
 
 clean_window_vibrancy_release_cache() {
   cargo clean --manifest-path src-tauri/Cargo.toml -p window-vibrancy >/dev/null 2>&1 || true
-  rm -rf "${release_dir}/.fingerprint"/window-vibrancy-* 2>/dev/null || true
-  rm -f "${release_dir}/deps"/libwindow_vibrancy-*.rlib 2>/dev/null || true
-  rm -f "${release_dir}/deps"/libwindow_vibrancy-*.rmeta 2>/dev/null || true
-  rm -f "${release_dir}/deps"/window_vibrancy-*.d 2>/dev/null || true
+  local release_dir
+  for release_dir in "${release_dirs[@]}"; do
+    rm -rf "${release_dir}/.fingerprint"/window-vibrancy-* 2>/dev/null || true
+    rm -f "${release_dir}/deps"/libwindow_vibrancy-*.rlib 2>/dev/null || true
+    rm -f "${release_dir}/deps"/libwindow_vibrancy-*.rmeta 2>/dev/null || true
+    rm -f "${release_dir}/deps"/window_vibrancy-*.d 2>/dev/null || true
+  done
 }
 
 # macOS release builds can fail in LTO while reading stale dependency bitcode,
@@ -128,6 +143,12 @@ if [[ "${unsigned_build}" == true ]]; then
   echo "Local ad-hoc signed macOS package build complete."
   echo "Updater archive, signature, and manifest were skipped because UNSIGNED=1."
   echo "Developer ID signing and notarization are still required for public distribution."
+  exit 0
+fi
+
+if [[ "${skip_updater}" == true ]]; then
+  echo "Signed macOS package build complete."
+  echo "Updater archive, signature, and manifest were skipped because SKIP_UPDATER=1."
   exit 0
 fi
 

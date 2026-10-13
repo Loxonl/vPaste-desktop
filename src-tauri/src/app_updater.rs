@@ -603,7 +603,10 @@ async fn reuse_cached_update(app: &AppHandle, update: &Update) -> Option<UpdateS
             return None;
         }
     };
-    info!("restored cached update {} without downloading", metadata.version);
+    info!(
+        "restored cached update {} without downloading",
+        metadata.version
+    );
     Some(mark_ready(
         app,
         PendingUpdate {
@@ -680,7 +683,13 @@ async fn restore_cached_update_at_startup(app: &AppHandle) {
                     state.downloaded_bytes = 0;
                     state.total_bytes = None;
                 }
-                mark_ready(app, PendingUpdate { metadata, package_path });
+                mark_ready(
+                    app,
+                    PendingUpdate {
+                        metadata,
+                        package_path,
+                    },
+                );
             }
         }
         Ok(Some((metadata, _))) => {
@@ -787,8 +796,8 @@ async fn prepare_update(
     let root = updates_root(app).map_err(|err| set_failed(app, UpdateErrorStage::Download, err))?;
     let public_key =
         updater_public_key(app).map_err(|err| set_failed(app, UpdateErrorStage::Download, err))?;
-    let committed = run_blocking(move || commit_pending_package(&root, metadata, &bytes, &public_key))
-        .await;
+    let committed =
+        run_blocking(move || commit_pending_package(&root, metadata, &bytes, &public_key)).await;
     let (metadata, package_path) = match committed {
         Ok(committed) => committed,
         Err(err) => {
@@ -862,7 +871,11 @@ fn decode_updater_text(value: &str, label: &str) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|err| format!("invalid UTF-8 in {label}: {err}"))
 }
 
-fn verify_package_bytes(public_key: &str, release_signature: &str, bytes: &[u8]) -> Result<(), String> {
+fn verify_package_bytes(
+    public_key: &str,
+    release_signature: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
     let public_key_text = decode_updater_text(public_key, "updater public key")?;
     let signature_text = decode_updater_text(release_signature, "update signature")?;
     let public_key = PublicKey::decode(&public_key_text)
@@ -969,9 +982,11 @@ fn commit_pending_package(
     let parent = path
         .parent()
         .ok_or_else(|| "cached update has no parent directory".to_string())?;
-    fs::create_dir_all(parent).map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
     write_file_atomically(&path, bytes)?;
-    let stored = fs::read(&path).map_err(|err| format!("failed to read back {}: {err}", path.display()))?;
+    let stored =
+        fs::read(&path).map_err(|err| format!("failed to read back {}: {err}", path.display()))?;
     if stored.len() != bytes.len() {
         return Err("the saved update is incomplete".to_string());
     }
@@ -1073,7 +1088,8 @@ pub async fn restart_and_install_app_update(app: AppHandle) -> Result<(), String
 
     // Re-verify right before installing: the file may have been removed or
     // modified since it was downloaded.
-    let root = updates_root(&app).map_err(|err| set_failed(&app, UpdateErrorStage::Install, err))?;
+    let root =
+        updates_root(&app).map_err(|err| set_failed(&app, UpdateErrorStage::Install, err))?;
     let public_key =
         updater_public_key(&app).map_err(|err| set_failed(&app, UpdateErrorStage::Install, err))?;
     let current_version = app.package_info().version.to_string();
@@ -1195,11 +1211,10 @@ async fn install_pending_update(
 #[cfg(test)]
 mod tests {
     use super::{
-        automatic_check_due_at, commit_pending_package, discard_pending_cache,
-        is_newer_version, load_pending_metadata, package_file_name, public_update_feed_enabled,
-        retry_allowed_at, retry_backoff, validate_cached_package, CheckGate,
-        PendingUpdateMetadata, RetrySchedule, UpdateStatus, CHECK_INTERVAL,
-        PENDING_METADATA_FILE,
+        automatic_check_due_at, commit_pending_package, discard_pending_cache, is_newer_version,
+        load_pending_metadata, package_file_name, public_update_feed_enabled, retry_allowed_at,
+        retry_backoff, validate_cached_package, CheckGate, PendingUpdateMetadata, RetrySchedule,
+        UpdateStatus, CHECK_INTERVAL, PENDING_METADATA_FILE,
     };
     use chrono::{Duration, TimeZone, Utc};
     use std::fs;
@@ -1267,7 +1282,10 @@ mod tests {
         assert!(!automatic_check_due_at(gate(), &recent, now));
         assert!(automatic_check_due_at(gate(), &old, now));
         assert!(!automatic_check_due_at(
-            CheckGate { pending_update: true, ..gate() },
+            CheckGate {
+                pending_update: true,
+                ..gate()
+            },
             &old,
             now
         ));
@@ -1276,10 +1294,27 @@ mod tests {
     #[test]
     fn automatic_checks_respect_feed_portable_and_user_switches() {
         let now = Utc.with_ymd_and_hms(2026, 7, 24, 12, 0, 0).unwrap();
-        assert!(!automatic_check_due_at(CheckGate { feed_enabled: false, ..gate() }, "", now));
-        assert!(!automatic_check_due_at(CheckGate { portable: true, ..gate() }, "", now));
         assert!(!automatic_check_due_at(
-            CheckGate { automatic_checks_enabled: false, ..gate() },
+            CheckGate {
+                feed_enabled: false,
+                ..gate()
+            },
+            "",
+            now
+        ));
+        assert!(!automatic_check_due_at(
+            CheckGate {
+                portable: true,
+                ..gate()
+            },
+            "",
+            now
+        ));
+        assert!(!automatic_check_due_at(
+            CheckGate {
+                automatic_checks_enabled: false,
+                ..gate()
+            },
             "",
             now
         ));
@@ -1288,7 +1323,10 @@ mod tests {
     #[test]
     fn failed_checks_back_off_instead_of_waiting_a_day_or_retrying_immediately() {
         let now = Utc.with_ymd_and_hms(2026, 7, 24, 12, 0, 0).unwrap();
-        let blocked = CheckGate { retry_allowed: false, ..gate() };
+        let blocked = CheckGate {
+            retry_allowed: false,
+            ..gate()
+        };
         assert!(!automatic_check_due_at(blocked, "", now));
 
         assert_eq!(retry_backoff(1), StdDuration::from_secs(15 * 60));
@@ -1310,10 +1348,16 @@ mod tests {
     fn cached_mac_updates_restore_before_the_daily_interval() {
         let now = Utc.with_ymd_and_hms(2026, 7, 24, 12, 0, 0).unwrap();
         let recent = (now - Duration::minutes(5)).to_rfc3339();
-        let restoring = CheckGate { cache_restore_pending: true, ..gate() };
+        let restoring = CheckGate {
+            cache_restore_pending: true,
+            ..gate()
+        };
         assert!(automatic_check_due_at(restoring, &recent, now));
         assert!(!automatic_check_due_at(
-            CheckGate { retry_allowed: false, ..restoring },
+            CheckGate {
+                retry_allowed: false,
+                ..restoring
+            },
             &recent,
             now
         ));
@@ -1379,7 +1423,10 @@ mod tests {
             TEST_PUBLIC_KEY
         )
         .is_err());
-        assert_eq!(fs::read(dir.path().join(PENDING_METADATA_FILE)).unwrap(), before);
+        assert_eq!(
+            fs::read(dir.path().join(PENDING_METADATA_FILE)).unwrap(),
+            before
+        );
         assert!(!dir.path().join("1.8.0").exists());
     }
 
@@ -1391,8 +1438,14 @@ mod tests {
                 .unwrap();
 
         assert!(
-            validate_cached_package(dir.path(), &stored, TEST_PUBLIC_KEY, "1.6.0", "darwin-x86_64")
-                .is_err(),
+            validate_cached_package(
+                dir.path(),
+                &stored,
+                TEST_PUBLIC_KEY,
+                "1.6.0",
+                "darwin-x86_64"
+            )
+            .is_err(),
             "architecture mismatch"
         );
         assert!(
@@ -1440,7 +1493,9 @@ mod tests {
         );
         fs::create_dir_all(dir.path().join("1.7.0")).unwrap();
         fs::write(
-            dir.path().join("1.7.0").join("vPaste_1.7.0_windows_x64_setup.exe"),
+            dir.path()
+                .join("1.7.0")
+                .join("vPaste_1.7.0_windows_x64_setup.exe"),
             TEST_PAYLOAD,
         )
         .unwrap();

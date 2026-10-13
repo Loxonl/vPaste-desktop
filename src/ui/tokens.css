@@ -7,6 +7,7 @@
   --ui-danger-soft: rgba(217, 48, 37, 0.10);
   --ui-warning: #8a5208;
   --ui-warning-soft: rgba(255, 184, 72, 0.16);
+  --ui-star: #f2a900;
   --ui-success: #16734b;
   --ui-success-soft: rgba(36, 176, 112, 0.10);
 
@@ -402,7 +403,6 @@
   --settings-text: var(--ui-text);
   --settings-muted: var(--ui-text-muted);
   --settings-card-bg: rgba(255, 255, 255, 0.72);
-  --settings-about-bg: rgba(255, 255, 255, 0.94);
   --settings-card-shadow: var(--ui-shadow-card);
   --settings-input-bg: rgba(255, 255, 255, 0.70);
   --settings-input-border: #e1e5ea;
@@ -421,6 +421,7 @@
   --ui-danger-soft: rgba(255, 113, 104, 0.14);
   --ui-warning: #ffd18a;
   --ui-warning-soft: rgba(255, 184, 72, 0.16);
+  --ui-star: #ffc94d;
   --ui-success: #65d9a0;
   --ui-success-soft: rgba(54, 201, 135, 0.14);
 
@@ -629,7 +630,6 @@
   --settings-text: #f1f2f4;
   --settings-muted: var(--ui-text-muted);
   --settings-card-bg: rgba(35, 35, 35, 0.96);
-  --settings-about-bg: rgba(35, 35, 35, 0.96);
   --settings-card-shadow: var(--ui-shadow-card);
   --settings-input-bg: rgba(26, 26, 26, 0.92);
   --settings-input-border: var(--ui-border);

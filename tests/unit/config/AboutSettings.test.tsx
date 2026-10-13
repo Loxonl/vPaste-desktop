@@ -48,7 +48,7 @@ function renderAbout(bridge: SettingsBridge) {
 }
 
 describe("About update controls", () => {
-    it("downloads after a manual check and then offers one restart action", async () => {
+    it("downloads after a manual check and turns the same button into the install action", async () => {
         const availableState = { ...baseState, status: "available", availableVersion: "1.7.0" } as UpdateState;
         const invoke = vi.fn(async (command: string) => {
             if (command === "get_update_state") return baseState;
@@ -64,24 +64,28 @@ describe("About update controls", () => {
         await waitFor(() => {
             expect(invoke).toHaveBeenCalledWith("prepare_app_update");
         });
-        await user.click(await screen.findByRole("button", { name: "settings.updateRestart" }));
+        const updateButton = await screen.findByRole("button", { name: "settings.updateTo" });
+        expect(screen.queryByRole("button", { name: "settings.updateCheck" })).not.toBeInTheDocument();
+        await user.click(updateButton);
         await waitFor(() => {
             expect(invoke).toHaveBeenCalledWith("restart_and_install_app_update");
         });
     });
 
-    it("opens shared link cards through the existing browser command", async () => {
+    it.each([
+        ["settings.about.website", "https://vpaste.app/"],
+        ["settings.about.github", "https://github.com/Loxonl/vPaste-desktop"],
+        ["settings.about.changelog", "https://github.com/Loxonl/vPaste-desktop/releases"],
+    ])("opens %s through the existing browser command", async (name, url) => {
         const invoke = vi.fn(async (command: string) => {
             if (command === "get_update_state") return baseState;
             return undefined;
         });
         renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
 
-        await userEvent.click(screen.getByRole("button", { name: /settings\.about\.changelog/ }));
+        await userEvent.click(screen.getByRole("button", { name }));
 
-        expect(invoke).toHaveBeenCalledWith("open_url_in_browser", {
-            url: "https://github.com/Loxonl/vPaste-desktop/releases",
-        });
+        expect(invoke).toHaveBeenCalledWith("open_url_in_browser", { url });
     });
 
     it("uses the shared confirmation dialog before opening a manual update download", async () => {
@@ -141,7 +145,7 @@ describe("About update controls", () => {
         renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
 
         expect(await screen.findByRole("alert")).toHaveTextContent("settings.updateReadyInstallFailed");
-        await userEvent.click(screen.getByRole("button", { name: "settings.updateRestart" }));
+        await userEvent.click(screen.getByRole("button", { name: "settings.updateTo" }));
         expect(invoke).toHaveBeenCalledWith("restart_and_install_app_update");
     });
 
@@ -158,7 +162,7 @@ describe("About update controls", () => {
         expect(screen.getByRole("button", { name: "settings.updateCheck" })).toBeDisabled();
     });
 
-    it("shows the version as text and only the check and install actions as buttons", async () => {
+    it("uses one update button that becomes the install action once an update is found", async () => {
         const readyState = { ...baseState, status: "ready", availableVersion: "1.7.0" } as UpdateState;
         const invoke = vi.fn(async (command: string) => {
             if (command === "get_update_state") return readyState;
@@ -166,14 +170,27 @@ describe("About update controls", () => {
         });
         renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
 
-        const restart = await screen.findByRole("button", { name: "settings.updateRestart" });
-        expect(screen.getByText("common.version")).not.toHaveAttribute("role", "button");
-        expect(screen.queryByText("settings.about.subtitle")).not.toBeInTheDocument();
-        const updateButtons = [screen.getByRole("button", { name: "settings.updateCheck" }), restart];
-        expect(updateButtons.map(button => button.textContent)).toEqual(["settings.updateCheck", "settings.updateRestart"]);
+        await screen.findByRole("button", { name: "settings.updateTo" });
+        expect(screen.queryByRole("button", { name: "settings.updateCheck" })).not.toBeInTheDocument();
+        expect(screen.getByText("common.version")).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "common.version" })).not.toBeInTheDocument();
     });
 
-    it("offers only the check button when no update is waiting", async () => {
+    it("downloads when the found update has not been prepared yet", async () => {
+        const availableState = { ...baseState, status: "available", availableVersion: "1.7.0" } as UpdateState;
+        const invoke = vi.fn(async (command: string) => {
+            if (command === "get_update_state") return availableState;
+            if (command === "prepare_app_update") return availableState;
+            return undefined;
+        });
+        renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
+
+        await userEvent.click(await screen.findByRole("button", { name: "settings.updateTo" }));
+        expect(invoke).toHaveBeenCalledWith("prepare_app_update");
+        expect(invoke).not.toHaveBeenCalledWith("restart_and_install_app_update");
+    });
+
+    it("offers only the check button when no update is waiting and disables it while busy", async () => {
         const invoke = vi.fn(async (command: string) => {
             if (command === "get_update_state") return baseState;
             return undefined;
@@ -181,7 +198,40 @@ describe("About update controls", () => {
         renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
 
         expect(await screen.findByRole("button", { name: "settings.updateCheck" })).toBeEnabled();
-        expect(screen.queryByRole("button", { name: "settings.updateRestart" })).not.toBeInTheDocument();
-        expect(screen.queryByRole("button", { name: "settings.updateDownload" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "settings.updateTo" })).not.toBeInTheDocument();
+
+        cleanup();
+        const checking = vi.fn(async (command: string) => {
+            if (command === "get_update_state") return { ...baseState, status: "checking" };
+            return undefined;
+        });
+        renderAbout(createBridge(checking as SettingsBridge["invoke"]));
+        expect(await screen.findByRole("button", { name: "settings.updateChecking" })).toBeDisabled();
+    });
+});
+
+describe("About GitHub star prompt", () => {
+    afterEach(() => localStorage.clear());
+
+    it("links to the repository and stays dismissed once closed", async () => {
+        const invoke = vi.fn(async (command: string) => {
+            if (command === "get_update_state") return baseState;
+            return undefined;
+        });
+        renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
+
+        expect(screen.getByText("settings.about.starPrompt")).toBeInTheDocument();
+        await userEvent.click(screen.getByRole("button", { name: "settings.about.starAction" }));
+        expect(invoke).toHaveBeenCalledWith("open_url_in_browser", {
+            url: "https://github.com/Loxonl/vPaste-desktop",
+        });
+
+        await userEvent.click(screen.getByRole("button", { name: "settings.about.starDismiss" }));
+        await waitFor(() => expect(screen.queryByText("settings.about.starPrompt")).not.toBeInTheDocument());
+
+        cleanup();
+        renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
+        await screen.findByRole("button", { name: "settings.updateCheck" });
+        expect(screen.queryByText("settings.about.starPrompt")).not.toBeInTheDocument();
     });
 });

@@ -1,25 +1,49 @@
 import * as React from "react";
-import { Box, Button, Stack, Typography } from "@mui/material";
-import ArticleOutlinedIcon from "@mui/icons-material/ArticleOutlined";
+import { Button, CircularProgress, IconButton, Typography } from "@mui/material";
+import ArrowCircleUpRoundedIcon from "@mui/icons-material/ArrowCircleUpRounded";
+import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import GitHubIcon from "@mui/icons-material/GitHub";
-import LaunchOutlinedIcon from "@mui/icons-material/LaunchOutlined";
+import HistoryRoundedIcon from "@mui/icons-material/HistoryRounded";
+import LanguageRoundedIcon from "@mui/icons-material/LanguageRounded";
+import StarRoundedIcon from "@mui/icons-material/StarRounded";
+import SyncRoundedIcon from "@mui/icons-material/SyncRounded";
 import { error } from "@tauri-apps/plugin-log";
 import aboutLogo from "../../../src-tauri/icons/source/vpaste-app-icon-1024.png";
 import { restartReady, useAppUpdateState, type UpdateState } from "../../update";
 import type { SettingsSectionProps, TFunction } from "../settingsTypes";
-import ActionCard from "../../ui/ActionCard";
 import { classes } from "../../ui/classNames";
 import { ConfirmDialog } from "../../ui/ConfirmDialog";
 import { AnimatePresence, m, useMotionPreset } from "../../ui/motion";
 import styles from "../Config.module.css";
 
+const APP_WEBSITE_URL = "https://vpaste.app/";
 const APP_REPOSITORY_URL = "https://github.com/Loxonl/vPaste-desktop";
 const APP_CHANGELOG_URL = `${APP_REPOSITORY_URL}/releases`;
+const STAR_PROMPT_DISMISSED_KEY = "vpaste.about.githubStarPromptDismissed";
+
+function readStarPromptDismissed(): boolean {
+    try {
+        return localStorage.getItem(STAR_PROMPT_DISMISSED_KEY) === "1";
+    } catch {
+        return false;
+    }
+}
+
+function rememberStarPromptDismissed() {
+    try {
+        localStorage.setItem(STAR_PROMPT_DISMISSED_KEY, "1");
+    } catch {
+        // Storage can be unavailable; the prompt then only hides for this session.
+    }
+}
+
+type UpdateAction = "check" | "prepare" | "install" | "manualDownload";
 
 export default function AboutSettings({ bridge, t, dialogBackdropClassName }: SettingsSectionProps & { dir: string, dialogBackdropClassName?: string }) {
     const { state: updateState, check, prepare, restartToUpdate } = useAppUpdateState(bridge);
     const [checkedManually, setCheckedManually] = React.useState(false);
     const [manualReleaseUrl, setManualReleaseUrl] = React.useState<string | null>(null);
+    const [starPromptVisible, setStarPromptVisible] = React.useState(() => !readStarPromptDismissed());
     const updateBusy = updateState.status === "checking"
         || updateState.status === "downloading"
         || updateState.status === "installing";
@@ -50,70 +74,78 @@ export default function AboutSettings({ bridge, t, dialogBackdropClassName }: Se
         }
     };
 
-    const handleCheckAction = () => {
-        void handleCheckUpdate();
-    };
+    // One button checks for updates and, once a version is found, becomes "Update to X".
+    const updateAction: UpdateAction = restartReady(updateState)
+        ? "install"
+        : updateState.status === "available" && !updateState.portable
+            ? "prepare"
+            : updateState.status === "manualDownload"
+                ? "manualDownload"
+                : "check";
+    const updateFound = updateAction !== "check";
 
-    const handlePrimaryUpdateAction = () => {
-        if (restartReady(updateState)) {
-            void handleRestartToUpdate();
-        } else if (updateState.status === "available" && !updateState.portable) {
-            void prepare().catch(e => error(`Failed to download update: ${e}`));
+    const handleUpdateAction = () => {
+        switch (updateAction) {
+            case "install":
+                void handleRestartToUpdate();
+                return;
+            case "prepare":
+                void prepare().catch(e => error(`Failed to download update: ${e}`));
+                return;
+            case "manualDownload":
+                setManualReleaseUrl(updateState.releaseUrl);
+                return;
+            case "check":
+                void handleCheckUpdate();
         }
     };
 
-    const checkActionText = updateState.status === "checking"
+    const updateButtonText = updateState.status === "checking"
         ? t("settings.updateChecking")
-        : updateState.status === "failed"
-            ? t("settings.updateRetry")
-            : t("settings.updateCheck");
-    // The filled button only appears when there is something to install or download.
-    const primaryActionText = restartReady(updateState)
-        ? t("settings.updateRestart")
-        : updateState.status === "available" && !updateState.portable
-            ? t("settings.updateDownload")
-            : null;
+        : updateState.status === "downloading"
+            ? t("settings.updateDownloading")
+            : updateState.status === "installing"
+                ? t("settings.updateInstallingShort")
+                : updateFound
+                    ? t("settings.updateTo", { version: updateState.availableVersion || "" })
+                    : updateState.status === "failed"
+                        ? t("settings.updateRetry")
+                        : t("settings.updateCheck");
+    const updateButtonIcon = updateBusy
+        ? <CircularProgress size={14} thickness={5} color="inherit" aria-hidden="true" />
+        : updateFound
+            ? <ArrowCircleUpRoundedIcon fontSize="small" />
+            : <SyncRoundedIcon fontSize="small" />;
 
     const displayVersion = updateState.currentVersion || t("settings.versionUnknown");
     const statusText = updateStatusText(updateState, checkedManually, t);
     const statusMotion = useMotionPreset("fade");
+    const promptMotion = useMotionPreset("listItem");
     const updateHasError = updateState.status === "failed"
         || (updateState.status === "ready" && Boolean(updateState.error));
 
+    const dismissStarPrompt = () => {
+        rememberStarPromptDismissed();
+        setStarPromptVisible(false);
+    };
+
+    const links = [
+        { key: "website", url: APP_WEBSITE_URL, icon: <LanguageRoundedIcon fontSize="small" />, label: t("settings.about.website") },
+        { key: "github", url: APP_REPOSITORY_URL, icon: <GitHubIcon fontSize="small" />, label: t("settings.about.github") },
+        { key: "changelog", url: APP_CHANGELOG_URL, icon: <HistoryRoundedIcon fontSize="small" />, label: t("settings.about.changelog") },
+    ];
+
     return (
-        <Stack spacing={6}>
-            <Box className={classes(styles, "about-hero")}>
-                <div className={classes(styles, "about-logo-tile")}>
-                    <img src={aboutLogo} alt="" />
-                </div>
+        <div className={classes(styles, "about-page")}>
+            <section className={classes(styles, "about-hero")} aria-labelledby="about-product-name">
+                <img className={classes(styles, "about-logo")} src={aboutLogo} alt="" />
                 <div className={classes(styles, "about-copy")}>
-                    <Typography variant="h5" className={classes(styles, "about-product-title")}>
+                    <Typography id="about-product-name" variant="h5" className={classes(styles, "about-product-title")}>
                         vPaste
                     </Typography>
                     <Typography variant="body2" className={classes(styles, "about-version")}>
                         {t("common.version", { version: displayVersion })}
                     </Typography>
-                    <div className={classes(styles, "about-update-actions")}>
-                        <Button
-                            variant="outlined"
-                            size="small"
-                            disabled={updateBusy || !updateState.feedEnabled}
-                            onClick={handleCheckAction}
-                        >
-                            {checkActionText}
-                        </Button>
-                        {primaryActionText && (
-                            <Button
-                                variant="contained"
-                                size="small"
-                                disableElevation
-                                disabled={updateBusy}
-                                onClick={handlePrimaryUpdateAction}
-                            >
-                                {primaryActionText}
-                            </Button>
-                        )}
-                    </div>
                     <AnimatePresence mode="wait" initial={false}>
                         {statusText && (
                             <m.div
@@ -136,28 +168,76 @@ export default function AboutSettings({ bridge, t, dialogBackdropClassName }: Se
                         )}
                     </AnimatePresence>
                 </div>
-            </Box>
-            <Box>
-                <Typography variant="subtitle2" className={classes(styles, "settings-section-title")}>
+                <Button
+                    className={classes(styles, "about-update-button")}
+                    variant={updateFound ? "contained" : "outlined"}
+                    disableElevation
+                    startIcon={updateButtonIcon}
+                    disabled={updateBusy || !updateState.feedEnabled}
+                    onClick={handleUpdateAction}
+                >
+                    {updateButtonText}
+                </Button>
+            </section>
+
+            <AnimatePresence mode="wait" initial={false}>
+                {starPromptVisible && (
+                    <m.div
+                        key="github-star-prompt"
+                        variants={promptMotion}
+                        initial="initial"
+                        animate="animate"
+                        exit="exit"
+                        data-motion-preset="listItem"
+                    >
+                        <div className={classes(styles, "about-star-prompt")} role="note">
+                            <StarRoundedIcon className={classes(styles, "about-star-icon")} aria-hidden="true" />
+                            <Typography variant="body2" className={classes(styles, "about-star-text")}>
+                                {t("settings.about.starPrompt")}
+                            </Typography>
+                            <Button
+                                size="small"
+                                className={classes(styles, "about-star-action")}
+                                variant="contained"
+                                disableElevation
+                                startIcon={<GitHubIcon fontSize="small" />}
+                                onClick={() => openExternal(APP_REPOSITORY_URL)}
+                            >
+                                {t("settings.about.starAction")}
+                            </Button>
+                            <IconButton
+                                size="small"
+                                className={classes(styles, "about-star-dismiss")}
+                                aria-label={t("settings.about.starDismiss")}
+                                title={t("settings.about.starDismiss")}
+                                onClick={dismissStarPrompt}
+                            >
+                                <CloseRoundedIcon fontSize="small" />
+                            </IconButton>
+                        </div>
+                    </m.div>
+                )}
+            </AnimatePresence>
+
+            <section className={classes(styles, "about-links-section")} aria-labelledby="about-links-title">
+                <Typography id="about-links-title" variant="subtitle2" className={classes(styles, "settings-section-title")}>
                     {t("settings.about.linksSection")}
                 </Typography>
-                <div className={classes(styles, "about-link-grid")}>
-                    <ActionCard
-                        icon={<ArticleOutlinedIcon fontSize="small" />}
-                        title={t("settings.about.changelog")}
-                        description={t("settings.about.changelog.desc")}
-                        endAdornment={<LaunchOutlinedIcon fontSize="small" />}
-                        onClick={() => openExternal(APP_CHANGELOG_URL)}
-                    />
-                    <ActionCard
-                        icon={<GitHubIcon fontSize="small" />}
-                        title={t("settings.about.github")}
-                        description="Loxonl/vPaste-desktop"
-                        endAdornment={<LaunchOutlinedIcon fontSize="small" />}
-                        onClick={() => openExternal(APP_REPOSITORY_URL)}
-                    />
+                <div className={classes(styles, "about-links")}>
+                    {links.map(link => (
+                        <Button
+                            key={link.key}
+                            variant="outlined"
+                            startIcon={link.icon}
+                            className={classes(styles, "about-link-button")}
+                            onClick={() => openExternal(link.url)}
+                        >
+                            {link.label}
+                        </Button>
+                    ))}
                 </div>
-            </Box>
+            </section>
+
             <ConfirmDialog
                 open={manualReleaseUrl !== null}
                 title={t("settings.updateOpenReleaseTitle")}
@@ -175,8 +255,8 @@ export default function AboutSettings({ bridge, t, dialogBackdropClassName }: Se
                     if (releaseUrl) openExternal(releaseUrl);
                 }}
             />
-        </Stack>
-    )
+        </div>
+    );
 }
 
 function updateStatusText(state: UpdateState, checkedManually: boolean, t: TFunction): string {

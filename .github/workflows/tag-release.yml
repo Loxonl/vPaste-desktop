@@ -500,10 +500,10 @@ jobs:
             --sbom "release-assets/vPaste_${RELEASE_VERSION}_sbom.cdx.json"
           cp LICENSE docs/open-source/third-party-notices.md release-assets/
 
-          (
-            cd release-assets
-            sha256sum ./* | sed 's#  \./#  #' > SHA256SUMS.txt
-          )
+          python3 scripts/prepare-release-assets.py \
+            --assets-dir release-assets \
+            --version "$RELEASE_VERSION" \
+            --manifest merged/latest.json
 
       - name: Upload packages to existing GitHub Release
         env:
@@ -523,6 +523,14 @@ jobs:
             --tag "$RELEASE_TAG" \
             --platforms windows-x86_64,darwin-aarch64,darwin-x86_64 \
             --verify-release-assets Loxonl/vPaste-desktop
+
+      - name: Append release download table
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          node scripts/update-release-downloads.mjs \
+            --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --require-universal --publish
 
       # Stable tags (vX.Y.Z) publish download/stable/latest.json and RC tags
       # (vX.Y.Z-rc.N) publish download/rc/latest.json. The script verifies

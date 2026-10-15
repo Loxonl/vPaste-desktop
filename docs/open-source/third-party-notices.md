@@ -7,7 +7,7 @@ This document records public attribution notes for the clean repository. The loc
 - `package-lock.json` for npm packages.
 - `src-tauri/Cargo.lock` for Rust crates.
 
-The Release workflow runs `npm run check:licenses` and publishes `THIRD_PARTY_LICENSES.json`, generated from both lockfiles, with every binary release. A custom, missing, or denied third-party license fails the workflow and requires explicit review.
+The Release workflow runs `npm run check:licenses` and publishes `THIRD_PARTY_LICENSES.json`, generated from both lockfiles, inside `vPaste_<version>_release-metadata.zip` with every binary release. The ZIP also includes this notice, `LICENSE`, and the SBOM. A custom, missing, or denied third-party license fails the workflow and requires explicit review.
 
 macOS DMG creation also uses the build-only Python packages `dmgbuild` 1.6.7, `ds_store` 1.3.3, and `mac_alias` 2.2.3 (all MIT). Their versions are pinned in `scripts/requirements-macos-dmg.txt`; they are not bundled into the app or installer.
 

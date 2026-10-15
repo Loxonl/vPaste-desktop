@@ -46,6 +46,20 @@ describe("tag release signing workflow", () => {
     expect(releaseWorkflow).not.toContain("Commit updater manifest to website");
   });
 
+  it("compacts metadata after signature verification and adds downloads only after upload", () => {
+    const compact = releaseWorkflow.indexOf("python3 scripts/prepare-release-assets.py");
+    expect(compact).toBeGreaterThan(releaseWorkflow.indexOf("cargo run --manifest-path tools/verify-updater-manifest"));
+    expect(compact).toBeLessThan(releaseWorkflow.indexOf("scripts/upload-published-release-assets.sh"));
+    expect(releaseWorkflow.slice(compact)).toContain('--manifest merged/latest.json');
+    const downloads = releaseWorkflow.indexOf("- name: Append release download table");
+    expect(downloads).toBeGreaterThan(releaseWorkflow.indexOf("- name: Verify release assets referenced by manifest"));
+    expect(releaseWorkflow.slice(downloads)).toContain("scripts/update-release-downloads.mjs");
+    expect(releaseWorkflow.slice(downloads)).toContain("--require-universal");
+    expect(draftReleaseWorkflow).toContain("scripts/prepare-release-assets.py");
+    expect(draftReleaseWorkflow).toContain("scripts/update-release-downloads.mjs");
+    expect(draftReleaseWorkflow).toContain("--require-universal");
+  });
+
   it.each(workflows)("derives the macOS signing identity in $path", ({ contents }) => {
     expect(contents).not.toContain("secrets.APPLE_SIGNING_IDENTITY");
     expect(contents).toContain('security list-keychains -d user -s "$keychain_path"');

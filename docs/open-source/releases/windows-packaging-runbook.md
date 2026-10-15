@@ -276,13 +276,57 @@ For the public flow, create and publish a new Release with the reviewed tag, tit
 The release should contain:
 
 - Windows installer and Portable ZIP
-- Apple silicon and Intel macOS artifacts
-- updater archives and signatures; the merged `latest.json` is validated in
-  the workflow and then published to the channel's website manifest
+- Apple silicon, Intel, and Universal macOS DMGs
+- the two per-architecture macOS updater archives
 - `SHA256SUMS.txt`
-- SBOM and dependency/license inventory
-- third-party notices and GPL license
+- `vPaste_<version>_release-metadata.zip` containing the SBOM,
+  dependency/license inventory, third-party notices, GPL license, updater
+  signatures, and the merged `latest.json` snapshot; that manifest is also
+  published to the channel's website after verification
 - GitHub source archives
+
+This gives nine uploaded assets plus GitHub's two source archives. The workflow
+appends an English-first bilingual direct-download table at the end of the Release notes,
+above Assets, after verifying that all five manual-install packages are
+uploaded. Re-running the helper replaces only its marked table and preserves
+handwritten content, normalizing the language sections to English before Chinese.
+Use this order when writing each release; English is the primary/default language:
+
+```markdown
+# vPaste <version>
+
+## English
+
+- User-facing changes in English
+
+## 中文
+
+- 对应的中文更新说明
+
+## Packages / 安装包
+
+Shared package information and warnings, English first and Chinese second.
+```
+
+The helper recognizes the exact `## English` and `## 中文` headings, keeps
+subsections within their language, and preserves shared notes and source links.
+It does not translate single-language or unstructured notes. The managed download
+table always comes last, after all handwritten sections.
+
+To refresh the table and language order on an existing release, preview first:
+
+```powershell
+node scripts/update-release-downloads.mjs --repo Loxonl/vPaste-desktop --tag v<version>
+node scripts/update-release-downloads.mjs --repo Loxonl/vPaste-desktop --tag v<version> --publish
+```
+
+For historical releases, the helper omits the Universal DMG row when that asset
+does not exist. Both release workflows pass `--require-universal` so new releases
+must provide all five manual-download packages before publishing the table.
+
+Apply asset compaction only to new releases. The table can be added to older
+releases without changing their packages, signatures, or checksums. WinGet
+YAML remains in the Windows Actions artifact and local packaging output.
 
 Submit WinGet metadata manually only after the corresponding Stable GitHub
 Release packages have been attached and verified.

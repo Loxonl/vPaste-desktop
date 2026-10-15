@@ -48,6 +48,8 @@ The workflow creates a Draft Release only. It never creates a tag-triggered rele
 4. Wait for Windows, Apple silicon macOS, Intel macOS, and universal macOS packages to be attached to that same Release. Existing assets with different contents are never replaced.
 5. Confirm the merged updater manifest contains `windows-x86_64`, `darwin-aarch64`, and `darwin-x86_64` entries with non-empty signatures. The workflow then publishes the channel manifest (`download/stable/latest.json` for `vX.Y.Z`, `download/rc/latest.json` for `vX.Y.Z-rc.N`) to the website; confirm the public URL serves the new version. See [update-feed-publication.md](update-feed-publication.md).
 6. Smoke-test the attached packages before advertising the Release. The source repository is currently private, so unauthenticated users cannot download its Release assets.
+7. Write bilingual notes with `## English` first and `## 中文` second. English is the primary/default release language; package warnings and shared bilingual labels also put English first. The workflow normalizes these language-section headings without changing their contents or inventing translations.
+8. Confirm the English-first bilingual download table is at the end of the Release notes, immediately above Assets. It must link directly to the five manual-install packages. The workflow refreshes its marked section without replacing handwritten notes.
 
 ## Windows validation
 
@@ -60,6 +62,10 @@ The workflow creates a Draft Release only. It never creates a tag-triggered rele
 
 ## Publish review
 
-- Private drafts contain the Windows installer/Portable, three macOS DMGs (Apple silicon, Intel, universal), checksums, SBOM, dependency inventory, notices, GPL license, and source archives.
-- Packages must include updater archives/signatures; macOS packages must also pass platform signature and notarization checks. Publishing the merged website updater manifest is a separate future step.
+- Published releases contain nine uploaded assets: Windows installer and Portable ZIP, three macOS DMGs, two macOS updater archives, `SHA256SUMS.txt`, and `vPaste_<version>_release-metadata.zip`. GitHub adds its two source archives, giving eleven download entries.
+- The metadata ZIP preserves `LICENSE`, third-party notices, the dependency inventory, SBOM, the three updater signatures, and a version-specific `latest.json` snapshot. The client reads signatures from the channel manifest; updater packages remain directly downloadable. Checksums cover the final public packages and metadata ZIP.
+- WinGet YAML remains in the Windows Actions artifact for maintainers and is not uploaded as a separate Release asset. Local packaging output is unchanged.
+- Private drafts use the same metadata ZIP and download table, but contain no updater signatures or manifest snapshot. Their history-converter tools remain available as separate assets.
+- macOS packages must pass signature and notarization checks. The published-release workflow verifies updater signatures before packaging metadata, then publishes the website channel manifest after upload verification.
 - Never replace assets under an already published version; create a new version for changed package bytes.
+- Apply compact packaging to new releases. Existing releases may receive the download table without replacing their packages or checksums.

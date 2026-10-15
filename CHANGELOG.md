@@ -6,6 +6,7 @@ All notable public changes to vPaste Desktop will be documented in this file.
 
 ### Changed
 
+- Consolidated release metadata into one ZIP and added an English-first bilingual download table at the end of release notes, with English updates displayed before Chinese.
 - Allowed public Windows tag releases without an Authenticode certificate while retaining updater signatures, artifact-integrity checks, and an explicit publisher warning.
 - Added Cargo dependency and pinned Inno Setup installer caching to the tag release workflow.
 - Added a download-only universal macOS DMG (Apple silicon and Intel) to releases; the per-architecture DMGs and updater packages are unchanged and remain the update channel.

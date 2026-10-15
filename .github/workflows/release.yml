@@ -269,9 +269,8 @@ jobs:
       - name: Generate checksums and notes
         shell: bash
         run: |
-          cd release-assets
-          find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum | sed 's#  \./#  #' > SHA256SUMS.txt
-          cd ..
+          python3 scripts/prepare-release-assets.py \
+            --assets-dir release-assets --version "$RELEASE_VERSION"
           {
             echo "Source commit: $SOURCE_SHA"
             echo
@@ -311,3 +310,5 @@ jobs:
             fi
             gh release create "$tag" release-assets/* --draft --target "$SOURCE_SHA" --title "vPaste $RELEASE_VERSION" --notes-file RELEASE_NOTES.md
           fi
+          node scripts/update-release-downloads.mjs \
+            --repo "$GITHUB_REPOSITORY" --tag "$tag" --require-universal --publish

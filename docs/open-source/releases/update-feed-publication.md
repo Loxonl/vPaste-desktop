@@ -30,8 +30,13 @@ an upgrade.
 
 1. Build, sign and notarize the platform packages; merge and validate the
    updater manifest fragments; verify every package signature locally.
-2. Upload the packages to the published GitHub Release and confirm the Release
-   lists every asset the manifest references.
+2. Archive licenses, SBOM, detached signatures, and a manifest snapshot in
+   `vPaste_<version>_release-metadata.zip`; keep the installer and updater
+   packages directly downloadable. Generate checksums for the final public
+   assets, upload them, and confirm the Release lists every package the manifest
+   references. Normalize bilingual notes to `## English` before `## 中文`, then
+   append or refresh the English-first download table at the end of the Release
+   notes. Existing handwritten content is preserved.
 3. `scripts/publish-updater-manifest.mjs`:
    - rejects channel mismatches (Stable never publishes `-rc` versions, RC only
      publishes `-rc` versions);

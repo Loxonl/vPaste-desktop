@@ -33,6 +33,8 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub tab_quick_select_enabled: bool,
     #[serde(default)]
+    pub win_v_takeover: bool,
+    #[serde(default)]
     pub onboarding_completed: bool,
     #[serde(default = "default_true")]
     pub update_check_enabled: bool,
@@ -60,6 +62,7 @@ impl Default for Config {
             sensitive_content_protection: true,
             quick_input_enabled: true,
             tab_quick_select_enabled: true,
+            win_v_takeover: false,
             onboarding_completed: false,
             update_check_enabled: true,
             last_update_check_at: String::new(),
@@ -232,5 +235,15 @@ mod tests {
     #[test]
     fn startup_is_enabled_by_default() {
         assert!(Config::default().startup);
+    }
+
+    #[test]
+    fn win_v_takeover_is_off_by_default_and_for_existing_configs() {
+        assert!(!Config::default().win_v_takeover);
+
+        let mut saved = serde_json::to_value(Config::default()).unwrap();
+        saved.as_object_mut().unwrap().remove("win_v_takeover");
+        let loaded: Config = serde_json::from_value(saved).unwrap();
+        assert!(!loaded.win_v_takeover);
     }
 }

@@ -6,6 +6,7 @@ import type { SettingsSectionProps, Shortcutkey, ShortcutRegistrationInfo, Stora
 import { classes } from "../../ui/classNames";
 import { SettingsRow, SettingsSection } from "../../ui/settings/SettingsPrimitives";
 import styles from "../Config.module.css";
+import { isWindowsPlatform } from "../../clipboard/clipboardDrag";
 
 function normalizeShortcutForPolicy(value: string) {
     return value
@@ -132,6 +133,10 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
         onSave({ ...config, tab_quick_select_enabled: event.target.checked });
     };
 
+    const handleWinVTakeoverChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        onSave({ ...config, win_v_takeover: event.target.checked });
+    };
+
     return (
         <Stack spacing={6}>
             <SettingsSection title={t("settings.shortcuts.global")}>
@@ -155,6 +160,22 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
                         validate={validatePasteQueueShortcut}
                         t={t}
                     />
+                    {isWindowsPlatform() && <SettingsRow
+                        labelId="settings-win-v-takeover-label"
+                        descriptionId="settings-win-v-takeover-description"
+                        label={t("settings.winVTakeover")}
+                        description={t("settings.winVTakeover.desc")}
+                        control={<span className={classes(styles, "shortcut-static")}>
+                            <Switch
+                                checked={config.win_v_takeover === true}
+                                onChange={handleWinVTakeoverChange}
+                                inputProps={{
+                                    "aria-labelledby": "settings-win-v-takeover-label",
+                                    "aria-describedby": "settings-win-v-takeover-description",
+                                }}
+                            />
+                        </span>}
+                    />}
             </SettingsSection>
             <SettingsSection title={t("settings.shortcuts.mainWindow")}>
                     <FixedShortcutItem

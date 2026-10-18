@@ -354,6 +354,8 @@ const enUS: LanguagePack = {
         "settings.tabQuickSelect": "Tab quick selection",
         "settings.tabQuickSelectSupport": "Add Tab key support",
         "settings.tabQuickSelect.desc": "Add Tab key navigation for selecting clipboard items alongside arrow keys",
+        "settings.winVTakeover": "Use Win + V to show main panel",
+        "settings.winVTakeover.desc": "Replaces the Windows clipboard history shortcut. Turn off to restore it. Does not work while an administrator window is focused.",
         "settings.shortcut.recording": "Recording...",
         "settings.shortcut.clickToSet": "Click to set shortcut",
         "settings.shortcut.unsupportedSystem": "This shortcut is reserved by the system. Choose another shortcut.",

@@ -66,6 +66,7 @@ mod paste_queue;
 mod runtime_mode;
 mod search;
 mod test_room;
+mod win_v_takeover;
 
 #[cfg(test)]
 #[ctor]
@@ -7607,6 +7608,7 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
         "开关粘贴队列",
     )?;
     let automatic_updates_enabled = config_struct.update_check_enabled;
+    let win_v_takeover_enabled = config_struct.win_v_takeover;
     let next_language = config_struct.multilingual.clone();
     let next_theme_mode = config_struct.theme_mode.clone();
 
@@ -7637,6 +7639,7 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
         *current = config_struct;
     });
     app_updater::set_automatic_updates_enabled(automatic_updates_enabled);
+    win_v_takeover::sync(&app, win_v_takeover_enabled);
     sync_tray_theme_for_mode(&app, &next_theme_mode);
     let _ = app.emit("language-changed", next_language);
     let _ = app.emit("theme-changed", next_theme_mode);
@@ -11012,6 +11015,7 @@ fn main() {
                     Err(err) => error!("Skipping invalid paste queue shortcut: {}", err),
                 }
             }
+            win_v_takeover::sync(app.handle(), config.win_v_takeover);
             if let Err(err) = ensure_history_storage_dirs() {
                 panic!("创建历史存储目录时出错: {:?}", err);
             }

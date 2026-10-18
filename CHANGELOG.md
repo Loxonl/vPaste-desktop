@@ -4,6 +4,10 @@ All notable public changes to vPaste Desktop will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Allowed recording Win + V as the main window shortcut on Windows; vPaste then takes it over from Windows clipboard history, and choosing another shortcut returns it to Windows.
+
 ### Changed
 
 - Consolidated release metadata into one ZIP and added an English-first bilingual download table at the end of release notes, with English updates displayed before Chinese.
@@ -13,6 +17,7 @@ All notable public changes to vPaste Desktop will be documented in this file.
 
 ### Fixed
 
+- Showed the Windows key as Win instead of Command in recorded shortcuts on Windows.
 - Removed the unused MQTT dependency and its vulnerable TLS stack; updated the application's updater TLS dependencies to patched releases.
 - Fixed macOS rich-content previews failing to cache images referenced by local file URLs, including paths with spaces or non-ASCII characters.
 - Derived every application version source from the release tag before building Stable or RC packages.

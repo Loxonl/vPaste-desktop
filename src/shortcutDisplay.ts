@@ -29,8 +29,7 @@ export function getModifierDisplayLabel(modifier: string, macPlatform = isMacPla
     if (normalized === "control" || normalized === "ctrl") return "Ctrl";
     if (normalized === "alt") return macPlatform ? "Option" : "Alt";
     if (normalized === "shift") return "Shift";
-    if (normalized === "command" || normalized === "meta" || normalized === "cmd") return "Command";
-    if (normalized === "super" || normalized === "win" || normalized === "windows") return macPlatform ? "Command" : "Win";
+    if (["command", "meta", "cmd", "super", "win", "windows"].includes(normalized)) return macPlatform ? "Command" : "Win";
     return modifier;
 }
 

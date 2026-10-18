@@ -33,9 +33,13 @@ function hasShortcutModifier(value: string) {
         .some(part => ["ctrl", "alt", "shift", "super"].includes(part));
 }
 
+/** Matches the backend's `win_v_takeover::RECORDED_EVENT`. */
+const WIN_V_RECORDED_EVENT = "win-v-shortcut-recorded";
+
 function isBlockedMainShortcut(value: string) {
     const normalized = normalizeShortcutForPolicy(value);
-    return normalized === "super+v"
+    // Windows handles Win+V through a keyboard hook; Command+V is paste on macOS.
+    return (normalized === "super+v" && !isWindowsPlatform())
         || normalized === "alt+space"
         || normalized === "space+super"
         || normalized === "super+tab"
@@ -133,9 +137,7 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
         onSave({ ...config, tab_quick_select_enabled: event.target.checked });
     };
 
-    const handleWinVTakeoverChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-        onSave({ ...config, win_v_takeover: event.target.checked });
-    };
+    const windowsPlatform = isWindowsPlatform();
 
     return (
         <Stack spacing={6}>
@@ -148,6 +150,10 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
                         onRecordingCancel={() => bridge.invoke('end_main_shortcut_recording')}
                         checkRegistration={(v) => bridge.invoke<ShortcutRegistrationInfo>('check_main_shortcut_registration', { shortcut: v })}
                         validate={validateMainWindowShortcut}
+                        description={windowsPlatform ? t("settings.shortcuts.main.winVHint") : undefined}
+                        subscribeRecordedShortcut={windowsPlatform
+                            ? handler => bridge.listen<string>(WIN_V_RECORDED_EVENT, event => handler(event.payload))
+                            : undefined}
                         t={t}
                     />
                     <ShortcutItem
@@ -160,22 +166,6 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
                         validate={validatePasteQueueShortcut}
                         t={t}
                     />
-                    {isWindowsPlatform() && <SettingsRow
-                        labelId="settings-win-v-takeover-label"
-                        descriptionId="settings-win-v-takeover-description"
-                        label={t("settings.winVTakeover")}
-                        description={t("settings.winVTakeover.desc")}
-                        control={<span className={classes(styles, "shortcut-static")}>
-                            <Switch
-                                checked={config.win_v_takeover === true}
-                                onChange={handleWinVTakeoverChange}
-                                inputProps={{
-                                    "aria-labelledby": "settings-win-v-takeover-label",
-                                    "aria-describedby": "settings-win-v-takeover-description",
-                                }}
-                            />
-                        </span>}
-                    />}
             </SettingsSection>
             <SettingsSection title={t("settings.shortcuts.mainWindow")}>
                     <FixedShortcutItem
@@ -237,14 +227,17 @@ function FixedShortcutItem({ label, secondary, value }: { label: string, seconda
     );
 }
 
-function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCancel, checkRegistration, validate, t }: {
+function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCancel, checkRegistration, validate, description, subscribeRecordedShortcut, t }: {
     label: string,
     value?: string,
+    description?: string,
+    /** Receives shortcuts the OS hides from the WebView, such as Win+V on Windows. */
+    subscribeRecordedShortcut?: (handler: (shortcut: string) => void) => Promise<() => void>,
     onChange: (v: string) => void | Promise<StorageMigrationInfo | null | void>,
     onRecordingStart?: () => void | Promise<unknown>,
     onRecordingCancel?: () => void | Promise<unknown>,
     checkRegistration?: (v: string) => Promise<ShortcutRegistrationInfo>,
-    validate?: (v: string, event: React.KeyboardEvent) => string | null,
+    validate?: (v: string, event?: React.KeyboardEvent) => string | null,
     t: TFunction
 }) {
     const [recording, setRecording] = React.useState(false);
@@ -252,6 +245,7 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
     const recorderRef = React.useRef<HTMLButtonElement | null>(null);
     const labelId = React.useId();
     const errorId = React.useId();
+    const descriptionId = React.useId();
 
     React.useEffect(() => {
         if (recording) {
@@ -300,7 +294,10 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
         if (['META', 'CONTROL', 'ALT', 'SHIFT'].includes(keyUpper)) return;
 
         const key = rawKey === " " ? "Space" : rawKey.length === 1 ? rawKey.toUpperCase() : formatShortcutLabel(rawKey).replace(/\s\+\s/g, "+");
-        const shortcut = [...modifiers, key].join('+');
+        commitShortcut([...modifiers, key].join('+'), e);
+    };
+
+    const commitShortcut = (shortcut: string, e?: React.KeyboardEvent) => {
         const validationError = validate?.(shortcut, e);
         if (validationError) {
             setErrorMessage(validationError);
@@ -327,6 +324,28 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
             });
     };
 
+    const commitShortcutRef = React.useRef(commitShortcut);
+    commitShortcutRef.current = commitShortcut;
+    const subscribeRef = React.useRef(subscribeRecordedShortcut);
+    subscribeRef.current = subscribeRecordedShortcut;
+
+    React.useEffect(() => {
+        const subscribe = subscribeRef.current;
+        if (!recording || !subscribe) return;
+        let disposed = false;
+        let unsubscribe: (() => void) | undefined;
+        void subscribe(shortcut => commitShortcutRef.current(shortcut))
+            .then(dispose => {
+                if (disposed) dispose();
+                else unsubscribe = dispose;
+            })
+            .catch(e => error(`Failed to listen for recorded shortcuts: ${e}`));
+        return () => {
+            disposed = true;
+            unsubscribe?.();
+        };
+    }, [recording]);
+
     const displayedValue = recording
         ? t("settings.shortcut.recording")
         : formatShortcutLabel(value) || t("settings.shortcut.clickToSet");
@@ -334,7 +353,9 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
     return (
         <SettingsRow
             labelId={labelId}
+            descriptionId={description ? descriptionId : undefined}
             label={label}
+            description={description}
             control={<div className={classes(styles, "shortcut-control")}>
                 <ButtonBase
                     ref={recorderRef}

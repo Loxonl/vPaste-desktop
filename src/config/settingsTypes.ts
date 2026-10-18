@@ -32,7 +32,6 @@ export interface ConfigData {
     sensitive_content_protection: boolean;
     quick_input_enabled: boolean;
     tab_quick_select_enabled: boolean;
-    win_v_takeover: boolean;
     onboarding_completed: boolean;
     update_check_enabled: boolean;
     last_update_check_at: string;
@@ -127,7 +126,6 @@ export const DEFAULT_CONFIG: ConfigData = {
     sensitive_content_protection: true,
     quick_input_enabled: true,
     tab_quick_select_enabled: true,
-    win_v_takeover: false,
     onboarding_completed: false,
     update_check_enabled: true,
     last_update_check_at: "",

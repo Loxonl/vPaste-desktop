@@ -1,12 +1,18 @@
-//! Optional Windows takeover of Win+V.
+//! Windows support for using Win+V as the main window shortcut.
 //!
 //! Explorer owns Win+V for the built-in clipboard history, so `RegisterHotKey`
-//! cannot claim it. When the user opts in, a low-level keyboard hook sees the
-//! chord before Explorer, swallows the V press, and opens the clipboard window.
+//! cannot claim it, and the settings recorder never receives the key press.
+//! A low-level keyboard hook sees the chord before Explorer: while Win+V is the
+//! saved main window shortcut it toggles the clipboard window, and while the
+//! main shortcut recorder is open it reports the chord to the settings window.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-static ENABLED: AtomicBool = AtomicBool::new(false);
+/// Emitted to the settings window when Win+V is pressed during recording.
+pub(crate) const RECORDED_EVENT: &str = "win-v-shortcut-recorded";
+
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+static RECORDING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Modifiers {
@@ -22,6 +28,16 @@ pub(crate) enum HookKey {
     Other,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HookMode {
+    /// Win+V belongs to Windows.
+    PassThrough,
+    /// Win+V is the saved main window shortcut.
+    ToggleWindow,
+    /// The main shortcut recorder is waiting for a key press.
+    Record,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct HookState {
     swallowing_v: bool,
@@ -33,6 +49,8 @@ pub(crate) struct HookDecision {
     pub intercept: bool,
     /// Toggle the clipboard window.
     pub open: bool,
+    /// Report Win+V to the shortcut recorder.
+    pub record: bool,
     /// Inject a neutral key so releasing Win does not open the Start menu.
     pub mask_win: bool,
 }
@@ -43,7 +61,7 @@ pub(crate) fn decide(
     down: bool,
     injected: bool,
     modifiers: Modifiers,
-    enabled: bool,
+    mode: HookMode,
 ) -> HookDecision {
     if injected || key != HookKey::V {
         return HookDecision::default();
@@ -56,44 +74,69 @@ pub(crate) fn decide(
         };
     }
     if state.swallowing_v {
-        // Auto-repeat while V stays held: keep swallowing, open only once.
+        // Auto-repeat while V stays held: keep swallowing, act only once.
         return HookDecision {
             intercept: true,
             ..HookDecision::default()
         };
     }
     let exact_win_v = modifiers.win && !modifiers.ctrl && !modifiers.shift && !modifiers.alt;
-    if !enabled || !exact_win_v {
+    if mode == HookMode::PassThrough || !exact_win_v {
         return HookDecision::default();
     }
     state.swallowing_v = true;
     HookDecision {
         intercept: true,
-        open: true,
+        open: mode == HookMode::ToggleWindow,
+        record: mode == HookMode::Record,
         mask_win: true,
     }
 }
 
-/// Applies the saved setting. The hook thread starts on first enable and then
-/// stays installed, passing every event through while the setting is off.
-pub(crate) fn sync(app: &tauri::AppHandle, enabled: bool) {
-    let enabled = enabled && cfg!(target_os = "windows");
-    ENABLED.store(enabled, Ordering::SeqCst);
-    #[cfg(target_os = "windows")]
-    if enabled {
-        windows_hook::ensure_started(app);
+fn current_mode() -> HookMode {
+    if RECORDING.load(Ordering::SeqCst) {
+        HookMode::Record
+    } else if ACTIVE.load(Ordering::SeqCst) {
+        HookMode::ToggleWindow
+    } else {
+        HookMode::PassThrough
     }
+}
+
+/// Sets whether Win+V is the saved main window shortcut.
+pub(crate) fn set_active(app: &tauri::AppHandle, active: bool) {
+    let active = active && cfg!(target_os = "windows");
+    ACTIVE.store(active, Ordering::SeqCst);
+    if active {
+        ensure_hook(app);
+    }
+}
+
+/// Sets whether the main shortcut recorder is open.
+pub(crate) fn set_recording(app: &tauri::AppHandle, recording: bool) {
+    let recording = recording && cfg!(target_os = "windows");
+    RECORDING.store(recording, Ordering::SeqCst);
+    if recording {
+        ensure_hook(app);
+    }
+}
+
+/// The hook thread starts the first time it is needed and then stays
+/// installed, passing every event through while the mode is `PassThrough`.
+fn ensure_hook(app: &tauri::AppHandle) {
+    #[cfg(target_os = "windows")]
+    windows_hook::ensure_started(app);
     #[cfg(not(target_os = "windows"))]
     let _ = app;
 }
 
 #[cfg(target_os = "windows")]
 mod windows_hook {
-    use super::{decide, HookKey, HookState, Modifiers, ENABLED};
+    use super::{current_mode, decide, HookKey, HookState, Modifiers, RECORDED_EVENT};
     use log::{error, info};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, OnceLock};
-    use tauri::AppHandle;
+    use tauri::{AppHandle, Emitter};
     use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
@@ -180,6 +223,14 @@ mod windows_hook {
         }
     }
 
+    fn report_recorded_shortcut() {
+        if let Some(app) = APP.get() {
+            if let Err(err) = app.emit(RECORDED_EVENT, "Super+V") {
+                error!("Failed to report recorded Win+V shortcut: {}", err);
+            }
+        }
+    }
+
     unsafe extern "system" fn keyboard_callback(
         code: i32,
         message: WPARAM,
@@ -208,20 +259,16 @@ mod windows_hook {
                     let mut state = STATE
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    decide(
-                        &mut state,
-                        key,
-                        down,
-                        injected,
-                        modifiers,
-                        ENABLED.load(Ordering::SeqCst),
-                    )
+                    decide(&mut state, key, down, injected, modifiers, current_mode())
                 };
                 if decision.mask_win {
                     send_mask_key();
                 }
                 if decision.open {
                     open_clipboard_window();
+                }
+                if decision.record {
+                    report_recorded_shortcut();
                 }
                 if decision.intercept {
                     return LRESULT(1);
@@ -278,106 +325,122 @@ mod tests {
         alt: false,
     };
 
-    fn press(state: &mut HookState, key: HookKey, modifiers: Modifiers) -> HookDecision {
-        decide(state, key, true, false, modifiers, true)
+    fn press(state: &mut HookState, modifiers: Modifiers, mode: HookMode) -> HookDecision {
+        decide(state, HookKey::V, true, false, modifiers, mode)
     }
 
-    fn release(state: &mut HookState, key: HookKey) -> HookDecision {
-        decide(state, key, false, false, Modifiers::default(), true)
+    fn release(state: &mut HookState, mode: HookMode) -> HookDecision {
+        decide(state, HookKey::V, false, false, Modifiers::default(), mode)
     }
+
+    const SWALLOW_ONLY: HookDecision = HookDecision {
+        intercept: true,
+        open: false,
+        record: false,
+        mask_win: false,
+    };
 
     #[test]
-    fn win_v_opens_once_and_swallows_the_whole_press() {
+    fn win_v_shortcut_toggles_once_and_swallows_the_whole_press() {
         let mut state = HookState::default();
         assert_eq!(
-            press(&mut state, HookKey::V, WIN),
+            press(&mut state, WIN, HookMode::ToggleWindow),
             HookDecision {
                 intercept: true,
                 open: true,
+                record: false,
                 mask_win: true,
             }
         );
         assert_eq!(
-            press(&mut state, HookKey::V, WIN),
-            HookDecision {
-                intercept: true,
-                ..HookDecision::default()
-            },
+            press(&mut state, WIN, HookMode::ToggleWindow),
+            SWALLOW_ONLY,
             "auto-repeat must not toggle the window again"
         );
-        assert_eq!(
-            release(&mut state, HookKey::V),
-            HookDecision {
-                intercept: true,
-                ..HookDecision::default()
-            }
-        );
-        assert_eq!(
-            press(&mut state, HookKey::V, WIN).open,
-            true,
+        assert_eq!(release(&mut state, HookMode::ToggleWindow), SWALLOW_ONLY);
+        assert!(
+            press(&mut state, WIN, HookMode::ToggleWindow).open,
             "the next real press toggles again"
         );
     }
 
     #[test]
-    fn disabled_setting_passes_win_v_through() {
+    fn recorder_receives_win_v_instead_of_toggling() {
         let mut state = HookState::default();
         assert_eq!(
-            decide(&mut state, HookKey::V, true, false, WIN, false),
+            press(&mut state, WIN, HookMode::Record),
+            HookDecision {
+                intercept: true,
+                open: false,
+                record: true,
+                mask_win: true,
+            }
+        );
+        assert_eq!(press(&mut state, WIN, HookMode::Record), SWALLOW_ONLY);
+        assert_eq!(release(&mut state, HookMode::Record), SWALLOW_ONLY);
+    }
+
+    #[test]
+    fn win_v_belongs_to_windows_when_it_is_not_the_shortcut() {
+        let mut state = HookState::default();
+        assert_eq!(
+            press(&mut state, WIN, HookMode::PassThrough),
             HookDecision::default()
         );
-        assert_eq!(release(&mut state, HookKey::V), HookDecision::default());
+        assert_eq!(
+            release(&mut state, HookMode::PassThrough),
+            HookDecision::default()
+        );
     }
 
     #[test]
     fn other_chords_and_keys_pass_through() {
-        let mut state = HookState::default();
-        for modifiers in [
-            Modifiers::default(),
-            Modifiers { shift: true, ..WIN },
-            Modifiers { ctrl: true, ..WIN },
-            Modifiers { alt: true, ..WIN },
-            Modifiers {
-                ctrl: true,
-                ..Modifiers::default()
-            },
-        ] {
+        for mode in [HookMode::ToggleWindow, HookMode::Record] {
+            let mut state = HookState::default();
+            for modifiers in [
+                Modifiers::default(),
+                Modifiers { shift: true, ..WIN },
+                Modifiers { ctrl: true, ..WIN },
+                Modifiers { alt: true, ..WIN },
+                Modifiers {
+                    ctrl: true,
+                    ..Modifiers::default()
+                },
+            ] {
+                assert_eq!(
+                    press(&mut state, modifiers, mode),
+                    HookDecision::default(),
+                    "{modifiers:?} must not be taken over in {mode:?}"
+                );
+                assert_eq!(release(&mut state, mode), HookDecision::default());
+            }
             assert_eq!(
-                press(&mut state, HookKey::V, modifiers),
-                HookDecision::default(),
-                "{modifiers:?} must not be taken over"
+                decide(&mut state, HookKey::Other, true, false, WIN, mode),
+                HookDecision::default()
             );
-            assert_eq!(release(&mut state, HookKey::V), HookDecision::default());
         }
-        assert_eq!(
-            press(&mut state, HookKey::Other, WIN),
-            HookDecision::default()
-        );
     }
 
     #[test]
     fn injected_events_are_ignored() {
         let mut state = HookState::default();
         assert_eq!(
-            decide(&mut state, HookKey::V, true, true, WIN, true),
+            decide(
+                &mut state,
+                HookKey::V,
+                true,
+                true,
+                WIN,
+                HookMode::ToggleWindow
+            ),
             HookDecision::default()
         );
     }
 
     #[test]
-    fn releasing_v_after_disabling_still_completes_the_swallowed_press() {
+    fn releasing_v_after_the_mode_changes_still_completes_the_swallowed_press() {
         let mut state = HookState::default();
-        assert!(press(&mut state, HookKey::V, WIN).open);
-        assert!(
-            decide(
-                &mut state,
-                HookKey::V,
-                false,
-                false,
-                Modifiers::default(),
-                false
-            )
-            .intercept
-        );
+        assert!(press(&mut state, WIN, HookMode::ToggleWindow).open);
+        assert!(release(&mut state, HookMode::PassThrough).intercept);
     }
 }

@@ -354,6 +354,7 @@ const zhCN: LanguagePack = {
         "settings.tabQuickSelect": "Tab快捷选择",
         "settings.tabQuickSelectSupport": "增加Tab键支持",
         "settings.tabQuickSelect.desc": "在方向键的基础上，增加Tab键辅助选择粘贴项",
+        "settings.shortcuts.main.winVHint": "可录入 Win + V 代替 Windows 剪贴板历史；焦点在以管理员身份运行的窗口时，Win + V 无效。",
         "settings.shortcut.recording": "正在记录...",
         "settings.shortcut.clickToSet": "点击设置快捷键",
         "settings.shortcut.unsupportedSystem": "该快捷键被系统保留，请换一个快捷键",

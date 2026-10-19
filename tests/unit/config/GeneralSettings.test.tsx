@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import GeneralSettings from "../../../src/config/sections/GeneralSettings";
 import type { SettingsBridge } from "../../../src/config/SettingsBridge";
@@ -37,6 +38,72 @@ const bridge: SettingsBridge = {
 };
 
 describe("General settings accessibility", () => {
+    it("lets a portable user opt in to launch at startup", async () => {
+        vi.spyOn(navigator, "platform", "get").mockReturnValue("Win32");
+        const portableBridge = {
+            ...bridge,
+            invoke: vi.fn(async (command: string) => {
+                if (command === "get_update_state") {
+                    return {
+                        status: "idle",
+                        currentVersion: "1.6.0",
+                        availableVersion: null,
+                        downloadedBytes: 0,
+                        totalBytes: null,
+                        error: null,
+                        portable: true,
+                        feedEnabled: true,
+                        releaseUrl: "",
+                    };
+                }
+                return null;
+            }) as SettingsBridge["invoke"],
+        };
+        const onSave = vi.fn(async () => null);
+        render(
+            <MotionTestProvider>
+                <AppThemeProvider>
+                    <GeneralSettings
+                        bridge={portableBridge}
+                        config={{ ...DEFAULT_CONFIG, startup: false }}
+                        languages={[]}
+                        onSave={onSave}
+                        t={key => key}
+                    />
+                </AppThemeProvider>
+            </MotionTestProvider>,
+        );
+
+        const startup = await screen.findByRole("checkbox", { name: "settings.startup" });
+        expect(startup).toBeEnabled();
+        await userEvent.click(startup);
+        expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ startup: true }));
+    });
+
+    it("keeps portable startup unavailable outside Windows", async () => {
+        const portableBridge = {
+            ...bridge,
+            invoke: vi.fn(async (command: string) => command === "get_update_state"
+                ? { portable: true, status: "idle", currentVersion: "1.6.0", availableVersion: null, downloadedBytes: 0, totalBytes: null, error: null, feedEnabled: true, releaseUrl: "" }
+                : null) as SettingsBridge["invoke"],
+        };
+        render(
+            <MotionTestProvider>
+                <AppThemeProvider>
+                    <GeneralSettings
+                        bridge={portableBridge}
+                        config={{ ...DEFAULT_CONFIG, startup: false }}
+                        languages={[]}
+                        onSave={vi.fn(async () => null)}
+                        t={key => key}
+                    />
+                </AppThemeProvider>
+            </MotionTestProvider>,
+        );
+
+        expect(await screen.findByRole("checkbox", { name: "settings.startup" })).toBeDisabled();
+    });
+
     it("associates standard switches and selects with their visible setting labels", async () => {
         render(
             <MotionTestProvider>

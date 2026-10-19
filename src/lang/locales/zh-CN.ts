@@ -247,7 +247,7 @@ const zhCN: LanguagePack = {
         "settings.data.title": "数据",
         "settings.section.system": "系统设置",
         "settings.startup": "开机启动",
-        "settings.startupPortable": "便携版不注册开机启动",
+        "settings.startupPortable": "启用后会写入当前用户的 Windows 开机启动项；移动文件夹后请手动打开一次以更新路径",
         "settings.trayIcon": "显示托盘图标",
         "settings.language": "多语言",
         "settings.themeMode": "主题模式",

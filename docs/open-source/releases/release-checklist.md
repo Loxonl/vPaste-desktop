@@ -58,7 +58,7 @@ The workflow creates a Draft Release only. It never creates a tag-triggered rele
 - Upgrade local 1.5.0 NSIS in place and preserve history, settings, startup preference, shortcuts, and install directory.
 - Test background download, restart-to-update from settings, the main panel update icon and its confirmation dialog (mouse, Enter, Space, Escape), and the tray, restart recovery from a verified cached installer while offline, the ready notification appearing once per version across restarts, bad signature, interrupted download, low disk, locked file, a cache deleted or modified before installing, an installer that fails to start, and recovery.
 - Uninstall while preserving data, deleting default data, confirming managed deletion in a custom history directory, and silent uninstall preserving data.
-- Move Portable between writable directories and confirm no AppData, uninstall registry, or startup residue.
+- Move Portable between writable directories and confirm no AppData, uninstall registry, or startup residue by default. Opt in to startup, confirm the separate Portable entry follows the moved EXE after one manual launch even while another instance is open, then opt out and confirm the installed app's entry is untouched. Launch an unconfigured second Portable copy and confirm it preserves the first copy's entry.
 
 ## Publish review
 

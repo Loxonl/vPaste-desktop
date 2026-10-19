@@ -247,7 +247,7 @@ const enUS: LanguagePack = {
         "settings.data.title": "Data",
         "settings.section.system": "System",
         "settings.startup": "Launch at startup",
-        "settings.startupPortable": "Portable builds do not register startup tasks",
+        "settings.startupPortable": "Creates a current-user Windows startup entry; open once after moving the folder to update its path",
         "settings.trayIcon": "Show tray icon",
         "settings.language": "Language",
         "settings.themeMode": "Theme mode",

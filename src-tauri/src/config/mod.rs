@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 
-use crate::splicing_with_app_data_dir;
+use crate::{runtime_mode, splicing_with_app_data_dir};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
@@ -67,6 +67,16 @@ impl Default for Config {
             ignored_app_sources: Vec::new(),
             shortcut_keys: Shortcutkey::default(),
         }
+    }
+}
+
+impl Config {
+    pub fn for_runtime(portable: bool) -> Self {
+        let mut config = Self::default();
+        if portable {
+            config.startup = false;
+        }
+        config
     }
 }
 
@@ -143,7 +153,7 @@ lazy_static! {
 }
 
 pub fn init() {
-    let config = Config::default();
+    let config = Config::for_runtime(runtime_mode::is_portable());
     save(config);
 }
 
@@ -168,7 +178,7 @@ pub fn get() -> Config {
         .read_to_string(&mut config_content);
 
     let mut config: Config = serde_json::from_str(config_content.as_str()).unwrap_or_else(|_| {
-        let config = Config::default();
+        let config = Config::for_runtime(runtime_mode::is_portable());
         save(config.clone());
         config
     });
@@ -232,5 +242,11 @@ mod tests {
     #[test]
     fn startup_is_enabled_by_default() {
         assert!(Config::default().startup);
+    }
+
+    #[test]
+    fn fresh_portable_config_requires_opt_in_for_startup() {
+        assert!(!Config::for_runtime(true).startup);
+        assert!(Config::for_runtime(false).startup);
     }
 }

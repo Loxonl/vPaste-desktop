@@ -1,12 +1,12 @@
 import * as React from "react";
 import { ButtonBase, Stack, Switch } from "@mui/material";
 import { error } from "@tauri-apps/plugin-log";
-import { formatShortcutLabel, getModifierDisplayLabel, isMacPlatform } from "../../shortcutDisplay";
+import { formatShortcutLabel, getModifierDisplayLabel, isMacPlatform, isWindowsPlatform } from "../../shortcutDisplay";
+import type { SettingsBridge } from "../SettingsBridge";
 import type { SettingsSectionProps, Shortcutkey, ShortcutRegistrationInfo, StorageMigrationInfo, TFunction } from "../settingsTypes";
 import { classes } from "../../ui/classNames";
 import { SettingsRow, SettingsSection } from "../../ui/settings/SettingsPrimitives";
 import styles from "../Config.module.css";
-import { isWindowsPlatform } from "../../clipboard/clipboardDrag";
 
 function normalizeShortcutForPolicy(value: string) {
     return value
@@ -33,12 +33,8 @@ function hasShortcutModifier(value: string) {
         .some(part => ["ctrl", "alt", "shift", "super"].includes(part));
 }
 
-/** Matches the backend's `win_v_takeover::RECORDED_EVENT`. */
-const WIN_V_RECORDED_EVENT = "win-v-shortcut-recorded";
-
 function isBlockedMainShortcut(value: string) {
     const normalized = normalizeShortcutForPolicy(value);
-    // Windows handles Win+V through a keyboard hook; Command+V is paste on macOS.
     return (normalized === "super+v" && !isWindowsPlatform())
         || normalized === "alt+space"
         || normalized === "space+super"
@@ -137,23 +133,18 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
         onSave({ ...config, tab_quick_select_enabled: event.target.checked });
     };
 
-    const windowsPlatform = isWindowsPlatform();
-
     return (
         <Stack spacing={6}>
             <SettingsSection title={t("settings.shortcuts.global")}>
                     <ShortcutItem
                         label={t("settings.shortcuts.main")}
                         value={config.shortcut_keys.main_window}
+                        nativeRecordingBridge={isWindowsPlatform() ? bridge : undefined}
                         onChange={(v) => handleShortcutChange('main_window', v)}
                         onRecordingStart={() => bridge.invoke('begin_main_shortcut_recording')}
                         onRecordingCancel={() => bridge.invoke('end_main_shortcut_recording')}
                         checkRegistration={(v) => bridge.invoke<ShortcutRegistrationInfo>('check_main_shortcut_registration', { shortcut: v })}
                         validate={validateMainWindowShortcut}
-                        description={windowsPlatform ? t("settings.shortcuts.main.winVHint") : undefined}
-                        subscribeRecordedShortcut={windowsPlatform
-                            ? handler => bridge.listen<string>(WIN_V_RECORDED_EVENT, event => handler(event.payload))
-                            : undefined}
                         t={t}
                     />
                     <ShortcutItem
@@ -227,12 +218,10 @@ function FixedShortcutItem({ label, secondary, value }: { label: string, seconda
     );
 }
 
-function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCancel, checkRegistration, validate, description, subscribeRecordedShortcut, t }: {
+function ShortcutItem({ label, value, nativeRecordingBridge, onChange, onRecordingStart, onRecordingCancel, checkRegistration, validate, t }: {
     label: string,
     value?: string,
-    description?: string,
-    /** Receives shortcuts the OS hides from the WebView, such as Win+V on Windows. */
-    subscribeRecordedShortcut?: (handler: (shortcut: string) => void) => Promise<() => void>,
+    nativeRecordingBridge?: SettingsBridge,
     onChange: (v: string) => void | Promise<StorageMigrationInfo | null | void>,
     onRecordingStart?: () => void | Promise<unknown>,
     onRecordingCancel?: () => void | Promise<unknown>,
@@ -243,9 +232,23 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
     const [recording, setRecording] = React.useState(false);
     const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
     const recorderRef = React.useRef<HTMLButtonElement | null>(null);
+    const session = React.useRef(0);
+    const recordingActive = React.useRef(false);
+    const saving = React.useRef(false);
+    const nativeUnlisten = React.useRef<(() => void) | undefined>();
+    const cancelRef = React.useRef(onRecordingCancel);
+    cancelRef.current = onRecordingCancel;
     const labelId = React.useId();
     const errorId = React.useId();
-    const descriptionId = React.useId();
+
+    React.useEffect(() => () => {
+        session.current += 1;
+        nativeUnlisten.current?.();
+        if (recordingActive.current) {
+            recordingActive.current = false;
+            void Promise.resolve(cancelRef.current?.()).catch(e => error(`Failed to restore shortcut after recording: ${e}`));
+        }
+    }, []);
 
     React.useEffect(() => {
         if (recording) {
@@ -259,23 +262,55 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
     };
 
     const stopRecordingAndRestore = () => {
+        session.current += 1;
+        recordingActive.current = false;
+        nativeUnlisten.current?.();
+        nativeUnlisten.current = undefined;
         setRecording(false);
         restoreRecordedShortcut();
     };
 
+    React.useEffect(() => {
+        if (!recording || !nativeRecordingBridge) return;
+        const handleWindowBlur = () => {
+            if (!saving.current) stopRecordingAndRestore();
+        };
+        window.addEventListener("blur", handleWindowBlur);
+        return () => window.removeEventListener("blur", handleWindowBlur);
+    }, [recording, nativeRecordingBridge]);
+
     const startRecording = () => {
+        if (recordingActive.current || saving.current) return;
+        const currentSession = ++session.current;
+        recordingActive.current = true;
         setErrorMessage(null);
-        void Promise.resolve(onRecordingStart?.())
-            .then(() => setRecording(true))
+        void (async () => {
+            if (nativeRecordingBridge) {
+                const unlisten = await nativeRecordingBridge.listen<string>("main-shortcut-recorded", event => {
+                    if (session.current === currentSession && recordingActive.current && event.payload === "Super+V") {
+                        saveShortcut(event.payload);
+                    }
+                });
+                if (session.current !== currentSession) { unlisten(); return; }
+                nativeUnlisten.current = unlisten;
+            }
+            await onRecordingStart?.();
+            if (session.current !== currentSession) { restoreRecordedShortcut(); return; }
+            setRecording(true);
+        })()
             .catch((startError: unknown) => {
+                if (session.current !== currentSession) return;
                 setErrorMessage(t("settings.shortcut.saveFailed", { error: getErrorText(startError) }));
-                setRecording(false);
+                stopRecordingAndRestore();
             });
     };
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
         e.preventDefault();
         e.stopPropagation();
+
+        // The Windows interceptor uses unassigned VK_E8 to prevent opening Start.
+        if (nativeRecordingBridge && e.keyCode === 0xE8) return;
 
         if (e.key === "Escape" || e.key === "Esc") {
             setErrorMessage(null);
@@ -284,7 +319,7 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
         }
 
         const modifiers = [];
-        if (e.metaKey) modifiers.push('Command');
+        if (e.metaKey) modifiers.push(isWindowsPlatform() ? 'Super' : 'Command');
         if (e.ctrlKey) modifiers.push('Control');
         if (e.altKey) modifiers.push('Alt');
         if (e.shiftKey) modifiers.push('Shift');
@@ -294,57 +329,44 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
         if (['META', 'CONTROL', 'ALT', 'SHIFT'].includes(keyUpper)) return;
 
         const key = rawKey === " " ? "Space" : rawKey.length === 1 ? rawKey.toUpperCase() : formatShortcutLabel(rawKey).replace(/\s\+\s/g, "+");
-        commitShortcut([...modifiers, key].join('+'), e);
+        const shortcut = [...modifiers, key].join('+');
+        saveShortcut(shortcut, e);
     };
 
-    const commitShortcut = (shortcut: string, e?: React.KeyboardEvent) => {
-        const validationError = validate?.(shortcut, e);
+    const saveShortcut = (shortcut: string, event?: React.KeyboardEvent) => {
+        if (!recordingActive.current || saving.current) return;
+        const validationError = validate?.(shortcut, event);
         if (validationError) {
             setErrorMessage(validationError);
             stopRecordingAndRestore();
             return;
         }
 
+        saving.current = true;
+        const currentSession = session.current;
         void Promise.resolve(checkRegistration?.(shortcut))
             .then(registrationInfo => {
+                if (session.current !== currentSession) return null;
                 const conflictMessage = registrationInfo?.conflict ? t("settings.shortcut.occupiedConflict") : null;
                 return Promise.resolve(onChange(shortcut)).then(saveInfo => ({ conflictMessage, saveInfo }));
             })
-            .then(({ conflictMessage, saveInfo }) => {
+            .then(result => {
+                if (!result || session.current !== currentSession) return;
+                const { conflictMessage, saveInfo } = result;
                 const nextErrorMessage = saveInfo?.shortcut_conflict
                     ? t("settings.shortcut.occupiedConflict")
                     : conflictMessage;
                 setErrorMessage(nextErrorMessage);
-                setRecording(false);
             })
             .catch((saveError: unknown) => {
-                restoreRecordedShortcut();
+                if (session.current !== currentSession) return;
                 setErrorMessage(t("settings.shortcut.saveFailed", { error: getErrorText(saveError) }));
-                setRecording(false);
+            })
+            .finally(() => {
+                saving.current = false;
+                if (session.current === currentSession) stopRecordingAndRestore();
             });
     };
-
-    const commitShortcutRef = React.useRef(commitShortcut);
-    commitShortcutRef.current = commitShortcut;
-    const subscribeRef = React.useRef(subscribeRecordedShortcut);
-    subscribeRef.current = subscribeRecordedShortcut;
-
-    React.useEffect(() => {
-        const subscribe = subscribeRef.current;
-        if (!recording || !subscribe) return;
-        let disposed = false;
-        let unsubscribe: (() => void) | undefined;
-        void subscribe(shortcut => commitShortcutRef.current(shortcut))
-            .then(dispose => {
-                if (disposed) dispose();
-                else unsubscribe = dispose;
-            })
-            .catch(e => error(`Failed to listen for recorded shortcuts: ${e}`));
-        return () => {
-            disposed = true;
-            unsubscribe?.();
-        };
-    }, [recording]);
 
     const displayedValue = recording
         ? t("settings.shortcut.recording")
@@ -353,9 +375,7 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
     return (
         <SettingsRow
             labelId={labelId}
-            descriptionId={description ? descriptionId : undefined}
             label={label}
-            description={description}
             control={<div className={classes(styles, "shortcut-control")}>
                 <ButtonBase
                     ref={recorderRef}
@@ -366,7 +386,7 @@ function ShortcutItem({ label, value, onChange, onRecordingStart, onRecordingCan
                     onClick={startRecording}
                     onKeyDown={recording ? handleKeyDown : undefined}
                     onBlur={() => {
-                        if (recording) {
+                        if (recordingActive.current && !saving.current) {
                             stopRecordingAndRestore();
                         }
                     }}

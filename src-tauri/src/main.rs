@@ -66,7 +66,8 @@ mod paste_queue;
 mod runtime_mode;
 mod search;
 mod test_room;
-mod win_v_takeover;
+#[cfg(target_os = "windows")]
+mod windows_main_shortcut;
 
 #[cfg(test)]
 #[ctor]
@@ -6839,13 +6840,6 @@ fn is_blocked_main_shortcut_for_platform(shortcut: &str, is_windows: bool) -> bo
     }
 }
 
-/// Win+V is owned by Explorer, so it is handled by `win_v_takeover` instead of
-/// a registered global shortcut.
-fn is_win_v_main_shortcut(shortcut: Option<&str>) -> bool {
-    cfg!(target_os = "windows")
-        && shortcut.is_some_and(|value| shortcut_policy_key(value) == "super+v")
-}
-
 fn is_reserved_quick_input_shortcut_for_platform(shortcut: &str, is_macos: bool) -> bool {
     if !is_macos {
         return false;
@@ -6979,6 +6973,16 @@ fn register_main_window_shortcut(
         });
     };
 
+    #[cfg(target_os = "windows")]
+    if windows_main_shortcut::matches(shortcut) {
+        windows_main_shortcut::ensure_available(app)?;
+        windows_main_shortcut::set_enabled(true);
+        return Ok(ShortcutRegistrationInfo {
+            registered: true,
+            conflict: false,
+        });
+    }
+
     let manager = app.global_shortcut();
     if manager.is_registered(shortcut) {
         return Ok(ShortcutRegistrationInfo {
@@ -7010,6 +7014,12 @@ fn unregister_main_window_shortcut(
         return Ok(());
     };
 
+    #[cfg(target_os = "windows")]
+    if windows_main_shortcut::matches(shortcut) {
+        windows_main_shortcut::set_enabled(false);
+        return Ok(());
+    }
+
     let manager = app.global_shortcut();
     if manager.is_registered(shortcut) {
         manager
@@ -7019,14 +7029,9 @@ fn unregister_main_window_shortcut(
     Ok(())
 }
 
-/// The registered main window shortcut; Win+V is handled by the keyboard hook.
 fn configured_main_window_shortcut() -> Result<Option<Shortcut>, String> {
     let config = config::get();
-    let shortcut = config.shortcut_keys.main_window.as_deref();
-    if is_win_v_main_shortcut(shortcut) {
-        return Ok(None);
-    }
-    parse_optional_shortcut(shortcut, "唤起主窗口")
+    parse_optional_shortcut(config.shortcut_keys.main_window.as_deref(), "唤起主窗口")
 }
 
 fn configured_paste_queue_shortcut() -> Result<Option<Shortcut>, String> {
@@ -7039,6 +7044,8 @@ fn configured_paste_queue_shortcut() -> Result<Option<Shortcut>, String> {
 
 #[tauri::command]
 fn begin_main_shortcut_recording(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    windows_main_shortcut::ensure_available(&app)?;
     let current_shortcut = match configured_main_window_shortcut() {
         Ok(shortcut) => shortcut,
         Err(err) => {
@@ -7049,12 +7056,20 @@ fn begin_main_shortcut_recording(app: tauri::AppHandle) -> Result<(), String> {
             None
         }
     };
-    win_v_takeover::set_recording(&app, true);
-    unregister_main_window_shortcut(&app, current_shortcut)
+    unregister_main_window_shortcut(&app, current_shortcut)?;
+    #[cfg(target_os = "windows")]
+    windows_main_shortcut::set_recording(true);
+    Ok(())
 }
 
 #[tauri::command]
 fn end_main_shortcut_recording(app: tauri::AppHandle) -> Result<ShortcutRegistrationInfo, String> {
+    #[cfg(target_os = "windows")]
+    {
+        windows_main_shortcut::set_recording(false);
+        // Saving can fail after registering Win+V but before committing the config.
+        windows_main_shortcut::set_enabled(false);
+    }
     let current_shortcut = match configured_main_window_shortcut() {
         Ok(shortcut) => shortcut,
         Err(err) => {
@@ -7062,7 +7077,6 @@ fn end_main_shortcut_recording(app: tauri::AppHandle) -> Result<ShortcutRegistra
             None
         }
     };
-    win_v_takeover::set_recording(&app, false);
     register_main_window_shortcut(&app, current_shortcut)
 }
 
@@ -7110,12 +7124,6 @@ fn check_main_shortcut_registration(
     shortcut: String,
 ) -> Result<ShortcutRegistrationInfo, String> {
     validate_main_window_shortcut(Some(shortcut.as_str()))?;
-    if is_win_v_main_shortcut(Some(shortcut.as_str())) {
-        return Ok(ShortcutRegistrationInfo {
-            registered: true,
-            conflict: false,
-        });
-    }
     let parsed = parse_optional_shortcut(Some(shortcut.as_str()), "唤起主窗口")?;
     let Some(shortcut) = parsed else {
         return Ok(ShortcutRegistrationInfo {
@@ -7123,6 +7131,15 @@ fn check_main_shortcut_registration(
             conflict: false,
         });
     };
+
+    #[cfg(target_os = "windows")]
+    if windows_main_shortcut::matches(shortcut) {
+        windows_main_shortcut::ensure_available(&app)?;
+        return Ok(ShortcutRegistrationInfo {
+            registered: true,
+            conflict: false,
+        });
+    }
 
     if app.global_shortcut().is_registered(shortcut) {
         return Ok(ShortcutRegistrationInfo {
@@ -7161,9 +7178,12 @@ mod shortcut_policy_tests {
     fn validates_main_window_shortcut_policy() {
         assert!(validate_main_window_shortcut(Some("Alt+V")).is_ok());
         assert_eq!(
+            validate_main_window_shortcut(Some("Super+V")).is_ok(),
+            cfg!(target_os = "windows")
+        );
+        assert_eq!(
             validate_main_window_shortcut(Some("Command+V")).is_ok(),
-            cfg!(target_os = "windows"),
-            "Win+V is allowed only on Windows"
+            cfg!(target_os = "windows")
         );
         assert!(validate_main_window_shortcut(Some("Alt+Space")).is_err());
         assert!(validate_main_window_shortcut(Some("A")).is_err());
@@ -7191,21 +7211,6 @@ mod shortcut_policy_tests {
     fn win_v_stays_unavailable_for_the_paste_queue() {
         assert!(validate_paste_queue_shortcut(Some("Super+V")).is_err());
         assert!(validate_paste_queue_shortcut(Some("Command+V")).is_err());
-    }
-
-    #[test]
-    fn only_win_v_main_shortcut_uses_the_keyboard_hook() {
-        assert_eq!(
-            is_win_v_main_shortcut(Some("Super+V")),
-            cfg!(target_os = "windows")
-        );
-        assert_eq!(
-            is_win_v_main_shortcut(Some("Command+V")),
-            cfg!(target_os = "windows")
-        );
-        assert!(!is_win_v_main_shortcut(Some("Super+Shift+V")));
-        assert!(!is_win_v_main_shortcut(Some("Alt+V")));
-        assert!(!is_win_v_main_shortcut(None));
     }
 
     #[test]
@@ -7663,13 +7668,10 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
             None
         }
     };
-    let next_main_uses_win_v =
-        is_win_v_main_shortcut(config_struct.shortcut_keys.main_window.as_deref());
     let next_main_shortcut = parse_optional_shortcut(
         config_struct.shortcut_keys.main_window.as_deref(),
         "唤起主窗口",
-    )?
-    .filter(|_| !next_main_uses_win_v);
+    )?;
     let previous_paste_queue_shortcut = parse_optional_shortcut(
         previous_config.shortcut_keys.paste_queue_toggle.as_deref(),
         "当前粘贴队列",
@@ -7687,8 +7689,6 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
     unregister_main_window_shortcut(&app, previous_main_shortcut)?;
     unregister_main_window_shortcut(&app, previous_paste_queue_shortcut)?;
     let registration_info = register_main_window_shortcut(&app, next_main_shortcut)?;
-    win_v_takeover::set_recording(&app, false);
-    win_v_takeover::set_active(&app, next_main_uses_win_v);
     let paste_queue_registration_info =
         register_main_window_shortcut(&app, next_paste_queue_shortcut)?;
     if !runtime_mode::is_portable() {
@@ -10816,6 +10816,11 @@ fn show_startup_error(message: &str) {
 }
 
 fn main() {
+    #[cfg(target_os = "windows")]
+    if windows_main_shortcut::run_if_requested() {
+        return;
+    }
+
     match maintenance::try_handle_maintenance_command() {
         Ok(true) => return,
         Ok(false) => {}
@@ -10924,6 +10929,10 @@ fn main() {
                 }
                 if window.label() == "config" {
                     api.prevent_close();
+                    #[cfg(target_os = "windows")]
+                    if windows_main_shortcut::set_recording(false) {
+                        let _ = end_main_shortcut_recording(window.app_handle().clone());
+                    }
                     let _ = window.hide();
                 }
                 if window.label() == "testRoom" {
@@ -10956,6 +10965,10 @@ fn main() {
             }
             if let tauri::WindowEvent::Focused(false) = event {
                 if window.label() == "config" {
+                    #[cfg(target_os = "windows")]
+                    if windows_main_shortcut::set_recording(false) {
+                        let _ = end_main_shortcut_recording(window.app_handle().clone());
+                    }
                     handle_config_focus_lost(window.app_handle().clone());
                 }
             }
@@ -11070,9 +11083,7 @@ fn main() {
             if let Err(err) = sync_tray_visibility(app.handle(), config.display_tray_icon) {
                 error!("Failed to sync tray visibility at startup: {}", err);
             }
-            if is_win_v_main_shortcut(config.shortcut_keys.main_window.as_deref()) {
-                win_v_takeover::set_active(app.handle(), true);
-            } else if let Some(s) = config.shortcut_keys.main_window.clone() {
+            if let Some(s) = config.shortcut_keys.main_window.clone() {
                 match parse_optional_shortcut(Some(s.as_str()), "唤起主窗口") {
                     Ok(shortcut) => {
                         let _ = register_main_window_shortcut(app.handle(), shortcut);
@@ -11134,6 +11145,8 @@ fn main() {
                         .build(),
                 )
                 .expect("load log plugin error");
+            #[cfg(target_os = "windows")]
+            windows_main_shortcut::log_status();
             std::thread::spawn(move || {
                 let clipboard_window = handle
                     .get_webview_window("clipboard")
@@ -11480,4 +11493,6 @@ fn main() {
                 }
             }
         });
+    #[cfg(target_os = "windows")]
+    windows_main_shortcut::shutdown();
 }

@@ -23,6 +23,10 @@ export function isMacPlatform(): boolean {
     return MAC_PLATFORM_PATTERNS.some(pattern => platform.includes(pattern));
 }
 
+export function isWindowsPlatform(): boolean {
+    return platformString().startsWith("win");
+}
+
 export function getModifierDisplayLabel(modifier: string, macPlatform = isMacPlatform()): string {
     const normalized = modifier.trim().toLowerCase();
 

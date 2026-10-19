@@ -201,8 +201,16 @@ the Inno package. Confirm that it:
 - Confirm all data follows the folder under `data`
 - Confirm an unwritable folder produces a clear error instead of falling back
   to AppData
-- Confirm there is no uninstall registration, startup registration, or
-  vPaste-specific AppData residue
+- Confirm the default run leaves no uninstall registration, startup
+  registration, or vPaste-specific AppData residue
+- Enable Portable launch at startup, confirm its separate current-user entry
+  targets this EXE, move the folder and launch it once to refresh the path,
+  then disable startup and confirm only the Portable entry is removed
+- With another vPaste instance already open, move the opted-in Portable folder
+  and launch it once; confirm the Portable entry points to the new EXE path
+- Run an unconfigured second Portable copy; confirm it does not remove the
+  first copy's startup entry. When both installed and Portable startup are
+  enabled, confirm only the first instance stays running
 - Confirm automatic self-update is disabled and the Release link is offered
 
 Record the tested OS version, language, theme, DPI, old version, new version,

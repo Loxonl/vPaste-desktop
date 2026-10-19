@@ -63,6 +63,8 @@ mod native_drag_preview;
 #[cfg(target_os = "macos")]
 mod native_drag_snapshot;
 mod paste_queue;
+#[cfg(any(target_os = "windows", test))]
+mod portable_autostart;
 mod runtime_mode;
 mod search;
 mod test_room;
@@ -7473,6 +7475,11 @@ fn sync_macos_main_app_service(startup: bool) -> Option<Result<bool, String>> {
 }
 
 fn check_autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    if runtime_mode::is_portable() {
+        return portable_autostart::is_enabled();
+    }
+
     #[cfg(all(target_os = "macos", not(debug_assertions)))]
     if let Some(status) = macos_main_app_service_status() {
         return Ok(status == MacosServiceStatus::Enabled);
@@ -7484,6 +7491,11 @@ fn check_autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
 }
 
 fn sync_autostart(app: &tauri::AppHandle, startup: bool) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    if runtime_mode::is_portable() {
+        return portable_autostart::set_enabled(startup);
+    }
+
     #[cfg(all(target_os = "macos", not(debug_assertions)))]
     {
         if let Some(result) = sync_macos_main_app_service(startup) {
@@ -7648,6 +7660,7 @@ fn cleanup_legacy_autostart_entries() {}
 fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigrationInfo, String> {
     let mut config_struct: Config =
         serde_json::from_str(&config).map_err(|err| format!("配置格式无效，无法保存：{}", err))?;
+    #[cfg(not(target_os = "windows"))]
     if runtime_mode::is_portable() {
         config_struct.startup = false;
     }
@@ -7691,17 +7704,19 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
     let registration_info = register_main_window_shortcut(&app, next_main_shortcut)?;
     let paste_queue_registration_info =
         register_main_window_shortcut(&app, next_paste_queue_shortcut)?;
-    if !runtime_mode::is_portable() {
-        let actual_startup = check_autostart_enabled(&app)?;
-        if actual_startup != config_struct.startup {
-            let enabled = sync_autostart(&app, config_struct.startup)?;
-            if enabled != config_struct.startup {
-                return Err(if config_struct.startup {
-                    "无法注册开机启动项，开关已保持关闭".to_string()
-                } else {
-                    "无法移除开机启动项，开关状态未保存".to_string()
-                });
-            }
+    let startup_changed = if runtime_mode::is_portable() {
+        previous_config.startup != config_struct.startup
+    } else {
+        check_autostart_enabled(&app)? != config_struct.startup
+    };
+    if startup_changed {
+        let enabled = sync_autostart(&app, config_struct.startup)?;
+        if enabled != config_struct.startup {
+            return Err(if config_struct.startup {
+                "无法注册开机启动项，开关已保持关闭".to_string()
+            } else {
+                "无法移除开机启动项，开关状态未保存".to_string()
+            });
         }
     }
     sync_tray_visibility(&app, config_struct.display_tray_icon)?;
@@ -10837,6 +10852,13 @@ fn main() {
         std::process::exit(1);
     }
 
+    // The single-instance plugin may terminate this process before Tauri setup.
+    // Refresh an opted-in portable path first so moving the folder still works.
+    #[cfg(target_os = "windows")]
+    if let Err(err) = portable_autostart::reconcile_before_single_instance() {
+        eprintln!("Failed to reconcile portable autostart before single-instance setup: {err}");
+    }
+
     // env_logger::Builder::new()
     //     .filter_level(LevelFilter::Info) // 设置全局最小日志级别为 Info
     //     .init();
@@ -11069,10 +11091,21 @@ fn main() {
             if let Err(err) = refresh_stored_autostart_from_system(app.handle()) {
                 error!("Failed to refresh autostart status at startup: {}", err);
             }
-            let mut config = config::get();
-            if runtime_mode::is_portable() && config.startup {
-                config.startup = false;
-                config::save(config.clone());
+            let config = config::get();
+            #[cfg(not(target_os = "windows"))]
+            let config = {
+                let mut config = config;
+                if runtime_mode::is_portable() && config.startup {
+                    config.startup = false;
+                    config::save(config.clone());
+                }
+                config
+            };
+            #[cfg(target_os = "windows")]
+            if runtime_mode::is_portable() {
+                if let Err(err) = portable_autostart::reconcile(config.startup) {
+                    error!("Failed to reconcile portable autostart at startup: {}", err);
+                }
             }
             #[cfg(not(target_os = "macos"))]
             if !runtime_mode::is_portable() {

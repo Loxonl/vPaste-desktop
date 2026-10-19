@@ -14,3 +14,10 @@ describe("shortcut display labels", () => {
         expect(formatShortcutLabel("Super+V", true)).toBe("Command + V");
     });
 });
+
+describe("Windows-key shortcut labels", () => {
+    it.each(["Command", "Meta", "Cmd", "Super", "Win", "Windows"])("shows the persisted %s alias as Win on Windows", modifier => {
+        expect(formatShortcutLabel(`${modifier}+V`, false)).toBe("Win + V");
+        expect(formatShortcutLabel(`${modifier}+V`, true)).toBe("Command + V");
+    });
+});

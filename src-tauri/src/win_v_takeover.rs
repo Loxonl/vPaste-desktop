@@ -22,6 +22,8 @@ pub(crate) fn is_vpaste_event(extra_info: usize) -> bool {
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static RECORDING: AtomicBool = AtomicBool::new(false);
+/// Diagnostics: whether the hook has logged a key event since recording began.
+static RECORDING_EVENT_LOGGED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Modifiers {
@@ -34,6 +36,9 @@ pub(crate) struct Modifiers {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HookKey {
     V,
+    /// Left or right Win key. Only told apart for recording diagnostics; the
+    /// decision reads Win from `Modifiers` and never intercepts this key.
+    Win,
     Other,
 }
 
@@ -136,6 +141,7 @@ pub(crate) fn set_recording(app: &tauri::AppHandle, recording: bool) {
         );
     }
     if recording {
+        RECORDING_EVENT_LOGGED.store(false, Ordering::SeqCst);
         ensure_hook(app);
     }
 }
@@ -152,8 +158,8 @@ fn ensure_hook(app: &tauri::AppHandle) {
 #[cfg(target_os = "windows")]
 mod windows_hook {
     use super::{
-        current_mode, decide, is_vpaste_event, HookKey, HookState, Modifiers, RECORDED_EVENT,
-        VPASTE_EVENT_MARKER,
+        current_mode, decide, is_vpaste_event, HookDecision, HookKey, HookMode, HookState,
+        Modifiers, RECORDED_EVENT, RECORDING_EVENT_LOGGED, VPASTE_EVENT_MARKER,
     };
     use log::{error, info};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -258,6 +264,34 @@ mod windows_hook {
         });
     }
 
+    /// Diagnostics while recording: confirms the hook receives keys and shows
+    /// how Win and V were seen. Only Win and V are logged, never other keys.
+    fn log_recording_event(
+        event: &KBDLLHOOKSTRUCT,
+        down: bool,
+        key: HookKey,
+        modifiers: Modifiers,
+        decision: HookDecision,
+    ) {
+        if !RECORDING_EVENT_LOGGED.swap(true, Ordering::SeqCst) {
+            info!("Win+V hook received its first key event while recording");
+        }
+        if key == HookKey::Other {
+            return;
+        }
+        info!(
+            "Win+V recording key: key={:?} vk={:#x} down={} injected={} extra={:#x} async_win={} modifiers={:?} decision={:?}",
+            key,
+            event.vkCode,
+            down,
+            (event.flags.0 & LLKHF_INJECTED.0) != 0,
+            event.dwExtraInfo,
+            key_pressed(VK_LWIN) || key_pressed(VK_RWIN),
+            modifiers,
+            decision
+        );
+    }
+
     unsafe extern "system" fn keyboard_callback(
         code: i32,
         message: WPARAM,
@@ -273,6 +307,8 @@ mod windows_hook {
                 let event = &*(data.0 as *const KBDLLHOOKSTRUCT);
                 let key = if event.vkCode == VK_V.0 as u32 {
                     HookKey::V
+                } else if event.vkCode == VK_LWIN.0 as u32 || event.vkCode == VK_RWIN.0 as u32 {
+                    HookKey::Win
                 } else {
                     HookKey::Other
                 };
@@ -289,14 +325,10 @@ mod windows_hook {
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     decide(&mut state, key, down, from_vpaste, modifiers, mode)
                 };
-                if key == HookKey::V && down && modifiers.win && !from_vpaste {
-                    info!(
-                        "Win+V seen: mode={:?} modifiers={:?} injected={} intercepted={}",
-                        mode,
-                        modifiers,
-                        (event.flags.0 & LLKHF_INJECTED.0) != 0,
-                        decision.intercept
-                    );
+                if mode == HookMode::Record {
+                    log_recording_event(event, down, key, modifiers, decision);
+                } else if key == HookKey::V && down && decision.intercept {
+                    info!("Win+V intercepted: mode={:?}", mode);
                 }
                 if decision.mask_win {
                     send_mask_key();
@@ -456,6 +488,23 @@ mod tests {
                 decide(&mut state, HookKey::Other, true, false, WIN, mode),
                 HookDecision::default()
             );
+        }
+    }
+
+    #[test]
+    fn win_key_itself_is_never_intercepted() {
+        for mode in [
+            HookMode::PassThrough,
+            HookMode::ToggleWindow,
+            HookMode::Record,
+        ] {
+            let mut state = HookState::default();
+            for down in [true, false] {
+                assert_eq!(
+                    decide(&mut state, HookKey::Win, down, false, WIN, mode),
+                    HookDecision::default()
+                );
+            }
         }
     }
 

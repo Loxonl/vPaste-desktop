@@ -11,6 +11,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Emitted to the settings window when Win+V is pressed during recording.
 pub(crate) const RECORDED_EVENT: &str = "win-v-shortcut-recorded";
 
+/// `dwExtraInfo` tag on keys vPaste injects, so the hook can skip them.
+/// Keys injected by other software (remote control, remapping tools) are
+/// still handled, because that is how their users type Win+V.
+const VPASTE_EVENT_MARKER: usize = 0x5650_5756;
+
+pub(crate) fn is_vpaste_event(extra_info: usize) -> bool {
+    extra_info == VPASTE_EVENT_MARKER
+}
+
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static RECORDING: AtomicBool = AtomicBool::new(false);
 
@@ -59,11 +68,11 @@ pub(crate) fn decide(
     state: &mut HookState,
     key: HookKey,
     down: bool,
-    injected: bool,
+    from_vpaste: bool,
     modifiers: Modifiers,
     mode: HookMode,
 ) -> HookDecision {
-    if injected || key != HookKey::V {
+    if from_vpaste || key != HookKey::V {
         return HookDecision::default();
     }
     if !down {
@@ -106,7 +115,12 @@ fn current_mode() -> HookMode {
 /// Sets whether Win+V is the saved main window shortcut.
 pub(crate) fn set_active(app: &tauri::AppHandle, active: bool) {
     let active = active && cfg!(target_os = "windows");
-    ACTIVE.store(active, Ordering::SeqCst);
+    if ACTIVE.swap(active, Ordering::SeqCst) != active {
+        log::info!(
+            "Win+V main window shortcut {}",
+            if active { "enabled" } else { "disabled" }
+        );
+    }
     if active {
         ensure_hook(app);
     }
@@ -115,7 +129,12 @@ pub(crate) fn set_active(app: &tauri::AppHandle, active: bool) {
 /// Sets whether the main shortcut recorder is open.
 pub(crate) fn set_recording(app: &tauri::AppHandle, recording: bool) {
     let recording = recording && cfg!(target_os = "windows");
-    RECORDING.store(recording, Ordering::SeqCst);
+    if RECORDING.swap(recording, Ordering::SeqCst) != recording {
+        log::info!(
+            "Win+V shortcut recording {}",
+            if recording { "started" } else { "stopped" }
+        );
+    }
     if recording {
         ensure_hook(app);
     }
@@ -132,7 +151,10 @@ fn ensure_hook(app: &tauri::AppHandle) {
 
 #[cfg(target_os = "windows")]
 mod windows_hook {
-    use super::{current_mode, decide, HookKey, HookState, Modifiers, RECORDED_EVENT};
+    use super::{
+        current_mode, decide, is_vpaste_event, HookKey, HookState, Modifiers, RECORDED_EVENT,
+        VPASTE_EVENT_MARKER,
+    };
     use log::{error, info};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, OnceLock};
@@ -150,7 +172,6 @@ mod windows_hook {
 
     /// Unassigned virtual key used only to break the "Win pressed alone" sequence.
     const MASK_VIRTUAL_KEY: u16 = 0xFF;
-    const MASK_EVENT_MARKER: usize = 0x5650_5756;
 
     static STARTED: AtomicBool = AtomicBool::new(false);
     static APP: OnceLock<AppHandle> = OnceLock::new();
@@ -195,7 +216,7 @@ mod windows_hook {
                         wScan: 0,
                         dwFlags: flags,
                         time: 0,
-                        dwExtraInfo: MASK_EVENT_MARKER,
+                        dwExtraInfo: VPASTE_EVENT_MARKER,
                     },
                 },
             }
@@ -224,11 +245,17 @@ mod windows_hook {
     }
 
     fn report_recorded_shortcut() {
-        if let Some(app) = APP.get() {
+        let Some(app) = APP.get() else {
+            return;
+        };
+        let app = app.clone();
+        // Windows skips a low-level hook that does not return quickly and lets
+        // the key through, so emit off the hook thread.
+        std::thread::spawn(move || {
             if let Err(err) = app.emit(RECORDED_EVENT, "Super+V") {
                 error!("Failed to report recorded Win+V shortcut: {}", err);
             }
-        }
+        });
     }
 
     unsafe extern "system" fn keyboard_callback(
@@ -249,18 +276,28 @@ mod windows_hook {
                 } else {
                     HookKey::Other
                 };
-                let injected = (event.flags.0 & LLKHF_INJECTED.0) != 0;
+                let from_vpaste = is_vpaste_event(event.dwExtraInfo);
                 let modifiers = if key == HookKey::V && down {
                     current_modifiers()
                 } else {
                     Modifiers::default()
                 };
+                let mode = current_mode();
                 let decision = {
                     let mut state = STATE
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    decide(&mut state, key, down, injected, modifiers, current_mode())
+                    decide(&mut state, key, down, from_vpaste, modifiers, mode)
                 };
+                if key == HookKey::V && down && modifiers.win && !from_vpaste {
+                    info!(
+                        "Win+V seen: mode={:?} modifiers={:?} injected={} intercepted={}",
+                        mode,
+                        modifiers,
+                        (event.flags.0 & LLKHF_INJECTED.0) != 0,
+                        decision.intercept
+                    );
+                }
                 if decision.mask_win {
                     send_mask_key();
                 }
@@ -282,6 +319,7 @@ mod windows_hook {
         unsafe {
             let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_callback), None, 0)
                 .map_err(|err| err.to_string())?;
+            info!("Win+V keyboard hook installed (mode={:?})", current_mode());
             let mut message = MSG::default();
             loop {
                 let status = GetMessageW(&mut message, None, 0, 0).0;
@@ -422,7 +460,28 @@ mod tests {
     }
 
     #[test]
-    fn injected_events_are_ignored() {
+    fn win_v_injected_by_other_software_is_still_handled() {
+        // Remote-control and key-remapping tools deliver keys through SendInput
+        // with their own (usually zero) extra info.
+        let from_vpaste = is_vpaste_event(0);
+        assert!(!from_vpaste);
+        let mut state = HookState::default();
+        assert!(
+            decide(
+                &mut state,
+                HookKey::V,
+                true,
+                from_vpaste,
+                WIN,
+                HookMode::Record
+            )
+            .record
+        );
+    }
+
+    #[test]
+    fn keys_injected_by_vpaste_are_ignored() {
+        assert!(is_vpaste_event(VPASTE_EVENT_MARKER));
         let mut state = HookState::default();
         assert_eq!(
             decide(

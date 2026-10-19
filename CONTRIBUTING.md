@@ -22,6 +22,7 @@ DCO / `Signed-off-by` is not required for the initial public launch.
   - `MINOR: <English summary>` when there is no related issue.
 - Resolve review comments before merge.
 - Include a documentation decision in each PR: update docs when public behavior changes, or state why docs are not needed.
+- Open a PR once the relevant code compiles: run `npm run build` for frontend changes and `cargo check --locked --all-targets --manifest-path src-tauri\Cargo.toml` for Rust/Tauri changes. Documentation-only PRs do not need a build. Local unit, visual, style, formatting, and manual tests are not prerequisites for creating a PR; report which checks were run or left for review. Required GitHub Actions checks still run after the PR opens and must pass before merge.
 
 ## Development checks
 
@@ -37,10 +38,17 @@ Frontend type/build check:
 npm run build
 ```
 
-Rust/Tauri check:
+Rust/Tauri compile check:
 
 ```powershell
 cargo check --locked --all-targets --manifest-path src-tauri\Cargo.toml
+```
+
+## Optional local checks
+
+These checks can be run for deeper review but are not required before opening a PR:
+
+```powershell
 cargo test --locked --all-targets --manifest-path src-tauri\Cargo.toml
 ```
 

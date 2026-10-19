@@ -13,19 +13,18 @@
 
 ## Local verification
 
-- [ ] `npm run check:styles` run locally
-- [ ] `npm run build` run locally
-- [ ] `npm run test:unit` run locally
-- [ ] `npm run test:visual` run locally when UI changed; screenshots inspected manually
-- [ ] `cargo check --manifest-path src-tauri\Cargo.toml`
-- [ ] `cargo fmt --all --check` from `src-tauri`
-- [ ] Manual test:
+<!-- List successful compile/build commands for code changes. For docs-only changes, write "Not needed". Other local checks are optional; say "Not run" when applicable. -->
+
+- Build / compile:
+- Other local checks (optional):
+- Manual test (optional):
 
 ## Platforms tested
 
 - [ ] Windows
 - [ ] macOS
 - [ ] Not platform-specific
+- [ ] Not tested locally
 
 ## Clipboard formats affected
 
@@ -59,7 +58,7 @@
 - [ ] Standard controls use MUI or the existing raw-control baseline was reduced; the baseline was not increased.
 - [ ] Motion is imported only through `src/ui/motion`, uses shared presets, and every `AnimatePresence` declares `mode`.
 - [ ] One element has one animation owner; Tauri window motion and manual drag transforms were not duplicated.
-- [ ] Normal and reduced-motion behavior were checked.
+- [ ] Normal and reduced-motion behavior were checked, or the pending check is noted above.
 - [ ] User-visible behavior changes and removed UI mechanisms are listed in the summary.
 - [ ] Windows installer and release scripts are unchanged.
-- [ ] Local verification results are written in the PR; this UI workstream does not rely on GitHub Actions quota.
+- [ ] Build results and any other local checks are written in the PR; visual tests for this UI workstream remain local-only.

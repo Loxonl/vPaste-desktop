@@ -116,13 +116,13 @@ Run `npm run dev:debug`, then use the component-lab button beside Settings to op
 Before opening a UI pull request:
 
 ```powershell
-npm run check:ui
+npm run build
 ```
 
-The full command includes Playwright visual tests and is intended for local review. Hosted GitHub Actions quota is not used for this UI workstream. Run the checks locally, inspect the screenshots manually, and record the results in the pull request for the maintainer to verify.
+A successful build is enough to open the PR. `npm run check:ui` is optional local review; it includes style, unit, and Playwright visual tests. Visual tests are not run in hosted GitHub Actions because quota is limited. Record the build result, any further local checks run, and checks still pending in the PR.
 
 Screenshot changes are review artifacts, not automatic updates. Regenerate them with `npm run test:visual:update`, inspect every changed image, and commit only intentional changes.
 
-For Motion-related changes, also verify normal and reduced-motion behavior directly. Wait for exit animations before taking screenshots; screenshots do not replace behavior tests for callbacks, focus return, or reduced-motion selection. Performance comparisons for 36 clipboard cards and 100 Paste Queue rows are local-only evidence and are never a hosted CI gate.
+During review of Motion-related changes, verify normal and reduced-motion behavior directly. Wait for exit animations before taking screenshots; screenshots do not replace behavior tests for callbacks, focus return, or reduced-motion selection. Performance comparisons for 36 clipboard cards and 100 Paste Queue rows are local-only evidence and are never a hosted CI gate.
 
 Do not combine a React or MUI major-version upgrade with visual migration work. Do not edit Windows installer files as part of frontend UI work.

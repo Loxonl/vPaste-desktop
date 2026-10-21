@@ -18,6 +18,7 @@ export type ClipboardKeyDownAction =
     | { type: "navigate-selection"; direction: -1 | 1 }
     | { type: "open-selected-context-menu" }
     | { type: "toggle-preview" }
+    | { type: "delete-selected" }
     | { type: "paste-selected"; plainText: boolean };
 
 export type ClipboardKeyboardContext = {
@@ -141,6 +142,14 @@ export function clipboardKeyDownAction(
     }
     if (event.key === " " || event.key === "Spacebar") {
         return { type: "toggle-preview" };
+    }
+    if (event.key === (context.isMac ? "Backspace" : "Delete")) {
+        if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey
+            || context.contextMenuOpen || isKeyboardPassthroughTarget(event.target)
+            || isKeyboardPassthroughTarget(event.target, '[role="dialog"], [role="alertdialog"], [aria-modal="true"]')) {
+            return null;
+        }
+        return { type: "delete-selected" };
     }
     if (matchesKeyboardShortcut(event, context.pasteAsTextShortcut)) {
         return { type: "paste-selected", plainText: true };

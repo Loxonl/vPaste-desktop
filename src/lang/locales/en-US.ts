@@ -365,6 +365,7 @@ const enUS: LanguagePack = {
         "settings.shortcuts.actionMenu": "Action menu",
         "settings.shortcuts.search": "Search",
         "settings.shortcuts.preview": "Preview",
+        "settings.shortcuts.deleteRecord": "Delete selected record",
         "settings.shortcuts.key.arrowsHorizontal": "Arrow keys ← / →",
         "settings.shortcuts.key.arrowDown": "Arrow key ↓",
         "settings.shortcuts.key.space": "Space",

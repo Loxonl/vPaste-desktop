@@ -248,6 +248,9 @@ export default function Clipboard() {
     const activeTabRef = useRef("all");
     const tutorialActiveRef = useRef(false);
     const selectedRef = useRef("");
+    const deleteInFlightRef = useRef(false);
+    const deleteClipboardItemRef = useRef<(item: Item) => Promise<void>>();
+    const historyRefreshingRef = useRef(false);
     const restoreFocusedResultRef = useRef(false);
     const pageListRef = useRef<Item[]>([]);
     const clipboardBehaviorConfigRef = useRef<ClipboardBehaviorConfig | null>(null);
@@ -922,6 +925,7 @@ export default function Clipboard() {
     async function fetchHistoryWith(keywords: string, tab: string, options: { selectFirst?: boolean, background?: boolean, isCurrent?: () => boolean } = {}) {
         if (showGateRef.current!.pending && !options.isCurrent) return false;
         const requestSeq = ++searchRequestSeqRef.current;
+        historyRefreshingRef.current = true;
         if (!options.background && keywords.trim()) {
             setIsSearching(true);
         }
@@ -982,6 +986,7 @@ export default function Clipboard() {
             }
         } finally {
             if (requestSeq === searchRequestSeqRef.current) {
+                historyRefreshingRef.current = false;
                 setIsSearching(false);
             }
         }
@@ -1345,6 +1350,14 @@ export default function Clipboard() {
             });
             if (!action) return;
 
+            if (action.type === "delete-selected" && (
+                !document.hasFocus() || tutorialActiveRef.current
+                || historyRefreshingRef.current || isSearching
+                || showGateRef.current!.needsSync || showGateRef.current!.pending || showGateRef.current!.failed
+                || lastHistoryFetchRef.current?.keywords !== searchWordRef.current
+                || lastHistoryFetchRef.current?.tab !== activeTabRef.current
+            )) return;
+
             event.preventDefault();
             if ("stopPropagation" in action && action.stopPropagation) {
                 event.stopPropagation();
@@ -1473,6 +1486,11 @@ export default function Clipboard() {
                         ) || pageListRef.current[0],
                     );
                     return;
+                case "delete-selected": {
+                    const item = pageListRef.current.find(candidate => candidate.getHash() === selectedRef.current);
+                    if (item) void deleteClipboardItemRef.current?.(item);
+                    return;
+                }
                 case "paste-selected":
                     setContextMenu(null);
                     if (action.plainText) {
@@ -1672,6 +1690,7 @@ export default function Clipboard() {
         toggleFavorite,
     } = createClipboardItemActions({
         closeContextMenu: () => setContextMenu(null),
+        deleteInFlight: deleteInFlightRef,
         hideWindow: hideCurrentWindowWithAnimation,
         onDelete: removeDeletedItemFromPage,
         refreshHistory: fetchHistory,
@@ -1679,6 +1698,7 @@ export default function Clipboard() {
         t,
         updateItemTags: updateItemTagsInPage,
     });
+    deleteClipboardItemRef.current = deleteClipboardItem;
 
     const buildContextMenuOptions = (
         item: Item,

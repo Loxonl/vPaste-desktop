@@ -365,6 +365,7 @@ const zhCN: LanguagePack = {
         "settings.shortcuts.actionMenu": "操作窗口",
         "settings.shortcuts.search": "搜索",
         "settings.shortcuts.preview": "预览",
+        "settings.shortcuts.deleteRecord": "删除选中记录",
         "settings.shortcuts.key.arrowsHorizontal": "方向键 ← / →",
         "settings.shortcuts.key.arrowDown": "方向键 ↓",
         "settings.shortcuts.key.space": "空格 Space",

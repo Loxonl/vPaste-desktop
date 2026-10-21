@@ -9,6 +9,7 @@ import { ItemType } from "./Item";
 import { FileTypePresentation } from "./FileTypePresentation";
 import { isImagePath, type FilePreviewInfo } from "./itemPresentation";
 import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
+import { useRichPreviewCanvas } from "./useRichPreviewCanvas";
 import { useLanguage } from "../lang";
 import { AnimatePresence, m, useMotionPreset } from "../ui/motion";
 import styles from "./Preview.module.css";
@@ -123,6 +124,7 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
     const type = payloadType(payload);
     const linkUrl = type === ItemType.Link ? normalizeLinkUrl(payload.content.split("|||")[0]) : "";
     const richHtml = useMemo(() => sanitizeRichHtml(payloadRichHtml(payload), 720), [payload]);
+    const richPreviewRef = useRichPreviewCanvas(richHtml);
     const linkPreviewHtml = useMemo(
         () => linkDocument ? disableDocumentNavigation(linkDocument.html) : "",
         [linkDocument],
@@ -349,6 +351,7 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
     if (richHtmlHasVisibleContent(richHtml)) {
         return (
             <div
+                ref={richPreviewRef}
                 className={styles["preview-rich"]}
                 dangerouslySetInnerHTML={{ __html: richHtml }}
             />

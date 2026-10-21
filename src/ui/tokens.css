@@ -237,6 +237,9 @@
   --ui-preview-panel-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
   --ui-preview-rich-surface: rgba(255, 255, 255, 0.92);
   --ui-preview-rich-text: #262a30;
+  --ui-rich-canvas-dark-surface: #242424;
+  --ui-rich-canvas-dark-text: #f2f3f5;
+  --ui-rich-canvas-dark-border: rgba(255, 255, 255, 0.20);
   --ui-preview-rich-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
   --ui-preview-caption-text: #90969e;
   --ui-preview-table-border: rgba(31, 41, 55, 0.16);
@@ -529,8 +532,6 @@
   --ui-clipboard-favorite-surface: var(--ui-clipboard-dark-pill-surface);
   --ui-clipboard-favorite-shadow: var(--ui-clipboard-dark-pill-shadow);
   --ui-clipboard-preview-text: var(--theme-text);
-  --ui-clipboard-rich-surface: rgba(18, 18, 18, 0.70);
-  --ui-clipboard-rich-table-border: rgba(255, 255, 255, 0.13);
   --ui-clipboard-media-surface: rgba(15, 18, 23, 0.72);
   --ui-clipboard-media-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
   --ui-clipboard-link-fallback-text: #8ab4ff;

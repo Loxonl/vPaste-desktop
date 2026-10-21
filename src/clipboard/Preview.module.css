@@ -243,7 +243,20 @@ body,
   background: var(--ui-preview-rich-surface);
   box-shadow: var(--ui-preview-rich-shadow);
   color: var(--ui-preview-rich-text);
+  -webkit-text-fill-color: currentColor;
+  color-scheme: light;
   font: 14px/1.62 "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", Arial, sans-serif;
+}
+
+.preview-rich[data-rich-canvas="dark"] {
+  background: var(--ui-rich-canvas-dark-surface);
+  color: var(--ui-rich-canvas-dark-text);
+  color-scheme: dark;
+}
+
+.preview-rich[data-rich-canvas="dark"] td,
+.preview-rich[data-rich-canvas="dark"] th {
+  border-color: var(--ui-rich-canvas-dark-border);
 }
 
 .preview-rich * {

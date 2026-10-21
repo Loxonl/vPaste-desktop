@@ -95,6 +95,8 @@ Use a single focus indicator per component. MUI controls use the shared theme fo
 
 ## Themes and Density
 
+Rich clipboard previews keep copied foreground colors, backgrounds, highlights, and text-fill styles in both app themes. Main-panel cards and Space previews use the same content-based default canvas: light by default, dark for uncovered light text or dark backgrounds missing a foreground. Only missing presentation defaults change; the sanitized source markup, stored clipboard data, and restored rich formats stay intact. Ordinary text continues to follow the app theme. Keep global dark-mode text overrides outside rich-preview descendants, and test both source color schemes against both app themes, including transparent backgrounds and nested/table formatting.
+
 The supported modes are `system`, `light`, and `dark`. Existing `data-theme` behavior must remain compatible. The default density is compact without becoming difficult to click:
 
 - regular controls: 32 px

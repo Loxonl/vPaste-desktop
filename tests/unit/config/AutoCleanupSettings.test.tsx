@@ -102,7 +102,7 @@ describe("Automatic history cleanup", () => {
         await user.click(screen.getByRole("combobox", { name: "自动清理数据" }));
         await user.click(screen.getByRole("option", { name: "按时间保留" }));
         await user.click(screen.getByRole("button", { name: "应用" }));
-        expect(await screen.findByText(/storage unavailable/)).toBeVisible();
+        await waitFor(() => expect(screen.getByText(/storage unavailable/)).toBeVisible());
         expect(onSave).not.toHaveBeenCalled();
         expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     });
@@ -114,6 +114,6 @@ describe("Automatic history cleanup", () => {
         await user.click(screen.getByRole("option", { name: "不自动清理" }));
         await waitFor(() => expect(screen.getByRole("combobox", { name: "自动清理数据" })).toHaveTextContent("按数量保留"));
         expect(screen.getByRole("combobox", { name: "保留范围" })).toHaveTextContent("5000 条");
-        expect(await screen.findByText(/disk full/)).toBeVisible();
+        await waitFor(() => expect(screen.getByText(/disk full/)).toBeVisible());
     });
 });

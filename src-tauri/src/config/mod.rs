@@ -8,6 +8,24 @@ use std::path::Path;
 
 use crate::{runtime_mode, splicing_with_app_data_dir};
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(tag = "mode", content = "value", rename_all = "snake_case")]
+pub enum AutoCleanupPolicy {
+    #[default]
+    Disabled,
+    Days(u32),
+    Count(u32),
+}
+
+impl AutoCleanupPolicy {
+    pub fn validate(self) -> Result<(), String> {
+        match self {
+            Self::Disabled | Self::Days(1..=36_500) | Self::Count(1..=1_000_000) => Ok(()),
+            _ => Err("Invalid automatic cleanup limit".to_string()),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     pub startup: bool,
@@ -16,6 +34,8 @@ pub struct Config {
     #[serde(default = "default_theme_mode")]
     pub theme_mode: String,
     pub storage_history: u8,
+    #[serde(default)]
+    pub auto_cleanup: AutoCleanupPolicy,
     #[serde(default)]
     pub storage_dir: String,
     #[serde(default)]
@@ -52,6 +72,7 @@ impl Default for Config {
             multilingual: default_language(),
             theme_mode: default_theme_mode(),
             storage_history: 0b0,
+            auto_cleanup: AutoCleanupPolicy::Disabled,
             storage_dir: String::new(),
             retain_search_history: false,
             retain_last_position: false,
@@ -235,9 +256,84 @@ fn write_to_disk(config: &Config) {
         .unwrap()
 }
 
+// A destructive retention policy must not become active if persistence fails.
+pub fn try_update<F>(mutate: F) -> Result<Config, String>
+where
+    F: FnOnce(&mut Config),
+{
+    get();
+    let mut cache = CACHE.write().map_err(|err| err.to_string())?;
+    let mut next = cache
+        .as_ref()
+        .ok_or("Configuration is unavailable")?
+        .clone();
+    mutate(&mut next);
+    let config_path = path();
+    let parent = Path::new(&config_path)
+        .parent()
+        .ok_or("Invalid configuration path")?;
+    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|err| err.to_string())?;
+    let bytes = serde_json::to_vec_pretty(&next).map_err(|err| err.to_string())?;
+    file.write_all(&bytes).map_err(|err| err.to_string())?;
+    file.as_file().sync_all().map_err(|err| err.to_string())?;
+    file.persist(&config_path).map_err(|err| err.to_string())?;
+    *cache = Some(next.clone());
+    Ok(next)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{AutoCleanupPolicy, Config};
+
+    #[test]
+    fn auto_cleanup_is_disabled_for_new_and_legacy_configs() {
+        assert_eq!(Config::default().auto_cleanup, AutoCleanupPolicy::Disabled);
+        let mut old = serde_json::to_value(Config::default()).unwrap();
+        old.as_object_mut().unwrap().remove("auto_cleanup");
+        let restored: Config = serde_json::from_value(old).unwrap();
+        assert_eq!(restored.auto_cleanup, AutoCleanupPolicy::Disabled);
+    }
+
+    #[test]
+    fn auto_cleanup_validates_limits_and_round_trips_settings_payload() {
+        for policy in [
+            AutoCleanupPolicy::Days(0),
+            AutoCleanupPolicy::Count(0),
+            AutoCleanupPolicy::Days(36_501),
+            AutoCleanupPolicy::Count(1_000_001),
+        ] {
+            assert!(policy.validate().is_err());
+        }
+        let policy: AutoCleanupPolicy =
+            serde_json::from_str(r#"{"mode":"count","value":5000}"#).unwrap();
+        assert_eq!(policy, AutoCleanupPolicy::Count(5000));
+        assert!(policy.validate().is_ok());
+        assert_eq!(
+            serde_json::to_string(&policy).unwrap(),
+            r#"{"mode":"count","value":5000}"#
+        );
+    }
+
+    #[test]
+    fn auto_cleanup_persistence_failure_does_not_activate_new_policy() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(dir.path().to_string_lossy().to_string());
+        super::save(Config::default());
+        let config_path = dir.path().join("config.json");
+        std::fs::remove_file(&config_path).unwrap();
+        std::fs::create_dir(&config_path).unwrap();
+        let result = super::try_update(|c| c.auto_cleanup = AutoCleanupPolicy::Count(10));
+        assert!(result.is_err());
+        assert_eq!(super::get().auto_cleanup, AutoCleanupPolicy::Disabled);
+        std::fs::remove_dir(&config_path).unwrap();
+        let saved = super::try_update(|c| c.auto_cleanup = AutoCleanupPolicy::Days(45)).unwrap();
+        assert_eq!(saved.auto_cleanup, AutoCleanupPolicy::Days(45));
+        let disk: Config = serde_json::from_slice(&std::fs::read(config_path).unwrap()).unwrap();
+        assert_eq!(disk.auto_cleanup, saved.auto_cleanup);
+        super::save(Config::default());
+    }
 
     #[test]
     fn startup_is_enabled_by_default() {

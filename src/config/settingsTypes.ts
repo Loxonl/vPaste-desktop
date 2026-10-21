@@ -18,12 +18,15 @@ export interface Shortcutkey {
     quick_selection?: string;
 }
 
+export type AutoCleanupPolicy = { mode: "disabled" } | { mode: "days" | "count"; value: number };
+
 export interface ConfigData {
     startup: boolean;
     display_tray_icon: boolean;
     multilingual: string;
     theme_mode: ThemeMode;
     storage_history: number;
+    auto_cleanup: AutoCleanupPolicy;
     storage_dir: string;
     retain_search_history: boolean;
     retain_last_position: boolean;
@@ -118,6 +121,7 @@ export const DEFAULT_CONFIG: ConfigData = {
     multilingual: DEFAULT_LANGUAGE,
     theme_mode: "system",
     storage_history: 0,
+    auto_cleanup: { mode: "disabled" },
     storage_dir: "",
     retain_search_history: false,
     retain_last_position: false,

@@ -145,6 +145,7 @@ fn detach_all_records() -> Result<DeferredCleanup, String> {
 }
 
 pub(crate) fn run_deferred_cleanup(cleanup: DeferredCleanup) {
+    let _cleanup = crate::auto_cleanup::pause();
     cleanup_records(&cleanup.records);
 }
 
@@ -155,6 +156,7 @@ fn lock_operation() -> MutexGuard<'static, ()> {
 }
 
 pub fn run_user_operation<T>(operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let _cleanup = crate::auto_cleanup::pause();
     let _operation = match OPERATION.try_lock() {
         Ok(operation) => operation,
         Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -172,6 +174,7 @@ pub fn run_user_operation<T>(operation: impl FnOnce() -> Result<T, String>) -> R
 }
 
 pub fn run_paste_operation<T>(operation: impl FnOnce() -> T) -> T {
+    let _cleanup = crate::auto_cleanup::pause();
     let _operation = lock_operation();
     operation()
 }
@@ -604,6 +607,14 @@ fn take_undo() -> Option<UndoEntry> {
     UNDO.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .take()
+}
+
+pub(crate) fn undo_internal_paths() -> std::collections::HashSet<std::path::PathBuf> {
+    UNDO.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map(|undo| clipboard::internal_paths_for_stored_item(&undo.record.stored))
+        .unwrap_or_default()
 }
 
 fn live_undo() -> Option<UndoEntry> {

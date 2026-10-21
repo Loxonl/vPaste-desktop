@@ -93,6 +93,7 @@ function createPreviewBridge(): SettingsBridge {
                 ];
                 break;
             case "estimate_storage_cleanup":
+            case "estimate_auto_cleanup":
                 result = { bytes: 24_870_912, items: 148 };
                 break;
             case "get_update_state":

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import GeneralSettings from "../../../src/config/sections/GeneralSettings";
@@ -81,6 +81,8 @@ describe("General settings accessibility", () => {
     });
 
     it("keeps portable startup unavailable outside Windows", async () => {
+        vi.spyOn(navigator, "platform", "get").mockReturnValue("Linux x86_64");
+        vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (X11; Linux x86_64)");
         const portableBridge = {
             ...bridge,
             invoke: vi.fn(async (command: string) => command === "get_update_state"
@@ -101,7 +103,7 @@ describe("General settings accessibility", () => {
             </MotionTestProvider>,
         );
 
-        expect(await screen.findByRole("checkbox", { name: "settings.startup" })).toBeDisabled();
+        await waitFor(() => expect(screen.getByRole("checkbox", { name: "settings.startup" })).toBeDisabled());
     });
 
     it("associates standard switches and selects with their visible setting labels", async () => {

@@ -14,6 +14,7 @@ import { ConfirmDialog } from "../../ui/ConfirmDialog";
 import { AnimatePresence, m, useMotionPreset } from "../../ui/motion";
 import { OperationStatus } from "../../ui/OperationStatus";
 import styles from "../Config.module.css";
+import AutoCleanupSettings from "./AutoCleanupSettings";
 
 export default function DataSettings({ bridge, config, storagePaths, t, onSave, onBlockingOperationChange, dialogBackdropClassName }: SettingsSectionProps & { storagePaths: StoragePaths | null, onBlockingOperationChange: (operation: SettingsBlockingOperation | null) => void, dialogBackdropClassName?: string }) {
     const [legacyHistoryBlocked, setLegacyHistoryBlocked] = React.useState(false);
@@ -143,6 +144,14 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
             .then(v => setCleanupInfo(v as StorageCleanupInfo))
             .catch(e => error(`Failed to estimate storage cleanup: ${e}`));
     }, [bridge]);
+
+    React.useEffect(() => {
+        const unlisten = bridge.listen("history-auto-cleaned", () => {
+            refreshStorageSummary();
+            if (cleanupDays) refreshCleanupInfo(Number(cleanupDays));
+        });
+        return () => { void unlisten.then(fn => fn()).catch(e => error(`Failed to unlisten history cleanup: ${e}`)); };
+    }, [bridge, cleanupDays, refreshCleanupInfo, refreshStorageSummary]);
 
     React.useEffect(() => {
         if (!cleanupDays) {
@@ -432,6 +441,12 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                             </AnimatePresence>
                         </Stack>
                     </ListItem>
+                    <Divider component="li" />
+                    <AutoCleanupSettings
+                        bridge={bridge} config={config} onSave={onSave} t={t}
+                        disabled={historyWorking || cleanupWorking || legacyHistoryBlocked}
+                        dialogBackdropClassName={dialogBackdropClassName}
+                    />
                     <Divider component="li" />
                     <ListItem>
                         <div className={styles["data-setting-row"]}>

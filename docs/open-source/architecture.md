@@ -58,6 +58,21 @@ History consists of metadata plus local assets:
 
 File history normally stores source paths. It does not copy original files unless a feature explicitly exports or packages them.
 
+Automatic cleanup is disabled by default. Settings can retain ordinary history by
+age (days since the last copy/use) or by count, with one rule active at a time.
+Favorites and tagged records are excluded from both deletion and the count limit.
+Editing a rule only changes a draft; applying it previews the eligible count and
+requires confirmation. Disabling takes effect when the setting is saved.
+
+The native worker checks at startup, after new records or rule changes, and hourly.
+Requests are coalesced on a five-second interval and deletion is limited to 256
+records per batch. It rereads the saved policy before each batch, defers while
+history capture, settings writes, transfers, or paste operations are active, and
+refreshes the history UI after deletion. Cleanup shares the manual path's asset
+ownership checks, including queue and undo references; original user files are
+never deleted. Enabling a rule only updates the in-memory configuration after
+the configuration file is successfully persisted.
+
 ## UI Principles
 
 - Main panel is a fast bottom floating panel.

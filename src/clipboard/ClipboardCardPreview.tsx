@@ -8,6 +8,7 @@ import { classes } from "../ui/classNames";
 import { Item, ItemType } from "./Item";
 import { FileTypePresentation } from "./FileTypePresentation";
 import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
+import { useRichPreviewCanvas } from "./useRichPreviewCanvas";
 import {
     compactPath,
     isSingleImageFileItem,
@@ -234,7 +235,7 @@ function AutoScrollPreview({
     html?: string;
     children?: React.ReactNode;
 }) {
-    const ref = useRef<HTMLDivElement>(null);
+    const ref = useRichPreviewCanvas(html);
 
     useEffect(() => {
         const element = ref.current;

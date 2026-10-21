@@ -1126,23 +1126,12 @@ body {
 }
 
 :root[data-theme="dark"] .card-preview-text,
-:root[data-theme="dark"] .card-preview-rich,
 :root[data-theme="dark"] .history-loading-card {
   color: var(--theme-text);
 }
 
 :root[data-theme="dark"] .card-preview-rich {
-  background: var(--ui-clipboard-rich-surface);
   box-shadow: var(--ui-clipboard-file-stage-shadow);
-}
-
-:root[data-theme="dark"] .card-preview-rich {
-  color: var(--theme-text) !important;
-}
-
-:root[data-theme="dark"] .card-preview-rich td,
-:root[data-theme="dark"] .card-preview-rich th {
-  border-color: var(--ui-clipboard-rich-table-border);
 }
 
 .history-loading-card {
@@ -1515,12 +1504,26 @@ body {
   padding: 8px;
   box-sizing: border-box;
   background: var(--ui-clipboard-rich-surface);
+  color: var(--ui-preview-rich-text);
+  -webkit-text-fill-color: currentColor;
+  color-scheme: light;
   overflow-x: hidden;
   white-space: normal;
   word-break: normal;
   overflow-wrap: normal;
   user-select: none;
   -webkit-user-select: none;
+}
+
+.card-preview-rich[data-rich-canvas="dark"] {
+  background: var(--ui-rich-canvas-dark-surface);
+  color: var(--ui-rich-canvas-dark-text);
+  color-scheme: dark;
+}
+
+.card-preview-rich[data-rich-canvas="dark"] td,
+.card-preview-rich[data-rich-canvas="dark"] th {
+  border-color: var(--ui-rich-canvas-dark-border);
 }
 
 .card-preview-rich * {
@@ -1828,7 +1831,6 @@ body {
 
 :root[data-theme="dark"] .card-content,
 :root[data-theme="dark"] .card-preview-text,
-:root[data-theme="dark"] .card-preview-rich,
 :root[data-theme="dark"] .file-name,
 :root[data-theme="dark"] .link-preview-title,
 :root[data-theme="dark"] .link-preview-url,
@@ -1863,10 +1865,6 @@ body {
 
 :root[data-theme="dark"] .file-preview.invalid .file-preview-stage {
   background: var(--ui-clipboard-invalid-stage-surface);
-}
-
-:root[data-theme="dark"] .card-preview-rich {
-  color: var(--theme-text) !important;
 }
 
 .image-preview {
@@ -1998,10 +1996,9 @@ body {
 }
 
 :root[data-theme="dark"] .card-content,
-:root[data-theme="dark"] .card-content *,
+:root[data-theme="dark"] .card-content :not(.card-preview-rich, .card-preview-rich *),
 :root[data-theme="dark"] .card-preview-text,
 :root[data-theme="dark"] .card-preview-text *,
-:root[data-theme="dark"] .card-preview-rich,
 :root[data-theme="dark"] .link-preview-title,
 :root[data-theme="dark"] .link-preview-title *,
 :root[data-theme="dark"] .link-preview-url,
@@ -2020,10 +2017,6 @@ body {
 :root[data-theme="dark"] .file-path-line.secondary * {
   color: var(--ui-clipboard-file-path-secondary-text) !important;
   -webkit-text-fill-color: var(--ui-clipboard-file-path-secondary-text) !important;
-}
-
-:root[data-theme="dark"] .card-preview-rich {
-  background: var(--ui-clipboard-rich-surface) !important;
 }
 
 :root[data-theme="dark"] .alt-tab-hint,

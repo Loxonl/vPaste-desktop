@@ -93,6 +93,7 @@ const enUS: LanguagePack = {
         "clipboard.updateAvailable": "Update {version} is available",
         "clipboard.updateOpenSettings": "View update",
         "clipboard.updateReadyAction": "Update and restart",
+        "clipboard.updateOpenAppStore": "Open update in App Store",
         "clipboard.updateInstallingAction": "Installing update...",
         "clipboard.updateConfirmTitle": "Update and restart?",
         "clipboard.updateConfirmDesc": "vPaste {version} will be installed and the app will restart.",
@@ -237,6 +238,7 @@ const enUS: LanguagePack = {
         "tray.resumeHint": "Resume to keep saving new clipboard content.",
         "tray.settings": "Settings",
         "tray.updateRestart": "Update and restart",
+        "tray.updateOpenAppStore": "Update in App Store",
         "tray.quit": "Quit",
 
         "settings.tabs.general": "General",
@@ -422,6 +424,7 @@ const enUS: LanguagePack = {
         "settings.updatePortableDesc": "Portable builds check versions but never replace their own files",
         "settings.updateReady": "Version {version} is downloaded and signature verified",
         "settings.updateTo": "Update to {version}",
+        "settings.updateOpenAppStore": "Open in App Store",
         "settings.updateInstallNow": "Update now",
         "settings.updateOnQuit": "Update on quit",
         "settings.updateLater": "Remind later",

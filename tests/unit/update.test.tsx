@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
     newerUpdateState,
+    storeUpdateAvailable,
     restartReady,
     updateEntryVisible,
     useAppUpdateState,
@@ -54,6 +55,23 @@ describe("app update state", () => {
             expect(updateEntryVisible({ ...readyState, status })).toBe(false);
         }
         expect(updateEntryVisible({ ...readyState, portable: true })).toBe(false);
+    });
+
+    it("shows App Store updates as an open-store action without offering restart", async () => {
+        const storeState: UpdateState = { ...readyState, source: "macAppStore", status: "available" };
+        expect(storeUpdateAvailable(storeState)).toBe(true);
+        expect(updateEntryVisible(storeState)).toBe(true);
+        expect(restartReady(storeState)).toBe(false);
+        const invoke = vi.fn(async (command: string) => command === "get_update_state" ? storeState : undefined);
+        const bridge: UpdateBridge = {
+            invoke: invoke as UpdateBridge["invoke"],
+            listen: vi.fn(async () => () => undefined) as unknown as UpdateBridge["listen"],
+        };
+        const { result } = renderHook(() => useAppUpdateState(bridge));
+        await act(async () => { await result.current.openAppStore(); });
+        expect(invoke).toHaveBeenCalledWith("open_app_store_update");
+        expect(invoke).not.toHaveBeenCalledWith("prepare_app_update");
+        expect(invoke).not.toHaveBeenCalledWith("restart_and_install_app_update");
     });
 
     it("never lets an older snapshot replace a newer one", () => {

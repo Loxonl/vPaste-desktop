@@ -58,6 +58,8 @@ mod clipboard;
 mod config;
 mod history_store;
 mod image_preview;
+#[cfg(all(target_os = "macos", feature = "mac-app-store"))]
+mod mac_app_store;
 mod maintenance;
 #[cfg(target_os = "macos")]
 mod native_drag_preview;
@@ -10915,7 +10917,7 @@ fn main() {
 
     let context = tauri::generate_context!();
     info!("running vPaste");
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if maintenance::installer_exit_requested_for_args(&args) {
                 app.exit(0);
@@ -10931,8 +10933,10 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_clipboard_manager::init());
+    #[cfg(not(all(target_os = "macos", feature = "mac-app-store")))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    builder
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec![]),
@@ -11478,6 +11482,7 @@ fn main() {
             app_updater::check_for_app_update,
             app_updater::prepare_app_update,
             app_updater::restart_and_install_app_update,
+            app_updater::open_app_store_update,
             get_app_version,
             begin_main_shortcut_recording,
             end_main_shortcut_recording,

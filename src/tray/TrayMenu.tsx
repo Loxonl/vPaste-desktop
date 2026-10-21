@@ -6,7 +6,7 @@ import MenuItem from "@mui/material/MenuItem";
 import MenuList from "@mui/material/MenuList";
 import Paper from "@mui/material/Paper";
 import { useLanguage } from "../lang";
-import { restartReady, useAppUpdateState } from "../update";
+import { restartReady, storeUpdateAvailable, useAppUpdateState } from "../update";
 import styles from "./TrayMenu.module.css";
 
 type TrayAction = "show_main_panel" | "open_config_window" | "quit_app";
@@ -25,7 +25,7 @@ const items: Array<{ labelKey: string; action: TrayAction }> = [
 
 export default function TrayMenu() {
     const { t } = useLanguage();
-    const { state: updateState, restartToUpdate } = useAppUpdateState();
+    const { state: updateState, restartToUpdate, openAppStore } = useAppUpdateState();
     const [paused, setPaused] = React.useState(false);
     const [toggleWorking, setToggleWorking] = React.useState(false);
     const menuRef = React.useRef<HTMLDivElement | null>(null);
@@ -106,6 +106,15 @@ export default function TrayMenu() {
         }
     };
 
+    const openStoreUpdate = async () => {
+        try {
+            await openAppStore();
+            await invoke("hide_tray_menu");
+        } catch (e) {
+            error(`Failed to open App Store: ${e}`);
+        }
+    };
+
     return (
         <div ref={menuRef} className={[styles["tray-menu-frame"], isMacOS ? styles.macos : ""].join(" ")}>
             <Paper component="nav" square elevation={0} className={styles["tray-menu-shell"]} aria-label={t("tray.menu")}>
@@ -130,6 +139,14 @@ export default function TrayMenu() {
                         onClick={() => void restartForUpdate()}
                     >
                         {t("tray.updateRestart")}
+                    </MenuItem>
+                )}
+                {storeUpdateAvailable(updateState) && (
+                    <MenuItem
+                        className={`${styles["tray-menu-item"]} ${styles["update-ready"]}`}
+                        onClick={() => void openStoreUpdate()}
+                    >
+                        {t("tray.updateOpenAppStore")}
                     </MenuItem>
                 )}
                 {items.map(item => (

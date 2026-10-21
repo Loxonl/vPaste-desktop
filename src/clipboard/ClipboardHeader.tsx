@@ -185,6 +185,7 @@ type ClipboardHeaderActionsProps = {
     pasteQueueActive: boolean;
     updateReadyVersion?: string | null;
     updateInstalling?: boolean;
+    updateInAppStore?: boolean;
     onOpenPasteQueue: () => void;
     onOpenPermissionCenter: () => void;
     onOpenTutorial: (platform: TutorialPlatform) => void;
@@ -208,6 +209,7 @@ export function ClipboardHeaderActions({
     pasteQueueActive,
     updateReadyVersion = null,
     updateInstalling = false,
+    updateInAppStore = false,
     onOpenPasteQueue,
     onOpenPermissionCenter,
     onOpenTutorial,
@@ -337,7 +339,7 @@ export function ClipboardHeaderActions({
             {!tutorialActive && updateReadyVersion !== null && onRestartToUpdate && (
                 <ToolbarIconButton
                     className={classes(styles, "settings-button app-update-button")}
-                    label={t(updateInstalling ? "clipboard.updateInstallingAction" : "clipboard.updateReadyAction")}
+                    label={t(updateInAppStore ? "clipboard.updateOpenAppStore" : updateInstalling ? "clipboard.updateInstallingAction" : "clipboard.updateReadyAction")}
                     disabled={updateInstalling}
                     // Enter and Space activate this button natively instead of
                     // pasting or previewing the selected card.

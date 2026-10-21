@@ -93,6 +93,7 @@ const zhCN: LanguagePack = {
         "clipboard.updateAvailable": "发现新版本 {version}",
         "clipboard.updateOpenSettings": "查看更新",
         "clipboard.updateReadyAction": "更新并重启",
+        "clipboard.updateOpenAppStore": "前往 App Store 更新",
         "clipboard.updateInstallingAction": "正在安装更新...",
         "clipboard.updateConfirmTitle": "更新并重启？",
         "clipboard.updateConfirmDesc": "将安装 vPaste {version} 并自动重启。",
@@ -237,6 +238,7 @@ const zhCN: LanguagePack = {
         "tray.resumeHint": "恢复后会继续记录新的剪贴板内容。",
         "tray.settings": "设置",
         "tray.updateRestart": "更新并重启",
+        "tray.updateOpenAppStore": "前往 App Store 更新",
         "tray.quit": "退出",
 
         "settings.tabs.general": "通用",
@@ -422,6 +424,7 @@ const zhCN: LanguagePack = {
         "settings.updatePortableDesc": "便携版只检查版本，不会自动替换程序文件",
         "settings.updateReady": "版本 {version} 已下载并通过签名验证",
         "settings.updateTo": "更新到 {version}",
+        "settings.updateOpenAppStore": "前往 App Store 更新",
         "settings.updateInstallNow": "立即更新",
         "settings.updateOnQuit": "退出时更新",
         "settings.updateLater": "稍后提醒",

@@ -9,7 +9,7 @@ import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import SyncRoundedIcon from "@mui/icons-material/SyncRounded";
 import { error } from "@tauri-apps/plugin-log";
 import aboutLogo from "../../../src-tauri/icons/source/vpaste-app-icon-1024.png";
-import { restartReady, useAppUpdateState, type UpdateState } from "../../update";
+import { restartReady, storeUpdateAvailable, useAppUpdateState, type UpdateState } from "../../update";
 import type { SettingsSectionProps, TFunction } from "../settingsTypes";
 import { classes } from "../../ui/classNames";
 import { ConfirmDialog } from "../../ui/ConfirmDialog";
@@ -37,10 +37,10 @@ function rememberStarPromptDismissed() {
     }
 }
 
-type UpdateAction = "check" | "prepare" | "install" | "manualDownload";
+type UpdateAction = "check" | "prepare" | "install" | "manualDownload" | "store";
 
 export default function AboutSettings({ bridge, t, dialogBackdropClassName }: SettingsSectionProps & { dir: string, dialogBackdropClassName?: string }) {
-    const { state: updateState, check, prepare, restartToUpdate } = useAppUpdateState(bridge);
+    const { state: updateState, check, prepare, restartToUpdate, openAppStore } = useAppUpdateState(bridge);
     const [checkedManually, setCheckedManually] = React.useState(false);
     const [manualReleaseUrl, setManualReleaseUrl] = React.useState<string | null>(null);
     const [starPromptVisible, setStarPromptVisible] = React.useState(() => !readStarPromptDismissed());
@@ -56,7 +56,7 @@ export default function AboutSettings({ bridge, t, dialogBackdropClassName }: Se
         try {
             setCheckedManually(true);
             const next = await check();
-            if (next.status === "available" && !next.portable) {
+            if (next.status === "available" && !next.portable && next.source !== "macAppStore") {
                 await prepare();
             } else if (next.status === "manualDownload") {
                 setManualReleaseUrl(next.releaseUrl);
@@ -75,7 +75,9 @@ export default function AboutSettings({ bridge, t, dialogBackdropClassName }: Se
     };
 
     // One button checks for updates and, once a version is found, becomes "Update to X".
-    const updateAction: UpdateAction = restartReady(updateState)
+    const updateAction: UpdateAction = storeUpdateAvailable(updateState)
+        ? "store"
+        : restartReady(updateState)
         ? "install"
         : updateState.status === "available" && !updateState.portable
             ? "prepare"
@@ -86,6 +88,9 @@ export default function AboutSettings({ bridge, t, dialogBackdropClassName }: Se
 
     const handleUpdateAction = () => {
         switch (updateAction) {
+            case "store":
+                void openAppStore().catch(e => error(`Failed to open App Store: ${e}`));
+                return;
             case "install":
                 void handleRestartToUpdate();
                 return;
@@ -106,7 +111,9 @@ export default function AboutSettings({ bridge, t, dialogBackdropClassName }: Se
             ? t("settings.updateDownloading")
             : updateState.status === "installing"
                 ? t("settings.updateInstallingShort")
-                : updateFound
+                : updateAction === "store"
+                    ? t("settings.updateOpenAppStore")
+                    : updateFound
                     ? t("settings.updateTo", { version: updateState.availableVersion || "" })
                     : updateState.status === "failed"
                         ? t("settings.updateRetry")

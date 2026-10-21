@@ -29,6 +29,17 @@ fn generate_tray_icon_mask() {
 fn main() {
     println!("cargo:rerun-if-env-changed=VPASTE_PUBLIC_UPDATE_FEED");
     println!("cargo:rerun-if-env-changed=VPASTE_UPDATE_CHANNEL");
+    println!("cargo:rerun-if-env-changed=VPASTE_APP_STORE_ID");
+    if env::var_os("CARGO_FEATURE_MAC_APP_STORE").is_some() {
+        let item_id = env::var("VPASTE_APP_STORE_ID")
+            .expect("VPASTE_APP_STORE_ID is required for Mac App Store builds");
+        assert!(
+            !item_id.starts_with('0')
+                && !item_id.is_empty()
+                && item_id.bytes().all(|byte| byte.is_ascii_digit()),
+            "VPASTE_APP_STORE_ID must be a numeric App Store item ID"
+        );
+    }
     generate_tray_icon_mask();
     tauri_build::build()
 }

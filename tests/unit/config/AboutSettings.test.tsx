@@ -48,6 +48,21 @@ function renderAbout(bridge: SettingsBridge) {
 }
 
 describe("About update controls", () => {
+    it("opens an available Mac App Store update without downloading it", async () => {
+        const storeState = { ...baseState, source: "macAppStore", status: "available", availableVersion: "1.7.0" } as UpdateState;
+        const invoke = vi.fn(async (command: string) => {
+            if (command === "get_update_state") return baseState;
+            if (command === "check_for_app_update") return storeState;
+            return undefined;
+        });
+        renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
+        const user = userEvent.setup();
+        await user.click(await screen.findByRole("button", { name: "settings.updateCheck" }));
+        await user.click(await screen.findByRole("button", { name: "settings.updateOpenAppStore" }));
+        expect(invoke).toHaveBeenCalledWith("open_app_store_update");
+        expect(invoke).not.toHaveBeenCalledWith("prepare_app_update");
+        expect(invoke).not.toHaveBeenCalledWith("restart_and_install_app_update");
+    });
     it("downloads after a manual check and turns the same button into the install action", async () => {
         const availableState = { ...baseState, status: "available", availableVersion: "1.7.0" } as UpdateState;
         const invoke = vi.fn(async (command: string) => {

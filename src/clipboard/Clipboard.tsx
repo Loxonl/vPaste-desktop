@@ -23,7 +23,7 @@ import ContentPasteSearchOutlinedIcon from "@mui/icons-material/ContentPasteSear
 import TutorialOverlay from "./TutorialOverlay.tsx";
 import appIcon from "../../src-tauri/icons/source/vpaste-app-icon-1024.png";
 import { getResolvedTheme, setThemePreview, type ResolvedTheme } from "../theme";
-import { restartReady, updateEntryVisible, useAppUpdateState } from "../update";
+import { restartReady, storeUpdateAvailable, updateEntryVisible, useAppUpdateState } from "../update";
 import {
     arraysEqual,
     customTabFilterPayload,
@@ -170,7 +170,7 @@ class ClipboardPage {
 
 export default function Clipboard() {
     const { t, languageCode, setPreviewLanguageCode } = useLanguage();
-    const { state: updateState, restartToUpdate } = useAppUpdateState();
+    const { state: updateState, restartToUpdate, openAppStore } = useAppUpdateState();
     const fadeMotion = useMotionPreset("fade");
     const listItemMotion = useMotionPreset("listItem");
     const stateIndicatorMotion = useMotionPreset("stateIndicator");
@@ -1982,8 +1982,13 @@ export default function Clipboard() {
                     onOpenSettings={tutorialActive ? blockTutorialNavigation : openConfigWindow}
                     updateReadyVersion={updateEntryVisible(updateState) ? updateState.availableVersion || "" : null}
                     updateInstalling={updateState.status === "installing"}
+                    updateInAppStore={storeUpdateAvailable(updateState)}
                     onRestartToUpdate={() => {
-                        if (restartReady(updateState)) setUpdateConfirmOpen(true);
+                        if (storeUpdateAvailable(updateState)) {
+                            void openAppStore().catch(e => error(`Failed to open App Store: ${e}`));
+                        } else if (restartReady(updateState)) {
+                            setUpdateConfirmOpen(true);
+                        }
                     }}
                 />
             </div>

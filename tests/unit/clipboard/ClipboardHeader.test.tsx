@@ -222,6 +222,7 @@ describe("clipboard header", () => {
     function renderUpdateActions(props: {
         updateReadyVersion?: string | null;
         updateInstalling?: boolean;
+        updateInAppStore?: boolean;
         tutorialActive?: boolean;
         onRestartToUpdate?: () => void;
     }) {
@@ -240,6 +241,7 @@ describe("clipboard header", () => {
                 pasteQueueActive={false}
                 updateReadyVersion={props.updateReadyVersion}
                 updateInstalling={props.updateInstalling}
+                updateInAppStore={props.updateInAppStore}
                 onOpenPasteQueue={vi.fn()}
                 onOpenPermissionCenter={vi.fn()}
                 onOpenTutorial={vi.fn()}
@@ -280,6 +282,13 @@ describe("clipboard header", () => {
         expect(onRestartToUpdate).toHaveBeenCalledTimes(1);
         await user.keyboard(" ");
         expect(onRestartToUpdate).toHaveBeenCalledTimes(2);
+    });
+
+    it("labels the store update action as an App Store handoff", async () => {
+        const onRestartToUpdate = vi.fn();
+        renderUpdateActions({ updateReadyVersion: "1.7.0", updateInAppStore: true, onRestartToUpdate });
+        await userEvent.click(screen.getByRole("button", { name: "clipboard.updateOpenAppStore" }));
+        expect(onRestartToUpdate).toHaveBeenCalledOnce();
     });
 
     it("disables the update icon while installing and hides it otherwise", async () => {

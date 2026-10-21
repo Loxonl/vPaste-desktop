@@ -30,6 +30,7 @@ export interface UpdateState {
     errorStage?: UpdateErrorStage | null;
     portable: boolean;
     feedEnabled: boolean;
+    source?: "direct" | "macAppStore";
     releaseUrl: string;
 }
 
@@ -44,6 +45,7 @@ const INITIAL_STATE: UpdateState = {
     errorStage: null,
     portable: false,
     feedEnabled: false,
+    source: "direct",
     releaseUrl: "https://github.com/Loxonl/vPaste-desktop/releases",
 };
 
@@ -105,14 +107,22 @@ export function useAppUpdateState(bridge: UpdateBridge = tauriUpdateBridge) {
         await bridge.invoke("restart_and_install_app_update");
     }, [bridge]);
 
-    return { state, check, prepare, restartToUpdate };
+    const openAppStore = React.useCallback(async () => {
+        await bridge.invoke("open_app_store_update");
+    }, [bridge]);
+
+    return { state, check, prepare, restartToUpdate, openAppStore };
 }
 
 export function restartReady(state: UpdateState): boolean {
-    return state.status === "ready" && !state.portable;
+    return state.source !== "macAppStore" && state.status === "ready" && !state.portable;
+}
+
+export function storeUpdateAvailable(state: UpdateState): boolean {
+    return state.source === "macAppStore" && state.status === "available";
 }
 
 /** The main panel entry stays visible (disabled) while the install starts. */
 export function updateEntryVisible(state: UpdateState): boolean {
-    return !state.portable && (state.status === "ready" || state.status === "installing");
+    return storeUpdateAvailable(state) || (!state.portable && (state.status === "ready" || state.status === "installing"));
 }

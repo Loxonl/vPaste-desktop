@@ -66,6 +66,21 @@ pub enum UpdateErrorStage {
     Install,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdateSource {
+    Direct,
+    MacAppStore,
+}
+
+fn update_source() -> UpdateSource {
+    if cfg!(all(target_os = "macos", feature = "mac-app-store")) {
+        UpdateSource::MacAppStore
+    } else {
+        UpdateSource::Direct
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateState {
@@ -83,6 +98,7 @@ pub struct UpdateState {
     error_stage: Option<UpdateErrorStage>,
     portable: bool,
     feed_enabled: bool,
+    source: UpdateSource,
     release_url: &'static str,
 }
 
@@ -101,6 +117,7 @@ impl Default for UpdateState {
             error_stage: None,
             portable: false,
             feed_enabled: false,
+            source: update_source(),
             release_url: RELEASES_URL,
         }
     }
@@ -155,6 +172,8 @@ static AUTOMATIC_DOWNLOAD_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// Set at startup on macOS when a cached package exists; the next manifest
 /// check is allowed to run before the normal 24 hour interval to restore it.
 static CACHE_RESTORE_PENDING: AtomicBool = AtomicBool::new(false);
+#[cfg(all(target_os = "macos", feature = "mac-app-store"))]
+static STORE_FIRST_CHECK_PENDING: AtomicBool = AtomicBool::new(true);
 
 /// Serializes check, prepare, restore and install across every window, the
 /// tray and the background scheduler.
@@ -182,6 +201,10 @@ pub fn initialize(app: &AppHandle) {
     state.current_version = app.package_info().version.to_string();
     state.portable = portable;
     state.feed_enabled = feed_enabled;
+    #[cfg(all(target_os = "macos", feature = "mac-app-store"))]
+    {
+        state.release_url = crate::mac_app_store::STORE_URL;
+    }
     if !feed_enabled {
         state.status = UpdateStatus::Disabled;
     } else if state.status == UpdateStatus::Disabled {
@@ -192,7 +215,10 @@ pub fn initialize(app: &AppHandle) {
 pub fn start_background_checks(app: AppHandle) {
     initialize(&app);
     tauri::async_runtime::spawn(async move {
-        if update_feed_enabled() && !runtime_mode::is_portable() {
+        if update_source() == UpdateSource::Direct
+            && update_feed_enabled()
+            && !runtime_mode::is_portable()
+        {
             restore_cached_update_at_startup(&app).await;
         }
         tokio::time::sleep(FIRST_CHECK_DELAY).await;
@@ -222,6 +248,9 @@ fn debug_update_endpoint() -> Option<String> {
 }
 
 fn update_feed_enabled() -> bool {
+    if update_source() == UpdateSource::MacAppStore {
+        return true;
+    }
     public_update_feed_enabled() || debug_update_endpoint().is_some()
 }
 
@@ -267,13 +296,18 @@ fn current_update_target() -> String {
 
 fn automatic_check_due() -> bool {
     let config = config::get();
+    #[cfg(all(target_os = "macos", feature = "mac-app-store"))]
+    let first_store_check = STORE_FIRST_CHECK_PENDING.load(Ordering::SeqCst);
+    #[cfg(not(all(target_os = "macos", feature = "mac-app-store")))]
+    let first_store_check = false;
     automatic_check_due_at(
         CheckGate {
             feed_enabled: update_feed_enabled(),
             portable: runtime_mode::is_portable(),
             pending_update: PENDING_UPDATE.lock().unwrap().is_some(),
             automatic_checks_enabled: config.update_check_enabled,
-            cache_restore_pending: CACHE_RESTORE_PENDING.load(Ordering::SeqCst),
+            cache_restore_pending: CACHE_RESTORE_PENDING.load(Ordering::SeqCst)
+                || first_store_check,
             retry_allowed: retry_allowed_at(&RETRY_SCHEDULE.lock().unwrap(), Instant::now()),
         },
         &config.last_update_check_at,
@@ -340,6 +374,8 @@ fn record_operation_failure() {
 /// Records a completed check cycle: the manifest was read and either no update
 /// exists or the update reached a terminal state (ready or manual download).
 fn record_check_success() {
+    #[cfg(all(target_os = "macos", feature = "mac-app-store"))]
+    STORE_FIRST_CHECK_PENDING.store(false, Ordering::SeqCst);
     *RETRY_SCHEDULE.lock().unwrap() = RetrySchedule::default();
     let completed_at = Utc::now().to_rfc3339();
     config::update(|current| current.last_update_check_at = completed_at);
@@ -417,6 +453,12 @@ async fn fetch_update(app: &AppHandle) -> Result<Option<Update>, String> {
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "mac-app-store"))]
+async fn check_internal(app: AppHandle, _automatic: bool) -> Result<UpdateState, String> {
+    check_mac_app_store(&app).await
+}
+
+#[cfg(not(all(target_os = "macos", feature = "mac-app-store")))]
 async fn check_internal(app: AppHandle, automatic: bool) -> Result<UpdateState, String> {
     if !update_feed_enabled() {
         initialize(&app);
@@ -479,6 +521,53 @@ async fn check_internal(app: AppHandle, automatic: bool) -> Result<UpdateState, 
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "mac-app-store"))]
+async fn check_mac_app_store(app: &AppHandle) -> Result<UpdateState, String> {
+    let Some(_guard) = OperationGuard::acquire() else {
+        return Ok(snapshot());
+    };
+    {
+        let mut state = UPDATE_STATE.lock().unwrap();
+        state.status = UpdateStatus::Checking;
+        state.error = None;
+        state.error_stage = None;
+    }
+    emit_state(app);
+    let version = match crate::mac_app_store::lookup_version().await {
+        Ok(version) => version,
+        Err(err) => {
+            record_operation_failure();
+            return Err(set_failed(app, UpdateErrorStage::Check, err));
+        }
+    };
+    let current_version = app.package_info().version.to_string();
+    let newer = match is_newer_version(&current_version, &version) {
+        Ok(newer) => newer,
+        Err(err) => {
+            record_operation_failure();
+            return Err(set_failed(app, UpdateErrorStage::Check, err));
+        }
+    };
+    {
+        let mut state = UPDATE_STATE.lock().unwrap();
+        state.status = if newer {
+            UpdateStatus::Available
+        } else {
+            UpdateStatus::Idle
+        };
+        state.current_version = current_version;
+        state.available_version = newer.then_some(version);
+        state.date = None;
+        state.body = None;
+        state.downloaded_bytes = 0;
+        state.total_bytes = None;
+        state.error = None;
+        state.error_stage = None;
+    }
+    record_check_success();
+    Ok(emit_state(app))
+}
+
 fn set_available_update(update: &Update) {
     let mut state = UPDATE_STATE.lock().unwrap();
     state.status = UpdateStatus::Available;
@@ -499,6 +588,9 @@ fn take_recent_checked_update() -> Option<Update> {
 
 #[tauri::command]
 pub async fn prepare_app_update(app: AppHandle) -> Result<UpdateState, String> {
+    if update_source() == UpdateSource::MacAppStore {
+        return Err("Mac App Store updates must be installed in the App Store".to_string());
+    }
     if runtime_mode::is_portable() {
         UPDATE_STATE.lock().unwrap().status = UpdateStatus::ManualDownload;
         return Ok(emit_state(&app));
@@ -1068,6 +1160,9 @@ fn notify_ready_once(_app: &AppHandle, _version: &str) {}
 
 #[tauri::command]
 pub async fn restart_and_install_app_update(app: AppHandle) -> Result<(), String> {
+    if update_source() == UpdateSource::MacAppStore {
+        return Err("Mac App Store updates must be installed in the App Store".to_string());
+    }
     if runtime_mode::is_portable() {
         return Err("portable builds must be updated manually".to_string());
     }
@@ -1152,6 +1247,18 @@ pub async fn restart_and_install_app_update(app: AppHandle) -> Result<(), String
 
     #[cfg(not(target_os = "windows"))]
     app.restart()
+}
+
+#[tauri::command]
+pub fn open_app_store_update() -> Result<(), String> {
+    #[cfg(all(target_os = "macos", feature = "mac-app-store"))]
+    {
+        crate::mac_app_store::open_store_page()
+    }
+    #[cfg(not(all(target_os = "macos", feature = "mac-app-store")))]
+    {
+        Err("this build is not distributed through the Mac App Store".to_string())
+    }
 }
 
 #[cfg(target_os = "windows")]

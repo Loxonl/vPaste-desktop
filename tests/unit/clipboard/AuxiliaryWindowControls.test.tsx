@@ -17,6 +17,10 @@ const tauri = vi.hoisted(() => ({
     invoke: vi.fn(),
     listen: vi.fn(),
 }));
+const update = vi.hoisted(() => ({
+    state: { status: "idle", source: "direct" },
+    openAppStore: vi.fn(),
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({
     convertFileSrc: (path: string) => `asset://${path}`,
@@ -46,9 +50,12 @@ vi.mock("../../../src/theme", () => ({
 
 vi.mock("../../../src/update", () => ({
     restartReady: () => false,
+    storeUpdateAvailable: (state: { status: string; source: string }) =>
+        state.source === "macAppStore" && state.status === "available",
     useAppUpdateState: () => ({
-        state: { status: "idle" },
+        state: update.state,
         restartToUpdate: vi.fn(),
+        openAppStore: update.openAppStore,
     }),
 }));
 
@@ -59,6 +66,8 @@ afterEach(() => {
 
 describe("auxiliary window controls", () => {
     beforeEach(() => {
+        update.state = { status: "idle", source: "direct" };
+        update.openAppStore.mockReset().mockResolvedValue(undefined);
         localStorage.clear();
         tauri.emit.mockReset().mockResolvedValue(undefined);
         tauri.emitTo.mockReset().mockResolvedValue(undefined);
@@ -224,5 +233,13 @@ describe("auxiliary window controls", () => {
             ["hide_tray_menu"],
         ]);
         bounds.mockRestore();
+    });
+
+    it("opens an available store update from the tray", async () => {
+        update.state = { status: "available", source: "macAppStore" };
+        render(<TrayMenu />);
+        await userEvent.click(screen.getByRole("menuitem", { name: "tray.updateOpenAppStore" }));
+        await waitFor(() => expect(update.openAppStore).toHaveBeenCalledOnce());
+        expect(tauri.invoke).toHaveBeenCalledWith("hide_tray_menu");
     });
 });

@@ -53,6 +53,7 @@ use crate::clipboard::windows::listen;
 use crate::config::Config;
 
 mod app_updater;
+mod auto_cleanup;
 mod clipboard;
 mod config;
 mod history_store;
@@ -65,6 +66,8 @@ mod native_drag_preview;
 #[cfg(target_os = "macos")]
 mod native_drag_snapshot;
 mod paste_queue;
+#[cfg(any(target_os = "windows", test))]
+mod portable_autostart;
 mod runtime_mode;
 mod search;
 mod test_room;
@@ -6233,6 +6236,7 @@ fn export_history_archive_impl(
     app: Option<&tauri::AppHandle>,
     archive_path: String,
 ) -> Result<HistoryArchiveInfo, String> {
+    let _cleanup = auto_cleanup::pause();
     ensure_history_ready()?;
     ensure_history_storage_dirs()?;
     clipboard::db::init();
@@ -6382,6 +6386,8 @@ fn import_history_archive_impl(
     app: tauri::AppHandle,
     archive_path: String,
 ) -> Result<HistoryArchiveInfo, String> {
+    let _cleanup = auto_cleanup::pause();
+    auto_cleanup::request();
     ensure_history_ready()?;
     ensure_history_storage_dirs()?;
     let target_dir = history_storage_dir();
@@ -6750,6 +6756,23 @@ async fn estimate_storage_cleanup(days: u64) -> Result<StorageCleanupInfo, Strin
     ensure_history_ready()?;
     tauri::async_runtime::spawn_blocking(move || {
         let estimate = clipboard::cleanup_estimate(days)?;
+        Ok(StorageCleanupInfo {
+            bytes: estimate.bytes,
+            items: estimate.items,
+        })
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn estimate_auto_cleanup(
+    policy: config::AutoCleanupPolicy,
+) -> Result<StorageCleanupInfo, String> {
+    ensure_history_ready()?;
+    policy.validate()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let estimate = clipboard::auto_cleanup_estimate(policy)?;
         Ok(StorageCleanupInfo {
             bytes: estimate.bytes,
             items: estimate.items,
@@ -7475,6 +7498,11 @@ fn sync_macos_main_app_service(startup: bool) -> Option<Result<bool, String>> {
 }
 
 fn check_autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    if runtime_mode::is_portable() {
+        return portable_autostart::is_enabled();
+    }
+
     #[cfg(all(target_os = "macos", not(debug_assertions)))]
     if let Some(status) = macos_main_app_service_status() {
         return Ok(status == MacosServiceStatus::Enabled);
@@ -7486,6 +7514,11 @@ fn check_autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
 }
 
 fn sync_autostart(app: &tauri::AppHandle, startup: bool) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    if runtime_mode::is_portable() {
+        return portable_autostart::set_enabled(startup);
+    }
+
     #[cfg(all(target_os = "macos", not(debug_assertions)))]
     {
         if let Some(result) = sync_macos_main_app_service(startup) {
@@ -7648,12 +7681,15 @@ fn cleanup_legacy_autostart_entries() {}
 
 #[tauri::command]
 fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigrationInfo, String> {
+    let _cleanup = auto_cleanup::pause();
     let mut config_struct: Config =
         serde_json::from_str(&config).map_err(|err| format!("配置格式无效，无法保存：{}", err))?;
+    #[cfg(not(target_os = "windows"))]
     if runtime_mode::is_portable() {
         config_struct.startup = false;
     }
     validate_shortcut_config(&config_struct)?;
+    config_struct.auto_cleanup.validate()?;
 
     let previous_config = config::get();
     let previous_history_dir = history_storage_dir();
@@ -7693,25 +7729,27 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
     let registration_info = register_main_window_shortcut(&app, next_main_shortcut)?;
     let paste_queue_registration_info =
         register_main_window_shortcut(&app, next_paste_queue_shortcut)?;
-    if !runtime_mode::is_portable() {
-        let actual_startup = check_autostart_enabled(&app)?;
-        if actual_startup != config_struct.startup {
-            let enabled = sync_autostart(&app, config_struct.startup)?;
-            if enabled != config_struct.startup {
-                return Err(if config_struct.startup {
-                    "无法注册开机启动项，开关已保持关闭".to_string()
-                } else {
-                    "无法移除开机启动项，开关状态未保存".to_string()
-                });
-            }
+    let startup_changed = if runtime_mode::is_portable() {
+        previous_config.startup != config_struct.startup
+    } else {
+        check_autostart_enabled(&app)? != config_struct.startup
+    };
+    if startup_changed {
+        let enabled = sync_autostart(&app, config_struct.startup)?;
+        if enabled != config_struct.startup {
+            return Err(if config_struct.startup {
+                "无法注册开机启动项，开关已保持关闭".to_string()
+            } else {
+                "无法移除开机启动项，开关状态未保存".to_string()
+            });
         }
     }
     sync_tray_visibility(&app, config_struct.display_tray_icon)?;
 
-    let saved_config = config::update(|current| {
+    let saved_config = config::try_update(|current| {
         config_struct.last_update_check_at = current.last_update_check_at.clone();
         *current = config_struct;
-    });
+    })?;
     app_updater::set_automatic_updates_enabled(automatic_updates_enabled);
     sync_tray_theme_for_mode(&app, &next_theme_mode);
     let _ = app.emit("language-changed", next_language);
@@ -7730,6 +7768,7 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
             error!("Failed to rebuild search index after changing history storage: {err}");
         }
     }
+    auto_cleanup::request();
     Ok(StorageMigrationInfo {
         migrated: false,
         source_dir: target_dir.clone(),
@@ -9007,11 +9046,18 @@ fn copy(
     item_type: String,
     hash: Option<String>,
 ) -> Result<(), String> {
+    let _cleanup = auto_cleanup::pause();
     if hash.is_some() {
         ensure_history_ready()?;
     }
     let rich_meta = hash.as_deref().and_then(clipboard::rich_clipboard_meta);
-    copy_with_rich_meta(app, item, item_type, rich_meta)
+    copy_with_rich_meta(app, item, item_type, rich_meta)?;
+    if let Some(hash) = hash {
+        if let Err(err) = clipboard::touch(&hash) {
+            error!("Failed to update clipboard item recency: {err}");
+        }
+    }
+    Ok(())
 }
 
 fn copy_with_rich_meta(
@@ -9156,13 +9202,18 @@ async fn copy_history_item(
 ) -> Result<(), String> {
     ensure_history_ready()?;
     tauri::async_runtime::spawn_blocking(move || {
+        let _cleanup = auto_cleanup::pause();
         let text = clipboard::plain_text_content(&hash)?;
         let rich_meta = if plain_text {
             None
         } else {
             clipboard::rich_clipboard_meta(&hash)
         };
-        copy_with_rich_meta(app, text, "Text".to_string(), rich_meta)
+        copy_with_rich_meta(app, text, "Text".to_string(), rich_meta)?;
+        if let Err(err) = clipboard::touch(&hash) {
+            error!("Failed to update clipboard item recency: {err}");
+        }
+        Ok(())
     })
     .await
     .map_err(|err| err.to_string())?
@@ -10180,6 +10231,7 @@ fn paste(
     restore_alt: Option<bool>,
     trigger_key: Option<String>,
 ) -> Result<(), String> {
+    let _cleanup = auto_cleanup::pause();
     ensure_history_ready()?;
     let restore_alt = restore_alt.unwrap_or(false);
     let trigger_key = trigger_key.as_deref();
@@ -10338,6 +10390,7 @@ async fn search(
 
 #[tauri::command]
 fn clear_history(app: tauri::AppHandle, clear_type: String) -> Result<(), String> {
+    let _cleanup = auto_cleanup::pause();
     ensure_history_ready()?;
     if clear_type == "all" {
         clipboard::db::clear_all().map_err(|e| e.to_string())?;
@@ -10839,6 +10892,13 @@ fn main() {
         std::process::exit(1);
     }
 
+    // The single-instance plugin may terminate this process before Tauri setup.
+    // Refresh an opted-in portable path first so moving the folder still works.
+    #[cfg(target_os = "windows")]
+    if let Err(err) = portable_autostart::reconcile_before_single_instance() {
+        eprintln!("Failed to reconcile portable autostart before single-instance setup: {err}");
+    }
+
     // env_logger::Builder::new()
     //     .filter_level(LevelFilter::Info) // 设置全局最小日志级别为 Info
     //     .init();
@@ -11073,10 +11133,21 @@ fn main() {
             if let Err(err) = refresh_stored_autostart_from_system(app.handle()) {
                 error!("Failed to refresh autostart status at startup: {}", err);
             }
-            let mut config = config::get();
-            if runtime_mode::is_portable() && config.startup {
-                config.startup = false;
-                config::save(config.clone());
+            let config = config::get();
+            #[cfg(not(target_os = "windows"))]
+            let config = {
+                let mut config = config;
+                if runtime_mode::is_portable() && config.startup {
+                    config.startup = false;
+                    config::save(config.clone());
+                }
+                config
+            };
+            #[cfg(target_os = "windows")]
+            if runtime_mode::is_portable() {
+                if let Err(err) = portable_autostart::reconcile(config.startup) {
+                    error!("Failed to reconcile portable autostart at startup: {}", err);
+                }
             }
             #[cfg(not(target_os = "macos"))]
             if !runtime_mode::is_portable() {
@@ -11347,6 +11418,7 @@ fn main() {
                         },
                     );
                 }
+                auto_cleanup::start(handle.clone());
                 std::thread::spawn(|| {
                     migrate_runtime_dirs_out_of_history();
                     cleanup_runtime_caches();
@@ -11381,6 +11453,7 @@ fn main() {
             export_history_archive,
             import_history_archive,
             estimate_storage_cleanup,
+            estimate_auto_cleanup,
             cleanup_storage_history,
             list_language_packs,
             get_custom_tabs,

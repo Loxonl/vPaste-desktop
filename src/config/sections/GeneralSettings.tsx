@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Button, MenuItem, Select, Stack, Switch, type SelectChangeEvent } from "@mui/material";
 import { error } from "@tauri-apps/plugin-log";
+import { isWindowsPlatform } from "../../clipboard/clipboardDrag";
 import { isMacPlatform } from "../../shortcutDisplay";
 import type { ThemeMode } from "../../theme";
 import { useAppUpdateState } from "../../update";
@@ -15,6 +16,8 @@ export default function GeneralSettings({ bridge, config, languages, t, onSave }
     const [permissionStatus, setPermissionStatus] = React.useState<PermissionStatus | null>(null);
     const permissionStatusMotion = useMotionPreset("stateIndicator");
     const { state: updateState } = useAppUpdateState(bridge);
+    const portableStartupAvailable = !updateState.portable || isWindowsPlatform();
+    const showPortableStartupDescription = updateState.portable && portableStartupAvailable;
     const languageChoices = languages.some(language => language.value === config.multilingual)
         ? languages
         : [{ value: config.multilingual, label: config.multilingual }, ...languages];
@@ -107,17 +110,17 @@ export default function GeneralSettings({ bridge, config, languages, t, onSave }
             <SettingsSection title={t("settings.section.system")}>
                     <SettingsRow
                         labelId="settings-startup-label"
-                        descriptionId={updateState.portable ? "settings-startup-description" : undefined}
+                        descriptionId={showPortableStartupDescription ? "settings-startup-description" : undefined}
                         label={t("settings.startup")}
-                        description={updateState.portable ? t("settings.startupPortable") : undefined}
+                        description={showPortableStartupDescription ? t("settings.startupPortable") : undefined}
                         control={(
                         <Switch
-                            checked={!updateState.portable && config.startup}
-                            disabled={updateState.portable}
+                            checked={config.startup}
                             onChange={handleStartupChange}
+                            disabled={!portableStartupAvailable}
                             inputProps={{
                                 "aria-labelledby": "settings-startup-label",
-                                "aria-describedby": updateState.portable ? "settings-startup-description" : undefined,
+                                "aria-describedby": showPortableStartupDescription ? "settings-startup-description" : undefined,
                             }}
                         />
                         )}

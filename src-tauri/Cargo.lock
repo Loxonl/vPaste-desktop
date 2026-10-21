@@ -7486,6 +7486,7 @@ name = "vpaste-desktop"
 version = "1.6.0"
 dependencies = [
  "arboard",
+ "auto-launch",
  "backtrace",
  "base64 0.22.1",
  "block",

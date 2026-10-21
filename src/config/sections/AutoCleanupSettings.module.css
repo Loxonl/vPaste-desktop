@@ -1,0 +1,26 @@
+.item.item {
+  padding: 0;
+}
+
+.root {
+  width: 100%;
+  min-width: 0;
+}
+
+.details {
+  display: grid;
+  gap: var(--ui-space-2);
+  padding: var(--ui-space-2) var(--ui-space-4);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--ui-space-2);
+}
+
+.amount {
+  flex: 0 1 10rem;
+}

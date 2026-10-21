@@ -42,7 +42,7 @@ pub fn is_portable() -> bool {
     PORTABLE_MODE.load(Ordering::SeqCst)
 }
 
-fn portable_data_directory() -> Result<Option<PathBuf>, String> {
+pub(crate) fn portable_data_directory() -> Result<Option<PathBuf>, String> {
     let executable = std::env::current_exe()
         .map_err(|err| format!("failed to locate the vPaste executable: {err}"))?;
     let executable_dir = executable
@@ -58,7 +58,7 @@ fn portable_data_directory_for(executable_dir: &Path) -> Option<PathBuf> {
         .then(|| executable_dir.join(PORTABLE_DATA_DIR))
 }
 
-fn ensure_writable_directory(path: &Path) -> Result<(), String> {
+pub(crate) fn ensure_writable_directory(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|err| {
         format!(
             "portable data directory cannot be created at {}: {err}",

@@ -1091,6 +1091,8 @@ fn item_matches_filter(item: &Item, filter: &SearchFilter) -> bool {
 }
 
 pub fn set_favorite(hash: &str, favorite: bool) -> Result<usize, Error> {
+    let _cleanup = crate::auto_cleanup::pause();
+    crate::auto_cleanup::request();
     let label = if favorite { 1_u64 } else { 0_u64 };
     db().execute(
         "update clipboard set label = ?1 where hash = ?2",
@@ -1149,6 +1151,8 @@ pub fn rename_tag(id: i64, name: &str) -> Result<ItemTag, String> {
 }
 
 pub fn delete_tag(id: i64) -> Result<usize, String> {
+    let _cleanup = crate::auto_cleanup::pause();
+    crate::auto_cleanup::request();
     let conn = db();
     conn.execute("delete from clipboard_tags where tag_id = ?1", [id])
         .map_err(|err| err.to_string())?;
@@ -1157,6 +1161,7 @@ pub fn delete_tag(id: i64) -> Result<usize, String> {
 }
 
 pub fn assign_tag(hash: &str, tag_id: i64) -> Result<(), String> {
+    let _cleanup = crate::auto_cleanup::pause();
     let conn = db();
     if tag_by_id(tag_id)?.is_none() {
         return Err("标签不存在".to_string());
@@ -1172,6 +1177,8 @@ pub fn assign_tag(hash: &str, tag_id: i64) -> Result<(), String> {
 }
 
 pub fn remove_tag(hash: &str, tag_id: i64) -> Result<(), String> {
+    let _cleanup = crate::auto_cleanup::pause();
+    crate::auto_cleanup::request();
     let clipboard_id = clipboard_id_by_hash(hash)?.ok_or_else(|| "粘贴项不存在".to_string())?;
     db().execute(
         "delete from clipboard_tags where clipboard_id = ?1 and tag_id = ?2",
@@ -1570,6 +1577,7 @@ pub(crate) fn rich_clipboard_meta_from_stored_source(
 }
 
 pub fn delete_by_hash(hash: &str) -> Result<usize, String> {
+    let _cleanup = crate::auto_cleanup::pause();
     let mut conn = db();
     let candidate = conn
         .query_row(
@@ -1623,6 +1631,7 @@ pub fn delete_by_hash(hash: &str) -> Result<usize, String> {
 }
 
 pub fn touch(hash: &str) -> Result<usize, Error> {
+    let _cleanup = crate::auto_cleanup::pause();
     db().execute(
         "update clipboard set time = ?1 where hash = ?2",
         rusqlite::params![current_timestamp_millis(), hash],
@@ -1745,7 +1754,7 @@ fn internal_paths_referenced_by_survivors(
         .iter()
         .map(|candidate| candidate.id)
         .collect::<HashSet<_>>();
-    let mut retained_paths = HashSet::new();
+    let mut retained_paths = crate::paste_queue::undo_internal_paths();
     for candidate in cleanup_candidates(0, true)? {
         if candidate_ids.contains(&candidate.id) {
             continue;
@@ -1823,6 +1832,7 @@ fn cleanup_estimate_for_candidates(
 }
 
 pub fn cleanup_estimate(days: u64) -> Result<CleanupEstimate, String> {
+    let _cleanup = crate::auto_cleanup::pause();
     let candidates = cleanup_candidates(days, false)?;
     let paths = internal_paths_for_candidates(&candidates);
     let retained_paths = internal_paths_referenced_by_survivors(&candidates, &paths)?;
@@ -1834,7 +1844,77 @@ pub fn cleanup_estimate(days: u64) -> Result<CleanupEstimate, String> {
 }
 
 pub fn cleanup_older_than(days: u64) -> Result<CleanupEstimate, String> {
+    let _cleanup = crate::auto_cleanup::pause();
     let candidates = cleanup_candidates(days, false)?;
+    delete_cleanup_candidates(candidates)
+}
+
+fn auto_cleanup_candidates(
+    policy: crate::config::AutoCleanupPolicy,
+    limit: usize,
+) -> Result<Vec<CleanupCandidate>, String> {
+    use crate::config::AutoCleanupPolicy;
+    policy.validate()?;
+    let eligible = "SELECT id, hash, item_type, content, source, time FROM clipboard
+        WHERE coalesce(label, 0) != 1
+        AND NOT EXISTS (SELECT 1 FROM clipboard_tags WHERE clipboard_id = clipboard.id)";
+    let (query, value) = match policy {
+        AutoCleanupPolicy::Disabled => return Ok(Vec::new()),
+        AutoCleanupPolicy::Days(days) => (
+            format!("{eligible} AND time < ?1 ORDER BY time ASC, id ASC LIMIT ?2"),
+            cleanup_cutoff(u64::from(days)),
+        ),
+        AutoCleanupPolicy::Count(count) => (
+            format!(
+                "SELECT * FROM ({eligible} ORDER BY time DESC, id DESC LIMIT -1 OFFSET ?1)
+                ORDER BY time ASC, id ASC LIMIT ?2"
+            ),
+            u64::from(count),
+        ),
+    };
+    let conn = db();
+    let mut statement = conn.prepare(&query).map_err(|err| err.to_string())?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![value, i64::try_from(limit).unwrap_or(i64::MAX)],
+            |row| {
+                Ok(CleanupCandidate {
+                    id: row.get(0)?,
+                    hash: row.get(1)?,
+                    item_type: row.get(2)?,
+                    content: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    source: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                })
+            },
+        )
+        .map_err(|err| err.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())
+}
+
+pub fn auto_cleanup_estimate(
+    policy: crate::config::AutoCleanupPolicy,
+) -> Result<CleanupEstimate, String> {
+    let _cleanup = crate::auto_cleanup::pause();
+    let candidates = auto_cleanup_candidates(policy, usize::MAX)?;
+    let paths = internal_paths_for_candidates(&candidates);
+    let retained = internal_paths_referenced_by_survivors(&candidates, &paths)?;
+    Ok(cleanup_estimate_for_candidates(
+        &candidates,
+        &paths,
+        &retained,
+    ))
+}
+
+// The scheduler holds the exclusive activity guard across selection and deletion.
+pub(crate) fn auto_cleanup_batch(
+    policy: crate::config::AutoCleanupPolicy,
+    limit: usize,
+) -> Result<CleanupEstimate, String> {
+    delete_cleanup_candidates(auto_cleanup_candidates(policy, limit)?)
+}
+
+fn delete_cleanup_candidates(candidates: Vec<CleanupCandidate>) -> Result<CleanupEstimate, String> {
     let paths_to_delete = internal_paths_for_candidates(&candidates);
     let retained_paths = internal_paths_referenced_by_survivors(&candidates, &paths_to_delete)?;
     let estimate = cleanup_estimate_for_candidates(&candidates, &paths_to_delete, &retained_paths);
@@ -1852,21 +1932,25 @@ pub fn cleanup_older_than(days: u64) -> Result<CleanupEstimate, String> {
         .iter()
         .map(|candidate| candidate.id.to_string())
         .collect::<Vec<_>>();
-    let conn = db();
-    conn.execute(
-        format!(
-            "DELETE FROM clipboard_tags WHERE clipboard_id IN ({})",
-            ids.join(",")
+    let mut conn = db();
+    let transaction = conn.transaction().map_err(|err| err.to_string())?;
+    transaction
+        .execute(
+            format!(
+                "DELETE FROM clipboard_tags WHERE clipboard_id IN ({})",
+                ids.join(",")
+            )
+            .as_str(),
+            [],
         )
-        .as_str(),
-        [],
-    )
-    .map_err(|err| err.to_string())?;
-    conn.execute(
-        format!("DELETE FROM clipboard WHERE id IN ({})", ids.join(",")).as_str(),
-        [],
-    )
-    .map_err(|err| err.to_string())?;
+        .map_err(|err| err.to_string())?;
+    transaction
+        .execute(
+            format!("DELETE FROM clipboard WHERE id IN ({})", ids.join(",")).as_str(),
+            [],
+        )
+        .map_err(|err| err.to_string())?;
+    transaction.commit().map_err(|err| err.to_string())?;
 
     for path in paths_to_delete {
         if !retained_paths.contains(&path)
@@ -1935,6 +2019,7 @@ fn insert_history_item(
     app_source: &str,
     app_icon_path: &str,
 ) -> bool {
+    let _cleanup = crate::auto_cleanup::pause();
     if count_by_hash(&item.hash) > 0 {
         let conn = db();
         let stored_source = source.to_string();
@@ -2022,6 +2107,7 @@ fn insert_history_item(
         item.time,
     );
     info!("insert item all :{}", start.elapsed().as_millis());
+    crate::auto_cleanup::request();
     true
 }
 
@@ -2258,6 +2344,7 @@ fn insert_rich_text_from_app_impl(
     app_icon_path: &str,
     context: CaptureContext,
 ) -> Option<String> {
+    let _cleanup = crate::auto_cleanup::pause();
     let payload_bytes = plain_text
         .len()
         .saturating_add(html.as_ref().map(Vec::len).unwrap_or(0))
@@ -2358,6 +2445,7 @@ pub(crate) fn insert_test_room_rich_text(
     app_source: &str,
     time: u64,
 ) {
+    let _cleanup = crate::auto_cleanup::pause();
     let meta = RichClipboardMeta {
         version: 1,
         html_path: save_rich_format_to_disk(&html, &hash, "html"),
@@ -2403,6 +2491,7 @@ fn insert_text_from_app_impl(
     app_icon_path: &str,
     context: CaptureContext,
 ) -> Option<String> {
+    let _cleanup = crate::auto_cleanup::pause();
     if is_semantically_blank_text(&content) {
         return None;
     }
@@ -2492,6 +2581,7 @@ fn insert_image_with_text_and_app_impl(
     app_icon_path: &str,
     context: CaptureContext,
 ) -> Option<String> {
+    let _cleanup = crate::auto_cleanup::pause();
     if content.len() > MAX_AUTOMATIC_CAPTURE_BYTES {
         error!(
             "skip oversized image clipboard payload: {} bytes",
@@ -2559,6 +2649,7 @@ fn insert_file_from_app_impl(
     app_icon_path: &str,
     context: CaptureContext,
 ) -> Option<String> {
+    let _cleanup = crate::auto_cleanup::pause();
     let content = serde_json::to_string(content).unwrap();
     let hash = calculate_xxhash64(&content.clone().into_bytes());
     let item = Item {
@@ -3224,6 +3315,7 @@ fn link_preview_is_fresh_for_day(record: &LinkPreviewRecord, local_day: &str) ->
 }
 
 pub fn refresh_link_previews(urls: Vec<String>) -> Result<Vec<LinkPreviewUpdate>, String> {
+    let _cleanup = crate::auto_cleanup::pause();
     let mut updates = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let local_day = Local::now().format("%Y-%m-%d").to_string();

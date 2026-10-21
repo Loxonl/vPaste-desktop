@@ -29,6 +29,35 @@ function context(overrides: Partial<Parameters<typeof clipboardKeyDownAction>[1]
 }
 
 describe("clipboardKeyDownAction", () => {
+    it.each([false, true])("uses only the fixed platform delete key (mac=%s)", isMac => {
+        expect(clipboardKeyDownAction(keyDown(isMac ? "Backspace" : "Delete"), context({ isMac })))
+            .toEqual({ type: "delete-selected" });
+        expect(clipboardKeyDownAction(keyDown(isMac ? "Delete" : "Backspace"), context({ isMac })))
+            .toBeNull();
+        for (const init of [{ repeat: true }, { ctrlKey: true }, { altKey: true }, { shiftKey: true }, { metaKey: true }, { isComposing: true }]) {
+            expect(clipboardKeyDownAction(keyDown(isMac ? "Backspace" : "Delete", init), context({ isMac })))
+                .toBeNull();
+        }
+        expect(clipboardKeyDownAction(keyDown(isMac ? "Backspace" : "Delete"), context({ isMac, searchComposing: true })))
+            .toBeNull();
+    });
+
+    it.each([false, true])("leaves deletion to text inputs, dialogs and menus (mac=%s)", isMac => {
+        const key = isMac ? "Backspace" : "Delete";
+        const editor = document.createElement("div");
+        Object.defineProperty(editor, "isContentEditable", { value: true });
+        const dialog = document.createElement("div");
+        dialog.setAttribute("role", "dialog");
+        const dialogButton = document.createElement("button");
+        dialog.append(dialogButton);
+        const toolbarButton = document.createElement("button");
+        toolbarButton.dataset.keyboardPassthrough = "true";
+        for (const target of [document.createElement("input"), document.createElement("textarea"), document.createElement("select"), editor, dialogButton, toolbarButton]) {
+            expect(clipboardKeyDownAction(keyDown(key, {}, target), context({ isMac }))).toBeNull();
+        }
+        expect(clipboardKeyDownAction(keyDown(key), context({ isMac, contextMenuOpen: true }))).toBeNull();
+    });
+
     it.each([false, true])("ignores held quick-item repeats (mac=%s)", isMac => {
         const searchInput = document.createElement("input");
         for (const target of [undefined, searchInput]) {

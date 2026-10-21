@@ -62,6 +62,7 @@ function isReservedPasteAsTextShortcut(value: string) {
     const parts = normalizeShortcutForPolicy(value).split("+");
     const hasCtrlOrSuper = parts.includes("ctrl") || parts.includes("super");
     if (hasCtrlOrSuper && parts.includes("f")) return true;
+    if (normalizeShortcutForPolicy(value) === (isMacPlatform() ? "backspace" : "delete")) return true;
 
     return parts.some(part => ["space", "arrowdown", "arrowleft", "arrowright", "tab", "esc"].includes(part))
         || normalizeShortcutForPolicy(value) === "enter";
@@ -190,6 +191,10 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
                     <FixedShortcutItem
                         label={t("settings.shortcuts.preview")}
                         value={t("settings.shortcuts.key.space")}
+                    />
+                    <FixedShortcutItem
+                        label={t("settings.shortcuts.deleteRecord")}
+                        value={isMacPlatform() ? "⌫" : "Delete"}
                     />
                     <ShortcutItem
                         label={t("settings.shortcuts.pasteText")}

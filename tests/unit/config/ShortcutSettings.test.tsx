@@ -12,6 +12,32 @@ afterEach(() => {
 });
 
 describe("Shortcut settings recorder", () => {
+    it.each([["Win32", "Delete"], ["MacIntel", "⌫"]])("displays a fixed delete shortcut on %s", (platform, key) => {
+        vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
+        const bridge = {
+            invoke: vi.fn(), listen: vi.fn(), open: vi.fn(), save: vi.fn(), convertFileSrc: vi.fn(),
+        } as unknown as SettingsBridge;
+        const onSave = vi.fn(async () => null);
+        render(<AppThemeProvider><ShortcutSettings bridge={bridge} config={DEFAULT_CONFIG} onSave={onSave} t={key => key} /></AppThemeProvider>);
+        const row = screen.getByText("settings.shortcuts.deleteRecord").parentElement!.parentElement!;
+        expect(row).toHaveTextContent(key);
+        expect(row.querySelector("button, input")).toBeNull();
+        expect(onSave).not.toHaveBeenCalled();
+    });
+
+    it.each([["Win32", "Delete"], ["MacIntel", "Backspace"]])("reserves the delete key from paste-as-text on %s", async (platform, key) => {
+        vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
+        const bridge = {
+            invoke: vi.fn(), listen: vi.fn(), open: vi.fn(), save: vi.fn(), convertFileSrc: vi.fn(),
+        } as unknown as SettingsBridge;
+        const onSave = vi.fn(async () => null);
+        render(<AppThemeProvider><ShortcutSettings bridge={bridge} config={DEFAULT_CONFIG} onSave={onSave} t={key => key} /></AppThemeProvider>);
+        await userEvent.setup().click(screen.getByRole("button", { name: /settings\.shortcuts\.pasteText/ }));
+        fireEvent.keyDown(screen.getByRole("button", { name: /settings\.shortcuts\.pasteText.*settings\.shortcut\.recording/ }), { key });
+        expect(await screen.findByRole("alert")).toHaveTextContent("settings.shortcut.panelConflict");
+        expect(onSave).not.toHaveBeenCalled();
+    });
+
     it("records Windows + V from the native interceptor and releases recording on completion", async () => {
         vi.spyOn(window.navigator, "platform", "get").mockReturnValue("Win32");
         let recorded: ((event: { payload: string }) => void) | undefined;

@@ -52,6 +52,7 @@ function item({
 function options() {
     return {
         closeContextMenu: vi.fn(),
+        deleteInFlight: { current: false },
         hideWindow: vi.fn(async () => undefined),
         onDelete: vi.fn(),
         refreshHistory: vi.fn(async () => undefined),
@@ -129,6 +130,27 @@ describe("clipboard item actions", () => {
         expect(logger.error).toHaveBeenCalledWith(
             `Failed to delete clipboard item: ${failure}`,
         );
+        expect(callbacks.deleteInFlight.current).toBe(false);
+        tauri.invoke.mockResolvedValue(undefined);
+        await actions.deleteClipboardItem(item());
+        expect(callbacks.onDelete).toHaveBeenCalledOnce();
+    });
+
+    it("serializes keyboard and menu deletions across rerenders", async () => {
+        const callbacks = options();
+        let finish!: () => void;
+        tauri.invoke.mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve; }))
+            .mockResolvedValue(undefined);
+        const first = createClipboardItemActions(callbacks).deleteClipboardItem(item());
+        await createClipboardItemActions(callbacks).deleteClipboardItem(item());
+        const callsWhilePending = tauri.invoke.mock.calls.length;
+        finish();
+        await first;
+        expect(callsWhilePending).toBe(1);
+        expect(callbacks.onDelete).toHaveBeenCalledOnce();
+        expect(callbacks.deleteInFlight.current).toBe(false);
+        await createClipboardItemActions(callbacks).deleteClipboardItem(item());
+        expect(callbacks.onDelete).toHaveBeenCalledTimes(2);
     });
 
     it("exports an image, restores blur handling, reveals it, then hides", async () => {

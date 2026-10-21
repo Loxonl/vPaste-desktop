@@ -111,7 +111,7 @@ test.describe("settings preview", () => {
         await page.getByRole("tab").nth(2).click();
 
         const valueColumns = page.locator("[class*='shortcut-static']");
-        await expect(valueColumns).toHaveCount(6);
+        await expect(valueColumns).toHaveCount(7);
         const columnBoxes = await valueColumns.evaluateAll(elements => elements.map(element => {
             const box = element.getBoundingClientRect();
             return { center: box.left + box.width / 2 };

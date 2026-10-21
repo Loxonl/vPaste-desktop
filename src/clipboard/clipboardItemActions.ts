@@ -20,6 +20,7 @@ type Translate = (
 
 type ClipboardItemActionsOptions = {
     closeContextMenu: () => void;
+    deleteInFlight: { current: boolean };
     hideWindow: () => Promise<void>;
     onDelete: (item: Item) => void;
     refreshHistory: () => Promise<void>;
@@ -114,6 +115,8 @@ export function createClipboardItemActions(
     };
 
     const deleteClipboardItem = async (item: Item) => {
+        if (options.deleteInFlight.current) return;
+        options.deleteInFlight.current = true;
         options.closeContextMenu();
         try {
             await invoke("delete_clipboard_item", { hash: item.getHash() });
@@ -127,6 +130,8 @@ export function createClipboardItemActions(
                 }),
                 "error",
             );
+        } finally {
+            options.deleteInFlight.current = false;
         }
     };
 

@@ -75,10 +75,12 @@ Default controls:
 | Search in the panel | `Ctrl + F` | `⌘ + F` |
 | Select the previous / next card | `←` / `→` | `←` / `→` |
 | Preview the selected card | `Space` | `Space` |
+| Delete the selected record | `Delete` | `Backspace` (`⌫`) |
 | Paste the selected card | `Enter` | `Enter` |
 | Paste as plain text | `Shift + Enter` | `Shift + Enter` |
 
 Panel, queue, and plain-text paste shortcuts can be changed in Settings.
+The deletion key is fixed and only acts in the panel, outside text editing and dialogs.
 
 ### Interface settings
 

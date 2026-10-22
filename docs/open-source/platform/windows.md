@@ -54,7 +54,12 @@ Implementation expectations:
 - Refresh duplicate items by recency instead of silently ignoring the copy.
 - Capture raw snapshots immediately, but allow a plain-text-only snapshot up to 50ms for an adjacent rich-format completion with identical text, source, and queue session. Preserve different copies in order; do not globally deduplicate rich text by its plain fallback.
 - Serialize native clipboard reads and restores with the shared process-level clipboard lock. Publish text and the internal marker before releasing it; keep decoding and database work outside this lock. Do not assume `OpenClipboard(NULL)` coordinates our own threads (see the [Windows Terminal clipboard implementation](https://github.com/microsoft/terminal/blob/main/src/cascadia/TerminalApp/TerminalPage.cpp)).
+- The Windows capture thread owns its message-only listener window and opens the clipboard with that non-null HWND. Keep the process lock as well: other native libraries cannot share it, and an uncoordinated NULL-window open/close must not invalidate an in-progress read. The listener never empties the clipboard or changes its source owner.
 - On transient capture failures, discard the partial snapshot and retry the latest clipboard sequence without requiring another notification. Sequence changes can be delayed rendering within one copy. Rebase the timestamp/queue session with the sequence, verify it again after opening the clipboard, and keep the existing total retry/size limits; never merge fields from failed attempts.
+- Native access-denied/clipboard-not-open errors (5/1418) in advertised HTML/RTF/PNG formats must retry the whole snapshot, not silently downgrade it to plain text or empty content. Other invalid optional formats retain their fallback behavior.
+- Word image rows can be captured successfully yet hidden as blank text if the rich preview is rejected. Prefer the HTML image fallback over its redundant VML block in the preview: large `o:gfxdata` drawing metadata must not consume the markup budget. Preserve the original HTML/RTF for paste, retain existing image/markup limits, and test both native capture and history visibility, not just insertion.
+- Use the shared semantic-blank predicate for rich plain-text selection, image-only fallback, and short-symbol hash eligibility. Image-only Word RTF can end with a NUL; treating that invisible character as a visible symbol collapses different pictures into one history key and reuses stale format files. Regressions must include consecutive copies with NUL-terminated RTF and expired image paths, without a warmed preview cache.
+- If activation is waiting for a current sequence not yet observed by capture, post a wakeup to the same native reader. Reuse an already-pending capture; do not poll/read payloads on the UI thread, acknowledge an older sequence, or lengthen/bypass the activation safety gate. Paused/internal/sensitive filtering and the total capture budget still apply to requested reads.
 - When pasting a selected history item, record the foreground window before showing vPaste, restore it after hiding vPaste, then send native Ctrl+V. Browser page inputs are more focus-sensitive than address bars or chat boxes.
 
 ## Clipboard Capture Diagnostics
@@ -77,8 +82,10 @@ environment. It is read once per process, so restart to change it. Detailed mode
 adds before/after metadata, format-size probes already performed by the reader,
 attempt/skip/sequence-change events, and snapshot byte counts to the existing
 runtime `logs/vPaste.log`; a custom history-storage directory does not move this
-log. No additional clipboard payload reads, background polling, or network reporting
-are introduced. With the flag unset, successful read stages are not logged.
+log. Detailed tracing itself adds no clipboard payload reads, background polling,
+or network reporting. With the flag unset, successful read stages are not logged.
+Capture-wait failures also include current, latest-observed, and completed
+sequence numbers, so a missed update can be distinguished from slow processing.
 
 Reproduce with one copy, note whether it entered history, and retain the nearby
 `clipboard_diag`/capture messages. Log timestamps are UTC. A sequence change can

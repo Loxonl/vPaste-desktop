@@ -12,7 +12,7 @@ function hasExternalCssResource(value: string): boolean {
     return /\\|\/\*|url\s*\(|image-set\s*\(|expression\s*\(|@import/i.test(value);
 }
 
-export function sanitizeRichHtml(html: string, maxWidthPx = 160): string {
+export function sanitizeRichHtml(html: string, maxWidthPx = 160, editable = false): string {
     if (!html.trim()) return "";
     const document = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
     document.querySelectorAll(
@@ -25,7 +25,7 @@ export function sanitizeRichHtml(html: string, maxWidthPx = 160): string {
     document.querySelectorAll("form").forEach(node => {
         node.replaceWith(...Array.from(node.childNodes));
     });
-    applyRichClassStyles(document);
+    applyRichClassStyles(document, editable);
     document.querySelectorAll("style").forEach(node => node.remove());
     document.querySelectorAll<HTMLElement>("*").forEach(element => {
         const tag = element.tagName.toLowerCase();
@@ -39,15 +39,32 @@ export function sanitizeRichHtml(html: string, maxWidthPx = 160): string {
                 element.removeAttribute(attribute.name);
                 return;
             }
+            if (editable && tag === "a" && name === "href") {
+                try {
+                    const url = new URL(attribute.value);
+                    if (["http:", "https:", "mailto:"].includes(url.protocol)) {
+                        element.setAttribute("href", url.href);
+                        return;
+                    }
+                } catch { /* Discard non-absolute and unsafe links. */ }
+            }
+            if (editable && tag === "font" && ["color", "face", "size"].includes(name)) return;
             if (!(tag === "img" && name === "src" && safeRichImageSource(attribute.value))
                 && !SAFE_RICH_ATTRIBUTES.has(name)) {
                 element.removeAttribute(attribute.name);
             }
         });
-        normalizeRichPreviewStyle(element, maxWidthPx);
+        if (editable) {
+            element.removeAttribute("class");
+            Array.from(element.style).forEach(name => {
+                if (!/^(?:color|background-color|font-(?:family|size|weight|style)|text-(?:decoration|align|indent)|vertical-align|white-space|line-height|letter-spacing|border(?:-(?:top|right|bottom|left|width|style|color|collapse))?|padding(?:-(?:top|right|bottom|left))?|width|max-width|height)$/.test(name)) {
+                    element.style.removeProperty(name);
+                }
+            });
+        } else normalizeRichPreviewStyle(element, maxWidthPx);
     });
     const root = document.body.firstElementChild;
-    if (root) {
+    if (root && !editable) {
         unwrapSingleLeadingLayoutContainers(root);
         trimLeadingEmptyRichBlocks(root);
     }
@@ -90,7 +107,7 @@ function normalizeRichPreviewStyle(element: HTMLElement, maxWidthPx: number) {
     }
 }
 
-function extractRichClassStyles(document: Document): Map<string, string[]> {
+function extractRichClassStyles(document: Document, editable: boolean): Map<string, string[]> {
     const classStyles = new Map<string, string[]>();
     document.querySelectorAll("style").forEach(styleNode => {
         const css = styleNode.textContent || "";
@@ -107,7 +124,7 @@ function extractRichClassStyles(document: Document): Map<string, string[]> {
                     const name = rawName.trim().toLowerCase();
                     const value = rawValue.join(":").trim();
                     if (!name || !value || hasExternalCssResource(value)) return false;
-                    return [
+                    return (editable && ["font-family", "font-size", "white-space"].includes(name)) || [
                         "background",
                         "background-color",
                         "color",
@@ -131,8 +148,8 @@ function extractRichClassStyles(document: Document): Map<string, string[]> {
     return classStyles;
 }
 
-function applyRichClassStyles(document: Document) {
-    const classStyles = extractRichClassStyles(document);
+function applyRichClassStyles(document: Document, editable: boolean) {
+    const classStyles = extractRichClassStyles(document, editable);
     if (classStyles.size === 0) return;
 
     document.querySelectorAll<HTMLElement>("[class]").forEach(element => {

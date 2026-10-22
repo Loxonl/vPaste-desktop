@@ -29,6 +29,24 @@ function context(overrides: Partial<Parameters<typeof clipboardKeyDownAction>[1]
 }
 
 describe("clipboardKeyDownAction", () => {
+    it("opens editing only for an unmodified, non-repeated F2 outside inputs and dialogs", () => {
+        expect(clipboardKeyDownAction(keyDown("F2"), context())).toEqual({ type: "edit-selected" });
+        for (const init of [{ repeat: true }, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { isComposing: true }]) {
+            expect(clipboardKeyDownAction(keyDown("F2", init), context())).toBeNull();
+        }
+        expect(clipboardKeyDownAction(keyDown("F2"), context({ contextMenuOpen: true }))).toBeNull();
+        expect(clipboardKeyDownAction(keyDown("F2", { repeat: true }), context({ pasteAsTextShortcut: "F2" }))).toBeNull();
+        for (const target of [document.createElement("input"), document.createElement("textarea")]) {
+            expect(clipboardKeyDownAction(keyDown("F2", {}, target), context())).toBeNull();
+        }
+        const rich = document.createElement("div");
+        rich.contentEditable = "true";
+        Object.defineProperty(rich, "isContentEditable", { value: true });
+        expect(clipboardKeyDownAction(keyDown("F2", {}, rich), context())).toBeNull();
+        const dialog = document.createElement("div");
+        dialog.setAttribute("role", "dialog");
+        expect(clipboardKeyDownAction(keyDown("F2", {}, dialog), context())).toBeNull();
+    });
     it.each([false, true])("uses only the fixed platform delete key (mac=%s)", isMac => {
         expect(clipboardKeyDownAction(keyDown(isMac ? "Backspace" : "Delete"), context({ isMac })))
             .toEqual({ type: "delete-selected" });

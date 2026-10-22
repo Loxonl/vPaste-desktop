@@ -1,5 +1,5 @@
 import { Item, ItemType, type ItemTag } from "./Item";
-import { imageExportSourcePath, isTextLikeItem } from "./itemPresentation";
+import { imageExportSourcePath, isEditableTextItem, isTextLikeItem } from "./itemPresentation";
 import type { ColorCopyOption, ContextMenuOption } from "./ClipboardOverlays";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
@@ -11,6 +11,7 @@ export type ClipboardContextMenuActions = {
     onCopyContainingFolder: (item: Item) => MenuAction;
     onCreateRecordTag: (item: Item) => MenuAction;
     onDelete: (item: Item) => MenuAction;
+    onEditText: (item: Item) => MenuAction;
     onExportImage: (item: Item) => MenuAction;
     onOpenContainingFolder: (item: Item) => MenuAction;
     onPastePlainText: (item: Item) => MenuAction;
@@ -46,6 +47,10 @@ export function buildClipboardContextMenuOptions({
             action: () => actions.onToggleFavorite(item),
         },
     ];
+
+    if (isEditableTextItem(item)) {
+        options.splice(1, 0, { label: t("menu.editText"), action: () => actions.onEditText(item) });
+    }
 
     options.push(currentItemTags.length === 0
         ? {

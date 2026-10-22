@@ -22,10 +22,13 @@ describe("Shortcut settings recorder", () => {
         const row = screen.getByText("settings.shortcuts.deleteRecord").parentElement!.parentElement!;
         expect(row).toHaveTextContent(key);
         expect(row.querySelector("button, input")).toBeNull();
+        const editRow = screen.getByText("menu.editText").parentElement!.parentElement!;
+        expect(editRow).toHaveTextContent("F2");
+        expect(editRow.querySelector("button, input")).toBeNull();
         expect(onSave).not.toHaveBeenCalled();
     });
 
-    it.each([["Win32", "Delete"], ["MacIntel", "Backspace"]])("reserves the delete key from paste-as-text on %s", async (platform, key) => {
+    it.each([["Win32", "Delete"], ["MacIntel", "Backspace"], ["Win32", "F2"], ["MacIntel", "F2"]])("reserves panel keys from paste-as-text on %s (%s)", async (platform, key) => {
         vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
         const bridge = {
             invoke: vi.fn(), listen: vi.fn(), open: vi.fn(), save: vi.fn(), convertFileSrc: vi.fn(),

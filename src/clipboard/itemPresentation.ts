@@ -94,6 +94,10 @@ export function isTextLikeItem(item: Item): boolean {
     return [ItemType.Text, ItemType.TextFile, ItemType.Link].includes(item.getType());
 }
 
+export function isEditableTextItem(item: Item): boolean {
+    return isTextLikeItem(item) || item.getType() === ItemType.Color;
+}
+
 export function parseLinkContent(content: string): {
     url: string;
     imagePath: string;

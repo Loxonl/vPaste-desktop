@@ -19,6 +19,7 @@ export type ClipboardKeyDownAction =
     | { type: "open-selected-context-menu" }
     | { type: "toggle-preview" }
     | { type: "delete-selected" }
+    | { type: "edit-selected" }
     | { type: "paste-selected"; plainText: boolean };
 
 export type ClipboardKeyboardContext = {
@@ -150,6 +151,11 @@ export function clipboardKeyDownAction(
             return null;
         }
         return { type: "delete-selected" };
+    }
+    if (event.key === "F2" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+        if (event.repeat || context.contextMenuOpen || isKeyboardPassthroughTarget(event.target)
+            || isKeyboardPassthroughTarget(event.target, '[role="dialog"], [role="alertdialog"], [aria-modal="true"]')) return null;
+        return { type: "edit-selected" };
     }
     if (matchesKeyboardShortcut(event, context.pasteAsTextShortcut)) {
         return { type: "paste-selected", plainText: true };

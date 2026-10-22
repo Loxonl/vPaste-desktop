@@ -43,6 +43,7 @@ function actions(): ClipboardContextMenuActions {
         onCopyContainingFolder: vi.fn(),
         onCreateRecordTag: vi.fn(),
         onDelete: vi.fn(),
+        onEditText: vi.fn(),
         onExportImage: vi.fn(),
         onOpenContainingFolder: vi.fn(),
         onPastePlainText: vi.fn(),
@@ -69,22 +70,27 @@ describe("buildClipboardContextMenuOptions", () => {
 
         expect(options.map(option => option.label)).toEqual([
             "menu.preview",
+            "menu.editText",
             "menu.removeFavorite",
             "menu.addRecordTag",
             "menu.pastePlainText",
             "menu.deleteRecord",
         ]);
 
-        void options[0].action?.();
-        void options[1].action?.();
-        void options[2].action?.();
-        void options[3].action?.();
-        void options[4].action?.();
+        options.forEach(option => { void option.action?.(); });
         expect(callbacks.onPreview).toHaveBeenCalledWith(target);
+        expect(callbacks.onEditText).toHaveBeenCalledWith(target);
+        expect(options.find(option => option.label === "menu.editText")).not.toHaveProperty("shortcut");
         expect(callbacks.onToggleFavorite).toHaveBeenCalledWith(target);
         expect(callbacks.onCreateRecordTag).toHaveBeenCalledWith(target);
         expect(callbacks.onPastePlainText).toHaveBeenCalledWith(target);
         expect(callbacks.onDelete).toHaveBeenCalledWith(target);
+    });
+
+    it.each(Object.values(ItemType))("offers editing only for text-backed %s items", type => {
+        const options = buildClipboardContextMenuOptions({ actions: actions(), colorOptions: [], currentItemTags: [], item: item(type), t });
+        expect(options.some(option => option.label === "menu.editText"))
+            .toBe([ItemType.Text, ItemType.TextFile, ItemType.Link, ItemType.Color].includes(type));
     });
 
     it("shows only assignable and currently valid assigned tags", () => {

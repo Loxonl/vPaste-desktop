@@ -21,6 +21,7 @@ use crate::{app_runtime_dir, history_storage_dir, history_store, search::engine}
 
 pub mod color;
 pub(crate) mod db;
+pub(crate) mod editor;
 pub(crate) mod item;
 #[cfg(target_os = "macos")]
 pub mod macos;
@@ -1511,15 +1512,22 @@ fn cache_rich_html(path: &str, stamp: RichHtmlFileStamp, html: &str) {
 }
 
 fn read_rich_html_fragment(path: &str) -> Option<String> {
+    read_rich_html_fragment_with_limit(
+        path,
+        RICH_CARD_SOURCE_MAX_BYTES.min(RICH_CARD_HTML_MAX_BYTES as u64),
+    )
+}
+
+fn read_rich_html_fragment_with_limit(path: &str, limit: u64) -> Option<String> {
     if path.is_empty() {
         return None;
     }
-    if history_store::file_len(path).ok()? > RICH_CARD_SOURCE_MAX_BYTES {
+    if history_store::file_len(path).ok()? > limit {
         return None;
     }
     let stamp = rich_html_file_stamp(path);
     if let Some(cached) = stamp.and_then(|stamp| cached_rich_html(path, stamp)) {
-        return Some(cached);
+        return (cached.len() as u64 <= limit).then_some(cached);
     }
     let bytes = history_store::read_file(path).ok()?;
     if bytes.is_empty() {
@@ -1550,7 +1558,7 @@ fn read_rich_html_fragment(path: &str) -> Option<String> {
         format!("{}\n{}", style_blocks, fragment)
     };
     let html = html.trim().to_string();
-    if html.is_empty() || html.len() > RICH_CARD_HTML_MAX_BYTES {
+    if html.is_empty() || html.len() as u64 > limit {
         return None;
     }
     if let Some(stamp) = stamp {

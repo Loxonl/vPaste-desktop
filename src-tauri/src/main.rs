@@ -169,6 +169,8 @@ const TRAY_MENU_WIDTH: i32 = 216;
 const TRAY_MENU_HEIGHT: i32 = 184;
 const TAB_EDITOR_CONTENT_WIDTH: f64 = 286.0;
 const TAB_EDITOR_DEFAULT_CONTENT_HEIGHT: f64 = 400.0;
+static TEXT_EDITOR_TARGET: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static TEXT_EDITOR_FOCUSED: AtomicBool = AtomicBool::new(false);
 const EMOJI_PICKER_CONTENT_WIDTH: f64 = 262.0;
 const EMOJI_PICKER_CONTENT_HEIGHT: f64 = 148.0;
 #[cfg(not(target_os = "macos"))]
@@ -1956,7 +1958,10 @@ fn hide_clipboard_if_inactive(window: tauri::WebviewWindow) {
         return;
     }
     let app = window.app_handle();
-    if preview_window_active(&app) || tab_editor_window_active(&app) {
+    if preview_window_active(&app)
+        || tab_editor_window_active(&app)
+        || text_editor_window_active(&app)
+    {
         return;
     }
     if CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
@@ -2398,13 +2403,19 @@ fn cursor_inside_window(window: &tauri::WebviewWindow) -> bool {
 }
 
 fn cursor_inside_app_windows(app: &tauri::AppHandle) -> bool {
-    ["clipboard", "clipboardPreview", "tabEditor", "emojiPicker"]
-        .iter()
-        .any(|label| {
-            app.get_webview_window(label)
-                .map(|window| window.is_visible().unwrap_or(false) && cursor_inside_window(&window))
-                .unwrap_or(false)
-        })
+    [
+        "clipboard",
+        "clipboardPreview",
+        "tabEditor",
+        "emojiPicker",
+        "textEditor",
+    ]
+    .iter()
+    .any(|label| {
+        app.get_webview_window(label)
+            .map(|window| window.is_visible().unwrap_or(false) && cursor_inside_window(&window))
+            .unwrap_or(false)
+    })
 }
 
 fn tab_editor_window_active(app: &tauri::AppHandle) -> bool {
@@ -2413,6 +2424,16 @@ fn tab_editor_window_active(app: &tauri::AppHandle) -> bool {
             window.is_visible().unwrap_or(false)
                 && (window.is_focused().unwrap_or(false)
                     || is_native_window_foreground(&window, "tab editor active guard"))
+        })
+        .unwrap_or(false)
+}
+
+fn text_editor_window_active(app: &tauri::AppHandle) -> bool {
+    app.get_webview_window("textEditor")
+        .map(|window| {
+            window.is_visible().unwrap_or(false)
+                && (window.is_focused().unwrap_or(false)
+                    || is_native_window_foreground(&window, "text editor active guard"))
         })
         .unwrap_or(false)
 }
@@ -4378,6 +4399,103 @@ fn plain_text_content(hash: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn open_text_editor_window(app: tauri::AppHandle, hash: String) -> Result<(), String> {
+    ensure_history_ready()?;
+    let window = app
+        .get_webview_window("textEditor")
+        .ok_or("text editor window not found")?;
+    if !window.is_visible().map_err(|err| err.to_string())? {
+        *TEXT_EDITOR_TARGET.lock().unwrap() = Some(hash);
+        window.center().map_err(|err| err.to_string())?;
+        window.show().map_err(|err| err.to_string())?;
+        window
+            .emit("text-editor-open", ())
+            .map_err(|err| err.to_string())?;
+    }
+    activate_native_window(&window, "text editor open");
+    window.set_focus().map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn get_text_editor_document() -> Result<Option<clipboard::editor::TextDocument>, String> {
+    ensure_history_ready()?;
+    let hash = TEXT_EDITOR_TARGET.lock().unwrap().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        hash.map(|hash| clipboard::editor::load(&hash)).transpose()
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn save_clipboard_text(
+    app: tauri::AppHandle,
+    update: clipboard::editor::TextUpdate,
+) -> Result<clipboard::item::Item, String> {
+    ensure_history_ready()?;
+    let previous_hash = TEXT_EDITOR_TARGET.lock().unwrap().clone();
+    let item = tauri::async_runtime::spawn_blocking(move || clipboard::editor::save(update))
+        .await
+        .map_err(|err| err.to_string())??;
+    if let Err(err) = app.emit(
+        "clipboard-item-edited",
+        serde_json::json!({ "previousHash": previous_hash, "hash": item.hash }),
+    ) {
+        error!("failed to notify edited clipboard item: {err}");
+    }
+    Ok(item)
+}
+
+#[tauri::command]
+fn hide_text_editor_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("textEditor") {
+        window.hide().map_err(|err| err.to_string())?;
+    }
+    *TEXT_EDITOR_TARGET.lock().unwrap() = None;
+    TEXT_EDITOR_FOCUSED.store(false, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("clipboard") {
+        if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+            show_clipboard_window(&window);
+        } else {
+            focus_clipboard_window(&window, "text editor closed");
+        }
+    }
+    Ok(())
+}
+
+fn build_text_editor_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let window = WebviewWindowBuilder::new(app, "textEditor", App("text-editor".into()))
+        .title("vPaste")
+        .visible(false)
+        .focused(false)
+        .decorations(false)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .resizable(false)
+        .shadow(false)
+        .inner_size(596.0, 476.0)
+        .build()?;
+    apply_vpaste_window_icon(&window);
+    #[cfg(target_os = "macos")]
+    set_macos_window_level(&window, 101);
+    Ok(())
+}
+
+fn paste_queue_shortcut_allowed(active: bool, editor_focused: bool) -> bool {
+    active && !editor_focused
+}
+
+#[test]
+fn queue_paste_yields_only_to_a_focused_text_editor() {
+    assert!(paste_queue_shortcut_allowed(true, false));
+    assert!(!paste_queue_shortcut_allowed(true, true));
+    assert!(!paste_queue_shortcut_allowed(false, false));
+    assert!(!paste_queue_shortcut_allowed(false, true));
+}
+
+#[tauri::command]
 fn color_conversion_options(content: String) -> Vec<clipboard::color::ColorVariant> {
     clipboard::color::color_variants(&content)
 }
@@ -4810,6 +4928,13 @@ async fn wait_for_clipboard_capture() -> Result<Option<String>, String> {
 }
 
 fn toggle_clipboard_window(app: &tauri::AppHandle) {
+    if let Some(editor) = app.get_webview_window("textEditor") {
+        if editor.is_visible().unwrap_or(false) {
+            activate_native_window(&editor, "text editor shortcut focus");
+            let _ = editor.set_focus();
+            return;
+        }
+    }
     if let Some(window) = app.get_webview_window("clipboard") {
         match window.is_visible() {
             Ok(true) => {
@@ -9782,7 +9907,10 @@ unsafe extern "C" fn paste_queue_macos_event_callback(
         let flags = CGEventGetFlags(event);
         let exact_command = flags & FLAG_COMMAND != 0
             && flags & (FLAG_SHIFT | FLAG_CONTROL | FLAG_ALTERNATE | FLAG_SECONDARY_FN) == 0;
-        let intercept = paste_queue::is_active() && exact_command;
+        let intercept = paste_queue_shortcut_allowed(
+            paste_queue::is_active(),
+            TEXT_EDITOR_FOCUSED.load(Ordering::SeqCst),
+        ) && exact_command;
         let trigger = intercept && !state.v_down;
         state.v_down = true;
         if intercept {
@@ -9908,7 +10036,10 @@ unsafe extern "system" fn paste_queue_windows_keyboard_callback(
                 event.vkCode,
                 down,
                 event.dwExtraInfo,
-                paste_queue::is_active(),
+                paste_queue_shortcut_allowed(
+                    paste_queue::is_active(),
+                    TEXT_EDITOR_FOCUSED.load(Ordering::SeqCst),
+                ),
             );
             if trigger {
                 let _ = enqueue_paste_queue_request(None, PasteQueueRequestOrigin::Shortcut);
@@ -9981,8 +10112,10 @@ fn run_paste_queue_interceptor() -> Result<(), String> {
                 if key == rdev::Key::KeyV {
                     let (intercept, trigger) = begin_paste_queue_v_press(
                         &mut state,
-                        paste_queue::is_active()
-                            && !PASTE_QUEUE_INTERNAL_PASTE.load(Ordering::SeqCst),
+                        paste_queue_shortcut_allowed(
+                            paste_queue::is_active(),
+                            TEXT_EDITOR_FOCUSED.load(Ordering::SeqCst),
+                        ) && !PASTE_QUEUE_INTERNAL_PASTE.load(Ordering::SeqCst),
                     );
                     if intercept {
                         if trigger {
@@ -10984,6 +11117,10 @@ fn main() {
                 }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "textEditor" {
+                    api.prevent_close();
+                    let _ = window.emit("text-editor-close-requested", ());
+                }
                 if window.label() == "pasteQueue" {
                     api.prevent_close();
                     if let Err(err) = deactivate_paste_queue_window(window.app_handle()) {
@@ -11027,6 +11164,11 @@ fn main() {
                     restore_parent_after_permission_guide(window.app_handle());
                 }
             }
+            if let tauri::WindowEvent::Focused(focused) = event {
+                if window.label() == "textEditor" {
+                    TEXT_EDITOR_FOCUSED.store(*focused, Ordering::SeqCst);
+                }
+            }
             if let tauri::WindowEvent::Focused(false) = event {
                 if window.label() == "config" {
                     #[cfg(target_os = "windows")]
@@ -11059,7 +11201,7 @@ fn main() {
                     let app = window.app_handle().clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(std::time::Duration::from_millis(35));
-                        if tab_editor_window_active(&app) {
+                        if tab_editor_window_active(&app) || text_editor_window_active(&app) {
                             return;
                         }
                         if preview_window_visible(&app) {
@@ -11196,6 +11338,7 @@ fn main() {
             }
             let _ = build_clipboard_window(app.handle())?;
             let _ = build_paste_queue_window(app.handle())?;
+            build_text_editor_window(app.handle())?;
             if !legacy_history {
                 initialize_paste_queue_worker(app.handle());
             }
@@ -11548,6 +11691,10 @@ fn main() {
             remove_item_tag,
             delete_clipboard_item,
             plain_text_content,
+            open_text_editor_window,
+            get_text_editor_document,
+            save_clipboard_text,
+            hide_text_editor_window,
             color_conversion_options,
             export_image_item,
             read_preview_text_file,

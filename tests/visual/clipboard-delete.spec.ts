@@ -148,6 +148,9 @@ test("settings show the platform deletion key without a recorder", async ({ page
         const row = page.getByText("删除选中记录", { exact: true }).locator("../..");
         await expect(row).toContainText(value);
         await expect(row.getByRole("button")).toHaveCount(0);
+        const editRow = page.getByText("编辑文字", { exact: true }).locator("../..");
+        await expect(editRow).toContainText("F2");
+        await expect(editRow.getByRole("button")).toHaveCount(0);
         await page.screenshot({ path: testInfo.outputPath(`settings-delete-${platform}.png`), animations: "disabled" });
     }
 });

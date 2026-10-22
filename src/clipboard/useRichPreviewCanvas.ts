@@ -57,11 +57,15 @@ function defaultCanvas(root: HTMLElement): "light" | "dark" {
     return dark > light ? "dark" : "light";
 }
 
+export function applyRichPreviewCanvas(root: HTMLElement) {
+    root.dataset.richCanvas = defaultCanvas(root);
+}
+
 export function useRichPreviewCanvas(html?: string) {
     const ref = useRef<HTMLDivElement>(null);
     useLayoutEffect(() => {
         if (html !== undefined && ref.current) {
-            ref.current.dataset.richCanvas = defaultCanvas(ref.current);
+            applyRichPreviewCanvas(ref.current);
         }
     }, [html]);
     return ref;

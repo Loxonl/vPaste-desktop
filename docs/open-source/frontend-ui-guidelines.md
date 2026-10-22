@@ -48,6 +48,11 @@ The temporary raw-control inventory is stored in `scripts/ui-governance-baseline
 
 The remaining native controls are deliberate special surfaces: `Config.tsx` owns the platform-shaped title-bar buttons, while `PasteQueue.tsx` owns its drag handle and full-row paste target. They keep native button semantics because MUI wrappers would add no accessibility benefit and could interfere with native window or pointer-drag behavior. Everything else, including development-only tools, uses MUI controls.
 
+The saved-text editor uses a `contenteditable` textbox for rich text. This special
+surface retains existing inline formatting and native text undo; MUI TextField
+is used for plain text, and all editor actions and confirmations remain MUI.
+Clipboard HTML is sanitized before insertion and before saving.
+
 ## Motion Ownership
 
 Motion is added deliberately after component structure is stable. Use one animation owner per element:

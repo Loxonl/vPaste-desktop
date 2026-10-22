@@ -13,6 +13,7 @@ const Clipboard = React.lazy(() => import("./clipboard/Clipboard.tsx"));
 const EmojiPicker = React.lazy(() => import("./clipboard/EmojiPicker.tsx"));
 const Preview = React.lazy(() => import("./clipboard/Preview.tsx"));
 const TabEditor = React.lazy(() => import("./clipboard/TabEditor.tsx"));
+const TextEditor = React.lazy(() => import("./clipboard/TextEditor.tsx"));
 const OnboardingPermissionWindow = React.lazy(() => import("./clipboard/OnboardingPermissionWindow.tsx"));
 const PasteFallbackNotice = React.lazy(() => import("./clipboard/PasteFallbackNotice.tsx"));
 const PasteQueue = React.lazy(() => import("./clipboard/PasteQueue.tsx"));
@@ -85,6 +86,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
                         <Route path="/clipboard/preview" element={<Preview />} />
                         <Route path="/emoji-picker" element={<EmojiPicker />} />
                         <Route path="/tab-editor" element={<TabEditor />} />
+                        <Route path="/text-editor" element={<TextEditor />} />
                         <Route path="/onboarding-permission" element={<OnboardingPermissionWindow />} />
                         <Route path="/paste-fallback-notice" element={<PasteFallbackNotice />} />
                         <Route path="/paste-failure-notice" element={<PasteFallbackNotice showSettingsAction={false} />} />

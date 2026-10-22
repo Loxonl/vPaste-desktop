@@ -65,7 +65,7 @@ function isReservedPasteAsTextShortcut(value: string) {
     if (normalizeShortcutForPolicy(value) === (isMacPlatform() ? "backspace" : "delete")) return true;
 
     return parts.some(part => ["space", "arrowdown", "arrowleft", "arrowright", "tab", "esc"].includes(part))
-        || normalizeShortcutForPolicy(value) === "enter";
+        || ["enter", "f2"].includes(normalizeShortcutForPolicy(value));
 }
 
 function isUnsupportedRecordedKey(event?: React.KeyboardEvent) {
@@ -196,6 +196,7 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
                         label={t("settings.shortcuts.deleteRecord")}
                         value={isMacPlatform() ? "⌫" : "Delete"}
                     />
+                    <FixedShortcutItem label={t("menu.editText")} value="F2" />
                     <ShortcutItem
                         label={t("settings.shortcuts.pasteText")}
                         value={config.shortcut_keys.paste_into_plain_text}

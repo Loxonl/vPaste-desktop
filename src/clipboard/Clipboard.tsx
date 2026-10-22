@@ -50,6 +50,7 @@ import ClipboardCard from "./ClipboardCard";
 import { ClipboardResultsSurface } from "./ClipboardResultsSurface";
 import {
     parseLinkContent,
+    isEditableTextItem,
 } from "./itemPresentation";
 import {
     CONTEXT_MENU_GAP,
@@ -1335,6 +1336,21 @@ export default function Clipboard() {
         void fetchHistoryWith(searchWordRef.current, activeTab, { selectFirst: true });
     }, [activeTab, customTabs]);
 
+    const editedHandlerRef = useRef<(hash: string, previousHash?: string) => void>(() => {});
+    editedHandlerRef.current = (hash, previousHash) => {
+        if (selectedRef.current === previousHash) {
+            selectedRef.current = hash;
+            setSelected(hash);
+        }
+        void fetchHistoryWith(searchWordRef.current, activeTabRef.current);
+    };
+    useEffect(() => {
+        const unlisten = listen<{ hash: string; previousHash?: string }>("clipboard-item-edited", event => {
+            editedHandlerRef.current(event.payload.hash, event.payload.previousHash);
+        });
+        return () => { void unlisten.then(dispose => dispose()); };
+    }, []);
+
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             const action = clipboardKeyDownAction(event, {
@@ -1350,7 +1366,7 @@ export default function Clipboard() {
             });
             if (!action) return;
 
-            if (action.type === "delete-selected" && (
+            if ((action.type === "delete-selected" || action.type === "edit-selected") && (
                 !document.hasFocus() || tutorialActiveRef.current
                 || historyRefreshingRef.current || isSearching
                 || showGateRef.current!.needsSync || showGateRef.current!.pending || showGateRef.current!.failed
@@ -1489,6 +1505,11 @@ export default function Clipboard() {
                 case "delete-selected": {
                     const item = pageListRef.current.find(candidate => candidate.getHash() === selectedRef.current);
                     if (item) void deleteClipboardItemRef.current?.(item);
+                    return;
+                }
+                case "edit-selected": {
+                    const item = pageListRef.current.find(candidate => candidate.getHash() === selectedRef.current);
+                    if (item) void openTextEditor(item);
                     return;
                 }
                 case "paste-selected":
@@ -1700,6 +1721,13 @@ export default function Clipboard() {
     });
     deleteClipboardItemRef.current = deleteClipboardItem;
 
+    async function openTextEditor(item: Item) {
+        if (!isEditableTextItem(item)) return;
+        setContextMenu(null);
+        try { await invoke("open_text_editor_window", { hash: item.getHash() }); }
+        catch (reason) { showToast(t("editor.failed", { error: String(reason) }), "error"); }
+    }
+
     const buildContextMenuOptions = (
         item: Item,
         currentItemTags: ItemTag[] = itemTags,
@@ -1711,6 +1739,7 @@ export default function Clipboard() {
             onCopyContainingFolder: copyContainingFolderPath,
             onCreateRecordTag: openRecordTagCreateEditorForItem,
             onDelete: deleteClipboardItem,
+            onEditText: openTextEditor,
             onExportImage: exportImageItem,
             onOpenContainingFolder: openContainingFolder,
             onPastePlainText: pastePlainTextItem,

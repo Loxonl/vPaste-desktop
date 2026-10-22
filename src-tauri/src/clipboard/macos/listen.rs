@@ -175,6 +175,23 @@ fn parse(system_clipboard: &mut Clipboard, queue_only: bool) -> Result<Option<St
         return Ok(None);
     }
 
+    let has_rich_or_text = HTML_PASTEBOARD_TYPES
+        .iter()
+        .chain(RTF_PASTEBOARD_TYPES.iter())
+        .any(|pasteboard_type| pasteboard_contains_type(pasteboard_type))
+        || pasteboard_contains_type("public.utf8-plain-text")
+        || pasteboard_contains_type("public.utf16-external-plain-text");
+    if should_capture_raster_image_before_file(
+        &app_source.name,
+        pasteboard_contains_type("public.file-url"),
+        pasteboard_contains_type("public.png") || pasteboard_contains_type("public.tiff"),
+        has_rich_or_text,
+    ) {
+        if let Some(hash) = insert_image_if_present(system_clipboard, &app_source, queue_only)? {
+            return Ok(Some(hash));
+        }
+    }
+
     if let Some(hash) = insert_file_if_present(&app_source, queue_only) {
         return Ok(Some(hash));
     }
@@ -205,6 +222,18 @@ fn parse(system_clipboard: &mut Clipboard, queue_only: bool) -> Result<Option<St
 
     info!("clipboard format is not supported yet");
     Ok(None)
+}
+
+fn should_capture_raster_image_before_file(
+    app_source: &str,
+    has_file_url: bool,
+    has_raster_image: bool,
+    has_rich_or_text: bool,
+) -> bool {
+    !app_source.eq_ignore_ascii_case("Finder")
+        && has_file_url
+        && has_raster_image
+        && !has_rich_or_text
 }
 
 fn clipboard_app_source() -> AppSource {
@@ -794,7 +823,44 @@ fn rich_preview_text(html: Option<&[u8]>, rtf: Option<&[u8]>) -> Option<String> 
 
 #[cfg(test)]
 mod tests {
-    use super::{pasteboard_file_value_to_path, push_file_path, rich_preview_text};
+    use super::{
+        pasteboard_file_value_to_path, push_file_path, rich_preview_text,
+        should_capture_raster_image_before_file,
+    };
+
+    #[test]
+    fn raster_image_with_temporary_file_is_captured_as_image() {
+        assert!(should_capture_raster_image_before_file(
+            "Microsoft Word",
+            true,
+            true,
+            false,
+        ));
+        assert!(should_capture_raster_image_before_file(
+            "Word", true, true, false,
+        ));
+        assert!(should_capture_raster_image_before_file(
+            "Universal Control",
+            true,
+            true,
+            false,
+        ));
+        assert!(!should_capture_raster_image_before_file(
+            "Finder", true, true, false,
+        ));
+        assert!(!should_capture_raster_image_before_file(
+            "Microsoft Word",
+            true,
+            false,
+            false,
+        ));
+        assert!(!should_capture_raster_image_before_file(
+            "Microsoft Word",
+            true,
+            true,
+            true,
+        ));
+    }
 
     #[test]
     fn rtf_only_preview_contains_readable_text_without_control_words() {

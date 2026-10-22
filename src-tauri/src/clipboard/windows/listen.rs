@@ -1205,11 +1205,19 @@ fn local_images_from_html(html: &[u8]) -> Vec<PathBuf> {
     let Ok(selector) = scraper::Selector::parse("img") else {
         return Vec::new();
     };
-    document
+    let mut images: Vec<PathBuf> = document
         .select(&selector)
         .filter_map(|element| element.value().attr("src"))
         .filter_map(file_url_to_path)
-        .collect()
+        .collect();
+    for src in clipboard::word_vml_local_image_urls(&fragment) {
+        if let Some(path) = file_url_to_path(&src) {
+            if !images.contains(&path) {
+                images.push(path);
+            }
+        }
+    }
+    images
 }
 
 fn remote_gif_images_from_html(html: &[u8]) -> Vec<String> {
@@ -2767,6 +2775,16 @@ mod tests {
             false,
         ));
         assert!(!should_prefer_bitmap_for_rich_content(None, 0, false));
+    }
+
+    #[test]
+    fn word_vml_file_image_is_detected_without_an_img_tag() {
+        let html = br#"<html><body><!--[if gte vml 1]><v:shape><v:imagedata src="file:///C:/Temp/word-image.png"/></v:shape><![endif]--></body></html>"#;
+
+        assert_eq!(
+            local_images_from_html(html),
+            vec![PathBuf::from(r"C:\Temp\word-image.png")]
+        );
     }
 
     #[test]

@@ -61,7 +61,12 @@ export function sanitizeRichHtml(html: string, maxWidthPx = 160, editable = fals
                     element.style.removeProperty(name);
                 }
             });
-        } else normalizeRichPreviewStyle(element, maxWidthPx);
+        } else {
+            normalizeRichPreviewStyle(element, maxWidthPx);
+            if (tag === "img" && isDocumentPicture(element)) {
+                element.setAttribute("data-rich-picture", "");
+            }
+        }
     });
     const root = document.body.firstElementChild;
     if (root && !editable) {
@@ -69,6 +74,20 @@ export function sanitizeRichHtml(html: string, maxWidthPx = 160, editable = fals
         trimLeadingEmptyRichBlocks(root);
     }
     return document.body.firstElementChild?.innerHTML || "";
+}
+
+// Cards shrink images inside text to icon size; pictures declared larger than an
+// icon (e.g. Word images, which always carry width/height) keep picture sizing.
+const RICH_INLINE_ICON_MAX_PX = 32;
+
+function isDocumentPicture(image: HTMLElement): boolean {
+    return [
+        image.getAttribute("width"),
+        image.getAttribute("height"),
+        image.style.width,
+        image.style.height,
+    ].some(value => /^\s*\d+(?:\.\d+)?\s*(?:px)?\s*$/i.test(value || "")
+        && Number.parseFloat(value || "") > RICH_INLINE_ICON_MAX_PX);
 }
 
 function normalizeRichPreviewStyle(element: HTMLElement, maxWidthPx: number) {

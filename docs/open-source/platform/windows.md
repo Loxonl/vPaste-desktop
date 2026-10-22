@@ -54,7 +54,47 @@ Implementation expectations:
 - Refresh duplicate items by recency instead of silently ignoring the copy.
 - Capture raw snapshots immediately, but allow a plain-text-only snapshot up to 50ms for an adjacent rich-format completion with identical text, source, and queue session. Preserve different copies in order; do not globally deduplicate rich text by its plain fallback.
 - Serialize native clipboard reads and restores with the shared process-level clipboard lock. Publish text and the internal marker before releasing it; keep decoding and database work outside this lock. Do not assume `OpenClipboard(NULL)` coordinates our own threads (see the [Windows Terminal clipboard implementation](https://github.com/microsoft/terminal/blob/main/src/cascadia/TerminalApp/TerminalPage.cpp)).
+- On transient capture failures, discard the partial snapshot and retry the latest clipboard sequence without requiring another notification. Sequence changes can be delayed rendering within one copy. Rebase the timestamp/queue session with the sequence, verify it again after opening the clipboard, and keep the existing total retry/size limits; never merge fields from failed attempts.
 - When pasting a selected history item, record the foreground window before showing vPaste, restore it after hiding vPaste, then send native Ctrl+V. Browser page inputs are more focus-sensitive than address bars or chat boxes.
+
+## Clipboard Capture Diagnostics
+
+Failed native clipboard opens/reads log `clipboard_diag` records with the stage,
+format name/ID, native error code, elapsed time, requested sequence, and current
+owner/open-window process and thread identifiers. These records do not contain
+copied text, HTML, image bytes, file paths, or window titles. They preserve the
+original return value and do not add retries or change format selection.
+
+For a short reproduction, enable detailed tracing before starting vPaste:
+
+```powershell
+$env:VPASTE_CLIPBOARD_DIAGNOSTICS = "1"
+npm run dev:debug
+```
+
+The flag also works for the Windows application executable launched from that
+environment. It is read once per process, so restart to change it. Detailed mode
+adds before/after metadata, format-size probes already performed by the reader,
+attempt/skip/sequence-change events, and snapshot byte counts to the existing
+runtime `logs/vPaste.log`; a custom history-storage directory does not move this
+log. No additional clipboard payload reads, background polling, or network reporting
+are introduced. With the flag unset, successful read stages are not logged.
+
+Reproduce with one copy, note whether it entered history, and retain the nearby
+`clipboard_diag`/capture messages. Log timestamps are UTC. A sequence change can
+also reflect delayed format rendering, not necessarily another user copy. A
+zero open-window handle does not prove the clipboard was unoccupied: callers
+can use `OpenClipboard(NULL)`, and metadata samples are not atomic API traces.
+Detailed logging can affect race timing; compare with ordinary failure logs.
+
+After diagnosis, remove the flag from the launching terminal and restart:
+
+```powershell
+Remove-Item Env:VPASTE_CLIPBOARD_DIAGNOSTICS
+```
+
+Only these new diagnostic records are payload-free; review the rest of the log
+for unrelated identifying information before sharing it publicly.
 
 ## Main-window Win+V Shortcut
 

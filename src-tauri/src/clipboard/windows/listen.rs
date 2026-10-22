@@ -11,6 +11,7 @@ use clipboard_win::{get, Clipboard};
 use log::{error, info};
 use tauri::{Emitter, Manager, WebviewWindow};
 
+use super::diagnostics::{self, ReadTrace};
 use crate::clipboard;
 use crate::clipboard::windows::image_convert;
 use crate::config;
@@ -291,6 +292,9 @@ fn is_ignored_app_source(app_source: &str) -> bool {
 
 pub fn start(window: WebviewWindow) {
     thread::spawn(move || {
+        if diagnostics::enabled() {
+            info!("clipboard_diag detailed Windows capture diagnostics enabled; payload content is not logged");
+        }
         let mut monitor = match Monitor::new() {
             Ok(monitor) => monitor,
             Err(err) => {
@@ -308,12 +312,32 @@ pub fn start(window: WebviewWindow) {
                 let sequence = snapshot.sequence;
                 let epoch = snapshot.context.unwrap().queue_epoch;
                 let started = Instant::now();
+                if diagnostics::enabled() {
+                    info!(
+                        "clipboard_diag stage=parse_snapshot sequence={} text_bytes={} html_bytes={} rtf_bytes={} png_bytes={} gif_bytes={} dib_v5_bytes={} dib_bytes={} file_count={}",
+                        sequence,
+                        snapshot.text.as_ref().map(String::len).unwrap_or(0),
+                        snapshot.html.as_ref().map(Vec::len).unwrap_or(0),
+                        snapshot.rtf.as_ref().map(Vec::len).unwrap_or(0),
+                        snapshot.png.as_ref().map(Vec::len).unwrap_or(0),
+                        snapshot.gif.as_ref().map(Vec::len).unwrap_or(0),
+                        snapshot.dib_v5.as_ref().map(Vec::len).unwrap_or(0),
+                        snapshot.dib.as_ref().map(Vec::len).unwrap_or(0),
+                        snapshot.files.as_ref().map(Vec::len).unwrap_or(0),
+                    );
+                }
                 resolve_app_source_icon(&mut snapshot.app_source);
                 let result = parse_snapshot(snapshot);
                 complete_capture(sequence, result.clone());
                 info!(
-                    "clipboard snapshot processed in {}ms",
-                    started.elapsed().as_millis()
+                    "clipboard snapshot processed in {}ms sequence={} outcome={}",
+                    started.elapsed().as_millis(),
+                    sequence,
+                    match &result {
+                        Ok(Some(_)) => "captured",
+                        Ok(None) => "ignored",
+                        Err(_) => "failed",
+                    }
                 );
                 if let Err(err) = &result {
                     error!("failed to process clipboard snapshot: {err}");
@@ -340,7 +364,7 @@ pub fn start(window: WebviewWindow) {
         complete_capture(clipboard_sequence_number(), Ok(None));
 
         while matches!(monitor.recv(), Ok(true)) {
-            let sequence = clipboard_sequence_number();
+            let mut sequence = clipboard_sequence_number();
             if !sequence_deduper.should_process(sequence) {
                 info!("skip duplicate clipboard sequence {}", sequence);
                 continue;
@@ -351,8 +375,10 @@ pub fn start(window: WebviewWindow) {
                 continue;
             }
             let start = Instant::now();
-            let context = clipboard::CaptureContext::from(crate::paste_queue::is_active());
-            let result = match read_snapshot_with_retry(sequence, context) {
+            let mut context = clipboard::CaptureContext::from(crate::paste_queue::is_active());
+            let snapshot_result = read_snapshot_with_retry(&mut sequence, &mut context);
+            sequence_deduper.last_processed = Some(sequence);
+            let result = match snapshot_result {
                 Ok(Some(snapshot)) => {
                     let sequence = snapshot.sequence;
                     sequence_deduper.last_processed = Some(sequence);
@@ -391,18 +417,60 @@ pub fn start(window: WebviewWindow) {
 }
 
 fn read_snapshot_with_retry(
-    sequence: u32,
-    context: clipboard::CaptureContext,
+    sequence: &mut u32,
+    context: &mut clipboard::CaptureContext,
+) -> Result<Option<ClipboardSnapshot>, String> {
+    retry_snapshot_read(
+        sequence,
+        context,
+        || {
+            (
+                clipboard_sequence_number(),
+                clipboard::CaptureContext::from(crate::paste_queue::is_active()),
+            )
+        },
+        |sequence, attempt, context, trace| {
+            LATEST_CAPTURE_SEQUENCE.store(sequence, Ordering::SeqCst);
+            read_snapshot(sequence, attempt < READ_ATTEMPTS, context, trace)
+        },
+        thread::sleep,
+    )
+}
+
+fn retry_snapshot_read(
+    sequence: &mut u32,
+    context: &mut clipboard::CaptureContext,
+    mut current_copy: impl FnMut() -> (u32, clipboard::CaptureContext),
+    mut read: impl FnMut(
+        u32,
+        usize,
+        clipboard::CaptureContext,
+        &ReadTrace,
+    ) -> Result<Option<ClipboardSnapshot>, String>,
+    mut wait: impl FnMut(Duration),
 ) -> Result<Option<ClipboardSnapshot>, String> {
     for attempt in 0..READ_ATTEMPTS {
-        if clipboard_sequence_number() != sequence {
-            return Err("剪贴板内容在读取前被后续复制覆盖".to_string());
+        let (current_sequence, current_context) = current_copy();
+        if current_sequence != *sequence {
+            // A failed attempt owns no snapshot. Start a fresh read of the
+            // latest copy instead of mistaking delayed rendering for a reason
+            // to abandon capture. Never combine fields across attempts or
+            // carry an old copy's timestamp/queue session into its successor.
+            ReadTrace::new(*sequence, attempt + 1).event("sequence_catch_up", false, None);
+            *sequence = current_sequence;
+            *context = current_context;
         }
-        match read_snapshot(attempt + 1 < READ_ATTEMPTS, context) {
+        let trace = ReadTrace::new(*sequence, attempt + 1);
+        trace.event("attempt_begin", false, None);
+        match read(*sequence, attempt + 1, *context, &trace) {
             Ok(snapshot) => return Ok(snapshot),
             Err(err) => {
                 if err.starts_with("复制内容超过") {
+                    trace.event("size_limit", true, None);
                     return Err(err);
+                }
+                if attempt + 1 == READ_ATTEMPTS {
+                    break;
                 }
                 let delay = (INITIAL_RETRY_DELAY_MS * (attempt as u64 + 1)).min(MAX_RETRY_DELAY_MS);
                 info!(
@@ -412,7 +480,7 @@ fn read_snapshot_with_retry(
                     err,
                     delay
                 );
-                thread::sleep(Duration::from_millis(delay));
+                wait(Duration::from_millis(delay));
             }
         }
     }
@@ -421,35 +489,61 @@ fn read_snapshot_with_retry(
 }
 
 fn read_snapshot(
+    sequence: u32,
     should_retry_file_hint: bool,
     context: clipboard::CaptureContext,
+    trace: &ReadTrace,
 ) -> Result<Option<ClipboardSnapshot>, String> {
     let _access = super::lock_clipboard_access();
-    let _clipboard = Clipboard::new_attempts(2).map_err(|err| err.to_string())?;
+    trace.event("access_lock_acquired", false, None);
+    let _clipboard = trace
+        .native("OpenClipboard", "none", 0, || Clipboard::new_attempts(2))
+        .map_err(|err| err.to_string())?;
+    // A new copy may arrive while waiting for our process lock or OpenClipboard.
+    // Check under the open clipboard, before consuming markers or any payload.
+    if clipboard_sequence_number() != sequence {
+        trace.event("sequence_changed_before_read", false, None);
+        return Err("剪贴板已更新，重新读取最新内容".into());
+    }
     let app_source = clipboard_app_source().unwrap_or_default();
     let internal_requested = should_skip_internal_clipboard_change();
     if has_internal_clipboard_marker() {
+        trace.event("skip_internal_marker", false, None);
         info!("skip vPaste internal clipboard payload");
         return Ok(None);
     }
     if (internal_requested || is_internal_clipboard_window_active())
         && is_vpaste_app_source(&app_source.name)
     {
+        trace.event("skip_internal_window", false, None);
         info!("skip vPaste foreground clipboard payload during internal window");
         return Ok(None);
     }
 
     if is_ignored_app_source(&app_source.name) {
+        trace.event("skip_ignored_source", false, None);
         return Ok(None);
     }
     if config::get().sensitive_content_protection && has_sensitive_clipboard_marker() {
+        trace.event("skip_sensitive_marker", false, None);
         info!("skip clipboard history item marked as sensitive by system clipboard formats");
         return Ok(None);
     }
 
     let text: Option<String> = if is_format_avail(formats::Unicode.into()) {
-        check_snapshot_format_size(formats::Unicode.into(), MAX_BUFFERED_CAPTURE_BYTES)?;
-        Some(get::<String, _>(formats::Unicode).map_err(|err| err.to_string())?)
+        check_snapshot_format_size(
+            formats::Unicode.into(),
+            MAX_BUFFERED_CAPTURE_BYTES,
+            trace,
+            "CF_UNICODETEXT",
+        )?;
+        Some(
+            trace
+                .native("read", "CF_UNICODETEXT", formats::Unicode.into(), || {
+                    get::<String, _>(formats::Unicode)
+                })
+                .map_err(|err| err.to_string())?,
+        )
     } else {
         None
     }
@@ -459,9 +553,9 @@ fn read_snapshot(
         text.as_ref().map(String::len).unwrap_or(0),
         &mut remaining_bytes,
     )?;
-    let gif = match read_snapshot_registered_format("GIF", &mut remaining_bytes)? {
+    let gif = match read_snapshot_registered_format("GIF", &mut remaining_bytes, trace)? {
         Some(bytes) => Some(bytes),
-        None => read_snapshot_registered_format("image/gif", &mut remaining_bytes)?,
+        None => read_snapshot_registered_format("image/gif", &mut remaining_bytes, trace)?,
     };
     if gif.as_deref().is_some_and(is_gif_bytes) {
         let snapshot = ClipboardSnapshot {
@@ -472,23 +566,31 @@ fn read_snapshot(
             gif,
             ..Default::default()
         };
-        if snapshot.byte_size() > MAX_BUFFERED_CAPTURE_BYTES {
+        let snapshot_size = snapshot.byte_size();
+        if snapshot_size > MAX_BUFFERED_CAPTURE_BYTES {
             return Err("复制内容超过安全大小限制，未加入记录".to_string());
         }
+        trace.event("snapshot_ready", false, Some(snapshot_size));
         return Ok(Some(snapshot));
     }
-    let html = read_snapshot_registered_format("HTML Format", &mut remaining_bytes)?;
-    let rtf = read_snapshot_registered_format("Rich Text Format", &mut remaining_bytes)?;
-    let png = read_snapshot_registered_format("PNG", &mut remaining_bytes)?;
-    let dib_v5 = read_snapshot_raw_format(CF_DIBV5, &mut remaining_bytes)?;
+    let html = read_snapshot_registered_format("HTML Format", &mut remaining_bytes, trace)?;
+    let rtf = read_snapshot_registered_format("Rich Text Format", &mut remaining_bytes, trace)?;
+    let png = read_snapshot_registered_format("PNG", &mut remaining_bytes, trace)?;
+    let dib_v5 = read_snapshot_raw_format(CF_DIBV5, &mut remaining_bytes, trace, "CF_DIBV5")?;
     let dib = if dib_v5.is_none() {
-        read_snapshot_raw_format(CF_DIB, &mut remaining_bytes)?
+        read_snapshot_raw_format(CF_DIB, &mut remaining_bytes, trace, "CF_DIB")?
     } else {
         None
     };
     let files = if is_format_avail(formats::FileList.into()) {
-        check_snapshot_format_size(formats::FileList.into(), remaining_bytes)?;
-        Some(get(formats::FileList).map_err(|err| format!("read file list failed: {err}"))?)
+        check_snapshot_format_size(formats::FileList.into(), remaining_bytes, trace, "CF_HDROP")?;
+        Some(
+            trace
+                .native("read", "CF_HDROP", formats::FileList.into(), || {
+                    get(formats::FileList)
+                })
+                .map_err(|err| format!("read file list failed: {err}"))?,
+        )
     } else {
         None
     };
@@ -498,6 +600,7 @@ fn read_snapshot(
             .as_deref()
             .is_some_and(is_probable_file_clipboard_placeholder)
     {
+        trace.event("file_list_not_ready", true, None);
         return Err("file list format is not ready yet".to_string());
     }
     let snapshot = ClipboardSnapshot {
@@ -513,9 +616,11 @@ fn read_snapshot(
         dib,
         files,
     };
-    if snapshot.byte_size() > MAX_BUFFERED_CAPTURE_BYTES {
+    let snapshot_size = snapshot.byte_size();
+    if snapshot_size > MAX_BUFFERED_CAPTURE_BYTES {
         return Err("复制内容超过安全大小限制，未加入记录".to_string());
     }
+    trace.event("snapshot_ready", false, Some(snapshot_size));
     Ok(Some(snapshot))
 }
 
@@ -526,8 +631,16 @@ fn reserve_snapshot_bytes(size: usize, remaining_bytes: &mut usize) -> Result<()
     Ok(())
 }
 
-fn check_snapshot_format_size(format: u32, remaining_bytes: usize) -> Result<(), String> {
-    if clipboard_win::size(format).is_some_and(|size| size.get() > remaining_bytes) {
+fn check_snapshot_format_size(
+    format: u32,
+    remaining_bytes: usize,
+    trace: &ReadTrace,
+    name: &'static str,
+) -> Result<(), String> {
+    if trace
+        .size(name, format, || clipboard_win::size(format))
+        .is_some_and(|size| size.get() > remaining_bytes)
+    {
         return Err("复制内容超过安全大小限制，未加入记录".to_string());
     }
     Ok(())
@@ -536,22 +649,27 @@ fn check_snapshot_format_size(format: u32, remaining_bytes: usize) -> Result<(),
 fn read_snapshot_raw_format(
     format: u32,
     remaining_bytes: &mut usize,
+    trace: &ReadTrace,
+    name: &'static str,
 ) -> Result<Option<Vec<u8>>, String> {
     if !is_format_avail(format) {
         return Ok(None);
     }
-    check_snapshot_format_size(format, *remaining_bytes)?;
-    let bytes: Vec<u8> = get(formats::RawData(format)).map_err(|err| err.to_string())?;
+    check_snapshot_format_size(format, *remaining_bytes, trace, name)?;
+    let bytes: Vec<u8> = trace
+        .native("read", name, format, || get(formats::RawData(format)))
+        .map_err(|err| err.to_string())?;
     reserve_snapshot_bytes(bytes.len(), remaining_bytes)?;
     Ok(Some(bytes))
 }
 
 fn read_snapshot_registered_format(
-    name: &str,
+    name: &'static str,
     remaining_bytes: &mut usize,
+    trace: &ReadTrace,
 ) -> Result<Option<Vec<u8>>, String> {
     match registered_format_code(name) {
-        Some(format) => match read_snapshot_raw_format(format, remaining_bytes) {
+        Some(format) => match read_snapshot_raw_format(format, remaining_bytes, trace, name) {
             Ok(bytes) => Ok(bytes.filter(|bytes| !bytes.is_empty())),
             Err(err) if err.starts_with("复制内容超过") => Err(err),
             Err(err) => {
@@ -1868,6 +1986,258 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clipboard_retry_recovers_excel_publication_and_delayed_rendering() {
+        let mut sequence = 4691;
+        let mut context = clipboard::CaptureContext {
+            time: 1000,
+            queue_epoch: Some(7),
+        };
+        let mut phases = [4691, 4722, 4723].into_iter();
+        let mut reads = Vec::new();
+        let mut waits = Vec::new();
+        let snapshot = retry_snapshot_read(
+            &mut sequence,
+            &mut context,
+            || {
+                (
+                    phases.next().expect("unexpected extra attempt"),
+                    clipboard::CaptureContext {
+                        time: 1010,
+                        queue_epoch: Some(7),
+                    },
+                )
+            },
+            |sequence, attempt, context, _| {
+                reads.push(sequence);
+                match attempt {
+                    1 => Err("OSError(5): access denied".into()),
+                    2 => Err("OSError(1418): clipboard not open".into()),
+                    _ => Ok(Some(ClipboardSnapshot {
+                        sequence,
+                        context: Some(context),
+                        app_source: AppSource {
+                            name: "EXCEL".into(),
+                            ..Default::default()
+                        },
+                        text: Some("cell one\tcell two".into()),
+                        html: Some(
+                            b"<table><tr><td>cell one</td><td>cell two</td></tr></table>".to_vec(),
+                        ),
+                        ..Default::default()
+                    })),
+                }
+            },
+            |delay| waits.push(delay),
+        )
+        .expect("one Excel copy must be recovered without another notification")
+        .unwrap();
+        assert_eq!(reads, [4691, 4722, 4723]);
+        assert_eq!(sequence, 4723);
+        assert_eq!(snapshot.sequence, 4723);
+        assert_eq!(snapshot.app_source.name, "EXCEL");
+        assert_eq!(snapshot.text.as_deref(), Some("cell one\tcell two"));
+        assert!(snapshot.html.is_some());
+        assert_eq!(waits, [Duration::from_millis(8), Duration::from_millis(16)]);
+    }
+
+    #[test]
+    fn clipboard_retry_new_copy_uses_fresh_snapshot_and_queue_session() {
+        let mut sequence = 10;
+        let mut context = clipboard::CaptureContext {
+            time: 1000,
+            queue_epoch: Some(7),
+        };
+        let mut phases = [10, 20].into_iter();
+        let mut reads = Vec::new();
+        let snapshot = retry_snapshot_read(
+            &mut sequence,
+            &mut context,
+            || {
+                (
+                    phases.next().unwrap(),
+                    clipboard::CaptureContext {
+                        time: 2000,
+                        queue_epoch: Some(8),
+                    },
+                )
+            },
+            |sequence, _, context, _| {
+                reads.push((sequence, context.time, context.queue_epoch));
+                if sequence == 10 {
+                    return Err("old incomplete Excel read failed".into());
+                }
+                Ok(Some(ClipboardSnapshot {
+                    sequence,
+                    context: Some(context),
+                    app_source: AppSource {
+                        name: "Chrome".into(),
+                        ..Default::default()
+                    },
+                    text: Some("new copy".into()),
+                    ..Default::default()
+                }))
+            },
+            |_| {},
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(reads, [(10, 1000, Some(7)), (20, 2000, Some(8))]);
+        assert_eq!(snapshot.app_source.name, "Chrome");
+        assert_eq!(snapshot.text.as_deref(), Some("new copy"));
+        assert!(snapshot.html.is_none());
+        assert_eq!(context.queue_epoch, Some(8));
+        assert_eq!(snapshot.context.unwrap().time, 2000);
+    }
+
+    #[test]
+    fn clipboard_retry_catches_up_before_first_read_and_preserves_ignored_result() {
+        let mut sequence = 10;
+        let mut context = clipboard::CaptureContext {
+            time: 1000,
+            queue_epoch: Some(7),
+        };
+        let ignored = retry_snapshot_read(
+            &mut sequence,
+            &mut context,
+            || {
+                (
+                    11,
+                    clipboard::CaptureContext {
+                        time: 2000,
+                        queue_epoch: None,
+                    },
+                )
+            },
+            |sequence, attempt, context, _| {
+                assert_eq!(sequence, 11);
+                assert_eq!(attempt, 1);
+                assert_eq!(context.time, 2000);
+                assert!(context.queue_epoch.is_none());
+                // Internal, sensitive, or ignored sources remain ignored.
+                Ok(None)
+            },
+            |_| panic!("an ignored copy must not be retried"),
+        )
+        .unwrap();
+        assert!(ignored.is_none());
+        assert_eq!(sequence, 11);
+    }
+
+    #[test]
+    fn clipboard_retry_success_is_immediate_and_keeps_original_context() {
+        let mut sequence = 10;
+        let mut context = clipboard::CaptureContext {
+            time: 1000,
+            queue_epoch: Some(7),
+        };
+        let snapshot = retry_snapshot_read(
+            &mut sequence,
+            &mut context,
+            || {
+                (
+                    10,
+                    clipboard::CaptureContext {
+                        time: 2000,
+                        queue_epoch: None,
+                    },
+                )
+            },
+            |sequence, attempt, context, _| {
+                assert_eq!(attempt, 1);
+                Ok(Some(ClipboardSnapshot {
+                    sequence,
+                    context: Some(context),
+                    text: Some("fast copy".into()),
+                    ..Default::default()
+                }))
+            },
+            |_| panic!("successful copies must not add a retry delay"),
+        )
+        .unwrap()
+        .unwrap();
+        let captured_context = snapshot.context.unwrap();
+        assert_eq!(captured_context.time, 1000);
+        assert_eq!(captured_context.queue_epoch, Some(7));
+    }
+
+    #[test]
+    fn clipboard_retry_size_limit_is_terminal() {
+        let mut sequence = 10;
+        let mut context = clipboard::CaptureContext {
+            time: 1000,
+            queue_epoch: None,
+        };
+        let error = retry_snapshot_read(
+            &mut sequence,
+            &mut context,
+            || {
+                (
+                    10,
+                    clipboard::CaptureContext {
+                        time: 2000,
+                        queue_epoch: None,
+                    },
+                )
+            },
+            |_, attempt, _, _| {
+                assert_eq!(attempt, 1);
+                Err("复制内容超过安全大小限制，未加入记录".into())
+            },
+            |_| panic!("oversized copies must not be read repeatedly"),
+        )
+        .err()
+        .unwrap();
+        assert!(error.starts_with("复制内容超过"));
+    }
+
+    #[test]
+    fn clipboard_retry_churn_and_native_failures_keep_a_fixed_retry_budget() {
+        for changing_sequence in [false, true] {
+            let mut sequence = 10;
+            let mut context = clipboard::CaptureContext {
+                time: 1000,
+                queue_epoch: None,
+            };
+            let mut current = 10;
+            let mut reads = 0;
+            let mut waits = Vec::new();
+            let result = retry_snapshot_read(
+                &mut sequence,
+                &mut context,
+                || {
+                    current += u32::from(changing_sequence);
+                    (
+                        current,
+                        clipboard::CaptureContext {
+                            time: 2000,
+                            queue_epoch: None,
+                        },
+                    )
+                },
+                |_, attempt, _, _| {
+                    reads += 1;
+                    assert_eq!(attempt, reads);
+                    Err("clipboard remains unavailable".into())
+                },
+                |delay| waits.push(delay),
+            );
+            assert!(result.is_err());
+            assert_eq!(
+                reads, READ_ATTEMPTS,
+                "sequence changes must not reset the budget"
+            );
+            assert_eq!(
+                waits.len(),
+                READ_ATTEMPTS - 1,
+                "do not sleep after the final failure"
+            );
+            assert!(waits
+                .iter()
+                .all(|delay| *delay <= Duration::from_millis(MAX_RETRY_DELAY_MS)));
+        }
+    }
+
+    #[test]
     fn internal_text_is_never_visible_without_its_marker() {
         // A separate process/window station owns a separate clipboard. Never run
         // this writer/reader race against the user's desktop or clipboard history.
@@ -1935,6 +2305,21 @@ mod tests {
         *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
             Some(root.path().to_string_lossy().to_string());
         crate::config::save(crate::config::Config::default());
+        crate::copy_text_to_windows_clipboard("internal catch-up text").unwrap();
+        let published_sequence = clipboard_sequence_number();
+        let mut sequence = published_sequence.wrapping_sub(1);
+        let mut context = clipboard::CaptureContext {
+            time: 1,
+            queue_epoch: None,
+        };
+        assert!(read_snapshot(sequence, false, context, &ReadTrace::new(sequence, 1)).is_err());
+        let captured = read_snapshot_with_retry(&mut sequence, &mut context).unwrap();
+        assert_eq!(sequence, published_sequence);
+        assert!(context.time > 1);
+        assert!(
+            captured.is_none(),
+            "catch-up must still honor internal markers"
+        );
         let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader_done = done.clone();
         let (ready, started) = mpsc::channel();
@@ -1944,11 +2329,13 @@ mod tests {
             let mut marked = 0;
             while !reader_done.load(Ordering::SeqCst) {
                 match read_snapshot(
+                    clipboard_sequence_number(),
                     false,
                     clipboard::CaptureContext {
                         time: 1,
                         queue_epoch: None,
                     },
+                    &ReadTrace::new(clipboard_sequence_number(), 1),
                 ) {
                     Ok(Some(snapshot)) if snapshot.text.is_some() => unmarked += 1,
                     Ok(None) => marked += 1,

@@ -118,6 +118,21 @@ describe("rich clipboard preview", () => {
         expect(html).not.toContain("&nbsp;");
     });
 
+    it("keeps document pictures inside paragraphs apart from inline icons", () => {
+        const html = sanitizeRichHtml(`
+            <p>Before</p>
+            <p><img width=158 height=344 src="data:image/png;base64,AA==" alt="word picture"></p>
+            <p>Icon <img width=16 height=16 src="data:image/png;base64,AA==" alt="icon"></p>
+            <p><img src="data:image/png;base64,AA==" alt="unsized"></p>
+        `);
+
+        const document = new DOMParser().parseFromString(html, "text/html");
+        const image = (alt: string) => document.querySelector(`img[alt="${alt}"]`);
+        expect(image("word picture")?.hasAttribute("data-rich-picture")).toBe(true);
+        expect(image("icon")?.hasAttribute("data-rich-picture")).toBe(false);
+        expect(image("unsized")?.hasAttribute("data-rich-picture")).toBe(false);
+    });
+
     it("distinguishes visible rich content from empty formatting", () => {
         expect(richHtmlHasVisibleContent("<style>.x { color: red; }</style>")).toBe(false);
         expect(richHtmlHasVisibleContent("<p>Visible</p>")).toBe(true);

@@ -1599,8 +1599,14 @@ body {
   object-fit: contain;
 }
 
-.card-preview-rich p img,
-.card-preview-rich li img {
+.card-preview-rich img[data-rich-picture] {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+}
+
+.card-preview-rich p img:not([data-rich-picture]),
+.card-preview-rich li img:not([data-rich-picture]) {
   display: inline-block;
   width: 1em;
   height: 1em;

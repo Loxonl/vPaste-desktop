@@ -116,6 +116,7 @@ const LARGE_TEXT_THRESHOLD_BYTES: usize = 10_000;
 const RICH_CARD_SOURCE_MAX_BYTES: u64 = 256 * 1024;
 const RICH_CARD_HTML_MAX_BYTES: usize = 256 * 1024;
 const RICH_CARD_INLINE_IMAGE_MAX_BYTES: u64 = 1024 * 1024;
+const RICH_CARD_INLINE_IMAGES_MAX_BYTES: u64 = 4 * RICH_CARD_INLINE_IMAGE_MAX_BYTES;
 const MAX_AUTOMATIC_CAPTURE_BYTES: usize = 256 * 1024 * 1024;
 
 pub fn try_get_by_hash(hash: &String) -> Option<Item> {
@@ -1437,12 +1438,66 @@ fn local_file_image_data_url(src: &str) -> Option<String> {
     ))
 }
 
+fn word_vml_image_src(tag: &str) -> Option<String> {
+    let document = scraper::Html::parse_fragment(tag);
+    let selector = scraper::Selector::parse("*").ok()?;
+    document
+        .select(&selector)
+        .find(|element| element.value().name().eq_ignore_ascii_case("v:imagedata"))?
+        .value()
+        .attr("src")
+        .map(ToString::to_string)
+}
+
+pub(crate) fn word_vml_local_image_urls(html: &str) -> Vec<String> {
+    let Ok(tag_pattern) = regex::Regex::new(r"(?is)<v:imagedata\b[^>]*>") else {
+        return Vec::new();
+    };
+    tag_pattern
+        .find_iter(html)
+        .filter_map(|tag| word_vml_image_src(tag.as_str()))
+        .filter(|src| file_url_to_path(src).is_some())
+        .collect()
+}
+
+// Word follows each VML block with an `<![if !vml]><img>` fallback that already
+// embeds the picture; only VML without that fallback is converted, so a picture
+// is not shown twice or re-read from Word's reused temporary files.
+fn inline_word_vml_images(html: &str) -> String {
+    let Ok(pattern) = regex::Regex::new(
+        r"(?is)<!--\s*\[if\b[^\]]*\]>(.*?)<!\s*\[endif\]\s*-->(\s*<!\[if\s+!vml\]>)?|<!--.*?-->|<v:imagedata\b[^>]*>",
+    ) else {
+        return html.to_string();
+    };
+    pattern
+        .replace_all(html, |capture: &regex::Captures<'_>| {
+            let original = capture[0].to_string();
+            let images = match (capture.get(1), capture.get(2)) {
+                (Some(conditional), None) => word_vml_local_image_urls(conditional.as_str()),
+                (None, _) if !original.starts_with("<!--") => {
+                    word_vml_image_src(&original).into_iter().collect()
+                }
+                _ => return original,
+            }
+            .iter()
+            .filter_map(|src| local_file_image_data_url(src))
+            .map(|data_url| format!("<img src=\"{data_url}\">"))
+            .collect::<String>();
+            if images.is_empty() {
+                original
+            } else {
+                images
+            }
+        })
+        .into_owned()
+}
+
 fn inline_local_file_images(html: &str) -> String {
     let Ok(selector) = scraper::Selector::parse("img") else {
         return html.to_string();
     };
-    let document = scraper::Html::parse_fragment(html);
-    let mut output = html.to_string();
+    let mut output = inline_word_vml_images(html);
+    let document = scraper::Html::parse_fragment(&output);
     let replacements = document
         .select(&selector)
         .filter_map(|element| element.value().attr("src"))
@@ -1522,12 +1577,12 @@ fn read_rich_html_fragment_with_limit(path: &str, limit: u64) -> Option<String> 
     if path.is_empty() {
         return None;
     }
-    if history_store::file_len(path).ok()? > limit {
+    if history_store::file_len(path).ok()? > limit + base64_len(RICH_CARD_INLINE_IMAGES_MAX_BYTES) {
         return None;
     }
     let stamp = rich_html_file_stamp(path);
     if let Some(cached) = stamp.and_then(|stamp| cached_rich_html(path, stamp)) {
-        return (cached.len() as u64 <= limit).then_some(cached);
+        return rich_card_html_within_budget(&cached, limit).then_some(cached);
     }
     let bytes = history_store::read_file(path).ok()?;
     if bytes.is_empty() {
@@ -1558,13 +1613,36 @@ fn read_rich_html_fragment_with_limit(path: &str, limit: u64) -> Option<String> 
         format!("{}\n{}", style_blocks, fragment)
     };
     let html = html.trim().to_string();
-    if html.is_empty() || html.len() as u64 > limit {
+    if html.is_empty() || !rich_card_html_within_budget(&html, limit) {
         return None;
     }
     if let Some(stamp) = stamp {
         cache_rich_html(path, stamp, &html);
     }
     Some(html)
+}
+
+fn base64_len(bytes: u64) -> u64 {
+    bytes.div_ceil(3) * 4
+}
+
+// Embedded images (e.g. Word's base64 pictures) have their own budget so they
+// don't count against the card markup limit.
+fn rich_card_html_within_budget(html: &str, markup_limit: u64) -> bool {
+    let Ok(pattern) = regex::Regex::new(r"(?i)data:image/[a-z0-9.+-]+;base64,([a-z0-9+/=]*)")
+    else {
+        return false;
+    };
+    let mut image_bytes = 0u64;
+    for capture in pattern.captures_iter(html) {
+        let payload_len = capture[1].len() as u64;
+        if payload_len > base64_len(RICH_CARD_INLINE_IMAGE_MAX_BYTES) {
+            return false;
+        }
+        image_bytes += payload_len;
+    }
+    image_bytes <= base64_len(RICH_CARD_INLINE_IMAGES_MAX_BYTES)
+        && html.len() as u64 - image_bytes <= markup_limit
 }
 
 pub fn rich_clipboard_meta(hash: &str) -> Option<RichClipboardMeta> {
@@ -3934,6 +4012,103 @@ mod tests {
 
         let second = read_rich_html_fragment(rich_path.to_str().unwrap()).unwrap();
         assert_eq!(second, first);
+    }
+
+    #[test]
+    fn word_vml_image_appears_beside_selected_text_in_rich_preview() {
+        let root = tempfile::tempdir().unwrap();
+        let image_path = root.path().join("word-image.png");
+        fs::write(&image_path, include_bytes!("../../icons/32x32.png")).unwrap();
+        let image_url = reqwest::Url::from_file_path(&image_path).unwrap();
+        let html = format!(
+            "<html><body><p>Before</p><!--[if gte vml 1]><v:shape><v:imagedata src=\"{image_url}\"/></v:shape><![endif]--><p>After</p></body></html>"
+        );
+        let rich_path = root.path().join("word.html");
+        history_store::write_file(&rich_path, html.as_bytes()).unwrap();
+
+        let preview = read_rich_html_fragment(rich_path.to_str().unwrap()).unwrap();
+        let image_start = preview.find("<img src=\"data:image/png;base64,").unwrap();
+        assert!(preview.find("Before").unwrap() < image_start);
+        assert!(image_start < preview.find("After").unwrap());
+    }
+
+    #[test]
+    fn word_vml_image_without_text_is_renderable_after_source_is_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let image_path = root.path().join("word-image.png");
+        fs::write(&image_path, include_bytes!("../../icons/32x32.png")).unwrap();
+        let image_url = reqwest::Url::from_file_path(&image_path).unwrap();
+        let html = format!(
+            "<html><body><v:shape><v:imagedata src=\"{image_url}\"/></v:shape></body></html>"
+        );
+        let rich_path = root.path().join("word.html");
+        history_store::write_file(&rich_path, html.as_bytes()).unwrap();
+
+        let preview = read_rich_html_fragment(rich_path.to_str().unwrap()).unwrap();
+        assert!(rich_html_has_renderable_image(&preview));
+        fs::remove_file(image_path).unwrap();
+        assert_eq!(
+            read_rich_html_fragment(rich_path.to_str().unwrap()),
+            Some(preview)
+        );
+    }
+
+    #[test]
+    fn word_vml_image_with_html_fallback_is_shown_once() {
+        let root = tempfile::tempdir().unwrap();
+        let image_path = root.path().join("clip_image001.png");
+        fs::write(&image_path, include_bytes!("../../icons/32x32.png")).unwrap();
+        let image_url = reqwest::Url::from_file_path(&image_path).unwrap();
+        let html = format!(
+            "<html><body><!--StartFragment--><p class=MsoNormal><span><!--[if gte vml 1]><v:shape style='width:338pt;height:202pt'><v:imagedata src=\"{image_url}\" o:title=\"\"/></v:shape><![endif]--><![if !vml]><img width=451 height=269 src=\"data:image/png;base64,AA==\" v:shapes=\"Picture_x0020_1\"><![endif]></span></p><!--EndFragment--></body></html>"
+        );
+        let rich_path = root.path().join("word.cf_html");
+        history_store::write_file(&rich_path, html.as_bytes()).unwrap();
+
+        let preview = read_rich_html_fragment(rich_path.to_str().unwrap()).unwrap();
+        assert_eq!(preview.matches("data:image/").count(), 1);
+        assert!(preview.contains("<img width=451 height=269 src=\"data:image/png;base64,AA==\""));
+    }
+
+    fn word_html_with_embedded_image(body_text: &str, image_bytes: usize) -> String {
+        let payload = "A".repeat(image_bytes.div_ceil(3) * 4);
+        format!(
+            "<html><body><!--StartFragment--><p>{body_text}</p><img width=158 height=344 src=\"data:image/png;base64,{payload}\"><!--EndFragment--></body></html>"
+        )
+    }
+
+    #[test]
+    fn word_image_larger_than_card_markup_budget_stays_in_rich_preview() {
+        let root = tempfile::tempdir().unwrap();
+        let rich_path = root.path().join("word.cf_html");
+        let html = word_html_with_embedded_image("&nbsp;", 257_346);
+        assert!(html.len() > RICH_CARD_HTML_MAX_BYTES);
+        history_store::write_file(&rich_path, html.as_bytes()).unwrap();
+
+        let preview = read_rich_html_fragment(rich_path.to_str().unwrap()).unwrap();
+        assert!(rich_html_has_renderable_image(&preview));
+    }
+
+    #[test]
+    fn rich_preview_still_rejects_oversized_markup_or_images() {
+        let root = tempfile::tempdir().unwrap();
+        let markup_path = root.path().join("markup.cf_html");
+        let long_text = "x".repeat(RICH_CARD_HTML_MAX_BYTES);
+        history_store::write_file(
+            &markup_path,
+            word_html_with_embedded_image(&long_text, 3).as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(read_rich_html_fragment(markup_path.to_str().unwrap()), None);
+
+        let image_path = root.path().join("image.cf_html");
+        history_store::write_file(
+            &image_path,
+            word_html_with_embedded_image("Before", RICH_CARD_INLINE_IMAGE_MAX_BYTES as usize + 3)
+                .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(read_rich_html_fragment(image_path.to_str().unwrap()), None);
     }
 
     #[test]

@@ -1460,9 +1460,9 @@ pub(crate) fn word_vml_local_image_urls(html: &str) -> Vec<String> {
         .collect()
 }
 
-// Word follows each VML block with an `<![if !vml]><img>` fallback that already
-// embeds the picture; only VML without that fallback is converted, so a picture
-// is not shown twice or re-read from Word's reused temporary files.
+// Prefer Word's `<![if !vml]><img>` fallback in the preview. Its redundant VML
+// can contain large o:gfxdata metadata that must not exhaust the markup budget.
+// Only VML without that fallback is converted, so a picture is not shown twice.
 fn inline_word_vml_images(html: &str) -> String {
     let Ok(pattern) = regex::Regex::new(
         r"(?is)<!--\s*\[if\b[^\]]*\]>(.*?)<!\s*\[endif\]\s*-->(\s*<!\[if\s+!vml\]>)?|<!--.*?-->|<v:imagedata\b[^>]*>",
@@ -1473,6 +1473,7 @@ fn inline_word_vml_images(html: &str) -> String {
         .replace_all(html, |capture: &regex::Captures<'_>| {
             let original = capture[0].to_string();
             let images = match (capture.get(1), capture.get(2)) {
+                (Some(_), Some(fallback)) => return fallback.as_str().to_string(),
                 (Some(conditional), None) => word_vml_local_image_urls(conditional.as_str()),
                 (None, _) if !original.starts_with("<!--") => {
                     word_vml_image_src(&original).into_iter().collect()
@@ -2304,7 +2305,7 @@ fn normalized_color_text(content: &str) -> Option<&str> {
 
 fn should_hash_rich_text_by_plain_text(plain_text: &str) -> bool {
     let trimmed = plain_text.trim();
-    if trimmed.is_empty() {
+    if is_semantically_blank_text(trimmed) {
         return false;
     }
 
@@ -3850,6 +3851,21 @@ mod tests {
     }
 
     #[test]
+    fn invisible_placeholder_rich_hash_preserves_picture_payload() {
+        assert_eq!(calculate_xxhash64(b"\0"), "e934a84adb052768");
+        let first_html = br#"<img src="file:///first-picture.png">"#;
+        let second_html = br#"<img src="file:///second-picture.png">"#;
+        for placeholder in ["", "\r\n", "\0", "\u{200B}", "\u{FEFF}", " \0\u{200B}\r\n"] {
+            let first = rich_text_history_hash(placeholder, Some(first_html), None, None);
+            let second = rich_text_history_hash(placeholder, Some(second_html), None, None);
+            assert_ne!(
+                first, second,
+                "invisible placeholders must not collapse different pictures: {placeholder:?}"
+            );
+        }
+    }
+
+    #[test]
     fn rich_url_keeps_hyperlink_target_separate_from_plain_url() {
         let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
         let app_data = tempfile::tempdir().unwrap();
@@ -4068,6 +4084,54 @@ mod tests {
         let preview = read_rich_html_fragment(rich_path.to_str().unwrap()).unwrap();
         assert_eq!(preview.matches("data:image/").count(), 1);
         assert!(preview.contains("<img width=451 height=269 src=\"data:image/png;base64,AA==\""));
+    }
+
+    #[test]
+    fn word_large_vml_metadata_with_html_fallback_stays_visible_in_history() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        crate::config::save(crate::config::Config {
+            storage_dir: root.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        });
+        crate::clipboard::db::init();
+        let image_path = root.path().join("clip_image002.png");
+        fs::write(&image_path, include_bytes!("../../icons/32x32.png")).unwrap();
+        let image_url = reqwest::Url::from_file_path(&image_path).unwrap();
+        let metadata = "A".repeat(854_000);
+        for text in ["", "Word text and picture"] {
+            let html = format!(
+                "<html><head><style>p {{ margin: 0; }}</style></head><body><p>{text}<!--[if gte vml 1]><v:shape o:gfxdata=\"{metadata}\"><v:imagedata src=\"file:///missing/clip_image001.png\"/></v:shape><![endif]--><![if !vml]><img width=32 height=32 src=\"{image_url}\"><![endif]></p></body></html>"
+            );
+            let hash = insert_rich_text_from_app(
+                text.into(),
+                Some(html.as_bytes().to_vec()),
+                None,
+                None,
+                "WINWORD",
+                "",
+            )
+            .unwrap();
+            let page = search("", 0, 0, 10, "").unwrap();
+            let item = page
+                .list
+                .iter()
+                .find(|item| item.hash == hash)
+                .expect("a Word image row must not be hidden as empty text");
+            assert_eq!(item.content, text);
+            assert_eq!(item.rich_html.matches("data:image/").count(), 1);
+            assert!(!item.rich_html.contains("o:gfxdata"));
+            assert!(item.rich_html.contains("<style>p { margin: 0; }</style>"));
+            let meta = rich_clipboard_meta(&hash).unwrap();
+            assert_eq!(
+                history_store::read_file(&meta.html_path).unwrap(),
+                html.as_bytes(),
+                "preview simplification must not alter the original paste format"
+            );
+        }
+        reset_test_storage_config();
     }
 
     fn word_html_with_embedded_image(body_text: &str, image_bytes: usize) -> String {

@@ -10,6 +10,13 @@ pub(super) fn enabled() -> bool {
     *ENABLED.get_or_init(|| detailed_value(std::env::var(ENVIRONMENT_FLAG).ok().as_deref()))
 }
 
+pub(super) fn capture_wait_timeout(current: u32, latest: u32, completed: Option<u32>) {
+    log::warn!(
+        "clipboard_diag stage=capture_wait_timeout current_seq={} latest_seq={} completed_seq={:?} state={:?}",
+        current, latest, completed, NativeState::capture()
+    );
+}
+
 fn detailed_value(value: Option<&str>) -> bool {
     value == Some("1")
 }

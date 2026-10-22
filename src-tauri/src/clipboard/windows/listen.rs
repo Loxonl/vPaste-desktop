@@ -5,12 +5,12 @@ use std::time::{Duration, Instant};
 
 use clipboard_win::formats;
 use clipboard_win::formats::{CF_DIB, CF_DIBV5};
+use clipboard_win::get;
 use clipboard_win::is_format_avail;
-use clipboard_win::monitor::Monitor;
-use clipboard_win::{get, Clipboard};
 use log::{error, info};
 use tauri::{Emitter, Manager, WebviewWindow};
 
+use super::capture_monitor::{self, CaptureMonitor};
 use super::diagnostics::{self, ReadTrace};
 use crate::clipboard;
 use crate::clipboard::windows::image_convert;
@@ -55,9 +55,13 @@ fn complete_capture(sequence: u32, result: Result<Option<String>, String>) {
         .lock()
         .unwrap_or_else(|err| err.into_inner());
     if LATEST_CAPTURE_SEQUENCE.load(Ordering::SeqCst) != sequence {
+        drop(completion);
+        ReadTrace::new(sequence, 0).event("capture_completion_superseded", false, None);
         return;
     }
     *completion = Some(CaptureCompletion { sequence, result });
+    drop(completion);
+    ReadTrace::new(sequence, 0).event("capture_completed", false, None);
 }
 
 fn retained_capture_result(
@@ -81,6 +85,7 @@ fn retained_capture_result(
 
 pub(crate) fn wait_for_capture() -> Result<Option<String>, String> {
     let started = Instant::now();
+    let mut requested_sequence = None;
     loop {
         let sequence = clipboard_sequence_number();
         if sequence == 0 {
@@ -98,9 +103,28 @@ pub(crate) fn wait_for_capture() -> Result<Option<String>, String> {
             return result;
         }
         if started.elapsed() >= Duration::from_secs(3) {
+            diagnostics::capture_wait_timeout(
+                sequence,
+                LATEST_CAPTURE_SEQUENCE.load(Ordering::SeqCst),
+                CAPTURE_COMPLETION
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .as_ref()
+                    .map(|completion| completion.sequence),
+            );
             return Err(
                 "Clipboard capture timed out; select an item explicitly to paste history".into(),
             );
+        }
+        // Delayed rendering can advance the sequence without another monitor
+        // notification. Request one fresh capture on the existing reader thread;
+        // do not duplicate an already-pending capture or read on the UI thread.
+        if LATEST_CAPTURE_SEQUENCE.load(Ordering::SeqCst) != sequence
+            && requested_sequence != Some(sequence)
+            && capture_monitor::request_capture()
+        {
+            requested_sequence = Some(sequence);
+            ReadTrace::new(sequence, 0).event("capture_requested", false, None);
         }
         thread::sleep(Duration::from_millis(16));
     }
@@ -295,7 +319,7 @@ pub fn start(window: WebviewWindow) {
         if diagnostics::enabled() {
             info!("clipboard_diag detailed Windows capture diagnostics enabled; payload content is not logged");
         }
-        let mut monitor = match Monitor::new() {
+        let mut monitor = match CaptureMonitor::new() {
             Ok(monitor) => monitor,
             Err(err) => {
                 error!("failed to start clipboard monitor: {:?}", err);
@@ -376,7 +400,7 @@ pub fn start(window: WebviewWindow) {
             }
             let start = Instant::now();
             let mut context = clipboard::CaptureContext::from(crate::paste_queue::is_active());
-            let snapshot_result = read_snapshot_with_retry(&mut sequence, &mut context);
+            let snapshot_result = read_snapshot_with_retry(&monitor, &mut sequence, &mut context);
             sequence_deduper.last_processed = Some(sequence);
             let result = match snapshot_result {
                 Ok(Some(snapshot)) => {
@@ -417,6 +441,7 @@ pub fn start(window: WebviewWindow) {
 }
 
 fn read_snapshot_with_retry(
+    monitor: &CaptureMonitor,
     sequence: &mut u32,
     context: &mut clipboard::CaptureContext,
 ) -> Result<Option<ClipboardSnapshot>, String> {
@@ -431,7 +456,7 @@ fn read_snapshot_with_retry(
         },
         |sequence, attempt, context, trace| {
             LATEST_CAPTURE_SEQUENCE.store(sequence, Ordering::SeqCst);
-            read_snapshot(sequence, attempt < READ_ATTEMPTS, context, trace)
+            read_snapshot(monitor, sequence, attempt < READ_ATTEMPTS, context, trace)
         },
         thread::sleep,
     )
@@ -489,6 +514,7 @@ fn retry_snapshot_read(
 }
 
 fn read_snapshot(
+    monitor: &CaptureMonitor,
     sequence: u32,
     should_retry_file_hint: bool,
     context: clipboard::CaptureContext,
@@ -497,7 +523,7 @@ fn read_snapshot(
     let _access = super::lock_clipboard_access();
     trace.event("access_lock_acquired", false, None);
     let _clipboard = trace
-        .native("OpenClipboard", "none", 0, || Clipboard::new_attempts(2))
+        .native("OpenClipboard", "none", 0, || monitor.open())
         .map_err(|err| err.to_string())?;
     // A new copy may arrive while waiting for our process lock or OpenClipboard.
     // Check under the open clipboard, before consuming markers or any payload.
@@ -646,20 +672,37 @@ fn check_snapshot_format_size(
     Ok(())
 }
 
+#[derive(Debug)]
+enum SnapshotFormatError {
+    Native(clipboard_win::ErrorCode),
+    SizeLimit,
+}
+
+impl From<SnapshotFormatError> for String {
+    fn from(error: SnapshotFormatError) -> Self {
+        match error {
+            SnapshotFormatError::Native(error) => error.to_string(),
+            SnapshotFormatError::SizeLimit => "复制内容超过安全大小限制，未加入记录".into(),
+        }
+    }
+}
+
 fn read_snapshot_raw_format(
     format: u32,
     remaining_bytes: &mut usize,
     trace: &ReadTrace,
     name: &'static str,
-) -> Result<Option<Vec<u8>>, String> {
+) -> Result<Option<Vec<u8>>, SnapshotFormatError> {
     if !is_format_avail(format) {
         return Ok(None);
     }
-    check_snapshot_format_size(format, *remaining_bytes, trace, name)?;
+    check_snapshot_format_size(format, *remaining_bytes, trace, name)
+        .map_err(|_| SnapshotFormatError::SizeLimit)?;
     let bytes: Vec<u8> = trace
         .native("read", name, format, || get(formats::RawData(format)))
-        .map_err(|err| err.to_string())?;
-    reserve_snapshot_bytes(bytes.len(), remaining_bytes)?;
+        .map_err(SnapshotFormatError::Native)?;
+    reserve_snapshot_bytes(bytes.len(), remaining_bytes)
+        .map_err(|_| SnapshotFormatError::SizeLimit)?;
     Ok(Some(bytes))
 }
 
@@ -669,15 +712,32 @@ fn read_snapshot_registered_format(
     trace: &ReadTrace,
 ) -> Result<Option<Vec<u8>>, String> {
     match registered_format_code(name) {
-        Some(format) => match read_snapshot_raw_format(format, remaining_bytes, trace, name) {
-            Ok(bytes) => Ok(bytes.filter(|bytes| !bytes.is_empty())),
-            Err(err) if err.starts_with("复制内容超过") => Err(err),
-            Err(err) => {
-                info!("skip unreadable optional clipboard format {name}: {err}");
-                Ok(None)
-            }
-        },
+        Some(format) => optional_snapshot_format_result(
+            name,
+            read_snapshot_raw_format(format, remaining_bytes, trace, name),
+        )
+        .map_err(String::from),
         None => Ok(None),
+    }
+}
+
+fn optional_snapshot_format_result(
+    name: &'static str,
+    result: Result<Option<Vec<u8>>, SnapshotFormatError>,
+) -> Result<Option<Vec<u8>>, SnapshotFormatError> {
+    match result {
+        Ok(bytes) => Ok(bytes.filter(|bytes| !bytes.is_empty())),
+        Err(SnapshotFormatError::SizeLimit) => Err(SnapshotFormatError::SizeLimit),
+        Err(SnapshotFormatError::Native(error)) if matches!(error.raw_code(), 5 | 1418) => {
+            Err(SnapshotFormatError::Native(error))
+        }
+        Err(error) => {
+            info!(
+                "skip unreadable optional clipboard format {name}: {}",
+                String::from(error)
+            );
+            Ok(None)
+        }
     }
 }
 
@@ -719,7 +779,7 @@ fn parse_snapshot(snapshot: &mut ClipboardSnapshot) -> Result<Option<String>, St
         let rtf_text = rich_preview_text(None, rtf.as_deref());
         let clipboard_text = text_content
             .clone()
-            .filter(|text: &String| !text.trim().is_empty());
+            .filter(|text| !clipboard::is_semantically_blank_text(text));
         let plain_text =
             preferred_rich_plain_text(clipboard_text.clone(), html_text.clone(), rtf_text.clone());
         let local_images = html
@@ -730,16 +790,9 @@ fn parse_snapshot(snapshot: &mut ClipboardSnapshot) -> Result<Option<String>, St
             .as_deref()
             .map(remote_gif_images_from_html)
             .unwrap_or_default();
-        let has_meaningful_text = html_text
-            .as_deref()
-            .is_some_and(|text| !text.trim().is_empty())
-            || rtf_text
-                .as_deref()
-                .is_some_and(|text| !text.trim().is_empty())
-            || (!local_images.is_empty()
-                && clipboard_text
-                    .as_deref()
-                    .is_some_and(|text| !text.trim().is_empty()));
+        let has_meaningful_text = has_visible_text(html_text.as_deref())
+            || has_visible_text(rtf_text.as_deref())
+            || (!local_images.is_empty() && has_visible_text(clipboard_text.as_deref()));
         let local_gif_candidate = if local_images.len() == 1
             && !has_meaningful_text
             && local_images[0]
@@ -976,9 +1029,9 @@ fn preferred_rich_plain_text(
     rtf_text: Option<String>,
 ) -> String {
     clipboard_text
-        .filter(|text| !text.trim().is_empty())
-        .or_else(|| html_text.filter(|text| !text.trim().is_empty()))
-        .or_else(|| rtf_text.filter(|text| !text.trim().is_empty()))
+        .filter(|text| !clipboard::is_semantically_blank_text(text))
+        .or_else(|| html_text.filter(|text| !clipboard::is_semantically_blank_text(text)))
+        .or_else(|| rtf_text.filter(|text| !clipboard::is_semantically_blank_text(text)))
         .unwrap_or_default()
 }
 
@@ -1023,7 +1076,7 @@ fn should_prefer_bitmap_for_rich_content(
 ) -> bool {
     !has_local_gif
         && local_image_count > 0
-        && clipboard_text.is_none_or(|text| text.trim().is_empty())
+        && clipboard_text.is_none_or(clipboard::is_semantically_blank_text)
 }
 
 fn rtf_plain_text(bytes: &[u8]) -> Option<String> {
@@ -1994,6 +2047,367 @@ mod tests {
     use super::*;
 
     #[test]
+    fn word_optional_formats_retry_access_errors_instead_of_losing_images() {
+        for name in ["HTML Format", "Rich Text Format", "PNG"] {
+            for code in [5, 1418] {
+                let result = optional_snapshot_format_result(
+                    name,
+                    Err(SnapshotFormatError::Native(
+                        clipboard_win::ErrorCode::new_system(code),
+                    )),
+                );
+                assert!(
+                    matches!(result, Err(SnapshotFormatError::Native(error)) if error.raw_code() == code),
+                    "a transient {name} read failure must retry the snapshot, not become absent data"
+                );
+            }
+        }
+        assert!(optional_snapshot_format_result("HTML Format", Ok(None))
+            .unwrap()
+            .is_none());
+        assert!(
+            optional_snapshot_format_result("HTML Format", Ok(Some(Vec::new())))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            optional_snapshot_format_result(
+                "HTML Format",
+                Err(SnapshotFormatError::Native(
+                    clipboard_win::ErrorCode::new_system(13)
+                )),
+            )
+            .unwrap()
+            .is_none(),
+            "a genuinely invalid optional format keeps its existing fallback"
+        );
+        assert!(matches!(
+            optional_snapshot_format_result("HTML Format", Err(SnapshotFormatError::SizeLimit)),
+            Err(SnapshotFormatError::SizeLimit)
+        ));
+    }
+
+    #[test]
+    fn native_capture_session_survives_an_uncoordinated_null_window_reader() {
+        if !isolated_clipboard_test(
+            "native_capture_session_survives_an_uncoordinated_null_window_reader",
+        ) {
+            return;
+        }
+        crate::copy_text_to_windows_clipboard("native read must stay open").unwrap();
+        let monitor = CaptureMonitor::new().unwrap();
+        let _access = super::super::lock_clipboard_access();
+        let _clipboard = monitor.open().unwrap();
+        let intruder_opened = thread::spawn(|| {
+            // Simulate a clipboard reader that does not use vPaste's mutex.
+            // Never write, and only close a clipboard we successfully opened.
+            clipboard_win::Clipboard::new().is_ok()
+        })
+        .join()
+        .unwrap();
+        let result = get::<String, _>(formats::Unicode);
+        assert!(
+            result.is_ok(),
+            "the native session was closed by another NULL-window reader: {result:?}"
+        );
+        assert!(
+            !intruder_opened,
+            "the reader's real HWND must exclude NULL-window opens"
+        );
+        assert_eq!(result.unwrap(), "native read must stay open");
+    }
+
+    #[test]
+    fn native_word_rows_keep_standalone_and_mixed_pictures_in_history() {
+        if !isolated_clipboard_test(
+            "native_word_rows_keep_standalone_and_mixed_pictures_in_history",
+        ) {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        crate::config::save(crate::config::Config::default());
+        clipboard::db::init();
+        let image_path = root.path().join("word-inline-picture.png");
+        fs::write(&image_path, include_bytes!("../../../icons/32x32.png")).unwrap();
+        let image_url = reqwest::Url::from_file_path(&image_path).unwrap();
+        let monitor = CaptureMonitor::new().unwrap();
+        for text in ["\r\n", "Word line with picture\r\n"] {
+            let html = format!(
+                "<html><body><!--StartFragment--><p>{text}</p><!--[if gte vml 1]><v:shape><v:imagedata src=\"{image_url}\"/></v:shape><![endif]--><!--EndFragment--></body></html>"
+            );
+            {
+                let _access = super::super::lock_clipboard_access();
+                let _clipboard = monitor.open().unwrap();
+                clipboard_win::empty().unwrap();
+                clipboard_win::raw::set_string_with(text, clipboard_win::options::NoClear).unwrap();
+                clipboard_win::raw::set_without_clear(
+                    registered_format_code("HTML Format").unwrap(),
+                    html.as_bytes(),
+                )
+                .unwrap();
+            }
+            let mut sequence = clipboard_sequence_number();
+            let mut context = clipboard::CaptureContext {
+                time: 1000,
+                queue_epoch: None,
+            };
+            let mut snapshot = read_snapshot_with_retry(&monitor, &mut sequence, &mut context)
+                .unwrap()
+                .expect("published Word row must not be skipped");
+            assert!(
+                snapshot.html.is_some(),
+                "capture must retain the native HTML format"
+            );
+            snapshot.app_source = AppSource {
+                name: "WINWORD".into(),
+                ..Default::default()
+            };
+            let hash = parse_snapshot(&mut snapshot)
+                .unwrap()
+                .expect("row must enter history");
+            complete_capture(sequence, Ok(Some(hash.clone())));
+            assert_eq!(wait_for_capture().unwrap(), Some(hash.clone()));
+            let item = clipboard::try_get_by_hash(&hash).unwrap();
+            if text.trim().is_empty() {
+                assert_eq!(item.item_type, clipboard::item::ItemType::Image);
+                assert!(Path::new(&item.content).is_file());
+            } else {
+                assert_eq!(item.item_type, clipboard::item::ItemType::Text);
+                assert!(item.content.contains("Word line with picture"));
+                assert!(item.rich_html.contains("data:image/png;base64,"));
+                let meta = clipboard::rich_clipboard_meta(&hash).unwrap();
+                assert!(
+                    Path::new(&meta.html_path).is_file(),
+                    "rich formats must be available for paste"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_word_margin_row_with_large_vml_fallback_remains_visible() {
+        if !isolated_clipboard_test(
+            "native_word_margin_row_with_large_vml_fallback_remains_visible",
+        ) {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        crate::config::save(crate::config::Config::default());
+        clipboard::db::init();
+        let mut image_urls = Vec::new();
+        for name in ["clip_image001.png", "clip_image002.png"] {
+            let path = root.path().join(name);
+            fs::write(&path, include_bytes!("../../../icons/32x32.png")).unwrap();
+            image_urls.push(reqwest::Url::from_file_path(path).unwrap());
+        }
+        let metadata = "A".repeat(854_000);
+        let html = format!(
+            "<html><body><table><tr><td>&nbsp;<!--[if gte vml 1]><v:shape o:gfxdata=\"{metadata}\"><v:imagedata src=\"{}\"/></v:shape><![endif]--><![if !vml]><img width=32 height=32 src=\"{}\"><![endif]></td></tr></table></body></html>",
+            image_urls[0], image_urls[1]
+        );
+        let monitor = CaptureMonitor::new().unwrap();
+        {
+            let _access = super::super::lock_clipboard_access();
+            let _clipboard = monitor.open().unwrap();
+            clipboard_win::empty().unwrap();
+            clipboard_win::raw::set_string_with("\r\n", clipboard_win::options::NoClear).unwrap();
+            clipboard_win::raw::set_without_clear(
+                registered_format_code("HTML Format").unwrap(),
+                html.as_bytes(),
+            )
+            .unwrap();
+        }
+        let mut sequence = clipboard_sequence_number();
+        let mut context = clipboard::CaptureContext {
+            time: 1000,
+            queue_epoch: None,
+        };
+        let mut snapshot = read_snapshot_with_retry(&monitor, &mut sequence, &mut context)
+            .unwrap()
+            .unwrap();
+        snapshot.app_source.name = "WINWORD".into();
+        let hash = parse_snapshot(&mut snapshot).unwrap().unwrap();
+        let item = clipboard::try_get_by_hash(&hash).unwrap();
+        assert_eq!(
+            item.rich_html.matches("data:image/").count(),
+            1,
+            "the HTML fallback must render once without its oversized VML metadata"
+        );
+        assert!(clipboard::search("", 0, 0, 10, "")
+            .unwrap()
+            .list
+            .iter()
+            .any(|item| item.hash == hash));
+        let meta = clipboard::rich_clipboard_meta(&hash).unwrap();
+        assert_eq!(
+            crate::history_store::read_file(&meta.html_path).unwrap(),
+            html.as_bytes()
+        );
+    }
+
+    #[test]
+    fn native_word_null_placeholder_does_not_reuse_stale_picture() {
+        use base64::Engine as _;
+
+        if !isolated_clipboard_test("native_word_null_placeholder_does_not_reuse_stale_picture") {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        crate::config::save(crate::config::Config::default());
+        clipboard::db::init();
+        let monitor = CaptureMonitor::new().unwrap();
+        let mut previous_hash = None;
+        for copy in [1, 2] {
+            let picture: &[u8] = if copy == 1 {
+                include_bytes!("../../../icons/32x32.png")
+            } else {
+                include_bytes!("../../../icons/128x128.png")
+            };
+            let paths = [
+                root.path().join(format!("copy-{copy}-vml.png")),
+                root.path().join(format!("copy-{copy}-fallback.png")),
+            ];
+            for path in &paths {
+                fs::write(path, picture).unwrap();
+            }
+            let vml_url = reqwest::Url::from_file_path(&paths[0]).unwrap();
+            let fallback_url = reqwest::Url::from_file_path(&paths[1]).unwrap();
+            let html = format!(
+                "<html><body><table><tr><td>&nbsp;<!--[if gte vml 1]><v:shape o:gfxdata=\"{}\"><v:imagedata src=\"{vml_url}\"/></v:shape><![endif]--><![if !vml]><img width=32 height=32 src=\"{fallback_url}\"><![endif]></td></tr></table></body></html>",
+                "A".repeat(854_000)
+            );
+            {
+                let _access = super::super::lock_clipboard_access();
+                let _clipboard = monitor.open().unwrap();
+                clipboard_win::empty().unwrap();
+                clipboard_win::raw::set_string_with("\0", clipboard_win::options::NoClear).unwrap();
+                clipboard_win::raw::set_without_clear(
+                    registered_format_code("HTML Format").unwrap(),
+                    html.as_bytes(),
+                )
+                .unwrap();
+                clipboard_win::raw::set_without_clear(
+                    registered_format_code("Rich Text Format").unwrap(),
+                    b"{\\rtf1\\ansi}\0",
+                )
+                .unwrap();
+            }
+            let mut sequence = clipboard_sequence_number();
+            let mut context = clipboard::CaptureContext {
+                time: 1000 + copy,
+                queue_epoch: None,
+            };
+            let mut snapshot = read_snapshot_with_retry(&monitor, &mut sequence, &mut context)
+                .unwrap()
+                .unwrap();
+            assert_eq!(snapshot.text.as_deref(), Some(""));
+            assert_eq!(
+                rich_preview_text(None, snapshot.rtf.as_deref()).as_deref(),
+                Some("\0"),
+                "Word's NUL-terminated, image-only RTF must exercise the invisible text fallback"
+            );
+            assert!(snapshot.dib.is_none() && snapshot.dib_v5.is_none() && snapshot.png.is_none());
+            snapshot.app_source.name = "WINWORD".into();
+            let hash = parse_snapshot(&mut snapshot).unwrap().unwrap();
+            if let Some(previous_hash) = &previous_hash {
+                assert_ne!(
+                    &hash, previous_hash,
+                    "different Word pictures must not share a NUL-only history key"
+                );
+                let item = clipboard::try_get_by_hash(&hash).unwrap();
+                assert_eq!(item.rich_html.matches("data:image/").count(), 1);
+                assert!(item
+                    .rich_html
+                    .contains(&base64::engine::general_purpose::STANDARD.encode(picture)));
+                assert!(clipboard::search("", 0, 0, 10, "")
+                    .unwrap()
+                    .list
+                    .iter()
+                    .any(|item| item.hash == hash));
+                let meta = clipboard::rich_clipboard_meta(&hash).unwrap();
+                assert_eq!(
+                    crate::history_store::read_file(&meta.html_path).unwrap(),
+                    html.as_bytes(),
+                    "the new copy must retain its own original HTML, not the first copy's"
+                );
+            }
+            previous_hash = Some(hash);
+            // Word cleans up its old temporary images. Do not materialize the
+            // first row beforehand: a warmed preview cache would mask stale paths.
+            for path in paths {
+                fs::remove_file(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn missing_word_capture_notification_is_recovered_before_activation_times_out() {
+        if !isolated_clipboard_test(
+            "missing_word_capture_notification_is_recovered_before_activation_times_out",
+        ) {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        crate::config::save(crate::config::Config::default());
+        // Publish before registering the monitor, so no OS notification is pending.
+        crate::copy_text_to_windows_clipboard("internal recovery probe").unwrap();
+        let sequence = clipboard_sequence_number();
+        let previous = sequence.wrapping_sub(1);
+        LATEST_CAPTURE_SEQUENCE.store(previous, Ordering::SeqCst);
+        complete_capture(previous, Ok(None));
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_done = done.clone();
+        let (ready, started) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            let mut monitor = CaptureMonitor::new().unwrap();
+            while monitor.try_recv() {}
+            ready.send(()).unwrap();
+            // Test-only polling avoids hanging a failing baseline. Production
+            // blocks on the native message queue; coordination uses this channel.
+            while !reader_done.load(Ordering::SeqCst) {
+                if monitor.try_recv() {
+                    let mut current = clipboard_sequence_number();
+                    let mut context = clipboard::CaptureContext {
+                        time: 1,
+                        queue_epoch: None,
+                    };
+                    let result = read_snapshot_with_retry(&monitor, &mut current, &mut context)
+                        .map(|snapshot| {
+                            assert!(
+                                snapshot.is_none(),
+                                "internal markers still apply to requested captures"
+                            );
+                            None
+                        });
+                    complete_capture(current, result);
+                    return true;
+                }
+                thread::yield_now();
+            }
+            false
+        });
+        started.recv().unwrap();
+        let result = wait_for_capture();
+        done.store(true, Ordering::SeqCst);
+        let recovered = reader.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "activation waited without asking the reader for the missing sequence: {result:?}"
+        );
+        assert!(recovered);
+        assert_eq!(result.unwrap(), None);
+        assert_eq!(LATEST_CAPTURE_SEQUENCE.load(Ordering::SeqCst), sequence);
+    }
+
+    #[test]
     fn clipboard_retry_recovers_excel_publication_and_delayed_rendering() {
         let mut sequence = 4691;
         let mut context = clipboard::CaptureContext {
@@ -2245,18 +2659,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn internal_text_is_never_visible_without_its_marker() {
+    fn isolated_clipboard_test(test_name: &str) -> bool {
         // A separate process/window station owns a separate clipboard. Never run
         // this writer/reader race against the user's desktop or clipboard history.
         const CHILD_FLAG: &str = "VPASTE_ISOLATED_CLIPBOARD_TEST";
         if std::env::var_os(CHILD_FLAG).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "clipboard::windows::listen::tests::internal_text_is_never_visible_without_its_marker",
-                    "--nocapture",
-                ])
+                .arg("--exact")
+                .arg(format!("clipboard::windows::listen::tests::{test_name}"))
+                .arg("--nocapture")
                 .env(CHILD_FLAG, "1")
                 .output()
                 .unwrap();
@@ -2267,7 +2678,7 @@ mod tests {
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
-            return;
+            return false;
         }
         #[link(name = "user32")]
         extern "system" {
@@ -2309,10 +2720,19 @@ mod tests {
         }
         // Handles are released when this short-lived child exits; its other tests
         // must never run after switching the process-wide window station.
+        true
+    }
+
+    #[test]
+    fn internal_text_is_never_visible_without_its_marker() {
+        if !isolated_clipboard_test("internal_text_is_never_visible_without_its_marker") {
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
         *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
             Some(root.path().to_string_lossy().to_string());
         crate::config::save(crate::config::Config::default());
+        let monitor = CaptureMonitor::new().unwrap();
         crate::copy_text_to_windows_clipboard("internal catch-up text").unwrap();
         let published_sequence = clipboard_sequence_number();
         let mut sequence = published_sequence.wrapping_sub(1);
@@ -2320,8 +2740,15 @@ mod tests {
             time: 1,
             queue_epoch: None,
         };
-        assert!(read_snapshot(sequence, false, context, &ReadTrace::new(sequence, 1)).is_err());
-        let captured = read_snapshot_with_retry(&mut sequence, &mut context).unwrap();
+        assert!(read_snapshot(
+            &monitor,
+            sequence,
+            false,
+            context,
+            &ReadTrace::new(sequence, 1)
+        )
+        .is_err());
+        let captured = read_snapshot_with_retry(&monitor, &mut sequence, &mut context).unwrap();
         assert_eq!(sequence, published_sequence);
         assert!(context.time > 1);
         assert!(
@@ -2332,11 +2759,13 @@ mod tests {
         let reader_done = done.clone();
         let (ready, started) = mpsc::channel();
         let reader = thread::spawn(move || {
+            let monitor = CaptureMonitor::new().unwrap();
             ready.send(()).unwrap();
             let mut unmarked = 0;
             let mut marked = 0;
             while !reader_done.load(Ordering::SeqCst) {
                 match read_snapshot(
+                    &monitor,
                     clipboard_sequence_number(),
                     false,
                     clipboard::CaptureContext {
@@ -2868,6 +3297,39 @@ mod tests {
             preferred_rich_plain_text(Some("\r\n".to_string()), None, visible_rtf),
             "你好"
         );
+    }
+
+    #[test]
+    fn invisible_clipboard_placeholder_uses_visible_rich_text() {
+        for placeholder in ["\0", "\u{200B}", "\u{FEFF}", " \0\u{200B}\r\n"] {
+            assert_eq!(
+                preferred_rich_plain_text(
+                    Some(placeholder.into()),
+                    Some("HTML text".into()),
+                    Some("RTF text".into()),
+                ),
+                "HTML text"
+            );
+            assert_eq!(
+                preferred_rich_plain_text(
+                    Some(placeholder.into()),
+                    Some(placeholder.into()),
+                    Some("RTF text".into()),
+                ),
+                "RTF text"
+            );
+            assert!(preferred_rich_plain_text(
+                Some(placeholder.into()),
+                Some(placeholder.into()),
+                Some(placeholder.into()),
+            )
+            .is_empty());
+            assert!(should_prefer_bitmap_for_rich_content(
+                Some(placeholder),
+                2,
+                false,
+            ));
+        }
     }
 
     #[test]

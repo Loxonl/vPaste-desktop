@@ -70,6 +70,7 @@ mod paste_queue;
 mod portable_autostart;
 mod runtime_mode;
 mod search;
+mod startup_panel;
 mod test_room;
 #[cfg(target_os = "windows")]
 mod windows_main_shortcut;
@@ -10864,6 +10865,31 @@ fn build_paste_fallback_notice_window(
     Ok(window)
 }
 
+#[cfg(target_os = "windows")]
+fn refresh_clipboard_window_frame(window: &tauri::Window) -> tauri::Result<()> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+
+    // Settle the hidden caption/shadow insets before Tao measures them for set_size.
+    // Without this, its first resize includes the old caption height in the client area.
+    let hwnd = window.hwnd()?;
+    unsafe {
+        SetWindowPos(
+            HWND(hwnd.0 as isize),
+            HWND::default(),
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+        )
+    }
+    .map_err(io::Error::other)?;
+    Ok(())
+}
+
 fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     let (screen_x, screen_y, screen_width, screen_height) =
         if let Ok(Some(monitor)) = handle.primary_monitor() {
@@ -10936,9 +10962,55 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
     {
         use window_vibrancy::apply_acrylic;
         let _ = apply_acrylic(&clipboard_window, Some((232, 235, 229, 30)));
+        refresh_clipboard_window_frame(&clipboard_window.as_ref().window())?;
     }
 
     Ok(clipboard_window)
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod clipboard_native_frame_tests {
+    #[test]
+    #[ignore = "requires an interactive Windows desktop; run locally with --ignored"]
+    fn first_show_keeps_the_same_client_height_as_later_shows() {
+        let mut context = tauri::generate_context!();
+        context.config_mut().app.windows.clear();
+        context.config_mut().identifier = "com.loxonl.vpaste.frame-test".into();
+        let app = tauri::Builder::default().any_thread().build(context).unwrap();
+        let window = tauri::window::WindowBuilder::new(app.handle(), "frame-test")
+            .visible(false)
+            .focused(false)
+            .decorations(false)
+            .resizable(false)
+            .shadow(super::CLIPBOARD_WINDOW_SHADOW)
+            .inner_size(800.0, super::CLIPBOARD_WINDOW_HEIGHT)
+            .build()
+            .unwrap();
+        window.set_shadow(super::CLIPBOARD_WINDOW_SHADOW).unwrap();
+        let _ = window_vibrancy::apply_acrylic(&window, Some((232, 235, 229, 30)));
+        super::refresh_clipboard_window_frame(&window).unwrap();
+
+        let scale = window.scale_factor().unwrap();
+        let expected = (super::CLIPBOARD_WINDOW_HEIGHT * scale).round() as u32;
+        window
+            .set_size(tauri::PhysicalSize::new(1200, expected))
+            .unwrap();
+        window.show().unwrap();
+        let first_height = window.inner_size().unwrap().height;
+        window.hide().unwrap();
+        window
+            .set_size(tauri::PhysicalSize::new(1200, expected))
+            .unwrap();
+        window.show().unwrap();
+        let second_height = window.inner_size().unwrap().height;
+        window.destroy().unwrap();
+
+        assert_eq!(
+            first_height, expected,
+            "the first show must not include the old caption inset"
+        );
+        assert_eq!(second_height, expected);
+    }
 }
 
 fn build_paste_queue_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
@@ -11018,6 +11090,8 @@ fn main() {
         }
     }
     let installer_exit_requested = maintenance::installer_exit_requested();
+    let show_panel_on_startup = cfg!(target_os = "macos")
+        || startup_panel::is_update_restart(std::env::args_os(), env!("CARGO_PKG_VERSION"));
 
     if let Err(err) = runtime_mode::configure_webview_data_directory() {
         let message = format!("vPaste portable mode could not start:\n\n{err}");
@@ -11541,11 +11615,6 @@ fn main() {
                     if let Err(err) = show_onboarding_window(&handle) {
                         error!("Failed to show onboarding window: {}", err);
                     }
-                } else {
-                    #[cfg(target_os = "macos")]
-                    if let Some(window) = handle.get_webview_window("clipboard") {
-                        show_clipboard_window(&window);
-                    }
                 }
 
                 if !LEGACY_HISTORY_BLOCKED.load(Ordering::SeqCst) {
@@ -11561,6 +11630,11 @@ fn main() {
                         },
                     );
                 }
+                if config.onboarding_completed && show_panel_on_startup {
+                    if let Err(err) = startup_panel::request_show(&handle) {
+                        error!("Failed to show main panel after startup: {}", err);
+                    }
+                }
                 auto_cleanup::start(handle.clone());
                 std::thread::spawn(|| {
                     migrate_runtime_dirs_out_of_history();
@@ -11571,6 +11645,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            startup_panel::clipboard_window_ready,
             wait_for_clipboard_capture,
             copy,
             copy_history_item,

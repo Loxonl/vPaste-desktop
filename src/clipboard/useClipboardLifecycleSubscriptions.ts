@@ -47,7 +47,8 @@ type ClipboardLifecycleSubscriptions = {
     browser: ClipboardBrowserEventHandlers;
     onBeforeCleanup: () => void;
     onMount: () => void;
-    onUnlistenError: (label: string, error: unknown) => void;
+    onReady: () => void;
+    onSubscriptionError: (label: string, error: unknown) => void;
     tauri: ClipboardTauriEventHandlers;
 };
 
@@ -64,6 +65,7 @@ export function useClipboardLifecycleSubscriptions(
     subscriptions: ClipboardLifecycleSubscriptions,
 ) {
     useEffect(() => {
+        let disposed = false;
         const unlistenShow = listen<WindowShowPayload>("window-show", event => {
             subscriptions.tauri.onWindowShow(event.payload);
         });
@@ -133,6 +135,22 @@ export function useClipboardLifecycleSubscriptions(
         window.addEventListener("click", subscriptions.browser.onDismissMenus);
         window.addEventListener("resize", subscriptions.browser.onDismissMenus);
         subscriptions.onMount();
+        void Promise.all([
+            unlistenShow,
+            unlistenShowComplete,
+            unlistenHide,
+            unlistenHidden,
+            unlistenClipboard,
+            unlistenTutorialStarted,
+            unlistenTutorialCompleted,
+            unlistenPermissionStatusChanged,
+            unlistenBehaviorConfigChanged,
+            unlistenCustomTabs,
+            unlistenItemTags,
+            unlistenPreviewNavigation,
+        ]).then(() => {
+            if (!disposed) subscriptions.onReady();
+        }).catch(error => subscriptions.onSubscriptionError("startup readiness", error));
 
         const removeTauriListener = (
             unlisten: Promise<() => void>,
@@ -140,10 +158,11 @@ export function useClipboardLifecycleSubscriptions(
         ) => {
             unlisten
                 .then(removeListener => removeListener())
-                .catch(error => subscriptions.onUnlistenError(label, error));
+                .catch(error => subscriptions.onSubscriptionError(label, error));
         };
 
         return () => {
+            disposed = true;
             subscriptions.onBeforeCleanup();
             removeTauriListener(unlistenShow, "show");
             removeTauriListener(unlistenShowComplete, "show completion");

@@ -32,7 +32,8 @@ function handlers() {
         },
         onBeforeCleanup: vi.fn(),
         onMount: vi.fn(),
-        onUnlistenError: vi.fn(),
+        onReady: vi.fn(),
+        onSubscriptionError: vi.fn(),
         tauri: {
             onBehaviorConfigChanged: vi.fn(),
             onClipboardChanged: vi.fn(),
@@ -147,6 +148,45 @@ describe("useClipboardLifecycleSubscriptions", () => {
         });
         expect(callbacks.browser.onFocus).toHaveBeenCalledOnce();
         expect(callbacks.browser.onDismissMenus).toHaveBeenCalledTimes(2);
-        expect(callbacks.onUnlistenError).not.toHaveBeenCalled();
+        expect(callbacks.onSubscriptionError).not.toHaveBeenCalled();
+    });
+
+    it("waits for native show listeners before acknowledging startup readiness", async () => {
+        const callbacks = handlers();
+        let finishShowListener!: () => void;
+        tauri.listen.mockImplementationOnce(() => new Promise(resolve => {
+            finishShowListener = () => resolve(vi.fn());
+        }));
+        const { unmount } = renderHook(() => useClipboardLifecycleSubscriptions(callbacks));
+        await act(async () => {});
+        expect(callbacks.onReady).not.toHaveBeenCalled();
+
+        await act(async () => finishShowListener());
+        expect(callbacks.onReady).toHaveBeenCalledOnce();
+        unmount();
+    });
+
+    it("does not open the startup panel after an unmounted subscription becomes ready", async () => {
+        const callbacks = handlers();
+        let finishShowListener!: () => void;
+        tauri.listen.mockImplementationOnce(() => new Promise(resolve => {
+            finishShowListener = () => resolve(vi.fn());
+        }));
+        const { unmount } = renderHook(() => useClipboardLifecycleSubscriptions(callbacks));
+        unmount();
+        await act(async () => finishShowListener());
+        expect(callbacks.onReady).not.toHaveBeenCalled();
+    });
+
+    it("reports failed registrations without acknowledging readiness", async () => {
+        const callbacks = handlers();
+        const reason = new Error("listener unavailable");
+        tauri.listen.mockImplementationOnce(() => Promise.reject(reason));
+        const { unmount } = renderHook(() => useClipboardLifecycleSubscriptions(callbacks));
+        await act(async () => {});
+        expect(callbacks.onReady).not.toHaveBeenCalled();
+        expect(callbacks.onSubscriptionError).toHaveBeenCalledWith("startup readiness", reason);
+        unmount();
+        await act(async () => {});
     });
 });

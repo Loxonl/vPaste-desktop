@@ -1305,8 +1305,12 @@ export default function Clipboard() {
             }
             clearAltHintTimer();
         },
-        onUnlistenError: (label, unlistenError) => {
-            error(`Failed to unlisten ${label}: ${unlistenError}`);
+        onReady: () => {
+            void invoke("clipboard_window_ready")
+                .catch(reason => error(`Failed to acknowledge clipboard readiness: ${reason}`));
+        },
+        onSubscriptionError: (label, subscriptionError) => {
+            error(`Clipboard lifecycle subscription failed (${label}): ${subscriptionError}`);
         },
     });
 

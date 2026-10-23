@@ -132,6 +132,20 @@ Remove-Item Env:VPASTE_CLIPBOARD_DIAGNOSTICS
 Only these new diagnostic records are payload-free; review the rest of the log
 for unrelated identifying information before sharing it publicly.
 
+## Main-window First-show Geometry
+
+The borderless main window keeps its native shadow. After applying its window
+effects, refresh the non-client frame while still hidden before the first
+resize. Otherwise Tao can measure the old caption insets and add their height
+to the first client size; subsequent shows look correct and mask the bug. Keep
+the existing 302 logical-pixel height and 12px card padding. The interactive
+Windows regression is opt-in locally:
+
+```powershell
+cd src-tauri
+cargo test --bin vPaste clipboard_native_frame_tests::first_show_keeps_the_same_client_height_as_later_shows -- --ignored --exact --test-threads=1
+```
+
 ## Main-window Win+V Shortcut
 
 In Settings > Shortcuts, record Win+V for the main window to replace Windows

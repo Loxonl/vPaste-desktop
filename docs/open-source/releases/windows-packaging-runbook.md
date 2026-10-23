@@ -34,6 +34,12 @@ Do not hand-edit generated files under
 
 ## Supported environment
 
+The application installation target is Windows 10 1709 (build 16299) or later,
+including Windows 10 21H2 / LTSC 2021, and Windows 11, with an x64-compatible
+environment and WebView2. This is separate from the build-machine requirement
+below and from the OS versions actually smoke-tested for a release. See
+[Windows version compatibility](../platform/windows.md#windows-version-compatibility).
+
 Use a Windows 10 22H2 or Windows 11 x64 build machine with:
 
 - Node.js 24.11.1 and npm 11
@@ -158,6 +164,12 @@ ZIP.
 Test both Windows 10 22H2 and Windows 11 where release risk warrants it. Cover
 Simplified Chinese and English, light and dark themes, and 100%, 150%, and
 200% display scaling.
+
+For compatibility changes, also test the oldest installation target and Windows
+10 21H2 / LTSC 2021. Check both interactive installation and `/VERYSILENT`
+update installation, then startup, panel display, text/image capture and paste,
+global shortcuts, preview, and update handoff. A version-policy unit test or a
+successful build on Windows 11 does not count as a Windows 10 runtime test.
 
 ### Installer
 

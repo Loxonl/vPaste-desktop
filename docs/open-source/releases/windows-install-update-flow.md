@@ -6,7 +6,8 @@ Windows 官方交付物为 Inno Setup 6.7.3 编译的 x64 当前用户安装包�
 
 - 固定 `AppId=com.loxonl.vpaste`，默认安装到 `%LOCALAPPDATA%\Programs\vPaste`，不请求管理员权限。
 - 准备页只展示产品信息、安装目录和默认关闭的桌面快捷方式；开始菜单快捷方式始终创建。
-- 跟随 Windows 的界面语言和深浅色；支持 Windows 10 22H2 与 Windows 11。
+- 跟随 Windows 的界面语言和深浅色；最低安装目标为 Windows 10 1709（Build 16299）x64，也允许 Windows 10 21H2 / LTSC 2021、22H2 和 Windows 11。具体真机验证范围见 [Windows 平台说明](../platform/windows.md#windows-version-compatibility)。
+- 系统版本由 Inno 原生 `MinVersion` 统一检查，交互安装和静默更新使用同一门槛；不再在欢迎页单独拦截低于 22H2 的系统。WinGet 清单使用相同最低版本。
 - 缺少 WebView2 时才下载微软 Evergreen Bootstrapper，并在运行前验证 Microsoft Authenticode 签名。
 - 同版本进入修复模式；默认阻止降级，开发测试只能显式传入 `/ALLOWDOWNGRADE` 并再次确认。
 

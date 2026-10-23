@@ -4,6 +4,35 @@
 
 Windows is the primary implemented and tested platform.
 
+## Windows Version Compatibility
+
+The minimum installation target is **Windows 10 1709 (build 16299)** in an
+x64-compatible environment, including later Windows 10 releases such as
+21H2 / LTSC 2021 and 22H2, plus Windows 11. A working WebView2 Runtime is
+required for both installed and Portable packages; the installer bootstraps it
+when missing. No native x86 or ARM64 application package is currently built.
+
+This floor follows Microsoft's [WebView2 Windows client requirements](https://learn.microsoft.com/en-us/microsoft-edge/webview2/#supported-windows-versions)
+for ordinary Windows 10 releases. Older LTSC editions listed by Microsoft are
+not automatically part of vPaste's installation target. Rust 1.91.1's
+[Windows MSVC target](https://github.com/rust-lang/rust/blob/1.91.1/src/doc/rustc/src/platform-support.md)
+requires Windows 10 or newer, not specifically 22H2. The existing acrylic call
+can fail without preventing startup on systems older than Windows 10 1809;
+do not turn optional visual effects into a newer whole-app OS requirement.
+
+Inno Setup's native `MinVersion` applies the version floor before both
+interactive and silent installations. Do not add a second, stricter welcome-page
+gate. The generated WinGet `MinimumOSVersion` must match the native gate.
+
+The installation target is not a claim that every listed OS has passed a
+real-machine test. Record the actual OS build and artifact hash for each release
+smoke test. The policy regressions cover 21H2 / LTSC 2021, other Windows 10
+builds, Windows 11, and rejection below the floor, but are not guest-OS tests.
+Before claiming verified support on an older release, follow the
+[manual compatibility checks](../releases/windows-packaging-runbook.md#manual-windows-validation)
+on that OS. Do not describe a Windows 11 build or compatibility-mode run as a
+Windows 10 runtime verification.
+
 ## Implemented Capabilities
 
 - Tauri 2 Windows desktop app.

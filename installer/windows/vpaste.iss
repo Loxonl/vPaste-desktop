@@ -58,7 +58,8 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-MinVersion=10.0
+; Match the WebView2 baseline in both interactive and silent installations.
+MinVersion=10.0.16299
 OutputDir={#OutputDir}
 OutputBaseFilename=vPaste_{#AppVersion}_windows_x64_setup
 SetupIconFile={#IconFile}
@@ -1118,7 +1119,6 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   ExistingExecutable: String;
-  WindowsVersion: TWindowsVersion;
   IsDowngrade: Boolean;
 begin
   Result := True;
@@ -1126,17 +1126,6 @@ begin
     Exit;
 
   Log('Validating quick installation settings');
-
-  GetWindowsVersionEx(WindowsVersion);
-  if (WindowsVersion.Major < 10) or
-     ((WindowsVersion.Major = 10) and (WindowsVersion.Build < 19045)) then
-  begin
-    MsgBox(Localized(
-      'vPaste 支持 Windows 10 22H2 和 Windows 11',
-      'vPaste supports Windows 10 22H2 and Windows 11'), mbError, MB_OK);
-    Result := False;
-    Exit;
-  end;
 
   IsDowngrade := (ExistingVersion <> '') and
     (CompareVersions(ExistingVersion, '{#AppVersion}') > 0);

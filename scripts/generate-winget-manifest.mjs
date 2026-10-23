@@ -28,6 +28,7 @@ Tags:
 - productivity
 InstallerType: inno
 Scope: user
+MinimumOSVersion: 10.0.16299.0
 UpgradeBehavior: install
 ReleaseDate: ${new Date().toISOString().slice(0, 10)}
 Installers:

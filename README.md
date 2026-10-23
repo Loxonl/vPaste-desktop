@@ -101,7 +101,7 @@ Clipboard history is stored locally. vPaste does not upload it to a cloud servic
 
 | Platform | System | Download |
 | --- | --- | --- |
-| Windows · x64 | Windows 10 22H2 / Windows 11 | [Installer `.exe` / Portable `.zip`](https://github.com/Loxonl/vPaste-desktop/releases) |
+| Windows · x64 | Windows 10 1709+ / Windows 11; WebView2 required | [Installer `.exe` / Portable `.zip`](https://github.com/Loxonl/vPaste-desktop/releases) |
 | macOS · Apple silicon | macOS 11 or later | [Apple silicon `.dmg`](https://github.com/Loxonl/vPaste-desktop/releases) |
 | macOS · Intel | macOS 11 or later | [Intel `.dmg`](https://github.com/Loxonl/vPaste-desktop/releases) |
 

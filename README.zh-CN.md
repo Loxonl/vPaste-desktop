@@ -99,7 +99,7 @@ vPaste 会自动记录支持的剪贴板内容，以卡片形式显示，并附�
 
 | 平台 | 系统要求 | 下载入口 |
 | --- | --- | --- |
-| Windows · x64 | Windows 10 22H2 / Windows 11 | [`.exe` 安装包 / `.zip` 便携包](https://github.com/Loxonl/vPaste-desktop/releases) |
+| Windows · x64 | Windows 10 1709 及以上 / Windows 11；需要 WebView2 | [`.exe` 安装包 / `.zip` 便携包](https://github.com/Loxonl/vPaste-desktop/releases) |
 | macOS · Apple 芯片 | macOS 11 及以上 | [Apple 芯片版 `.dmg`](https://github.com/Loxonl/vPaste-desktop/releases) |
 | macOS · Intel 芯片 | macOS 11 及以上 | [Intel 芯片版 `.dmg`](https://github.com/Loxonl/vPaste-desktop/releases) |
 

@@ -181,13 +181,25 @@
   text-wrap: pretty;
 }
 
-.caseRow small,
-.passed {
-  color: var(--ui-success);
+.caseRow small {
+  color: var(--ui-text-muted);
 }
 
-.failed {
-  color: var(--ui-danger) !important;
+.caseResult,
+.manualActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ui-space-2);
+}
+
+.manualSteps {
+  max-width: 760px;
+  margin: var(--ui-space-3) 0;
+  padding-left: var(--ui-space-6);
+  color: var(--ui-text-muted);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .samplesPage {

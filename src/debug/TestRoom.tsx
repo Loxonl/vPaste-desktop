@@ -18,6 +18,15 @@ import Select from "@mui/material/Select";
 import Tab from "@mui/material/Tab";
 import Tabs from "@mui/material/Tabs";
 import TextField from "@mui/material/TextField";
+import StatusBadge from "../ui/StatusBadge";
+import {
+    caseNeedsManualCheck,
+    caseStateFromResult,
+    caseStatusLabel,
+    OFFICE_CASES,
+    type CaseResult,
+    type CaseState,
+} from "./officeCases";
 import {
     APP_SOURCE_OPTIONS,
     BUILT_IN_SAMPLE_GROUPS,
@@ -36,8 +45,6 @@ import {
 import styles from "./TestRoom.module.css";
 
 type OperationResult = { affectedItems: number; message: string };
-type CaseResult = { passed: boolean; message: string; durationMs: number };
-type CaseState = CaseResult & { status: "passed" | "failed" };
 
 const CASE_GROUPS = [
     {
@@ -49,11 +56,14 @@ const CASE_GROUPS = [
         ],
     },
     {
+        id: "word",
+        name: "Word",
+        cases: OFFICE_CASES.filter(testCase => testCase.group === "word"),
+    },
+    {
         id: "excel",
         name: "Excel 与表格",
-        cases: [
-            { id: "excel-chart", code: "TC-EXCEL-01", name: "Excel 图表与表格", description: "验证表格与内嵌图表。" },
-        ],
+        cases: OFFICE_CASES.filter(testCase => testCase.group === "excel"),
     },
     {
         id: "image",
@@ -229,11 +239,16 @@ export default function TestRoom() {
         setError("");
         for (const caseId of caseIds) {
             setRunningCaseId(caseId);
+            setCaseStates(current => {
+                const next = { ...current };
+                delete next[caseId];
+                return next;
+            });
             try {
                 const result = await invoke<CaseResult>("run_test_room_case", { caseId });
                 setCaseStates(current => ({
                     ...current,
-                    [caseId]: { ...result, status: result.passed ? "passed" : "failed" },
+                    [caseId]: caseStateFromResult(caseId, result),
                 }));
             } catch (reason) {
                 setCaseStates(current => ({
@@ -410,6 +425,11 @@ export default function TestRoom() {
                             >
                                 全部运行
                             </Button>
+                            <Button
+                                variant="outlined"
+                                disabled={busy}
+                                onClick={() => void operate(() => invoke("open_test_room_office_fixtures"))}
+                            >Office 测试素材</Button>
                         </div>
                         <span>测试记录会保留，按需手动清理。</span>
                     </div>
@@ -428,12 +448,36 @@ export default function TestRoom() {
                                 {group.cases.map(testCase => {
                                     const state = caseStates[testCase.id];
                                     const running = runningCaseId === testCase.id;
+                                    const officeCase = OFFICE_CASES.find(candidate => candidate.id === testCase.id);
                                     return (
-                                        <div className={styles.caseRow} key={testCase.id}>
+                                        <div className={styles.caseRow} key={testCase.id} data-case-id={testCase.id}>
                                             <div>
                                                 <strong><span className={styles.caseCode}>{testCase.code}</span> · {testCase.name}</strong>
                                                 <p>{testCase.description}</p>
-                                                {state && <small className={state.passed ? styles.passed : styles.failed}>{state.message} · {state.durationMs}ms</small>}
+                                                {state && <div className={styles.caseResult} role="status">
+                                                    <StatusBadge tone={state.status === "prepared" ? "warning" : state.status === "passed" ? "success" : "danger"}>
+                                                        {caseStatusLabel(state)}
+                                                    </StatusBadge>
+                                                    <small>{state.message} · {state.durationMs}ms</small>
+                                                </div>}
+                                                {state && officeCase && <ol className={styles.manualSteps}>
+                                                    {officeCase.manualSteps.map(step => <li key={step}>{step}</li>)}
+                                                </ol>}
+                                                {state && caseNeedsManualCheck(testCase.id) && (state.status === "prepared" || state.manual) && (
+                                                    <div className={styles.manualActions}>
+                                                        {([true, false] as const).map(passed => <Button
+                                                            key={String(passed)}
+                                                            size="small"
+                                                            color={passed ? "success" : "error"}
+                                                            disabled={busy}
+                                                            aria-label={`${passed ? "确认通过" : "标记失败"} ${testCase.code}`}
+                                                            onClick={() => setCaseStates(current => ({
+                                                                ...current,
+                                                                [testCase.id]: { ...state, passed, status: passed ? "passed" : "failed", manual: true },
+                                                            }))}
+                                                        >{passed ? "确认通过" : "标记失败"}</Button>)}
+                                                    </div>
+                                                )}
                                             </div>
                                             <Button
                                                 size="small"

@@ -86,6 +86,7 @@ if [[ ! -d "$app" ]]; then
   echo "Mac App Store app bundle was not produced: $app" >&2
   exit 1
 fi
+node scripts/check-office-release-isolation.mjs --binary "$app/Contents/MacOS/vPaste"
 architectures="$(lipo -archs "$app/Contents/MacOS/vPaste")"
 if [[ " $architectures " != *" arm64 "* || " $architectures " != *" x86_64 "* ]]; then
   echo "Mac App Store app must contain both arm64 and x86_64 architectures: $architectures" >&2

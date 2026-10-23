@@ -7,6 +7,7 @@ if [[ "$#" -ne 3 ]]; then
 fi
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
+node "${root}/scripts/check-office-release-isolation.mjs" --binary "$1/Contents/MacOS/vPaste"
 venv="${root}/src-tauri/target/.macos-dmg-venv"
 if [[ ! -x "${venv}/bin/python" ]]; then
   python3 -m venv "${venv}"

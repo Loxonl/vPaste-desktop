@@ -65,6 +65,8 @@ mod maintenance;
 mod native_drag_preview;
 #[cfg(target_os = "macos")]
 mod native_drag_snapshot;
+#[cfg(any(test, debug_assertions))]
+mod office_test_fixtures;
 mod paste_queue;
 #[cfg(any(target_os = "windows", test))]
 mod portable_autostart;
@@ -11694,6 +11696,7 @@ fn main() {
             test_room::cleanup_today_test_room_case_history,
             test_room::cleanup_test_room_history,
             test_room::run_test_room_case,
+            test_room::open_test_room_office_fixtures,
             get_onboarding_permission_status,
             enable_onboarding_background_service,
             get_clipboard_history_paused,

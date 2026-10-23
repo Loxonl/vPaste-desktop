@@ -2,6 +2,10 @@
 
 Use these cases for platform clipboard changes and release regression checks. Prefer real applications over synthetic-only tests.
 
+For Word/Excel work, use the shared [Office regression catalog and profiles](office-regressions.md).
+It maps the same scenarios to Debug Test Room, native/unit tests, browser checks,
+and final-package manual acceptance, using generated non-personal documents.
+
 ## Manual Regression Suite
 
 The public checklist below is self-contained and should be run with vPaste open on the target platform. It covers:
@@ -89,7 +93,7 @@ Expected:
 
 Expected:
 
-- Plain fallback is not empty.
+- A selection containing text keeps its plain fallback. Image-only selections remain visible and pasteable without requiring attached text.
 - Rich text tag is shown where appropriate.
 - On macOS, `public.html`/`public.rtf` content is detected before the plain text fallback.
 - Preview uses HTML/RTF where available.

@@ -2088,6 +2088,91 @@ mod tests {
     }
 
     #[test]
+    fn native_office_catalog_payloads_are_visible() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+        if !isolated_clipboard_test("native_office_catalog_payloads_are_visible") {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        crate::config::save(crate::config::Config::default());
+        clipboard::db::init();
+        let monitor = CaptureMonitor::new().unwrap();
+        for case in crate::office_test_fixtures::catalog().unwrap().cases {
+            for payload in crate::office_test_fixtures::payloads(&case).unwrap() {
+                let mut html = payload.html.clone();
+                for key in &payload.image_keys {
+                    let path = root.path().join(format!("{key}.png"));
+                    fs::write(&path, crate::office_test_fixtures::image(key)).unwrap();
+                    let encoded = format!(
+                        "data:image/png;base64,{}",
+                        STANDARD.encode(crate::office_test_fixtures::image(key))
+                    );
+                    html = html.replace(
+                        &encoded,
+                        reqwest::Url::from_file_path(path).unwrap().as_str(),
+                    );
+                }
+                {
+                    let _access = super::super::lock_clipboard_access();
+                    let _clipboard = monitor.open().unwrap();
+                    clipboard_win::empty().unwrap();
+                    clipboard_win::raw::set_string_with(
+                        &payload.text,
+                        clipboard_win::options::NoClear,
+                    )
+                    .unwrap();
+                    clipboard_win::raw::set_without_clear(
+                        registered_format_code("HTML Format").unwrap(),
+                        html.as_bytes(),
+                    )
+                    .unwrap();
+                }
+                let mut sequence = clipboard_sequence_number();
+                let mut context = clipboard::CaptureContext {
+                    time: 1000,
+                    queue_epoch: None,
+                };
+                let mut snapshot = read_snapshot_with_retry(&monitor, &mut sequence, &mut context)
+                    .unwrap()
+                    .unwrap();
+                snapshot.app_source.name = if case.group == "word" {
+                    "WINWORD"
+                } else {
+                    "EXCEL"
+                }
+                .into();
+                let hash = parse_snapshot(&mut snapshot)
+                    .unwrap()
+                    .expect("Office copy must enter history");
+                let item = clipboard::try_get_by_hash(&hash).unwrap();
+                if item.item_type == clipboard::item::ItemType::Image {
+                    assert_eq!(payload.image_keys.len(), 1);
+                    let bytes = crate::history_store::read_file(&item.content).unwrap();
+                    assert_eq!(
+                        image::load_from_memory(&bytes).unwrap().to_rgb8(),
+                        image::load_from_memory(crate::office_test_fixtures::image(
+                            &payload.image_keys[0]
+                        ))
+                        .unwrap()
+                        .to_rgb8()
+                    );
+                } else {
+                    crate::office_test_fixtures::validate_preview(&payload, &item.rich_html)
+                        .unwrap();
+                }
+                assert!(clipboard::search("", 0, 0, 100, "")
+                    .unwrap()
+                    .list
+                    .iter()
+                    .any(|item| item.hash == hash));
+            }
+        }
+    }
+
+    #[test]
     fn native_capture_session_survives_an_uncoordinated_null_window_reader() {
         if !isolated_clipboard_test(
             "native_capture_session_survives_an_uncoordinated_null_window_reader",

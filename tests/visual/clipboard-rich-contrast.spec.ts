@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { officeCatalog, officeHtml } from "../support/officeFixtures";
 
 const samples = [
     { id: "light-page", html: '<p style="color: #222; background-color: #fff">Light page</p>', text: "Light page", color: "rgb(34, 34, 34)", background: "rgb(255, 255, 255)" },
@@ -14,7 +15,18 @@ const samples = [
     { id: "table", html: '<table><tbody><tr><td style="color: #123456; background: #ffff00; border: 1px solid red">Table cell</td></tr></tbody></table>', text: "Table cell", color: "rgb(18, 52, 86)", background: "rgb(255, 255, 0)" },
 ] as const;
 
-async function openFixture(page: Page, theme: "light" | "dark") {
+async function decodedOfficePicture(picture: Locator, source: string) {
+    await expect.poll(() => picture.evaluate((image, expected) => {
+        const img = image as HTMLImageElement;
+        return img.getAttribute("src") === expected && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0;
+    }, source)).toBe(true);
+    return picture.evaluate(image => {
+        const img = image as HTMLImageElement;
+        return { width: img.naturalWidth, height: img.naturalHeight };
+    });
+}
+
+async function openFixture(page: Page, theme: "light" | "dark", officeSamples: Array<{ id: string; html: string; text: string }> = []) {
     await page.emulateMedia({ colorScheme: theme });
     await page.setViewportSize({ width: 1200, height: 302 });
     await page.addInitScript(({ samples, theme }) => {
@@ -49,13 +61,66 @@ async function openFixture(page: Page, theme: "light" | "dark") {
                 metadata: { currentWindow: { label: "clipboard" }, currentWebview: { label: "clipboard" } },
             },
         });
-    }, { samples, theme });
+    }, { samples: [...samples, ...officeSamples], theme });
     await page.goto("/clipboard");
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     await expect(page.locator('[data-hash="light-page"]')).toBeVisible({ timeout: 15000 });
 }
 
 for (const theme of ["light", "dark"] as const) {
+    test(`office pictures decode and keep their size (${theme})`, async ({ page }) => {
+        const cases = officeCatalog.cases.filter(testCase => testCase.expectedImages > 0);
+        const officeSamples = cases.flatMap(testCase => {
+            const first = { id: testCase.id, html: officeHtml(testCase.id), text: testCase.plainText };
+            return testCase.fixture === "consecutive"
+                ? [first, { ...first, id: `${testCase.id}-second`, html: officeHtml(testCase.id, true) }]
+                : [first];
+        });
+        await openFixture(page, theme, officeSamples);
+        for (const sample of officeSamples) {
+            const card = page.locator(`[data-hash="${sample.id}"]`);
+            await card.scrollIntoViewIfNeeded();
+            const images = card.locator('[class*="card-preview-rich"] img');
+            const expected = [...sample.html.matchAll(/src="([^"]+)"/g)].map(match => match[1]);
+            await expect(images).toHaveCount(expected.length);
+            for (let index = 0; index < expected.length; index += 1) {
+                const picture = images.nth(index);
+                const dimensions = await decodedOfficePicture(picture, expected[index]);
+                const large = dimensions.width > 32 || dimensions.height > 32;
+                const box = await picture.boundingBox();
+                expect(box).not.toBeNull();
+                if (large) {
+                    await expect(picture).toHaveAttribute("data-rich-picture", "");
+                    expect(box!.width).toBeGreaterThan(32);
+                    expect(box!.height).toBeGreaterThan(32);
+                } else {
+                    expect(box!.width).toBeLessThanOrEqual(32);
+                    expect(box!.height).toBeLessThanOrEqual(32);
+                }
+            }
+        }
+        await page.goto("/clipboard/preview");
+        await expect.poll(() => page.evaluate(() => (window as unknown as {
+            __richPreviewFixture: { listeners: Map<string, number> };
+        }).__richPreviewFixture.listeners.has("preview-item"))).toBe(true);
+        for (const sample of officeSamples) {
+            await page.evaluate(sample => {
+                const fixture = (window as unknown as { __richPreviewFixture: {
+                    callbacks: Map<number, (event: unknown) => void>; listeners: Map<string, number>;
+                } }).__richPreviewFixture;
+                fixture.callbacks.get(fixture.listeners.get("preview-item")!)?.({
+                    event: "preview-item", payload: { item_type: "Text", content: sample.text, rich_html: sample.html },
+                });
+            }, sample);
+            const images = page.locator('[class*="preview-rich"] img');
+            const expected = [...sample.html.matchAll(/src="([^"]+)"/g)].map(match => match[1]);
+            await expect(images).toHaveCount(expected.length);
+            for (let index = 0; index < expected.length; index += 1) {
+                await decodedOfficePicture(images.nth(index), expected[index]);
+            }
+        }
+    });
+
     test(`rich card colors and highlights survive the ${theme} app theme`, async ({ page }, testInfo) => {
         await openFixture(page, theme);
         for (const sample of samples) {

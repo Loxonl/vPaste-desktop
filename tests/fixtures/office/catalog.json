@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "marker": "VPASTE_SYNTHETIC_OFFICE_V1",
+  "images": [
+    { "key": "pictureA", "file": "picture-a.png", "width": 160, "height": 96 },
+    { "key": "pictureB", "file": "picture-b.png", "width": 120, "height": 80 },
+    { "key": "icon", "file": "inline-icon.png", "width": 16, "height": 16 },
+    { "key": "largePicture", "file": "large-picture.png", "width": 384, "height": 256 }
+  ],
+  "cases": [
+    {
+      "id": "office-word-formatted", "code": "TC-WORD-01", "group": "word", "name": "Word 格式文本",
+      "description": "验证加粗、颜色和高亮。", "fixture": "rich", "plainText": "VPASTE_SYNTHETIC_OFFICE_V1 · Word sample",
+      "html": "<p><strong style=\"color:#234e9b\">VPASTE_SYNTHETIC_OFFICE_V1</strong> · <span style=\"background-color:#fff59d\">Word sample</span></p>",
+      "expectedImages": 0,
+      "manualSteps": ["打开 Word 样本，复制 TC-WORD-01 下的格式文本。", "在主面板和空格预览中检查加粗、蓝色文字与黄色高亮，再粘贴回空白文档。"],
+      "automatedTests": ["office_catalog_history_roundtrip", "rich_text_word_hash_preserves_format_payload", "office pictures decode and keep their size"]
+    },
+    {
+      "id": "office-word-image-row", "code": "TC-WORD-02", "group": "word", "name": "Word 纯图片整行",
+      "description": "验证左侧整行选择和空白占位。", "fixture": "rich", "plainText": "",
+      "html": "<p><img width=160 height=96 src=\"{{pictureA}}\" alt=\"Office picture A\"></p>",
+      "expectedImages": 1,
+      "manualSteps": ["在 Word 样本 TC-WORD-02 的图片行左侧选择整行并复制。", "确认主面板有图片、无需再复制一次，且能正确粘贴。"],
+      "automatedTests": ["native_word_rows_keep_standalone_and_mixed_pictures_in_history", "invisible_placeholder_rich_hash_preserves_picture_payload", "office pictures decode and keep their size"]
+    },
+    {
+      "id": "office-word-mixed", "code": "TC-WORD-03", "group": "word", "name": "Word 文字与双图",
+      "description": "验证图片数量、顺序和内联图标。", "fixture": "rich", "plainText": "Office mixed content",
+      "html": "<p>Office mixed content</p><p><img width=160 height=96 src=\"{{pictureA}}\" alt=\"Office picture A\"></p><p><img width=120 height=80 src=\"{{pictureB}}\" alt=\"Office picture B\"></p><p>Icon <img width=16 height=16 src=\"{{icon}}\" alt=\"Office inline icon\"></p>",
+      "expectedImages": 3,
+      "manualSteps": ["复制 Word 样本 TC-WORD-03 的文字、蓝图、绿图和小图标。", "检查两张大图各出现一次、顺序正确；小图标保持小尺寸；粘贴后内容完整。"],
+      "automatedTests": ["office_catalog_history_roundtrip", "native_word_margin_row_with_large_vml_fallback_remains_visible", "office pictures decode and keep their size"]
+    },
+    {
+      "id": "office-word-large-picture", "code": "TC-WORD-04", "group": "word", "name": "Word 大图片与预览预算",
+      "description": "验证超过 256KB 的有效图片。", "fixture": "rich", "plainText": "Office large picture",
+      "html": "<p>Office large picture</p><p><img width=384 height=256 src=\"{{largePicture}}\" alt=\"Office large picture\"></p>",
+      "expectedImages": 1,
+      "manualSteps": ["复制 Word 样本 TC-WORD-04 的噪声图片。", "确认卡片和空格预览均可解码显示，不因 HTML 总体积而消失，且能粘贴。"],
+      "automatedTests": ["office_catalog_history_roundtrip", "word_image_larger_than_card_markup_budget_stays_in_rich_preview", "office pictures decode and keep their size"]
+    },
+    {
+      "id": "office-word-consecutive", "code": "TC-WORD-05", "group": "word", "name": "Word 连续复制与重开",
+      "description": "验证不同图片不复用旧图。", "fixture": "consecutive", "plainText": "",
+      "html": "<p><img width=160 height=96 src=\"{{pictureA}}\" alt=\"Office consecutive picture\"></p>",
+      "expectedImages": 1,
+      "manualSteps": ["从 Word 样本先复制 TC-WORD-05 蓝图，再复制绿图。", "关闭来源文档，收起重开并重启 vPaste；确认两条内容仍不同，分别粘贴后颜色正确。"],
+      "automatedTests": ["native_word_null_placeholder_does_not_reuse_stale_picture", "office_catalog_history_roundtrip", "office pictures decode and keep their size"]
+    },
+    {
+      "id": "excel-chart", "code": "TC-EXCEL-01", "group": "excel", "name": "Excel 图表与表格",
+      "description": "验证表格与内嵌图表。", "fixture": "rich", "plainText": "Product\tUnits\nSample A\t12\nSample B\t24",
+      "html": "<table><tr><th>Product</th><th>Units</th></tr><tr><td>Sample A</td><td>12</td></tr><tr><td>Sample B</td><td>24</td></tr></table><p>Quarterly sample</p><img width=160 height=96 src=\"{{pictureA}}\" alt=\"Office chart preview\">",
+      "expectedImages": 1,
+      "manualSteps": ["在 Excel 样本中分别复制 A1:C4 表格、E5 图表和 A8 图片。", "检查三种内容的识别、预览和粘贴。测试间生成的是展示样本，真实 Excel 图表需要此步骤确认。"],
+      "automatedTests": ["office_catalog_history_roundtrip", "image_only_excel_rich_content_prefers_bitmap_storage", "office pictures decode and keep their size"]
+    },
+    {
+      "id": "office-excel-formatted", "code": "TC-EXCEL-02", "group": "excel", "name": "Excel 格式表格",
+      "description": "验证值、颜色、边框与合并标题。", "fixture": "rich", "plainText": "Product\tUnits\tRegion\nSample A\t12\tNorth\nSample B\t24\tSouth",
+      "html": "<table><tr><th colspan=3 style=\"background-color:#dce6f1\">Synthetic sales</th></tr><tr><th>Product</th><th>Units</th><th>Region</th></tr><tr><td style=\"border:1px solid #234e9b;color:#234e9b\">Sample A</td><td>12</td><td>North</td></tr><tr><td>Sample B</td><td style=\"background-color:#fff59d\">24</td><td>South</td></tr></table>",
+      "expectedImages": 0,
+      "manualSteps": ["复制 Excel 样本 A1:C4 及 A6:C6 合并标题。", "在卡片、空格预览和目标表格中检查文字、数值、颜色、边框和标题。"],
+      "automatedTests": ["office_catalog_history_roundtrip", "rich card colors and highlights survive"]
+    },
+    {
+      "id": "office-excel-empty", "code": "TC-EXCEL-03", "group": "excel", "name": "Excel 空白选择后恢复",
+      "description": "真实复制空白区，再复制有效单元格。", "fixture": "manual", "plainText": "", "html": "", "expectedImages": 0,
+      "manualSteps": ["复制 Excel 样本 F1:H3 空白区，再复制 A2:C2 有效内容。", "空白内容不应误抓成位图；后一条有效内容应及时出现并可粘贴。"],
+      "automatedTests": ["empty_excel_rich_content_is_ignored_even_when_dib_is_available", "transient_excel_blank_bitmap_phase_is_ignored"]
+    },
+    {
+      "id": "office-excel-delayed", "code": "TC-EXCEL-04", "group": "excel", "name": "Excel 延迟发布恢复",
+      "description": "验证一次复制后的最终内容和捕获时序。", "fixture": "manual", "plainText": "", "html": "", "expectedImages": 0,
+      "manualSteps": ["在原问题的正常后台环境中复制 Excel 样本 A1:C4 一次，随后打开主面板。", "无需再复制一次即可看到最终内容；快速复制不同区域时不应出现旧数据。故障注入由原生回归验证。"],
+      "automatedTests": ["clipboard_retry_recovers_excel_publication_and_delayed_rendering", "clipboard_retry_new_copy_uses_fresh_snapshot_and_queue_session", "missing_word_capture_notification_is_recovered_before_activation_times_out"]
+    },
+    {
+      "id": "office-excel-queue", "code": "TC-EXCEL-05", "group": "excel", "name": "Office 内容进入粘贴队列",
+      "description": "真实复制表格和图片，验证队列粘贴。", "fixture": "manual", "plainText": "", "html": "", "expectedImages": 0,
+      "manualSteps": ["开启粘贴队列，依次复制 Excel A1:C4 和 Word TC-WORD-02 图片。", "核对历史与队列顺序，在外部应用粘贴两次，再撤销；内容、格式和消费次数应正确。"],
+      "automatedTests": ["queued_image_and_rich_text_are_also_saved_to_history", "queued_rich_capture_updates_history_and_queue_formats_together", "native_word_rows_keep_standalone_and_mixed_pictures_in_history"]
+    }
+  ]
+}

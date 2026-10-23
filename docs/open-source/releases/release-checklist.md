@@ -2,6 +2,13 @@
 
 Use this checklist together with the detailed [Windows Packaging Runbook](windows-packaging-runbook.md). The runbook is the source of truth for commands, expected artifacts, validation coverage, signing order, and rollback behavior.
 
+For clipboard verification, follow the [Office regression profiles](../testing/office-regressions.md).
+Reuse valid automated evidence for unchanged source/platform inputs; verify the
+final installed candidate with the listed real-Office smoke cases on Windows and
+macOS. Record package/source identity, Office version, outcomes, and any tests not
+run. Packaging now rejects the new Office fixtures in Release assets; this
+isolation check does not execute Office or establish functional acceptance.
+
 ## One-time repository setup
 
 1. Create a protected GitHub Environment named `release` with maintainer approval.

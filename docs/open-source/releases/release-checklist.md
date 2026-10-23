@@ -42,13 +42,13 @@ The workflow creates a Draft Release only. It never creates a tag-triggered rele
 
 ## Build packages for a published release
 
-1. Merge the workflow and upload script before choosing the source commit. Create a GitHub Release with a reviewed tag matching `vX.Y.Z` for Stable or `vX.Y.Z-rc.N` for RC, and add the release title and notes. The notes must include the Windows Unknown publisher and SmartScreen warning.
+1. Merge the workflow and upload script before choosing the source commit. Create a GitHub Release with a reviewed tag matching `vX.Y.Z` for Stable or `vX.Y.Z-rc.N` for RC. Set the Release title to exactly the tag (for example, `v1.6.3` or `v1.6.4-rc.1`), without a product-name prefix, and add the release notes. The notes must include the Windows Unknown publisher and SmartScreen warning.
 2. Publish the Release to trigger `.github/workflows/tag-release.yml`. Pushing a tag alone does not start this workflow.
 3. Approve the protected `release` Environment for platform signing and asset upload.
 4. Wait for Windows, Apple silicon macOS, Intel macOS, and universal macOS packages to be attached to that same Release. Existing assets with different contents are never replaced.
 5. Confirm the merged updater manifest contains `windows-x86_64`, `darwin-aarch64`, and `darwin-x86_64` entries with non-empty signatures. The workflow then publishes the channel manifest (`download/stable/latest.json` for `vX.Y.Z`, `download/rc/latest.json` for `vX.Y.Z-rc.N`) to the website; confirm the public URL serves the new version. See [update-feed-publication.md](update-feed-publication.md).
 6. Smoke-test the attached packages before advertising the Release. The source repository is currently private, so unauthenticated users cannot download its Release assets.
-7. Write bilingual notes with `## English` first and `## 中文` second. English is the primary/default release language; package warnings and shared bilingual labels also put English first. The workflow normalizes these language-section headings without changing their contents or inventing translations.
+7. Write bilingual notes with `## English` first and `## 中文` second. English is the primary/default release language; package warnings and shared bilingual labels also put English first. The workflow normalizes these language-section headings without changing their contents or inventing translations. Keep `Packages / 安装包` to at most two short sentences per language covering package types and the required unsigned Windows warning; leave download links to the final table and omit build workflow, SBOM, metadata, and updater-signature explanations.
 8. Confirm the English-first bilingual download table is at the end of the Release notes, immediately above Assets. It must link directly to the five manual-install packages. The workflow refreshes its marked section without replacing handwritten notes.
 
 ## Windows validation

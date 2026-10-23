@@ -10976,7 +10976,10 @@ mod clipboard_native_frame_tests {
         let mut context = tauri::generate_context!();
         context.config_mut().app.windows.clear();
         context.config_mut().identifier = "com.loxonl.vpaste.frame-test".into();
-        let app = tauri::Builder::default().any_thread().build(context).unwrap();
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(context)
+            .unwrap();
         let window = tauri::window::WindowBuilder::new(app.handle(), "frame-test")
             .visible(false)
             .focused(false)

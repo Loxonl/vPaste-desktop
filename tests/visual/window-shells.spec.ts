@@ -568,7 +568,7 @@ test.describe("window shells", () => {
         await expect(page.getByRole("tabpanel")).toHaveAttribute("data-motion-preset", "panelBackward");
     });
 
-    test("test room shows grouped cases and persistent sample tabs", async ({ page }) => {
+    test("test room shows grouped cases and persistent sample tabs", async ({ page }, testInfo) => {
         await page.addInitScript(() => {
             let callbackId = 0;
             const calls: string[] = [];
@@ -584,6 +584,9 @@ test.describe("window shells", () => {
                         }
                         if (cmd === "cleanup_test_room_history") {
                             return { affectedItems: 5, message: "已清理 5 条测试历史" };
+                        }
+                        if (cmd === "run_test_room_case") {
+                            return { passed: true, message: "Fixture ready", durationMs: 1 };
                         }
                         if (cmd === "copy_test_room_item_to_clipboard") {
                             Object.assign(window, { __lastCopiedTestRoomItem: args?.item });
@@ -631,6 +634,8 @@ test.describe("window shells", () => {
         await expect(page.getByText("TC-FILE-04 · 文件夹与文件")).toBeVisible();
         await expect(page.getByText("TC-FILE-05 · 已删除文件")).toBeVisible();
         await expect(page.getByText("TC-EXCEL-01 · Excel 图表与表格")).toBeVisible();
+        await expect(page.getByText("TC-WORD-02 · Word 纯图片整行")).toBeVisible();
+        await expect(page.getByText("TC-EXCEL-04 · Excel 延迟发布恢复")).toBeVisible();
         await expect(page.getByText("TC-IMAGE-02 · QQ 双图消息")).toBeVisible();
         await expect(page.getByText("TC-IMAGE-03 · GIF 历史预览")).toBeVisible();
         await expect(page.getByText("TC-BOUNDARY-01 · 超长文本")).toBeVisible();
@@ -647,6 +652,7 @@ test.describe("window shells", () => {
         await expect(page.getByText("TC-DRAG-05 · 多文件")).toBeVisible();
         await expect(page.locator("article h2").allTextContents()).resolves.toEqual([
             "文本与富文本",
+            "Word",
             "Excel 与表格",
             "图片",
             "链接",
@@ -658,6 +664,18 @@ test.describe("window shells", () => {
             "主窗口生命周期",
             "功能与元数据",
         ]);
+        const officeRow = page.locator('[data-case-id="office-word-image-row"]');
+        await officeRow.getByRole("button", { name: "运行", exact: true }).click();
+        await expect(officeRow.getByText("已准备 · 待人工确认", { exact: true })).toBeVisible();
+        await expect(officeRow.getByText("自动通过", { exact: true })).toHaveCount(0);
+        await officeRow.scrollIntoViewIfNeeded();
+        await page.screenshot({ path: testInfo.outputPath("office-test-room.png") });
+        await officeRow.getByRole("button", { name: "确认通过 TC-WORD-02" }).click();
+        await expect(officeRow.getByText("人工通过", { exact: true })).toBeVisible();
+        await officeRow.getByRole("button", { name: "运行", exact: true }).click();
+        await expect(officeRow.getByText("已准备 · 待人工确认", { exact: true })).toBeVisible();
+        await officeRow.getByRole("button", { name: "标记失败 TC-WORD-02" }).click();
+        await expect(officeRow.getByText("人工未通过", { exact: true })).toBeVisible();
         page.once("dialog", dialog => dialog.accept());
         await page.getByRole("button", { name: "清理测试历史" }).click();
         await expect.poll(() => page.evaluate(() => (

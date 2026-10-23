@@ -90,6 +90,7 @@ pub struct TestRoomOperationResult {
 #[serde(rename_all = "camelCase")]
 pub struct TestCaseResult {
     passed: bool,
+    status: &'static str,
     message: String,
     duration_ms: u128,
 }
@@ -1250,32 +1251,84 @@ fn png_data_url(preset: &str) -> Result<String, String> {
     ))
 }
 
-fn run_excel_chart_case() -> Result<String, String> {
-    let (created_at_ms, hash) = case_history_identity("excel-chart");
-    let (plain, table) = excel_preset("excel-sales")?;
-    let chart = png_data_url("image-gradient")?;
-    let html = format!(
-        "<div>{}<p>季度趋势</p><img src=\"{}\" alt=\"季度趋势图\"></div>",
-        table, chart
-    );
-    clipboard::insert_test_room_rich_text(
-        hash.clone(),
-        plain,
-        html.into_bytes(),
-        "Microsoft Excel",
-        created_at_ms,
-    );
-    register_case_history(created_at_ms, &hash)?;
-    let stored = clipboard::try_get_by_hash(&hash)
-        .ok_or_else(|| "Excel 测试项未能从历史数据库读回".to_string())?;
-    if stored.app_source != "Microsoft Excel"
-        || !Path::new(&stored.app_icon_path).is_file()
-        || !stored.rich_html.contains("<table")
-        || stored.rich_html.matches("<img").count() != 1
-    {
-        return Err("Excel 表格、图表或来源 App 不完整".to_string());
+#[cfg(any(test, debug_assertions))]
+fn run_office_case(case_id: &str) -> Result<String, String> {
+    let case = crate::office_test_fixtures::catalog()?
+        .cases
+        .into_iter()
+        .find(|case| case.id == case_id)
+        .ok_or_else(|| format!("未知 Office 用例：{case_id}"))?;
+    let payloads = crate::office_test_fixtures::payloads(&case)?;
+    if payloads.is_empty() {
+        return Ok("请使用 Office 测试素材按步骤操作；此项未执行真实应用验证".into());
     }
-    Ok("Excel 表格与图表已写入，测试历史已保留".to_string())
+    let created_at_ms = clipboard::current_timestamp_millis();
+    let run_id = CASE_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let scope = format!("case-{case_id}-{created_at_ms}-{run_id}");
+    let source = if case.group == "word" {
+        "Microsoft Word"
+    } else {
+        "Microsoft Excel"
+    };
+    let mut hashes = Vec::new();
+    for (index, payload) in payloads.iter().enumerate() {
+        let hash = generated_hash(&scope, &index.to_string());
+        clipboard::insert_test_room_rich_text(
+            hash.clone(),
+            payload.text.clone(),
+            payload.html.as_bytes().to_vec(),
+            source,
+            created_at_ms.saturating_sub((payloads.len() - index - 1) as u64),
+        );
+        hashes.push(hash);
+    }
+    if let Err(err) = record_test_case_history_hashes(created_at_ms, hashes.clone()) {
+        let _ = delete_hashes(&hashes);
+        return Err(err);
+    }
+    for (hash, payload) in hashes.iter().zip(&payloads) {
+        let stored =
+            clipboard::try_get_by_hash(hash).ok_or_else(|| "Office 样本无法读回".to_string())?;
+        if stored.app_source != source || !Path::new(&stored.app_icon_path).is_file() {
+            return Err("Office 样本来源不完整".into());
+        }
+        crate::office_test_fixtures::validate_preview(payload, &stored.rich_html)?;
+        if !clipboard::search("", 0, 0, 100, "")?
+            .list
+            .iter()
+            .any(|item| item.hash == *hash)
+        {
+            return Err("Office 样本未出现在历史中".into());
+        }
+    }
+    Ok(format!(
+        "已保留 {} 条样本并验证图片解码；请继续人工确认",
+        hashes.len()
+    ))
+}
+
+#[tauri::command]
+pub fn open_test_room_office_fixtures() -> Result<TestRoomOperationResult, String> {
+    ensure_enabled()?;
+    #[cfg(any(test, debug_assertions))]
+    {
+        let dir = test_room_path("fixtures/office");
+        fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+        for (name, bytes) in crate::office_test_fixtures::documents() {
+            write_fixture(&dir.join(name), bytes)?;
+        }
+        crate::open_containing_folder(
+            serde_json::to_string(&vec![dir.join("vPaste-Office.docx")])
+                .map_err(|err| err.to_string())?,
+        )?;
+        Ok(TestRoomOperationResult {
+            affected_items: 0,
+            message: "已打开脱敏 Office 素材目录；真实复制会替换当前系统剪贴板，请勿使用个人文档"
+                .into(),
+        })
+    }
+    #[cfg(not(any(test, debug_assertions)))]
+    Err("Office 测试素材不包含在正式构建中".into())
 }
 
 fn run_qq_two_images_case() -> Result<String, String> {
@@ -1712,6 +1765,14 @@ pub fn cleanup_test_room_history(app: tauri::AppHandle) -> Result<TestRoomOperat
 }
 
 fn run_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
+    #[cfg(any(test, debug_assertions))]
+    if crate::office_test_fixtures::catalog()?
+        .cases
+        .iter()
+        .any(|case| case.id == case_id)
+    {
+        return run_office_case(case_id);
+    }
     if clipboard_case_sample(case_id).is_some() {
         return run_clipboard_case(case_id);
     }
@@ -1740,7 +1801,6 @@ fn run_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
             }
             Ok("全部粘贴类型均映射到固定安全预设".to_string())
         }
-        "excel-chart" => run_excel_chart_case(),
         "qq-two-images" => run_qq_two_images_case(),
         "gif-history" => run_gif_history_case(case_id),
         "paste-queue-mixed" | "paste-queue-order" | "paste-queue-undo" | "paste-queue-target" => {
@@ -1806,12 +1866,18 @@ pub fn run_test_room_case(
     let started = Instant::now();
     let result = match run_case(&app, &case_id) {
         Ok(message) => Ok(TestCaseResult {
-            passed: true,
+            passed: !case_needs_manual_check(&case_id),
+            status: if case_needs_manual_check(&case_id) {
+                "prepared"
+            } else {
+                "passed"
+            },
             message,
             duration_ms: started.elapsed().as_millis(),
         }),
         Err(message) => Ok(TestCaseResult {
             passed: false,
+            status: "failed",
             message,
             duration_ms: started.elapsed().as_millis(),
         }),
@@ -1822,9 +1888,60 @@ pub fn run_test_room_case(
     result
 }
 
+fn case_needs_manual_check(case_id: &str) -> bool {
+    case_id.starts_with("office-")
+        || case_id == "excel-chart"
+        || case_id.starts_with("external-drag-")
+        || case_id == "paste-queue-target"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn office_catalog_history_roundtrip() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        crate::config::save(crate::config::Config {
+            storage_dir: root.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        });
+        crate::clipboard::db::init();
+        for case in crate::office_test_fixtures::catalog().unwrap().cases {
+            assert!(case_needs_manual_check(&case.id));
+            run_office_case(&case.id).unwrap();
+        }
+        let manifest = load_case_history_manifest().unwrap();
+        assert_eq!(manifest.runs.len(), 7);
+        let consecutive = manifest
+            .runs
+            .iter()
+            .find(|run| run.hashes.len() == 2)
+            .unwrap();
+        let first = clipboard::try_get_by_hash(&consecutive.hashes[0]).unwrap();
+        let second = clipboard::try_get_by_hash(&consecutive.hashes[1]).unwrap();
+        assert!(
+            first.time < second.time,
+            "later Office copies must sort first"
+        );
+        let hashes = manifest
+            .runs
+            .iter()
+            .flat_map(|run| run.hashes.iter())
+            .collect::<HashSet<_>>();
+        assert_eq!(hashes.len(), 8);
+        assert!(hashes
+            .iter()
+            .all(|hash| clipboard::try_get_by_hash(hash).is_some()));
+        assert_eq!(
+            cleanup_test_case_history_for_date(&current_local_date()).unwrap(),
+            8
+        );
+        crate::config::save(crate::config::Config::default());
+    }
 
     #[test]
     fn basic_clipboard_test_cases_cover_non_file_history_types() {
@@ -2113,7 +2230,7 @@ mod tests {
         ] {
             run_file_case(case_id).unwrap();
         }
-        run_excel_chart_case().unwrap();
+        run_office_case("excel-chart").unwrap();
         run_qq_two_images_case().unwrap();
         run_gif_history_case("gif-history").unwrap();
 

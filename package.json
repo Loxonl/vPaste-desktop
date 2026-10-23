@@ -38,6 +38,9 @@
     "test:unit:coverage": "vitest run --coverage",
     "test:visual": "playwright test",
     "test:visual:update": "playwright test --update-snapshots",
+    "test:office": "node scripts/run-office-checks.mjs logic",
+    "test:office:ui": "node scripts/run-office-checks.mjs ui",
+    "check:office:release": "node scripts/check-office-release-isolation.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

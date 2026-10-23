@@ -49,6 +49,7 @@ Only changes confined to Markdown, `docs/`, `LICENSE`, issue forms, and `CODEOWN
 | Rust backend/Tauri commands | `cargo check --locked --all-targets --manifest-path src-tauri\Cargo.toml` and `cargo test --locked --all-targets --manifest-path src-tauri\Cargo.toml` |
 | Rust formatting-sensitive changes | `cargo fmt --all --check --manifest-path src-tauri\Cargo.toml` |
 | Clipboard behavior | Relevant cases from `docs/open-source/testing/clipboard-cases.md` |
+| Word/Excel capture, rich preview, or queue | Relevant [Office profiles](office-regressions.md); record native, browser, and manual outcomes separately |
 | Release scripts/config | `npm run check:release`, `npm run check:licenses`, workflow lint, and the relevant release flow document |
 | Language text | Verify both `src/lang/locales/en-US.ts` and `src/lang/locales/zh-CN.ts` when applicable |
 

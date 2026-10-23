@@ -169,6 +169,7 @@ $appBinary = Join-Path $repoRoot "src-tauri\target\release\vPaste.exe"
 if (-not (Test-Path -LiteralPath $appBinary)) {
     throw "vPaste release binary was not found at $appBinary"
 }
+Invoke-Checked node scripts/check-office-release-isolation.mjs --binary $appBinary
 if ($authenticodeCertificate) {
     Invoke-AuthenticodeSign -Path $appBinary -Certificate $authenticodeCertificate
 }

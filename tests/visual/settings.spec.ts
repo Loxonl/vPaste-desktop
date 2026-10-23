@@ -71,6 +71,10 @@ test.describe("settings preview", () => {
         await expect(page.getByRole("button", { name: "检查更新" })).toBeVisible();
         await expect(page.getByText("版本 1.6.0")).toBeVisible();
         await expect(page.getByText("版本与更新")).toHaveCount(0);
+        await expect(page.getByRole("note")).toBeVisible();
+        for (const name of ["官方网站", "GitHub 主页", "更新记录"]) {
+            await expect(page.getByRole("button", { name, exact: true })).toBeVisible();
+        }
         await expect(page).toHaveScreenshot("settings-about-switch.png");
     });
 
@@ -111,7 +115,8 @@ test.describe("settings preview", () => {
         await page.getByRole("tab").nth(2).click();
 
         const valueColumns = page.locator("[class*='shortcut-static']");
-        await expect(valueColumns).toHaveCount(7);
+        await expect(valueColumns.filter({ hasText: /^F2$/ })).toHaveCount(1);
+        await expect(valueColumns).toHaveCount(8);
         const columnBoxes = await valueColumns.evaluateAll(elements => elements.map(element => {
             const box = element.getBoundingClientRect();
             return { center: box.left + box.width / 2 };

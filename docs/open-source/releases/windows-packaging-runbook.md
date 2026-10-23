@@ -325,8 +325,16 @@ Use this order when writing each release; English is the primary/default languag
 
 ## Packages / 安装包
 
-Shared package information and warnings, English first and Chinese second.
+Windows: installer / Portable ZIP; macOS: Apple silicon / Intel / Universal DMG.
+Windows packages are unsigned and may show **Unknown publisher** or SmartScreen warnings.
+
+Windows：安装版／便携版；macOS：Apple 芯片／Intel／通用版。
+Windows 安装包暂未签名，可能显示「未知发布者」或 SmartScreen 提示。
 ```
+
+Keep this package section to at most two short sentences per language. The final
+download table provides links; do not repeat build workflow, SBOM, metadata, or
+updater-signature details in the Release notes.
 
 The helper recognizes the exact `## English` and `## 中文` headings, keeps
 subsections within their language, and preserves shared notes and source links.

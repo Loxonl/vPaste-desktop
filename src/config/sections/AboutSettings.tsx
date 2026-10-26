@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Button, CircularProgress, IconButton, Typography } from "@mui/material";
+import { Button, CircularProgress, IconButton, Tooltip, Typography } from "@mui/material";
 import ArrowCircleUpRoundedIcon from "@mui/icons-material/ArrowCircleUpRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import GitHubIcon from "@mui/icons-material/GitHub";
@@ -38,31 +38,57 @@ function rememberStarPromptDismissed() {
 }
 
 type UpdateAction = "check" | "prepare" | "install" | "manualDownload" | "store";
+type UpdateFeedback = { kind: "latest" | "failed"; detail?: string };
 
 export default function AboutSettings({ bridge, t, dialogBackdropClassName }: SettingsSectionProps & { dir: string, dialogBackdropClassName?: string }) {
     const { state: updateState, check, prepare, restartToUpdate, openAppStore } = useAppUpdateState(bridge);
-    const [checkedManually, setCheckedManually] = React.useState(false);
+    const [checkingManually, setCheckingManually] = React.useState(false);
+    const [feedback, setFeedback] = React.useState<UpdateFeedback | null>(null);
+    const statusId = React.useId();
     const [manualReleaseUrl, setManualReleaseUrl] = React.useState<string | null>(null);
     const [starPromptVisible, setStarPromptVisible] = React.useState(() => !readStarPromptDismissed());
-    const updateBusy = updateState.status === "checking"
+    const updateBusy = checkingManually || updateState.status === "checking"
         || updateState.status === "downloading"
         || updateState.status === "installing";
+    const activeFeedback = updateState.status === "ready" || updateState.status === "downloading" || updateState.status === "installing"
+        ? null
+        : feedback;
+
+    React.useEffect(() => {
+        if (!feedback) return;
+        const timer = window.setTimeout(() => setFeedback(null), 3000);
+        return () => window.clearTimeout(timer);
+    }, [feedback]);
 
     const openExternal = (url: string) => {
         void bridge.invoke("open_url_in_browser", { url }).catch(e => error(`Failed to open external link: ${e}`));
     };
 
     const handleCheckUpdate = async () => {
+        setCheckingManually(true);
+        setFeedback(null);
+        let preparing = false;
         try {
-            setCheckedManually(true);
-            const next = await check();
+            let next = await check();
             if (next.status === "available" && !next.portable && next.source !== "macAppStore") {
-                await prepare();
+                preparing = true;
+                next = await prepare();
             } else if (next.status === "manualDownload") {
                 setManualReleaseUrl(next.releaseUrl);
             }
+            if (next.status === "idle") {
+                setFeedback({ kind: "latest" });
+            } else if (next.status === "failed") {
+                setFeedback({ kind: "failed", detail: updateStatusText(next, false, t) });
+            }
         } catch (e) {
             error(`Failed to check update: ${e}`);
+            setFeedback({
+                kind: "failed",
+                detail: t(preparing ? "settings.updateDownloadFailed" : "settings.updateCheckFailed", { error: String(e) }),
+            });
+        } finally {
+            setCheckingManually(false);
         }
     };
 
@@ -105,19 +131,28 @@ export default function AboutSettings({ bridge, t, dialogBackdropClassName }: Se
         }
     };
 
-    const updateButtonText = updateState.status === "checking"
-        ? t("settings.updateChecking")
-        : updateState.status === "downloading"
-            ? t("settings.updateDownloading")
-            : updateState.status === "installing"
-                ? t("settings.updateInstallingShort")
-                : updateAction === "store"
-                    ? t("settings.updateOpenAppStore")
-                    : updateFound
-                    ? t("settings.updateTo", { version: updateState.availableVersion || "" })
-                    : updateState.status === "failed"
-                        ? t("settings.updateRetry")
-                        : t("settings.updateCheck");
+    let updateButtonText = t("settings.updateCheck");
+    if (updateState.status === "downloading") {
+        updateButtonText = updateState.totalBytes && updateState.totalBytes > 0
+            ? t("settings.updateDownloadingPercent", {
+                percent: Math.min(100, Math.max(0, Math.round(updateState.downloadedBytes / updateState.totalBytes * 100))),
+            })
+            : t("settings.updateDownloading");
+    } else if (updateState.status === "installing") {
+        updateButtonText = t("settings.updateInstallingShort");
+    } else if (updateState.status === "checking" || checkingManually) {
+        updateButtonText = t("settings.updateChecking");
+    } else if (updateAction === "store") {
+        updateButtonText = t("settings.updateOpenAppStore");
+    } else if (updateFound) {
+        updateButtonText = t("settings.updateTo", { version: updateState.availableVersion || "" });
+    } else if (activeFeedback?.kind === "failed") {
+        updateButtonText = t("settings.updateFailedShort");
+    } else if (updateState.status === "failed") {
+        updateButtonText = t("settings.updateRetry");
+    } else if (activeFeedback?.kind === "latest" && updateState.status === "idle") {
+        updateButtonText = t("settings.updateLatestShort");
+    }
     const updateButtonIcon = updateBusy
         ? <CircularProgress size={14} thickness={5} color="inherit" aria-hidden="true" />
         : updateFound
@@ -125,11 +160,19 @@ export default function AboutSettings({ bridge, t, dialogBackdropClassName }: Se
             : <SyncRoundedIcon fontSize="small" />;
 
     const displayVersion = updateState.currentVersion || t("settings.versionUnknown");
-    const statusText = updateStatusText(updateState, checkedManually, t);
-    const statusMotion = useMotionPreset("fade");
     const promptMotion = useMotionPreset("listItem");
-    const updateHasError = updateState.status === "failed"
+    const backendHasError = updateState.status === "failed"
         || (updateState.status === "ready" && Boolean(updateState.error));
+    const updateHasError = backendHasError || activeFeedback?.kind === "failed";
+    const statusText = backendHasError
+        ? updateStatusText(updateState, false, t)
+        : activeFeedback?.kind === "failed"
+            ? activeFeedback.detail || ""
+            : checkingManually && updateState.status !== "downloading"
+                ? t("settings.updateChecking")
+                : updateState.currentVersion
+                    ? updateStatusText(updateState, activeFeedback?.kind === "latest", t)
+                    : "";
 
     const dismissStarPrompt = () => {
         rememberStarPromptDismissed();
@@ -153,38 +196,33 @@ export default function AboutSettings({ bridge, t, dialogBackdropClassName }: Se
                     <Typography variant="body2" className={classes(styles, "about-version")}>
                         {t("common.version", { version: displayVersion })}
                     </Typography>
-                    <AnimatePresence mode="wait" initial={false}>
-                        {statusText && (
-                            <m.div
-                                key={`${updateState.status}-${updateState.errorStage ?? ""}`}
-                                variants={statusMotion}
-                                initial="initial"
-                                animate="animate"
-                                exit="exit"
-                                data-motion-preset="fade"
-                            >
-                                <Typography
-                                    variant="body2"
-                                    className={classes(styles, `about-update-status${updateHasError ? " is-error" : ""}`)}
-                                    role={updateHasError ? "alert" : "status"}
-                                    aria-live={updateHasError ? "assertive" : "polite"}
-                                >
-                                    {statusText}
-                                </Typography>
-                            </m.div>
-                        )}
-                    </AnimatePresence>
                 </div>
-                <Button
-                    className={classes(styles, "about-update-button")}
-                    variant={updateFound ? "contained" : "outlined"}
-                    disableElevation
-                    startIcon={updateButtonIcon}
-                    disabled={updateBusy || !updateState.feedEnabled}
-                    onClick={handleUpdateAction}
-                >
-                    {updateButtonText}
-                </Button>
+                <Tooltip title={statusText} describeChild>
+                    <span className={classes(styles, "about-update-control")}>
+                        <Button
+                            className={classes(styles, "about-update-button")}
+                            variant={updateFound ? "contained" : "outlined"}
+                            color={updateHasError ? "error" : "primary"}
+                            fullWidth
+                            disableElevation
+                            startIcon={updateButtonIcon}
+                            aria-describedby={statusText ? statusId : undefined}
+                            aria-busy={updateBusy}
+                            disabled={updateBusy || !updateState.feedEnabled}
+                            onClick={handleUpdateAction}
+                        >
+                            {updateButtonText}
+                        </Button>
+                        <span
+                            id={statusId}
+                            className={classes(styles, "about-update-announcement")}
+                            role={updateHasError ? "alert" : "status"}
+                            aria-live={updateHasError ? "assertive" : "polite"}
+                        >
+                            {statusText}
+                        </span>
+                    </span>
+                </Tooltip>
             </section>
 
             <AnimatePresence mode="wait" initial={false}>

@@ -1,13 +1,19 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import AboutSettings from "../../../src/config/sections/AboutSettings";
 import type { SettingsBridge } from "../../../src/config/SettingsBridge";
-import { DEFAULT_CONFIG } from "../../../src/config/settingsTypes";
+import { DEFAULT_CONFIG, type TFunction } from "../../../src/config/settingsTypes";
 import type { UpdateState } from "../../../src/update";
 import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
+import type { EventCallback, EventName } from "@tauri-apps/api/event";
 
-afterEach(cleanup);
+vi.mock("@tauri-apps/plugin-log", () => ({ error: vi.fn() }));
+
+afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+});
 
 const baseState: UpdateState = {
     status: "idle",
@@ -33,21 +39,138 @@ function createBridge(invoke: SettingsBridge["invoke"]): SettingsBridge {
     };
 }
 
-function renderAbout(bridge: SettingsBridge) {
-    render(
+function renderAbout(bridge: SettingsBridge, t: TFunction = (key: string) => key) {
+    return render(
         <MotionTestProvider>
             <AboutSettings
                 bridge={bridge}
                 config={DEFAULT_CONFIG}
                 dir="ltr"
                 onSave={vi.fn()}
-                t={(key: string) => key}
+                t={t}
             />
         </MotionTestProvider>,
     );
 }
 
 describe("About update controls", () => {
+    it("keeps product identity to two lines while the initial update snapshot loads", async () => {
+        let resolveSnapshot!: (state: UpdateState) => void;
+        const snapshot = new Promise<UpdateState>(resolve => { resolveSnapshot = resolve; });
+        const invoke = vi.fn(async (command: string) => {
+            if (command === "get_update_state") return snapshot;
+            return undefined;
+        });
+        renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
+        const identity = screen.getByRole("heading", { name: "vPaste" }).parentElement!;
+
+        expect(identity.children).toHaveLength(2);
+        expect(identity).not.toHaveTextContent("settings.updateDisabled");
+        await act(async () => resolveSnapshot(baseState));
+        expect(identity.children).toHaveLength(2);
+        expect(invoke).not.toHaveBeenCalledWith("check_for_app_update");
+    });
+
+    it("reports manual checks only in the button and briefly shows the latest-version result", async () => {
+        vi.useFakeTimers();
+        let resolveCheck!: (state: UpdateState) => void;
+        const checked = new Promise<UpdateState>(resolve => { resolveCheck = resolve; });
+        const invoke = vi.fn(async (command: string) => {
+            if (command === "get_update_state") return baseState;
+            if (command === "check_for_app_update") return checked;
+            return undefined;
+        });
+        renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
+        await act(async () => {});
+
+        fireEvent.click(screen.getByRole("button", { name: "settings.updateCheck" }));
+        const checking = screen.getByRole("button", { name: "settings.updateChecking" });
+        expect(checking).toBeDisabled();
+        fireEvent.click(checking);
+        expect(invoke.mock.calls.filter(([command]) => command === "check_for_app_update")).toHaveLength(1);
+        const identity = screen.getByRole("heading", { name: "vPaste" }).parentElement!;
+        expect(identity.children).toHaveLength(2);
+
+        await act(async () => resolveCheck(baseState));
+        expect(screen.getByRole("button", { name: "settings.updateLatestShort" })).toBeEnabled();
+        act(() => vi.advanceTimersByTime(3000));
+        expect(screen.getByRole("button", { name: "settings.updateCheck" })).toBeEnabled();
+        expect(identity.children).toHaveLength(2);
+    });
+
+    it("shows transport errors at the update action instead of leaving a check looking successful", async () => {
+        const invoke = vi.fn(async (command: string) => {
+            if (command === "get_update_state") return baseState;
+            if (command === "check_for_app_update") throw new Error("offline");
+            return undefined;
+        });
+        renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
+        await userEvent.click(await screen.findByRole("button", { name: "settings.updateCheck" }));
+
+        expect(await screen.findByRole("button", { name: "settings.updateFailedShort" })).toBeEnabled();
+        expect(screen.getByRole("alert")).toHaveTextContent("settings.updateCheckFailed");
+        expect(screen.getByRole("heading", { name: "vPaste" }).parentElement!.children).toHaveLength(2);
+    });
+
+    it("lets a newer ready update replace temporary failed-check feedback", async () => {
+        let emitState!: (state: UpdateState) => void;
+        const invoke = vi.fn(async (command: string) => {
+            if (command === "get_update_state") return baseState;
+            if (command === "check_for_app_update") throw new Error("offline");
+            return undefined;
+        });
+        const bridge = createBridge(invoke as SettingsBridge["invoke"]);
+        bridge.listen = vi.fn(async <T,>(event: EventName, callback: EventCallback<T>) => {
+            emitState = payload => callback({ event, id: 0, payload: payload as T });
+            return () => undefined;
+        }) as SettingsBridge["listen"];
+        renderAbout(bridge);
+        await userEvent.click(await screen.findByRole("button", { name: "settings.updateCheck" }));
+        expect(await screen.findByRole("button", { name: "settings.updateFailedShort" })).toBeEnabled();
+
+        act(() => emitState({ ...baseState, revision: 2, status: "ready", availableVersion: "1.7.0" }));
+        expect(screen.getByRole("button", { name: "settings.updateTo" })).toBeEnabled();
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+        expect(screen.getByRole("status")).toHaveTextContent("settings.updateReady");
+    });
+
+    it.each(["checking", "downloading", "installing", "ready", "manualDownload", "failed", "disabled"] as const)(
+        "keeps the left column stable when the backend reports %s",
+        async status => {
+            const state = { ...baseState, status, availableVersion: "1.7.0" };
+            const invoke = vi.fn(async (command: string) => command === "get_update_state" ? state : undefined);
+            renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
+            await act(async () => {});
+            expect(screen.getByRole("heading", { name: "vPaste" }).parentElement!.children).toHaveLength(2);
+        },
+    );
+
+    it.each([[42, 42], [120, 100]])("shows bounded download progress for %i bytes", async (downloadedBytes, percent) => {
+        const state = { ...baseState, status: "downloading", downloadedBytes, totalBytes: 100 } as UpdateState;
+        const invoke = vi.fn(async (command: string) => command === "get_update_state" ? state : undefined);
+        renderAbout(createBridge(invoke as SettingsBridge["invoke"]), (key, params) =>
+            key === "settings.updateDownloadingPercent" ? `Downloading ${params?.percent}%` : key);
+        expect(await screen.findByRole("button", { name: `Downloading ${percent}%` })).toBeDisabled();
+    });
+
+    it("restarts the feedback timer for a repeated check and clears it on unmount", async () => {
+        vi.useFakeTimers();
+        const invoke = vi.fn(async () => baseState);
+        const { unmount } = renderAbout(createBridge(invoke as SettingsBridge["invoke"]));
+        await act(async () => {});
+        await act(async () => fireEvent.click(screen.getByRole("button", { name: "settings.updateCheck" })));
+        act(() => vi.advanceTimersByTime(2000));
+        await act(async () => fireEvent.click(screen.getByRole("button", { name: "settings.updateLatestShort" })));
+        act(() => vi.advanceTimersByTime(2000));
+        expect(screen.getByRole("button", { name: "settings.updateLatestShort" })).toBeEnabled();
+        act(() => vi.advanceTimersByTime(1000));
+        expect(screen.getByRole("button", { name: "settings.updateCheck" })).toBeEnabled();
+
+        await act(async () => fireEvent.click(screen.getByRole("button", { name: "settings.updateCheck" })));
+        unmount();
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
     it("opens an available Mac App Store update without downloading it", async () => {
         const storeState = { ...baseState, source: "macAppStore", status: "available", availableVersion: "1.7.0" } as UpdateState;
         const invoke = vi.fn(async (command: string) => {

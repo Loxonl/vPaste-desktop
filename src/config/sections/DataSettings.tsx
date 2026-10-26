@@ -35,7 +35,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
     const [cleanupWorking, setCleanupWorking] = React.useState(false);
     const [historyWorkingArea, setHistoryWorkingArea] = React.useState<'storage' | 'export' | 'import' | null>(null);
     const [historyMessage, setHistoryMessage] = React.useState<{ kind: 'success' | 'error', text: string } | null>(null);
-    const [transferMessage, setTransferMessage] = React.useState<{ kind: 'success' | 'error', text: string } | null>(null);
+    const [transferMessage, setTransferMessage] = React.useState<{ kind: 'success' | 'error', text: string, detail?: string } | null>(null);
     const [archiveProgress, setArchiveProgress] = React.useState<HistoryArchiveProgressPayload | null>(null);
     const historyWorking = historyWorkingArea !== null;
     const transferWorking = historyWorkingArea === 'export' || historyWorkingArea === 'import';
@@ -191,7 +191,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
         try {
             const target = await bridge.save({
                 defaultPath: "vpaste-history.vphistory",
-                filters: [{ name: "vPaste History", extensions: ["vphistory"] }],
+                filters: [{ name: t("settings.historyArchiveFileType"), extensions: ["vphistory"] }],
             });
             if (!target) return;
             setHistoryWorkingArea('export');
@@ -220,7 +220,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
         try {
             const selected = await bridge.open({
                 multiple: false,
-                filters: [{ name: "vPaste History", extensions: ["vphistory"] }],
+                filters: [{ name: t("settings.historyArchiveFileType"), extensions: ["vphistory"] }],
             });
             if (typeof selected !== "string" || !selected) return;
             setHistoryWorkingArea('import');
@@ -233,7 +233,8 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
             const result = await bridge.invoke<HistoryArchiveInfo>('import_history_archive', { archivePath: selected });
             setTransferMessage({
                 kind: 'success',
-                text: t("settings.importSuccess", { merged: result.merged_items, skipped: result.skipped_items, files: result.copied_files })
+                text: t("settings.importSuccess", { merged: result.merged_items, skipped: result.skipped_items, files: result.copied_files }),
+                detail: t("settings.importSuccessFiles", { files: result.copied_files })
             });
             if (cleanupDays) {
                 refreshCleanupInfo(Number(cleanupDays));
@@ -513,7 +514,12 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                         variant="block"
                                         busy={transferWorking}
                                         tone={transferMessage?.kind || 'neutral'}
-                                        message={transferWorking ? transferWorkingText : transferMessage?.text}
+                                        message={transferWorking ? transferWorkingText : transferMessage?.detail ? (
+                                            <span className={styles["history-transfer-result"]}>
+                                                <span>{transferMessage.text}</span>
+                                                <span className={styles["history-transfer-file-count"]}>{transferMessage.detail}</span>
+                                            </span>
+                                        ) : transferMessage?.text}
                                         progress={transferWorking ? transferProgressValue : undefined}
                                         progressLabel={transferWorking ? transferWorkingText : undefined}
                                     />
@@ -593,9 +599,11 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                 </m.div>
                             )}
                         </AnimatePresence>
-                        <Typography variant="body2" color="text.secondary">
-                            {t("settings.privacyApps.help")}
-                        </Typography>
+                        {!privacyAppsLoading && managedPrivacyApps.length > 0 && (
+                            <Typography variant="body2" color="text.secondary">
+                                {t("settings.privacyApps.help")}
+                            </Typography>
+                        )}
                     </Stack>
                 </DialogContent>
                 <DialogActions>
@@ -638,7 +646,12 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
             <ConfirmDialog
                 open={cleanupConfirmOpen}
                 title={t("settings.cleanup.confirmTitle")}
-                description={t("settings.cleanup.confirm", { range: cleanupRangeLabel, items: cleanupInfo?.items ?? 0 })}
+                description={[
+                    t("settings.cleanup.confirm", { range: cleanupRangeLabel, items: cleanupInfo?.items ?? 0 }),
+                    t("settings.cleanup.confirmCount", { items: cleanupInfo?.items ?? 0 }),
+                    t("settings.cleanup.keepProtected"),
+                ]}
+                warning={t("settings.cleanup.irreversible")}
                 cancelLabel={t("common.cancel")}
                 confirmLabel={t("common.cleanup")}
                 backdropClassName={dialogBackdropClassName}

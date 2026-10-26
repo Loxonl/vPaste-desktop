@@ -149,7 +149,12 @@ export default function AutoCleanupSettings({
                 )}
                 <ConfirmDialog
                     open={confirmation !== null} title={t("settings.autoCleanup.confirmTitle")}
-                    description={t("settings.autoCleanup.confirm", { items: confirmation?.items ?? 0 })}
+                    description={[
+                        t("settings.autoCleanup.confirm", { items: confirmation?.items ?? 0 }),
+                        t("settings.autoCleanup.confirmFuture"),
+                        t("settings.cleanup.keepProtected"),
+                    ]}
+                    warning={t("settings.cleanup.irreversible")}
                     cancelLabel={t("common.cancel")} confirmLabel={t("settings.autoCleanup.confirmApply")}
                     backdropClassName={dialogBackdropClassName}
                     cancelDisabled={busy} confirmDisabled={locked}

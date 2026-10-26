@@ -33,6 +33,23 @@
   line-height: 1.45;
 }
 
+.details {
+  margin: 0;
+  padding-inline-start: var(--ui-space-4);
+}
+
+.details li + li {
+  margin-top: var(--ui-space-1);
+}
+
+.warning.warning {
+  margin: var(--ui-space-2) 0 0;
+  color: var(--ui-text-strong);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
 .actions.actions {
   gap: var(--ui-space-2);
   padding: var(--ui-space-3) var(--ui-space-4) var(--ui-space-4);

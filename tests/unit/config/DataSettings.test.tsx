@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import DataSettings from "../../../src/config/sections/DataSettings";
@@ -28,18 +28,54 @@ function createBridge(): SettingsBridge {
     };
 }
 
+function renderLocalizedSettings(bridge: SettingsBridge, pack = zhCN) {
+    const t = (key: string, params: Record<string, string | number> = {}) => Object.entries(params).reduce(
+        (text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), pack.translations[key] ?? key,
+    );
+    render(<MotionTestProvider><AppThemeProvider><DataSettings bridge={bridge} config={DEFAULT_CONFIG}
+        storagePaths={null} onSave={vi.fn(async () => null)} onBlockingOperationChange={vi.fn()} t={t} />
+    </AppThemeProvider></MotionTestProvider>);
+    return { user: userEvent.setup(), t };
+}
+
 describe("Data settings actions", () => {
-    it("explains protected records and the estimated count in both cleanup translations", () => {
-        const english = enUS.translations["settings.cleanup.confirm"];
-        const chinese = zhCN.translations["settings.cleanup.confirm"];
-        expect(english).toContain("{items}");
-        expect(english).toMatch(/favorite/i);
-        expect(english).toMatch(/tag/i);
-        expect(chinese).toContain("{items}");
-        expect(chinese).toContain("收藏");
-        expect(chinese).toContain("标签");
-        expect(enUS.translations["settings.cleanupSummary"]).toMatch(/cleanup/i);
-        expect(zhCN.translations["settings.cleanupSummary"]).toContain("可清理");
+    it.each([{ name: "Chinese", pack: zhCN }, { name: "English", pack: enUS }])("shows cleanup scope, count, protection, and warning before deleting ($name)", async ({ pack }) => {
+        const bridge = createBridge();
+        const invoke = vi.mocked(bridge.invoke).getMockImplementation()!;
+        vi.mocked(bridge.invoke).mockImplementation(async (command, args) => command === "estimate_storage_cleanup"
+            ? { bytes: 2048, items: 12 } : invoke(command, args));
+        const { user, t } = renderLocalizedSettings(bridge, pack);
+        await user.click(screen.getByRole("button", { name: t("settings.cleanupSelect") }));
+        await user.click(screen.getByRole("menuitem", { name: t("settings.cleanup.all"), exact: true }));
+        await user.click(screen.getByRole("button", { name: new RegExp(`^${t("common.cleanup")}`) }));
+        const dialog = await screen.findByRole("alertdialog", { name: t("settings.cleanup.confirmTitle") });
+        expect(within(dialog).getAllByRole("listitem")).toHaveLength(3);
+        expect(dialog).toHaveTextContent(t("settings.cleanup.keepProtected"));
+        expect(dialog).toHaveAccessibleDescription(new RegExp(t("settings.cleanup.irreversible").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        expect(bridge.invoke).not.toHaveBeenCalledWith("cleanup_storage_history", expect.anything());
+    });
+
+    it("shows only the empty-state instruction when no privacy apps are available", async () => {
+        const { user, t } = renderLocalizedSettings(createBridge());
+        await user.click(screen.getByRole("button", { name: t("settings.privacyApps.manage") }));
+        const dialog = screen.getByRole("dialog", { name: t("settings.privacyApps.manage") });
+        await waitFor(() => expect(within(dialog).getByText(t("settings.privacyApps.noOptions"))).toBeVisible());
+        expect(within(dialog).queryByText(t("settings.privacyApps.help"))).not.toBeInTheDocument();
+    });
+
+    it.each([{ name: "Chinese", pack: zhCN }, { name: "English", pack: enUS }])("keeps all import statistics on separate lines and localizes the archive picker ($name)", async ({ pack }) => {
+        const bridge = createBridge();
+        vi.mocked(bridge.open).mockResolvedValue("archive.vphistory");
+        const invoke = vi.mocked(bridge.invoke).getMockImplementation()!;
+        vi.mocked(bridge.invoke).mockImplementation(async (command, args) => command === "import_history_archive"
+            ? { merged_items: 12, skipped_items: 3, copied_files: 4 } : invoke(command, args));
+        const { user, t } = renderLocalizedSettings(bridge, pack);
+        await user.click(screen.getByRole("button", { name: t("settings.importHistory") }));
+        const detail = await screen.findByText(t("settings.importSuccessFiles", { files: 4 }), { exact: true });
+        const status = detail.closest('[role="status"]')!;
+        expect(status).toHaveTextContent(t("settings.importSuccess", { merged: 12, skipped: 3 }));
+        expect(bridge.open).toHaveBeenCalledWith({ multiple: false,
+            filters: [{ name: t("settings.historyArchiveFileType"), extensions: ["vphistory"] }] });
     });
 
     it("keeps managed privacy apps, import, and export wired to their existing handlers", async () => {
@@ -163,7 +199,8 @@ describe("Data settings actions", () => {
                         }}
                         onSave={vi.fn(async () => null)}
                         onBlockingOperationChange={vi.fn()}
-                        t={(key, params) => key === "settings.cleanup.confirm" ? `Delete ${params?.items} from ${params?.range}; protected records stay` : key}
+                        t={(key, params) => key === "settings.cleanup.confirm" ? `Range ${params?.range}`
+                            : key === "settings.cleanup.confirmCount" ? `Delete ${params?.items}` : key}
                     />
                 </AppThemeProvider>
             </MotionTestProvider>,
@@ -185,7 +222,10 @@ describe("Data settings actions", () => {
         await waitFor(() => expect(cleanupButton).toBeEnabled());
 
         await user.click(cleanupButton);
-        expect(screen.getByRole("alertdialog", { name: "settings.cleanup.confirmTitle" })).toHaveTextContent("Delete 4 from settings.cleanup.30; protected records stay");
+        const cleanupDialog = screen.getByRole("alertdialog", { name: "settings.cleanup.confirmTitle" });
+        expect(within(cleanupDialog).getAllByRole("listitem")).toHaveLength(3);
+        expect(cleanupDialog).toHaveTextContent("Range settings.cleanup.30");
+        expect(cleanupDialog).toHaveTextContent("Delete 4");
         await user.click(screen.getByRole("button", { name: "common.cancel", exact: true }));
         expect(bridge.invoke).not.toHaveBeenCalledWith("cleanup_storage_history", expect.anything());
 

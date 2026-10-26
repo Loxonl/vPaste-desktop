@@ -1,5 +1,5 @@
 import { useState, type ReactElement } from "react";
-import { cleanup, render as renderUi, screen, waitFor } from "@testing-library/react";
+import { cleanup, render as renderUi, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConfirmDialog } from "../../../src/ui/ConfirmDialog";
@@ -14,6 +14,17 @@ const render = (ui: ReactElement) => renderUi(<MotionTestProvider>{ui}</MotionTe
 afterEach(cleanup);
 
 describe("overlay primitives", () => {
+    it("announces structured confirmation details and the separate irreversible warning", () => {
+        render(<ConfirmDialog open title="Apply cleanup"
+            description={["Remove 12 records", "Keep favorites", "Keep tagged records"]}
+            warning="Deleted records cannot be recovered."
+            cancelLabel="Cancel" confirmLabel="Apply" onCancel={vi.fn()} onConfirm={vi.fn()} />);
+        const dialog = screen.getByRole("alertdialog", { name: "Apply cleanup" });
+        expect(within(dialog).getAllByRole("listitem")).toHaveLength(3);
+        expect(dialog).toHaveAccessibleDescription(/Remove 12 records.*Keep favorites.*Deleted records cannot be recovered/);
+        expect(within(dialog).getByRole("button", { name: "Apply" })).toBeEnabled();
+    });
+
     it("closes a confirmation dialog with Escape and restores focus", async () => {
         const user = userEvent.setup();
 

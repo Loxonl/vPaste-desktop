@@ -17,6 +17,7 @@ import SwapVertRoundedIcon from "@mui/icons-material/SwapVertRounded";
 import UndoRoundedIcon from "@mui/icons-material/UndoRounded";
 import { error } from "@tauri-apps/plugin-log";
 import { useLanguage } from "../lang";
+import { isMacPlatform } from "../shortcutDisplay";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { InlineMenuItem, InlineMenuSurface } from "../ui/InlineMenu";
 import { StatusToast } from "../ui/StatusToast";
@@ -459,7 +460,7 @@ export default function PasteQueue() {
                             exit="exit"
                         >
                             <strong>{t("pasteQueue.empty")}</strong>
-                            <span>{t("pasteQueue.emptyIntercepting")}</span>
+                            <span>{t("pasteQueue.emptyIntercepting", { shortcut: isMacPlatform() ? "⌘ + V" : "Ctrl + V" })}</span>
                         </m.div>
                     ) : (
                         <m.ol

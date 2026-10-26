@@ -148,7 +148,7 @@ test.describe("window shells", () => {
         await page.setViewportSize({ width: 302, height: 416 });
         await page.goto("/tab-editor");
 
-        await page.getByRole("button", { name: /来源 App|Source App/ }).click();
+        await page.getByRole("button", { name: /来源应用|Source app/ }).click();
         const sourceMenu = page.getByRole("menu");
         await expect(sourceMenu.getByRole("menuitem")).toHaveCount(11);
         const lastOption = sourceMenu.getByRole("menuitem", { name: "Example App 10" });

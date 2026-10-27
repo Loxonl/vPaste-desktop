@@ -378,6 +378,7 @@ const zhCN: LanguagePack = {
         "settings.shortcuts.pasteQueue": "开关粘贴队列",
         "settings.shortcuts.pasteText": "粘贴为文本",
         "settings.shortcuts.quickSelect": "快捷选择",
+        "settings.shortcuts.switchCategory": "切换分类",
         "settings.shortcuts.actionMenu": "操作窗口",
         "settings.shortcuts.search": "搜索",
         "settings.shortcuts.preview": "预览",

@@ -378,6 +378,7 @@ const enUS: LanguagePack = {
         "settings.shortcuts.pasteQueue": "Toggle Paste Queue",
         "settings.shortcuts.pasteText": "Paste as text",
         "settings.shortcuts.quickSelect": "Quick selection",
+        "settings.shortcuts.switchCategory": "Switch category",
         "settings.shortcuts.actionMenu": "Action menu",
         "settings.shortcuts.search": "Search",
         "settings.shortcuts.preview": "Preview",

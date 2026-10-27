@@ -116,7 +116,7 @@ test.describe("settings preview", () => {
 
         const valueColumns = page.locator("[class*='shortcut-static']");
         await expect(valueColumns.filter({ hasText: /^F2$/ })).toHaveCount(1);
-        await expect(valueColumns).toHaveCount(8);
+        await expect(valueColumns).toHaveCount(9);
         const columnBoxes = await valueColumns.evaluateAll(elements => elements.map(element => {
             const box = element.getBoundingClientRect();
             return { center: box.left + box.width / 2 };
@@ -128,7 +128,7 @@ test.describe("settings preview", () => {
 
         const tabSwitch = page.getByRole("checkbox", { name: "Tab 键选择" });
         await expect(tabSwitch).toBeVisible();
-        const switchBox = await valueColumns.nth(1).locator(".MuiSwitch-root").boundingBox();
+        const switchBox = await valueColumns.filter({ has: tabSwitch }).locator(".MuiSwitch-root").boundingBox();
         expect(switchBox).not.toBeNull();
         expect(Math.abs(switchBox!.x + switchBox!.width / 2 - referenceCenter)).toBeLessThan(1);
         await expect(page).toHaveScreenshot("settings-shortcuts-aligned.png");

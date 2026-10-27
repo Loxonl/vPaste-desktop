@@ -7,6 +7,7 @@ import TextField from "@mui/material/TextField";
 import styles from "./TabEditor.module.css";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
+import { notifyAuxiliaryWindowReady } from "../auxiliaryWindowReady";
 import CloseIcon from "@mui/icons-material/Close";
 import { error } from "@tauri-apps/plugin-log";
 import { useLanguage } from "../lang";
@@ -140,6 +141,7 @@ export default function TabEditor() {
         const unlistenEmoji = listen<string>('emoji-prefix-selected', event => {
             chooseNameEmoji(event.payload || "");
         });
+        const cancelReady = notifyAuxiliaryWindowReady([unlistenOpen, unlistenEmoji]);
 
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === "Escape") {
@@ -172,6 +174,7 @@ export default function TabEditor() {
         window.addEventListener("storage", handleStorage);
         document.addEventListener("visibilitychange", handleVisibilityChange);
         return () => {
+            cancelReady();
             unlistenOpen.then(f => f()).catch(e => error(`Failed to unlisten tab editor: ${e}`));
             unlistenEmoji.then(f => f()).catch(e => error(`Failed to unlisten emoji picker: ${e}`));
             window.removeEventListener("keydown", handleKeyDown);

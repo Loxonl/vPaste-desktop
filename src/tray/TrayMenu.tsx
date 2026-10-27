@@ -2,6 +2,7 @@ import React from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
+import { notifyAuxiliaryWindowReady } from "../auxiliaryWindowReady";
 import MenuItem from "@mui/material/MenuItem";
 import MenuList from "@mui/material/MenuList";
 import Paper from "@mui/material/Paper";
@@ -54,7 +55,9 @@ export default function TrayMenu() {
         const unlisten = listen<PauseChangedPayload>("clipboard-history-pause-changed", event => {
             setPaused(event.payload.paused);
         });
+        const cancelReady = notifyAuxiliaryWindowReady([unlisten]);
         return () => {
+            cancelReady();
             unlisten.then(fn => fn()).catch(e => error(`Failed to unlisten pause state: ${e}`));
         };
     }, []);

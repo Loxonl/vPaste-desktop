@@ -1,0 +1,53 @@
+{
+  "measured_at": "2026-10-27",
+  "baseline_commit": "c446089e646347a207a843756d80cccfa21073c6",
+  "scenario": "Startup idle, before opening any auxiliary windows",
+  "environment": {
+    "platform": "Windows x64",
+    "webview2": "155.0.4283.62",
+    "build": "Diagnostic Release builds; custom-protocol; ThinLTO; 16 codegen units; production frontend",
+    "isolation": "Separate application identifier, configuration, WebView profile and history; clipboard listener and legacy autostart cleanup disabled in both probes",
+    "fixture": "Same configuration and one synthetic text history item for both measurements",
+    "debugger": "WebView2 CDP enabled for both probes",
+    "sampling": "Three samples after eight seconds of startup settling; one-second intervals; median",
+    "metric": "Sum of Win32_PerfRawData_PerfProc_Process.WorkingSetPrivate for the native process and all descendants, divided by 1048576"
+  },
+  "before": {
+    "webviews": 10,
+    "private_working_set_mib": [405.61328125, 392.10546875, 392.10546875],
+    "median_mib": 392.10546875
+  },
+  "after": {
+    "webviews": 3,
+    "private_working_set_mib": [183.22265625, 177.80078125, 177.80078125],
+    "median_mib": 177.80078125
+  },
+  "reduction": {
+    "mib": 214.3046875,
+    "percent": 54.65485808784706
+  },
+  "native_verification": {
+    "method": "Real native command calls through WebView2 CDP; a diagnostic-only command calls the actual tray-menu display function; no clipboard writes or simulated paste",
+    "full_smoke_runs_passed": 8,
+    "final_revision_smoke_runs": 3,
+    "checks": [
+      "Only clipboard, clipboardPreview and pasteQueue exist at startup",
+      "Concurrent first settings requests create one window",
+      "First settings opening receives the requested destination",
+      "Tag editor, emoji picker, text editor and permission guide receive their opening payloads",
+      "Fallback notice and tray menu cold-open successfully",
+      "Hidden auxiliary windows are reused; opening all seven leaves exactly ten windows",
+      "Destroyed tray menu is recreated and waits for its new page to become ready"
+    ],
+    "first_open_ms_range": [169, 369],
+    "reopen_ms_range": [18, 77]
+  },
+  "limitations": [
+    "Not a packaged installer benchmark or a promise of the same memory use on other machines",
+    "Memory is the complete process group, not vPaste.exe alone",
+    "Previously used auxiliary windows remain initialized for reuse; this is not idle eviction",
+    "Primary clipboard, preview and paste queue remain eager; the developer-only test room is unchanged",
+    "macOS native runtime was not available for verification",
+    "Image conversion and clipboard payload processing were not optimized in this change"
+  ]
+}

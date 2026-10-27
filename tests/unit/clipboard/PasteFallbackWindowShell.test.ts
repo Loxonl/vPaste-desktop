@@ -25,7 +25,12 @@ describe("paste fallback native window", () => {
         expect(creation).toContain('"paste-fallback-notice"');
         expect(creation).toContain('"paste-failure-notice"');
         expect(mainSource).toContain(
-            "build_paste_fallback_notice_window(&handle)",
+            "WindowKind::PasteFallbackNotice => return build_paste_fallback_notice_window(handle)",
+        );
+        const setup = mainSource.slice(mainSource.indexOf(".setup("));
+        expect(setup).not.toContain("build_paste_fallback_notice_window(");
+        expect(mainSource).toContain(
+            "auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::PasteFallbackNotice).await?",
         );
     });
 

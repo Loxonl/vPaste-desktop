@@ -6,6 +6,7 @@ import Typography from '@mui/material/Typography';
 import { info, error } from "@tauri-apps/plugin-log";
 import { useLanguage } from "../lang";
 import { isMacPlatform } from "../shortcutDisplay";
+import { notifyAuxiliaryWindowReady } from "../auxiliaryWindowReady";
 import { applyThemeMode } from "../theme";
 import { tauriSettingsBridge, type SettingsBridge } from "./SettingsBridge";
 import { persistSettings } from "./settingsPersistence";
@@ -131,6 +132,7 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
         };
         applyTarget(null);
         const unlisten = bridge.listen<string>("config-opened", event => applyTarget(event.payload));
+        const cancelReady = notifyAuxiliaryWindowReady([unlisten]);
         const handleFocus = () => refreshStartupStatus();
         const handleVisibilityChange = () => {
             if (document.visibilityState === 'visible') refreshStartupStatus();
@@ -138,6 +140,7 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
         window.addEventListener('focus', handleFocus);
         document.addEventListener('visibilitychange', handleVisibilityChange);
         return () => {
+            cancelReady();
             unlisten.then(fn => fn()).catch(e => error(`Failed to unlisten config-opened target: ${e}`));
             window.removeEventListener('focus', handleFocus);
             document.removeEventListener('visibilitychange', handleVisibilityChange);

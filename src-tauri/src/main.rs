@@ -55,6 +55,7 @@ use crate::config::Config;
 
 mod app_updater;
 mod auto_cleanup;
+mod auxiliary_windows;
 mod clipboard;
 mod config;
 mod history_store;
@@ -1969,30 +1970,39 @@ fn hide_clipboard_if_inactive(window: tauri::WebviewWindow) {
 }
 
 #[tauri::command]
-fn open_config_window(
+fn auxiliary_window_ready(window: tauri::WebviewWindow) -> Result<(), String> {
+    window
+        .app_handle()
+        .state::<auxiliary_windows::Readiness>()
+        .signal(window.label())
+}
+
+#[tauri::command]
+async fn open_config_window(
     app: tauri::AppHandle,
     source_window: tauri::WebviewWindow,
     target: Option<String>,
 ) -> Result<(), String> {
     info!("Opening config window");
-    let window = app
-        .get_webview_window("config")
-        .ok_or_else(|| "config window not found".to_string())?;
-    let target = target.unwrap_or_default();
-    let _ = window.unminimize();
-    let _ = window.set_always_on_top(false);
-    let _ = window.set_title("vPaste设置");
-    apply_vpaste_window_icon(&window);
-    center_window_on_source_monitor(&window, &source_window)?;
-    if let Some(clipboard_window) = app.get_webview_window("clipboard") {
-        let _ = finish_hide_window(&clipboard_window);
-    }
-    window.show().map_err(|err| err.to_string())?;
-    activate_native_window(&window, "config open");
-    window.set_focus().map_err(|err| err.to_string())?;
-    let _ = AsRef::<tauri::Webview>::as_ref(&window).set_focus();
-    let _ = window.emit("config-opened", target);
-    Ok(())
+    let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::Config).await?;
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        let target = target.unwrap_or_default();
+        let _ = window.unminimize();
+        let _ = window.set_always_on_top(false);
+        let _ = window.set_title("vPaste设置");
+        apply_vpaste_window_icon(&window);
+        center_window_on_source_monitor(&window, &source_window)?;
+        if let Some(clipboard_window) = app.get_webview_window("clipboard") {
+            let _ = finish_hide_window(&clipboard_window);
+        }
+        window.show().map_err(|err| err.to_string())?;
+        activate_native_window(&window, "config open");
+        window.set_focus().map_err(|err| err.to_string())?;
+        let _ = AsRef::<tauri::Webview>::as_ref(&window).set_focus();
+        let _ = window.emit("config-opened", target);
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2032,39 +2042,42 @@ fn close_test_room_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String> {
+async fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String> {
     let clipboard_window = app
         .get_webview_window("clipboard")
         .ok_or_else(|| "clipboard window not found".to_string())?;
-    let notice_window = app
-        .get_webview_window("pasteFallbackNotice")
-        .ok_or_else(|| "paste fallback notice window not found".to_string())?;
-    let bounds = screen_bounds(&clipboard_window);
-    let x = bounds.x + (bounds.width - PASTE_FALLBACK_NOTICE_WIDTH) / 2.0;
-    let y = bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT + PASTE_FALLBACK_NOTICE_TOP_INSET;
+    let notice_window =
+        auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::PasteFallbackNotice).await?;
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        let bounds = screen_bounds(&clipboard_window);
+        let x = bounds.x + (bounds.width - PASTE_FALLBACK_NOTICE_WIDTH) / 2.0;
+        let y =
+            bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT + PASTE_FALLBACK_NOTICE_TOP_INSET;
 
-    set_window_size_for_scale(
-        &notice_window,
-        PASTE_FALLBACK_NOTICE_WIDTH,
-        PASTE_FALLBACK_NOTICE_HEIGHT,
-        bounds.scale_factor,
-    )?;
-    set_window_position_for_scale(&notice_window, x, y, bounds.scale_factor)?;
-    let generation = PASTE_FALLBACK_NOTICE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    notice_window.show().map_err(|err| err.to_string())?;
-    let app_for_timer = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(
-            PASTE_FALLBACK_NOTICE_DURATION_MS,
-        ));
-        if PASTE_FALLBACK_NOTICE_GENERATION.load(Ordering::SeqCst) != generation {
-            return;
-        }
-        if let Some(window) = app_for_timer.get_webview_window("pasteFallbackNotice") {
-            let _ = window.hide();
-        }
-    });
-    Ok(())
+        set_window_size_for_scale(
+            &notice_window,
+            PASTE_FALLBACK_NOTICE_WIDTH,
+            PASTE_FALLBACK_NOTICE_HEIGHT,
+            bounds.scale_factor,
+        )?;
+        set_window_position_for_scale(&notice_window, x, y, bounds.scale_factor)?;
+        let generation = PASTE_FALLBACK_NOTICE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+        notice_window.show().map_err(|err| err.to_string())?;
+        let app_for_timer = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(
+                PASTE_FALLBACK_NOTICE_DURATION_MS,
+            ));
+            if PASTE_FALLBACK_NOTICE_GENERATION.load(Ordering::SeqCst) != generation {
+                return;
+            }
+            if let Some(window) = app_for_timer.get_webview_window("pasteFallbackNotice") {
+                let _ = window.hide();
+            }
+        });
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2196,7 +2209,7 @@ fn restore_parent_after_permission_guide(app: &tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn open_onboarding_permission_window(
+async fn open_onboarding_permission_window(
     app: tauri::AppHandle,
     source_window: tauri::WebviewWindow,
     permission: String,
@@ -2212,37 +2225,40 @@ fn open_onboarding_permission_window(
         Some("dark") => Some("dark"),
         Some(value) => return Err(format!("unsupported theme preview: {}", value)),
     };
-    PERMISSION_GUIDE_RETURN_TO_CONFIG.store(source_window.label() == "config", Ordering::SeqCst);
+    let window =
+        auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::OnboardingPermission)
+            .await?;
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        PERMISSION_GUIDE_RETURN_TO_CONFIG
+            .store(source_window.label() == "config", Ordering::SeqCst);
+        let _ = window.unminimize();
+        center_window_on_source_monitor(&window, &source_window)?;
+        let _ = window.set_shadow(false);
+        window
+            .set_always_on_top(true)
+            .map_err(|err| err.to_string())?;
+        #[cfg(target_os = "macos")]
+        set_macos_window_level(&window, 102);
+        window.show().map_err(|err| err.to_string())?;
+        activate_native_window(&window, "onboarding permission open");
+        window.set_focus().map_err(|err| err.to_string())?;
+        let _ = AsRef::<tauri::Webview>::as_ref(&window).set_focus();
+        #[cfg(target_os = "macos")]
+        configure_macos_transparent_window(&window);
+        window
+            .emit(
+                "onboarding-permission-open",
+                serde_json::json!({
+                    "permission": permission,
+                    "languageCode": language_code.unwrap_or_default(),
+                    "themePreview": theme_preview,
+                }),
+            )
+            .map_err(|err| err.to_string())?;
 
-    let window = app
-        .get_webview_window("onboardingPermission")
-        .ok_or_else(|| "onboarding permission window not found".to_string())?;
-    let _ = window.unminimize();
-    center_window_on_source_monitor(&window, &source_window)?;
-    let _ = window.set_shadow(false);
-    window
-        .set_always_on_top(true)
-        .map_err(|err| err.to_string())?;
-    #[cfg(target_os = "macos")]
-    set_macos_window_level(&window, 102);
-    window.show().map_err(|err| err.to_string())?;
-    activate_native_window(&window, "onboarding permission open");
-    window.set_focus().map_err(|err| err.to_string())?;
-    let _ = AsRef::<tauri::Webview>::as_ref(&window).set_focus();
-    #[cfg(target_os = "macos")]
-    configure_macos_transparent_window(&window);
-    window
-        .emit(
-            "onboarding-permission-open",
-            serde_json::json!({
-                "permission": permission,
-                "languageCode": language_code.unwrap_or_default(),
-                "themePreview": theme_preview,
-            }),
-        )
-        .map_err(|err| err.to_string())?;
-
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3313,7 +3329,7 @@ fn resize_tray_menu(window: tauri::WebviewWindow, width: u32, height: u32) -> Re
 }
 
 #[tauri::command]
-fn open_tab_editor_window(
+async fn open_tab_editor_window(
     app: tauri::AppHandle,
     x: f64,
     y: f64,
@@ -3321,28 +3337,29 @@ fn open_tab_editor_window(
     height: Option<f64>,
     payload: String,
 ) -> Result<(), String> {
-    let window = app
-        .get_webview_window("tabEditor")
-        .ok_or_else(|| "tab editor window not found".to_string())?;
-    let content_width = width.unwrap_or(TAB_EDITOR_CONTENT_WIDTH);
-    let content_height = height.unwrap_or(TAB_EDITOR_DEFAULT_CONTENT_HEIGHT);
-    let bounds = clipboard_screen_bounds(&app, &window);
-    let _ = window.set_size(tauri::Size::Logical(LogicalSize {
-        width: content_width + AUXILIARY_WINDOW_GUTTER * 2.0,
-        height: content_height + AUXILIARY_WINDOW_GUTTER * 2.0,
-    }));
-    set_window_position_for_scale(
-        &window,
-        x - AUXILIARY_WINDOW_GUTTER,
-        y - AUXILIARY_WINDOW_GUTTER,
-        bounds.scale_factor,
-    )?;
-    window.show().map_err(|err| err.to_string())?;
-    let _ = activate_native_window(&window, "tab editor open");
-    window.set_focus().map_err(|err| err.to_string())?;
-    window
-        .emit("tab-editor-open", payload)
-        .map_err(|err| err.to_string())
+    let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::TabEditor).await?;
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        let content_width = width.unwrap_or(TAB_EDITOR_CONTENT_WIDTH);
+        let content_height = height.unwrap_or(TAB_EDITOR_DEFAULT_CONTENT_HEIGHT);
+        let bounds = clipboard_screen_bounds(&app, &window);
+        let _ = window.set_size(tauri::Size::Logical(LogicalSize {
+            width: content_width + AUXILIARY_WINDOW_GUTTER * 2.0,
+            height: content_height + AUXILIARY_WINDOW_GUTTER * 2.0,
+        }));
+        set_window_position_for_scale(
+            &window,
+            x - AUXILIARY_WINDOW_GUTTER,
+            y - AUXILIARY_WINDOW_GUTTER,
+            bounds.scale_factor,
+        )?;
+        window.show().map_err(|err| err.to_string())?;
+        let _ = activate_native_window(&window, "tab editor open");
+        window.set_focus().map_err(|err| err.to_string())?;
+        window
+            .emit("tab-editor-open", payload)
+            .map_err(|err| err.to_string())
+    })
+    .await
 }
 
 fn popup_position_above_or_below(
@@ -3369,7 +3386,7 @@ fn popup_position_above_or_below(
 }
 
 #[tauri::command]
-fn open_emoji_picker_window(
+async fn open_emoji_picker_window(
     app: tauri::AppHandle,
     anchor_left: f64,
     anchor_top: f64,
@@ -3383,56 +3400,57 @@ fn open_emoji_picker_window(
     let editor = app
         .get_webview_window("tabEditor")
         .ok_or_else(|| "tab editor window not found".to_string())?;
-    let window = app
-        .get_webview_window("emojiPicker")
-        .ok_or_else(|| "emoji picker window not found".to_string())?;
+    let window =
+        auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::EmojiPicker).await?;
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        let editor_position = editor.outer_position().map_err(|err| err.to_string())?;
+        let scale_factor = editor.scale_factor().map_err(|err| err.to_string())?;
+        let picker_width = EMOJI_PICKER_CONTENT_WIDTH * scale_factor;
+        let picker_height = EMOJI_PICKER_CONTENT_HEIGHT * scale_factor;
+        let window_gutter = AUXILIARY_WINDOW_GUTTER * scale_factor;
+        let gap = PICKER_GAP * scale_factor;
+        let margin = SCREEN_MARGIN * scale_factor;
+        let button_left = editor_position.x as f64 + anchor_left * scale_factor;
+        let button_top = editor_position.y as f64 + anchor_top * scale_factor;
+        let button_right = editor_position.x as f64 + anchor_right * scale_factor;
+        let button_bottom = editor_position.y as f64 + anchor_bottom * scale_factor;
 
-    let editor_position = editor.outer_position().map_err(|err| err.to_string())?;
-    let scale_factor = editor.scale_factor().map_err(|err| err.to_string())?;
-    let picker_width = EMOJI_PICKER_CONTENT_WIDTH * scale_factor;
-    let picker_height = EMOJI_PICKER_CONTENT_HEIGHT * scale_factor;
-    let window_gutter = AUXILIARY_WINDOW_GUTTER * scale_factor;
-    let gap = PICKER_GAP * scale_factor;
-    let margin = SCREEN_MARGIN * scale_factor;
-    let button_left = editor_position.x as f64 + anchor_left * scale_factor;
-    let button_top = editor_position.y as f64 + anchor_top * scale_factor;
-    let button_right = editor_position.x as f64 + anchor_right * scale_factor;
-    let button_bottom = editor_position.y as f64 + anchor_bottom * scale_factor;
+        let monitor = editor
+            .current_monitor()
+            .map_err(|err| err.to_string())?
+            .ok_or_else(|| "tab editor monitor not found".to_string())?;
+        let monitor_position = monitor.position();
+        let monitor_size = monitor.size();
+        let min_x = monitor_position.x as f64 + margin;
+        let min_y = monitor_position.y as f64 + margin;
+        let max_x = monitor_position.x as f64 + monitor_size.width as f64 - picker_width - margin;
+        let max_y = monitor_position.y as f64 + monitor_size.height as f64 - picker_height - margin;
 
-    let monitor = editor
-        .current_monitor()
-        .map_err(|err| err.to_string())?
-        .ok_or_else(|| "tab editor monitor not found".to_string())?;
-    let monitor_position = monitor.position();
-    let monitor_size = monitor.size();
-    let min_x = monitor_position.x as f64 + margin;
-    let min_y = monitor_position.y as f64 + margin;
-    let max_x = monitor_position.x as f64 + monitor_size.width as f64 - picker_width - margin;
-    let max_y = monitor_position.y as f64 + monitor_size.height as f64 - picker_height - margin;
+        let (x, y) = popup_position_above_or_below(
+            (button_left, button_top, button_right, button_bottom),
+            (picker_width, picker_height),
+            gap,
+            (min_x, min_y, max_x, max_y),
+        );
 
-    let (x, y) = popup_position_above_or_below(
-        (button_left, button_top, button_right, button_bottom),
-        (picker_width, picker_height),
-        gap,
-        (min_x, min_y, max_x, max_y),
-    );
-
-    let _ = window.set_size(tauri::Size::Logical(LogicalSize {
-        width: EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
-        height: EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
-    }));
-    window
-        .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-            x: (x - window_gutter).round() as i32,
-            y: (y - window_gutter).round() as i32,
-        }))
-        .map_err(|err| err.to_string())?;
-    window.show().map_err(|err| err.to_string())?;
-    let _ = activate_native_window(&window, "emoji picker open");
-    window.set_focus().map_err(|err| err.to_string())?;
-    window
-        .emit("emoji-picker-open", payload)
-        .map_err(|err| err.to_string())
+        let _ = window.set_size(tauri::Size::Logical(LogicalSize {
+            width: EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
+            height: EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+        }));
+        window
+            .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                x: (x - window_gutter).round() as i32,
+                y: (y - window_gutter).round() as i32,
+            }))
+            .map_err(|err| err.to_string())?;
+        window.show().map_err(|err| err.to_string())?;
+        let _ = activate_native_window(&window, "emoji picker open");
+        window.set_focus().map_err(|err| err.to_string())?;
+        window
+            .emit("emoji-picker-open", payload)
+            .map_err(|err| err.to_string())
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -4388,20 +4406,21 @@ fn plain_text_content(hash: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn open_text_editor_window(app: tauri::AppHandle, hash: String) -> Result<(), String> {
-    let window = app
-        .get_webview_window("textEditor")
-        .ok_or("text editor window not found")?;
-    if !window.is_visible().map_err(|err| err.to_string())? {
-        *TEXT_EDITOR_TARGET.lock().unwrap() = Some(hash);
-        window.center().map_err(|err| err.to_string())?;
-        window.show().map_err(|err| err.to_string())?;
-        window
-            .emit("text-editor-open", ())
-            .map_err(|err| err.to_string())?;
-    }
-    activate_native_window(&window, "text editor open");
-    window.set_focus().map_err(|err| err.to_string())
+async fn open_text_editor_window(app: tauri::AppHandle, hash: String) -> Result<(), String> {
+    let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::TextEditor).await?;
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        if !window.is_visible().map_err(|err| err.to_string())? {
+            *TEXT_EDITOR_TARGET.lock().unwrap() = Some(hash);
+            window.center().map_err(|err| err.to_string())?;
+            window.show().map_err(|err| err.to_string())?;
+            window
+                .emit("text-editor-open", ())
+                .map_err(|err| err.to_string())?;
+        }
+        activate_native_window(&window, "text editor open");
+        window.set_focus().map_err(|err| err.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -4449,7 +4468,7 @@ fn hide_text_editor_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn build_text_editor_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+fn build_text_editor_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     let window = WebviewWindowBuilder::new(app, "textEditor", App("text-editor".into()))
         .title("vPaste")
         .visible(false)
@@ -4466,7 +4485,7 @@ fn build_text_editor_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     apply_vpaste_window_icon(&window);
     #[cfg(target_os = "macos")]
     set_macos_window_level(&window, 101);
-    Ok(())
+    Ok(window)
 }
 
 fn paste_queue_shortcut_allowed(active: bool, editor_focused: bool) -> bool {
@@ -9890,13 +9909,20 @@ fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(
     if active {
         if !is_process_trusted_with_prompt(false) {
             if let Some(source_window) = app.get_webview_window("clipboard") {
-                let _ = open_onboarding_permission_window(
-                    app.clone(),
-                    source_window,
-                    "paste".to_string(),
-                    None,
-                    None,
-                );
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(err) = open_onboarding_permission_window(
+                        app,
+                        source_window,
+                        "paste".to_string(),
+                        None,
+                        None,
+                    )
+                    .await
+                    {
+                        error!("Failed to open paste queue permission guide: {err}");
+                    }
+                });
             }
             return Err("需要辅助功能权限才能启用粘贴队列".to_string());
         }
@@ -10365,61 +10391,72 @@ fn toggle_clipboard_history_paused(app: tauri::AppHandle) -> Result<bool, String
     Ok(set_clipboard_history_paused_state(&app, paused))
 }
 
-fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
-    if let Some(window) = app.get_webview_window("trayMenu") {
-        let scale_factor = window.scale_factor().unwrap_or(1.0);
-        let icon_position = rect.position.to_physical::<i32>(scale_factor);
-        let icon_size = rect.size.to_physical::<u32>(scale_factor);
-        let icon_center_x = icon_position.x + icon_size.width as i32 / 2;
-        let icon_bottom_y = icon_position.y + icon_size.height as i32;
-        let menu_size = window.outer_size().unwrap_or(tauri::PhysicalSize {
-            width: TRAY_MENU_WIDTH as u32,
-            height: TRAY_MENU_HEIGHT as u32,
-        });
-        let cursor = cursor_physical_position();
-        let monitor = cursor
-            .and_then(|position| {
-                app.monitor_from_point(position.x as f64, position.y as f64)
-                    .ok()
-                    .flatten()
+async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
+    let cursor = cursor_physical_position();
+    match auxiliary_windows::ensure(app, auxiliary_windows::WindowKind::TrayMenu).await {
+        Err(err) => error!("Failed to open tray menu: {err}"),
+        Ok(window) => {
+            let app = app.clone();
+            if let Err(err) = auxiliary_windows::on_main_thread(app.clone(), move || {
+                let scale_factor = window.scale_factor().unwrap_or(1.0);
+                let icon_position = rect.position.to_physical::<i32>(scale_factor);
+                let icon_size = rect.size.to_physical::<u32>(scale_factor);
+                let icon_center_x = icon_position.x + icon_size.width as i32 / 2;
+                let icon_bottom_y = icon_position.y + icon_size.height as i32;
+                let menu_size = window.outer_size().unwrap_or(tauri::PhysicalSize {
+                    width: TRAY_MENU_WIDTH as u32,
+                    height: TRAY_MENU_HEIGHT as u32,
+                });
+                let monitor = cursor
+                    .and_then(|position| {
+                        app.monitor_from_point(position.x as f64, position.y as f64)
+                            .ok()
+                            .flatten()
+                    })
+                    .or_else(|| window.current_monitor().ok().flatten())
+                    .or_else(|| window.primary_monitor().ok().flatten());
+                let (min_x, min_y, max_x, max_y) = monitor
+                    .map(|monitor| {
+                        let pos = monitor.position();
+                        let size = monitor.size();
+                        (
+                            pos.x,
+                            pos.y,
+                            pos.x + size.width as i32 - menu_size.width as i32,
+                            pos.y + size.height as i32 - menu_size.height as i32,
+                        )
+                    })
+                    .unwrap_or((0, 0, i32::MAX, i32::MAX));
+                #[cfg(target_os = "macos")]
+                let (target_x, target_y) = (
+                    (icon_center_x - menu_size.width as i32 / 2).clamp(min_x, max_x),
+                    icon_bottom_y.clamp(min_y, max_y),
+                );
+                #[cfg(not(target_os = "macos"))]
+                let (target_x, target_y) = (
+                    cursor
+                        .map(|position| position.x + TRAY_MENU_CURSOR_GAP)
+                        .unwrap_or_else(|| icon_center_x - menu_size.width as i32 / 2)
+                        .clamp(min_x, max_x),
+                    cursor
+                        .map(|position| position.y - menu_size.height as i32 - TRAY_MENU_CURSOR_GAP)
+                        .unwrap_or(icon_bottom_y)
+                        .clamp(min_y, max_y),
+                );
+                let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                    x: target_x,
+                    y: target_y,
+                }));
+                let _ = window.show();
+                let _ = window.set_focus();
+                watch_tray_menu_outside_click(app.clone());
+                Ok(())
             })
-            .or_else(|| window.current_monitor().ok().flatten())
-            .or_else(|| window.primary_monitor().ok().flatten());
-        let (min_x, min_y, max_x, max_y) = monitor
-            .map(|monitor| {
-                let pos = monitor.position();
-                let size = monitor.size();
-                (
-                    pos.x,
-                    pos.y,
-                    pos.x + size.width as i32 - menu_size.width as i32,
-                    pos.y + size.height as i32 - menu_size.height as i32,
-                )
-            })
-            .unwrap_or((0, 0, i32::MAX, i32::MAX));
-        #[cfg(target_os = "macos")]
-        let (target_x, target_y) = (
-            (icon_center_x - menu_size.width as i32 / 2).clamp(min_x, max_x),
-            icon_bottom_y.clamp(min_y, max_y),
-        );
-        #[cfg(not(target_os = "macos"))]
-        let (target_x, target_y) = (
-            cursor
-                .map(|position| position.x + TRAY_MENU_CURSOR_GAP)
-                .unwrap_or_else(|| icon_center_x - menu_size.width as i32 / 2)
-                .clamp(min_x, max_x),
-            cursor
-                .map(|position| position.y - menu_size.height as i32 - TRAY_MENU_CURSOR_GAP)
-                .unwrap_or(icon_bottom_y)
-                .clamp(min_y, max_y),
-        );
-        let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-            x: target_x,
-            y: target_y,
-        }));
-        let _ = window.show();
-        let _ = window.set_focus();
-        watch_tray_menu_outside_click(app.clone());
+            .await
+            {
+                error!("Failed to show tray menu: {err}");
+            }
+        }
     }
 }
 
@@ -10440,8 +10477,10 @@ fn install_vpaste_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 if matches!(button, MouseButton::Left | MouseButton::Right)
                     && button_state == MouseButtonState::Up
                 {
-                    let app = tray.app_handle();
-                    show_vpaste_tray_menu(app, rect);
+                    let app = tray.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        show_vpaste_tray_menu(&app, rect).await;
+                    });
                 }
             }
         });
@@ -10513,6 +10552,163 @@ fn build_paste_fallback_notice_window(
     {
         set_macos_window_level(&window, 102);
         configure_macos_transparent_window(&window);
+    }
+    Ok(window)
+}
+
+fn build_auxiliary_window(
+    handle: &tauri::AppHandle,
+    kind: auxiliary_windows::WindowKind,
+) -> tauri::Result<tauri::WebviewWindow> {
+    use auxiliary_windows::WindowKind;
+
+    let builder = match kind {
+        WindowKind::Config => return build_config_window(handle),
+        WindowKind::TextEditor => return build_text_editor_window(handle),
+        WindowKind::PasteFallbackNotice => return build_paste_fallback_notice_window(handle),
+        WindowKind::OnboardingPermission => WebviewWindowBuilder::new(
+            handle,
+            "onboardingPermission",
+            App("onboarding-permission".into()),
+        )
+        .title("vPaste Permission Guide")
+        .visible(false)
+        .focused(false)
+        .decorations(false)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
+        .resizable(false)
+        .minimizable(false)
+        .maximizable(false)
+        .always_on_top(true)
+        .shadow(false)
+        .inner_size(940_f64, 430_f64),
+        WindowKind::TrayMenu => {
+            WebviewWindowBuilder::new(handle, "trayMenu", App("tray-menu".into()))
+                .title("vPaste Tray")
+                .visible(false)
+                .focused(false)
+                .decorations(false)
+                .transparent(true)
+                .background_color(tauri::window::Color(0, 0, 0, 0))
+                .skip_taskbar(true)
+                .always_on_top(true)
+                .resizable(false)
+                .shadow(false)
+                .inner_size(TRAY_MENU_WIDTH as f64, TRAY_MENU_HEIGHT as f64)
+        }
+        WindowKind::EmojiPicker => {
+            WebviewWindowBuilder::new(handle, "emojiPicker", App("emoji-picker".into()))
+                .title("vPaste Emoji Picker")
+                .visible(false)
+                .focused(false)
+                .decorations(false)
+                .transparent(true)
+                .background_color(tauri::window::Color(0, 0, 0, 0))
+                .skip_taskbar(true)
+                .always_on_top(true)
+                .resizable(false)
+                .shadow(false)
+                .inner_size(
+                    EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
+                    EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+                )
+        }
+        WindowKind::TabEditor => {
+            WebviewWindowBuilder::new(handle, "tabEditor", App("tab-editor".into()))
+                .title("vPaste Tabs")
+                .visible(false)
+                .focused(false)
+                .decorations(false)
+                .transparent(true)
+                .background_color(tauri::window::Color(0, 0, 0, 0))
+                .skip_taskbar(true)
+                .always_on_top(true)
+                .resizable(false)
+                .shadow(false)
+                .inner_size(
+                    TAB_EDITOR_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
+                    TAB_EDITOR_DEFAULT_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+                )
+        }
+    };
+    let window = builder.build()?;
+    let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    let _ = window.set_shadow(false);
+    apply_vpaste_window_icon(&window);
+    if matches!(kind, WindowKind::OnboardingPermission) {
+        let _ = window.center();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        set_macos_window_level(
+            &window,
+            if matches!(kind, WindowKind::OnboardingPermission) {
+                102
+            } else {
+                101
+            },
+        );
+        if matches!(
+            kind,
+            WindowKind::OnboardingPermission | WindowKind::TrayMenu
+        ) {
+            configure_macos_transparent_window(&window);
+        }
+    }
+    Ok(window)
+}
+
+fn build_config_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let builder = WebviewWindowBuilder::new(handle, "config", App("config".into()))
+        .title("vPaste设置")
+        .visible(false)
+        .fullscreen(false)
+        .focused(false)
+        .resizable(true)
+        .minimizable(false)
+        .maximizable(false)
+        .decorations(false)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
+        .inner_size(720_f64, 700_f64)
+        .min_inner_size(640_f64, 520_f64)
+        .always_on_top(false);
+    #[cfg(target_os = "windows")]
+    let builder = builder.shadow(false);
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .hidden_title(true)
+        .title_bar_style(TitleBarStyle::Overlay);
+    let window = builder.build()?;
+    let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    apply_vpaste_window_icon(&window);
+    #[cfg(target_os = "windows")]
+    let _ = window.set_shadow(false);
+    #[cfg(target_os = "macos")]
+    {
+        let window_clone = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            use cocoa::base::id;
+            use objc::{msg_send, sel, sel_impl};
+            use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+            if let Err(err) = apply_vibrancy(
+                &window_clone,
+                NSVisualEffectMaterial::Sidebar,
+                Some(NSVisualEffectState::Active),
+                Some(ROUNDED_WINDOW_RADIUS),
+            ) {
+                error!("apply_vibrancy error for config: {err:?}");
+            }
+            if let Ok(ns_window) = window_clone.ns_window() {
+                unsafe {
+                    if !ns_window.is_null() {
+                        let ns_window = ns_window as id;
+                        let _: () = msg_send![ns_window, invalidateShadow];
+                    }
+                }
+            }
+        });
     }
     Ok(window)
 }
@@ -10780,6 +10976,7 @@ fn main() {
     let context = tauri::generate_context!();
     info!("running vPaste");
     let builder = tauri::Builder::default()
+        .manage(auxiliary_windows::Readiness::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if maintenance::installer_exit_requested_for_args(&args) {
                 app.exit(0);
@@ -11068,7 +11265,6 @@ fn main() {
             }
             let _ = build_clipboard_window(app.handle())?;
             let _ = build_paste_queue_window(app.handle())?;
-            build_text_editor_window(app.handle())?;
             initialize_paste_queue_worker(app.handle());
             if get_developer_mode() {
                 let _ = build_test_room_window(app.handle())?;
@@ -11097,173 +11293,6 @@ fn main() {
                 let clipboard_window = handle
                     .get_webview_window("clipboard")
                     .unwrap_or_else(|| build_clipboard_window(&handle).unwrap());
-                let _paste_fallback_notice_window =
-                    build_paste_fallback_notice_window(&handle).unwrap();
-
-                let config_window =
-                    WebviewWindowBuilder::new(&handle, "config", App("config".into()))
-                        .title("vPaste设置")
-                        .visible(false)
-                        .fullscreen(false)
-                        .focused(false)
-                        .resizable(true)
-                        .minimizable(false)
-                        .maximizable(false)
-                        .decorations(false)
-                        .transparent(true)
-                        .background_color(tauri::window::Color(0, 0, 0, 0))
-                        .inner_size(720_f64, 700_f64)
-                        .min_inner_size(640_f64, 520_f64)
-                        .always_on_top(false);
-                #[cfg(target_os = "windows")]
-                let config_window = config_window.shadow(false);
-                #[cfg(target_os = "macos")]
-                let config_window = config_window
-                    .hidden_title(true)
-                    .title_bar_style(TitleBarStyle::Overlay);
-
-                info!("Attempting to build config window");
-                let config_window = config_window.build().unwrap();
-                let _ = config_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                apply_vpaste_window_icon(&config_window);
-                #[cfg(target_os = "windows")]
-                {
-                    let _ = config_window.set_shadow(false);
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    let window_clone = config_window.clone();
-                    let _ = config_window.run_on_main_thread(move || {
-                        use cocoa::base::id;
-                        use objc::{msg_send, sel, sel_impl};
-                        use window_vibrancy::{
-                            apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState,
-                        };
-                        if let Err(e) = apply_vibrancy(
-                            &window_clone,
-                            NSVisualEffectMaterial::Sidebar,
-                            Some(NSVisualEffectState::Active),
-                            Some(ROUNDED_WINDOW_RADIUS),
-                        ) {
-                            error!("apply_vibrancy error for config: {:?}", e);
-                        }
-                        if let Ok(ns_window) = window_clone.ns_window() {
-                            unsafe {
-                                if !ns_window.is_null() {
-                                    let ns_window = ns_window as id;
-                                    let _: () = msg_send![ns_window, invalidateShadow];
-                                }
-                            }
-                        }
-                    });
-                }
-                info!("Config window built successfully");
-
-                let onboarding_permission_window = WebviewWindowBuilder::new(
-                    &handle,
-                    "onboardingPermission",
-                    App("onboarding-permission".into()),
-                )
-                .title("vPaste Permission Guide")
-                .visible(false)
-                .focused(false)
-                .decorations(false)
-                .transparent(true)
-                .background_color(tauri::window::Color(0, 0, 0, 0))
-                .resizable(false)
-                .minimizable(false)
-                .maximizable(false)
-                .always_on_top(true)
-                .shadow(false)
-                .inner_size(940_f64, 430_f64)
-                .build()
-                .unwrap();
-                let _ = onboarding_permission_window
-                    .set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                let _ = onboarding_permission_window.set_shadow(false);
-                let _ = onboarding_permission_window.center();
-                apply_vpaste_window_icon(&onboarding_permission_window);
-                #[cfg(target_os = "macos")]
-                {
-                    set_macos_window_level(&onboarding_permission_window, 102);
-                    configure_macos_transparent_window(&onboarding_permission_window);
-                }
-
-                let tray_menu_window =
-                    WebviewWindowBuilder::new(&handle, "trayMenu", App("tray-menu".into()))
-                        .title("vPaste Tray")
-                        .visible(false)
-                        .focused(false)
-                        .decorations(false)
-                        .transparent(true)
-                        .background_color(tauri::window::Color(0, 0, 0, 0))
-                        .skip_taskbar(true)
-                        .always_on_top(true)
-                        .resizable(false)
-                        .shadow(false)
-                        .inner_size(TRAY_MENU_WIDTH as f64, TRAY_MENU_HEIGHT as f64);
-                let tray_menu_window = tray_menu_window.build().unwrap();
-                let _ =
-                    tray_menu_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                let _ = tray_menu_window.set_shadow(false);
-                apply_vpaste_window_icon(&tray_menu_window);
-                #[cfg(target_os = "macos")]
-                {
-                    set_macos_window_level(&tray_menu_window, 101);
-                    configure_macos_transparent_window(&tray_menu_window);
-                }
-
-                let emoji_picker_window =
-                    WebviewWindowBuilder::new(&handle, "emojiPicker", App("emoji-picker".into()))
-                        .title("vPaste Emoji Picker")
-                        .visible(false)
-                        .focused(false)
-                        .decorations(false)
-                        .transparent(true)
-                        .background_color(tauri::window::Color(0, 0, 0, 0))
-                        .skip_taskbar(true)
-                        .always_on_top(true)
-                        .resizable(false)
-                        .shadow(false)
-                        .inner_size(
-                            EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
-                            EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
-                        );
-                let emoji_picker_window = emoji_picker_window.build().unwrap();
-                let _ = emoji_picker_window
-                    .set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                let _ = emoji_picker_window.set_shadow(false);
-                apply_vpaste_window_icon(&emoji_picker_window);
-                #[cfg(target_os = "macos")]
-                {
-                    set_macos_window_level(&emoji_picker_window, 101);
-                }
-
-                let tab_editor_window =
-                    WebviewWindowBuilder::new(&handle, "tabEditor", App("tab-editor".into()))
-                        .title("vPaste Tabs")
-                        .visible(false)
-                        .focused(false)
-                        .decorations(false)
-                        .transparent(true)
-                        .background_color(tauri::window::Color(0, 0, 0, 0))
-                        .skip_taskbar(true)
-                        .always_on_top(true)
-                        .resizable(false)
-                        .shadow(false)
-                        .inner_size(
-                            TAB_EDITOR_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
-                            TAB_EDITOR_DEFAULT_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
-                        );
-                let tab_editor_window = tab_editor_window.build().unwrap();
-                let _ =
-                    tab_editor_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                let _ = tab_editor_window.set_shadow(false);
-                apply_vpaste_window_icon(&tab_editor_window);
-                #[cfg(target_os = "macos")]
-                {
-                    set_macos_window_level(&tab_editor_window, 101);
-                }
 
                 if !config.onboarding_completed {
                     if let Err(err) = show_onboarding_window(&handle) {
@@ -11288,6 +11317,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            auxiliary_window_ready,
             startup_panel::clipboard_window_ready,
             wait_for_clipboard_capture,
             copy,

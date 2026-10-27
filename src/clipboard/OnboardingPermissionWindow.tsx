@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
+import { notifyAuxiliaryWindowReady } from "../auxiliaryWindowReady";
 import Button from "@mui/material/Button";
 import ArrowOutwardRoundedIcon from "@mui/icons-material/ArrowOutwardRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
@@ -111,6 +112,7 @@ export default function OnboardingPermissionWindow() {
         const unlisten = listen<PermissionWindowPayload>("onboarding-permission-open", event => {
             applyPayload(event.payload);
         });
+        const cancelReady = notifyAuxiliaryWindowReady([unlisten]);
         const handleFocus = () => {
             applyPendingPayload();
             void finishIfGranted();
@@ -131,6 +133,7 @@ export default function OnboardingPermissionWindow() {
         window.addEventListener("keydown", handleKeyDown);
         document.addEventListener("visibilitychange", handleVisibilityChange);
         return () => {
+            cancelReady();
             unlisten.then(fn => fn()).catch(e => error(`Failed to unlisten onboarding permission window: ${e}`));
             window.removeEventListener("focus", handleFocus);
             window.removeEventListener("keydown", handleKeyDown);

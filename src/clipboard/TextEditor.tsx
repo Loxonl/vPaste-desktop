@@ -4,6 +4,7 @@ import TextField from "@mui/material/TextField";
 import CloseIcon from "@mui/icons-material/Close";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { notifyAuxiliaryWindowReady } from "../auxiliaryWindowReady";
 import { useLanguage } from "../lang";
 import { loadAndApplyTheme } from "../theme";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -76,6 +77,7 @@ export default function TextEditor() {
         };
         const unlistenOpen = listen("text-editor-open", () => { void load(); });
         const unlistenClose = listen("text-editor-close-requested", () => closeRef.current());
+        const cancelReady = notifyAuxiliaryWindowReady([unlistenOpen, unlistenClose]);
         void Promise.all([unlistenOpen, unlistenClose]).then(() => {
             if (!disposed) void load();
         });
@@ -89,6 +91,7 @@ export default function TextEditor() {
         };
         window.addEventListener("keydown", keyDown);
         return () => {
+            cancelReady();
             disposed = true;
             generation.current += 1;
             window.removeEventListener("keydown", keyDown);

@@ -159,8 +159,6 @@ jobs:
         run: npm ci
       - name: Build Windows assets
         run: npm run build:windows
-      - name: Build history archive converter
-        run: cargo build --release --locked --manifest-path tools/history-archive-converter/Cargo.toml
       - name: Stage Windows assets
         shell: pwsh
         run: |
@@ -168,7 +166,6 @@ jobs:
           New-Item -ItemType Directory -Force release-assets | Out-Null
           Copy-Item "$source/vPaste_$($env:RELEASE_VERSION)_windows_x64_setup.exe" release-assets/
           Copy-Item "$source/vPaste_$($env:RELEASE_VERSION)_windows_x64_portable.zip" release-assets/
-          Copy-Item "tools/history-archive-converter/target/release/vpaste-history-converter.exe" "release-assets/vpaste-history-converter_windows_x64.exe"
       - name: Upload Windows assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -187,7 +184,7 @@ jobs:
             arch: aarch64
           - target: x86_64-apple-darwin
             arch: x86_64
-          # Download-only universal DMG; the history converter stays per-architecture.
+          # Download-only universal DMG; updater packages remain per-architecture.
           - target: universal-apple-darwin
             arch: universal
     steps:
@@ -223,9 +220,6 @@ jobs:
         shell: bash
         run: |
           VERSION="$RELEASE_VERSION" MACOS_BUILD_TARGET='${{ matrix.target }}' UNSIGNED=1 npm run build:macos-release
-          if [[ '${{ matrix.arch }}' != universal ]]; then
-            cargo build --release --locked --target '${{ matrix.target }}' --manifest-path tools/history-archive-converter/Cargo.toml
-          fi
       - name: Stage macOS assets
         shell: bash
         run: |
@@ -235,8 +229,6 @@ jobs:
           cp "$dmg" "release-assets/vPaste_${RELEASE_VERSION}_macos_${{ matrix.arch }}.dmg"
           if [[ '${{ matrix.arch }}' == universal ]]; then
             lipo "$bundle/macos/vPaste.app/Contents/MacOS/vPaste" -verify_arch arm64 x86_64
-          else
-            cp "tools/history-archive-converter/target/${{ matrix.target }}/release/vpaste-history-converter" "release-assets/vpaste-history-converter_macos_${{ matrix.arch }}"
           fi
       - name: Upload macOS assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

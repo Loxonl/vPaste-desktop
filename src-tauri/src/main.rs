@@ -36,6 +36,7 @@ use tauri::utils::TitleBarStyle;
 
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_log::{Target, TargetKind};
 use WebviewUrl::App;
@@ -121,7 +122,6 @@ static CLIPBOARD_WINDOW_GENERATION: AtomicU64 = AtomicU64::new(0);
 static LAST_CLIPBOARD_MONITOR_CENTER: Mutex<Option<(f64, f64)>> = Mutex::new(None);
 #[cfg(target_os = "windows")]
 static CLIPBOARD_RESTORE_FOCUS_GENERATION: AtomicU64 = AtomicU64::new(0);
-static LEGACY_HISTORY_BLOCKED: AtomicBool = AtomicBool::new(false);
 static PREVIEW_PINNED: AtomicBool = AtomicBool::new(false);
 static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
@@ -437,14 +437,7 @@ struct ShortcutRegistrationInfo {
 }
 
 #[derive(Serialize)]
-struct StorageMigrationInfo {
-    migrated: bool,
-    source_dir: String,
-    target_dir: String,
-    merged_items: usize,
-    skipped_items: usize,
-    copied_files: usize,
-    backup_dir: String,
+struct SettingsSaveInfo {
     message: String,
     shortcut_conflict: bool,
 }
@@ -4316,7 +4309,6 @@ fn get_app_version() -> AppVersionInfo {
 
 #[tauri::command]
 fn set_item_favorite(hash: String, favorite: bool) -> Result<(), String> {
-    ensure_history_ready()?;
     let affected = clipboard::set_favorite(&hash, favorite).map_err(|err| err.to_string())?;
     if affected == 0 {
         Err("粘贴项不存在".to_string())
@@ -4352,25 +4344,21 @@ fn delete_item_tag(id: i64) -> Result<(), String> {
 
 #[tauri::command]
 fn assign_item_tag(hash: String, tag_id: i64) -> Result<(), String> {
-    ensure_history_ready()?;
     clipboard::assign_tag(&hash, tag_id)
 }
 
 #[tauri::command]
 fn remove_item_tag(hash: String, tag_id: i64) -> Result<(), String> {
-    ensure_history_ready()?;
     clipboard::remove_tag(&hash, tag_id)
 }
 
 #[tauri::command]
 fn list_recent_app_sources(days: u64) -> Result<Vec<String>, String> {
-    ensure_history_ready()?;
     clipboard::recent_app_sources(days)
 }
 
 #[tauri::command]
 fn list_recent_app_source_options(days: u64) -> Result<Vec<clipboard::AppSourceOption>, String> {
-    ensure_history_ready()?;
     clipboard::recent_app_source_options(days)
 }
 
@@ -4378,7 +4366,6 @@ fn list_recent_app_source_options(days: u64) -> Result<Vec<clipboard::AppSourceO
 async fn refresh_link_previews(
     urls: Vec<String>,
 ) -> Result<Vec<clipboard::LinkPreviewUpdate>, String> {
-    ensure_history_ready()?;
     tauri::async_runtime::spawn_blocking(move || clipboard::refresh_link_previews(urls))
         .await
         .map_err(|err| err.to_string())?
@@ -4386,7 +4373,6 @@ async fn refresh_link_previews(
 
 #[tauri::command]
 fn delete_clipboard_item(app: tauri::AppHandle, hash: String) -> Result<(), String> {
-    ensure_history_ready()?;
     let affected = clipboard::delete_by_hash(&hash)?;
     if affected == 0 {
         Err("粘贴项不存在".to_string())
@@ -4403,7 +4389,6 @@ fn plain_text_content(hash: String) -> Result<String, String> {
 
 #[tauri::command]
 fn open_text_editor_window(app: tauri::AppHandle, hash: String) -> Result<(), String> {
-    ensure_history_ready()?;
     let window = app
         .get_webview_window("textEditor")
         .ok_or("text editor window not found")?;
@@ -4421,7 +4406,6 @@ fn open_text_editor_window(app: tauri::AppHandle, hash: String) -> Result<(), St
 
 #[tauri::command]
 async fn get_text_editor_document() -> Result<Option<clipboard::editor::TextDocument>, String> {
-    ensure_history_ready()?;
     let hash = TEXT_EDITOR_TARGET.lock().unwrap().clone();
     tauri::async_runtime::spawn_blocking(move || {
         hash.map(|hash| clipboard::editor::load(&hash)).transpose()
@@ -4435,7 +4419,6 @@ async fn save_clipboard_text(
     app: tauri::AppHandle,
     update: clipboard::editor::TextUpdate,
 ) -> Result<clipboard::item::Item, String> {
-    ensure_history_ready()?;
     let previous_hash = TEXT_EDITOR_TARGET.lock().unwrap().clone();
     let item = tauri::async_runtime::spawn_blocking(move || clipboard::editor::save(update))
         .await
@@ -5022,94 +5005,6 @@ fn ensure_runtime_storage_dirs() -> Result<(), String> {
     Ok(())
 }
 
-fn migrate_runtime_dir_out_of_history(name: &str, remove_after_copy: bool) {
-    let source = PathBuf::from(history_storage_dir()).join(name);
-    let target = PathBuf::from(app_runtime_dir(&[name]));
-    if let Err(err) = migrate_runtime_dir(&source, &target, remove_after_copy) {
-        error!("migrate runtime dir {} failed: {}", name, err);
-    }
-}
-
-fn migrate_runtime_dir(
-    source: &Path,
-    target: &Path,
-    remove_after_copy: bool,
-) -> Result<(), String> {
-    if !source.exists() || paths_resolve_to_same_location(source, target) {
-        return Ok(());
-    }
-    copy_dir_contents_recursive(source, target)?;
-    if remove_after_copy {
-        fs::remove_dir_all(source).map_err(|err| err.to_string())?;
-    }
-    Ok(())
-}
-
-fn paths_resolve_to_same_location(source: &Path, target: &Path) -> bool {
-    if source == target {
-        return true;
-    }
-    let Ok(source) = fs::canonicalize(source) else {
-        return false;
-    };
-    let Ok(target) = fs::canonicalize(target) else {
-        return false;
-    };
-    source == target
-}
-
-#[cfg(test)]
-mod runtime_dir_migration_tests {
-    use super::*;
-
-    #[test]
-    fn same_runtime_directory_is_not_removed() {
-        let root = tempfile::tempdir().unwrap();
-        let runtime_dir = root.path().join("app_icons");
-        fs::create_dir_all(&runtime_dir).unwrap();
-        let icon = runtime_dir.join("source.png");
-        fs::write(&icon, b"icon").unwrap();
-
-        migrate_runtime_dir(&runtime_dir, &runtime_dir, true).unwrap();
-
-        assert!(icon.exists());
-    }
-
-    #[test]
-    fn separate_history_directory_is_copied_then_removed() {
-        let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("history").join("app_icons");
-        let target = root.path().join("runtime").join("app_icons");
-        fs::create_dir_all(&source).unwrap();
-        fs::write(source.join("source.png"), b"icon").unwrap();
-
-        migrate_runtime_dir(&source, &target, true).unwrap();
-
-        assert_eq!(fs::read(target.join("source.png")).unwrap(), b"icon");
-        assert!(!source.exists());
-    }
-}
-
-fn migrate_runtime_dirs_out_of_history() {
-    migrate_runtime_dir_out_of_history("lang", true);
-    migrate_runtime_dir_out_of_history("logs", true);
-    migrate_runtime_dir_out_of_history("app_icons", true);
-    for cache in ["search", "file_previews", "image_clipboard_cache"] {
-        let path = PathBuf::from(history_storage_dir()).join(cache);
-        let runtime_path = PathBuf::from(app_runtime_dir(&[cache]));
-        if paths_resolve_to_same_location(&path, &runtime_path) {
-            continue;
-        }
-        if path.exists() {
-            let _ = fs::remove_dir_all(path);
-        }
-    }
-    for cache in ["search", "file_previews", "image_clipboard_cache"] {
-        let runtime_cache = PathBuf::from(app_runtime_dir(&[cache]));
-        let _ = fs::create_dir_all(runtime_cache);
-    }
-}
-
 fn cleanup_runtime_cache_dir(name: &str, max_age_days: u64) {
     let dir = PathBuf::from(app_runtime_dir(&[name]));
     let Ok(entries) = fs::read_dir(&dir) else {
@@ -5261,7 +5156,6 @@ fn list_language_packs() -> Result<Vec<LanguagePackFile>, String> {
 
 #[tauri::command]
 fn get_custom_tabs() -> Result<serde_json::Value, String> {
-    ensure_history_ready()?;
     ensure_history_storage_dirs()?;
     let path = custom_tabs_path();
     if !path.exists() {
@@ -5280,7 +5174,6 @@ fn get_custom_tabs() -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 fn save_custom_tabs(tabs: serde_json::Value) -> Result<(), String> {
-    ensure_history_ready()?;
     ensure_history_storage_dirs()?;
     let path = custom_tabs_path();
     let value = if tabs.is_array() {
@@ -5290,29 +5183,6 @@ fn save_custom_tabs(tabs: serde_json::Value) -> Result<(), String> {
     };
     let content = serde_json::to_string_pretty(&value).map_err(|err| err.to_string())?;
     history_store::write_file(path, content.as_bytes())
-}
-
-fn copy_dir_contents_recursive(source: &Path, target: &Path) -> Result<usize, String> {
-    if !source.exists() {
-        return Ok(0);
-    }
-    fs::create_dir_all(target).map_err(|err| err.to_string())?;
-    let mut copied = 0_usize;
-    for entry in fs::read_dir(source).map_err(|err| err.to_string())? {
-        let entry = entry.map_err(|err| err.to_string())?;
-        let source_path = entry.path();
-        let target_path = target.join(entry.file_name());
-        if source_path.is_dir() {
-            copied += copy_dir_contents_recursive(&source_path, &target_path)?;
-        } else if source_path.is_file() && !target_path.exists() {
-            if let Some(parent) = target_path.parent() {
-                fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-            }
-            fs::copy(&source_path, &target_path).map_err(|err| err.to_string())?;
-            copied += 1;
-        }
-    }
-    Ok(copied)
 }
 
 #[cfg(test)]
@@ -5392,22 +5262,6 @@ fn database_table_exists(conn: &rusqlite::Connection, table: &str) -> Result<boo
     )
     .map(|count| count > 0)
     .map_err(|err| err.to_string())
-}
-
-fn clipboard_table_exists(conn: &rusqlite::Connection) -> Result<bool, String> {
-    database_table_exists(conn, "clipboard")
-}
-
-fn database_table_columns(conn: &rusqlite::Connection, table: &str) -> Result<Vec<String>, String> {
-    let mut statement = conn
-        .prepare(&format!("pragma table_info({table})"))
-        .map_err(|err| err.to_string())?;
-    let columns = statement
-        .query_map([], |row| row.get(1))
-        .map_err(|err| err.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| err.to_string())?;
-    Ok(columns)
 }
 
 fn rewrite_internal_storage_paths(value: String, source_dir: &str, target_dir: &str) -> String {
@@ -5521,10 +5375,12 @@ fn merge_clipboard_database(
         return Ok((0, 0));
     }
 
-    let source_conn = rusqlite::Connection::open(source_db).map_err(|err| err.to_string())?;
-    if !clipboard_table_exists(&source_conn)? {
-        return Ok((0, 0));
-    }
+    let source_conn = rusqlite::Connection::open_with_flags(
+        source_db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|err| err.to_string())?;
+    clipboard::db::validate_schema(&source_conn).map_err(|err| err.to_string())?;
 
     let target_db = PathBuf::from(target_dir).join("vpaste.db");
     let mut target_conn = rusqlite::Connection::open(target_db).map_err(|err| err.to_string())?;
@@ -5700,34 +5556,10 @@ fn merge_clipboard_database(
     }
 
     if database_table_exists(&source_conn, "paste_queue")? {
-        let columns = database_table_columns(&source_conn, "paste_queue")?;
-        let has_full_payload = [
-            "position",
-            "queued_at",
-            "time",
-            "item_type",
-            "search_index",
-            "app_source",
-            "app_icon_path",
-            "title_color",
-            "label",
-        ]
-        .iter()
-        .all(|required| columns.iter().any(|column| column == required));
-        let queue_query = if has_full_payload {
+        let queue_query =
             "select hash, position, queued_at, time, content, preview_content, item_type,
                     search_index, source, app_source, app_icon_path, title_color, label
-             from paste_queue order by position, rowid"
-        } else {
-            "select q.hash, row_number() over (order by q.rowid) - 1, 0,
-                    coalesce(c.time, 0), coalesce(q.content, ''),
-                    coalesce(q.preview_content, ''), coalesce(c.item_type, 'Text'),
-                    coalesce(c.search_index, 1), coalesce(q.source, ''),
-                    coalesce(c.app_source, ''), coalesce(c.app_icon_path, ''),
-                    coalesce(c.title_color, ''), coalesce(c.label, 0)
-             from paste_queue q left join clipboard c on c.hash = q.hash
-             order by q.rowid"
-        };
+             from paste_queue order by position, rowid";
         let mut statement = source_conn
             .prepare(queue_query)
             .map_err(|err| err.to_string())?;
@@ -5827,213 +5659,6 @@ const HISTORY_ARCHIVE_METADATA_MAX_BYTES: u64 = 1024 * 1024;
 const HISTORY_ARCHIVE_PATH_MAX_BYTES: u32 = 4096;
 const HISTORY_ARCHIVE_DIRS: [&str; 2] = ["data", "rich_formats"];
 const HISTORY_ARCHIVE_FILES: [&str; 1] = [CUSTOM_TABS_FILE];
-const LEGACY_TEXT_PREFIX: &str = "vpaste-secure:v2:";
-const LEGACY_FILE_MAGIC: &[u8] = b"VPASTESEC2";
-
-fn path_contains_legacy_history(path: &Path) -> Result<bool, String> {
-    if !path.exists() {
-        return Ok(false);
-    }
-    if path.is_dir() {
-        for entry in fs::read_dir(path).map_err(|err| err.to_string())? {
-            if path_contains_legacy_history(&entry.map_err(|err| err.to_string())?.path())? {
-                return Ok(true);
-            }
-        }
-        return Ok(false);
-    }
-    let mut file = File::open(path).map_err(|err| err.to_string())?;
-    let mut magic = [0_u8; 10];
-    Ok(
-        file.read(&mut magic).map_err(|err| err.to_string())? == magic.len()
-            && magic == LEGACY_FILE_MAGIC,
-    )
-}
-
-fn table_has_legacy_text(conn: &rusqlite::Connection, table: &str) -> Result<bool, String> {
-    let exists: i64 = conn
-        .query_row(
-            "select count(*) from sqlite_master where type='table' and name=?1",
-            [table],
-            |row| row.get(0),
-        )
-        .map_err(|err| err.to_string())?;
-    if exists == 0 {
-        return Ok(false);
-    }
-    let query = format!(
-        "select count(*) from {table} where content like ?1 or preview_content like ?1 or source like ?1"
-    );
-    conn.query_row(&query, [format!("{LEGACY_TEXT_PREFIX}%")], |row| {
-        row.get::<_, i64>(0)
-    })
-    .map(|count| count > 0)
-    .map_err(|err| err.to_string())
-}
-
-fn legacy_history_present(root: &Path) -> Result<bool, String> {
-    let db_path = root.join(HISTORY_ARCHIVE_DB);
-    if db_path.is_file() {
-        let conn = rusqlite::Connection::open_with_flags(
-            db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .map_err(|err| err.to_string())?;
-        if table_has_legacy_text(&conn, "clipboard")?
-            || table_has_legacy_text(&conn, "paste_queue")?
-        {
-            return Ok(true);
-        }
-    }
-    for name in [
-        CUSTOM_TABS_FILE,
-        "data",
-        "rich_formats",
-        "image_clipboard_cache",
-    ] {
-        if path_contains_legacy_history(&root.join(name))? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-#[cfg(test)]
-mod legacy_history_detection_tests {
-    use super::*;
-
-    fn create_history_db(root: &Path, clipboard_content: &str, queue_content: &str) {
-        let conn = rusqlite::Connection::open(root.join(HISTORY_ARCHIVE_DB)).unwrap();
-        conn.execute_batch(
-            "create table clipboard(content text, preview_content text, source text);
-             create table paste_queue(content text, preview_content text, source text);",
-        )
-        .unwrap();
-        conn.execute(
-            "insert into clipboard values(?1, 'preview', 'source')",
-            [clipboard_content],
-        )
-        .unwrap();
-        conn.execute(
-            "insert into paste_queue values(?1, 'preview', 'source')",
-            [queue_content],
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn detects_legacy_clipboard_and_mixed_plaintext() {
-        let root = tempfile::tempdir().unwrap();
-        create_history_db(root.path(), "vpaste-secure:v2:ciphertext", "plain queue");
-        assert!(legacy_history_present(root.path()).unwrap());
-    }
-
-    #[test]
-    fn detects_legacy_paste_queue_without_legacy_clipboard() {
-        let root = tempfile::tempdir().unwrap();
-        create_history_db(
-            root.path(),
-            "plain clipboard",
-            "vpaste-secure:v2:ciphertext",
-        );
-        assert!(legacy_history_present(root.path()).unwrap());
-    }
-
-    #[test]
-    fn detects_legacy_managed_file_magic() {
-        let root = tempfile::tempdir().unwrap();
-        create_history_db(root.path(), "plain clipboard", "plain queue");
-        fs::create_dir(root.path().join("rich_formats")).unwrap();
-        fs::write(
-            root.path().join("rich_formats/item.html"),
-            b"VPASTESEC2ciphertext",
-        )
-        .unwrap();
-        assert!(legacy_history_present(root.path()).unwrap());
-    }
-
-    #[test]
-    fn accepts_fully_plaintext_history() {
-        let root = tempfile::tempdir().unwrap();
-        create_history_db(root.path(), "plain clipboard", "plain queue");
-        fs::create_dir(root.path().join("data")).unwrap();
-        fs::write(root.path().join("data/item"), b"plain bytes").unwrap();
-        assert!(!legacy_history_present(root.path()).unwrap());
-    }
-}
-
-#[derive(Clone, Serialize)]
-struct HistoryFormatStatus {
-    migration_required: bool,
-}
-
-#[tauri::command]
-fn get_history_format_status() -> HistoryFormatStatus {
-    HistoryFormatStatus {
-        migration_required: LEGACY_HISTORY_BLOCKED.load(Ordering::SeqCst),
-    }
-}
-
-fn ensure_history_ready() -> Result<(), String> {
-    if LEGACY_HISTORY_BLOCKED.load(Ordering::SeqCst) {
-        Err("LEGACY_HISTORY_MIGRATION_REQUIRED".to_string())
-    } else {
-        Ok(())
-    }
-}
-
-fn remove_managed_path(path: &Path) -> Result<(), String> {
-    if path.is_dir() {
-        fs::remove_dir_all(path).map_err(|err| err.to_string())
-    } else if path.is_file() {
-        fs::remove_file(path).map_err(|err| err.to_string())
-    } else {
-        Ok(())
-    }
-}
-
-#[tauri::command]
-fn clear_legacy_history(app: tauri::AppHandle, confirmation: String) -> Result<(), String> {
-    if confirmation != "CLEAR_LEGACY_HISTORY" {
-        return Err("legacy history clear confirmation is invalid".to_string());
-    }
-    if !LEGACY_HISTORY_BLOCKED.load(Ordering::SeqCst) {
-        return Err("legacy history migration is not required".to_string());
-    }
-    clipboard::db::clear_legacy_payload().map_err(|err| err.to_string())?;
-    let root = PathBuf::from(history_storage_dir());
-    for name in [
-        CUSTOM_TABS_FILE,
-        "data",
-        "rich_formats",
-        "image_clipboard_cache",
-    ] {
-        remove_managed_path(&root.join(name))?;
-    }
-    for name in [
-        "search",
-        "file_previews",
-        "image_clipboard_cache",
-        "image_preview_cache",
-    ] {
-        remove_managed_path(&PathBuf::from(app_runtime_dir(&[name])))?;
-    }
-    clipboard::db::init();
-    rebuild_current_search_index()?;
-    LEGACY_HISTORY_BLOCKED.store(false, Ordering::SeqCst);
-    initialize_paste_queue_worker(&app);
-    if let Some(window) = app.get_webview_window("clipboard") {
-        listen::start(window);
-    }
-    let _ = app.emit(
-        "history-format-status-changed",
-        HistoryFormatStatus {
-            migration_required: false,
-        },
-    );
-    Ok(())
-}
-
 impl HistoryArchiveTotals {
     fn empty() -> Self {
         Self {
@@ -6208,11 +5833,6 @@ fn read_history_archive_header(reader: &mut File) -> Result<(serde_json::Value, 
     }
 
     let version = read_u32(reader)?;
-    if version == 2 {
-        return Err(
-            "vPaste v2 历史包需要先使用 vpaste-history-converter 转换为明文 v3 格式".to_string(),
-        );
-    }
     if version != HISTORY_ARCHIVE_VERSION {
         return Err(format!("不支持的 vPaste 历史包版本：{}", version));
     }
@@ -6365,9 +5985,8 @@ fn export_history_archive_impl(
     archive_path: String,
 ) -> Result<HistoryArchiveInfo, String> {
     let _cleanup = auto_cleanup::pause();
-    ensure_history_ready()?;
     ensure_history_storage_dirs()?;
-    clipboard::db::init();
+    clipboard::db::try_init().map_err(|err| err.to_string())?;
     let _: (i64, i64, i64) = clipboard::db::db()
         .query_row("pragma wal_checkpoint(full)", [], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
@@ -6510,27 +6129,45 @@ fn import_custom_tabs(
     Ok(changed)
 }
 
-fn import_history_archive_impl(
-    app: tauri::AppHandle,
-    archive_path: String,
-) -> Result<HistoryArchiveInfo, String> {
-    let _cleanup = auto_cleanup::pause();
-    auto_cleanup::request();
-    ensure_history_ready()?;
-    ensure_history_storage_dirs()?;
-    let target_dir = history_storage_dir();
-    let mut progress =
-        HistoryArchiveProgressState::new(Some(&app), "import", HistoryArchiveTotals::empty());
-    progress.emit();
-    let (rewrite_source_dir, _) = validate_history_archive(&archive_path)?;
+fn prepare_history_import(
+    archive_path: &str,
+    target_dir: &str,
+    progress: &mut HistoryArchiveProgressState,
+) -> Result<(tempfile::TempDir, String), String> {
+    let (rewrite_source_dir, _) = validate_history_archive(archive_path)?;
     let temp_dir = tempfile::tempdir().map_err(|err| err.to_string())?;
-    extract_history_archive(&archive_path, temp_dir.path(), &mut progress)?;
+    extract_history_archive(archive_path, temp_dir.path(), progress)?;
 
     let source_db = temp_dir.path().join(HISTORY_ARCHIVE_DB);
     if !source_db.exists() {
         return Err("导入文件不是有效的 vPaste 历史包".to_string());
     }
 
+    let source_conn = rusqlite::Connection::open_with_flags(
+        &source_db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|err| err.to_string())?;
+    clipboard::db::validate_schema(&source_conn).map_err(|err| err.to_string())?;
+    drop(source_conn);
+    clipboard::db::validate_existing_database(&PathBuf::from(target_dir).join(HISTORY_ARCHIVE_DB))
+        .map_err(|err| err.to_string())?;
+    Ok((temp_dir, rewrite_source_dir))
+}
+
+fn import_history_archive_impl(
+    app: tauri::AppHandle,
+    archive_path: String,
+) -> Result<HistoryArchiveInfo, String> {
+    let _cleanup = auto_cleanup::pause();
+    auto_cleanup::request();
+    ensure_history_storage_dirs()?;
+    let target_dir = history_storage_dir();
+    let mut progress =
+        HistoryArchiveProgressState::new(Some(&app), "import", HistoryArchiveTotals::empty());
+    progress.emit();
+    let (temp_dir, rewrite_source_dir) =
+        prepare_history_import(&archive_path, &target_dir, &mut progress)?;
     progress.set_totals(history_import_payload_totals(temp_dir.path())?);
     progress.set_stage("copy");
     let mut copied_files = 0_usize;
@@ -6559,7 +6196,7 @@ fn import_history_archive_impl(
         &target_dir,
         &rewrite_source_dir,
     )?;
-    clipboard::db::init();
+    clipboard::db::try_init().map_err(|err| err.to_string())?;
     progress.set_stage("index");
     if let Err(err) = rebuild_current_search_index() {
         error!(
@@ -6633,7 +6270,7 @@ mod history_archive_v3_tests {
     }
 
     #[test]
-    fn v2_requires_the_converter() {
+    fn unsupported_archive_version_has_no_migration_instructions() {
         let archive = tempfile::NamedTempFile::new().unwrap();
         let mut file = archive.reopen().unwrap();
         file.write_all(HISTORY_ARCHIVE_MAGIC).unwrap();
@@ -6641,7 +6278,40 @@ mod history_archive_v3_tests {
         file.flush().unwrap();
         let error =
             read_history_archive_header(&mut File::open(archive.path()).unwrap()).unwrap_err();
-        assert!(error.contains("vpaste-history-converter"));
+        assert!(error.contains("不支持的 vPaste 历史包版本"));
+        assert!(!error.contains("converter"));
+    }
+
+    #[test]
+    fn unsupported_import_payload_cannot_copy_attachments_or_create_destination_database() {
+        let root = tempfile::tempdir().unwrap();
+        let source_path = root.path().join("unsupported.db");
+        let connection = rusqlite::Connection::open(&source_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE clipboard(content TEXT); INSERT INTO clipboard VALUES('untouched');",
+            )
+            .unwrap();
+        drop(connection);
+        let bytes = fs::read(source_path).unwrap();
+        let archive = archive_with_entries(&[
+            (HISTORY_ARCHIVE_DB, &bytes),
+            ("data/new-attachment", b"must not be copied"),
+            (CUSTOM_TABS_FILE, b"[]"),
+        ]);
+        let target = root.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("existing-file"), b"kept").unwrap();
+        let mut progress =
+            HistoryArchiveProgressState::new(None, "import", HistoryArchiveTotals::empty());
+        assert!(prepare_history_import(
+            archive.path().to_str().unwrap(),
+            target.to_str().unwrap(),
+            &mut progress
+        )
+        .is_err());
+        assert_eq!(fs::read(target.join("existing-file")).unwrap(), b"kept");
+        assert_eq!(fs::read_dir(target).unwrap().count(), 1);
     }
 
     #[test]
@@ -6881,7 +6551,6 @@ fn get_storage_paths() -> StoragePaths {
 
 #[tauri::command]
 async fn estimate_storage_cleanup(days: u64) -> Result<StorageCleanupInfo, String> {
-    ensure_history_ready()?;
     tauri::async_runtime::spawn_blocking(move || {
         let estimate = clipboard::cleanup_estimate(days)?;
         Ok(StorageCleanupInfo {
@@ -6897,7 +6566,6 @@ async fn estimate_storage_cleanup(days: u64) -> Result<StorageCleanupInfo, Strin
 async fn estimate_auto_cleanup(
     policy: config::AutoCleanupPolicy,
 ) -> Result<StorageCleanupInfo, String> {
-    ensure_history_ready()?;
     policy.validate()?;
     tauri::async_runtime::spawn_blocking(move || {
         let estimate = clipboard::auto_cleanup_estimate(policy)?;
@@ -6912,7 +6580,6 @@ async fn estimate_auto_cleanup(
 
 #[tauri::command]
 async fn cleanup_storage_history(days: u64) -> Result<StorageCleanupInfo, String> {
-    ensure_history_ready()?;
     tauri::async_runtime::spawn_blocking(move || {
         let estimate = clipboard::cleanup_older_than(days)?;
         Ok(StorageCleanupInfo {
@@ -7808,7 +7475,7 @@ fn cleanup_legacy_autostart_entries() {
 fn cleanup_legacy_autostart_entries() {}
 
 #[tauri::command]
-fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigrationInfo, String> {
+fn save_config(app: tauri::AppHandle, config: String) -> Result<SettingsSaveInfo, String> {
     let _cleanup = auto_cleanup::pause();
     let mut config_struct: Config =
         serde_json::from_str(&config).map_err(|err| format!("配置格式无效，无法保存：{}", err))?;
@@ -7821,6 +7488,15 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
 
     let previous_config = config::get();
     let previous_history_dir = history_storage_dir();
+    let next_history_dir = if config_struct.storage_dir.trim().is_empty() {
+        get_app_data_dir()
+    } else {
+        config_struct.storage_dir.trim().to_string()
+    };
+    clipboard::db::validate_existing_database(
+        &PathBuf::from(next_history_dir).join(HISTORY_ARCHIVE_DB),
+    )
+    .map_err(|err| err.to_string())?;
     let previous_main_shortcut = match parse_optional_shortcut(
         previous_config.shortcut_keys.main_window.as_deref(),
         "当前唤起主窗口",
@@ -7889,7 +7565,7 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
             err
         );
     }
-    clipboard::db::init();
+    clipboard::db::try_init().map_err(|err| err.to_string())?;
     let target_dir = history_storage_dir();
     if previous_history_dir != target_dir || !search::engine::is_ready() {
         if let Err(err) = rebuild_current_search_index() {
@@ -7897,14 +7573,7 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
         }
     }
     auto_cleanup::request();
-    Ok(StorageMigrationInfo {
-        migrated: false,
-        source_dir: target_dir.clone(),
-        target_dir,
-        merged_items: 0,
-        skipped_items: 0,
-        copied_files: 0,
-        backup_dir: String::new(),
+    Ok(SettingsSaveInfo {
         message: if registration_info.conflict || paste_queue_registration_info.conflict {
             "配置已保存，但快捷键被其他应用占用".to_string()
         } else {
@@ -9175,9 +8844,6 @@ fn copy(
     hash: Option<String>,
 ) -> Result<(), String> {
     let _cleanup = auto_cleanup::pause();
-    if hash.is_some() {
-        ensure_history_ready()?;
-    }
     let rich_meta = hash.as_deref().and_then(clipboard::rich_clipboard_meta);
     copy_with_rich_meta(app, item, item_type, rich_meta)?;
     if let Some(hash) = hash {
@@ -9328,7 +8994,6 @@ async fn copy_history_item(
     hash: String,
     plain_text: bool,
 ) -> Result<(), String> {
-    ensure_history_ready()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _cleanup = auto_cleanup::pause();
         let text = clipboard::plain_text_content(&hash)?;
@@ -10259,7 +9924,6 @@ fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(
 
 #[tauri::command]
 fn get_paste_queue_state() -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     paste_queue::state()
 }
 
@@ -10277,7 +9941,6 @@ fn set_paste_queue_active(
     app: tauri::AppHandle,
     active: bool,
 ) -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     set_paste_queue_active_impl(&app, active)?;
     paste_queue::state()
 }
@@ -10287,7 +9950,6 @@ fn add_paste_queue_items(
     app: tauri::AppHandle,
     hashes: Vec<String>,
 ) -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     paste_queue::run_user_operation(|| paste_queue::add_items(&hashes))?;
     paste_queue::emit_state(&app);
     paste_queue::state()
@@ -10298,7 +9960,6 @@ fn reorder_paste_queue(
     app: tauri::AppHandle,
     hashes: Vec<String>,
 ) -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     paste_queue::run_user_operation(|| paste_queue::reorder(&hashes))?;
     paste_queue::emit_state(&app);
     paste_queue::state()
@@ -10306,7 +9967,6 @@ fn reorder_paste_queue(
 
 #[tauri::command]
 fn reverse_paste_queue(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     paste_queue::run_user_operation(paste_queue::reverse)?;
     paste_queue::emit_state(&app);
     paste_queue::state()
@@ -10317,7 +9977,6 @@ fn remove_paste_queue_item(
     app: tauri::AppHandle,
     hash: String,
 ) -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     let cleanup =
         paste_queue::run_user_operation(|| paste_queue::remove_item_with_deferred_cleanup(&hash))?;
     paste_queue::emit_state(&app);
@@ -10328,7 +9987,6 @@ fn remove_paste_queue_item(
 
 #[tauri::command]
 fn clear_paste_queue(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     let cleanup = paste_queue::run_user_operation(paste_queue::clear_with_deferred_cleanup)?;
     paste_queue::emit_state(&app);
     let state = paste_queue::state()?;
@@ -10338,7 +9996,6 @@ fn clear_paste_queue(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueSta
 
 #[tauri::command]
 fn paste_queue_item(app: tauri::AppHandle, hash: Option<String>) -> Result<(), String> {
-    ensure_history_ready()?;
     if !paste_queue::is_active() {
         return Err("粘贴队列尚未激活".to_string());
     }
@@ -10355,7 +10012,6 @@ fn paste_queue_item(app: tauri::AppHandle, hash: Option<String>) -> Result<(), S
 
 #[tauri::command]
 fn undo_paste_queue_consume(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     let _ = paste_queue::run_user_operation(paste_queue::undo_consume)?;
     paste_queue::emit_state(&app);
     paste_queue::state()
@@ -10368,7 +10024,6 @@ fn paste(
     trigger_key: Option<String>,
 ) -> Result<(), String> {
     let _cleanup = auto_cleanup::pause();
-    ensure_history_ready()?;
     let restore_alt = restore_alt.unwrap_or(false);
     let trigger_key = trigger_key.as_deref();
     if !_hash.is_empty() {
@@ -10415,9 +10070,6 @@ fn record_text_history(content: String) {
     else {
         return;
     };
-    if ensure_history_ready().is_err() {
-        return;
-    }
     clipboard::insert_text(content);
 }
 
@@ -10488,7 +10140,6 @@ async fn search(
     limit: usize,
     label: String,
 ) -> Result<String, String> {
-    ensure_history_ready()?;
     let last_time = last_time.unwrap_or(0);
     let generation = SEARCH_COMMAND_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     tauri::async_runtime::spawn_blocking(move || {
@@ -10527,7 +10178,6 @@ async fn search(
 #[tauri::command]
 fn clear_history(app: tauri::AppHandle, clear_type: String) -> Result<(), String> {
     let _cleanup = auto_cleanup::pause();
-    ensure_history_ready()?;
     if clear_type == "all" {
         clipboard::db::clear_all().map_err(|e| e.to_string())?;
     } else if clear_type == "images" {
@@ -11398,29 +11048,28 @@ fn main() {
             if let Err(err) = ensure_history_storage_dirs() {
                 panic!("创建历史存储目录时出错: {:?}", err);
             }
-            let legacy_history = legacy_history_present(Path::new(&history_storage_dir()))
-                .unwrap_or_else(|err| {
-                    error!("Failed to inspect history format: {err}");
-                    true
-                });
-            LEGACY_HISTORY_BLOCKED.store(legacy_history, Ordering::SeqCst);
-            if !legacy_history {
-                clipboard::db::init();
-                if !search::engine::is_ready() {
-                    if let Err(err) = rebuild_current_search_index() {
-                        error!("Failed to initialize clipboard search index: {err}");
-                    }
+            if let Err(err) = clipboard::db::try_init() {
+                error!("Failed to open history database: {err}");
+                let handle = app.handle().clone();
+                app.dialog()
+                    .message(format!("Cannot open vPaste history:\n{err}\nYour history files have been kept unchanged."))
+                    .title("vPaste")
+                    .kind(MessageDialogKind::Error)
+                    .show(move |_| handle.exit(1));
+                return Ok(());
+            }
+            if !search::engine::is_ready() {
+                if let Err(err) = rebuild_current_search_index() {
+                    error!("Failed to initialize clipboard search index: {err}");
                 }
-                if let Err(err) = search::engine::resume_pending_updates() {
-                    error!("Failed to resume clipboard search index updates: {err}");
-                }
+            }
+            if let Err(err) = search::engine::resume_pending_updates() {
+                error!("Failed to resume clipboard search index updates: {err}");
             }
             let _ = build_clipboard_window(app.handle())?;
             let _ = build_paste_queue_window(app.handle())?;
             build_text_editor_window(app.handle())?;
-            if !legacy_history {
-                initialize_paste_queue_worker(app.handle());
-            }
+            initialize_paste_queue_worker(app.handle());
             if get_developer_mode() {
                 let _ = build_test_room_window(app.handle())?;
             }
@@ -11622,19 +11271,9 @@ fn main() {
                     }
                 }
 
-                if !LEGACY_HISTORY_BLOCKED.load(Ordering::SeqCst) {
-                    info!("Starting clipboard listener");
-                    listen::start(clipboard_window);
-                    info!("Clipboard listener started");
-                } else {
-                    error!("Legacy encrypted history detected; history writes are blocked");
-                    let _ = handle.emit(
-                        "history-format-status-changed",
-                        HistoryFormatStatus {
-                            migration_required: true,
-                        },
-                    );
-                }
+                info!("Starting clipboard listener");
+                listen::start(clipboard_window);
+                info!("Clipboard listener started");
                 if config.onboarding_completed && show_panel_on_startup {
                     if let Err(err) = startup_panel::request_show(&handle) {
                         error!("Failed to show main panel after startup: {}", err);
@@ -11642,7 +11281,6 @@ fn main() {
                 }
                 auto_cleanup::start(handle.clone());
                 std::thread::spawn(|| {
-                    migrate_runtime_dirs_out_of_history();
                     cleanup_runtime_caches();
                     cleanup_legacy_autostart_entries();
                 });
@@ -11671,8 +11309,6 @@ fn main() {
             set_position,
             get_app_data_dir,
             get_storage_paths,
-            get_history_format_status,
-            clear_legacy_history,
             export_history_archive,
             import_history_archive,
             estimate_storage_cleanup,

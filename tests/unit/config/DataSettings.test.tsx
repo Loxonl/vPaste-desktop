@@ -16,7 +16,6 @@ function createBridge(): SettingsBridge {
         invoke: vi.fn(async (command: string) => {
             if (command === "list_recent_app_source_options") return [];
             if (command === "estimate_storage_cleanup") return { bytes: 0, items: 0 };
-            if (command === "get_history_format_status") return { migration_required: false };
             return null;
         }) as SettingsBridge["invoke"],
         listen: vi.fn(async () => () => undefined) as unknown as SettingsBridge["listen"],
@@ -39,6 +38,20 @@ function renderLocalizedSettings(bridge: SettingsBridge, pack = zhCN) {
 }
 
 describe("Data settings actions", () => {
+    it("offers current history actions without requesting retired migration commands", async () => {
+        const bridge = createBridge();
+        render(<MotionTestProvider><AppThemeProvider>
+            <DataSettings bridge={bridge} config={DEFAULT_CONFIG} storagePaths={null}
+                onSave={vi.fn(async () => null)} onBlockingOperationChange={vi.fn()} t={key => key} />
+        </AppThemeProvider></MotionTestProvider>);
+        await waitFor(() => expect(bridge.invoke).toHaveBeenCalledWith("estimate_storage_cleanup", { days: 0 }));
+        expect(bridge.invoke).not.toHaveBeenCalledWith("get_history_format_status");
+        expect(bridge.listen).not.toHaveBeenCalledWith("history-format-status-changed", expect.anything());
+        expect(screen.queryByRole("button", { name: "settings.legacyHistory.clear" })).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "settings.importHistory" })).toBeEnabled();
+        expect(screen.getByRole("button", { name: "settings.exportHistory" })).toBeEnabled();
+    });
+
     it.each([{ name: "Chinese", pack: zhCN }, { name: "English", pack: enUS }])("shows cleanup scope, count, protection, and warning before deleting ($name)", async ({ pack }) => {
         const bridge = createBridge();
         const invoke = vi.mocked(bridge.invoke).getMockImplementation()!;
@@ -151,7 +164,6 @@ describe("Data settings actions", () => {
                 return [{ source: "Code.exe", icon_path: "C:\\icons\\code.png" }];
             }
             if (command === "estimate_storage_cleanup") return { bytes: 0, items: 0 };
-            if (command === "get_history_format_status") return { migration_required: false };
             return null;
         });
         const config = { ...DEFAULT_CONFIG, ignored_app_sources: ["Code.exe"] };
@@ -176,12 +188,11 @@ describe("Data settings actions", () => {
         expect(appIcon?.parentElement?.className).toContain("app-icon");
     });
 
-    it("uses standard storage and migration actions and confirms cleanup", async () => {
+    it("uses standard storage and transfer actions and confirms cleanup", async () => {
         const bridge = createBridge();
         vi.mocked(bridge.invoke).mockImplementation(async (command: string) => {
             if (command === "list_recent_app_source_options") return [];
             if (command === "estimate_storage_cleanup") return { bytes: 2048, items: 4 };
-            if (command === "get_history_format_status") return { migration_required: false };
             if (command === "cleanup_storage_history") return { bytes: 2048, items: 4 };
             return null;
         });
@@ -234,113 +245,5 @@ describe("Data settings actions", () => {
         await waitFor(() => expect(bridge.invoke).toHaveBeenCalledWith("cleanup_storage_history", { days: 30 }));
     });
 
-    it("uses the shared destructive dialog before clearing legacy history", async () => {
-        const bridge = createBridge();
-        vi.mocked(bridge.invoke).mockImplementation(async (command: string) => {
-            if (command === "list_recent_app_source_options") return [];
-            if (command === "estimate_storage_cleanup") return { bytes: 0, items: 0 };
-            if (command === "get_history_format_status") return { migration_required: true };
-            return null;
-        });
-        render(
-            <MotionTestProvider>
-                <AppThemeProvider>
-                    <DataSettings
-                        bridge={bridge}
-                        config={DEFAULT_CONFIG}
-                        storagePaths={null}
-                        onSave={vi.fn(async () => null)}
-                        onBlockingOperationChange={vi.fn()}
-                        t={key => key}
-                    />
-                </AppThemeProvider>
-            </MotionTestProvider>,
-        );
-
-        const user = userEvent.setup();
-        await user.click(await screen.findByRole("button", { name: "settings.legacyHistory.clear" }));
-        expect(screen.getByRole("alertdialog", { name: "settings.legacyHistory.confirmTitle" })).toBeVisible();
-        await user.click(screen.getByRole("button", { name: "settings.legacyHistory.clear" }));
-
-        await waitFor(() => expect(bridge.invoke).toHaveBeenCalledWith("clear_legacy_history", {
-            confirmation: "CLEAR_LEGACY_HISTORY",
-        }));
-    });
-
-    it("shows progress and prevents duplicate confirmation while legacy history is clearing", async () => {
-        const bridge = createBridge();
-        let finishClear: (() => void) | undefined;
-        vi.mocked(bridge.invoke).mockImplementation(async (command: string) => {
-            if (command === "list_recent_app_source_options") return [];
-            if (command === "estimate_storage_cleanup") return { bytes: 0, items: 0 };
-            if (command === "get_history_format_status") return { migration_required: true };
-            if (command === "clear_legacy_history") {
-                await new Promise<void>(resolve => {
-                    finishClear = resolve;
-                });
-            }
-            return null;
-        });
-        render(
-            <MotionTestProvider>
-                <AppThemeProvider>
-                    <DataSettings
-                        bridge={bridge}
-                        config={DEFAULT_CONFIG}
-                        storagePaths={null}
-                        onSave={vi.fn(async () => null)}
-                        onBlockingOperationChange={vi.fn()}
-                        t={key => key}
-                    />
-                </AppThemeProvider>
-            </MotionTestProvider>,
-        );
-
-        const user = userEvent.setup();
-        await user.click(await screen.findByRole("button", { name: "settings.legacyHistory.clear" }));
-        const confirmButton = screen.getByRole("button", { name: "settings.legacyHistory.clear" });
-        await user.click(confirmButton);
-
-        expect(screen.getByRole("alertdialog", { name: "settings.legacyHistory.confirmTitle" })).toBeVisible();
-        expect(confirmButton).toBeDisabled();
-        expect(screen.getByRole("button", { name: "common.cancel" })).toBeDisabled();
-        expect(screen.getByRole("alertdialog")).toHaveTextContent("settings.legacyHistory.clearing");
-
-        finishClear?.();
-        await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
-    });
-
-    it("keeps the confirmation available and shows the backend error when legacy clearing fails", async () => {
-        const bridge = createBridge();
-        vi.mocked(bridge.invoke).mockImplementation(async (command: string) => {
-            if (command === "list_recent_app_source_options") return [];
-            if (command === "estimate_storage_cleanup") return { bytes: 0, items: 0 };
-            if (command === "get_history_format_status") return { migration_required: true };
-            if (command === "clear_legacy_history") throw new Error("database is locked");
-            return null;
-        });
-        render(
-            <MotionTestProvider>
-                <AppThemeProvider>
-                    <DataSettings
-                        bridge={bridge}
-                        config={DEFAULT_CONFIG}
-                        storagePaths={null}
-                        onSave={vi.fn(async () => null)}
-                        onBlockingOperationChange={vi.fn()}
-                        t={(key, values) => values?.error ? `${key}: ${values.error}` : key}
-                    />
-                </AppThemeProvider>
-            </MotionTestProvider>,
-        );
-
-        const user = userEvent.setup();
-        await user.click(await screen.findByRole("button", { name: "settings.legacyHistory.clear" }));
-        await user.click(screen.getByRole("button", { name: "settings.legacyHistory.clear" }));
-
-        expect(await screen.findByRole("alert")).toHaveTextContent("settings.legacyHistory.clearFailed: Error: database is locked");
-        expect(screen.getByRole("alertdialog", { name: "settings.legacyHistory.confirmTitle" })).toBeVisible();
-        expect(screen.getByRole("button", { name: "settings.legacyHistory.clear" })).toBeEnabled();
-    });
 
 });

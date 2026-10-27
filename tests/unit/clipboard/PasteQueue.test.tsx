@@ -143,7 +143,7 @@ describe("PasteQueue", () => {
         });
     });
 
-    it("falls back to a decrypted data URL when an image preview asset cannot be created", async () => {
+    it("falls back to a data URL when an image preview asset cannot be created", async () => {
         const imageState = {
             ...state(),
             items: [{

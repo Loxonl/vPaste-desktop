@@ -29,6 +29,41 @@ function context(overrides: Partial<Parameters<typeof clipboardKeyDownAction>[1]
 }
 
 describe("clipboardKeyDownAction", () => {
+    it("cycles categories with Control+Tab on both platforms independently of Tab selection", () => {
+        for (const isMac of [false, true]) {
+            for (const tabQuickSelectEnabled of [false, true]) {
+                for (const shiftKey of [false, true]) {
+                    expect(clipboardKeyDownAction(keyDown("Tab", { ctrlKey: true, shiftKey }), context({ isMac, tabQuickSelectEnabled })))
+                        .toEqual({ type: "navigate-tab", direction: shiftKey ? -1 : 1 });
+                }
+            }
+        }
+    });
+
+    it("cycles categories from search without taking over other inputs, menus, or composition", () => {
+        const input = document.createElement("input");
+        const event = keyDown("Tab", { ctrlKey: true }, input);
+        expect(clipboardKeyDownAction(event, context({ searchInput: input, searchOpen: true })))
+            .toEqual({ type: "navigate-tab", direction: 1 });
+        expect(clipboardKeyDownAction(event, context())).toBeNull();
+        expect(clipboardKeyDownAction(keyDown("Tab", { ctrlKey: true }), context({ contextMenuOpen: true }))).toBeNull();
+        expect(clipboardKeyDownAction(event, context({ searchInput: input, searchComposing: true }))).toBeNull();
+        expect(clipboardKeyDownAction(keyDown("Tab", { ctrlKey: true, isComposing: true }), context())).toBeNull();
+        const dialog = document.createElement("div");
+        dialog.setAttribute("role", "dialog");
+        dialog.append(input);
+        expect(clipboardKeyDownAction(event, context({ searchInput: input }))).toBeNull();
+    });
+
+    it("leaves system Tab combinations alone while preserving ordinary Tab selection", () => {
+        for (const modifiers of [{ altKey: true }, { metaKey: true }, { ctrlKey: true, altKey: true }, { ctrlKey: true, metaKey: true }]) {
+            expect(clipboardKeyDownAction(keyDown("Tab", modifiers), context())).toBeNull();
+        }
+        expect(clipboardKeyDownAction(keyDown("Tab"), context())).toEqual({ type: "navigate-selection", direction: 1 });
+        expect(clipboardKeyDownAction(keyDown("Tab", { shiftKey: true }), context())).toEqual({ type: "navigate-selection", direction: -1 });
+        expect(clipboardKeyDownAction(keyDown("Tab"), context({ tabQuickSelectEnabled: false }))).toBeNull();
+    });
+
     it("opens editing only for an unmodified, non-repeated F2 outside inputs and dialogs", () => {
         expect(clipboardKeyDownAction(keyDown("F2"), context())).toEqual({ type: "edit-selected" });
         for (const init of [{ repeat: true }, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { isComposing: true }]) {

@@ -170,6 +170,21 @@ describe("auxiliary window controls", () => {
             .toHaveAttribute("data-preview-direction", "forward");
     });
 
+    it("forwards category shortcuts from preview while keeping ordinary Tab navigation", () => {
+        render(<Preview />);
+        fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
+        expect(tauri.emitTo).toHaveBeenLastCalledWith("clipboard", "preview-navigate-selection", { direction: 1, key: "Tab", ctrlKey: true });
+        fireEvent.keyDown(window, { key: "Tab", ctrlKey: true, shiftKey: true });
+        expect(tauri.emitTo).toHaveBeenLastCalledWith("clipboard", "preview-navigate-selection", { direction: -1, key: "Tab", ctrlKey: true });
+        fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+        expect(tauri.emitTo).toHaveBeenLastCalledWith("clipboard", "preview-navigate-selection", { direction: -1, key: "Tab" });
+        tauri.emitTo.mockClear();
+        for (const modifiers of [{ metaKey: true }, { altKey: true }, { ctrlKey: true, metaKey: true }, { ctrlKey: true, isComposing: true }]) {
+            fireEvent.keyDown(window, { key: "Tab", ...modifiers });
+        }
+        expect(tauri.emitTo).not.toHaveBeenCalled();
+    });
+
     it("keeps the Emoji picker anchored to the editor trigger rectangle", async () => {
         const user = userEvent.setup();
         localStorage.setItem("vpaste.pendingTabEditorPayload", JSON.stringify({

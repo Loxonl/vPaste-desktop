@@ -16,6 +16,7 @@ export type ClipboardKeyDownAction =
     | { type: "close-context-menu" }
     | { type: "hide-window" }
     | { type: "navigate-selection"; direction: -1 | 1 }
+    | { type: "navigate-tab"; direction: -1 | 1 }
     | { type: "open-selected-context-menu" }
     | { type: "toggle-preview" }
     | { type: "delete-selected" }
@@ -44,6 +45,12 @@ function isKeyboardPassthroughTarget(target: EventTarget | null, selector = "[da
     return target instanceof Element && target.closest(selector) !== null;
 }
 
+export function clipboardTabNavigationDirection(event: KeyboardEvent): -1 | 1 | null {
+    return event.key === "Tab" && event.ctrlKey && !event.altKey && !event.metaKey
+        ? event.shiftKey ? -1 : 1
+        : null;
+}
+
 export function clipboardKeyDownAction(
     event: KeyboardEvent,
     context: ClipboardKeyboardContext,
@@ -66,6 +73,13 @@ export function clipboardKeyDownAction(
 
     const targetIsTextInput = isTextInputTarget(event.target);
     const allowQuickInputInSearch = event.target === context.searchInput;
+    const tabDirection = clipboardTabNavigationDirection(event);
+    if (tabDirection !== null) {
+        if (context.contextMenuOpen || (targetIsTextInput && !allowQuickInputInSearch)
+            || isKeyboardPassthroughTarget(event.target, '[role="dialog"], [role="alertdialog"], [aria-modal="true"], [role="menu"]')) return null;
+        return { type: "navigate-tab", direction: tabDirection };
+    }
+    if (event.key === "Tab" && (event.altKey || event.metaKey)) return null;
     if (
         context.quickInputEnabled
         && event.altKey
@@ -126,7 +140,7 @@ export function clipboardKeyDownAction(
     if (event.key === "Escape") {
         return { type: "hide-window" };
     }
-    if (context.tabQuickSelectEnabled && event.key === "Tab") {
+    if (context.tabQuickSelectEnabled && event.key === "Tab" && !event.ctrlKey) {
         return {
             type: "navigate-selection",
             direction: event.shiftKey ? -1 : 1,

@@ -12,6 +12,20 @@ afterEach(() => {
 });
 
 describe("Shortcut settings recorder", () => {
+    it.each([["Win32", "Ctrl + Tab"], ["MacIntel", "⌃Tab"]])("shows one fixed category shortcut without a Shift hint on %s", (platform, key) => {
+        vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
+        const bridge = {
+            invoke: vi.fn(), listen: vi.fn(), open: vi.fn(), save: vi.fn(), convertFileSrc: vi.fn(),
+        } as unknown as SettingsBridge;
+        render(<AppThemeProvider><ShortcutSettings bridge={bridge} config={DEFAULT_CONFIG} onSave={vi.fn()} t={key => key} /></AppThemeProvider>);
+        const label = screen.getByText("settings.shortcuts.switchCategory");
+        const row = label.parentElement!.parentElement!;
+        expect(row).toHaveTextContent(key);
+        expect(row).not.toHaveTextContent("Shift");
+        expect(row.querySelector("button, input, [title]")).toBeNull();
+        expect(row.previousElementSibling).toHaveTextContent("settings.tabQuickSelectSupport");
+    });
+
     it.each([["Win32", "Delete"], ["MacIntel", "⌫"]])("displays a fixed delete shortcut on %s", (platform, key) => {
         vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
         const bridge = {

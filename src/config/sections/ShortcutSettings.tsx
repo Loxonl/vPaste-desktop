@@ -181,6 +181,10 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
                         </span>}
                     />
                     <FixedShortcutItem
+                        label={t("settings.shortcuts.switchCategory")}
+                        value={isMacPlatform() ? "⌃Tab" : "Ctrl + Tab"}
+                    />
+                    <FixedShortcutItem
                         label={t("settings.shortcuts.actionMenu")}
                         value={t("settings.shortcuts.key.arrowDown")}
                     />

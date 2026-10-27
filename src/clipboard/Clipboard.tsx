@@ -275,6 +275,7 @@ export default function Clipboard() {
     const customTabsStorageReadyRef = useRef(false);
     const pendingRecordTagAssignTargetRef = useRef<Item | null>(null);
     const previewRequestSeqRef = useRef(0);
+    const cycleTabRef = useRef<(direction: -1 | 1) => void>(() => { });
     const activateClipboardCardRef = useRef<(hash: string, plainText: boolean) => void>(() => { });
     const pasteQueueRevisionRef = useRef(0);
     const {
@@ -350,6 +351,20 @@ export default function Clipboard() {
         setTabContextMenu(null);
         activeTabRef.current = tabId;
         setActiveTab(tabId);
+    };
+
+    cycleTabRef.current = direction => {
+        if (tutorialActiveRef.current || contextMenu || tabContextMenu || isSearchComposing) return;
+        const tabIds = ["all", "favorite", ...dynamicTabs.map(tab => tab.id)];
+        const currentIndex = Math.max(0, tabIds.indexOf(activeTabRef.current));
+        const nextTab = tabIds[(currentIndex + direction + tabIds.length) % tabIds.length];
+        showGateRef.current!.cancel();
+        previewRequestSeqRef.current += 1;
+        void invoke<boolean>("is_preview_window_visible").then(visible => {
+            if (visible) return invoke("hide_preview_window");
+        }).catch(previewError => error(`Failed to close preview before switching category: ${previewError}`));
+        switchToTabWithShortcut(nextTab);
+        if (cardsContainerRef.current) cardsContainerRef.current.scrollLeft = 0;
     };
 
     const activateItemShortcut = (index: number) => {
@@ -1237,6 +1252,10 @@ export default function Clipboard() {
                 applyItemTagsChanged(payload);
             },
             onPreviewNavigation: payload => {
+                if (payload.key === "Tab" && payload.ctrlKey) {
+                    cycleTabRef.current(payload.direction === -1 ? -1 : 1);
+                    return;
+                }
                 if (payload.key === "Tab" && !tabQuickSelectEnabledRef.current) return;
                 navigateSelectedCard(payload.direction === -1 ? -1 : 1);
             },
@@ -1370,6 +1389,8 @@ export default function Clipboard() {
             });
             if (!action) return;
 
+            if (action.type === "navigate-tab" && (tutorialActiveRef.current || tabContextMenu !== null)) return;
+
             if ((action.type === "delete-selected" || action.type === "edit-selected") && (
                 !document.hasFocus() || tutorialActiveRef.current
                 || historyRefreshingRef.current || isSearching
@@ -1433,6 +1454,9 @@ export default function Clipboard() {
                     return;
                 case "quick-tab":
                     switchToTabWithShortcut(action.tabId);
+                    return;
+                case "navigate-tab":
+                    cycleTabRef.current(action.direction);
                     return;
                 case "quick-item":
                     activateItemShortcut(action.index);
@@ -1565,7 +1589,7 @@ export default function Clipboard() {
             window.removeEventListener('keyup', handleKeyUp, true);
             window.removeEventListener('blur', handleBlur);
         };
-    }, [searchOpen, searchWord, isSearching, isSearchComposing, contextMenu, contextMenuIndex, queueSelectionMode, t]);
+    }, [searchOpen, searchWord, isSearching, isSearchComposing, contextMenu, contextMenuIndex, tabContextMenu, queueSelectionMode, t]);
 
     const handleSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         showGateRef.current!.cancel();

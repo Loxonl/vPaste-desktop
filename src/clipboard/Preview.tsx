@@ -10,6 +10,7 @@ import { FileTypePresentation } from "./FileTypePresentation";
 import { isImagePath, type FilePreviewInfo } from "./itemPresentation";
 import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
 import { useRichPreviewCanvas } from "./useRichPreviewCanvas";
+import { clipboardTabNavigationDirection } from "./clipboardKeyboard";
 import { useLanguage } from "../lang";
 import { AnimatePresence, m, useMotionPreset } from "../ui/motion";
 import styles from "./Preview.module.css";
@@ -391,7 +392,16 @@ export default function Preview() {
             setPayload(null);
         });
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === "ArrowRight" || event.key === "ArrowLeft" || event.key === "Tab") {
+            if (event.isComposing || event.keyCode === 229) return;
+            const tabDirection = clipboardTabNavigationDirection(event);
+            if (tabDirection !== null) {
+                event.preventDefault();
+                void emitTo("clipboard", "preview-navigate-selection", { direction: tabDirection, key: "Tab", ctrlKey: true })
+                    .catch(e => error(`Failed to switch preview category: ${e}`));
+                return;
+            }
+            const plainTab = event.key === "Tab" && !event.ctrlKey && !event.altKey && !event.metaKey;
+            if (event.key === "ArrowRight" || event.key === "ArrowLeft" || plainTab) {
                 event.preventDefault();
                 const direction = event.key === "ArrowLeft" || (event.key === "Tab" && event.shiftKey) ? -1 : 1;
                 pendingNavigationDirectionRef.current = direction;

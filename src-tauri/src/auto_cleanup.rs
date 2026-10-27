@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use log::{error, info};
 use tauri::{AppHandle, Emitter};
 
-use crate::{clipboard, config, ensure_history_ready};
+use crate::{clipboard, config};
 
 const BATCH_SIZE: usize = 256;
 const CHECK_INTERVAL: Duration = Duration::from_secs(5);
@@ -30,7 +30,6 @@ pub(crate) fn run_once() -> Result<Option<clipboard::CleanupEstimate>, String> {
     let Ok(_idle) = ACTIVITY.try_write() else {
         return Ok(None);
     };
-    ensure_history_ready()?;
     let policy = config::get().auto_cleanup;
     policy.validate()?;
     clipboard::auto_cleanup_batch(policy, BATCH_SIZE).map(Some)

@@ -14,7 +14,6 @@ function setup(overrides = {}) {
     const config = { ...DEFAULT_CONFIG, ...overrides };
     const bridge = {
         invoke: vi.fn(async (command: string) => {
-            if (command === "get_history_format_status") return { migration_required: false };
             if (command === "list_recent_app_source_options") return [];
             return { items: 12, bytes: 2048 };
         }),

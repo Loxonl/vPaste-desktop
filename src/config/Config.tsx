@@ -10,7 +10,7 @@ import { applyThemeMode } from "../theme";
 import { tauriSettingsBridge, type SettingsBridge } from "./SettingsBridge";
 import { persistSettings } from "./settingsPersistence";
 import layout from "./ConfigLayout.module.css";
-import { DEFAULT_CONFIG, parseSettingsConfig, type ConfigData, type SettingsBlockingOperation, type StorageMigrationInfo, type StoragePaths } from "./settingsTypes";
+import { DEFAULT_CONFIG, parseSettingsConfig, type ConfigData, type SettingsBlockingOperation, type SettingsSaveInfo, type StoragePaths } from "./settingsTypes";
 import GeneralSettings from "./sections/GeneralSettings";
 import DataSettings from "./sections/DataSettings";
 import ShortcutSettings from "./sections/ShortcutSettings";
@@ -144,7 +144,7 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
         };
     }, [bridge]);
 
-    const saveConfig = async (newConfig: ConfigData): Promise<StorageMigrationInfo | null> => {
+    const saveConfig = async (newConfig: ConfigData): Promise<SettingsSaveInfo | null> => {
         const previousConfig = config;
         const applyConfig = (nextConfig: ConfigData) => {
             setConfig(nextConfig);
@@ -153,7 +153,7 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
         };
 
         try {
-            const migrationInfo = await persistSettings<ConfigData, StorageMigrationInfo, StoragePaths>({
+            const saveInfo = await persistSettings<ConfigData, SettingsSaveInfo, StoragePaths>({
                 bridge,
                 previousConfig,
                 nextConfig: newConfig,
@@ -162,7 +162,7 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
                 serialize: JSON.stringify,
             });
             info("Config saved");
-            return migrationInfo;
+            return saveInfo;
         } catch (e) {
             error(`Failed to save config: ${e}`);
             throw e;

@@ -53,14 +53,7 @@ export interface StorageCleanupInfo {
     items: number;
 }
 
-export interface StorageMigrationInfo {
-    migrated: boolean;
-    source_dir: string;
-    target_dir: string;
-    merged_items: number;
-    skipped_items: number;
-    copied_files: number;
-    backup_dir: string;
+export interface SettingsSaveInfo {
     message: string;
     shortcut_conflict?: boolean;
 }
@@ -111,7 +104,7 @@ export type SettingsBlockingOperation = {
 export interface SettingsSectionProps {
     bridge: SettingsBridge;
     config: ConfigData;
-    onSave: (config: ConfigData) => Promise<StorageMigrationInfo | null>;
+    onSave: (config: ConfigData) => Promise<SettingsSaveInfo | null>;
     t: TFunction;
 }
 

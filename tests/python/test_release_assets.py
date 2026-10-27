@@ -100,9 +100,9 @@ class ReleaseAssetsTests(unittest.TestCase):
         for name in self.metadata:
             if name.endswith(".sig"):
                 (self.assets / name).unlink()
-        (self.assets / "vpaste-history-converter_windows_x64.exe").write_bytes(b"tool")
+        (self.assets / "support-tool_windows_x64.exe").write_bytes(b"tool")
         release_assets.prepare(self.assets, self.version)
-        self.assertTrue((self.assets / "vpaste-history-converter_windows_x64.exe").exists())
+        self.assertTrue((self.assets / "support-tool_windows_x64.exe").exists())
         with zipfile.ZipFile(self.assets / f"vPaste_{self.version}_release-metadata.zip") as bundle:
             self.assertNotIn("latest.json", bundle.namelist())
 

@@ -3,7 +3,7 @@ import { ButtonBase, Stack, Switch } from "@mui/material";
 import { error } from "@tauri-apps/plugin-log";
 import { formatShortcutLabel, getModifierDisplayLabel, isMacPlatform, isWindowsPlatform } from "../../shortcutDisplay";
 import type { SettingsBridge } from "../SettingsBridge";
-import type { SettingsSectionProps, Shortcutkey, ShortcutRegistrationInfo, StorageMigrationInfo, TFunction } from "../settingsTypes";
+import type { SettingsSectionProps, Shortcutkey, ShortcutRegistrationInfo, SettingsSaveInfo, TFunction } from "../settingsTypes";
 import { classes } from "../../ui/classNames";
 import { SettingsRow, SettingsSection } from "../../ui/settings/SettingsPrimitives";
 import styles from "../Config.module.css";
@@ -228,7 +228,7 @@ function ShortcutItem({ label, value, nativeRecordingBridge, onChange, onRecordi
     label: string,
     value?: string,
     nativeRecordingBridge?: SettingsBridge,
-    onChange: (v: string) => void | Promise<StorageMigrationInfo | null | void>,
+    onChange: (v: string) => void | Promise<SettingsSaveInfo | null | void>,
     onRecordingStart?: () => void | Promise<unknown>,
     onRecordingCancel?: () => void | Promise<unknown>,
     checkRegistration?: (v: string) => Promise<ShortcutRegistrationInfo>,

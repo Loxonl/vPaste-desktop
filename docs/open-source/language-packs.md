@@ -6,7 +6,7 @@ vPaste has built-in `Chinese` and `English` language packs. Runtime language pac
 <app-runtime-dir>/lang/*.json
 ```
 
-The app scans this folder when a window loads. Invalid JSON files are skipped and logged, so one bad language file will not block the built-in languages. Older installs may have had `lang` under the history directory; the app migrates runtime language files out of history storage.
+The app scans this folder when a window loads. Invalid JSON files are skipped and logged, so one bad language file will not block the built-in languages. Language files belong in this runtime folder, not in the history storage directory.
 
 ## JSON Format
 

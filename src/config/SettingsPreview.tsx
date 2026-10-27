@@ -51,13 +51,6 @@ function createPreviewBridge(): SettingsBridge {
             case "save_config":
                 config = JSON.parse(String((args as { config?: unknown } | undefined)?.config));
                 result = {
-                    migrated: false,
-                    source_dir: "",
-                    target_dir: "",
-                    merged_items: 0,
-                    skipped_items: 0,
-                    copied_files: 0,
-                    backup_dir: "",
                     message: "",
                 };
                 break;

@@ -175,7 +175,7 @@ for (const theme of ["light", "dark"] as const) {
                     event: "preview-item", payload: { item_type: "Text", content: sample.text, rich_html: sample.html },
                 });
             }, sample);
-            const canvas = page.locator('[class*="preview-rich"]');
+            const canvas = page.locator('[data-preview-phase="current"] [class*="preview-rich"]');
             const text = canvas.getByText(sample.text, { exact: true });
             await expect(text).toBeVisible();
             await expect(text).toHaveCSS("color", sample.color);

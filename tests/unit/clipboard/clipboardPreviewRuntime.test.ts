@@ -36,6 +36,15 @@ function options() {
 }
 
 describe("clipboard preview runtime", () => {
+    it("refreshes keyboard selection without reopening or refocusing the preview", async () => {
+        tauri.invoke.mockImplementation(async (command: string) => command === "is_preview_window_visible" ? true : undefined);
+        createClipboardPreviewRuntime(options()).refreshPreviewIfVisible(item(), -1);
+        await vi.waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("show_preview_window", expect.objectContaining({
+            mode: "selection", navigationDirection: -1,
+        })));
+        expect(tauri.invoke).not.toHaveBeenCalledWith("hide_preview_window");
+    });
+
     for (const outcome of ["limited", "failed"]) {
         it(`does not close an existing preview or toast during an automatic image selection (${outcome})`, async () => {
             const callbacks = options();
@@ -82,7 +91,7 @@ describe("clipboard preview runtime", () => {
     it("updates an open preview without asking it to take focus on mouse selection", async () => {
         const callbacks = options();
         tauri.invoke.mockImplementation(async (command: string) => command === "is_preview_window_visible" ? true : undefined);
-        createClipboardPreviewRuntime(callbacks).refreshPreviewIfVisible(item(), true);
+        createClipboardPreviewRuntime(callbacks).refreshPreviewIfVisible(item());
         await vi.waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("show_preview_window", expect.objectContaining({ mode: "selection" })));
     });
 

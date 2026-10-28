@@ -1657,7 +1657,7 @@ export default function Clipboard() {
             if (selectedRef.current === hash) return;
             selectedRef.current = hash;
             setSelected(hash);
-            refreshPreviewIfVisible(item, true);
+            refreshPreviewIfVisible(item);
             return;
         }
         activateClipboardCardRef.current(hash, plainText);
@@ -1742,7 +1742,7 @@ export default function Clipboard() {
             hoverPreviewRef.current?.cancel();
             selectedRef.current = hash;
             setSelected(hash);
-            refreshPreviewIfVisible(item, true);
+            refreshPreviewIfVisible(item);
         }
         if (target.closest("button, a, input, textarea, [contenteditable=true]")) {
             hoverPreviewRef.current?.leave();
@@ -1781,8 +1781,8 @@ export default function Clipboard() {
         if (list.length === 0) return;
         const currentIndex = list.findIndex(item => item.getHash() === selectedRef.current);
         const item = selectCardAt(currentIndex === -1 ? 0 : currentIndex + direction);
-        if (item) {
-            refreshPreviewIfVisible(item);
+        if (item && item.getHash() !== list[currentIndex]?.getHash()) {
+            refreshPreviewIfVisible(item, direction < 0 ? -1 : 1);
         }
     };
 

@@ -33,6 +33,7 @@ export function createClipboardPreviewRuntime(
         mode: "manual" | "selection" | "hover" = "manual",
         hoverRequest?: number,
         isCurrent: () => boolean = () => true,
+        navigationDirection: -1 | 0 | 1 = 0,
     ) => {
         const current = () => requestSeq === options.requestSequence.current && isCurrent();
         if (mode !== "hover") options.closeContextMenu();
@@ -104,6 +105,7 @@ export function createClipboardPreviewRuntime(
                 richHtml: item.getRichHtml(),
                 appSource: item.getAppSource(),
                 ...(mode !== "manual" ? { mode } : {}),
+                ...(mode === "selection" ? { navigationDirection } : {}),
                 ...(hoverRequest !== undefined ? { hoverRequest } : {}),
             });
             if (mode === "hover" && !current()) {
@@ -122,14 +124,14 @@ export function createClipboardPreviewRuntime(
         }
     };
 
-    const refreshPreviewIfVisible = (item: Item, keepFocus = false) => {
+    const refreshPreviewIfVisible = (item: Item, navigationDirection: -1 | 0 | 1 = 0) => {
         const requestSeq = ++options.requestSequence.current;
         void invoke<boolean>("is_preview_window_visible")
             .then(visible => {
                 if (!visible || requestSeq !== options.requestSequence.current) {
                     return;
                 }
-                return openPreviewItem(item, requestSeq, keepFocus ? "selection" : "manual");
+                return openPreviewItem(item, requestSeq, "selection", undefined, undefined, navigationDirection);
             })
             .catch(previewError => {
                 error(
@@ -139,15 +141,16 @@ export function createClipboardPreviewRuntime(
     };
 
     const togglePreview = (item: Item | undefined) => {
+        const requestSeq = ++options.requestSequence.current;
         void invoke("dismiss_hover_preview_window")
             .then(() => invoke<boolean>("is_preview_window_visible"))
             .then(visible => {
+                if (requestSeq !== options.requestSequence.current) return;
                 if (visible) {
-                    options.requestSequence.current += 1;
                     return invoke("hide_preview_window");
                 }
                 if (item) {
-                    return openPreviewItem(item);
+                    return openPreviewItem(item, requestSeq);
                 }
             })
             .catch(previewError => {

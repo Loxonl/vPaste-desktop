@@ -156,6 +156,7 @@ export function clipboardKeyDownAction(
         return { type: "open-selected-context-menu" };
     }
     if (event.key === " " || event.key === "Spacebar") {
+        if (event.repeat) return null;
         return { type: "toggle-preview" };
     }
     if (event.key === (context.isMac ? "Backspace" : "Delete")) {

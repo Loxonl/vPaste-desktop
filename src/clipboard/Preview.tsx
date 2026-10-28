@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
@@ -13,7 +13,7 @@ import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
 import { useRichPreviewCanvas } from "./useRichPreviewCanvas";
 import { clipboardTabNavigationDirection } from "./clipboardKeyboard";
 import { useLanguage } from "../lang";
-import { AnimatePresence, m, useMotionPreset } from "../ui/motion";
+import { m, motionDurationsMs, motionTokens, useMotionPreset, useReducedMotionConfig } from "../ui/motion";
 import styles from "./Preview.module.css";
 
 type HistoryImageMetadata = {
@@ -23,6 +23,8 @@ type HistoryImageMetadata = {
 };
 
 type PreviewPayload = {
+    request_id?: number;
+    navigation_direction?: number;
     hover?: boolean;
     item_type?: ItemType | string;
     itemType?: ItemType | string;
@@ -127,10 +129,18 @@ function disableDocumentNavigation(html: string): string {
     return `<!doctype html>${parsed.documentElement.outerHTML}`;
 }
 
-export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: string, params?: Record<string, string | number>) => string }) {
+export function PreviewBody({ payload, t, onReady }: {
+    payload: PreviewPayload;
+    t: (key: string, params?: Record<string, string | number>) => string;
+    onReady?: () => void;
+}) {
     const [fileInfo, setFileInfo] = useState<FilePreviewInfo | null>(null);
     const [fileError, setFileError] = useState("");
     const [fileText, setFileText] = useState("");
+    const [fileTextReady, setFileTextReady] = useState(false);
+    const [imageLoaded, setImageLoaded] = useState(false);
+    const [imageError, setImageError] = useState(false);
+    const readySentRef = useRef(false);
     const [imageSrc, setImageSrc] = useState("");
     const [filePreviewSrc, setFilePreviewSrc] = useState("");
     const [linkDocument, setLinkDocument] = useState<{ url: string; html: string } | null>(null);
@@ -148,11 +158,35 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
         return payloadTextContent(payload) || payload.content;
     }, [linkUrl, payload.content, payload.text_content, type]);
 
+    const ready = type === ItemType.Image
+        ? imageLoaded
+        : type === ItemType.File
+            ? !!fileError || (!!fileInfo && (fileInfo.kind === "single-preview"
+                ? imageLoaded
+                : fileInfo.kind === "text-preview" ? fileTextReady : true))
+            : true;
+    useEffect(() => {
+        if (!ready || readySentRef.current) return;
+        readySentRef.current = true;
+        onReady?.();
+    }, [ready, onReady]);
+
+    const imageReady = (event: SyntheticEvent<HTMLImageElement>) => {
+        const image = event.currentTarget;
+        void Promise.resolve(image.decode?.()).catch(() => undefined)
+            .then(() => setImageLoaded(true));
+    };
+    const imageFailed = () => {
+        setImageError(true);
+        setImageLoaded(true);
+    };
+
     useEffect(() => {
         let cancelled = false;
         setFileInfo(null);
         setFileError("");
         setFileText("");
+        setFileTextReady(false);
         setFilePreviewSrc("");
         if (type !== ItemType.File) return;
         invoke<FilePreviewInfo>("file_preview_info", { content: payload.content })
@@ -161,7 +195,10 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
                 if (info.kind === "text-preview" && info.display_path) {
                     return invoke<string>("read_preview_text_file", { path: info.display_path })
                         .then(text => {
-                            if (!cancelled) setFileText(text);
+                            if (!cancelled) {
+                                setFileText(text);
+                                setFileTextReady(true);
+                            }
                         });
                 }
             })
@@ -265,11 +302,14 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
     }, [fileInfo?.preview_path]);
 
     if (type === ItemType.Image) {
+        if (imageError) return <div className={styles["preview-empty"]}>{t("preview.unsupported")}</div>;
         return (
             <div className={styles["preview-image-stage"]}>
                 <img
-                    src={imageSrc}
+                    src={imageSrc || undefined}
                     alt=""
+                    onLoad={imageReady}
+                    onError={imageFailed}
                     className={styles["transparency-grid"]}
                 />
             </div>
@@ -335,12 +375,15 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
             );
         }
         if (fileInfo.kind === "single-preview" && fileInfo.preview_path) {
+            if (imageError) return <div className={styles["preview-empty"]}>{t("preview.unsupported")}</div>;
             return (
                 <div className={styles["preview-file-stage"]}>
                     <div className={styles["preview-file-image-wrap"]}>
                         <img
-                            src={filePreviewSrc}
+                            src={filePreviewSrc || undefined}
                             alt=""
+                            onLoad={imageReady}
+                            onError={imageFailed}
                             className={isImagePath(mainPath) ? styles["transparency-grid"] : undefined}
                         />
                     </div>
@@ -384,37 +427,104 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
     );
 }
 
+type PreviewLayer = {
+    id: number;
+    payload: PreviewPayload;
+    direction: PreviewNavigationDirection;
+    phase: "pending" | "current" | "exiting";
+};
+
+function samePreviewContent(a: PreviewPayload, b: PreviewPayload) {
+    return payloadType(a) === payloadType(b) && a.content === b.content
+        && payloadPreviewContent(a) === payloadPreviewContent(b)
+        && payloadPreviewAssetPath(a) === payloadPreviewAssetPath(b)
+        && payloadTextContent(a) === payloadTextContent(b)
+        && payloadRichHtml(a) === payloadRichHtml(b);
+}
+
 export default function Preview() {
     const { t } = useLanguage();
     const contentMotion = useMotionPreset("preview");
-    const waitingMotion = useMotionPreset("fade");
-    const [payload, setPayload] = useState<PreviewPayload | null>(null);
-    const [payloadRevision, setPayloadRevision] = useState(0);
-    const [navigationDirection, setNavigationDirection] = useState<PreviewNavigationDirection>(0);
+    const reducedMotionRef = useRef(false);
+    reducedMotionRef.current = Boolean(useReducedMotionConfig());
+    const [layers, setLayers] = useState<PreviewLayer[]>([]);
     const [pinned, setPinned] = useState(false);
-    const openedAtRef = useRef(0);
     const pinnedRef = useRef(false);
     const hoverRef = useRef(false);
     const pendingNavigationDirectionRef = useRef<PreviewNavigationDirection>(0);
+    const sequenceRef = useRef(0);
+    const latestRequestRef = useRef(0);
+    const currentLayerRef = useRef<PreviewLayer | null>(null);
+    const pendingLayerRef = useRef<PreviewLayer | null>(null);
 
-    useEffect(() => {
-        const unlisten = listen<PreviewPayload>("preview-item", event => {
-            hoverRef.current = event.payload.hover === true;
-            openedAtRef.current = Date.now();
+    const commitLayer = useCallback(async (layer: PreviewLayer, reuse = false) => {
+        if (pendingLayerRef.current?.id !== layer.id) return;
+        try {
+            const accepted = layer.payload.request_id === undefined || await invoke<boolean>("commit_preview_window", {
+                requestId: layer.payload.request_id,
+                reducedMotion: reducedMotionRef.current,
+                durationMs: motionDurationsMs.standard,
+                easing: motionTokens.easing.enter,
+            });
+            if (pendingLayerRef.current?.id !== layer.id) return;
+            pendingLayerRef.current = null;
+            if (!accepted) {
+                setLayers(current => current.filter(entry => entry.id !== layer.id));
+                return;
+            }
+            const next = reuse
+                ? { ...currentLayerRef.current!, phase: "current" as const }
+                : { ...layer, phase: "current" as const };
+            currentLayerRef.current = next;
+            hoverRef.current = layer.payload.hover === true;
             pinnedRef.current = false;
             setPinned(false);
-            setNavigationDirection(pendingNavigationDirectionRef.current);
+            setLayers(current => reuse ? [next] : current.map(entry => ({
+                ...entry,
+                phase: entry.id === layer.id ? "current" : "exiting",
+            })));
+        } catch (previewError) {
+            if (pendingLayerRef.current?.id === layer.id) {
+                pendingLayerRef.current = null;
+                setLayers(current => current.filter(entry => entry.id !== layer.id));
+            }
+            error(`Failed to commit preview: ${previewError}`);
+        }
+    }, []);
+
+    useEffect(() => {
+        const receive = (payload: PreviewPayload) => {
+            if (payload.request_id !== undefined && payload.request_id <= latestRequestRef.current) return;
+            if (payload.request_id !== undefined) latestRequestRef.current = payload.request_id;
+            const direction = payload.navigation_direction ?? pendingNavigationDirectionRef.current;
             pendingNavigationDirectionRef.current = 0;
-            setPayloadRevision(revision => revision + 1);
-            setPayload(event.payload);
-        });
+            const layer: PreviewLayer = {
+                id: ++sequenceRef.current, payload, phase: "pending",
+                direction: direction < 0 ? -1 : direction > 0 ? 1 : 0,
+            };
+            pendingLayerRef.current = layer;
+            if (currentLayerRef.current && samePreviewContent(currentLayerRef.current.payload, payload)) {
+                void commitLayer(layer, true);
+            } else {
+                setLayers(current => [...current.filter(entry => entry.phase === "current"), layer]);
+            }
+        };
+        const unlisten = listen<PreviewPayload>("preview-item", event => receive(event.payload));
         const unlistenClear = listen("preview-clear", () => {
+            sequenceRef.current += 1;
+            pendingLayerRef.current = null;
+            currentLayerRef.current = null;
             hoverRef.current = false;
             pendingNavigationDirectionRef.current = 0;
-            setNavigationDirection(0);
-            setPayload(null);
+            setLayers([]);
         });
         const unlistenPromoted = listen("preview-promoted", () => { hoverRef.current = false; });
+        // Replay a first request that arrived while this lazy route was still loading.
+        const mountSequence = sequenceRef.current;
+        void Promise.all([unlisten, unlistenClear]).then(() => invoke<PreviewPayload | null>("pending_preview_item"))
+            .then(payload => {
+                if (payload && sequenceRef.current === mountSequence) receive(payload);
+            }).catch(e => error(`Failed to restore pending preview: ${e}`));
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.isComposing || event.keyCode === 229) return;
             const tabDirection = clipboardTabNavigationDirection(event);
@@ -438,19 +548,23 @@ export default function Preview() {
                     });
                 return;
             }
-            if (event.key === "Escape" || event.key === " ") {
+            if (event.key === "Escape" || event.key === " " || event.key === "Spacebar") {
                 event.preventDefault();
+                if (event.repeat) return;
+                pendingLayerRef.current = null;
                 void invoke("hide_preview_window").catch(e => error(`Failed to hide preview: ${e}`));
             }
         };
         window.addEventListener("keydown", handleKeyDown);
         return () => {
+            sequenceRef.current += 1;
+            pendingLayerRef.current = null;
             unlisten.then(fn => fn()).catch(e => error(`Failed to unlisten preview: ${e}`));
             unlistenClear.then(fn => fn()).catch(e => error(`Failed to unlisten preview clear: ${e}`));
             unlistenPromoted.then(fn => fn()).catch(e => error(`Failed to unlisten preview promotion: ${e}`));
             window.removeEventListener("keydown", handleKeyDown);
         };
-    }, []);
+    }, [commitLayer]);
 
     const togglePinned = () => {
         const next = !pinnedRef.current;
@@ -474,27 +588,33 @@ export default function Preview() {
                 {pinned ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
             </ToolbarIconButton>
             <div className={styles["preview-content"]}>
-                <AnimatePresence mode="wait" initial={false} custom={navigationDirection}>
+                {layers.length === 0 && <div className={styles["preview-empty"]}>{t("preview.waiting")}</div>}
+                {layers.map(layer => (
                     <m.div
-                        key={payload ? `preview-content-${payloadRevision}` : "preview-waiting"}
+                        key={layer.id}
                         className={styles["preview-state"]}
-                        data-motion-preset={payload ? "preview" : "fade"}
-                        data-preview-direction={navigationDirection < 0
+                        data-motion-preset="preview"
+                        data-preview-phase={layer.phase}
+                        aria-hidden={layer.phase !== "current"}
+                        {...(layer.phase !== "current" ? { inert: "" } : {})}
+                        data-preview-direction={layer.direction < 0
                             ? "backward"
-                            : navigationDirection > 0
+                            : layer.direction > 0
                                 ? "forward"
                                 : "neutral"}
-                        custom={navigationDirection}
-                        variants={payload ? contentMotion : waitingMotion}
+                        custom={layer.direction}
+                        variants={contentMotion}
                         initial="initial"
-                        animate="animate"
-                        exit="exit"
+                        animate={layer.phase === "current" ? "animate" : layer.phase === "exiting" ? "exit" : "initial"}
+                        onAnimationComplete={definition => {
+                            if (definition === "exit" && layer.phase === "exiting") {
+                                setLayers(current => current.filter(entry => entry.id !== layer.id));
+                            }
+                        }}
                     >
-                        {payload
-                            ? <PreviewBody payload={payload} t={t} />
-                            : <div className={styles["preview-empty"]}>{t("preview.waiting")}</div>}
+                        <PreviewBody payload={layer.payload} t={t} onReady={() => { void commitLayer(layer); }} />
                     </m.div>
-                </AnimatePresence>
+                ))}
             </div>
         </div>
     );

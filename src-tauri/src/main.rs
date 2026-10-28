@@ -72,6 +72,8 @@ mod office_test_fixtures;
 mod paste_queue;
 mod preview_behavior;
 use preview_behavior::PreviewMode;
+mod preview_motion;
+use preview_motion::{PreviewRect, PreviewRequests};
 #[cfg(any(target_os = "windows", test))]
 mod portable_autostart;
 mod preview_http;
@@ -132,6 +134,8 @@ static PREVIEW_PINNED: AtomicBool = AtomicBool::new(false);
 static PREVIEW_HOVER: AtomicBool = AtomicBool::new(false);
 static PREVIEW_HOVER_REQUEST: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
+static PREVIEW_REQUESTS: PreviewRequests = PreviewRequests::new();
+static PREVIEW_PENDING: Mutex<Option<PreparedPreview>> = Mutex::new(None);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static ONBOARDING_ACTIVE: AtomicBool = AtomicBool::new(false);
 static ONBOARDING_SHORTCUT_DEMO_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -338,6 +342,8 @@ struct ClipboardHistoryPausePayload {
 
 #[derive(Clone, Serialize)]
 struct PreviewPayload {
+    request_id: u64,
+    navigation_direction: i8,
     hover: bool,
     item_type: String,
     content: String,
@@ -352,6 +358,14 @@ struct PreviewPayload {
 struct PreviewWindowSize {
     width: f64,
     height: f64,
+}
+
+#[derive(Clone)]
+struct PreparedPreview {
+    payload: PreviewPayload,
+    mode: PreviewMode,
+    rect: PreviewRect,
+    scale_factor: f64,
 }
 
 #[derive(Serialize)]
@@ -1463,6 +1477,12 @@ fn finish_hide_window_locked(
         bounds.scale_factor,
     );
     window.hide().map_err(|err| err.to_string())?;
+    if !PREVIEW_PINNED.load(Ordering::SeqCst) {
+        if let Some(preview) = window.app_handle().get_webview_window("clipboardPreview") {
+            clear_preview_content(&preview);
+            let _ = preview.hide();
+        }
+    }
     CLIPBOARD_VISIBLE.store(false, Ordering::SeqCst);
     CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
     CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
@@ -2373,7 +2393,7 @@ fn hide_preview_and_clipboard(app: &tauri::AppHandle, context: &str) {
     info!("Hide preview and clipboard: {}", context);
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
     if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
-        let _ = preview_window.emit("preview-clear", ());
+        clear_preview_content(&preview_window);
         let _ = preview_window.hide();
     }
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
@@ -2888,6 +2908,7 @@ fn handle_preview_focus_lost(app: tauri::AppHandle) {
             if clipboard_foreground {
                 info!("Hide preview on grace recheck to clipboard");
                 if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
+                    clear_preview_content(&preview_window);
                     let _ = preview_window.hide();
                 }
                 if let Some(clipboard_window) = app.get_webview_window("clipboard") {
@@ -3082,8 +3103,228 @@ fn preview_bounds_avoiding_clipboard(app: &tauri::AppHandle, bounds: ScreenBound
     }
 }
 
+fn clear_preview_content(window: &tauri::WebviewWindow) {
+    PREVIEW_REQUESTS.cancel();
+    *PREVIEW_PENDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    let _ = window.emit("preview-clear", ());
+}
+
+#[cfg(target_os = "windows")]
+fn set_preview_rect(
+    window: &tauri::WebviewWindow,
+    rect: PreviewRect,
+    scale: f64,
+) -> Result<(), String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+    let handle = window.hwnd().map_err(|err| err.to_string())?;
+    // SetWindowPos sizes the outer frame; our target sizes the WebView client area.
+    let outer = window.outer_size().map_err(|err| err.to_string())?;
+    let inner = window.inner_size().map_err(|err| err.to_string())?;
+    unsafe {
+        SetWindowPos(
+            HWND(handle.0 as _),
+            HWND::default(),
+            (rect.x * scale).round() as i32,
+            (rect.y * scale).round() as i32,
+            (rect.width * scale).round() as i32 + outer.width.saturating_sub(inner.width) as i32,
+            (rect.height * scale).round() as i32 + outer.height.saturating_sub(inner.height) as i32,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        )
+    }
+    .map_err(|err| err.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn set_preview_rect(
+    window: &tauri::WebviewWindow,
+    rect: PreviewRect,
+    _scale: f64,
+) -> Result<(), String> {
+    use cocoa::appkit::NSWindow;
+    use cocoa::base::{id, YES};
+    use cocoa::foundation::{NSPoint, NSRect, NSSize};
+    // Called on the AppKit main thread. Keep Tao's screen coordinate conversion,
+    // including mixed-DPI monitors, by applying the delta to the current NSRect.
+    let position = window
+        .outer_position()
+        .map_err(|err| err.to_string())?
+        .to_logical::<f64>(window.scale_factor().map_err(|err| err.to_string())?);
+    let native = window.ns_window().map_err(|err| err.to_string())? as id;
+    unsafe {
+        let frame = native.frame();
+        native.setFrame_display_(
+            NSRect::new(
+                NSPoint::new(
+                    frame.origin.x + rect.x - position.x,
+                    frame.origin.y + position.y - rect.y + frame.size.height - rect.height,
+                ),
+                NSSize::new(rect.width, rect.height),
+            ),
+            YES,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn set_preview_rect(
+    window: &tauri::WebviewWindow,
+    rect: PreviewRect,
+    scale: f64,
+) -> Result<(), String> {
+    set_window_position_for_scale(window, rect.x, rect.y, scale)?;
+    set_window_size_for_scale(window, rect.width, rect.height, scale)
+}
+
+fn current_preview_rect(window: &tauri::WebviewWindow, scale: f64) -> Result<PreviewRect, String> {
+    let position = window
+        .outer_position()
+        .map_err(|err| err.to_string())?
+        .to_logical::<f64>(scale);
+    let size = window
+        .inner_size()
+        .map_err(|err| err.to_string())?
+        .to_logical::<f64>(scale);
+    Ok(PreviewRect {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    })
+}
+
+fn animate_preview_rect(
+    window: tauri::WebviewWindow,
+    prepared: &PreparedPreview,
+    from: PreviewRect,
+    duration_ms: u64,
+    easing: [f64; 4],
+) {
+    let request = prepared.payload.request_id;
+    let target = prepared.rect;
+    let scale = prepared.scale_factor;
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let duration = std::time::Duration::from_millis(duration_ms.clamp(1, 320));
+        let mut frames = 0;
+        let mut longest_frame = std::time::Duration::ZERO;
+        while PREVIEW_REQUESTS.current(request) {
+            let progress = (started.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0);
+            let rect = from.interpolate(target, preview_motion::eased_progress(progress, easing));
+            let update_window = window.clone();
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            let frame_started = Instant::now();
+            // One frame in flight, with the version check at the actual native write.
+            if window
+                .run_on_main_thread(move || {
+                    let result = if PREVIEW_REQUESTS.current(request) {
+                        set_preview_rect(&update_window, rect, scale)
+                    } else {
+                        Ok(())
+                    };
+                    let _ = tx.send(result);
+                })
+                .is_err()
+            {
+                return;
+            }
+            match rx.recv() {
+                Ok(Ok(())) => {}
+                failure => {
+                    error!("Failed to animate preview rectangle: {:?}", failure);
+                    return;
+                }
+            }
+            longest_frame = longest_frame.max(frame_started.elapsed());
+            frames += 1;
+            if progress >= 1.0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(
+                CLIPBOARD_ANIMATION_FRAME_MS,
+            ));
+        }
+        log::debug!("Preview geometry request={request}, frames={frames}, elapsed_ms={}, longest_frame_ms={}",
+            started.elapsed().as_millis(), longest_frame.as_millis());
+    });
+}
+
 #[tauri::command]
-fn show_preview_window(
+fn pending_preview_item() -> Option<PreviewPayload> {
+    PREVIEW_PENDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .filter(|pending| PREVIEW_REQUESTS.current(pending.payload.request_id))
+        .map(|pending| pending.payload.clone())
+}
+
+#[tauri::command]
+fn commit_preview_window(
+    app: tauri::AppHandle,
+    request_id: u64,
+    reduced_motion: bool,
+    duration_ms: u64,
+    easing: [f64; 4],
+) -> Result<bool, String> {
+    let prepared = {
+        let mut pending = PREVIEW_PENDING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !PREVIEW_REQUESTS.current(request_id)
+            || pending
+                .as_ref()
+                .is_none_or(|pending| pending.payload.request_id != request_id)
+        {
+            return Ok(false);
+        }
+        pending.take().unwrap()
+    };
+    let window = get_or_create_preview_window(&app)?;
+    let visible = window.is_visible().unwrap_or(false);
+    if !prepared.mode.allows(
+        visible || PREVIEW_REQUESTS.active(),
+        PREVIEW_HOVER.load(Ordering::SeqCst),
+        PREVIEW_PINNED.load(Ordering::SeqCst),
+    ) {
+        return Ok(false);
+    }
+    let from = current_preview_rect(&window, prepared.scale_factor)?;
+    if visible
+        && !reduced_motion
+        && !system_reduces_motion()
+        && !from.near(prepared.rect)
+        && easing.iter().all(|value| value.is_finite())
+    {
+        animate_preview_rect(window.clone(), &prepared, from, duration_ms, easing);
+    } else {
+        set_preview_rect(&window, prepared.rect, prepared.scale_factor)?;
+    }
+    if !visible {
+        window
+            .set_focusable(prepared.mode.takes_focus())
+            .map_err(|err| err.to_string())?;
+        window.show().map_err(|err| err.to_string())?;
+        window.set_focusable(true).map_err(|err| err.to_string())?;
+        let _ = window.set_always_on_top(true);
+        #[cfg(target_os = "macos")]
+        set_macos_window_level(&window, 102);
+    }
+    if prepared.mode.takes_focus() {
+        focus_clipboard_window(&window, "preview show");
+        window.set_focus().map_err(|err| err.to_string())?;
+        AsRef::<tauri::Webview>::as_ref(&window)
+            .set_focus()
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(true)
+}
+
+#[tauri::command]
+async fn show_preview_window(
     app: tauri::AppHandle,
     item_type: String,
     content: String,
@@ -3093,6 +3334,7 @@ fn show_preview_window(
     app_source: String,
     mode: Option<PreviewMode>,
     hover_request: Option<u64>,
+    navigation_direction: Option<i8>,
 ) -> Result<(), String> {
     let mode = mode.unwrap_or_default();
     if mode == PreviewMode::Hover {
@@ -3113,62 +3355,48 @@ fn show_preview_window(
         PREVIEW_HOVER_REQUEST.fetch_max(hover_request.unwrap_or(0), Ordering::SeqCst);
     }
     if !mode.allows(
-        preview_window_visible(&app),
+        preview_window_visible(&app) || PREVIEW_REQUESTS.active(),
         PREVIEW_HOVER.load(Ordering::SeqCst),
         PREVIEW_PINNED.load(Ordering::SeqCst),
     ) {
         return Ok(());
     }
-    let window = get_or_create_preview_window(&app)?;
-    let bounds = clipboard_screen_bounds(&app, &window);
-    let source_image_path = if preview_content.is_empty() {
-        content.as_str()
-    } else {
-        preview_content.as_str()
-    };
-    let preview_asset_path = if item_type == "Image" {
-        image_preview_asset_path(source_image_path).unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let preview_bounds = preview_bounds_avoiding_clipboard(&app, bounds);
-    let size = preview_window_size(
-        &item_type,
-        &content,
-        &preview_content,
-        &preview_asset_path,
-        &rich_html,
-        preview_bounds,
-    );
-    if mode == PreviewMode::Hover
-        && hover_request.unwrap_or(0) != PREVIEW_HOVER_REQUEST.load(Ordering::SeqCst)
-    {
-        return Ok(());
-    }
-    if !mode.allows(
-        preview_window_visible(&app),
-        PREVIEW_HOVER.load(Ordering::SeqCst),
-        PREVIEW_PINNED.load(Ordering::SeqCst),
-    ) {
-        return Ok(());
-    }
+    let request_id = PREVIEW_REQUESTS.begin();
+    *PREVIEW_PENDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     PREVIEW_HOVER.store(mode == PreviewMode::Hover, Ordering::SeqCst);
     if mode == PreviewMode::Manual {
         PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
+        PREVIEW_PINNED.store(false, Ordering::SeqCst);
     }
-    PREVIEW_PINNED.store(false, Ordering::SeqCst);
-    PREVIEW_IGNORE_BLUR_UNTIL.store(
-        now_millis().saturating_add(if mode == PreviewMode::Hover { 0 } else { 1800 }),
-        Ordering::SeqCst,
-    );
-    let position = preview_position_avoiding_clipboard(&app, bounds, size);
-    set_window_position_for_scale(&window, position.x, position.y, bounds.scale_factor)?;
-    set_window_size_for_scale(&window, size.width, size.height, bounds.scale_factor)?;
-    let _ = window.emit("preview-clear", ());
-    window
-        .emit(
-            "preview-item",
+    let window = get_or_create_preview_window(&app)?;
+    let bounds = clipboard_screen_bounds(&app, &window);
+    let preview_bounds = preview_bounds_avoiding_clipboard(&app, bounds);
+    // File materialization and thumbnail reads must not block the native event loop.
+    let (payload, size) = tauri::async_runtime::spawn_blocking(move || {
+        let source_image_path = if preview_content.is_empty() {
+            &content
+        } else {
+            &preview_content
+        };
+        let preview_asset_path = if item_type == "Image" {
+            image_preview_asset_path(source_image_path).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let size = preview_window_size(
+            &item_type,
+            &content,
+            &preview_content,
+            &preview_asset_path,
+            &rich_html,
+            preview_bounds,
+        );
+        (
             PreviewPayload {
+                request_id,
+                navigation_direction: navigation_direction.unwrap_or(0).clamp(-1, 1),
                 hover: mode == PreviewMode::Hover,
                 item_type,
                 content,
@@ -3178,23 +3406,52 @@ fn show_preview_window(
                 rich_html,
                 app_source,
             },
+            size,
         )
-        .map_err(|err| err.to_string())?;
-    window
-        .set_focusable(mode.takes_focus())
-        .map_err(|err| err.to_string())?;
-    window.show().map_err(|err| err.to_string())?;
-    window.set_focusable(true).map_err(|err| err.to_string())?;
-    let _ = window.set_always_on_top(true);
-    #[cfg(target_os = "macos")]
-    set_macos_window_level(&window, 102);
-    if !mode.takes_focus() {
+    })
+    .await
+    .map_err(|err| err.to_string())?;
+    if !PREVIEW_REQUESTS.current(request_id) {
         return Ok(());
     }
-    focus_clipboard_window(&window, "preview show");
-    window.set_focus().map_err(|err| err.to_string())?;
-    AsRef::<tauri::Webview>::as_ref(&window)
-        .set_focus()
+    if mode == PreviewMode::Hover
+        && hover_request.unwrap_or(0) != PREVIEW_HOVER_REQUEST.load(Ordering::SeqCst)
+    {
+        return Ok(());
+    }
+    if !mode.allows(
+        preview_window_visible(&app) || PREVIEW_REQUESTS.active(),
+        PREVIEW_HOVER.load(Ordering::SeqCst),
+        PREVIEW_PINNED.load(Ordering::SeqCst),
+    ) {
+        return Ok(());
+    }
+    PREVIEW_IGNORE_BLUR_UNTIL.store(
+        now_millis().saturating_add(if mode == PreviewMode::Hover { 0 } else { 1800 }),
+        Ordering::SeqCst,
+    );
+    let position = preview_position_avoiding_clipboard(&app, bounds, size);
+    {
+        let mut pending = PREVIEW_PENDING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !PREVIEW_REQUESTS.current(request_id) {
+            return Ok(());
+        }
+        *pending = Some(PreparedPreview {
+            payload: payload.clone(),
+            mode,
+            rect: PreviewRect {
+                x: position.x,
+                y: position.y,
+                width: size.width,
+                height: size.height,
+            },
+            scale_factor: bounds.scale_factor,
+        });
+    }
+    window
+        .emit("preview-item", payload)
         .map_err(|err| err.to_string())
 }
 
@@ -3257,13 +3514,17 @@ async fn fetch_link_preview_document(url: String) -> Result<LinkPreviewDocument,
 
 #[tauri::command]
 fn is_preview_window_visible(app: tauri::AppHandle) -> bool {
-    preview_window_visible(&app)
+    preview_window_visible(&app) || PREVIEW_REQUESTS.active()
 }
 
 #[tauri::command]
 fn set_preview_pinned(app: tauri::AppHandle, pinned: bool) {
     PREVIEW_PINNED.store(pinned, Ordering::SeqCst);
     if pinned {
+        PREVIEW_REQUESTS.cancel();
+        *PREVIEW_PENDING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         PREVIEW_HOVER.store(false, Ordering::SeqCst);
         PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
         if let Some(window) = app.get_webview_window("clipboardPreview") {
@@ -3284,7 +3545,7 @@ fn dismiss_hover_preview_window(app: tauri::AppHandle, request: Option<u64>) -> 
     }
     if PREVIEW_HOVER.swap(false, Ordering::SeqCst) && !PREVIEW_PINNED.load(Ordering::SeqCst) {
         if let Some(window) = app.get_webview_window("clipboardPreview") {
-            let _ = window.emit("preview-clear", ());
+            clear_preview_content(&window);
             window.hide().map_err(|err| err.to_string())?;
         }
     }
@@ -3372,7 +3633,7 @@ fn hide_preview_window(app: tauri::AppHandle) -> Result<(), String> {
     PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("clipboardPreview") {
-        let _ = window.emit("preview-clear", ());
+        clear_preview_content(&window);
         window.hide().map_err(|err| err.to_string())?;
     }
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
@@ -11149,6 +11410,9 @@ fn main() {
                 }
                 if window.label() == "clipboardPreview" {
                     api.prevent_close();
+                    if let Some(preview) = window.app_handle().get_webview_window("clipboardPreview") {
+                        clear_preview_content(&preview);
+                    }
                     let _ = window.hide();
                     PREVIEW_PINNED.store(false, Ordering::SeqCst);
                     if let Some(clipboard_window) =
@@ -11483,6 +11747,8 @@ fn main() {
             is_alt_key_pressed,
             is_quick_input_modifier_pressed,
             show_preview_window,
+            pending_preview_item,
+            commit_preview_window,
             dismiss_hover_preview_window,
             is_preview_window_visible,
             set_preview_pinned,

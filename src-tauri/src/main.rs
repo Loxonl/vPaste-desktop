@@ -36,6 +36,7 @@ use tauri::utils::TitleBarStyle;
 
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_log::{Target, TargetKind};
 use WebviewUrl::App;
@@ -54,6 +55,7 @@ use crate::config::Config;
 
 mod app_updater;
 mod auto_cleanup;
+mod auxiliary_windows;
 mod clipboard;
 mod config;
 mod history_store;
@@ -68,8 +70,13 @@ mod native_drag_snapshot;
 #[cfg(any(test, debug_assertions))]
 mod office_test_fixtures;
 mod paste_queue;
+mod preview_behavior;
+use preview_behavior::PreviewMode;
 #[cfg(any(target_os = "windows", test))]
 mod portable_autostart;
+mod preview_http;
+#[cfg(test)]
+mod preview_proxy_tests;
 mod runtime_mode;
 mod search;
 mod startup_panel;
@@ -121,8 +128,9 @@ static CLIPBOARD_WINDOW_GENERATION: AtomicU64 = AtomicU64::new(0);
 static LAST_CLIPBOARD_MONITOR_CENTER: Mutex<Option<(f64, f64)>> = Mutex::new(None);
 #[cfg(target_os = "windows")]
 static CLIPBOARD_RESTORE_FOCUS_GENERATION: AtomicU64 = AtomicU64::new(0);
-static LEGACY_HISTORY_BLOCKED: AtomicBool = AtomicBool::new(false);
 static PREVIEW_PINNED: AtomicBool = AtomicBool::new(false);
+static PREVIEW_HOVER: AtomicBool = AtomicBool::new(false);
+static PREVIEW_HOVER_REQUEST: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static ONBOARDING_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -330,6 +338,7 @@ struct ClipboardHistoryPausePayload {
 
 #[derive(Clone, Serialize)]
 struct PreviewPayload {
+    hover: bool,
     item_type: String,
     content: String,
     preview_content: String,
@@ -437,14 +446,7 @@ struct ShortcutRegistrationInfo {
 }
 
 #[derive(Serialize)]
-struct StorageMigrationInfo {
-    migrated: bool,
-    source_dir: String,
-    target_dir: String,
-    merged_items: usize,
-    skipped_items: usize,
-    copied_files: usize,
-    backup_dir: String,
+struct SettingsSaveInfo {
     message: String,
     shortcut_conflict: bool,
 }
@@ -1976,30 +1978,39 @@ fn hide_clipboard_if_inactive(window: tauri::WebviewWindow) {
 }
 
 #[tauri::command]
-fn open_config_window(
+fn auxiliary_window_ready(window: tauri::WebviewWindow) -> Result<(), String> {
+    window
+        .app_handle()
+        .state::<auxiliary_windows::Readiness>()
+        .signal(window.label())
+}
+
+#[tauri::command]
+async fn open_config_window(
     app: tauri::AppHandle,
     source_window: tauri::WebviewWindow,
     target: Option<String>,
 ) -> Result<(), String> {
     info!("Opening config window");
-    let window = app
-        .get_webview_window("config")
-        .ok_or_else(|| "config window not found".to_string())?;
-    let target = target.unwrap_or_default();
-    let _ = window.unminimize();
-    let _ = window.set_always_on_top(false);
-    let _ = window.set_title("vPaste设置");
-    apply_vpaste_window_icon(&window);
-    center_window_on_source_monitor(&window, &source_window)?;
-    if let Some(clipboard_window) = app.get_webview_window("clipboard") {
-        let _ = finish_hide_window(&clipboard_window);
-    }
-    window.show().map_err(|err| err.to_string())?;
-    activate_native_window(&window, "config open");
-    window.set_focus().map_err(|err| err.to_string())?;
-    let _ = AsRef::<tauri::Webview>::as_ref(&window).set_focus();
-    let _ = window.emit("config-opened", target);
-    Ok(())
+    let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::Config).await?;
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        let target = target.unwrap_or_default();
+        let _ = window.unminimize();
+        let _ = window.set_always_on_top(false);
+        let _ = window.set_title("vPaste设置");
+        apply_vpaste_window_icon(&window);
+        center_window_on_source_monitor(&window, &source_window)?;
+        if let Some(clipboard_window) = app.get_webview_window("clipboard") {
+            let _ = finish_hide_window(&clipboard_window);
+        }
+        window.show().map_err(|err| err.to_string())?;
+        activate_native_window(&window, "config open");
+        window.set_focus().map_err(|err| err.to_string())?;
+        let _ = AsRef::<tauri::Webview>::as_ref(&window).set_focus();
+        let _ = window.emit("config-opened", target);
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2039,39 +2050,42 @@ fn close_test_room_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String> {
+async fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String> {
     let clipboard_window = app
         .get_webview_window("clipboard")
         .ok_or_else(|| "clipboard window not found".to_string())?;
-    let notice_window = app
-        .get_webview_window("pasteFallbackNotice")
-        .ok_or_else(|| "paste fallback notice window not found".to_string())?;
-    let bounds = screen_bounds(&clipboard_window);
-    let x = bounds.x + (bounds.width - PASTE_FALLBACK_NOTICE_WIDTH) / 2.0;
-    let y = bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT + PASTE_FALLBACK_NOTICE_TOP_INSET;
+    let notice_window =
+        auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::PasteFallbackNotice).await?;
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        let bounds = screen_bounds(&clipboard_window);
+        let x = bounds.x + (bounds.width - PASTE_FALLBACK_NOTICE_WIDTH) / 2.0;
+        let y =
+            bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT + PASTE_FALLBACK_NOTICE_TOP_INSET;
 
-    set_window_size_for_scale(
-        &notice_window,
-        PASTE_FALLBACK_NOTICE_WIDTH,
-        PASTE_FALLBACK_NOTICE_HEIGHT,
-        bounds.scale_factor,
-    )?;
-    set_window_position_for_scale(&notice_window, x, y, bounds.scale_factor)?;
-    let generation = PASTE_FALLBACK_NOTICE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    notice_window.show().map_err(|err| err.to_string())?;
-    let app_for_timer = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(
-            PASTE_FALLBACK_NOTICE_DURATION_MS,
-        ));
-        if PASTE_FALLBACK_NOTICE_GENERATION.load(Ordering::SeqCst) != generation {
-            return;
-        }
-        if let Some(window) = app_for_timer.get_webview_window("pasteFallbackNotice") {
-            let _ = window.hide();
-        }
-    });
-    Ok(())
+        set_window_size_for_scale(
+            &notice_window,
+            PASTE_FALLBACK_NOTICE_WIDTH,
+            PASTE_FALLBACK_NOTICE_HEIGHT,
+            bounds.scale_factor,
+        )?;
+        set_window_position_for_scale(&notice_window, x, y, bounds.scale_factor)?;
+        let generation = PASTE_FALLBACK_NOTICE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+        notice_window.show().map_err(|err| err.to_string())?;
+        let app_for_timer = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(
+                PASTE_FALLBACK_NOTICE_DURATION_MS,
+            ));
+            if PASTE_FALLBACK_NOTICE_GENERATION.load(Ordering::SeqCst) != generation {
+                return;
+            }
+            if let Some(window) = app_for_timer.get_webview_window("pasteFallbackNotice") {
+                let _ = window.hide();
+            }
+        });
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2203,7 +2217,7 @@ fn restore_parent_after_permission_guide(app: &tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn open_onboarding_permission_window(
+async fn open_onboarding_permission_window(
     app: tauri::AppHandle,
     source_window: tauri::WebviewWindow,
     permission: String,
@@ -2219,37 +2233,40 @@ fn open_onboarding_permission_window(
         Some("dark") => Some("dark"),
         Some(value) => return Err(format!("unsupported theme preview: {}", value)),
     };
-    PERMISSION_GUIDE_RETURN_TO_CONFIG.store(source_window.label() == "config", Ordering::SeqCst);
+    let window =
+        auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::OnboardingPermission)
+            .await?;
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        PERMISSION_GUIDE_RETURN_TO_CONFIG
+            .store(source_window.label() == "config", Ordering::SeqCst);
+        let _ = window.unminimize();
+        center_window_on_source_monitor(&window, &source_window)?;
+        let _ = window.set_shadow(false);
+        window
+            .set_always_on_top(true)
+            .map_err(|err| err.to_string())?;
+        #[cfg(target_os = "macos")]
+        set_macos_window_level(&window, 102);
+        window.show().map_err(|err| err.to_string())?;
+        activate_native_window(&window, "onboarding permission open");
+        window.set_focus().map_err(|err| err.to_string())?;
+        let _ = AsRef::<tauri::Webview>::as_ref(&window).set_focus();
+        #[cfg(target_os = "macos")]
+        configure_macos_transparent_window(&window);
+        window
+            .emit(
+                "onboarding-permission-open",
+                serde_json::json!({
+                    "permission": permission,
+                    "languageCode": language_code.unwrap_or_default(),
+                    "themePreview": theme_preview,
+                }),
+            )
+            .map_err(|err| err.to_string())?;
 
-    let window = app
-        .get_webview_window("onboardingPermission")
-        .ok_or_else(|| "onboarding permission window not found".to_string())?;
-    let _ = window.unminimize();
-    center_window_on_source_monitor(&window, &source_window)?;
-    let _ = window.set_shadow(false);
-    window
-        .set_always_on_top(true)
-        .map_err(|err| err.to_string())?;
-    #[cfg(target_os = "macos")]
-    set_macos_window_level(&window, 102);
-    window.show().map_err(|err| err.to_string())?;
-    activate_native_window(&window, "onboarding permission open");
-    window.set_focus().map_err(|err| err.to_string())?;
-    let _ = AsRef::<tauri::Webview>::as_ref(&window).set_focus();
-    #[cfg(target_os = "macos")]
-    configure_macos_transparent_window(&window);
-    window
-        .emit(
-            "onboarding-permission-open",
-            serde_json::json!({
-                "permission": permission,
-                "languageCode": language_code.unwrap_or_default(),
-                "themePreview": theme_preview,
-            }),
-        )
-        .map_err(|err| err.to_string())?;
-
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2351,6 +2368,8 @@ fn app_window_is_foreground(app: &tauri::AppHandle, label: &str, context: &str) 
 }
 
 fn hide_preview_and_clipboard(app: &tauri::AppHandle, context: &str) {
+    PREVIEW_HOVER.store(false, Ordering::SeqCst);
+    PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
     info!("Hide preview and clipboard: {}", context);
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
     if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
@@ -2844,13 +2863,7 @@ fn handle_preview_focus_lost(app: tauri::AppHandle) {
         }
 
         if clipboard_foreground {
-            info!("Hide preview on blur to clipboard");
-            if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
-                let _ = preview_window.hide();
-            }
-            if let Some(clipboard_window) = app.get_webview_window("clipboard") {
-                focus_clipboard_window(&clipboard_window, "preview blur to clipboard");
-            }
+            // Keep the ordinary preview available while the panel changes selection.
             return;
         }
 
@@ -3078,7 +3091,34 @@ fn show_preview_window(
     text_content: String,
     rich_html: String,
     app_source: String,
+    mode: Option<PreviewMode>,
+    hover_request: Option<u64>,
 ) -> Result<(), String> {
+    let mode = mode.unwrap_or_default();
+    if mode == PreviewMode::Hover {
+        let navigation_foreground = ["clipboard", "clipboardPreview"].iter().any(|label| {
+            (*label == "clipboard" || PREVIEW_HOVER.load(Ordering::SeqCst))
+                && app.get_webview_window(label).is_some_and(|window| {
+                    window.is_focused().unwrap_or(false)
+                        || is_native_window_foreground(&window, "hover preview foreground guard")
+                })
+        });
+        if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+            || !navigation_foreground
+            || !matches!(item_type.as_str(), "Text" | "TextFile" | "Image" | "Link")
+            || hover_request.unwrap_or(0) < PREVIEW_HOVER_REQUEST.load(Ordering::SeqCst)
+        {
+            return Ok(());
+        }
+        PREVIEW_HOVER_REQUEST.fetch_max(hover_request.unwrap_or(0), Ordering::SeqCst);
+    }
+    if !mode.allows(
+        preview_window_visible(&app),
+        PREVIEW_HOVER.load(Ordering::SeqCst),
+        PREVIEW_PINNED.load(Ordering::SeqCst),
+    ) {
+        return Ok(());
+    }
     let window = get_or_create_preview_window(&app)?;
     let bounds = clipboard_screen_bounds(&app, &window);
     let source_image_path = if preview_content.is_empty() {
@@ -3100,8 +3140,27 @@ fn show_preview_window(
         &rich_html,
         preview_bounds,
     );
+    if mode == PreviewMode::Hover
+        && hover_request.unwrap_or(0) != PREVIEW_HOVER_REQUEST.load(Ordering::SeqCst)
+    {
+        return Ok(());
+    }
+    if !mode.allows(
+        preview_window_visible(&app),
+        PREVIEW_HOVER.load(Ordering::SeqCst),
+        PREVIEW_PINNED.load(Ordering::SeqCst),
+    ) {
+        return Ok(());
+    }
+    PREVIEW_HOVER.store(mode == PreviewMode::Hover, Ordering::SeqCst);
+    if mode == PreviewMode::Manual {
+        PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
+    }
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
-    PREVIEW_IGNORE_BLUR_UNTIL.store(now_millis().saturating_add(1800), Ordering::SeqCst);
+    PREVIEW_IGNORE_BLUR_UNTIL.store(
+        now_millis().saturating_add(if mode == PreviewMode::Hover { 0 } else { 1800 }),
+        Ordering::SeqCst,
+    );
     let position = preview_position_avoiding_clipboard(&app, bounds, size);
     set_window_position_for_scale(&window, position.x, position.y, bounds.scale_factor)?;
     set_window_size_for_scale(&window, size.width, size.height, bounds.scale_factor)?;
@@ -3110,6 +3169,7 @@ fn show_preview_window(
         .emit(
             "preview-item",
             PreviewPayload {
+                hover: mode == PreviewMode::Hover,
                 item_type,
                 content,
                 preview_content,
@@ -3120,10 +3180,17 @@ fn show_preview_window(
             },
         )
         .map_err(|err| err.to_string())?;
+    window
+        .set_focusable(mode.takes_focus())
+        .map_err(|err| err.to_string())?;
     window.show().map_err(|err| err.to_string())?;
+    window.set_focusable(true).map_err(|err| err.to_string())?;
     let _ = window.set_always_on_top(true);
     #[cfg(target_os = "macos")]
     set_macos_window_level(&window, 102);
+    if !mode.takes_focus() {
+        return Ok(());
+    }
     focus_clipboard_window(&window, "preview show");
     window.set_focus().map_err(|err| err.to_string())?;
     AsRef::<tauri::Webview>::as_ref(&window)
@@ -3151,21 +3218,16 @@ fn resize_preview_image_window(
 #[tauri::command]
 async fn fetch_link_preview_document(url: String) -> Result<LinkPreviewDocument, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let parsed = reqwest::Url::parse(url.trim()).map_err(|err| err.to_string())?;
+        let parsed = reqwest::Url::parse(url.trim()).map_err(|_| "link_preview_blocked".to_string())?;
         if !clipboard::is_previewable_domain_link(parsed.as_str()) {
-            return Err("unsupported link preview destination".to_string());
+            return Err("link_preview_blocked".to_string());
         }
         let client = clipboard::preview_http_client(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 vPaste/1.0",
             6,
             false,
         )?;
-        let response = client
-            .get(parsed.clone())
-            .send()
-            .map_err(|err| err.to_string())?
-            .error_for_status()
-            .map_err(|err| err.to_string())?;
+        let response = client.get(parsed.clone(), &[])?;
         let final_url = response.url().clone();
         let content_type = response
             .headers()
@@ -3174,9 +3236,9 @@ async fn fetch_link_preview_document(url: String) -> Result<LinkPreviewDocument,
             .unwrap_or("")
             .to_ascii_lowercase();
         if !content_type.is_empty() && !content_type.contains("text/html") {
-            return Err("preview only supports html pages".to_string());
+            return Err("link_preview_not_html".to_string());
         }
-        let mut html = response.text().map_err(|err| err.to_string())?;
+        let mut html = client.text(response)?;
         let base = format!(r#"<base href="{}">"#, final_url);
         if html.to_ascii_lowercase().contains("<head") {
             html = html.replacen("<head>", &format!("<head>{}", base), 1);
@@ -3199,8 +3261,34 @@ fn is_preview_window_visible(app: tauri::AppHandle) -> bool {
 }
 
 #[tauri::command]
-fn set_preview_pinned(pinned: bool) {
+fn set_preview_pinned(app: tauri::AppHandle, pinned: bool) {
     PREVIEW_PINNED.store(pinned, Ordering::SeqCst);
+    if pinned {
+        PREVIEW_HOVER.store(false, Ordering::SeqCst);
+        PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
+        if let Some(window) = app.get_webview_window("clipboardPreview") {
+            let _ = window.emit("preview-promoted", ());
+        }
+    }
+}
+
+#[tauri::command]
+fn dismiss_hover_preview_window(app: tauri::AppHandle, request: Option<u64>) -> Result<(), String> {
+    if let Some(request) = request {
+        if request < PREVIEW_HOVER_REQUEST.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        PREVIEW_HOVER_REQUEST.fetch_max(request, Ordering::SeqCst);
+    } else {
+        PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
+    }
+    if PREVIEW_HOVER.swap(false, Ordering::SeqCst) && !PREVIEW_PINNED.load(Ordering::SeqCst) {
+        if let Some(window) = app.get_webview_window("clipboardPreview") {
+            let _ = window.emit("preview-clear", ());
+            window.hide().map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -3280,6 +3368,8 @@ fn maybe_hide_macos_dock_icon() {
 
 #[tauri::command]
 fn hide_preview_window(app: tauri::AppHandle) -> Result<(), String> {
+    PREVIEW_HOVER.store(false, Ordering::SeqCst);
+    PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("clipboardPreview") {
         let _ = window.emit("preview-clear", ());
@@ -3320,7 +3410,7 @@ fn resize_tray_menu(window: tauri::WebviewWindow, width: u32, height: u32) -> Re
 }
 
 #[tauri::command]
-fn open_tab_editor_window(
+async fn open_tab_editor_window(
     app: tauri::AppHandle,
     x: f64,
     y: f64,
@@ -3328,28 +3418,29 @@ fn open_tab_editor_window(
     height: Option<f64>,
     payload: String,
 ) -> Result<(), String> {
-    let window = app
-        .get_webview_window("tabEditor")
-        .ok_or_else(|| "tab editor window not found".to_string())?;
-    let content_width = width.unwrap_or(TAB_EDITOR_CONTENT_WIDTH);
-    let content_height = height.unwrap_or(TAB_EDITOR_DEFAULT_CONTENT_HEIGHT);
-    let bounds = clipboard_screen_bounds(&app, &window);
-    let _ = window.set_size(tauri::Size::Logical(LogicalSize {
-        width: content_width + AUXILIARY_WINDOW_GUTTER * 2.0,
-        height: content_height + AUXILIARY_WINDOW_GUTTER * 2.0,
-    }));
-    set_window_position_for_scale(
-        &window,
-        x - AUXILIARY_WINDOW_GUTTER,
-        y - AUXILIARY_WINDOW_GUTTER,
-        bounds.scale_factor,
-    )?;
-    window.show().map_err(|err| err.to_string())?;
-    let _ = activate_native_window(&window, "tab editor open");
-    window.set_focus().map_err(|err| err.to_string())?;
-    window
-        .emit("tab-editor-open", payload)
-        .map_err(|err| err.to_string())
+    let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::TabEditor).await?;
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        let content_width = width.unwrap_or(TAB_EDITOR_CONTENT_WIDTH);
+        let content_height = height.unwrap_or(TAB_EDITOR_DEFAULT_CONTENT_HEIGHT);
+        let bounds = clipboard_screen_bounds(&app, &window);
+        let _ = window.set_size(tauri::Size::Logical(LogicalSize {
+            width: content_width + AUXILIARY_WINDOW_GUTTER * 2.0,
+            height: content_height + AUXILIARY_WINDOW_GUTTER * 2.0,
+        }));
+        set_window_position_for_scale(
+            &window,
+            x - AUXILIARY_WINDOW_GUTTER,
+            y - AUXILIARY_WINDOW_GUTTER,
+            bounds.scale_factor,
+        )?;
+        window.show().map_err(|err| err.to_string())?;
+        let _ = activate_native_window(&window, "tab editor open");
+        window.set_focus().map_err(|err| err.to_string())?;
+        window
+            .emit("tab-editor-open", payload)
+            .map_err(|err| err.to_string())
+    })
+    .await
 }
 
 fn popup_position_above_or_below(
@@ -3376,7 +3467,7 @@ fn popup_position_above_or_below(
 }
 
 #[tauri::command]
-fn open_emoji_picker_window(
+async fn open_emoji_picker_window(
     app: tauri::AppHandle,
     anchor_left: f64,
     anchor_top: f64,
@@ -3390,56 +3481,57 @@ fn open_emoji_picker_window(
     let editor = app
         .get_webview_window("tabEditor")
         .ok_or_else(|| "tab editor window not found".to_string())?;
-    let window = app
-        .get_webview_window("emojiPicker")
-        .ok_or_else(|| "emoji picker window not found".to_string())?;
+    let window =
+        auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::EmojiPicker).await?;
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        let editor_position = editor.outer_position().map_err(|err| err.to_string())?;
+        let scale_factor = editor.scale_factor().map_err(|err| err.to_string())?;
+        let picker_width = EMOJI_PICKER_CONTENT_WIDTH * scale_factor;
+        let picker_height = EMOJI_PICKER_CONTENT_HEIGHT * scale_factor;
+        let window_gutter = AUXILIARY_WINDOW_GUTTER * scale_factor;
+        let gap = PICKER_GAP * scale_factor;
+        let margin = SCREEN_MARGIN * scale_factor;
+        let button_left = editor_position.x as f64 + anchor_left * scale_factor;
+        let button_top = editor_position.y as f64 + anchor_top * scale_factor;
+        let button_right = editor_position.x as f64 + anchor_right * scale_factor;
+        let button_bottom = editor_position.y as f64 + anchor_bottom * scale_factor;
 
-    let editor_position = editor.outer_position().map_err(|err| err.to_string())?;
-    let scale_factor = editor.scale_factor().map_err(|err| err.to_string())?;
-    let picker_width = EMOJI_PICKER_CONTENT_WIDTH * scale_factor;
-    let picker_height = EMOJI_PICKER_CONTENT_HEIGHT * scale_factor;
-    let window_gutter = AUXILIARY_WINDOW_GUTTER * scale_factor;
-    let gap = PICKER_GAP * scale_factor;
-    let margin = SCREEN_MARGIN * scale_factor;
-    let button_left = editor_position.x as f64 + anchor_left * scale_factor;
-    let button_top = editor_position.y as f64 + anchor_top * scale_factor;
-    let button_right = editor_position.x as f64 + anchor_right * scale_factor;
-    let button_bottom = editor_position.y as f64 + anchor_bottom * scale_factor;
+        let monitor = editor
+            .current_monitor()
+            .map_err(|err| err.to_string())?
+            .ok_or_else(|| "tab editor monitor not found".to_string())?;
+        let monitor_position = monitor.position();
+        let monitor_size = monitor.size();
+        let min_x = monitor_position.x as f64 + margin;
+        let min_y = monitor_position.y as f64 + margin;
+        let max_x = monitor_position.x as f64 + monitor_size.width as f64 - picker_width - margin;
+        let max_y = monitor_position.y as f64 + monitor_size.height as f64 - picker_height - margin;
 
-    let monitor = editor
-        .current_monitor()
-        .map_err(|err| err.to_string())?
-        .ok_or_else(|| "tab editor monitor not found".to_string())?;
-    let monitor_position = monitor.position();
-    let monitor_size = monitor.size();
-    let min_x = monitor_position.x as f64 + margin;
-    let min_y = monitor_position.y as f64 + margin;
-    let max_x = monitor_position.x as f64 + monitor_size.width as f64 - picker_width - margin;
-    let max_y = monitor_position.y as f64 + monitor_size.height as f64 - picker_height - margin;
+        let (x, y) = popup_position_above_or_below(
+            (button_left, button_top, button_right, button_bottom),
+            (picker_width, picker_height),
+            gap,
+            (min_x, min_y, max_x, max_y),
+        );
 
-    let (x, y) = popup_position_above_or_below(
-        (button_left, button_top, button_right, button_bottom),
-        (picker_width, picker_height),
-        gap,
-        (min_x, min_y, max_x, max_y),
-    );
-
-    let _ = window.set_size(tauri::Size::Logical(LogicalSize {
-        width: EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
-        height: EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
-    }));
-    window
-        .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-            x: (x - window_gutter).round() as i32,
-            y: (y - window_gutter).round() as i32,
-        }))
-        .map_err(|err| err.to_string())?;
-    window.show().map_err(|err| err.to_string())?;
-    let _ = activate_native_window(&window, "emoji picker open");
-    window.set_focus().map_err(|err| err.to_string())?;
-    window
-        .emit("emoji-picker-open", payload)
-        .map_err(|err| err.to_string())
+        let _ = window.set_size(tauri::Size::Logical(LogicalSize {
+            width: EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
+            height: EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+        }));
+        window
+            .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                x: (x - window_gutter).round() as i32,
+                y: (y - window_gutter).round() as i32,
+            }))
+            .map_err(|err| err.to_string())?;
+        window.show().map_err(|err| err.to_string())?;
+        let _ = activate_native_window(&window, "emoji picker open");
+        window.set_focus().map_err(|err| err.to_string())?;
+        window
+            .emit("emoji-picker-open", payload)
+            .map_err(|err| err.to_string())
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -4316,7 +4408,6 @@ fn get_app_version() -> AppVersionInfo {
 
 #[tauri::command]
 fn set_item_favorite(hash: String, favorite: bool) -> Result<(), String> {
-    ensure_history_ready()?;
     let affected = clipboard::set_favorite(&hash, favorite).map_err(|err| err.to_string())?;
     if affected == 0 {
         Err("粘贴项不存在".to_string())
@@ -4352,25 +4443,21 @@ fn delete_item_tag(id: i64) -> Result<(), String> {
 
 #[tauri::command]
 fn assign_item_tag(hash: String, tag_id: i64) -> Result<(), String> {
-    ensure_history_ready()?;
     clipboard::assign_tag(&hash, tag_id)
 }
 
 #[tauri::command]
 fn remove_item_tag(hash: String, tag_id: i64) -> Result<(), String> {
-    ensure_history_ready()?;
     clipboard::remove_tag(&hash, tag_id)
 }
 
 #[tauri::command]
 fn list_recent_app_sources(days: u64) -> Result<Vec<String>, String> {
-    ensure_history_ready()?;
     clipboard::recent_app_sources(days)
 }
 
 #[tauri::command]
 fn list_recent_app_source_options(days: u64) -> Result<Vec<clipboard::AppSourceOption>, String> {
-    ensure_history_ready()?;
     clipboard::recent_app_source_options(days)
 }
 
@@ -4378,7 +4465,6 @@ fn list_recent_app_source_options(days: u64) -> Result<Vec<clipboard::AppSourceO
 async fn refresh_link_previews(
     urls: Vec<String>,
 ) -> Result<Vec<clipboard::LinkPreviewUpdate>, String> {
-    ensure_history_ready()?;
     tauri::async_runtime::spawn_blocking(move || clipboard::refresh_link_previews(urls))
         .await
         .map_err(|err| err.to_string())?
@@ -4386,7 +4472,6 @@ async fn refresh_link_previews(
 
 #[tauri::command]
 fn delete_clipboard_item(app: tauri::AppHandle, hash: String) -> Result<(), String> {
-    ensure_history_ready()?;
     let affected = clipboard::delete_by_hash(&hash)?;
     if affected == 0 {
         Err("粘贴项不存在".to_string())
@@ -4402,26 +4487,25 @@ fn plain_text_content(hash: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn open_text_editor_window(app: tauri::AppHandle, hash: String) -> Result<(), String> {
-    ensure_history_ready()?;
-    let window = app
-        .get_webview_window("textEditor")
-        .ok_or("text editor window not found")?;
-    if !window.is_visible().map_err(|err| err.to_string())? {
-        *TEXT_EDITOR_TARGET.lock().unwrap() = Some(hash);
-        window.center().map_err(|err| err.to_string())?;
-        window.show().map_err(|err| err.to_string())?;
-        window
-            .emit("text-editor-open", ())
-            .map_err(|err| err.to_string())?;
-    }
-    activate_native_window(&window, "text editor open");
-    window.set_focus().map_err(|err| err.to_string())
+async fn open_text_editor_window(app: tauri::AppHandle, hash: String) -> Result<(), String> {
+    let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::TextEditor).await?;
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        if !window.is_visible().map_err(|err| err.to_string())? {
+            *TEXT_EDITOR_TARGET.lock().unwrap() = Some(hash);
+            window.center().map_err(|err| err.to_string())?;
+            window.show().map_err(|err| err.to_string())?;
+            window
+                .emit("text-editor-open", ())
+                .map_err(|err| err.to_string())?;
+        }
+        activate_native_window(&window, "text editor open");
+        window.set_focus().map_err(|err| err.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
 async fn get_text_editor_document() -> Result<Option<clipboard::editor::TextDocument>, String> {
-    ensure_history_ready()?;
     let hash = TEXT_EDITOR_TARGET.lock().unwrap().clone();
     tauri::async_runtime::spawn_blocking(move || {
         hash.map(|hash| clipboard::editor::load(&hash)).transpose()
@@ -4435,7 +4519,6 @@ async fn save_clipboard_text(
     app: tauri::AppHandle,
     update: clipboard::editor::TextUpdate,
 ) -> Result<clipboard::item::Item, String> {
-    ensure_history_ready()?;
     let previous_hash = TEXT_EDITOR_TARGET.lock().unwrap().clone();
     let item = tauri::async_runtime::spawn_blocking(move || clipboard::editor::save(update))
         .await
@@ -4466,7 +4549,7 @@ fn hide_text_editor_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn build_text_editor_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+fn build_text_editor_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     let window = WebviewWindowBuilder::new(app, "textEditor", App("text-editor".into()))
         .title("vPaste")
         .visible(false)
@@ -4483,7 +4566,7 @@ fn build_text_editor_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     apply_vpaste_window_icon(&window);
     #[cfg(target_os = "macos")]
     set_macos_window_level(&window, 101);
-    Ok(())
+    Ok(window)
 }
 
 fn paste_queue_shortcut_allowed(active: bool, editor_focused: bool) -> bool {
@@ -5022,94 +5105,6 @@ fn ensure_runtime_storage_dirs() -> Result<(), String> {
     Ok(())
 }
 
-fn migrate_runtime_dir_out_of_history(name: &str, remove_after_copy: bool) {
-    let source = PathBuf::from(history_storage_dir()).join(name);
-    let target = PathBuf::from(app_runtime_dir(&[name]));
-    if let Err(err) = migrate_runtime_dir(&source, &target, remove_after_copy) {
-        error!("migrate runtime dir {} failed: {}", name, err);
-    }
-}
-
-fn migrate_runtime_dir(
-    source: &Path,
-    target: &Path,
-    remove_after_copy: bool,
-) -> Result<(), String> {
-    if !source.exists() || paths_resolve_to_same_location(source, target) {
-        return Ok(());
-    }
-    copy_dir_contents_recursive(source, target)?;
-    if remove_after_copy {
-        fs::remove_dir_all(source).map_err(|err| err.to_string())?;
-    }
-    Ok(())
-}
-
-fn paths_resolve_to_same_location(source: &Path, target: &Path) -> bool {
-    if source == target {
-        return true;
-    }
-    let Ok(source) = fs::canonicalize(source) else {
-        return false;
-    };
-    let Ok(target) = fs::canonicalize(target) else {
-        return false;
-    };
-    source == target
-}
-
-#[cfg(test)]
-mod runtime_dir_migration_tests {
-    use super::*;
-
-    #[test]
-    fn same_runtime_directory_is_not_removed() {
-        let root = tempfile::tempdir().unwrap();
-        let runtime_dir = root.path().join("app_icons");
-        fs::create_dir_all(&runtime_dir).unwrap();
-        let icon = runtime_dir.join("source.png");
-        fs::write(&icon, b"icon").unwrap();
-
-        migrate_runtime_dir(&runtime_dir, &runtime_dir, true).unwrap();
-
-        assert!(icon.exists());
-    }
-
-    #[test]
-    fn separate_history_directory_is_copied_then_removed() {
-        let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("history").join("app_icons");
-        let target = root.path().join("runtime").join("app_icons");
-        fs::create_dir_all(&source).unwrap();
-        fs::write(source.join("source.png"), b"icon").unwrap();
-
-        migrate_runtime_dir(&source, &target, true).unwrap();
-
-        assert_eq!(fs::read(target.join("source.png")).unwrap(), b"icon");
-        assert!(!source.exists());
-    }
-}
-
-fn migrate_runtime_dirs_out_of_history() {
-    migrate_runtime_dir_out_of_history("lang", true);
-    migrate_runtime_dir_out_of_history("logs", true);
-    migrate_runtime_dir_out_of_history("app_icons", true);
-    for cache in ["search", "file_previews", "image_clipboard_cache"] {
-        let path = PathBuf::from(history_storage_dir()).join(cache);
-        let runtime_path = PathBuf::from(app_runtime_dir(&[cache]));
-        if paths_resolve_to_same_location(&path, &runtime_path) {
-            continue;
-        }
-        if path.exists() {
-            let _ = fs::remove_dir_all(path);
-        }
-    }
-    for cache in ["search", "file_previews", "image_clipboard_cache"] {
-        let runtime_cache = PathBuf::from(app_runtime_dir(&[cache]));
-        let _ = fs::create_dir_all(runtime_cache);
-    }
-}
-
 fn cleanup_runtime_cache_dir(name: &str, max_age_days: u64) {
     let dir = PathBuf::from(app_runtime_dir(&[name]));
     let Ok(entries) = fs::read_dir(&dir) else {
@@ -5261,7 +5256,6 @@ fn list_language_packs() -> Result<Vec<LanguagePackFile>, String> {
 
 #[tauri::command]
 fn get_custom_tabs() -> Result<serde_json::Value, String> {
-    ensure_history_ready()?;
     ensure_history_storage_dirs()?;
     let path = custom_tabs_path();
     if !path.exists() {
@@ -5280,7 +5274,6 @@ fn get_custom_tabs() -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 fn save_custom_tabs(tabs: serde_json::Value) -> Result<(), String> {
-    ensure_history_ready()?;
     ensure_history_storage_dirs()?;
     let path = custom_tabs_path();
     let value = if tabs.is_array() {
@@ -5290,29 +5283,6 @@ fn save_custom_tabs(tabs: serde_json::Value) -> Result<(), String> {
     };
     let content = serde_json::to_string_pretty(&value).map_err(|err| err.to_string())?;
     history_store::write_file(path, content.as_bytes())
-}
-
-fn copy_dir_contents_recursive(source: &Path, target: &Path) -> Result<usize, String> {
-    if !source.exists() {
-        return Ok(0);
-    }
-    fs::create_dir_all(target).map_err(|err| err.to_string())?;
-    let mut copied = 0_usize;
-    for entry in fs::read_dir(source).map_err(|err| err.to_string())? {
-        let entry = entry.map_err(|err| err.to_string())?;
-        let source_path = entry.path();
-        let target_path = target.join(entry.file_name());
-        if source_path.is_dir() {
-            copied += copy_dir_contents_recursive(&source_path, &target_path)?;
-        } else if source_path.is_file() && !target_path.exists() {
-            if let Some(parent) = target_path.parent() {
-                fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-            }
-            fs::copy(&source_path, &target_path).map_err(|err| err.to_string())?;
-            copied += 1;
-        }
-    }
-    Ok(copied)
 }
 
 #[cfg(test)]
@@ -5392,22 +5362,6 @@ fn database_table_exists(conn: &rusqlite::Connection, table: &str) -> Result<boo
     )
     .map(|count| count > 0)
     .map_err(|err| err.to_string())
-}
-
-fn clipboard_table_exists(conn: &rusqlite::Connection) -> Result<bool, String> {
-    database_table_exists(conn, "clipboard")
-}
-
-fn database_table_columns(conn: &rusqlite::Connection, table: &str) -> Result<Vec<String>, String> {
-    let mut statement = conn
-        .prepare(&format!("pragma table_info({table})"))
-        .map_err(|err| err.to_string())?;
-    let columns = statement
-        .query_map([], |row| row.get(1))
-        .map_err(|err| err.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| err.to_string())?;
-    Ok(columns)
 }
 
 fn rewrite_internal_storage_paths(value: String, source_dir: &str, target_dir: &str) -> String {
@@ -5521,10 +5475,12 @@ fn merge_clipboard_database(
         return Ok((0, 0));
     }
 
-    let source_conn = rusqlite::Connection::open(source_db).map_err(|err| err.to_string())?;
-    if !clipboard_table_exists(&source_conn)? {
-        return Ok((0, 0));
-    }
+    let source_conn = rusqlite::Connection::open_with_flags(
+        source_db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|err| err.to_string())?;
+    clipboard::db::validate_schema(&source_conn).map_err(|err| err.to_string())?;
 
     let target_db = PathBuf::from(target_dir).join("vpaste.db");
     let mut target_conn = rusqlite::Connection::open(target_db).map_err(|err| err.to_string())?;
@@ -5700,34 +5656,10 @@ fn merge_clipboard_database(
     }
 
     if database_table_exists(&source_conn, "paste_queue")? {
-        let columns = database_table_columns(&source_conn, "paste_queue")?;
-        let has_full_payload = [
-            "position",
-            "queued_at",
-            "time",
-            "item_type",
-            "search_index",
-            "app_source",
-            "app_icon_path",
-            "title_color",
-            "label",
-        ]
-        .iter()
-        .all(|required| columns.iter().any(|column| column == required));
-        let queue_query = if has_full_payload {
+        let queue_query =
             "select hash, position, queued_at, time, content, preview_content, item_type,
                     search_index, source, app_source, app_icon_path, title_color, label
-             from paste_queue order by position, rowid"
-        } else {
-            "select q.hash, row_number() over (order by q.rowid) - 1, 0,
-                    coalesce(c.time, 0), coalesce(q.content, ''),
-                    coalesce(q.preview_content, ''), coalesce(c.item_type, 'Text'),
-                    coalesce(c.search_index, 1), coalesce(q.source, ''),
-                    coalesce(c.app_source, ''), coalesce(c.app_icon_path, ''),
-                    coalesce(c.title_color, ''), coalesce(c.label, 0)
-             from paste_queue q left join clipboard c on c.hash = q.hash
-             order by q.rowid"
-        };
+             from paste_queue order by position, rowid";
         let mut statement = source_conn
             .prepare(queue_query)
             .map_err(|err| err.to_string())?;
@@ -5827,213 +5759,6 @@ const HISTORY_ARCHIVE_METADATA_MAX_BYTES: u64 = 1024 * 1024;
 const HISTORY_ARCHIVE_PATH_MAX_BYTES: u32 = 4096;
 const HISTORY_ARCHIVE_DIRS: [&str; 2] = ["data", "rich_formats"];
 const HISTORY_ARCHIVE_FILES: [&str; 1] = [CUSTOM_TABS_FILE];
-const LEGACY_TEXT_PREFIX: &str = "vpaste-secure:v2:";
-const LEGACY_FILE_MAGIC: &[u8] = b"VPASTESEC2";
-
-fn path_contains_legacy_history(path: &Path) -> Result<bool, String> {
-    if !path.exists() {
-        return Ok(false);
-    }
-    if path.is_dir() {
-        for entry in fs::read_dir(path).map_err(|err| err.to_string())? {
-            if path_contains_legacy_history(&entry.map_err(|err| err.to_string())?.path())? {
-                return Ok(true);
-            }
-        }
-        return Ok(false);
-    }
-    let mut file = File::open(path).map_err(|err| err.to_string())?;
-    let mut magic = [0_u8; 10];
-    Ok(
-        file.read(&mut magic).map_err(|err| err.to_string())? == magic.len()
-            && magic == LEGACY_FILE_MAGIC,
-    )
-}
-
-fn table_has_legacy_text(conn: &rusqlite::Connection, table: &str) -> Result<bool, String> {
-    let exists: i64 = conn
-        .query_row(
-            "select count(*) from sqlite_master where type='table' and name=?1",
-            [table],
-            |row| row.get(0),
-        )
-        .map_err(|err| err.to_string())?;
-    if exists == 0 {
-        return Ok(false);
-    }
-    let query = format!(
-        "select count(*) from {table} where content like ?1 or preview_content like ?1 or source like ?1"
-    );
-    conn.query_row(&query, [format!("{LEGACY_TEXT_PREFIX}%")], |row| {
-        row.get::<_, i64>(0)
-    })
-    .map(|count| count > 0)
-    .map_err(|err| err.to_string())
-}
-
-fn legacy_history_present(root: &Path) -> Result<bool, String> {
-    let db_path = root.join(HISTORY_ARCHIVE_DB);
-    if db_path.is_file() {
-        let conn = rusqlite::Connection::open_with_flags(
-            db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .map_err(|err| err.to_string())?;
-        if table_has_legacy_text(&conn, "clipboard")?
-            || table_has_legacy_text(&conn, "paste_queue")?
-        {
-            return Ok(true);
-        }
-    }
-    for name in [
-        CUSTOM_TABS_FILE,
-        "data",
-        "rich_formats",
-        "image_clipboard_cache",
-    ] {
-        if path_contains_legacy_history(&root.join(name))? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-#[cfg(test)]
-mod legacy_history_detection_tests {
-    use super::*;
-
-    fn create_history_db(root: &Path, clipboard_content: &str, queue_content: &str) {
-        let conn = rusqlite::Connection::open(root.join(HISTORY_ARCHIVE_DB)).unwrap();
-        conn.execute_batch(
-            "create table clipboard(content text, preview_content text, source text);
-             create table paste_queue(content text, preview_content text, source text);",
-        )
-        .unwrap();
-        conn.execute(
-            "insert into clipboard values(?1, 'preview', 'source')",
-            [clipboard_content],
-        )
-        .unwrap();
-        conn.execute(
-            "insert into paste_queue values(?1, 'preview', 'source')",
-            [queue_content],
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn detects_legacy_clipboard_and_mixed_plaintext() {
-        let root = tempfile::tempdir().unwrap();
-        create_history_db(root.path(), "vpaste-secure:v2:ciphertext", "plain queue");
-        assert!(legacy_history_present(root.path()).unwrap());
-    }
-
-    #[test]
-    fn detects_legacy_paste_queue_without_legacy_clipboard() {
-        let root = tempfile::tempdir().unwrap();
-        create_history_db(
-            root.path(),
-            "plain clipboard",
-            "vpaste-secure:v2:ciphertext",
-        );
-        assert!(legacy_history_present(root.path()).unwrap());
-    }
-
-    #[test]
-    fn detects_legacy_managed_file_magic() {
-        let root = tempfile::tempdir().unwrap();
-        create_history_db(root.path(), "plain clipboard", "plain queue");
-        fs::create_dir(root.path().join("rich_formats")).unwrap();
-        fs::write(
-            root.path().join("rich_formats/item.html"),
-            b"VPASTESEC2ciphertext",
-        )
-        .unwrap();
-        assert!(legacy_history_present(root.path()).unwrap());
-    }
-
-    #[test]
-    fn accepts_fully_plaintext_history() {
-        let root = tempfile::tempdir().unwrap();
-        create_history_db(root.path(), "plain clipboard", "plain queue");
-        fs::create_dir(root.path().join("data")).unwrap();
-        fs::write(root.path().join("data/item"), b"plain bytes").unwrap();
-        assert!(!legacy_history_present(root.path()).unwrap());
-    }
-}
-
-#[derive(Clone, Serialize)]
-struct HistoryFormatStatus {
-    migration_required: bool,
-}
-
-#[tauri::command]
-fn get_history_format_status() -> HistoryFormatStatus {
-    HistoryFormatStatus {
-        migration_required: LEGACY_HISTORY_BLOCKED.load(Ordering::SeqCst),
-    }
-}
-
-fn ensure_history_ready() -> Result<(), String> {
-    if LEGACY_HISTORY_BLOCKED.load(Ordering::SeqCst) {
-        Err("LEGACY_HISTORY_MIGRATION_REQUIRED".to_string())
-    } else {
-        Ok(())
-    }
-}
-
-fn remove_managed_path(path: &Path) -> Result<(), String> {
-    if path.is_dir() {
-        fs::remove_dir_all(path).map_err(|err| err.to_string())
-    } else if path.is_file() {
-        fs::remove_file(path).map_err(|err| err.to_string())
-    } else {
-        Ok(())
-    }
-}
-
-#[tauri::command]
-fn clear_legacy_history(app: tauri::AppHandle, confirmation: String) -> Result<(), String> {
-    if confirmation != "CLEAR_LEGACY_HISTORY" {
-        return Err("legacy history clear confirmation is invalid".to_string());
-    }
-    if !LEGACY_HISTORY_BLOCKED.load(Ordering::SeqCst) {
-        return Err("legacy history migration is not required".to_string());
-    }
-    clipboard::db::clear_legacy_payload().map_err(|err| err.to_string())?;
-    let root = PathBuf::from(history_storage_dir());
-    for name in [
-        CUSTOM_TABS_FILE,
-        "data",
-        "rich_formats",
-        "image_clipboard_cache",
-    ] {
-        remove_managed_path(&root.join(name))?;
-    }
-    for name in [
-        "search",
-        "file_previews",
-        "image_clipboard_cache",
-        "image_preview_cache",
-    ] {
-        remove_managed_path(&PathBuf::from(app_runtime_dir(&[name])))?;
-    }
-    clipboard::db::init();
-    rebuild_current_search_index()?;
-    LEGACY_HISTORY_BLOCKED.store(false, Ordering::SeqCst);
-    initialize_paste_queue_worker(&app);
-    if let Some(window) = app.get_webview_window("clipboard") {
-        listen::start(window);
-    }
-    let _ = app.emit(
-        "history-format-status-changed",
-        HistoryFormatStatus {
-            migration_required: false,
-        },
-    );
-    Ok(())
-}
-
 impl HistoryArchiveTotals {
     fn empty() -> Self {
         Self {
@@ -6208,11 +5933,6 @@ fn read_history_archive_header(reader: &mut File) -> Result<(serde_json::Value, 
     }
 
     let version = read_u32(reader)?;
-    if version == 2 {
-        return Err(
-            "vPaste v2 历史包需要先使用 vpaste-history-converter 转换为明文 v3 格式".to_string(),
-        );
-    }
     if version != HISTORY_ARCHIVE_VERSION {
         return Err(format!("不支持的 vPaste 历史包版本：{}", version));
     }
@@ -6365,9 +6085,8 @@ fn export_history_archive_impl(
     archive_path: String,
 ) -> Result<HistoryArchiveInfo, String> {
     let _cleanup = auto_cleanup::pause();
-    ensure_history_ready()?;
     ensure_history_storage_dirs()?;
-    clipboard::db::init();
+    clipboard::db::try_init().map_err(|err| err.to_string())?;
     let _: (i64, i64, i64) = clipboard::db::db()
         .query_row("pragma wal_checkpoint(full)", [], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
@@ -6510,27 +6229,45 @@ fn import_custom_tabs(
     Ok(changed)
 }
 
-fn import_history_archive_impl(
-    app: tauri::AppHandle,
-    archive_path: String,
-) -> Result<HistoryArchiveInfo, String> {
-    let _cleanup = auto_cleanup::pause();
-    auto_cleanup::request();
-    ensure_history_ready()?;
-    ensure_history_storage_dirs()?;
-    let target_dir = history_storage_dir();
-    let mut progress =
-        HistoryArchiveProgressState::new(Some(&app), "import", HistoryArchiveTotals::empty());
-    progress.emit();
-    let (rewrite_source_dir, _) = validate_history_archive(&archive_path)?;
+fn prepare_history_import(
+    archive_path: &str,
+    target_dir: &str,
+    progress: &mut HistoryArchiveProgressState,
+) -> Result<(tempfile::TempDir, String), String> {
+    let (rewrite_source_dir, _) = validate_history_archive(archive_path)?;
     let temp_dir = tempfile::tempdir().map_err(|err| err.to_string())?;
-    extract_history_archive(&archive_path, temp_dir.path(), &mut progress)?;
+    extract_history_archive(archive_path, temp_dir.path(), progress)?;
 
     let source_db = temp_dir.path().join(HISTORY_ARCHIVE_DB);
     if !source_db.exists() {
         return Err("导入文件不是有效的 vPaste 历史包".to_string());
     }
 
+    let source_conn = rusqlite::Connection::open_with_flags(
+        &source_db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|err| err.to_string())?;
+    clipboard::db::validate_schema(&source_conn).map_err(|err| err.to_string())?;
+    drop(source_conn);
+    clipboard::db::validate_existing_database(&PathBuf::from(target_dir).join(HISTORY_ARCHIVE_DB))
+        .map_err(|err| err.to_string())?;
+    Ok((temp_dir, rewrite_source_dir))
+}
+
+fn import_history_archive_impl(
+    app: tauri::AppHandle,
+    archive_path: String,
+) -> Result<HistoryArchiveInfo, String> {
+    let _cleanup = auto_cleanup::pause();
+    auto_cleanup::request();
+    ensure_history_storage_dirs()?;
+    let target_dir = history_storage_dir();
+    let mut progress =
+        HistoryArchiveProgressState::new(Some(&app), "import", HistoryArchiveTotals::empty());
+    progress.emit();
+    let (temp_dir, rewrite_source_dir) =
+        prepare_history_import(&archive_path, &target_dir, &mut progress)?;
     progress.set_totals(history_import_payload_totals(temp_dir.path())?);
     progress.set_stage("copy");
     let mut copied_files = 0_usize;
@@ -6559,7 +6296,7 @@ fn import_history_archive_impl(
         &target_dir,
         &rewrite_source_dir,
     )?;
-    clipboard::db::init();
+    clipboard::db::try_init().map_err(|err| err.to_string())?;
     progress.set_stage("index");
     if let Err(err) = rebuild_current_search_index() {
         error!(
@@ -6633,7 +6370,7 @@ mod history_archive_v3_tests {
     }
 
     #[test]
-    fn v2_requires_the_converter() {
+    fn unsupported_archive_version_has_no_migration_instructions() {
         let archive = tempfile::NamedTempFile::new().unwrap();
         let mut file = archive.reopen().unwrap();
         file.write_all(HISTORY_ARCHIVE_MAGIC).unwrap();
@@ -6641,7 +6378,40 @@ mod history_archive_v3_tests {
         file.flush().unwrap();
         let error =
             read_history_archive_header(&mut File::open(archive.path()).unwrap()).unwrap_err();
-        assert!(error.contains("vpaste-history-converter"));
+        assert!(error.contains("不支持的 vPaste 历史包版本"));
+        assert!(!error.contains("converter"));
+    }
+
+    #[test]
+    fn unsupported_import_payload_cannot_copy_attachments_or_create_destination_database() {
+        let root = tempfile::tempdir().unwrap();
+        let source_path = root.path().join("unsupported.db");
+        let connection = rusqlite::Connection::open(&source_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE clipboard(content TEXT); INSERT INTO clipboard VALUES('untouched');",
+            )
+            .unwrap();
+        drop(connection);
+        let bytes = fs::read(source_path).unwrap();
+        let archive = archive_with_entries(&[
+            (HISTORY_ARCHIVE_DB, &bytes),
+            ("data/new-attachment", b"must not be copied"),
+            (CUSTOM_TABS_FILE, b"[]"),
+        ]);
+        let target = root.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("existing-file"), b"kept").unwrap();
+        let mut progress =
+            HistoryArchiveProgressState::new(None, "import", HistoryArchiveTotals::empty());
+        assert!(prepare_history_import(
+            archive.path().to_str().unwrap(),
+            target.to_str().unwrap(),
+            &mut progress
+        )
+        .is_err());
+        assert_eq!(fs::read(target.join("existing-file")).unwrap(), b"kept");
+        assert_eq!(fs::read_dir(target).unwrap().count(), 1);
     }
 
     #[test]
@@ -6881,7 +6651,6 @@ fn get_storage_paths() -> StoragePaths {
 
 #[tauri::command]
 async fn estimate_storage_cleanup(days: u64) -> Result<StorageCleanupInfo, String> {
-    ensure_history_ready()?;
     tauri::async_runtime::spawn_blocking(move || {
         let estimate = clipboard::cleanup_estimate(days)?;
         Ok(StorageCleanupInfo {
@@ -6897,7 +6666,6 @@ async fn estimate_storage_cleanup(days: u64) -> Result<StorageCleanupInfo, Strin
 async fn estimate_auto_cleanup(
     policy: config::AutoCleanupPolicy,
 ) -> Result<StorageCleanupInfo, String> {
-    ensure_history_ready()?;
     policy.validate()?;
     tauri::async_runtime::spawn_blocking(move || {
         let estimate = clipboard::auto_cleanup_estimate(policy)?;
@@ -6912,7 +6680,6 @@ async fn estimate_auto_cleanup(
 
 #[tauri::command]
 async fn cleanup_storage_history(days: u64) -> Result<StorageCleanupInfo, String> {
-    ensure_history_ready()?;
     tauri::async_runtime::spawn_blocking(move || {
         let estimate = clipboard::cleanup_older_than(days)?;
         Ok(StorageCleanupInfo {
@@ -7808,7 +7575,7 @@ fn cleanup_legacy_autostart_entries() {
 fn cleanup_legacy_autostart_entries() {}
 
 #[tauri::command]
-fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigrationInfo, String> {
+fn save_config(app: tauri::AppHandle, config: String) -> Result<SettingsSaveInfo, String> {
     let _cleanup = auto_cleanup::pause();
     let mut config_struct: Config =
         serde_json::from_str(&config).map_err(|err| format!("配置格式无效，无法保存：{}", err))?;
@@ -7821,6 +7588,15 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
 
     let previous_config = config::get();
     let previous_history_dir = history_storage_dir();
+    let next_history_dir = if config_struct.storage_dir.trim().is_empty() {
+        get_app_data_dir()
+    } else {
+        config_struct.storage_dir.trim().to_string()
+    };
+    clipboard::db::validate_existing_database(
+        &PathBuf::from(next_history_dir).join(HISTORY_ARCHIVE_DB),
+    )
+    .map_err(|err| err.to_string())?;
     let previous_main_shortcut = match parse_optional_shortcut(
         previous_config.shortcut_keys.main_window.as_deref(),
         "当前唤起主窗口",
@@ -7889,7 +7665,7 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
             err
         );
     }
-    clipboard::db::init();
+    clipboard::db::try_init().map_err(|err| err.to_string())?;
     let target_dir = history_storage_dir();
     if previous_history_dir != target_dir || !search::engine::is_ready() {
         if let Err(err) = rebuild_current_search_index() {
@@ -7897,14 +7673,7 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<StorageMigration
         }
     }
     auto_cleanup::request();
-    Ok(StorageMigrationInfo {
-        migrated: false,
-        source_dir: target_dir.clone(),
-        target_dir,
-        merged_items: 0,
-        skipped_items: 0,
-        copied_files: 0,
-        backup_dir: String::new(),
+    Ok(SettingsSaveInfo {
         message: if registration_info.conflict || paste_queue_registration_info.conflict {
             "配置已保存，但快捷键被其他应用占用".to_string()
         } else {
@@ -9175,9 +8944,6 @@ fn copy(
     hash: Option<String>,
 ) -> Result<(), String> {
     let _cleanup = auto_cleanup::pause();
-    if hash.is_some() {
-        ensure_history_ready()?;
-    }
     let rich_meta = hash.as_deref().and_then(clipboard::rich_clipboard_meta);
     copy_with_rich_meta(app, item, item_type, rich_meta)?;
     if let Some(hash) = hash {
@@ -9328,7 +9094,6 @@ async fn copy_history_item(
     hash: String,
     plain_text: bool,
 ) -> Result<(), String> {
-    ensure_history_ready()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _cleanup = auto_cleanup::pause();
         let text = clipboard::plain_text_content(&hash)?;
@@ -10225,13 +9990,20 @@ fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(
     if active {
         if !is_process_trusted_with_prompt(false) {
             if let Some(source_window) = app.get_webview_window("clipboard") {
-                let _ = open_onboarding_permission_window(
-                    app.clone(),
-                    source_window,
-                    "paste".to_string(),
-                    None,
-                    None,
-                );
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(err) = open_onboarding_permission_window(
+                        app,
+                        source_window,
+                        "paste".to_string(),
+                        None,
+                        None,
+                    )
+                    .await
+                    {
+                        error!("Failed to open paste queue permission guide: {err}");
+                    }
+                });
             }
             return Err("需要辅助功能权限才能启用粘贴队列".to_string());
         }
@@ -10259,7 +10031,6 @@ fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(
 
 #[tauri::command]
 fn get_paste_queue_state() -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     paste_queue::state()
 }
 
@@ -10277,7 +10048,6 @@ fn set_paste_queue_active(
     app: tauri::AppHandle,
     active: bool,
 ) -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     set_paste_queue_active_impl(&app, active)?;
     paste_queue::state()
 }
@@ -10287,7 +10057,6 @@ fn add_paste_queue_items(
     app: tauri::AppHandle,
     hashes: Vec<String>,
 ) -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     paste_queue::run_user_operation(|| paste_queue::add_items(&hashes))?;
     paste_queue::emit_state(&app);
     paste_queue::state()
@@ -10298,7 +10067,6 @@ fn reorder_paste_queue(
     app: tauri::AppHandle,
     hashes: Vec<String>,
 ) -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     paste_queue::run_user_operation(|| paste_queue::reorder(&hashes))?;
     paste_queue::emit_state(&app);
     paste_queue::state()
@@ -10306,7 +10074,6 @@ fn reorder_paste_queue(
 
 #[tauri::command]
 fn reverse_paste_queue(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     paste_queue::run_user_operation(paste_queue::reverse)?;
     paste_queue::emit_state(&app);
     paste_queue::state()
@@ -10317,7 +10084,6 @@ fn remove_paste_queue_item(
     app: tauri::AppHandle,
     hash: String,
 ) -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     let cleanup =
         paste_queue::run_user_operation(|| paste_queue::remove_item_with_deferred_cleanup(&hash))?;
     paste_queue::emit_state(&app);
@@ -10328,7 +10094,6 @@ fn remove_paste_queue_item(
 
 #[tauri::command]
 fn clear_paste_queue(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     let cleanup = paste_queue::run_user_operation(paste_queue::clear_with_deferred_cleanup)?;
     paste_queue::emit_state(&app);
     let state = paste_queue::state()?;
@@ -10338,7 +10103,6 @@ fn clear_paste_queue(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueSta
 
 #[tauri::command]
 fn paste_queue_item(app: tauri::AppHandle, hash: Option<String>) -> Result<(), String> {
-    ensure_history_ready()?;
     if !paste_queue::is_active() {
         return Err("粘贴队列尚未激活".to_string());
     }
@@ -10355,7 +10119,6 @@ fn paste_queue_item(app: tauri::AppHandle, hash: Option<String>) -> Result<(), S
 
 #[tauri::command]
 fn undo_paste_queue_consume(app: tauri::AppHandle) -> Result<paste_queue::PasteQueueState, String> {
-    ensure_history_ready()?;
     let _ = paste_queue::run_user_operation(paste_queue::undo_consume)?;
     paste_queue::emit_state(&app);
     paste_queue::state()
@@ -10368,7 +10131,6 @@ fn paste(
     trigger_key: Option<String>,
 ) -> Result<(), String> {
     let _cleanup = auto_cleanup::pause();
-    ensure_history_ready()?;
     let restore_alt = restore_alt.unwrap_or(false);
     let trigger_key = trigger_key.as_deref();
     if !_hash.is_empty() {
@@ -10415,9 +10177,6 @@ fn record_text_history(content: String) {
     else {
         return;
     };
-    if ensure_history_ready().is_err() {
-        return;
-    }
     clipboard::insert_text(content);
 }
 
@@ -10488,7 +10247,6 @@ async fn search(
     limit: usize,
     label: String,
 ) -> Result<String, String> {
-    ensure_history_ready()?;
     let last_time = last_time.unwrap_or(0);
     let generation = SEARCH_COMMAND_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     tauri::async_runtime::spawn_blocking(move || {
@@ -10527,7 +10285,6 @@ async fn search(
 #[tauri::command]
 fn clear_history(app: tauri::AppHandle, clear_type: String) -> Result<(), String> {
     let _cleanup = auto_cleanup::pause();
-    ensure_history_ready()?;
     if clear_type == "all" {
         clipboard::db::clear_all().map_err(|e| e.to_string())?;
     } else if clear_type == "images" {
@@ -10715,61 +10472,72 @@ fn toggle_clipboard_history_paused(app: tauri::AppHandle) -> Result<bool, String
     Ok(set_clipboard_history_paused_state(&app, paused))
 }
 
-fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
-    if let Some(window) = app.get_webview_window("trayMenu") {
-        let scale_factor = window.scale_factor().unwrap_or(1.0);
-        let icon_position = rect.position.to_physical::<i32>(scale_factor);
-        let icon_size = rect.size.to_physical::<u32>(scale_factor);
-        let icon_center_x = icon_position.x + icon_size.width as i32 / 2;
-        let icon_bottom_y = icon_position.y + icon_size.height as i32;
-        let menu_size = window.outer_size().unwrap_or(tauri::PhysicalSize {
-            width: TRAY_MENU_WIDTH as u32,
-            height: TRAY_MENU_HEIGHT as u32,
-        });
-        let cursor = cursor_physical_position();
-        let monitor = cursor
-            .and_then(|position| {
-                app.monitor_from_point(position.x as f64, position.y as f64)
-                    .ok()
-                    .flatten()
+async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
+    let cursor = cursor_physical_position();
+    match auxiliary_windows::ensure(app, auxiliary_windows::WindowKind::TrayMenu).await {
+        Err(err) => error!("Failed to open tray menu: {err}"),
+        Ok(window) => {
+            let app = app.clone();
+            if let Err(err) = auxiliary_windows::on_main_thread(app.clone(), move || {
+                let scale_factor = window.scale_factor().unwrap_or(1.0);
+                let icon_position = rect.position.to_physical::<i32>(scale_factor);
+                let icon_size = rect.size.to_physical::<u32>(scale_factor);
+                let icon_center_x = icon_position.x + icon_size.width as i32 / 2;
+                let icon_bottom_y = icon_position.y + icon_size.height as i32;
+                let menu_size = window.outer_size().unwrap_or(tauri::PhysicalSize {
+                    width: TRAY_MENU_WIDTH as u32,
+                    height: TRAY_MENU_HEIGHT as u32,
+                });
+                let monitor = cursor
+                    .and_then(|position| {
+                        app.monitor_from_point(position.x as f64, position.y as f64)
+                            .ok()
+                            .flatten()
+                    })
+                    .or_else(|| window.current_monitor().ok().flatten())
+                    .or_else(|| window.primary_monitor().ok().flatten());
+                let (min_x, min_y, max_x, max_y) = monitor
+                    .map(|monitor| {
+                        let pos = monitor.position();
+                        let size = monitor.size();
+                        (
+                            pos.x,
+                            pos.y,
+                            pos.x + size.width as i32 - menu_size.width as i32,
+                            pos.y + size.height as i32 - menu_size.height as i32,
+                        )
+                    })
+                    .unwrap_or((0, 0, i32::MAX, i32::MAX));
+                #[cfg(target_os = "macos")]
+                let (target_x, target_y) = (
+                    (icon_center_x - menu_size.width as i32 / 2).clamp(min_x, max_x),
+                    icon_bottom_y.clamp(min_y, max_y),
+                );
+                #[cfg(not(target_os = "macos"))]
+                let (target_x, target_y) = (
+                    cursor
+                        .map(|position| position.x + TRAY_MENU_CURSOR_GAP)
+                        .unwrap_or_else(|| icon_center_x - menu_size.width as i32 / 2)
+                        .clamp(min_x, max_x),
+                    cursor
+                        .map(|position| position.y - menu_size.height as i32 - TRAY_MENU_CURSOR_GAP)
+                        .unwrap_or(icon_bottom_y)
+                        .clamp(min_y, max_y),
+                );
+                let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                    x: target_x,
+                    y: target_y,
+                }));
+                let _ = window.show();
+                let _ = window.set_focus();
+                watch_tray_menu_outside_click(app.clone());
+                Ok(())
             })
-            .or_else(|| window.current_monitor().ok().flatten())
-            .or_else(|| window.primary_monitor().ok().flatten());
-        let (min_x, min_y, max_x, max_y) = monitor
-            .map(|monitor| {
-                let pos = monitor.position();
-                let size = monitor.size();
-                (
-                    pos.x,
-                    pos.y,
-                    pos.x + size.width as i32 - menu_size.width as i32,
-                    pos.y + size.height as i32 - menu_size.height as i32,
-                )
-            })
-            .unwrap_or((0, 0, i32::MAX, i32::MAX));
-        #[cfg(target_os = "macos")]
-        let (target_x, target_y) = (
-            (icon_center_x - menu_size.width as i32 / 2).clamp(min_x, max_x),
-            icon_bottom_y.clamp(min_y, max_y),
-        );
-        #[cfg(not(target_os = "macos"))]
-        let (target_x, target_y) = (
-            cursor
-                .map(|position| position.x + TRAY_MENU_CURSOR_GAP)
-                .unwrap_or_else(|| icon_center_x - menu_size.width as i32 / 2)
-                .clamp(min_x, max_x),
-            cursor
-                .map(|position| position.y - menu_size.height as i32 - TRAY_MENU_CURSOR_GAP)
-                .unwrap_or(icon_bottom_y)
-                .clamp(min_y, max_y),
-        );
-        let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-            x: target_x,
-            y: target_y,
-        }));
-        let _ = window.show();
-        let _ = window.set_focus();
-        watch_tray_menu_outside_click(app.clone());
+            .await
+            {
+                error!("Failed to show tray menu: {err}");
+            }
+        }
     }
 }
 
@@ -10790,8 +10558,10 @@ fn install_vpaste_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 if matches!(button, MouseButton::Left | MouseButton::Right)
                     && button_state == MouseButtonState::Up
                 {
-                    let app = tray.app_handle();
-                    show_vpaste_tray_menu(app, rect);
+                    let app = tray.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        show_vpaste_tray_menu(&app, rect).await;
+                    });
                 }
             }
         });
@@ -10863,6 +10633,163 @@ fn build_paste_fallback_notice_window(
     {
         set_macos_window_level(&window, 102);
         configure_macos_transparent_window(&window);
+    }
+    Ok(window)
+}
+
+fn build_auxiliary_window(
+    handle: &tauri::AppHandle,
+    kind: auxiliary_windows::WindowKind,
+) -> tauri::Result<tauri::WebviewWindow> {
+    use auxiliary_windows::WindowKind;
+
+    let builder = match kind {
+        WindowKind::Config => return build_config_window(handle),
+        WindowKind::TextEditor => return build_text_editor_window(handle),
+        WindowKind::PasteFallbackNotice => return build_paste_fallback_notice_window(handle),
+        WindowKind::OnboardingPermission => WebviewWindowBuilder::new(
+            handle,
+            "onboardingPermission",
+            App("onboarding-permission".into()),
+        )
+        .title("vPaste Permission Guide")
+        .visible(false)
+        .focused(false)
+        .decorations(false)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
+        .resizable(false)
+        .minimizable(false)
+        .maximizable(false)
+        .always_on_top(true)
+        .shadow(false)
+        .inner_size(940_f64, 430_f64),
+        WindowKind::TrayMenu => {
+            WebviewWindowBuilder::new(handle, "trayMenu", App("tray-menu".into()))
+                .title("vPaste Tray")
+                .visible(false)
+                .focused(false)
+                .decorations(false)
+                .transparent(true)
+                .background_color(tauri::window::Color(0, 0, 0, 0))
+                .skip_taskbar(true)
+                .always_on_top(true)
+                .resizable(false)
+                .shadow(false)
+                .inner_size(TRAY_MENU_WIDTH as f64, TRAY_MENU_HEIGHT as f64)
+        }
+        WindowKind::EmojiPicker => {
+            WebviewWindowBuilder::new(handle, "emojiPicker", App("emoji-picker".into()))
+                .title("vPaste Emoji Picker")
+                .visible(false)
+                .focused(false)
+                .decorations(false)
+                .transparent(true)
+                .background_color(tauri::window::Color(0, 0, 0, 0))
+                .skip_taskbar(true)
+                .always_on_top(true)
+                .resizable(false)
+                .shadow(false)
+                .inner_size(
+                    EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
+                    EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+                )
+        }
+        WindowKind::TabEditor => {
+            WebviewWindowBuilder::new(handle, "tabEditor", App("tab-editor".into()))
+                .title("vPaste Tabs")
+                .visible(false)
+                .focused(false)
+                .decorations(false)
+                .transparent(true)
+                .background_color(tauri::window::Color(0, 0, 0, 0))
+                .skip_taskbar(true)
+                .always_on_top(true)
+                .resizable(false)
+                .shadow(false)
+                .inner_size(
+                    TAB_EDITOR_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
+                    TAB_EDITOR_DEFAULT_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+                )
+        }
+    };
+    let window = builder.build()?;
+    let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    let _ = window.set_shadow(false);
+    apply_vpaste_window_icon(&window);
+    if matches!(kind, WindowKind::OnboardingPermission) {
+        let _ = window.center();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        set_macos_window_level(
+            &window,
+            if matches!(kind, WindowKind::OnboardingPermission) {
+                102
+            } else {
+                101
+            },
+        );
+        if matches!(
+            kind,
+            WindowKind::OnboardingPermission | WindowKind::TrayMenu
+        ) {
+            configure_macos_transparent_window(&window);
+        }
+    }
+    Ok(window)
+}
+
+fn build_config_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let builder = WebviewWindowBuilder::new(handle, "config", App("config".into()))
+        .title("vPaste设置")
+        .visible(false)
+        .fullscreen(false)
+        .focused(false)
+        .resizable(true)
+        .minimizable(false)
+        .maximizable(false)
+        .decorations(false)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
+        .inner_size(720_f64, 700_f64)
+        .min_inner_size(640_f64, 520_f64)
+        .always_on_top(false);
+    #[cfg(target_os = "windows")]
+    let builder = builder.shadow(false);
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .hidden_title(true)
+        .title_bar_style(TitleBarStyle::Overlay);
+    let window = builder.build()?;
+    let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    apply_vpaste_window_icon(&window);
+    #[cfg(target_os = "windows")]
+    let _ = window.set_shadow(false);
+    #[cfg(target_os = "macos")]
+    {
+        let window_clone = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            use cocoa::base::id;
+            use objc::{msg_send, sel, sel_impl};
+            use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+            if let Err(err) = apply_vibrancy(
+                &window_clone,
+                NSVisualEffectMaterial::Sidebar,
+                Some(NSVisualEffectState::Active),
+                Some(ROUNDED_WINDOW_RADIUS),
+            ) {
+                error!("apply_vibrancy error for config: {err:?}");
+            }
+            if let Ok(ns_window) = window_clone.ns_window() {
+                unsafe {
+                    if !ns_window.is_null() {
+                        let ns_window = ns_window as id;
+                        let _: () = msg_send![ns_window, invalidateShadow];
+                    }
+                }
+            }
+        });
     }
     Ok(window)
 }
@@ -11130,6 +11057,7 @@ fn main() {
     let context = tauri::generate_context!();
     info!("running vPaste");
     let builder = tauri::Builder::default()
+        .manage(auxiliary_windows::Readiness::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if maintenance::installer_exit_requested_for_args(&args) {
                 app.exit(0);
@@ -11398,29 +11326,27 @@ fn main() {
             if let Err(err) = ensure_history_storage_dirs() {
                 panic!("创建历史存储目录时出错: {:?}", err);
             }
-            let legacy_history = legacy_history_present(Path::new(&history_storage_dir()))
-                .unwrap_or_else(|err| {
-                    error!("Failed to inspect history format: {err}");
-                    true
-                });
-            LEGACY_HISTORY_BLOCKED.store(legacy_history, Ordering::SeqCst);
-            if !legacy_history {
-                clipboard::db::init();
-                if !search::engine::is_ready() {
-                    if let Err(err) = rebuild_current_search_index() {
-                        error!("Failed to initialize clipboard search index: {err}");
-                    }
+            if let Err(err) = clipboard::db::try_init() {
+                error!("Failed to open history database: {err}");
+                let handle = app.handle().clone();
+                app.dialog()
+                    .message(format!("Cannot open vPaste history:\n{err}\nYour history files have been kept unchanged."))
+                    .title("vPaste")
+                    .kind(MessageDialogKind::Error)
+                    .show(move |_| handle.exit(1));
+                return Ok(());
+            }
+            if !search::engine::is_ready() {
+                if let Err(err) = rebuild_current_search_index() {
+                    error!("Failed to initialize clipboard search index: {err}");
                 }
-                if let Err(err) = search::engine::resume_pending_updates() {
-                    error!("Failed to resume clipboard search index updates: {err}");
-                }
+            }
+            if let Err(err) = search::engine::resume_pending_updates() {
+                error!("Failed to resume clipboard search index updates: {err}");
             }
             let _ = build_clipboard_window(app.handle())?;
             let _ = build_paste_queue_window(app.handle())?;
-            build_text_editor_window(app.handle())?;
-            if !legacy_history {
-                initialize_paste_queue_worker(app.handle());
-            }
+            initialize_paste_queue_worker(app.handle());
             if get_developer_mode() {
                 let _ = build_test_room_window(app.handle())?;
             }
@@ -11448,173 +11374,6 @@ fn main() {
                 let clipboard_window = handle
                     .get_webview_window("clipboard")
                     .unwrap_or_else(|| build_clipboard_window(&handle).unwrap());
-                let _paste_fallback_notice_window =
-                    build_paste_fallback_notice_window(&handle).unwrap();
-
-                let config_window =
-                    WebviewWindowBuilder::new(&handle, "config", App("config".into()))
-                        .title("vPaste设置")
-                        .visible(false)
-                        .fullscreen(false)
-                        .focused(false)
-                        .resizable(true)
-                        .minimizable(false)
-                        .maximizable(false)
-                        .decorations(false)
-                        .transparent(true)
-                        .background_color(tauri::window::Color(0, 0, 0, 0))
-                        .inner_size(720_f64, 700_f64)
-                        .min_inner_size(640_f64, 520_f64)
-                        .always_on_top(false);
-                #[cfg(target_os = "windows")]
-                let config_window = config_window.shadow(false);
-                #[cfg(target_os = "macos")]
-                let config_window = config_window
-                    .hidden_title(true)
-                    .title_bar_style(TitleBarStyle::Overlay);
-
-                info!("Attempting to build config window");
-                let config_window = config_window.build().unwrap();
-                let _ = config_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                apply_vpaste_window_icon(&config_window);
-                #[cfg(target_os = "windows")]
-                {
-                    let _ = config_window.set_shadow(false);
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    let window_clone = config_window.clone();
-                    let _ = config_window.run_on_main_thread(move || {
-                        use cocoa::base::id;
-                        use objc::{msg_send, sel, sel_impl};
-                        use window_vibrancy::{
-                            apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState,
-                        };
-                        if let Err(e) = apply_vibrancy(
-                            &window_clone,
-                            NSVisualEffectMaterial::Sidebar,
-                            Some(NSVisualEffectState::Active),
-                            Some(ROUNDED_WINDOW_RADIUS),
-                        ) {
-                            error!("apply_vibrancy error for config: {:?}", e);
-                        }
-                        if let Ok(ns_window) = window_clone.ns_window() {
-                            unsafe {
-                                if !ns_window.is_null() {
-                                    let ns_window = ns_window as id;
-                                    let _: () = msg_send![ns_window, invalidateShadow];
-                                }
-                            }
-                        }
-                    });
-                }
-                info!("Config window built successfully");
-
-                let onboarding_permission_window = WebviewWindowBuilder::new(
-                    &handle,
-                    "onboardingPermission",
-                    App("onboarding-permission".into()),
-                )
-                .title("vPaste Permission Guide")
-                .visible(false)
-                .focused(false)
-                .decorations(false)
-                .transparent(true)
-                .background_color(tauri::window::Color(0, 0, 0, 0))
-                .resizable(false)
-                .minimizable(false)
-                .maximizable(false)
-                .always_on_top(true)
-                .shadow(false)
-                .inner_size(940_f64, 430_f64)
-                .build()
-                .unwrap();
-                let _ = onboarding_permission_window
-                    .set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                let _ = onboarding_permission_window.set_shadow(false);
-                let _ = onboarding_permission_window.center();
-                apply_vpaste_window_icon(&onboarding_permission_window);
-                #[cfg(target_os = "macos")]
-                {
-                    set_macos_window_level(&onboarding_permission_window, 102);
-                    configure_macos_transparent_window(&onboarding_permission_window);
-                }
-
-                let tray_menu_window =
-                    WebviewWindowBuilder::new(&handle, "trayMenu", App("tray-menu".into()))
-                        .title("vPaste Tray")
-                        .visible(false)
-                        .focused(false)
-                        .decorations(false)
-                        .transparent(true)
-                        .background_color(tauri::window::Color(0, 0, 0, 0))
-                        .skip_taskbar(true)
-                        .always_on_top(true)
-                        .resizable(false)
-                        .shadow(false)
-                        .inner_size(TRAY_MENU_WIDTH as f64, TRAY_MENU_HEIGHT as f64);
-                let tray_menu_window = tray_menu_window.build().unwrap();
-                let _ =
-                    tray_menu_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                let _ = tray_menu_window.set_shadow(false);
-                apply_vpaste_window_icon(&tray_menu_window);
-                #[cfg(target_os = "macos")]
-                {
-                    set_macos_window_level(&tray_menu_window, 101);
-                    configure_macos_transparent_window(&tray_menu_window);
-                }
-
-                let emoji_picker_window =
-                    WebviewWindowBuilder::new(&handle, "emojiPicker", App("emoji-picker".into()))
-                        .title("vPaste Emoji Picker")
-                        .visible(false)
-                        .focused(false)
-                        .decorations(false)
-                        .transparent(true)
-                        .background_color(tauri::window::Color(0, 0, 0, 0))
-                        .skip_taskbar(true)
-                        .always_on_top(true)
-                        .resizable(false)
-                        .shadow(false)
-                        .inner_size(
-                            EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
-                            EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
-                        );
-                let emoji_picker_window = emoji_picker_window.build().unwrap();
-                let _ = emoji_picker_window
-                    .set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                let _ = emoji_picker_window.set_shadow(false);
-                apply_vpaste_window_icon(&emoji_picker_window);
-                #[cfg(target_os = "macos")]
-                {
-                    set_macos_window_level(&emoji_picker_window, 101);
-                }
-
-                let tab_editor_window =
-                    WebviewWindowBuilder::new(&handle, "tabEditor", App("tab-editor".into()))
-                        .title("vPaste Tabs")
-                        .visible(false)
-                        .focused(false)
-                        .decorations(false)
-                        .transparent(true)
-                        .background_color(tauri::window::Color(0, 0, 0, 0))
-                        .skip_taskbar(true)
-                        .always_on_top(true)
-                        .resizable(false)
-                        .shadow(false)
-                        .inner_size(
-                            TAB_EDITOR_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
-                            TAB_EDITOR_DEFAULT_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
-                        );
-                let tab_editor_window = tab_editor_window.build().unwrap();
-                let _ =
-                    tab_editor_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-                let _ = tab_editor_window.set_shadow(false);
-                apply_vpaste_window_icon(&tab_editor_window);
-                #[cfg(target_os = "macos")]
-                {
-                    set_macos_window_level(&tab_editor_window, 101);
-                }
 
                 if !config.onboarding_completed {
                     if let Err(err) = show_onboarding_window(&handle) {
@@ -11622,19 +11381,9 @@ fn main() {
                     }
                 }
 
-                if !LEGACY_HISTORY_BLOCKED.load(Ordering::SeqCst) {
-                    info!("Starting clipboard listener");
-                    listen::start(clipboard_window);
-                    info!("Clipboard listener started");
-                } else {
-                    error!("Legacy encrypted history detected; history writes are blocked");
-                    let _ = handle.emit(
-                        "history-format-status-changed",
-                        HistoryFormatStatus {
-                            migration_required: true,
-                        },
-                    );
-                }
+                info!("Starting clipboard listener");
+                listen::start(clipboard_window);
+                info!("Clipboard listener started");
                 if config.onboarding_completed && show_panel_on_startup {
                     if let Err(err) = startup_panel::request_show(&handle) {
                         error!("Failed to show main panel after startup: {}", err);
@@ -11642,7 +11391,6 @@ fn main() {
                 }
                 auto_cleanup::start(handle.clone());
                 std::thread::spawn(|| {
-                    migrate_runtime_dirs_out_of_history();
                     cleanup_runtime_caches();
                     cleanup_legacy_autostart_entries();
                 });
@@ -11650,6 +11398,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            auxiliary_window_ready,
             startup_panel::clipboard_window_ready,
             wait_for_clipboard_capture,
             copy,
@@ -11671,8 +11420,6 @@ fn main() {
             set_position,
             get_app_data_dir,
             get_storage_paths,
-            get_history_format_status,
-            clear_legacy_history,
             export_history_archive,
             import_history_archive,
             estimate_storage_cleanup,
@@ -11736,6 +11483,7 @@ fn main() {
             is_alt_key_pressed,
             is_quick_input_modifier_pressed,
             show_preview_window,
+            dismiss_hover_preview_window,
             is_preview_window_visible,
             set_preview_pinned,
             hide_preview_window,

@@ -124,6 +124,26 @@ describe("auxiliary window controls", () => {
         expect(screen.getByRole("button", { name: "preview.unpin" })).toHaveAttribute("aria-pressed", "true");
     });
 
+    it("reports hover entry and exit only until the preview is promoted", async () => {
+        const listeners = new Map<string, (event: { payload: unknown }) => void>();
+        tauri.listen.mockImplementation(async (name: string, callback: (event: { payload: unknown }) => void) => {
+            listeners.set(name, callback);
+            return () => undefined;
+        });
+        const { container } = render(<Preview />);
+        act(() => listeners.get("preview-item")?.({ payload: { itemType: "Text", content: "Hover content", hover: true } }));
+        const shell = container.querySelector('[class*="preview-shell"]')!;
+        fireEvent.mouseEnter(shell);
+        expect(tauri.emitTo).toHaveBeenLastCalledWith("clipboard", "preview-hover", true);
+        fireEvent.mouseLeave(shell);
+        expect(tauri.emitTo).toHaveBeenLastCalledWith("clipboard", "preview-hover", false);
+        tauri.emitTo.mockClear();
+        act(() => listeners.get("preview-promoted")?.({ payload: null }));
+        fireEvent.mouseEnter(shell);
+        fireEvent.mouseLeave(shell);
+        expect(tauri.emitTo).not.toHaveBeenCalled();
+    });
+
     it("uses the requested direction when preview content moves backward and forward", async () => {
         const listeners = new Map<string, (event: { payload: unknown }) => void>();
         tauri.listen.mockImplementation(async (event: string, callback: (event: { payload: unknown }) => void) => {
@@ -168,6 +188,21 @@ describe("auxiliary window controls", () => {
         await waitFor(() => expect(screen.getByText("Next preview")).toBeVisible());
         expect(screen.getByText("Next preview").closest("[data-preview-direction]"))
             .toHaveAttribute("data-preview-direction", "forward");
+    });
+
+    it("forwards category shortcuts from preview while keeping ordinary Tab navigation", () => {
+        render(<Preview />);
+        fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
+        expect(tauri.emitTo).toHaveBeenLastCalledWith("clipboard", "preview-navigate-selection", { direction: 1, key: "Tab", ctrlKey: true });
+        fireEvent.keyDown(window, { key: "Tab", ctrlKey: true, shiftKey: true });
+        expect(tauri.emitTo).toHaveBeenLastCalledWith("clipboard", "preview-navigate-selection", { direction: -1, key: "Tab", ctrlKey: true });
+        fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+        expect(tauri.emitTo).toHaveBeenLastCalledWith("clipboard", "preview-navigate-selection", { direction: -1, key: "Tab" });
+        tauri.emitTo.mockClear();
+        for (const modifiers of [{ metaKey: true }, { altKey: true }, { ctrlKey: true, metaKey: true }, { ctrlKey: true, isComposing: true }]) {
+            fireEvent.keyDown(window, { key: "Tab", ...modifiers });
+        }
+        expect(tauri.emitTo).not.toHaveBeenCalled();
     });
 
     it("keeps the Emoji picker anchored to the editor trigger rectangle", async () => {

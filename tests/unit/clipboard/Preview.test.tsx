@@ -1,5 +1,6 @@
-import { render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { error as logError } from "@tauri-apps/plugin-log";
 import { Item, ItemType } from "../../../src/clipboard/Item";
 import { createClipboardPreviewRuntime } from "../../../src/clipboard/clipboardPreviewRuntime";
 import { PreviewBody } from "../../../src/clipboard/Preview";
@@ -21,6 +22,20 @@ vi.mock("@tauri-apps/plugin-log", () => ({ error: vi.fn() }));
 const t = (key: string) => key;
 
 describe("PreviewBody transparency", () => {
+    it("shows the existing link loading state while the webpage request is still pending", async () => {
+        let complete!: (document: { url: string; html: string }) => void;
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "fetch_link_preview_document") return new Promise(resolve => { complete = resolve; });
+            return undefined;
+        });
+        const { container } = render(<PreviewBody payload={{ item_type: ItemType.Link, content: "https://example.com/slow" }} t={t} />);
+        expect(container.textContent).toContain("https://example.com/slow");
+        expect(container.textContent).toContain("preview.generating");
+        expect(container.querySelector("iframe")).toBeNull();
+        complete({ url: "https://example.com/slow", html: "<html><body>Loaded article</body></html>" });
+        await waitFor(() => expect(container.querySelector("iframe")?.getAttribute("srcdoc")).toContain("Loaded article"));
+    });
+
     it("sanitizes clipboard rich HTML in the separate preview window", () => {
         const { container } = render(
             <PreviewBody
@@ -68,6 +83,40 @@ describe("PreviewBody transparency", () => {
         expect(frame.getAttribute("sandbox")).toBe("");
     });
 
+    it.each([
+        ["link_preview_proxy_unavailable", "preview.linkProxyUnavailable"],
+        ["link_preview_fake_ip", "preview.linkFakeIp"],
+        ["link_preview_timeout", "preview.linkTimeout"],
+        ["link_preview_blocked", "preview.linkBlocked"],
+        ["link_preview_network", "preview.linkNetworkError"],
+        ["link_preview_not_html", "preview.linkNotHtml"],
+        ["link_preview_redirect_limit", "preview.linkRedirectLimit"],
+        ["link_preview_http_status", "preview.linkHttpError"],
+        ["error sending request for url (https://example.com/?token=private-test-value)", "preview.linkNetworkError"],
+    ])("localizes link preview failure %s without exposing the raw error", async (failure, message) => {
+        tauri.invoke.mockRejectedValueOnce(failure);
+        const { container, getByRole } = render(
+            <PreviewBody payload={{ item_type: ItemType.Link, content: "https://example.com/page" }} t={t} />,
+        );
+
+        await waitFor(() => expect(container).toHaveTextContent(message));
+        expect(container).not.toHaveTextContent("private-test-value");
+        expect(container).not.toHaveTextContent("error sending request");
+        expect(vi.mocked(logError).mock.calls.flat().join(" ")).not.toContain("private-test-value");
+        expect(getByRole("button", { name: "preview.openOriginalLink" })).toBeEnabled();
+    });
+
+    it("opens the original link from the failed preview", async () => {
+        tauri.invoke.mockRejectedValueOnce("link_preview_proxy_unavailable");
+        const { getByRole } = render(
+            <PreviewBody payload={{ item_type: ItemType.Link, content: "https://example.com/page" }} t={t} />,
+        );
+        await waitFor(() => expect(getByRole("button", { name: "preview.openOriginalLink" })).toBeEnabled());
+        tauri.invoke.mockResolvedValueOnce(undefined);
+        fireEvent.click(getByRole("button", { name: "preview.openOriginalLink" }));
+        expect(tauri.invoke).toHaveBeenLastCalledWith("open_url_in_browser", { url: "https://example.com/page" });
+    });
+
     it("renders the complete long text delivered by the preview runtime", async () => {
         const body = "line of saved text\n".repeat(1200) + "FINAL LINE";
         const path = "C:\\history\\data\\long-text";
@@ -87,6 +136,8 @@ describe("PreviewBody transparency", () => {
     });
 
     beforeEach(() => {
+        cleanup();
+        vi.mocked(logError).mockClear();
         tauri.invoke.mockReset();
         tauri.invoke.mockImplementation(async (command: string) => {
             if (command === "history_image_metadata") {

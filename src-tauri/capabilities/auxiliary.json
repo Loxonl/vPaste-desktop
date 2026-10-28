@@ -1,0 +1,16 @@
+{
+  "identifier": "auxiliary-window-events",
+  "description": "Allow auxiliary pages to receive opening payloads and log initialization errors.",
+  "local": true,
+  "windows": [
+    "pasteFallbackNotice",
+    "onboardingPermission",
+    "trayMenu",
+    "emojiPicker",
+    "tabEditor"
+  ],
+  "permissions": [
+    "core:event:default",
+    "log:default"
+  ]
+}

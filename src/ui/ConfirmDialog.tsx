@@ -10,7 +10,8 @@ import styles from "./ConfirmDialog.module.css";
 export type ConfirmDialogProps = {
     open: boolean;
     title: string;
-    description: string;
+    description: string | readonly string[];
+    warning?: string;
     cancelLabel: string;
     confirmLabel: string;
     backdropClassName?: string;
@@ -28,6 +29,7 @@ export function ConfirmDialog({
     open,
     title,
     description,
+    warning,
     cancelLabel,
     confirmLabel,
     backdropClassName,
@@ -41,13 +43,14 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
     const titleId = useId();
     const descriptionId = useId();
+    const warningId = useId();
 
     return (
         <Dialog
             open={open}
             onClose={onCancel}
             aria-labelledby={titleId}
-            aria-describedby={descriptionId}
+            aria-describedby={warning ? `${descriptionId} ${warningId}` : descriptionId}
             maxWidth={false}
             data-keyboard-passthrough={keyboardPassthrough ? "dialog" : undefined}
             BackdropProps={{
@@ -59,9 +62,14 @@ export function ConfirmDialog({
                 {title}
             </DialogTitle>
             <DialogContent className={styles.content}>
-                <DialogContentText id={descriptionId} className={styles.description}>
-                    {description}
+                <DialogContentText id={descriptionId} className={styles.description} component={typeof description === "string" ? "p" : "div"}>
+                    {typeof description === "string" ? description : (
+                        <ul className={styles.details}>
+                            {description.map(line => <li key={line}>{line}</li>)}
+                        </ul>
+                    )}
                 </DialogContentText>
+                {warning && <DialogContentText id={warningId} className={styles.warning}>{warning}</DialogContentText>}
                 {status}
             </DialogContent>
             <DialogActions className={styles.actions}>

@@ -7507,6 +7507,7 @@ dependencies = [
  "drag",
  "env_logger",
  "hex",
+ "hyper-util",
  "image",
  "infer 0.15.0",
  "lazy_static",

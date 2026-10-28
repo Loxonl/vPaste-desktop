@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn unsupported_import_database_is_rejected_before_creating_destination() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let target = root.path().join("target");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    let source_path = source.join("vpaste.db");
+    let connection = rusqlite::Connection::open(&source_path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE clipboard(content TEXT);
+         INSERT INTO clipboard VALUES('untouched');",
+        )
+        .unwrap();
+    drop(connection);
+    let before = fs::read(&source_path).unwrap();
+    assert!(merge_clipboard_database(
+        source.to_str().unwrap(),
+        target.to_str().unwrap(),
+        "/source"
+    )
+    .is_err());
+    assert!(!target.join("vpaste.db").exists());
+    assert_eq!(fs::read(source_path).unwrap(), before);
+}
+
+#[test]
 fn managed_import_paths_follow_destination_not_source_separators() {
     assert_eq!(
         rewrite_internal_storage_paths(r"C:\old\data\item".into(), r"C:\old", "/Users/new/history"),

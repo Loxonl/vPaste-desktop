@@ -140,6 +140,8 @@ body,
   min-height: 0;
   border-radius: var(--ui-radius-window);
   display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-3);
   align-items: center;
   justify-content: center;
   padding: 24px;

@@ -5,6 +5,7 @@ import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
 import { useLanguage } from "../lang";
 import { loadAndApplyTheme } from "../theme";
+import { notifyAuxiliaryWindowReady } from "../auxiliaryWindowReady";
 import { NAME_PREFIX_EMOJIS } from "./nameEmoji";
 import styles from "./EmojiPicker.module.css";
 
@@ -52,6 +53,7 @@ export default function EmojiPicker() {
                 error(`Failed to parse emoji picker payload: ${e}`);
             }
         });
+        const cancelReady = notifyAuxiliaryWindowReady([unlistenOpen]);
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === "Escape") {
                 event.preventDefault();
@@ -60,6 +62,7 @@ export default function EmojiPicker() {
         };
         window.addEventListener("keydown", handleKeyDown);
         return () => {
+            cancelReady();
             unlistenOpen.then(f => f()).catch(e => error(`Failed to unlisten emoji picker: ${e}`));
             window.removeEventListener("keydown", handleKeyDown);
         };

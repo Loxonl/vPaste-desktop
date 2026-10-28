@@ -32,7 +32,8 @@ vi.mock("@mui/icons-material/SwapVertRounded", () => ({ default: () => <span /> 
 vi.mock("@mui/icons-material/UndoRounded", () => ({ default: () => <span /> }));
 vi.mock("../../../src/lang", () => ({
     useLanguage: () => ({
-        t: (key: string) => key,
+        t: (key: string, params?: Record<string, string | number>) => key === "pasteQueue.emptyIntercepting"
+            ? `Paste from queue with ${params?.shortcut}` : key,
     }),
 }));
 
@@ -99,10 +100,18 @@ beforeEach(() => {
 
 afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 });
 
 describe("PasteQueue", () => {
+    it.each([["Win32", "Ctrl + V"], ["MacIntel", "⌘ + V"]])("shows the native paste chord in an empty queue on %s", async (platform, shortcut) => {
+        vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
+        tauri.invoke.mockResolvedValue({ ...state(), items: [] });
+        render(<PasteQueue />);
+        expect(await screen.findByText(`Paste from queue with ${shortcut}`)).toBeVisible();
+    });
+
     it("loads image thumbnails through the history preview asset command", async () => {
         const imageState = {
             ...state(),
@@ -134,7 +143,7 @@ describe("PasteQueue", () => {
         });
     });
 
-    it("falls back to a decrypted data URL when an image preview asset cannot be created", async () => {
+    it("falls back to a data URL when an image preview asset cannot be created", async () => {
         const imageState = {
             ...state(),
             items: [{

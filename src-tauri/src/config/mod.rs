@@ -26,6 +26,14 @@ impl AutoCleanupPolicy {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MousePasteMode {
+    #[default]
+    Single,
+    Double,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     pub startup: bool,
@@ -46,6 +54,10 @@ pub struct Config {
     pub retain_tab_position: bool,
     #[serde(default = "default_true")]
     pub link_auto_preview: bool,
+    #[serde(default)]
+    pub mouse_paste_mode: MousePasteMode,
+    #[serde(default)]
+    pub hover_preview_enabled: bool,
     #[serde(default = "default_true")]
     pub sensitive_content_protection: bool,
     #[serde(default = "default_true")]
@@ -78,6 +90,8 @@ impl Default for Config {
             retain_last_position: false,
             retain_tab_position: false,
             link_auto_preview: true,
+            mouse_paste_mode: MousePasteMode::Single,
+            hover_preview_enabled: false,
             sensitive_content_protection: true,
             quick_input_enabled: true,
             tab_quick_select_enabled: true,
@@ -283,7 +297,22 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{AutoCleanupPolicy, Config};
+    use super::{AutoCleanupPolicy, Config, MousePasteMode};
+
+    #[test]
+    fn mouse_preferences_preserve_legacy_behavior_and_round_trip() {
+        let mut old = serde_json::to_value(Config::default()).unwrap();
+        old.as_object_mut().unwrap().remove("mouse_paste_mode");
+        old.as_object_mut().unwrap().remove("hover_preview_enabled");
+        let mut restored: Config = serde_json::from_value(old).unwrap();
+        assert_eq!(restored.mouse_paste_mode, MousePasteMode::Single);
+        assert!(!restored.hover_preview_enabled);
+        restored.mouse_paste_mode = MousePasteMode::Double;
+        restored.hover_preview_enabled = true;
+        let saved = serde_json::to_value(restored).unwrap();
+        assert_eq!(saved["mouse_paste_mode"], "double");
+        assert_eq!(saved["hover_preview_enabled"], true);
+    }
 
     #[test]
     fn auto_cleanup_is_disabled_for_new_and_legacy_configs() {

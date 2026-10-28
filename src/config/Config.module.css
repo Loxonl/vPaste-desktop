@@ -259,6 +259,18 @@ body {
     flex: 0 0 auto;
 }
 
+.history-transfer-result {
+    display: inline-grid;
+    max-width: 100%;
+    gap: var(--ui-space-1);
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.history-transfer-file-count {
+    color: var(--ui-text-muted);
+}
+
 .data-list-copy {
     min-width: 0;
     flex: 1 1 auto;
@@ -307,16 +319,25 @@ body {
     flex: 1 1 auto;
 }
 
-.about-update-status {
-    margin-top: var(--ui-space-1);
-    color: var(--settings-muted);
-    font-size: 12px;
+.about-update-announcement {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
 }
 
-.about-update-status.is-error {
-    color: var(--ui-danger);
+.about-update-control {
+    display: inline-flex;
+    position: relative;
 }
 
+.about-update-button {
+    min-width: 144px;
+}
+
+.about-update-control,
 .about-update-button,
 .about-star-action {
     flex: 0 0 auto;
@@ -398,7 +419,7 @@ body {
         padding: var(--ui-space-4);
     }
 
-    .about-update-button {
+    .about-update-control {
         flex: 1 1 100%;
     }
 

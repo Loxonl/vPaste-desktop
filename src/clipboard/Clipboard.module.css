@@ -1115,12 +1115,8 @@ body {
   box-shadow: var(--ui-clipboard-card-shadow);
 }
 
-:root[data-theme="dark"] .cards-container:not(.dragging) .clipboard-card:hover,
-:root[data-theme="dark"] .cards-container:not(.dragging) .clipboard-card.simulated-hover {
-  box-shadow: var(--ui-clipboard-card-hover-shadow);
-}
-
-:root[data-theme="dark"] .clipboard-card.selected {
+:root[data-theme="dark"] .clipboard-card.selected,
+:root[data-theme="dark"] .clipboard-card.simulated-hover {
   outline-color: var(--theme-accent);
   box-shadow: var(--ui-clipboard-card-selected-shadow);
 }
@@ -1189,13 +1185,8 @@ body {
   line-height: 1.5;
 }
 
-.cards-container:not(.dragging):not(.wheel-scrolling) .clipboard-card:hover,
-.cards-container:not(.dragging):not(.wheel-scrolling) .clipboard-card.simulated-hover {
-  transform: translateY(-3px);
-  box-shadow: var(--ui-clipboard-card-hover-shadow);
-}
-
-.clipboard-card.selected {
+.clipboard-card.selected,
+.clipboard-card.simulated-hover {
   outline: 2px solid var(--ui-clipboard-card-selected-outline);
   outline-offset: 2px;
   box-shadow: var(--ui-clipboard-card-selected-shadow);
@@ -1992,11 +1983,8 @@ body {
   box-shadow: var(--ui-clipboard-card-shadow);
 }
 
-:root[data-theme="dark"] .clipboard-card:hover {
-  box-shadow: var(--ui-clipboard-card-hover-shadow);
-}
-
-:root[data-theme="dark"] .clipboard-card.selected {
+:root[data-theme="dark"] .clipboard-card.selected,
+:root[data-theme="dark"] .clipboard-card.simulated-hover {
   outline-color: var(--theme-accent);
   box-shadow: var(--ui-clipboard-card-selected-shadow);
 }

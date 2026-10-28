@@ -1,8 +1,10 @@
+import { useEffect } from "react";
 import ContentCopyRoundedIcon from "@mui/icons-material/ContentCopyRounded";
 import Button from "@mui/material/Button";
 import { invoke } from "@tauri-apps/api/core";
 import { error } from "@tauri-apps/plugin-log";
 import { useLanguage } from "../lang";
+import { notifyAuxiliaryWindowReady } from "../auxiliaryWindowReady";
 import styles from "./PasteFallbackNotice.module.css";
 
 type PasteFallbackNoticeProps = {
@@ -13,6 +15,7 @@ export default function PasteFallbackNotice({
     showSettingsAction = true,
 }: PasteFallbackNoticeProps) {
     const { t } = useLanguage();
+    useEffect(() => notifyAuxiliaryWindowReady(), []);
 
     const openPermissionCenter = async () => {
         try {

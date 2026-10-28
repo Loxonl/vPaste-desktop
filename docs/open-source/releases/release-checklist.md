@@ -72,7 +72,7 @@ The workflow creates a Draft Release only. It never creates a tag-triggered rele
 - Published releases contain nine uploaded assets: Windows installer and Portable ZIP, three macOS DMGs, two macOS updater archives, `SHA256SUMS.txt`, and `vPaste_<version>_release-metadata.zip`. GitHub adds its two source archives, giving eleven download entries.
 - The metadata ZIP preserves `LICENSE`, third-party notices, the dependency inventory, SBOM, the three updater signatures, and a version-specific `latest.json` snapshot. The client reads signatures from the channel manifest; updater packages remain directly downloadable. Checksums cover the final public packages and metadata ZIP.
 - WinGet YAML remains in the Windows Actions artifact for maintainers and is not uploaded as a separate Release asset. Local packaging output is unchanged.
-- Private drafts use the same metadata ZIP and download table, but contain no updater signatures or manifest snapshot. Their history-converter tools remain available as separate assets.
+- Private drafts use the same metadata ZIP and download table, but contain no updater signatures or manifest snapshot.
 - macOS packages must pass signature and notarization checks. The published-release workflow verifies updater signatures before packaging metadata, then publishes the website channel manifest after upload verification.
 - Never replace assets under an already published version; create a new version for changed package bytes.
 - Apply compact packaging to new releases. Existing releases may receive the download table without replacing their packages or checksums.

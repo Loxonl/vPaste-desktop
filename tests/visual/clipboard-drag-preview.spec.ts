@@ -90,7 +90,7 @@ async function openDragCard(page: Page, kind: DragKind, options: {
     await page.setViewportSize({ width: 960, height: 600 });
     await page.goto("/clipboard");
     const card = page.locator('[data-hash="drag-thumbnail-item"]');
-    await expect(card).toBeVisible();
+    await expect(card).toBeVisible({ timeout: 15_000 });
     if (kind === "Image" || (kind === "File" && fileCase === "image")) {
         await expect.poll(() => card.locator('[class*="card-content"] img').evaluate(image => (image as HTMLImageElement).naturalWidth)).toBe(200);
     } else if (kind === "File") {

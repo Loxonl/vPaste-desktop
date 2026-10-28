@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
+import Button from "@mui/material/Button";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
 import { ToolbarIconButton } from "../ui/ToolbarIconButton";
@@ -10,6 +11,7 @@ import { FileTypePresentation } from "./FileTypePresentation";
 import { isImagePath, type FilePreviewInfo } from "./itemPresentation";
 import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
 import { useRichPreviewCanvas } from "./useRichPreviewCanvas";
+import { clipboardTabNavigationDirection } from "./clipboardKeyboard";
 import { useLanguage } from "../lang";
 import { AnimatePresence, m, useMotionPreset } from "../ui/motion";
 import styles from "./Preview.module.css";
@@ -21,6 +23,7 @@ type HistoryImageMetadata = {
 };
 
 type PreviewPayload = {
+    hover?: boolean;
     item_type?: ItemType | string;
     itemType?: ItemType | string;
     content: string;
@@ -35,6 +38,17 @@ type PreviewPayload = {
 };
 
 type PreviewNavigationDirection = -1 | 0 | 1;
+
+const LINK_PREVIEW_ERROR_MESSAGES = new Map<string, string>([
+    ["link_preview_proxy_unavailable", "preview.linkProxyUnavailable"],
+    ["link_preview_fake_ip", "preview.linkFakeIp"],
+    ["link_preview_timeout", "preview.linkTimeout"],
+    ["link_preview_blocked", "preview.linkBlocked"],
+    ["link_preview_network", "preview.linkNetworkError"],
+    ["link_preview_not_html", "preview.linkNotHtml"],
+    ["link_preview_redirect_limit", "preview.linkRedirectLimit"],
+    ["link_preview_http_status", "preview.linkHttpError"],
+]);
 
 function parseFilePaths(content: string): string[] {
     try {
@@ -219,8 +233,9 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
                 if (!cancelled) setLinkDocument(document);
             })
             .catch(e => {
-                if (!cancelled) setLinkError(String(e));
-                error(`Failed to fetch link preview document: ${e}`);
+                const message = LINK_PREVIEW_ERROR_MESSAGES.get(typeof e === "string" ? e : "") || "preview.linkNetworkError";
+                if (!cancelled) setLinkError(message);
+                error(`Link preview failed: ${message}`);
             });
         return () => {
             cancelled = true;
@@ -285,7 +300,13 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
                     />
                 ) : (
                     <div className={styles["preview-link-loading"]}>
-                        {linkError || t("preview.generating")}
+                        <span role={linkError ? "alert" : undefined}>{t(linkError || "preview.generating")}</span>
+                        {linkError && (
+                            <Button size="small" onClick={() => {
+                                void invoke("open_url_in_browser", { url: linkUrl })
+                                    .catch(() => error("Failed to open original preview link"));
+                            }}>{t("preview.openOriginalLink")}</Button>
+                        )}
                     </div>
                 )}
             </div>
@@ -373,10 +394,12 @@ export default function Preview() {
     const [pinned, setPinned] = useState(false);
     const openedAtRef = useRef(0);
     const pinnedRef = useRef(false);
+    const hoverRef = useRef(false);
     const pendingNavigationDirectionRef = useRef<PreviewNavigationDirection>(0);
 
     useEffect(() => {
         const unlisten = listen<PreviewPayload>("preview-item", event => {
+            hoverRef.current = event.payload.hover === true;
             openedAtRef.current = Date.now();
             pinnedRef.current = false;
             setPinned(false);
@@ -386,12 +409,23 @@ export default function Preview() {
             setPayload(event.payload);
         });
         const unlistenClear = listen("preview-clear", () => {
+            hoverRef.current = false;
             pendingNavigationDirectionRef.current = 0;
             setNavigationDirection(0);
             setPayload(null);
         });
+        const unlistenPromoted = listen("preview-promoted", () => { hoverRef.current = false; });
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === "ArrowRight" || event.key === "ArrowLeft" || event.key === "Tab") {
+            if (event.isComposing || event.keyCode === 229) return;
+            const tabDirection = clipboardTabNavigationDirection(event);
+            if (tabDirection !== null) {
+                event.preventDefault();
+                void emitTo("clipboard", "preview-navigate-selection", { direction: tabDirection, key: "Tab", ctrlKey: true })
+                    .catch(e => error(`Failed to switch preview category: ${e}`));
+                return;
+            }
+            const plainTab = event.key === "Tab" && !event.ctrlKey && !event.altKey && !event.metaKey;
+            if (event.key === "ArrowRight" || event.key === "ArrowLeft" || plainTab) {
                 event.preventDefault();
                 const direction = event.key === "ArrowLeft" || (event.key === "Tab" && event.shiftKey) ? -1 : 1;
                 pendingNavigationDirectionRef.current = direction;
@@ -413,6 +447,7 @@ export default function Preview() {
         return () => {
             unlisten.then(fn => fn()).catch(e => error(`Failed to unlisten preview: ${e}`));
             unlistenClear.then(fn => fn()).catch(e => error(`Failed to unlisten preview clear: ${e}`));
+            unlistenPromoted.then(fn => fn()).catch(e => error(`Failed to unlisten preview promotion: ${e}`));
             window.removeEventListener("keydown", handleKeyDown);
         };
     }, []);
@@ -425,7 +460,10 @@ export default function Preview() {
     };
 
     return (
-        <div className={styles["preview-shell"]}>
+        <div className={styles["preview-shell"]}
+            onMouseEnter={() => { if (hoverRef.current) void emitTo("clipboard", "preview-hover", true).catch(e => error(`Failed to retain hover preview: ${e}`)); }}
+            onMouseLeave={() => { if (hoverRef.current) void emitTo("clipboard", "preview-hover", false).catch(e => error(`Failed to leave hover preview: ${e}`)); }}
+        >
             <ToolbarIconButton
                 size="medium"
                 className={[styles["preview-pin"], pinned ? styles.pinned : ""].join(" ")}

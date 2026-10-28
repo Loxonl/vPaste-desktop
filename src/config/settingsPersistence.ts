@@ -9,23 +9,23 @@ interface PersistSettingsOptions<TConfig, TPaths> {
     serialize: (config: TConfig) => string;
 }
 
-export async function persistSettings<TConfig, TMigration, TPaths>({
+export async function persistSettings<TConfig, TSaveResult, TPaths>({
     bridge,
     previousConfig,
     nextConfig,
     applyConfig,
     applyStoragePaths,
     serialize,
-}: PersistSettingsOptions<TConfig, TPaths>): Promise<TMigration> {
+}: PersistSettingsOptions<TConfig, TPaths>): Promise<TSaveResult> {
     applyConfig(nextConfig);
 
     try {
-        const migration = await bridge.invoke<TMigration>("save_config", {
+        const saveResult = await bridge.invoke<TSaveResult>("save_config", {
             config: serialize(nextConfig),
         });
         const storagePaths = await bridge.invoke<TPaths>("get_storage_paths", {});
         applyStoragePaths(storagePaths);
-        return migration;
+        return saveResult;
     } catch (cause) {
         applyConfig(previousConfig);
         throw cause;

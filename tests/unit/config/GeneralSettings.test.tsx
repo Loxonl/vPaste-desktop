@@ -38,6 +38,19 @@ const bridge: SettingsBridge = {
 };
 
 describe("General settings accessibility", () => {
+    it("offers immediate single-click paste by default, double-click paste, and opt-in hover preview", async () => {
+        const onSave = vi.fn(async () => null);
+        render(<AppThemeProvider><MotionTestProvider><GeneralSettings bridge={bridge} config={DEFAULT_CONFIG} languages={[]} onSave={onSave} t={key => key} /></MotionTestProvider></AppThemeProvider>);
+        const user = userEvent.setup();
+        await user.click(screen.getByRole("combobox", { name: "settings.mousePaste" }));
+        await user.click(screen.getByRole("option", { name: "settings.mousePaste.double" }));
+        expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ mouse_paste_mode: "double" }));
+        const hover = screen.getByRole("checkbox", { name: "settings.hoverPreview" });
+        expect(hover).not.toBeChecked();
+        await user.click(hover);
+        expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ hover_preview_enabled: true }));
+    });
+
     it("lets a portable user opt in to launch at startup", async () => {
         vi.spyOn(navigator, "platform", "get").mockReturnValue("Win32");
         const portableBridge = {

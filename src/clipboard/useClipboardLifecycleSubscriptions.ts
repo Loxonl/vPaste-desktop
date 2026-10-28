@@ -17,6 +17,7 @@ export type CustomTabsChangedPayload = {
 export type PreviewNavigationPayload = {
     direction?: number;
     key?: string;
+    ctrlKey?: boolean;
 };
 
 type ClipboardTauriEventHandlers = {

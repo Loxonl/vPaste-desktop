@@ -1,4 +1,4 @@
-import { type RefObject, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import ButtonBase from "@mui/material/ButtonBase";
 import AddIcon from "@mui/icons-material/Add";
 import AppleIcon from "@mui/icons-material/Apple";
@@ -60,6 +60,17 @@ export function ClipboardTabBar({
 }: ClipboardTabBarProps) {
     const selectionIndicator = useMotionPreset("selectionIndicator");
     const shortcutHintMotion = useMotionPreset("shortcutHint");
+    const tabBarRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const container = tabBarRef.current;
+        const active = container?.querySelector<HTMLElement>(`.${styles["tab-item"]}.${styles.active}`);
+        if (!container || !active) return;
+        const bounds = container.getBoundingClientRect();
+        const tabBounds = active.getBoundingClientRect();
+        if (tabBounds.left < bounds.left) container.scrollLeft += tabBounds.left - bounds.left;
+        else if (tabBounds.right > bounds.right) container.scrollLeft += tabBounds.right - bounds.right;
+    }, [activeTab]);
 
     const activeIndicator = (active: boolean) => active ? (
         <m.span
@@ -101,7 +112,7 @@ export function ClipboardTabBar({
     };
 
     return (
-        <div className={classes(styles, "header-tabs")} onDragOver={event => event.preventDefault()}>
+        <div ref={tabBarRef} className={classes(styles, "header-tabs")} onDragOver={event => event.preventDefault()}>
             <ButtonBase
                 disableRipple
                 className={classes(styles, `tab-item fixed ${activeTab === "all" ? 'active' : ''}`)}

@@ -14,7 +14,6 @@ function setup(overrides = {}) {
     const config = { ...DEFAULT_CONFIG, ...overrides };
     const bridge = {
         invoke: vi.fn(async (command: string) => {
-            if (command === "get_history_format_status") return { migration_required: false };
             if (command === "list_recent_app_source_options") return [];
             return { items: 12, bytes: 2048 };
         }),
@@ -56,6 +55,8 @@ describe("Automatic history cleanup", () => {
         await user.click(screen.getByRole("option", { name: "按数量保留" }));
         await user.click(screen.getByRole("button", { name: "应用" }));
         const dialog = await screen.findByRole("alertdialog");
+        expect(within(dialog).getAllByRole("listitem")).toHaveLength(3);
+        expect(dialog).toHaveAccessibleDescription(/删除后无法恢复/);
         expect(dialog).toHaveTextContent("12");
         expect(dialog).toHaveTextContent("收藏");
         expect(dialog).toHaveTextContent("标签");

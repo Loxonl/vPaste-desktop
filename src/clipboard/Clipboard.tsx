@@ -125,6 +125,7 @@ import { createClipboardItemActions } from "./clipboardItemActions";
 import { createClipboardPasteRuntime } from "./clipboardPasteRuntime";
 import { createClipboardShowGate } from "./clipboardShowGate";
 import { createClipboardPreviewRuntime } from "./clipboardPreviewRuntime";
+import { createClipboardHoverPreview } from "./clipboardHoverPreview";
 import { parsePasteQueueState } from "./pasteQueueState";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
@@ -275,7 +276,12 @@ export default function Clipboard() {
     const customTabsStorageReadyRef = useRef(false);
     const pendingRecordTagAssignTargetRef = useRef<Item | null>(null);
     const previewRequestSeqRef = useRef(0);
+    const hoverPreviewRef = useRef<ReturnType<typeof createClipboardHoverPreview> | null>(null);
+    const hoverAllowedRef = useRef<() => boolean>(() => false);
+    const cycleTabRef = useRef<(direction: -1 | 1) => void>(() => { });
     const activateClipboardCardRef = useRef<(hash: string, plainText: boolean) => void>(() => { });
+    const mouseCardClickRef = useRef<(hash: string, plainText: boolean, doubleClick?: boolean) => void>(() => { });
+    const hoverCardRef = useRef<(hash: string, target: Element) => void>(() => { });
     const pasteQueueRevisionRef = useRef(0);
     const {
         clearTimer: clearAltHintTimer,
@@ -313,8 +319,8 @@ export default function Clipboard() {
         };
     }, [applyPasteQueueState]);
 
-    const activateClipboardCard = useCallback((hash: string, plainText: boolean) => {
-        activateClipboardCardRef.current(hash, plainText);
+    const activateClipboardCard = useCallback((hash: string, plainText: boolean, doubleClick?: boolean) => {
+        mouseCardClickRef.current(hash, plainText, doubleClick);
     }, []);
 
     const openClipboardContextMenu = useCallback((item: Item, clientX: number, clientY: number) => {
@@ -325,18 +331,23 @@ export default function Clipboard() {
         clearClickSuppression: clearCardsClickSuppression,
         finishPointerDrag: finishCardsPointerDrag,
         handleClickCapture: handleCardsClickCapture,
+        handleDoubleClick: handleCardsDoubleClick,
         handlePointerDown: handleCardsPointerDown,
+        handlePointerLeave: handleCardsPointerLeave,
         handlePointerMove: handleCardsPointerMove,
+        handleScroll: handleCardsScroll,
         resetPointerState: resetCardsPointerState,
         stopWheelScroll,
+        suspendPointerSelection,
     } = useClipboardListInteractions({
         containerRef: cardsContainerRef,
         tutorialActive,
         draggingClassName: styles.dragging,
         wheelScrollingClassName: styles["wheel-scrolling"],
-        cardSelector: `.${styles["clipboard-card"]}`,
+        cardSelector: `[data-results-active="true"] .${styles["clipboard-card"]}`,
         contextMenuSelector: `.${styles["context-menu"]}`,
         onActivateCard: activateClipboardCard,
+        onHoverCard: (hash, target) => hoverCardRef.current(hash, target),
         onLoadMore: force => maybeLoadMoreHistoryRef.current(force),
         onPointerStart: () => setContextMenu(null),
         onWheelStart: () => {
@@ -350,6 +361,20 @@ export default function Clipboard() {
         setTabContextMenu(null);
         activeTabRef.current = tabId;
         setActiveTab(tabId);
+    };
+
+    cycleTabRef.current = direction => {
+        if (tutorialActiveRef.current || contextMenu || tabContextMenu || isSearchComposing) return;
+        const tabIds = ["all", "favorite", ...dynamicTabs.map(tab => tab.id)];
+        const currentIndex = Math.max(0, tabIds.indexOf(activeTabRef.current));
+        const nextTab = tabIds[(currentIndex + direction + tabIds.length) % tabIds.length];
+        showGateRef.current!.cancel();
+        previewRequestSeqRef.current += 1;
+        void invoke<boolean>("is_preview_window_visible").then(visible => {
+            if (visible) return invoke("hide_preview_window");
+        }).catch(previewError => error(`Failed to close preview before switching category: ${previewError}`));
+        switchToTabWithShortcut(nextTab);
+        if (cardsContainerRef.current) cardsContainerRef.current.scrollLeft = 0;
     };
 
     const activateItemShortcut = (index: number) => {
@@ -1141,6 +1166,7 @@ export default function Clipboard() {
         tauri: {
             onBehaviorConfigChanged: config => {
                 clipboardBehaviorConfigRef.current = config;
+                if (!config.hover_preview_enabled) hoverPreviewRef.current?.cancel();
                 const preferences = resolveClipboardShowPreferences(
                     config,
                     searchWordRef.current,
@@ -1178,6 +1204,7 @@ export default function Clipboard() {
                 setAnimationState("entered");
             },
             onWindowHide: () => {
+                hoverPreviewRef.current?.cancel();
                 showGateRef.current!.cancel(true);
                 retainedScrollLeftRef.current = cardsContainerRef.current?.scrollLeft ?? 0;
                 resetCardsPointerState();
@@ -1237,7 +1264,15 @@ export default function Clipboard() {
                 applyItemTagsChanged(payload);
             },
             onPreviewNavigation: payload => {
+                suspendPointerSelection();
+                hoverPreviewRef.current?.cancel();
+                if (payload.key === "Tab" && payload.ctrlKey) {
+                    cycleTabRef.current(payload.direction === -1 ? -1 : 1);
+                    return;
+                }
                 if (payload.key === "Tab" && !tabQuickSelectEnabledRef.current) return;
+                if (showGateRef.current!.queueNavigation(() => navigateSelectedCard(payload.direction === -1 ? -1 : 1))) return;
+                showGateRef.current!.cancel();
                 navigateSelectedCard(payload.direction === -1 ? -1 : 1);
             },
         },
@@ -1357,6 +1392,8 @@ export default function Clipboard() {
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
+            suspendPointerSelection();
+            hoverPreviewRef.current?.cancel();
             const action = clipboardKeyDownAction(event, {
                 contextMenuOpen: contextMenu !== null,
                 isMac: isMacPlatform(),
@@ -1369,6 +1406,8 @@ export default function Clipboard() {
                 tabQuickSelectEnabled: tabQuickSelectEnabledRef.current,
             });
             if (!action) return;
+
+            if (action.type === "navigate-tab" && (tutorialActiveRef.current || tabContextMenu !== null)) return;
 
             if ((action.type === "delete-selected" || action.type === "edit-selected") && (
                 !document.hasFocus() || tutorialActiveRef.current
@@ -1433,6 +1472,9 @@ export default function Clipboard() {
                     return;
                 case "quick-tab":
                     switchToTabWithShortcut(action.tabId);
+                    return;
+                case "navigate-tab":
+                    cycleTabRef.current(action.direction);
                     return;
                 case "quick-item":
                     activateItemShortcut(action.index);
@@ -1565,7 +1607,7 @@ export default function Clipboard() {
             window.removeEventListener('keyup', handleKeyUp, true);
             window.removeEventListener('blur', handleBlur);
         };
-    }, [searchOpen, searchWord, isSearching, isSearchComposing, contextMenu, contextMenuIndex, queueSelectionMode, t]);
+    }, [searchOpen, searchWord, isSearching, isSearchComposing, contextMenu, contextMenuIndex, tabContextMenu, queueSelectionMode, t]);
 
     const handleSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         showGateRef.current!.cancel();
@@ -1602,7 +1644,27 @@ export default function Clipboard() {
         void clickClipboardItem(hash, plainText);
     };
 
+    mouseCardClickRef.current = (hash, plainText, doubleClick = false) => {
+        const doubleMode = clipboardBehaviorConfigRef.current?.mouse_paste_mode === "double";
+        if (doubleClick) {
+            if (!queueSelectionMode && doubleMode) activateClipboardCardRef.current(hash, plainText);
+            return;
+        }
+        if (!queueSelectionMode && doubleMode) {
+            const item = pageListRef.current.find(candidate => candidate.getHash() === hash);
+            if (!item) return;
+            showGateRef.current!.cancel();
+            if (selectedRef.current === hash) return;
+            selectedRef.current = hash;
+            setSelected(hash);
+            refreshPreviewIfVisible(item, true);
+            return;
+        }
+        activateClipboardCardRef.current(hash, plainText);
+    };
+
     const openContextMenu = async (item: Item, clientX: number, clientY: number) => {
+        suspendPointerSelection();
         showGateRef.current!.cancel();
         selectedRef.current = item.getHash() as string;
         setSelected(item.getHash());
@@ -1663,6 +1725,56 @@ export default function Clipboard() {
         showToast,
         t,
     });
+
+    const pointerSelectionAllowed = () => !tutorialActiveRef.current && !queueSelectionMode && !isSearchComposing && !isSearching
+        && !historyRefreshingRef.current && !showGateRef.current!.pending
+        && !contextMenu && !tabContextMenu && !tagCreateChoice && !deleteConfirmTab && !deleteConfirmRecordTag
+        && !updateConfirmOpen && !document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]');
+    hoverAllowedRef.current = () => Boolean(clipboardBehaviorConfigRef.current?.hover_preview_enabled)
+        && pointerSelectionAllowed();
+    hoverCardRef.current = (hash, target) => {
+        if (!pointerSelectionAllowed()) return;
+        const item = pageListRef.current.find(candidate => candidate.getHash() === hash);
+        if (!item) return;
+        // A real pointer choice owns selection just like explicit card navigation.
+        showGateRef.current!.cancel();
+        if (selectedRef.current !== hash) {
+            hoverPreviewRef.current?.cancel();
+            selectedRef.current = hash;
+            setSelected(hash);
+            refreshPreviewIfVisible(item, true);
+        }
+        if (target.closest("button, a, input, textarea, [contenteditable=true]")) {
+            hoverPreviewRef.current?.leave();
+        } else {
+            hoverPreviewRef.current?.enter(item);
+        }
+    };
+    if (!hoverPreviewRef.current) {
+        hoverPreviewRef.current = createClipboardHoverPreview({
+            allowed: () => hoverAllowedRef.current(),
+            requestSequence: previewRequestSeqRef,
+            open: (item, sequence, request, isCurrent) => openPreviewItem(item, sequence, "hover", request, isCurrent),
+            dismiss: request => invoke("dismiss_hover_preview_window", { request }),
+            onError: hoverError => error(`Failed to update hover preview: ${hoverError}`),
+        });
+    }
+    useEffect(() => {
+        const cancel = () => hoverPreviewRef.current?.cancel();
+        const unlisten = listen<boolean>("preview-hover", event => hoverPreviewRef.current?.previewHover(event.payload));
+        window.addEventListener("pointerdown", cancel, true);
+        window.addEventListener("wheel", cancel, { capture: true, passive: true });
+        return () => {
+            cancel();
+            window.removeEventListener("pointerdown", cancel, true);
+            window.removeEventListener("wheel", cancel, true);
+            void unlisten.then(dispose => dispose()).catch(e => error(`Failed to unlisten hover preview: ${e}`));
+        };
+    }, []);
+    useEffect(() => {
+        suspendPointerSelection();
+        hoverPreviewRef.current?.cancel();
+    }, [activeTab, searchWord, queueSelectionMode, contextMenu, tabContextMenu, tagCreateChoice, isSearchComposing]);
 
     const navigateSelectedCard = (direction: number) => {
         const list = pageListRef.current;
@@ -2052,7 +2164,15 @@ export default function Clipboard() {
                 ref={cardsContainerRef}
                 aria-busy={filteringResults}
                 onScroll={() => {
+                    hoverPreviewRef.current?.cancel();
+                    handleCardsScroll();
                     if (!tutorialActive) maybeLoadMoreHistory();
+                }}
+                onPointerLeave={handleCardsPointerLeave}
+                onPointerOut={event => {
+                    const card = (event.target as Element).closest<HTMLElement>(`.${styles["clipboard-card"]}`);
+                    if (card && event.relatedTarget instanceof Node && card.contains(event.relatedTarget)) return;
+                    hoverPreviewRef.current?.leave();
                 }}
                 onPointerDown={(event) => {
                     if (!tutorialActive) handleCardsPointerDown(event);
@@ -2070,6 +2190,7 @@ export default function Clipboard() {
                     if (!tutorialActive) finishCardsPointerDrag(event);
                 }}
                 onClickCapture={handleCardsClickCapture}
+                onDoubleClickCapture={handleCardsDoubleClick}
             >
                 {tutorialActive ? (
                     <TutorialOverlay

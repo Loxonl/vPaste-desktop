@@ -30,14 +30,18 @@ export function createClipboardPreviewRuntime(
     const openPreviewItem = async (
         item: Item,
         requestSeq: number = ++options.requestSequence.current,
+        mode: "manual" | "selection" | "hover" = "manual",
+        hoverRequest?: number,
+        isCurrent: () => boolean = () => true,
     ) => {
-        options.closeContextMenu();
+        const current = () => requestSeq === options.requestSequence.current && isCurrent();
+        if (mode !== "hover") options.closeContextMenu();
         if (item.getType() === "File") {
             try {
                 const info = await invoke<FilePreviewInfo>("file_preview_info", {
                     content: item.getContent(),
                 });
-                if (requestSeq !== options.requestSequence.current) return;
+                if (!current()) return;
                 const previewableFile = (
                     info.kind === "single-preview" && !!info.preview_path
                 ) || info.kind === "pdf-preview" || info.kind === "text-preview";
@@ -60,8 +64,9 @@ export function createClipboardPreviewRuntime(
                     "history_image_metadata",
                     { path: item.getContent() },
                 );
-                if (requestSeq !== options.requestSequence.current) return;
+                if (!current()) return;
                 if (metadata.previewLimited || metadata.animationLimited) {
+                    if (mode !== "manual") return;
                     try {
                         await invoke("hide_preview_window");
                     } catch (previewError) {
@@ -75,7 +80,8 @@ export function createClipboardPreviewRuntime(
                 }
             } catch (previewError) {
                 error("Failed to check image preview budget: " + previewError);
-                if (requestSeq !== options.requestSequence.current) return;
+                if (mode !== "manual") return;
+                if (!current()) return;
                 options.showToast(
                     options.t("clipboard.previewUnsupported"),
                     "warning",
@@ -83,13 +89,13 @@ export function createClipboardPreviewRuntime(
                 return;
             }
         }
-        if (requestSeq !== options.requestSequence.current) return;
-        options.selectItem(item.getHash());
+        if (!current()) return;
+        if (mode !== "hover") options.selectItem(item.getHash());
         try {
             const textContent = item.getType() === "TextFile"
                 ? await invoke<string>("plain_text_content", { hash: item.getHash() })
                 : item.getTextContent();
-            if (requestSeq !== options.requestSequence.current) return;
+            if (!current()) return;
             await invoke("show_preview_window", {
                 itemType: item.getType(),
                 content: item.getContent(),
@@ -97,10 +103,16 @@ export function createClipboardPreviewRuntime(
                 textContent,
                 richHtml: item.getRichHtml(),
                 appSource: item.getAppSource(),
+                ...(mode !== "manual" ? { mode } : {}),
+                ...(hoverRequest !== undefined ? { hoverRequest } : {}),
             });
+            if (mode === "hover" && !current()) {
+                await invoke("dismiss_hover_preview_window", { request: hoverRequest });
+            }
         } catch (previewError) {
-            if (requestSeq !== options.requestSequence.current) return;
+            if (!current()) return;
             error(`Failed to open preview: ${previewError}`);
+            if (mode === "hover") return;
             options.showToast(
                 options.t("clipboard.previewFailed", {
                     error: String(previewError),
@@ -110,14 +122,14 @@ export function createClipboardPreviewRuntime(
         }
     };
 
-    const refreshPreviewIfVisible = (item: Item) => {
+    const refreshPreviewIfVisible = (item: Item, keepFocus = false) => {
         const requestSeq = ++options.requestSequence.current;
         void invoke<boolean>("is_preview_window_visible")
             .then(visible => {
                 if (!visible || requestSeq !== options.requestSequence.current) {
                     return;
                 }
-                return openPreviewItem(item, requestSeq);
+                return openPreviewItem(item, requestSeq, keepFocus ? "selection" : "manual");
             })
             .catch(previewError => {
                 error(
@@ -127,7 +139,8 @@ export function createClipboardPreviewRuntime(
     };
 
     const togglePreview = (item: Item | undefined) => {
-        void invoke<boolean>("is_preview_window_visible")
+        void invoke("dismiss_hover_preview_window")
+            .then(() => invoke<boolean>("is_preview_window_visible"))
             .then(visible => {
                 if (visible) {
                     options.requestSequence.current += 1;

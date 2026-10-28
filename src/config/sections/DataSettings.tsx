@@ -17,7 +17,6 @@ import styles from "../Config.module.css";
 import AutoCleanupSettings from "./AutoCleanupSettings";
 
 export default function DataSettings({ bridge, config, storagePaths, t, onSave, onBlockingOperationChange, dialogBackdropClassName }: SettingsSectionProps & { storagePaths: StoragePaths | null, onBlockingOperationChange: (operation: SettingsBlockingOperation | null) => void, dialogBackdropClassName?: string }) {
-    const [legacyHistoryBlocked, setLegacyHistoryBlocked] = React.useState(false);
     const [storageDirDraft, setStorageDirDraft] = React.useState(config.storage_dir || "");
     const [cleanupDays, setCleanupDays] = React.useState<string>("");
     const [cleanupInfo, setCleanupInfo] = React.useState<StorageCleanupInfo | null>(null);
@@ -29,13 +28,10 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
     const [privacyManagerOpen, setPrivacyManagerOpen] = React.useState(false);
     const [cleanupMenuAnchor, setCleanupMenuAnchor] = React.useState<HTMLElement | null>(null);
     const [cleanupConfirmOpen, setCleanupConfirmOpen] = React.useState(false);
-    const [legacyCleanupConfirmOpen, setLegacyCleanupConfirmOpen] = React.useState(false);
-    const [legacyCleanupWorking, setLegacyCleanupWorking] = React.useState(false);
-    const [legacyCleanupError, setLegacyCleanupError] = React.useState<string | null>(null);
     const [cleanupWorking, setCleanupWorking] = React.useState(false);
     const [historyWorkingArea, setHistoryWorkingArea] = React.useState<'storage' | 'export' | 'import' | null>(null);
     const [historyMessage, setHistoryMessage] = React.useState<{ kind: 'success' | 'error', text: string } | null>(null);
-    const [transferMessage, setTransferMessage] = React.useState<{ kind: 'success' | 'error', text: string } | null>(null);
+    const [transferMessage, setTransferMessage] = React.useState<{ kind: 'success' | 'error', text: string, detail?: string } | null>(null);
     const [archiveProgress, setArchiveProgress] = React.useState<HistoryArchiveProgressPayload | null>(null);
     const historyWorking = historyWorkingArea !== null;
     const transferWorking = historyWorkingArea === 'export' || historyWorkingArea === 'import';
@@ -81,33 +77,6 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
     React.useEffect(() => {
         refreshStorageSummary();
     }, [refreshStorageSummary]);
-
-    React.useEffect(() => {
-        bridge.invoke<{ migration_required: boolean }>('get_history_format_status')
-            .then(status => setLegacyHistoryBlocked(status.migration_required))
-            .catch(e => error(`Failed to load history format status: ${e}`));
-        const unlisten = bridge.listen<{ migration_required: boolean }>('history-format-status-changed', event => {
-            setLegacyHistoryBlocked(event.payload.migration_required);
-        });
-        return () => { unlisten.then(fn => fn()).catch(e => error(`Failed to unlisten history format status: ${e}`)); };
-    }, [bridge]);
-
-    const handleClearLegacyHistory = async () => {
-        if (legacyCleanupWorking) return;
-        setLegacyCleanupWorking(true);
-        setLegacyCleanupError(null);
-        try {
-            await bridge.invoke('clear_legacy_history', { confirmation: 'CLEAR_LEGACY_HISTORY' });
-            setLegacyHistoryBlocked(false);
-            setLegacyCleanupConfirmOpen(false);
-            refreshStorageSummary();
-        } catch (e) {
-            void error(`Failed to clear legacy history: ${e}`).catch(() => undefined);
-            setLegacyCleanupError(t("settings.legacyHistory.clearFailed", { error: String(e) }));
-        } finally {
-            setLegacyCleanupWorking(false);
-        }
-    };
 
     React.useEffect(() => {
         const resetCleanup = () => {
@@ -191,7 +160,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
         try {
             const target = await bridge.save({
                 defaultPath: "vpaste-history.vphistory",
-                filters: [{ name: "vPaste History", extensions: ["vphistory"] }],
+                filters: [{ name: t("settings.historyArchiveFileType"), extensions: ["vphistory"] }],
             });
             if (!target) return;
             setHistoryWorkingArea('export');
@@ -220,7 +189,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
         try {
             const selected = await bridge.open({
                 multiple: false,
-                filters: [{ name: "vPaste History", extensions: ["vphistory"] }],
+                filters: [{ name: t("settings.historyArchiveFileType"), extensions: ["vphistory"] }],
             });
             if (typeof selected !== "string" || !selected) return;
             setHistoryWorkingArea('import');
@@ -233,7 +202,8 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
             const result = await bridge.invoke<HistoryArchiveInfo>('import_history_archive', { archivePath: selected });
             setTransferMessage({
                 kind: 'success',
-                text: t("settings.importSuccess", { merged: result.merged_items, skipped: result.skipped_items, files: result.copied_files })
+                text: t("settings.importSuccess", { merged: result.merged_items, skipped: result.skipped_items, files: result.copied_files }),
+                detail: t("settings.importSuccessFiles", { files: result.copied_files })
             });
             if (cleanupDays) {
                 refreshCleanupInfo(Number(cleanupDays));
@@ -395,17 +365,6 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                     {t("settings.section.history")}
                 </Typography>
                 <List>
-                    {legacyHistoryBlocked && (
-                        <ListItem sx={{ alignItems: 'flex-start' }}>
-                            <Stack spacing={1} sx={{ width: '100%' }}>
-                                <ListItemText primary={t("settings.legacyHistory.title")} secondary={t("settings.legacyHistory.desc")} />
-                                <Button color="error" variant="outlined" size="small" onClick={() => setLegacyCleanupConfirmOpen(true)} className={classes(styles, "data-action-button")}>
-                                    {t("settings.legacyHistory.clear")}
-                                </Button>
-                            </Stack>
-                        </ListItem>
-                    )}
-                    {legacyHistoryBlocked && <Divider component="li" />}
                     <ListItem sx={{ alignItems: 'flex-start' }}>
                         <Stack spacing={2} sx={{ width: '100%' }}>
                             <div className={styles["data-setting-row"]}>
@@ -423,7 +382,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                     size="small"
                                     startIcon={<FolderOutlinedIcon fontSize="small" />}
                                     onClick={handleChooseStorageDir}
-                                    disabled={historyWorking || legacyHistoryBlocked}
+                                    disabled={historyWorking}
                                     className={styles["data-action-button"]}
                                 >
                                     {t("settings.storageDir.change")}
@@ -444,7 +403,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                     <Divider component="li" />
                     <AutoCleanupSettings
                         bridge={bridge} config={config} onSave={onSave} t={t}
-                        disabled={historyWorking || cleanupWorking || legacyHistoryBlocked}
+                        disabled={historyWorking || cleanupWorking}
                         dialogBackdropClassName={dialogBackdropClassName}
                     />
                     <Divider component="li" />
@@ -462,7 +421,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                             <ButtonGroup variant="outlined" color="error" size="small" className={classes(styles, "cleanup-button-group")}>
                                 <Button
                                     onClick={() => setCleanupConfirmOpen(true)}
-                                    disabled={cleanupWorking || historyWorking || legacyHistoryBlocked || !cleanupInfo || cleanupInfo.items === 0 || !cleanupDays}
+                                    disabled={cleanupWorking || historyWorking || !cleanupInfo || cleanupInfo.items === 0 || !cleanupDays}
                                     startIcon={cleanupWorking ? <CircularProgress size={14} thickness={5} aria-hidden="true" /> : <AutoDeleteOutlinedIcon fontSize="small" />}
                                 >
                                     {cleanupWorking ? t("settings.cleanupWorking") : `${t("common.cleanup")} · ${cleanupRangeLabel}`}
@@ -471,7 +430,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                     aria-label={t("settings.cleanupSelect")}
                                     aria-haspopup="menu"
                                     onClick={event => setCleanupMenuAnchor(event.currentTarget)}
-                                    disabled={cleanupWorking || historyWorking || legacyHistoryBlocked}
+                                    disabled={cleanupWorking || historyWorking}
                                 >
                                     <ArrowDropDownIcon fontSize="small" />
                                 </Button>
@@ -490,7 +449,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                 <div className={styles["history-transfer-actions"]}>
                                     <Button
                                         variant="outlined"
-                                        disabled={historyWorking || cleanupWorking || legacyHistoryBlocked}
+                                        disabled={historyWorking || cleanupWorking}
                                         onClick={handleImportHistory}
                                         startIcon={<FileUploadIcon />}
                                     >
@@ -498,7 +457,7 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                     </Button>
                                     <Button
                                         variant="outlined"
-                                        disabled={historyWorking || cleanupWorking || legacyHistoryBlocked}
+                                        disabled={historyWorking || cleanupWorking}
                                         onClick={handleExportHistory}
                                         startIcon={<FileDownloadIcon />}
                                     >
@@ -513,7 +472,12 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                         variant="block"
                                         busy={transferWorking}
                                         tone={transferMessage?.kind || 'neutral'}
-                                        message={transferWorking ? transferWorkingText : transferMessage?.text}
+                                        message={transferWorking ? transferWorkingText : transferMessage?.detail ? (
+                                            <span className={styles["history-transfer-result"]}>
+                                                <span>{transferMessage.text}</span>
+                                                <span className={styles["history-transfer-file-count"]}>{transferMessage.detail}</span>
+                                            </span>
+                                        ) : transferMessage?.text}
                                         progress={transferWorking ? transferProgressValue : undefined}
                                         progressLabel={transferWorking ? transferWorkingText : undefined}
                                     />
@@ -593,9 +557,11 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                                 </m.div>
                             )}
                         </AnimatePresence>
-                        <Typography variant="body2" color="text.secondary">
-                            {t("settings.privacyApps.help")}
-                        </Typography>
+                        {!privacyAppsLoading && managedPrivacyApps.length > 0 && (
+                            <Typography variant="body2" color="text.secondary">
+                                {t("settings.privacyApps.help")}
+                            </Typography>
+                        )}
                     </Stack>
                 </DialogContent>
                 <DialogActions>
@@ -614,31 +580,14 @@ export default function DataSettings({ bridge, config, storagePaths, t, onSave, 
                 <MenuItem selected={cleanupDays === "365"} onClick={() => { setCleanupDays("365"); setCleanupMenuAnchor(null); }}>{t("settings.cleanup.365")}</MenuItem>
             </Menu>
             <ConfirmDialog
-                open={legacyCleanupConfirmOpen}
-                title={t("settings.legacyHistory.confirmTitle")}
-                description={t("settings.legacyHistory.confirm")}
-                cancelLabel={t("common.cancel")}
-                confirmLabel={t("settings.legacyHistory.clear")}
-                backdropClassName={dialogBackdropClassName}
-                cancelDisabled={legacyCleanupWorking}
-                confirmDisabled={legacyCleanupWorking}
-                status={(legacyCleanupWorking || legacyCleanupError) ? (
-                    <OperationStatus
-                        busy={legacyCleanupWorking}
-                        tone={legacyCleanupError ? "error" : "neutral"}
-                        message={legacyCleanupError ?? t("settings.legacyHistory.clearing")}
-                        variant="block"
-                    />
-                ) : undefined}
-                onCancel={() => {
-                    if (!legacyCleanupWorking) setLegacyCleanupConfirmOpen(false);
-                }}
-                onConfirm={() => void handleClearLegacyHistory()}
-            />
-            <ConfirmDialog
                 open={cleanupConfirmOpen}
                 title={t("settings.cleanup.confirmTitle")}
-                description={t("settings.cleanup.confirm", { range: cleanupRangeLabel, items: cleanupInfo?.items ?? 0 })}
+                description={[
+                    t("settings.cleanup.confirm", { range: cleanupRangeLabel, items: cleanupInfo?.items ?? 0 }),
+                    t("settings.cleanup.confirmCount", { items: cleanupInfo?.items ?? 0 }),
+                    t("settings.cleanup.keepProtected"),
+                ]}
+                warning={t("settings.cleanup.irreversible")}
                 cancelLabel={t("common.cancel")}
                 confirmLabel={t("common.cleanup")}
                 backdropClassName={dialogBackdropClassName}

@@ -17,7 +17,7 @@ function createBridge(invoke: SettingsBridge["invoke"]): SettingsBridge {
 describe("persistSettings", () => {
     it("applies the new value and refreshes storage paths after saving", async () => {
         const invoke = vi.fn()
-            .mockResolvedValueOnce({ migrated: false })
+            .mockResolvedValueOnce({ shortcut_conflict: false, message: '配置已保存' })
             .mockResolvedValueOnce({ history_storage_dir: "D:/vPaste" });
         const applyConfig = vi.fn();
         const applyStoragePaths = vi.fn();
@@ -31,7 +31,7 @@ describe("persistSettings", () => {
             serialize: JSON.stringify,
         });
 
-        expect(result).toEqual({ migrated: false });
+        expect(result).toEqual({ shortcut_conflict: false, message: '配置已保存' });
         expect(applyConfig).toHaveBeenCalledWith({ theme: "dark" });
         expect(invoke).toHaveBeenNthCalledWith(1, "save_config", {
             config: JSON.stringify({ theme: "dark" }),

@@ -61,7 +61,7 @@ test.describe("settings preview", () => {
         await managerList.hover();
         await page.mouse.wheel(0, 10_000);
 
-        const managerHelp = privacyDialog.getByText("如果没有看到目标应用，请先切换到该应用复制一次非敏感内容，再重新打开管理窗口。");
+        const managerHelp = privacyDialog.getByText("找不到应用？请在该应用复制一次非敏感内容，再重新打开此窗口。");
         await expect.poll(async () => managerList.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
         await expect(managerHelp).toBeVisible();
         await expect(page).toHaveScreenshot("settings-privacy-manager-bottom.png");
@@ -116,7 +116,7 @@ test.describe("settings preview", () => {
 
         const valueColumns = page.locator("[class*='shortcut-static']");
         await expect(valueColumns.filter({ hasText: /^F2$/ })).toHaveCount(1);
-        await expect(valueColumns).toHaveCount(8);
+        await expect(valueColumns).toHaveCount(9);
         const columnBoxes = await valueColumns.evaluateAll(elements => elements.map(element => {
             const box = element.getBoundingClientRect();
             return { center: box.left + box.width / 2 };
@@ -126,9 +126,9 @@ test.describe("settings preview", () => {
             expect(Math.abs(box.center - referenceCenter)).toBeLessThan(1);
         }
 
-        const tabSwitch = page.getByRole("checkbox", { name: "增加Tab键支持" });
+        const tabSwitch = page.getByRole("checkbox", { name: "Tab 键选择" });
         await expect(tabSwitch).toBeVisible();
-        const switchBox = await valueColumns.nth(1).locator(".MuiSwitch-root").boundingBox();
+        const switchBox = await valueColumns.filter({ has: tabSwitch }).locator(".MuiSwitch-root").boundingBox();
         expect(switchBox).not.toBeNull();
         expect(Math.abs(switchBox!.x + switchBox!.width / 2 - referenceCenter)).toBeLessThan(1);
         await expect(page).toHaveScreenshot("settings-shortcuts-aligned.png");

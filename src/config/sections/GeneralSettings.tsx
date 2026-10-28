@@ -211,6 +211,29 @@ export default function GeneralSettings({ bridge, config, languages, t, onSave }
 
             <SettingsSection title={t("settings.section.personalization")}>
                     <SettingsRow
+                        labelId="settings-mouse-paste-label"
+                        label={t("settings.mousePaste")}
+                        control={<Select
+                            value={config.mouse_paste_mode}
+                            onChange={event => saveSetting({ ...config, mouse_paste_mode: event.target.value as "single" | "double" }, "mouse paste")}
+                            size="small"
+                            SelectDisplayProps={{ "aria-labelledby": "settings-mouse-paste-label" }}
+                            sx={{ minWidth: 160 }}
+                        >
+                            <MenuItem value="single">{t("settings.mousePaste.single")}</MenuItem>
+                            <MenuItem value="double">{t("settings.mousePaste.double")}</MenuItem>
+                        </Select>}
+                    />
+                    <SettingsRow
+                        labelId="settings-hover-preview-label"
+                        label={t("settings.hoverPreview")}
+                        control={<Switch
+                            checked={config.hover_preview_enabled}
+                            onChange={event => saveSetting({ ...config, hover_preview_enabled: event.target.checked }, "hover preview")}
+                            inputProps={{ "aria-labelledby": "settings-hover-preview-label" }}
+                        />}
+                    />
+                    <SettingsRow
                         labelId="settings-link-preview-label"
                         descriptionId="settings-link-preview-description"
                         label={t("settings.linkAutoPreview")}

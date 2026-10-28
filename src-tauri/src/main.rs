@@ -70,6 +70,8 @@ mod native_drag_snapshot;
 #[cfg(any(test, debug_assertions))]
 mod office_test_fixtures;
 mod paste_queue;
+mod preview_behavior;
+use preview_behavior::PreviewMode;
 #[cfg(any(target_os = "windows", test))]
 mod portable_autostart;
 mod preview_http;
@@ -127,6 +129,8 @@ static LAST_CLIPBOARD_MONITOR_CENTER: Mutex<Option<(f64, f64)>> = Mutex::new(Non
 #[cfg(target_os = "windows")]
 static CLIPBOARD_RESTORE_FOCUS_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_PINNED: AtomicBool = AtomicBool::new(false);
+static PREVIEW_HOVER: AtomicBool = AtomicBool::new(false);
+static PREVIEW_HOVER_REQUEST: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static ONBOARDING_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -334,6 +338,7 @@ struct ClipboardHistoryPausePayload {
 
 #[derive(Clone, Serialize)]
 struct PreviewPayload {
+    hover: bool,
     item_type: String,
     content: String,
     preview_content: String,
@@ -2363,6 +2368,8 @@ fn app_window_is_foreground(app: &tauri::AppHandle, label: &str, context: &str) 
 }
 
 fn hide_preview_and_clipboard(app: &tauri::AppHandle, context: &str) {
+    PREVIEW_HOVER.store(false, Ordering::SeqCst);
+    PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
     info!("Hide preview and clipboard: {}", context);
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
     if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
@@ -2856,13 +2863,7 @@ fn handle_preview_focus_lost(app: tauri::AppHandle) {
         }
 
         if clipboard_foreground {
-            info!("Hide preview on blur to clipboard");
-            if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
-                let _ = preview_window.hide();
-            }
-            if let Some(clipboard_window) = app.get_webview_window("clipboard") {
-                focus_clipboard_window(&clipboard_window, "preview blur to clipboard");
-            }
+            // Keep the ordinary preview available while the panel changes selection.
             return;
         }
 
@@ -3090,7 +3091,34 @@ fn show_preview_window(
     text_content: String,
     rich_html: String,
     app_source: String,
+    mode: Option<PreviewMode>,
+    hover_request: Option<u64>,
 ) -> Result<(), String> {
+    let mode = mode.unwrap_or_default();
+    if mode == PreviewMode::Hover {
+        let navigation_foreground = ["clipboard", "clipboardPreview"].iter().any(|label| {
+            (*label == "clipboard" || PREVIEW_HOVER.load(Ordering::SeqCst))
+                && app.get_webview_window(label).is_some_and(|window| {
+                    window.is_focused().unwrap_or(false)
+                        || is_native_window_foreground(&window, "hover preview foreground guard")
+                })
+        });
+        if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+            || !navigation_foreground
+            || !matches!(item_type.as_str(), "Text" | "TextFile" | "Image" | "Link")
+            || hover_request.unwrap_or(0) < PREVIEW_HOVER_REQUEST.load(Ordering::SeqCst)
+        {
+            return Ok(());
+        }
+        PREVIEW_HOVER_REQUEST.fetch_max(hover_request.unwrap_or(0), Ordering::SeqCst);
+    }
+    if !mode.allows(
+        preview_window_visible(&app),
+        PREVIEW_HOVER.load(Ordering::SeqCst),
+        PREVIEW_PINNED.load(Ordering::SeqCst),
+    ) {
+        return Ok(());
+    }
     let window = get_or_create_preview_window(&app)?;
     let bounds = clipboard_screen_bounds(&app, &window);
     let source_image_path = if preview_content.is_empty() {
@@ -3112,8 +3140,27 @@ fn show_preview_window(
         &rich_html,
         preview_bounds,
     );
+    if mode == PreviewMode::Hover
+        && hover_request.unwrap_or(0) != PREVIEW_HOVER_REQUEST.load(Ordering::SeqCst)
+    {
+        return Ok(());
+    }
+    if !mode.allows(
+        preview_window_visible(&app),
+        PREVIEW_HOVER.load(Ordering::SeqCst),
+        PREVIEW_PINNED.load(Ordering::SeqCst),
+    ) {
+        return Ok(());
+    }
+    PREVIEW_HOVER.store(mode == PreviewMode::Hover, Ordering::SeqCst);
+    if mode == PreviewMode::Manual {
+        PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
+    }
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
-    PREVIEW_IGNORE_BLUR_UNTIL.store(now_millis().saturating_add(1800), Ordering::SeqCst);
+    PREVIEW_IGNORE_BLUR_UNTIL.store(
+        now_millis().saturating_add(if mode == PreviewMode::Hover { 0 } else { 1800 }),
+        Ordering::SeqCst,
+    );
     let position = preview_position_avoiding_clipboard(&app, bounds, size);
     set_window_position_for_scale(&window, position.x, position.y, bounds.scale_factor)?;
     set_window_size_for_scale(&window, size.width, size.height, bounds.scale_factor)?;
@@ -3122,6 +3169,7 @@ fn show_preview_window(
         .emit(
             "preview-item",
             PreviewPayload {
+                hover: mode == PreviewMode::Hover,
                 item_type,
                 content,
                 preview_content,
@@ -3132,10 +3180,17 @@ fn show_preview_window(
             },
         )
         .map_err(|err| err.to_string())?;
+    window
+        .set_focusable(mode.takes_focus())
+        .map_err(|err| err.to_string())?;
     window.show().map_err(|err| err.to_string())?;
+    window.set_focusable(true).map_err(|err| err.to_string())?;
     let _ = window.set_always_on_top(true);
     #[cfg(target_os = "macos")]
     set_macos_window_level(&window, 102);
+    if !mode.takes_focus() {
+        return Ok(());
+    }
     focus_clipboard_window(&window, "preview show");
     window.set_focus().map_err(|err| err.to_string())?;
     AsRef::<tauri::Webview>::as_ref(&window)
@@ -3206,8 +3261,34 @@ fn is_preview_window_visible(app: tauri::AppHandle) -> bool {
 }
 
 #[tauri::command]
-fn set_preview_pinned(pinned: bool) {
+fn set_preview_pinned(app: tauri::AppHandle, pinned: bool) {
     PREVIEW_PINNED.store(pinned, Ordering::SeqCst);
+    if pinned {
+        PREVIEW_HOVER.store(false, Ordering::SeqCst);
+        PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
+        if let Some(window) = app.get_webview_window("clipboardPreview") {
+            let _ = window.emit("preview-promoted", ());
+        }
+    }
+}
+
+#[tauri::command]
+fn dismiss_hover_preview_window(app: tauri::AppHandle, request: Option<u64>) -> Result<(), String> {
+    if let Some(request) = request {
+        if request < PREVIEW_HOVER_REQUEST.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        PREVIEW_HOVER_REQUEST.fetch_max(request, Ordering::SeqCst);
+    } else {
+        PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
+    }
+    if PREVIEW_HOVER.swap(false, Ordering::SeqCst) && !PREVIEW_PINNED.load(Ordering::SeqCst) {
+        if let Some(window) = app.get_webview_window("clipboardPreview") {
+            let _ = window.emit("preview-clear", ());
+            window.hide().map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -3287,6 +3368,8 @@ fn maybe_hide_macos_dock_icon() {
 
 #[tauri::command]
 fn hide_preview_window(app: tauri::AppHandle) -> Result<(), String> {
+    PREVIEW_HOVER.store(false, Ordering::SeqCst);
+    PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("clipboardPreview") {
         let _ = window.emit("preview-clear", ());
@@ -11400,6 +11483,7 @@ fn main() {
             is_alt_key_pressed,
             is_quick_input_modifier_pressed,
             show_preview_window,
+            dismiss_hover_preview_window,
             is_preview_window_visible,
             set_preview_pinned,
             hide_preview_window,

@@ -124,6 +124,26 @@ describe("auxiliary window controls", () => {
         expect(screen.getByRole("button", { name: "preview.unpin" })).toHaveAttribute("aria-pressed", "true");
     });
 
+    it("reports hover entry and exit only until the preview is promoted", async () => {
+        const listeners = new Map<string, (event: { payload: unknown }) => void>();
+        tauri.listen.mockImplementation(async (name: string, callback: (event: { payload: unknown }) => void) => {
+            listeners.set(name, callback);
+            return () => undefined;
+        });
+        const { container } = render(<Preview />);
+        act(() => listeners.get("preview-item")?.({ payload: { itemType: "Text", content: "Hover content", hover: true } }));
+        const shell = container.querySelector('[class*="preview-shell"]')!;
+        fireEvent.mouseEnter(shell);
+        expect(tauri.emitTo).toHaveBeenLastCalledWith("clipboard", "preview-hover", true);
+        fireEvent.mouseLeave(shell);
+        expect(tauri.emitTo).toHaveBeenLastCalledWith("clipboard", "preview-hover", false);
+        tauri.emitTo.mockClear();
+        act(() => listeners.get("preview-promoted")?.({ payload: null }));
+        fireEvent.mouseEnter(shell);
+        fireEvent.mouseLeave(shell);
+        expect(tauri.emitTo).not.toHaveBeenCalled();
+    });
+
     it("uses the requested direction when preview content moves backward and forward", async () => {
         const listeners = new Map<string, (event: { payload: unknown }) => void>();
         tauri.listen.mockImplementation(async (event: string, callback: (event: { payload: unknown }) => void) => {

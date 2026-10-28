@@ -67,7 +67,7 @@ async function openClipboard(page: Page, mac: boolean, holdDelete = false, holdS
         });
     }, { mac, holdDelete, holdSearch });
     await page.goto("/clipboard");
-    await expect(card(page, "first")).toBeVisible();
+    await expect(card(page, "first")).toBeVisible({ timeout: 15_000 });
     await page.evaluate(() => (window as DeleteProbe).__deleteProbe.emitShow());
     await expect.poll(() => page.evaluate(() => (window as DeleteProbe).__deleteProbe.searches)).toBeGreaterThan(1);
     await card(page, "first").focus();

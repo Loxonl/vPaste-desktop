@@ -22,6 +22,20 @@ vi.mock("@tauri-apps/plugin-log", () => ({ error: vi.fn() }));
 const t = (key: string) => key;
 
 describe("PreviewBody transparency", () => {
+    it("shows the existing link loading state while the webpage request is still pending", async () => {
+        let complete!: (document: { url: string; html: string }) => void;
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "fetch_link_preview_document") return new Promise(resolve => { complete = resolve; });
+            return undefined;
+        });
+        const { container } = render(<PreviewBody payload={{ item_type: ItemType.Link, content: "https://example.com/slow" }} t={t} />);
+        expect(container.textContent).toContain("https://example.com/slow");
+        expect(container.textContent).toContain("preview.generating");
+        expect(container.querySelector("iframe")).toBeNull();
+        complete({ url: "https://example.com/slow", html: "<html><body>Loaded article</body></html>" });
+        await waitFor(() => expect(container.querySelector("iframe")?.getAttribute("srcdoc")).toContain("Loaded article"));
+    });
+
     it("sanitizes clipboard rich HTML in the separate preview window", () => {
         const { container } = render(
             <PreviewBody

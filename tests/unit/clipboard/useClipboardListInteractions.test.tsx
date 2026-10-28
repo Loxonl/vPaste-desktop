@@ -6,10 +6,11 @@ import { useClipboardListInteractions } from "../../../src/clipboard/useClipboar
 type HarnessProps = {
     tutorialActive?: boolean;
     draggableCard?: boolean;
-    onActivateCard?: (hash: string, plainText: boolean) => void;
+    onActivateCard?: (hash: string, plainText: boolean, doubleClick?: boolean) => void;
     onLoadMore?: (force?: boolean) => void;
     onPointerStart?: () => void;
     onWheelStart?: () => void;
+    onHoverCard?: (hash: string, target: Element) => void;
 };
 
 function Harness({
@@ -19,6 +20,7 @@ function Harness({
     onLoadMore = () => undefined,
     onPointerStart = () => undefined,
     onWheelStart = () => undefined,
+    onHoverCard = () => undefined,
 }: HarnessProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const interactions = useClipboardListInteractions({
@@ -32,6 +34,7 @@ function Harness({
         onLoadMore,
         onPointerStart,
         onWheelStart,
+        onHoverCard,
     });
 
     return (
@@ -44,13 +47,29 @@ function Harness({
             onPointerCancel={interactions.finishPointerDrag}
             onLostPointerCapture={interactions.finishPointerDrag}
             onClickCapture={interactions.handleClickCapture}
+            onDoubleClickCapture={interactions.handleDoubleClick}
+            onScroll={interactions.handleScroll}
+            onPointerLeave={interactions.handlePointerLeave}
+            onKeyDown={interactions.suspendPointerSelection}
         >
             <div className="card" data-hash="item-1" draggable={draggableCard}>Card</div>
+            <div className="card" data-hash="item-2">Second card</div>
         </div>
     );
 }
 
 describe("useClipboardListInteractions", () => {
+    it("forwards a captured card double-click separately from its two selection clicks", () => {
+        const activate = vi.fn();
+        render(<Harness onActivateCard={activate} />);
+        const container = screen.getByTestId("cards");
+        const card = screen.getByText("Card");
+        fireEvent.pointerDown(card, { pointerId: 1, isPrimary: true, button: 0 });
+        fireEvent.pointerUp(container, { pointerId: 1, isPrimary: true, button: 0 });
+        fireEvent.doubleClick(container, { shiftKey: true });
+        expect(activate).toHaveBeenLastCalledWith("item-1", true, true);
+    });
+
     let animationFrameId = 0;
 
     beforeEach(() => {
@@ -78,10 +97,84 @@ describe("useClipboardListInteractions", () => {
 
     afterEach(() => {
         cleanup();
+        vi.useRealTimers();
+        vi.unstubAllGlobals();
         vi.restoreAllMocks();
+        delete (document as Partial<Document>).elementFromPoint;
         delete (HTMLElement.prototype as Partial<HTMLElement>).setPointerCapture;
         delete (HTMLElement.prototype as Partial<HTMLElement>).hasPointerCapture;
         delete (HTMLElement.prototype as Partial<HTMLElement>).releasePointerCapture;
+    });
+
+    it("selects the card under a moving mouse without activating it, ignoring touch and pressed buttons", () => {
+        const hover = vi.fn();
+        const activate = vi.fn();
+        render(<Harness onHoverCard={hover} onActivateCard={activate} />);
+        const card = screen.getByText("Card");
+        const second = screen.getByText("Second card");
+        fireEvent.pointerMove(card, { pointerType: "mouse", buttons: 0, clientX: 100, clientY: 20 });
+        expect(hover).toHaveBeenLastCalledWith("item-1", card);
+        fireEvent.pointerMove(second, { pointerType: "touch", buttons: 0, clientX: 200, clientY: 20 });
+        fireEvent.pointerMove(second, { pointerType: "mouse", buttons: 1, clientX: 201, clientY: 20 });
+        expect(hover).toHaveBeenCalledOnce();
+        fireEvent.pointerMove(second, { pointerType: "mouse", buttons: 0, clientX: 202, clientY: 20 });
+        expect(hover).toHaveBeenLastCalledWith("item-2", second);
+        expect(activate).not.toHaveBeenCalled();
+    });
+
+    it("does not take keyboard selection back until the mouse actually moves", () => {
+        const hover = vi.fn();
+        render(<Harness onHoverCard={hover} />);
+        const card = screen.getByText("Card");
+        const second = screen.getByText("Second card");
+        fireEvent.pointerMove(card, { pointerType: "mouse", buttons: 0, clientX: 100, clientY: 20 });
+        expect(hover).toHaveBeenCalledOnce();
+        fireEvent.keyDown(screen.getByTestId("cards"), { key: "ArrowRight" });
+        fireEvent.pointerOver(second, { pointerType: "mouse", buttons: 0, clientX: 100, clientY: 20 });
+        fireEvent.pointerMove(second, { pointerType: "mouse", buttons: 0, clientX: 100, clientY: 20 });
+        expect(hover).toHaveBeenCalledOnce();
+        fireEvent.pointerMove(second, { pointerType: "mouse", buttons: 0, clientX: 101, clientY: 20 });
+        expect(hover).toHaveBeenLastCalledWith("item-2", second);
+    });
+
+    it("reselects the card under the stationary pointer only after user scrolling settles", () => {
+        vi.useFakeTimers();
+        vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);
+        const hover = vi.fn();
+        render(<Harness onHoverCard={hover} />);
+        const container = screen.getByTestId("cards");
+        const card = screen.getByText("Card");
+        const second = screen.getByText("Second card");
+        Object.defineProperties(container, {
+            clientWidth: { configurable: true, value: 400 },
+            scrollWidth: { configurable: true, value: 1000 },
+        });
+        Object.defineProperty(document, "elementFromPoint", { configurable: true, value: vi.fn(() => second) });
+        fireEvent.pointerMove(card, { pointerType: "mouse", buttons: 0, clientX: 100, clientY: 20 });
+        expect(hover).toHaveBeenCalledOnce();
+        hover.mockClear();
+        fireEvent.wheel(container, { deltaY: 300, clientX: 100, clientY: 20 });
+        fireEvent.scroll(container);
+        fireEvent.pointerMove(second, { pointerType: "mouse", buttons: 0, clientX: 100, clientY: 20 });
+        vi.advanceTimersByTime(99);
+        expect(hover).not.toHaveBeenCalled();
+        vi.advanceTimersByTime(1);
+        expect(hover).toHaveBeenLastCalledWith("item-2", second);
+        hover.mockClear();
+        fireEvent.keyDown(container, { key: "ArrowRight" });
+        fireEvent.scroll(container);
+        vi.advanceTimersByTime(200);
+        expect(hover).not.toHaveBeenCalled();
+    });
+
+    it("recognizes real movement back into the list even at the same card coordinates", () => {
+        const hover = vi.fn();
+        render(<Harness onHoverCard={hover} />);
+        const card = screen.getByText("Card");
+        fireEvent.pointerMove(card, { pointerType: "mouse", buttons: 0, clientX: 100, clientY: 20 });
+        fireEvent.pointerOut(card, { pointerType: "mouse", clientX: 0, clientY: 0, relatedTarget: document.body });
+        fireEvent.pointerMove(card, { pointerType: "mouse", buttons: 0, clientX: 100, clientY: 20 });
+        expect(hover).toHaveBeenCalledTimes(2);
     });
 
     it("activates the pressed card when the pointer is released without dragging", () => {

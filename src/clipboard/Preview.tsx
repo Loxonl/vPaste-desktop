@@ -23,6 +23,7 @@ type HistoryImageMetadata = {
 };
 
 type PreviewPayload = {
+    hover?: boolean;
     item_type?: ItemType | string;
     itemType?: ItemType | string;
     content: string;
@@ -393,10 +394,12 @@ export default function Preview() {
     const [pinned, setPinned] = useState(false);
     const openedAtRef = useRef(0);
     const pinnedRef = useRef(false);
+    const hoverRef = useRef(false);
     const pendingNavigationDirectionRef = useRef<PreviewNavigationDirection>(0);
 
     useEffect(() => {
         const unlisten = listen<PreviewPayload>("preview-item", event => {
+            hoverRef.current = event.payload.hover === true;
             openedAtRef.current = Date.now();
             pinnedRef.current = false;
             setPinned(false);
@@ -406,10 +409,12 @@ export default function Preview() {
             setPayload(event.payload);
         });
         const unlistenClear = listen("preview-clear", () => {
+            hoverRef.current = false;
             pendingNavigationDirectionRef.current = 0;
             setNavigationDirection(0);
             setPayload(null);
         });
+        const unlistenPromoted = listen("preview-promoted", () => { hoverRef.current = false; });
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.isComposing || event.keyCode === 229) return;
             const tabDirection = clipboardTabNavigationDirection(event);
@@ -442,6 +447,7 @@ export default function Preview() {
         return () => {
             unlisten.then(fn => fn()).catch(e => error(`Failed to unlisten preview: ${e}`));
             unlistenClear.then(fn => fn()).catch(e => error(`Failed to unlisten preview clear: ${e}`));
+            unlistenPromoted.then(fn => fn()).catch(e => error(`Failed to unlisten preview promotion: ${e}`));
             window.removeEventListener("keydown", handleKeyDown);
         };
     }, []);
@@ -454,7 +460,10 @@ export default function Preview() {
     };
 
     return (
-        <div className={styles["preview-shell"]}>
+        <div className={styles["preview-shell"]}
+            onMouseEnter={() => { if (hoverRef.current) void emitTo("clipboard", "preview-hover", true).catch(e => error(`Failed to retain hover preview: ${e}`)); }}
+            onMouseLeave={() => { if (hoverRef.current) void emitTo("clipboard", "preview-hover", false).catch(e => error(`Failed to leave hover preview: ${e}`)); }}
+        >
             <ToolbarIconButton
                 size="medium"
                 className={[styles["preview-pin"], pinned ? styles.pinned : ""].join(" ")}

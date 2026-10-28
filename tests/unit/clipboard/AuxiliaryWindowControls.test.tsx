@@ -79,15 +79,15 @@ describe("auxiliary window controls", () => {
         tauri.listen.mockReset().mockResolvedValue(() => undefined);
     });
 
-    it("opens the permission settings from the fallback notice in the established order", async () => {
+    it("opens permission settings before destroying the fallback notice", async () => {
         const user = userEvent.setup();
         render(<PasteFallbackNotice />);
 
         await user.click(screen.getByRole("button", { name: "common.settings" }));
 
         expect(tauri.invoke.mock.calls.slice(-2)).toEqual([
-            ["hide_paste_fallback_notice"],
             ["open_config_window", { target: "permissions" }],
+            ["hide_paste_fallback_notice"],
         ]);
     });
 

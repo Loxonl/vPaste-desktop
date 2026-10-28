@@ -56,13 +56,17 @@ use crate::config::Config;
 mod app_updater;
 mod auto_cleanup;
 mod auxiliary_windows;
+mod background_resources;
 mod clipboard;
 mod config;
+#[cfg(debug_assertions)]
+mod dev_memory;
 mod history_store;
 mod image_preview;
 #[cfg(all(target_os = "macos", feature = "mac-app-store"))]
 mod mac_app_store;
 mod maintenance;
+mod media_resources;
 #[cfg(target_os = "macos")]
 mod native_drag_preview;
 #[cfg(target_os = "macos")]
@@ -74,8 +78,10 @@ mod preview_behavior;
 use preview_behavior::PreviewMode;
 mod preview_motion;
 use preview_motion::{PreviewRect, PreviewRequests};
+mod paste_queue_activation;
 #[cfg(any(target_os = "windows", test))]
 mod portable_autostart;
+mod preview_focus;
 mod preview_http;
 #[cfg(test)]
 mod preview_proxy_tests;
@@ -133,17 +139,20 @@ static CLIPBOARD_RESTORE_FOCUS_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_PINNED: AtomicBool = AtomicBool::new(false);
 static PREVIEW_HOVER: AtomicBool = AtomicBool::new(false);
 static PREVIEW_HOVER_REQUEST: AtomicU64 = AtomicU64::new(0);
+static PREVIEW_WINDOW_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_REQUESTS: PreviewRequests = PreviewRequests::new();
 static PREVIEW_PENDING: Mutex<Option<PreparedPreview>> = Mutex::new(None);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static ONBOARDING_ACTIVE: AtomicBool = AtomicBool::new(false);
 static ONBOARDING_SHORTCUT_DEMO_ENABLED: AtomicBool = AtomicBool::new(false);
-static TRAY_MENU_WATCHING: AtomicBool = AtomicBool::new(false);
+static TRAY_MENU_WATCH_GENERATION: AtomicU64 = AtomicU64::new(0);
 static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
 static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
 static PASTE_FALLBACK_NOTICE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PASTE_QUEUE_INTERCEPTOR_READY: AtomicBool = AtomicBool::new(false);
+static PASTE_QUEUE_ACTIVATION: Mutex<paste_queue_activation::Requests> =
+    Mutex::new(paste_queue_activation::Requests::new());
 static PASTE_QUEUE_INTERCEPTOR_STARTING: AtomicBool = AtomicBool::new(false);
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 static PASTE_QUEUE_INTERNAL_PASTE: AtomicBool = AtomicBool::new(false);
@@ -214,11 +223,49 @@ fn get_developer_mode() -> bool {
     developer_mode_enabled_for_args(std::env::args(), cfg!(debug_assertions))
 }
 
-fn test_room_window_open_error(developer_mode: bool, window_exists: bool) -> Option<&'static str> {
+#[tauri::command]
+async fn get_dev_memory_report(
+    app: tauri::AppHandle,
+    refresh: bool,
+) -> Result<serde_json::Value, String> {
+    if !get_developer_mode() {
+        return Err("Memory monitor requires Debug + --dev-mode".into());
+    }
+    #[cfg(debug_assertions)]
+    {
+        serde_json::to_value(dev_memory::report(&app, refresh).await)
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (app, refresh);
+        Err("Memory monitor is unavailable in release builds".into())
+    }
+}
+
+#[tauri::command]
+async fn set_dev_memory_monitoring(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<serde_json::Value, String> {
+    if !get_developer_mode() {
+        return Err("Memory monitor requires Debug + --dev-mode".into());
+    }
+    #[cfg(debug_assertions)]
+    {
+        serde_json::to_value(dev_memory::set_monitoring(app, enabled).await)
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (app, enabled);
+        Err("Memory monitor is unavailable in release builds".into())
+    }
+}
+
+fn test_room_window_open_error(developer_mode: bool) -> Option<&'static str> {
     if !developer_mode {
         Some("测试间只在带 --dev-mode 参数的 Debug 构建中可用")
-    } else if !window_exists {
-        Some("测试间窗口尚未完成初始化，请稍后重试")
     } else {
         None
     }
@@ -254,10 +301,9 @@ mod developer_mode_tests {
     }
 
     #[test]
-    fn test_room_open_requires_developer_mode_and_a_prebuilt_window() {
-        assert!(test_room_window_open_error(false, false).is_some());
-        assert!(test_room_window_open_error(true, false).is_some());
-        assert!(test_room_window_open_error(true, true).is_none());
+    fn test_room_open_requires_developer_mode_but_not_a_prebuilt_window() {
+        assert!(test_room_window_open_error(false).is_some());
+        assert!(test_room_window_open_error(true).is_none());
     }
 }
 const PREVIEW_IMAGE_MIN_HEIGHT: f64 = 320.0;
@@ -1478,12 +1524,10 @@ fn finish_hide_window_locked(
     );
     window.hide().map_err(|err| err.to_string())?;
     if !PREVIEW_PINNED.load(Ordering::SeqCst) {
-        if let Some(preview) = window.app_handle().get_webview_window("clipboardPreview") {
-            clear_preview_content(&preview);
-            let _ = preview.hide();
-        }
+        let _ = destroy_preview_window(window.app_handle());
     }
     CLIPBOARD_VISIBLE.store(false, Ordering::SeqCst);
+    background_resources::set_visible(window.app_handle(), false);
     CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
     CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
     let _ = window.emit("window-hidden", ());
@@ -1821,6 +1865,7 @@ fn hide_clipboard_window_with_onboarding_policy(
         {
             return;
         }
+        background_resources::set_visible(window.app_handle(), false);
         CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
     };
     mark_foreground_restore_for_hide(window, generation);
@@ -1880,6 +1925,7 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
 
         CLIPBOARD_VISIBLE.store(true, Ordering::SeqCst);
         CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
+        background_resources::set_visible(window.app_handle(), true);
     }
 
     let cursor = cursor_physical_position().and_then(|cursor| {
@@ -1958,6 +2004,7 @@ fn begin_hide_clipboard_window(window: tauri::WebviewWindow) -> u64 {
             return 0;
         }
         CLIPBOARD_HIDING.store(true, Ordering::SeqCst);
+        background_resources::set_visible(window.app_handle(), false);
         CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
     };
     mark_foreground_restore_for_hide(&window, generation);
@@ -1986,6 +2033,7 @@ fn hide_clipboard_if_inactive(window: tauri::WebviewWindow) {
     if preview_window_active(&app)
         || tab_editor_window_active(&app)
         || text_editor_window_active(&app)
+        || memory_monitor_window_active(&app)
     {
         return;
     }
@@ -2003,6 +2051,66 @@ fn auxiliary_window_ready(window: tauri::WebviewWindow) -> Result<(), String> {
         .app_handle()
         .state::<auxiliary_windows::Readiness>()
         .signal(window.label())
+}
+
+#[tauri::command]
+async fn open_dev_memory_window(
+    app: tauri::AppHandle,
+    source_window: tauri::WebviewWindow,
+    language_code: String,
+    theme_preview: String,
+) -> Result<(), String> {
+    if !get_developer_mode() {
+        return Err("Memory monitor requires Debug + --dev-mode".into());
+    }
+    #[cfg(debug_assertions)]
+    {
+        if !matches!(theme_preview.as_str(), "light" | "dark") {
+            return Err("unsupported theme preview".into());
+        }
+        let window =
+            auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::DevMemory).await?;
+        auxiliary_windows::on_main_thread(app.clone(), move || {
+            if !auxiliary_windows::is_open(&window) {
+                return Err("memory window closed while opening".into());
+            }
+            let was_visible = window.is_visible().unwrap_or(false);
+            let _ = window.unminimize();
+            if !was_visible {
+                center_window_on_source_monitor(&window, &source_window)?;
+            }
+            dev_memory::keep_on_top(&window)?;
+            window
+                .emit(
+                    "dev-memory-open",
+                    serde_json::json!({ "languageCode": language_code, "themePreview": theme_preview }),
+                )
+                .map_err(|error| error.to_string())?;
+            window.show().map_err(|error| error.to_string())?;
+            activate_native_window(&window, "memory monitor open");
+            window.set_focus().map_err(|error| error.to_string())?;
+            AsRef::<tauri::Webview>::as_ref(&window)
+                .set_focus()
+                .map_err(|error| error.to_string())
+        })
+        .await
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (app, source_window, language_code, theme_preview);
+        Err("Memory monitor is unavailable in release builds".into())
+    }
+}
+
+#[tauri::command]
+fn close_dev_memory_window(app: tauri::AppHandle) -> Result<(), String> {
+    if !get_developer_mode() {
+        return Err("Memory monitor requires Debug + --dev-mode".into());
+    }
+    if let Some(window) = app.get_webview_window("devMemory") {
+        auxiliary_windows::destroy(&window)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2034,28 +2142,42 @@ async fn open_config_window(
 }
 
 #[tauri::command]
-fn open_test_room_window(
+fn close_config_window(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    if windows_main_shortcut::set_recording(false) {
+        let _ = end_main_shortcut_recording(app.clone());
+    }
+    if let Some(window) = app.get_webview_window("config") {
+        auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_test_room_window(
     app: tauri::AppHandle,
     source_window: tauri::WebviewWindow,
 ) -> Result<(), String> {
-    let window = app.get_webview_window("testRoom");
-    if let Some(message) = test_room_window_open_error(get_developer_mode(), window.is_some()) {
+    if let Some(message) = test_room_window_open_error(get_developer_mode()) {
         return Err(message.to_string());
     }
-    let window = window.expect("test room window existence was checked above");
-    let _ = window.unminimize();
-    let was_maximized = window.is_maximized().unwrap_or(false);
-    if was_maximized {
-        let _ = window.unmaximize();
-    }
-    center_window_on_source_monitor(&window, &source_window)?;
-    window.show().map_err(|err| err.to_string())?;
-    if was_maximized {
-        let _ = window.maximize();
-    }
-    activate_native_window(&window, "test room show");
-    window.set_focus().map_err(|err| err.to_string())?;
-    Ok(())
+    let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::TestRoom).await?;
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        let _ = window.unminimize();
+        let was_maximized = window.is_maximized().unwrap_or(false);
+        if was_maximized {
+            let _ = window.unmaximize();
+        }
+        center_window_on_source_monitor(&window, &source_window)?;
+        window.show().map_err(|err| err.to_string())?;
+        if was_maximized {
+            let _ = window.maximize();
+        }
+        activate_native_window(&window, "test room show");
+        window.set_focus().map_err(|err| err.to_string())?;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2064,7 +2186,7 @@ fn close_test_room_window(app: tauri::AppHandle) -> Result<(), String> {
         return Err("测试间只在带 --dev-mode 参数的 Debug 构建中可用".to_string());
     }
     if let Some(window) = app.get_webview_window("testRoom") {
-        window.hide().map_err(|err| err.to_string())?;
+        auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
     }
     Ok(())
 }
@@ -2091,7 +2213,7 @@ async fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String>
         set_window_position_for_scale(&notice_window, x, y, bounds.scale_factor)?;
         let generation = PASTE_FALLBACK_NOTICE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
         notice_window.show().map_err(|err| err.to_string())?;
-        let app_for_timer = app.clone();
+        let notice_for_timer = notice_window.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(
                 PASTE_FALLBACK_NOTICE_DURATION_MS,
@@ -2099,9 +2221,7 @@ async fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String>
             if PASTE_FALLBACK_NOTICE_GENERATION.load(Ordering::SeqCst) != generation {
                 return;
             }
-            if let Some(window) = app_for_timer.get_webview_window("pasteFallbackNotice") {
-                let _ = window.hide();
-            }
+            let _ = auxiliary_windows::destroy(&notice_for_timer);
         });
         Ok(())
     })
@@ -2112,7 +2232,7 @@ async fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String>
 fn hide_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String> {
     PASTE_FALLBACK_NOTICE_GENERATION.fetch_add(1, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("pasteFallbackNotice") {
-        window.hide().map_err(|err| err.to_string())?;
+        auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
     }
     Ok(())
 }
@@ -2295,7 +2415,7 @@ fn hide_onboarding_permission_window(
     restore_parent: bool,
 ) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("onboardingPermission") {
-        window.hide().map_err(|err| err.to_string())?;
+        auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
     }
     if restore_parent {
         restore_parent_after_permission_guide(&app);
@@ -2332,32 +2452,31 @@ fn set_onboarding_shortcut_demo_enabled(enabled: bool) {
     ONBOARDING_SHORTCUT_DEMO_ENABLED.store(enabled && active, Ordering::SeqCst);
 }
 
-fn get_or_create_preview_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
-    if let Some(window) = app.get_webview_window("clipboardPreview") {
-        return Ok(window);
-    }
-
-    WebviewWindowBuilder::new(app, "clipboardPreview", App("clipboard/preview".into()))
-        .title("vPaste Preview")
-        .visible(false)
-        .focused(false)
-        .decorations(false)
-        .transparent(true)
-        .background_color(tauri::window::Color(0, 0, 0, 0))
-        .skip_taskbar(true)
-        .always_on_top(true)
-        .resizable(true)
-        .shadow(false)
-        .inner_size(PREVIEW_WINDOW_WIDTH, PREVIEW_WINDOW_HEIGHT)
-        .build()
-        .inspect(|window| {
-            let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-            let _ = window.set_shadow(false);
-            apply_vpaste_window_icon(window);
-            #[cfg(target_os = "macos")]
-            set_macos_window_level(window, 102); // Above NSPopUpMenuWindowLevel
-        })
-        .map_err(|err| err.to_string())
+fn build_preview_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let builder =
+        WebviewWindowBuilder::new(app, "clipboardPreview", App("clipboard/preview".into()))
+            .title("vPaste Preview")
+            .visible(false)
+            .focused(false)
+            .decorations(false)
+            .transparent(true)
+            .background_color(tauri::window::Color(0, 0, 0, 0))
+            .skip_taskbar(true)
+            .always_on_top(true)
+            .resizable(false)
+            .shadow(false)
+            .inner_size(PREVIEW_WINDOW_WIDTH, PREVIEW_WINDOW_HEIGHT);
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .hidden_title(true)
+        .title_bar_style(TitleBarStyle::Overlay);
+    builder.build().inspect(|window| {
+        let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+        let _ = window.set_shadow(false);
+        apply_vpaste_window_icon(window);
+        #[cfg(target_os = "macos")]
+        set_macos_window_level(window, 102); // Above NSPopUpMenuWindowLevel
+    })
 }
 
 fn preview_window_active(app: &tauri::AppHandle) -> bool {
@@ -2387,15 +2506,23 @@ fn app_window_is_foreground(app: &tauri::AppHandle, label: &str, context: &str) 
         .unwrap_or(false)
 }
 
-fn hide_preview_and_clipboard(app: &tauri::AppHandle, context: &str) {
+fn destroy_preview_window(app: &tauri::AppHandle) -> Result<(), String> {
     PREVIEW_HOVER.store(false, Ordering::SeqCst);
     PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
-    info!("Hide preview and clipboard: {}", context);
+    PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
     if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
         clear_preview_content(&preview_window);
-        let _ = preview_window.hide();
+        auxiliary_windows::destroy(&preview_window)?;
+    } else {
+        cancel_preview_content();
     }
+    Ok(())
+}
+
+fn hide_preview_and_clipboard(app: &tauri::AppHandle, context: &str) {
+    info!("Hide preview and clipboard: {}", context);
+    let _ = destroy_preview_window(app);
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
         hide_clipboard_window(&clipboard_window);
     }
@@ -2410,7 +2537,7 @@ fn handle_config_focus_lost(app: tauri::AppHandle) {
         let config_focused = config_window.is_focused().unwrap_or(false);
         let config_foreground =
             is_native_window_foreground(&config_window, "config blur self guard");
-        if config_focused || config_foreground {
+        if config_focused || config_foreground || memory_monitor_window_active(&app) {
             return;
         }
 
@@ -2451,6 +2578,7 @@ fn cursor_inside_app_windows(app: &tauri::AppHandle) -> bool {
         "tabEditor",
         "emojiPicker",
         "textEditor",
+        "devMemory",
     ]
     .iter()
     .any(|label| {
@@ -2478,6 +2606,22 @@ fn text_editor_window_active(app: &tauri::AppHandle) -> bool {
                     || is_native_window_foreground(&window, "text editor active guard"))
         })
         .unwrap_or(false)
+}
+
+fn memory_monitor_window_active(app: &tauri::AppHandle) -> bool {
+    #[cfg(debug_assertions)]
+    {
+        app.get_webview_window("devMemory").is_some_and(|window| {
+            window.is_visible().unwrap_or(false)
+                && (window.is_focused().unwrap_or(false)
+                    || is_native_window_foreground(&window, "memory monitor active guard"))
+        })
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = app;
+        false
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -2601,27 +2745,23 @@ fn is_quick_input_modifier_pressed(_trigger_key: String) -> bool {
     false
 }
 
-fn watch_tray_menu_outside_click(app: tauri::AppHandle) {
-    if TRAY_MENU_WATCHING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
+fn watch_tray_menu_outside_click(window: tauri::WebviewWindow) {
+    let generation = TRAY_MENU_WATCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(160));
         loop {
-            let Some(window) = app.get_webview_window("trayMenu") else {
+            if TRAY_MENU_WATCH_GENERATION.load(Ordering::SeqCst) != generation {
                 break;
-            };
+            }
             if !window.is_visible().unwrap_or(false) {
                 break;
             }
             if mouse_button_pressed() && !cursor_inside_window(&window) {
-                let _ = window.hide();
+                let _ = auxiliary_windows::destroy(&window);
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
-        TRAY_MENU_WATCHING.store(false, Ordering::SeqCst);
     });
 }
 
@@ -2854,77 +2994,54 @@ mod paste_queue_menu_tests {
     }
 }
 
+fn preview_blur_state(app: &tauri::AppHandle) -> preview_focus::State {
+    preview_focus::State {
+        pinned: PREVIEW_PINNED.load(Ordering::SeqCst),
+        cursor_inside_app: cursor_inside_app_windows(app),
+        preview_foreground: app_window_is_foreground(app, "clipboardPreview", "preview blur guard"),
+        clipboard_foreground: app_window_is_foreground(
+            app,
+            "clipboard",
+            "preview blur guard clipboard",
+        ),
+        memory_monitor_active: memory_monitor_window_active(app),
+    }
+}
+
 fn handle_preview_focus_lost(app: tauri::AppHandle) {
+    use preview_focus::{Action, Phase};
+    let generation = PREVIEW_WINDOW_GENERATION.load(Ordering::SeqCst);
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(35));
-
-        let now = now_millis();
-        let ignore_until = PREVIEW_IGNORE_BLUR_UNTIL.load(Ordering::SeqCst);
-        let pinned = PREVIEW_PINNED.load(Ordering::SeqCst);
-        let cursor_inside_app = cursor_inside_app_windows(&app);
-        let preview_foreground =
-            app_window_is_foreground(&app, "clipboardPreview", "preview blur guard");
-        let clipboard_foreground =
-            app_window_is_foreground(&app, "clipboard", "preview blur guard clipboard");
-
-        if pinned {
-            info!("Skip preview blur hide: pinned");
+        if PREVIEW_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
             return;
         }
 
-        if preview_foreground {
-            info!("Skip preview blur hide: preview is foreground");
-            return;
-        }
-
-        if !cursor_inside_app && !clipboard_foreground {
-            hide_preview_and_clipboard(&app, "preview blur cursor outside app");
-            return;
-        }
-
-        if clipboard_foreground {
-            // Keep the ordinary preview available while the panel changes selection.
-            return;
-        }
-
-        if now < ignore_until {
-            info!(
-                "Preview blur during open grace, will recheck, now={}, ignore_until={}",
-                now, ignore_until
-            );
+        let mut action = preview_focus::decide(
+            preview_blur_state(&app),
+            Phase::Initial {
+                opening_grace: now_millis() < PREVIEW_IGNORE_BLUR_UNTIL.load(Ordering::SeqCst),
+            },
+        );
+        if action == Action::Recheck {
             std::thread::sleep(std::time::Duration::from_millis(120));
-            if !preview_window_visible(&app) || PREVIEW_PINNED.load(Ordering::SeqCst) {
+            if PREVIEW_WINDOW_GENERATION.load(Ordering::SeqCst) != generation
+                || !preview_window_visible(&app)
+            {
                 return;
             }
-            let cursor_inside_app = cursor_inside_app_windows(&app);
-            let preview_foreground =
-                app_window_is_foreground(&app, "clipboardPreview", "preview grace recheck");
-            let clipboard_foreground =
-                app_window_is_foreground(&app, "clipboard", "preview grace recheck clipboard");
-            if preview_foreground {
-                info!("Skip preview grace recheck: preview is foreground");
-                return;
-            }
-            if clipboard_foreground {
-                info!("Hide preview on grace recheck to clipboard");
-                if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
-                    clear_preview_content(&preview_window);
-                    let _ = preview_window.hide();
-                }
-                if let Some(clipboard_window) = app.get_webview_window("clipboard") {
-                    focus_clipboard_window(&clipboard_window, "preview grace recheck to clipboard");
-                }
-                return;
-            }
-            if cursor_inside_app {
-                info!("Skip preview grace recheck: cursor inside app windows");
-                return;
-            }
-            hide_preview_and_clipboard(&app, "preview grace recheck outside app");
-            return;
+            action = preview_focus::decide(preview_blur_state(&app), Phase::GraceRecheck);
         }
-
-        hide_preview_and_clipboard(&app, "preview blur outside app");
+        match action {
+            Action::Keep | Action::Recheck => {}
+            Action::HidePreview => {
+                let _ = destroy_preview_window(&app);
+                if let Some(clipboard_window) = app.get_webview_window("clipboard") {
+                    focus_clipboard_window(&clipboard_window, "preview blur to clipboard");
+                }
+            }
+            Action::HideBoth => hide_preview_and_clipboard(&app, "preview blur outside app"),
+        }
     });
 }
 
@@ -3103,12 +3220,36 @@ fn preview_bounds_avoiding_clipboard(app: &tauri::AppHandle, bounds: ScreenBound
     }
 }
 
-fn clear_preview_content(window: &tauri::WebviewWindow) {
-    PREVIEW_REQUESTS.cancel();
-    *PREVIEW_PENDING
+fn cancel_preview_content() {
+    let mut pending = PREVIEW_PENDING
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    PREVIEW_REQUESTS.cancel();
+    *pending = None;
+}
+
+fn clear_preview_content(window: &tauri::WebviewWindow) {
+    cancel_preview_content();
     let _ = window.emit("preview-clear", ());
+}
+
+async fn discard_cancelled_preview_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    auxiliary_windows::on_main_thread(window.app_handle().clone(), move || {
+        // Keep a newer request from adopting this instance between the check and
+        // marking it Closing. Never cancel global state from a stale completion.
+        let _pending = PREVIEW_PENDING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if PREVIEW_REQUESTS.should_discard_cancelled_window(
+            PREVIEW_PINNED.load(Ordering::SeqCst),
+            window.is_visible().unwrap_or(true),
+        ) && auxiliary_windows::is_open(&window)
+        {
+            auxiliary_windows::destroy(&window)?;
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(target_os = "windows")]
@@ -3283,7 +3424,12 @@ fn commit_preview_window(
         }
         pending.take().unwrap()
     };
-    let window = get_or_create_preview_window(&app)?;
+    let Some(window) = app.get_webview_window("clipboardPreview") else {
+        return Ok(false);
+    };
+    if !auxiliary_windows::is_open(&window) || !PREVIEW_REQUESTS.current(request_id) {
+        return Ok(false);
+    }
     let visible = window.is_visible().unwrap_or(false);
     if !prepared.mode.allows(
         visible || PREVIEW_REQUESTS.active(),
@@ -3361,16 +3507,25 @@ async fn show_preview_window(
     ) {
         return Ok(());
     }
-    let request_id = PREVIEW_REQUESTS.begin();
-    *PREVIEW_PENDING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-    PREVIEW_HOVER.store(mode == PreviewMode::Hover, Ordering::SeqCst);
-    if mode == PreviewMode::Manual {
-        PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
-        PREVIEW_PINNED.store(false, Ordering::SeqCst);
+    let request_id = {
+        let mut pending = PREVIEW_PENDING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let request_id = PREVIEW_REQUESTS.begin();
+        *pending = None;
+        PREVIEW_HOVER.store(mode == PreviewMode::Hover, Ordering::SeqCst);
+        if mode == PreviewMode::Manual {
+            PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
+            PREVIEW_PINNED.store(false, Ordering::SeqCst);
+        }
+        request_id
+    };
+    let window =
+        auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::ClipboardPreview).await?;
+    if !PREVIEW_REQUESTS.current(request_id) {
+        discard_cancelled_preview_window(window).await?;
+        return Ok(());
     }
-    let window = get_or_create_preview_window(&app)?;
     let bounds = clipboard_screen_bounds(&app, &window);
     let preview_bounds = preview_bounds_avoiding_clipboard(&app, bounds);
     // File materialization and thumbnail reads must not block the native event loop.
@@ -3412,6 +3567,7 @@ async fn show_preview_window(
     .await
     .map_err(|err| err.to_string())?;
     if !PREVIEW_REQUESTS.current(request_id) {
+        discard_cancelled_preview_window(window).await?;
         return Ok(());
     }
     if mode == PreviewMode::Hover
@@ -3426,33 +3582,40 @@ async fn show_preview_window(
     ) {
         return Ok(());
     }
-    PREVIEW_IGNORE_BLUR_UNTIL.store(
-        now_millis().saturating_add(if mode == PreviewMode::Hover { 0 } else { 1800 }),
-        Ordering::SeqCst,
-    );
-    let position = preview_position_avoiding_clipboard(&app, bounds, size);
-    {
-        let mut pending = PREVIEW_PENDING
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !PREVIEW_REQUESTS.current(request_id) {
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        if !auxiliary_windows::is_open(&window) || !PREVIEW_REQUESTS.current(request_id) {
             return Ok(());
         }
-        *pending = Some(PreparedPreview {
-            payload: payload.clone(),
-            mode,
-            rect: PreviewRect {
-                x: position.x,
-                y: position.y,
-                width: size.width,
-                height: size.height,
-            },
-            scale_factor: bounds.scale_factor,
-        });
-    }
-    window
-        .emit("preview-item", payload)
-        .map_err(|err| err.to_string())
+        PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
+        PREVIEW_IGNORE_BLUR_UNTIL.store(
+            now_millis().saturating_add(if mode == PreviewMode::Hover { 0 } else { 1800 }),
+            Ordering::SeqCst,
+        );
+        let position = preview_position_avoiding_clipboard(&app, bounds, size);
+        {
+            let mut pending = PREVIEW_PENDING
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !PREVIEW_REQUESTS.current(request_id) {
+                return Ok(());
+            }
+            *pending = Some(PreparedPreview {
+                payload: payload.clone(),
+                mode,
+                rect: PreviewRect {
+                    x: position.x,
+                    y: position.y,
+                    width: size.width,
+                    height: size.height,
+                },
+                scale_factor: bounds.scale_factor,
+            });
+        }
+        window
+            .emit("preview-item", payload)
+            .map_err(|err| err.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3521,10 +3684,7 @@ fn is_preview_window_visible(app: tauri::AppHandle) -> bool {
 fn set_preview_pinned(app: tauri::AppHandle, pinned: bool) {
     PREVIEW_PINNED.store(pinned, Ordering::SeqCst);
     if pinned {
-        PREVIEW_REQUESTS.cancel();
-        *PREVIEW_PENDING
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        cancel_preview_content();
         PREVIEW_HOVER.store(false, Ordering::SeqCst);
         PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
         if let Some(window) = app.get_webview_window("clipboardPreview") {
@@ -3544,10 +3704,7 @@ fn dismiss_hover_preview_window(app: tauri::AppHandle, request: Option<u64>) -> 
         PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
     }
     if PREVIEW_HOVER.swap(false, Ordering::SeqCst) && !PREVIEW_PINNED.load(Ordering::SeqCst) {
-        if let Some(window) = app.get_webview_window("clipboardPreview") {
-            clear_preview_content(&window);
-            window.hide().map_err(|err| err.to_string())?;
-        }
+        destroy_preview_window(&app)?;
     }
     Ok(())
 }
@@ -3629,13 +3786,7 @@ fn maybe_hide_macos_dock_icon() {
 
 #[tauri::command]
 fn hide_preview_window(app: tauri::AppHandle) -> Result<(), String> {
-    PREVIEW_HOVER.store(false, Ordering::SeqCst);
-    PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
-    PREVIEW_PINNED.store(false, Ordering::SeqCst);
-    if let Some(window) = app.get_webview_window("clipboardPreview") {
-        clear_preview_content(&window);
-        window.hide().map_err(|err| err.to_string())?;
-    }
+    destroy_preview_window(&app)?;
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
         focus_clipboard_window(&clipboard_window, "preview closed");
     }
@@ -3657,7 +3808,7 @@ fn show_main_panel(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn hide_tray_menu(window: tauri::WebviewWindow) -> Result<(), String> {
-    window.hide().map_err(|err| err.to_string())
+    auxiliary_windows::destroy(&window).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -3839,7 +3990,7 @@ mod popup_position_tests {
 #[tauri::command]
 fn hide_emoji_picker_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("emojiPicker") {
-        window.hide().map_err(|err| err.to_string())?;
+        auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
     }
     if let Some(tab_editor_window) = app.get_webview_window("tabEditor") {
         let _ = tab_editor_window.set_focus();
@@ -3851,9 +4002,9 @@ fn hide_emoji_picker_window(app: tauri::AppHandle) -> Result<(), String> {
 fn hide_tab_editor_window(window: tauri::WebviewWindow) -> Result<(), String> {
     let app = window.app_handle().clone();
     if let Some(emoji_picker_window) = app.get_webview_window("emojiPicker") {
-        let _ = emoji_picker_window.hide();
+        let _ = auxiliary_windows::destroy(&emoji_picker_window);
     }
-    window.hide().map_err(|err| err.to_string())?;
+    auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
         focus_clipboard_window(&clipboard_window, "tab editor closed");
     }
@@ -4796,7 +4947,7 @@ async fn save_clipboard_text(
 #[tauri::command]
 fn hide_text_editor_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("textEditor") {
-        window.hide().map_err(|err| err.to_string())?;
+        auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
     }
     *TEXT_EDITOR_TARGET.lock().unwrap() = None;
     TEXT_EDITOR_FOCUSED.store(false, Ordering::SeqCst);
@@ -5097,10 +5248,12 @@ fn build_file_preview_info(content: String) -> Result<FilePreviewInfo, String> {
             String::new()
         };
     let image_dimensions = if !preview_path.is_empty() {
-        image::image_dimensions(&display_path)
-            .map_err(|err| err.to_string())
+        image_preview::metadata_for_path(&preview_path)
             .ok()
-            .or_else(|| image_dimensions_secure(&preview_path).ok())
+            .filter(|metadata| {
+                !metadata.preview_limited && metadata.width > 0 && metadata.height > 0
+            })
+            .map(|metadata| (metadata.width, metadata.height))
     } else {
         None
     };
@@ -8323,7 +8476,10 @@ fn prewarm_image_clipboard_cache_path(path: &str) -> Result<bool, String> {
         return Ok(false);
     }
     let image_bytes = history_store::read_file(path)?;
-    let _ = history_image_metadata_from_bytes(path, &image_bytes);
+    let metadata = history_image_metadata_from_bytes(path, &image_bytes)?;
+    if metadata.preview_limited {
+        return Ok(false);
+    }
     let is_gif = infer::get(&image_bytes)
         .map(|kind| kind.mime_type() == "image/gif")
         .unwrap_or_else(|| path.to_ascii_lowercase().ends_with(".gif"));
@@ -8478,10 +8634,7 @@ fn image_mime_from_bytes(bytes: &[u8]) -> &'static str {
     if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
         return "image/webp";
     }
-    if std::str::from_utf8(bytes)
-        .map(|text| text.trim_start().starts_with("<svg"))
-        .unwrap_or(false)
-    {
+    if image_preview::is_svg_bytes(bytes) {
         return "image/svg+xml";
     }
     infer::get(bytes)
@@ -8496,10 +8649,7 @@ fn image_extension_from_bytes(bytes: &[u8]) -> &'static str {
     if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
         return "webp";
     }
-    if std::str::from_utf8(bytes)
-        .map(|text| text.trim_start().starts_with("<svg"))
-        .unwrap_or(false)
-    {
+    if image_preview::is_svg_bytes(bytes) {
         return "svg";
     }
     infer::get(bytes)
@@ -8572,10 +8722,14 @@ fn publish_image_cache_file(
 }
 
 fn image_preview_asset_path(path: &str) -> Result<String, String> {
+    let bytes = history_store::read_file(path)?;
+    image_preview_asset_from_bytes(path, &bytes)
+}
+
+fn image_preview_asset_from_bytes(path: &str, bytes: &[u8]) -> Result<String, String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let bytes = history_store::read_file(path)?;
     let extension = image_extension_from_bytes(&bytes);
     let mut hasher = DefaultHasher::new();
     "preview-asset-v3".hash(&mut hasher);
@@ -8858,6 +9012,15 @@ mod image_cache_tests {
         assert!(metadata.preview_limited);
         assert_eq!((metadata.width, metadata.height), (0, 0));
     }
+}
+
+#[tauri::command]
+async fn resolve_history_media(
+    path: String,
+    intent: media_resources::MediaIntent,
+    refresh: Option<bool>,
+) -> Result<media_resources::MediaResource, String> {
+    media_resources::resolve(path, intent, refresh.unwrap_or(false)).await
 }
 
 #[tauri::command]
@@ -10192,9 +10355,8 @@ fn ensure_paste_queue_interceptor(app: &tauri::AppHandle) -> Result<(), String> 
             PASTE_QUEUE_INTERCEPTOR_READY.store(false, Ordering::SeqCst);
             PASTE_QUEUE_INTERCEPTOR_STARTING.store(false, Ordering::SeqCst);
             if let Err(err) = result {
-                paste_queue::set_active(false);
+                let _ = deactivate_paste_queue_window(&app);
                 paste_queue::set_error(None, format!("无法接管系统粘贴快捷键：{err}"));
-                paste_queue::hide_window(&app);
                 paste_queue::emit_state(&app);
             }
         });
@@ -10211,10 +10373,10 @@ fn ensure_paste_queue_interceptor(app: &tauri::AppHandle) -> Result<(), String> 
     Err("无法启动系统粘贴快捷键拦截".to_string())
 }
 
-fn show_paste_queue_window(app: &tauri::AppHandle) -> Result<(), String> {
-    let window = app
-        .get_webview_window("pasteQueue")
-        .ok_or_else(|| "粘贴队列窗口不存在".to_string())?;
+fn show_paste_queue_window(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Result<(), String> {
     let bounds = app
         .get_webview_window("clipboard")
         .map(|clipboard_window| target_clipboard_screen_bounds(&clipboard_window))
@@ -10241,14 +10403,54 @@ fn schedule_paste_queue_cleanup(cleanup: paste_queue::DeferredCleanup) {
 }
 
 fn deactivate_paste_queue_window(app: &tauri::AppHandle) -> Result<(), String> {
-    paste_queue::hide_window(app);
+    let mut requests = PASTE_QUEUE_ACTIVATION.lock().unwrap();
+    let request = requests.request(false);
+    let result = deactivate_paste_queue_window_inner(app);
+    requests.finish(request);
+    result
+}
+
+fn deactivate_paste_queue_window_inner(app: &tauri::AppHandle) -> Result<(), String> {
+    PASTE_QUEUE_POINTER_GENERATION.fetch_add(1, Ordering::SeqCst);
+    PASTE_QUEUE_MENU_GENERATION.fetch_add(1, Ordering::SeqCst);
+    PASTE_QUEUE_MENU_OPEN.store(false, Ordering::SeqCst);
+    paste_queue::destroy_window(app);
     let cleanup = paste_queue::deactivate_with_deferred_cleanup()?;
     schedule_paste_queue_cleanup(cleanup);
     Ok(())
 }
 
-fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(), String> {
-    if active {
+async fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(), String> {
+    let request = PASTE_QUEUE_ACTIVATION.lock().unwrap().request(active);
+    apply_paste_queue_activation(app, request).await
+}
+
+async fn apply_paste_queue_activation(
+    app: &tauri::AppHandle,
+    request: paste_queue_activation::Request,
+) -> Result<(), String> {
+    let result = apply_paste_queue_activation_inner(app, request).await;
+    if result.is_err() {
+        let mut requests = PASTE_QUEUE_ACTIVATION.lock().unwrap();
+        if !requests.current(request) {
+            return Ok(());
+        }
+        if request.active {
+            let _ = deactivate_paste_queue_window_inner(app);
+        }
+        requests.finish(request);
+    }
+    result
+}
+
+async fn apply_paste_queue_activation_inner(
+    app: &tauri::AppHandle,
+    request: paste_queue_activation::Request,
+) -> Result<(), String> {
+    if !PASTE_QUEUE_ACTIVATION.lock().unwrap().current(request) {
+        return Ok(());
+    }
+    if request.active {
         if !is_process_trusted_with_prompt(false) {
             if let Some(source_window) = app.get_webview_window("clipboard") {
                 let app = app.clone();
@@ -10269,24 +10471,47 @@ fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(
             return Err("需要辅助功能权限才能启用粘贴队列".to_string());
         }
         ensure_paste_queue_interceptor(app)?;
-        if !paste_queue::is_active() && !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
-            record_foreground_app_before_clipboard();
-        }
-        paste_queue::set_active(true);
-        paste_queue::clear_error();
-        if let Err(err) = show_paste_queue_window(app) {
-            paste_queue::set_active(false);
-            return Err(err);
-        }
-        let generation = PASTE_QUEUE_POINTER_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-        watch_paste_queue_pointer(app.clone(), generation);
+        let window =
+            auxiliary_windows::ensure(app, auxiliary_windows::WindowKind::PasteQueue).await?;
+        let app = app.clone();
+        auxiliary_windows::on_main_thread(app.clone(), move || {
+            let mut requests = PASTE_QUEUE_ACTIVATION.lock().unwrap();
+            if !requests.current(request) {
+                if requests.discard_window(request, paste_queue::is_active()) {
+                    let _ = auxiliary_windows::destroy(&window);
+                }
+                return Ok(());
+            }
+            if !auxiliary_windows::is_open(&window) {
+                return Err("paste queue window closed while opening".into());
+            }
+            if !paste_queue::is_active() && !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+                record_foreground_app_before_clipboard();
+            }
+            show_paste_queue_window(&app, &window)?;
+            paste_queue::set_active(true);
+            paste_queue::clear_error();
+            let generation = PASTE_QUEUE_POINTER_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+            watch_paste_queue_pointer(app.clone(), generation);
+            requests.finish(request);
+            paste_queue::emit_state(&app);
+            Ok(())
+        })
+        .await?;
     } else {
-        PASTE_QUEUE_POINTER_GENERATION.fetch_add(1, Ordering::SeqCst);
-        PASTE_QUEUE_MENU_GENERATION.fetch_add(1, Ordering::SeqCst);
-        PASTE_QUEUE_MENU_OPEN.store(false, Ordering::SeqCst);
-        deactivate_paste_queue_window(app)?;
+        let app = app.clone();
+        auxiliary_windows::on_main_thread(app.clone(), move || {
+            let mut requests = PASTE_QUEUE_ACTIVATION.lock().unwrap();
+            if !requests.current(request) {
+                return Ok(());
+            }
+            deactivate_paste_queue_window_inner(&app)?;
+            requests.finish(request);
+            paste_queue::emit_state(&app);
+            Ok(())
+        })
+        .await?;
     }
-    paste_queue::emit_state(app);
     Ok(())
 }
 
@@ -10305,11 +10530,11 @@ fn set_paste_queue_menu_open(app: tauri::AppHandle, open: bool) {
 }
 
 #[tauri::command]
-fn set_paste_queue_active(
+async fn set_paste_queue_active(
     app: tauri::AppHandle,
     active: bool,
 ) -> Result<paste_queue::PasteQueueState, String> {
-    set_paste_queue_active_impl(&app, active)?;
+    set_paste_queue_active_impl(&app, active).await?;
     paste_queue::state()
 }
 
@@ -10502,19 +10727,31 @@ fn set_position(window: tauri::Window, position: LogicalPosition<u32>) -> Result
 
 #[tauri::command]
 async fn search(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     keywords: String,
     last_id: u64,
     last_time: Option<u64>,
     limit: usize,
     label: String,
+    background: Option<bool>,
 ) -> Result<String, String> {
     let last_time = last_time.unwrap_or(0);
+    let resources = app
+        .state::<background_resources::BackgroundResources>()
+        .inner()
+        .clone();
+    let resource_epoch = resources.epoch();
+    let is_main = window.label() == "clipboard";
     let generation = SEARCH_COMMAND_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = SEARCH_COMMAND_LOCK
             .lock()
             .map_err(|_| "search command lock is poisoned".to_string())?;
-        let is_current = || SEARCH_COMMAND_GENERATION.load(Ordering::SeqCst) == generation;
+        let is_current = || {
+            SEARCH_COMMAND_GENERATION.load(Ordering::SeqCst) == generation
+                && (!is_main || resources.epoch() == resource_epoch)
+        };
         if !is_current() {
             return Err("search superseded".to_string());
         }
@@ -10537,7 +10774,25 @@ async fn search(
             page.list.len(),
             page.has_more
         );
-        serde_json::to_string(&page).map_err(|err| err.to_string())
+        if !is_current() {
+            return Err("search superseded".into());
+        }
+        #[derive(Serialize)]
+        struct Response<'a> {
+            #[serde(flatten)]
+            page: &'a clipboard::item::Page<clipboard::item::Item>,
+            #[serde(rename = "resourceEpoch")]
+            resource_epoch: u64,
+        }
+        let response = serde_json::to_string(&Response {
+            page: &page,
+            resource_epoch,
+        })
+        .map_err(|err| err.to_string())?;
+        if is_main && !background.unwrap_or(false) && is_current() {
+            resources.submit(app, &page.list, resource_epoch, last_id == 0);
+        }
+        Ok(response)
     })
     .await
     .map_err(|err| err.to_string())?
@@ -10791,7 +11046,7 @@ async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
                 }));
                 let _ = window.show();
                 let _ = window.set_focus();
-                watch_tray_menu_outside_click(app.clone());
+                watch_tray_menu_outside_click(window.clone());
                 Ok(())
             })
             .await
@@ -10905,9 +11160,16 @@ fn build_auxiliary_window(
     use auxiliary_windows::WindowKind;
 
     let builder = match kind {
+        #[cfg(debug_assertions)]
+        WindowKind::DevMemory => {
+            return dev_memory::build_window(handle, App("__dev-memory".into()))
+        }
+        WindowKind::ClipboardPreview => return build_preview_window(handle),
+        WindowKind::PasteQueue => return build_paste_queue_window(handle),
         WindowKind::Config => return build_config_window(handle),
         WindowKind::TextEditor => return build_text_editor_window(handle),
         WindowKind::PasteFallbackNotice => return build_paste_fallback_notice_window(handle),
+        WindowKind::TestRoom => return build_test_room_window(handle),
         WindowKind::OnboardingPermission => WebviewWindowBuilder::new(
             handle,
             "onboardingPermission",
@@ -11319,13 +11581,14 @@ fn main() {
     info!("running vPaste");
     let builder = tauri::Builder::default()
         .manage(auxiliary_windows::Readiness::default())
+        .manage(background_resources::BackgroundResources::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if maintenance::installer_exit_requested_for_args(&args) {
                 app.exit(0);
                 return;
             }
             if let Some(window) = app.get_webview_window("onboardingPermission") {
-                let _ = window.hide();
+                let _ = auxiliary_windows::destroy(&window);
             }
             if let Some(window) = app.get_webview_window("clipboard") {
                 show_clipboard_window(&window);
@@ -11335,6 +11598,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init());
+    #[cfg(debug_assertions)]
+    let builder = builder.manage(dev_memory::Monitor::default());
     #[cfg(not(all(target_os = "macos", feature = "mac-app-store")))]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     builder
@@ -11358,11 +11623,16 @@ fn main() {
                         if let Some(s) = config.shortcut_keys.paste_queue_toggle {
                             if let Ok(parsed) = s.parse::<Shortcut>() {
                                 if shortcut == &parsed {
-                                    let active = !paste_queue::is_active();
-                                    if let Err(err) = set_paste_queue_active_impl(&app, active) {
-                                        paste_queue::set_error(None, err);
-                                        paste_queue::emit_state(&app);
-                                    }
+                                    let request = PASTE_QUEUE_ACTIVATION.lock().unwrap().toggle(paste_queue::is_active());
+                                    let app = app.clone();
+                                    tauri::async_runtime::spawn(async move {
+                                        if let Err(err) =
+                                            apply_paste_queue_activation(&app, request).await
+                                        {
+                                            paste_queue::set_error(None, err);
+                                            paste_queue::emit_state(&app);
+                                        }
+                                    });
                                 }
                             }
                         }
@@ -11385,6 +11655,10 @@ fn main() {
                 }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if matches!(window.label(), "trayMenu" | "pasteFallbackNotice" | "devMemory") {
+                    api.prevent_close();
+                    let _ = auxiliary_windows::destroy_native(window);
+                }
                 if window.label() == "textEditor" {
                     api.prevent_close();
                     let _ = window.emit("text-editor-close-requested", ());
@@ -11398,23 +11672,22 @@ fn main() {
                 }
                 if window.label() == "config" {
                     api.prevent_close();
-                    #[cfg(target_os = "windows")]
-                    if windows_main_shortcut::set_recording(false) {
-                        let _ = end_main_shortcut_recording(window.app_handle().clone());
-                    }
-                    let _ = window.hide();
+                    let _ = close_config_window(window.app_handle().clone());
                 }
                 if window.label() == "testRoom" {
                     api.prevent_close();
-                    let _ = window.hide();
+                    let _ = auxiliary_windows::destroy_native(window);
                 }
                 if window.label() == "clipboardPreview" {
                     api.prevent_close();
+                    PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
                     if let Some(preview) = window.app_handle().get_webview_window("clipboardPreview") {
                         clear_preview_content(&preview);
+                    } else {
+                        cancel_preview_content();
                     }
-                    let _ = window.hide();
                     PREVIEW_PINNED.store(false, Ordering::SeqCst);
+                    let _ = auxiliary_windows::destroy_native(window);
                     if let Some(clipboard_window) =
                         window.app_handle().get_webview_window("clipboard")
                     {
@@ -11423,19 +11696,27 @@ fn main() {
                 }
                 if window.label() == "tabEditor" {
                     api.prevent_close();
-                    let _ = window.hide();
+                    let _ = auxiliary_windows::destroy_native(window);
                 }
                 if window.label() == "emojiPicker" {
                     api.prevent_close();
-                    let _ = window.hide();
+                    let _ = auxiliary_windows::destroy_native(window);
                 }
                 if window.label() == "onboardingPermission" {
                     api.prevent_close();
-                    let _ = window.hide();
+                    let _ = auxiliary_windows::destroy_native(window);
                     restore_parent_after_permission_guide(window.app_handle());
                 }
             }
             if let tauri::WindowEvent::Focused(focused) = event {
+                #[cfg(debug_assertions)]
+                if *focused && window.label() != "devMemory" {
+                    if let Some(monitor) = window.app_handle().get_webview_window("devMemory") {
+                        if monitor.is_visible().unwrap_or(false) {
+                            let _ = dev_memory::keep_on_top(&monitor);
+                        }
+                    }
+                }
                 if window.label() == "textEditor" {
                     TEXT_EDITOR_FOCUSED.store(*focused, Ordering::SeqCst);
                 }
@@ -11456,12 +11737,12 @@ fn main() {
             }
             if let tauri::WindowEvent::Focused(false) = event {
                 if window.label() == "trayMenu" {
-                    let _ = window.hide();
+                    let _ = auxiliary_windows::destroy_native(window);
                 }
             }
             if let tauri::WindowEvent::Focused(false) = event {
                 if window.label() == "emojiPicker" {
-                    let _ = window.hide();
+                    let _ = auxiliary_windows::destroy_native(window);
                 }
             }
             if let tauri::WindowEvent::Focused(false) = event {
@@ -11472,7 +11753,10 @@ fn main() {
                     let app = window.app_handle().clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(std::time::Duration::from_millis(35));
-                        if tab_editor_window_active(&app) || text_editor_window_active(&app) {
+                        if tab_editor_window_active(&app)
+                            || text_editor_window_active(&app)
+                            || memory_monitor_window_active(&app)
+                        {
                             return;
                         }
                         if preview_window_visible(&app) {
@@ -11502,7 +11786,8 @@ fn main() {
                             let tauri_focused = window.is_focused().unwrap_or(false);
                             let native_foreground =
                                 is_native_window_foreground(&window, "focus-loss hide guard");
-                            let tab_editor_active = tab_editor_window_active(&app);
+                            let tab_editor_active = tab_editor_window_active(&app)
+                                || memory_monitor_window_active(&app);
                             if CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
                                 && !tauri_focused
                                 && !native_foreground
@@ -11609,11 +11894,7 @@ fn main() {
                 error!("Failed to resume clipboard search index updates: {err}");
             }
             let _ = build_clipboard_window(app.handle())?;
-            let _ = build_paste_queue_window(app.handle())?;
             initialize_paste_queue_worker(app.handle());
-            if get_developer_mode() {
-                let _ = build_test_room_window(app.handle())?;
-            }
             get_app_data_dir();
             let handle = app.handle().clone();
 
@@ -11662,7 +11943,12 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            open_dev_memory_window,
+            close_dev_memory_window,
+            get_dev_memory_report,
+            set_dev_memory_monitoring,
             auxiliary_window_ready,
+            close_config_window,
             startup_panel::clipboard_window_ready,
             wait_for_clipboard_capture,
             copy,
@@ -11793,6 +12079,7 @@ fn main() {
             color_conversion_options,
             export_image_item,
             read_preview_text_file,
+            resolve_history_media,
             history_file_preview_asset_path,
             history_image_card_preview_asset_path,
             history_image_metadata,

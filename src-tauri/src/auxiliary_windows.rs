@@ -1,12 +1,106 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::Manager;
 use tokio::sync::{oneshot, watch};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Lifecycle {
+    Open,
+    Closing,
+    Closed,
+}
+
+struct Instance(watch::Sender<Lifecycle>);
+impl tauri::Resource for Instance {}
+
+fn instance(window: &tauri::Window) -> Arc<Instance> {
+    let mut resources = window.resources_table();
+    let existing = resources
+        .names()
+        .find_map(|(id, name)| (name == std::any::type_name::<Instance>()).then_some(id));
+    if let Some(id) = existing {
+        return resources.get(id).expect("window lifecycle resource");
+    }
+    let instance = Arc::new(Instance(watch::channel(Lifecycle::Open).0));
+    resources.add_arc(instance.clone());
+    let destroyed = instance.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            destroyed.0.send_replace(Lifecycle::Closed);
+        }
+    });
+    instance
+}
+
+fn native_window(window: &tauri::WebviewWindow) -> tauri::Window {
+    AsRef::<tauri::Webview>::as_ref(window).window()
+}
+
+pub(crate) fn is_open(window: &tauri::WebviewWindow) -> bool {
+    *instance(&native_window(window)).0.borrow() == Lifecycle::Open
+}
+
+pub(crate) fn destroy(window: &tauri::WebviewWindow) -> Result<(), String> {
+    destroy_native(&native_window(window))
+}
+
+pub(crate) fn destroy_native(window: &tauri::Window) -> Result<(), String> {
+    let instance = instance(window);
+    let requested = instance.0.send_if_modified(|state| {
+        if *state != Lifecycle::Open {
+            return false;
+        }
+        *state = Lifecycle::Closing;
+        true
+    });
+    if !requested {
+        return Ok(());
+    }
+    if let Err(error) = window.destroy() {
+        instance.0.send_if_modified(|state| {
+            if *state != Lifecycle::Closing {
+                return false;
+            }
+            *state = Lifecycle::Open;
+            true
+        });
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
+async fn wait_for_closing(mut lifecycle: watch::Receiver<Lifecycle>) -> Result<(), String> {
+    loop {
+        if *lifecycle.borrow_and_update() != Lifecycle::Open {
+            return Ok(());
+        }
+        lifecycle
+            .changed()
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+}
+
+async fn wait_until_not_closing(mut lifecycle: watch::Receiver<Lifecycle>) -> Result<(), String> {
+    loop {
+        if *lifecycle.borrow_and_update() != Lifecycle::Closing {
+            return Ok(());
+        }
+        lifecycle
+            .changed()
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum WindowKind {
+    #[cfg(debug_assertions)]
+    DevMemory,
+    ClipboardPreview,
+    PasteQueue,
     Config,
     TextEditor,
     PasteFallbackNotice,
@@ -14,11 +108,16 @@ pub(crate) enum WindowKind {
     TrayMenu,
     EmojiPicker,
     TabEditor,
+    TestRoom,
 }
 
 impl WindowKind {
     pub(crate) fn label(self) -> &'static str {
         match self {
+            #[cfg(debug_assertions)]
+            Self::DevMemory => "devMemory",
+            Self::ClipboardPreview => "clipboardPreview",
+            Self::PasteQueue => "pasteQueue",
             Self::Config => "config",
             Self::TextEditor => "textEditor",
             Self::PasteFallbackNotice => "pasteFallbackNotice",
@@ -26,6 +125,7 @@ impl WindowKind {
             Self::TrayMenu => "trayMenu",
             Self::EmojiPicker => "emojiPicker",
             Self::TabEditor => "tabEditor",
+            Self::TestRoom => "testRoom",
         }
     }
 }
@@ -78,27 +178,53 @@ pub(crate) async fn ensure(
     app: &tauri::AppHandle,
     kind: WindowKind,
 ) -> Result<tauri::WebviewWindow, String> {
-    let ready = app.state::<Readiness>().subscribe(kind);
-    let handle = app.clone();
-    let window = tauri::async_runtime::spawn_blocking(move || {
-        // WebView2 creation must run outside synchronous UI event handlers.
-        // Serialize the check/build pair so concurrent cold opens share a window.
-        let state = handle.state::<Readiness>();
-        let _creation = state.creation.lock().unwrap();
-        match handle.get_webview_window(kind.label()) {
-            Some(window) => Ok(window),
-            None => {
-                state.reset(kind);
-                crate::build_auxiliary_window(&handle, kind).map_err(|err| err.to_string())
-            }
-        }
-    })
-    .await
-    .map_err(|err| err.to_string())??;
-    tokio::time::timeout(Duration::from_secs(15), wait_for_ready(ready))
+    tokio::time::timeout(Duration::from_secs(15), ensure_open(app, kind))
         .await
-        .map_err(|_| format!("{} window did not finish loading", kind.label()))??;
-    Ok(window)
+        .map_err(|_| format!("{} window did not finish loading or closing", kind.label()))?
+}
+
+async fn ensure_open(
+    app: &tauri::AppHandle,
+    kind: WindowKind,
+) -> Result<tauri::WebviewWindow, String> {
+    loop {
+        let ready = app.state::<Readiness>().subscribe(kind);
+        let handle = app.clone();
+        let window = tauri::async_runtime::spawn_blocking(move || {
+            // WebView2 creation must run outside synchronous UI event handlers.
+            // Serialize the check/build pair so concurrent cold opens share a window.
+            let state = handle.state::<Readiness>();
+            let _creation = state.creation.lock().unwrap();
+            match handle.get_webview_window(kind.label()) {
+                Some(window) => Ok(window),
+                None => {
+                    state.reset(kind);
+                    crate::build_auxiliary_window(&handle, kind).map_err(|err| err.to_string())
+                }
+            }
+        })
+        .await
+        .map_err(|err| err.to_string())??;
+        let instance = instance(&native_window(&window));
+        let lifecycle = instance.0.subscribe();
+        if *lifecycle.borrow() == Lifecycle::Open {
+            tokio::select! {
+                result = wait_for_ready(ready.clone()) => result?,
+                result = wait_for_closing(lifecycle.clone()) => result?,
+            }
+            if *lifecycle.borrow() == Lifecycle::Open {
+                if *ready.borrow() {
+                    return Ok(window);
+                }
+                continue;
+            }
+            return Err(format!("{} window closed while loading", kind.label()));
+        }
+        wait_until_not_closing(lifecycle).await?;
+        // Let the event loop settle before rechecking the manager. A Closed
+        // instance is never returned even if its entry is briefly still present.
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
 }
 
 pub(crate) async fn on_main_thread(
@@ -118,6 +244,72 @@ pub(crate) async fn on_main_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn closing_window_waits_for_destruction_and_old_instances_stay_closed() {
+        let (sender, receiver) = watch::channel(Lifecycle::Open);
+        sender.send_replace(Lifecycle::Closing);
+        let pending = tokio::spawn(wait_until_not_closing(receiver));
+        tokio::task::yield_now().await;
+        assert!(!pending.is_finished());
+        sender.send_replace(Lifecycle::Closed);
+        pending.await.unwrap().unwrap();
+        let new = Instance(watch::channel(Lifecycle::Open).0);
+        assert!(*sender.borrow() == Lifecycle::Closed);
+        assert!(*new.0.borrow() == Lifecycle::Open);
+    }
+
+    #[tokio::test]
+    async fn failed_destruction_releases_waiters_without_claiming_the_page_is_ready() {
+        let (sender, receiver) = watch::channel(Lifecycle::Closing);
+        let pending = tokio::spawn(wait_until_not_closing(receiver));
+        tokio::task::yield_now().await;
+        assert!(!pending.is_finished());
+        sender.send_replace(Lifecycle::Open);
+        pending.await.unwrap().unwrap();
+        let readiness = Readiness::default();
+        assert!(!*readiness.subscribe(WindowKind::Config).borrow());
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn memory_monitor_has_its_own_debug_window_kind() {
+        assert_eq!(WindowKind::DevMemory.label(), "devMemory");
+        assert_ne!(WindowKind::DevMemory.label(), "clipboard");
+    }
+
+    #[test]
+    fn every_non_main_window_has_a_recreation_kind() {
+        let labels = [
+            WindowKind::ClipboardPreview,
+            WindowKind::PasteQueue,
+            WindowKind::Config,
+            WindowKind::TextEditor,
+            WindowKind::PasteFallbackNotice,
+            WindowKind::OnboardingPermission,
+            WindowKind::TrayMenu,
+            WindowKind::EmojiPicker,
+            WindowKind::TabEditor,
+            WindowKind::TestRoom,
+        ]
+        .map(WindowKind::label);
+        assert_eq!(
+            labels,
+            [
+                "clipboardPreview",
+                "pasteQueue",
+                "config",
+                "textEditor",
+                "pasteFallbackNotice",
+                "onboardingPermission",
+                "trayMenu",
+                "emojiPicker",
+                "tabEditor",
+                "testRoom",
+            ]
+        );
+        assert!(!labels.contains(&"clipboard"));
+    }
 
     #[tokio::test]
     async fn first_open_waits_for_the_page_and_releases_every_waiter() {

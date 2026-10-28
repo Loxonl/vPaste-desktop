@@ -59,15 +59,12 @@ describe("ImagePreview", () => {
         vi.clearAllMocks();
         vi.stubGlobal("IntersectionObserver", ImmediateIntersectionObserver);
         vi.stubGlobal("ResizeObserver", ImmediateResizeObserver);
-        invokeMock.mockImplementation(async (command: string) => {
-            if (command === "history_image_metadata") {
-                return { width: 320, height: 180, isGif: false };
-            }
-            if (command === "history_image_card_preview_asset_path") {
-                return "C:\\cache\\preview.png";
-            }
-            if (command === "history_file_data_url") {
-                return "data:image/png;base64,recovered";
+        invokeMock.mockImplementation(async (command: string, args?: { refresh?: boolean }) => {
+            if (command === "resolve_history_media") {
+                return {
+                    assetPath: args?.refresh ? "C:\\cache\\recovered.png" : "C:\\cache\\preview.png",
+                    metadata: { width: 320, height: 180, isGif: false, sourceBytes: 1024, previewLimited: false, animationLimited: false },
+                };
             }
             if (command === "file_preview_info") {
                 return {
@@ -131,7 +128,7 @@ describe("ImagePreview", () => {
         const refreshedImage = container.querySelector("img");
         expect(refreshedImage).toBe(firstImage);
         expect(invokeMock.mock.calls.filter(([command]) => (
-            command === "history_image_card_preview_asset_path"
+            command === "resolve_history_media"
         ))).toHaveLength(1);
     });
 
@@ -160,25 +157,25 @@ describe("ImagePreview", () => {
         await waitFor(() => {
             expect(container.querySelector("img")).toHaveAttribute(
                 "src",
-                "data:image/png;base64,recovered",
+                "asset://C:\\cache\\recovered.png",
             );
         });
-        expect(invokeMock).toHaveBeenCalledWith("history_file_data_url", {
-            path: "C:\\history\\recover-image.bin",
+        expect(invokeMock).toHaveBeenCalledWith("resolve_history_media", {
+            path: "C:\\history\\recover-image.bin", intent: "card", refresh: true,
         });
     });
 
     it("keeps oversized images in a stable metadata fallback without requesting an asset", async () => {
         invokeMock.mockImplementation(async (command: string) => {
-            if (command === "history_image_metadata") {
-                return {
+            if (command === "resolve_history_media") {
+                return { assetPath: "", metadata: {
                     width: 12_000,
                     height: 5_000,
                     isGif: false,
                     sourceBytes: 48 * 1024 * 1024,
                     previewLimited: true,
                     animationLimited: false,
-                };
+                } };
             }
             throw new Error(`Unexpected command: ${command}`);
         });
@@ -219,10 +216,10 @@ describe("ImagePreview", () => {
 
         expect(container.querySelector("img")).toBeNull();
         expect(invokeMock.mock.calls.filter(([command]) => (
-            command === "history_image_metadata"
+            command === "resolve_history_media"
         ))).toHaveLength(1);
         expect(invokeMock).not.toHaveBeenCalledWith(
-            "history_image_card_preview_asset_path",
+            "history_file_data_url",
             expect.anything(),
         );
     });
@@ -253,10 +250,7 @@ describe("ImagePreview", () => {
             expect(container.querySelectorAll("img")).toHaveLength(2);
         });
         expect(invokeMock.mock.calls.filter(([command]) => (
-            command === "history_image_metadata"
-        ))).toHaveLength(1);
-        expect(invokeMock.mock.calls.filter(([command]) => (
-            command === "history_image_card_preview_asset_path"
+            command === "resolve_history_media"
         ))).toHaveLength(1);
     });
 

@@ -13,6 +13,7 @@ import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
 import { useRichPreviewCanvas } from "./useRichPreviewCanvas";
 import { clipboardTabNavigationDirection } from "./clipboardKeyboard";
 import { useLanguage } from "../lang";
+import { notifyAuxiliaryWindowReady } from "../auxiliaryWindowReady";
 import { m, motionDurationsMs, motionTokens, useMotionPreset, useReducedMotionConfig } from "../ui/motion";
 import styles from "./Preview.module.css";
 
@@ -519,6 +520,7 @@ export default function Preview() {
             setLayers([]);
         });
         const unlistenPromoted = listen("preview-promoted", () => { hoverRef.current = false; });
+        const cancelReady = notifyAuxiliaryWindowReady([unlisten, unlistenClear, unlistenPromoted]);
         // Replay a first request that arrived while this lazy route was still loading.
         const mountSequence = sequenceRef.current;
         void Promise.all([unlisten, unlistenClear]).then(() => invoke<PreviewPayload | null>("pending_preview_item"))
@@ -559,6 +561,7 @@ export default function Preview() {
         return () => {
             sequenceRef.current += 1;
             pendingLayerRef.current = null;
+            cancelReady();
             unlisten.then(fn => fn()).catch(e => error(`Failed to unlisten preview: ${e}`));
             unlistenClear.then(fn => fn()).catch(e => error(`Failed to unlisten preview clear: ${e}`));
             unlistenPromoted.then(fn => fn()).catch(e => error(`Failed to unlisten preview promotion: ${e}`));

@@ -6,6 +6,7 @@ import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
 import DashboardCustomizeOutlinedIcon from "@mui/icons-material/DashboardCustomizeOutlined";
 import DarkModeRoundedIcon from "@mui/icons-material/DarkModeRounded";
 import LightModeRoundedIcon from "@mui/icons-material/LightModeRounded";
+import MemoryOutlinedIcon from "@mui/icons-material/MemoryOutlined";
 import PlaylistAddCheckRoundedIcon from "@mui/icons-material/PlaylistAddCheckRounded";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
@@ -204,6 +205,7 @@ type ClipboardHeaderActionsProps = {
     onToggleTheme: () => void;
     onOpenUiLab: () => void;
     onOpenTestRoom: () => void;
+    onOpenMemoryMonitor?: () => void;
     onOpenSettings: () => void;
     onRestartToUpdate?: () => void;
 };
@@ -228,6 +230,7 @@ export function ClipboardHeaderActions({
     onToggleTheme,
     onOpenUiLab,
     onOpenTestRoom,
+    onOpenMemoryMonitor,
     onOpenSettings,
     onRestartToUpdate,
 }: ClipboardHeaderActionsProps) {
@@ -309,6 +312,13 @@ export function ClipboardHeaderActions({
                         onClick={onOpenTestRoom}
                     >
                         <ScienceOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
+                    </ToolbarIconButton>
+                    <ToolbarIconButton
+                        className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}
+                        label={t("memory.title")}
+                        onClick={onOpenMemoryMonitor}
+                    >
+                        <MemoryOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
                     </ToolbarIconButton>
                     <ToolbarIconButton
                         className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}

@@ -1,0 +1,14 @@
+.content { display: flex; flex-direction: column; gap: 12px; }
+.controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.sampleSelector { width: 240px; max-width: 100%; }
+.meta, .note { color: var(--ui-text-muted); font-size: 12px; }
+.note { margin: 0; line-height: 1.6; }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.summary > div { padding: 12px; background: var(--ui-surface-muted); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-control); }
+.summary span { display: block; color: var(--ui-text-muted); font-size: 12px; }
+.summary strong { display: block; margin-top: 4px; font-size: 20px; font-variant-numeric: tabular-nums; }
+.sectionTitle { margin: 8px 0 0; font-size: 14px; }
+.table { overflow-x: auto; flex-shrink: 0; }
+.table td { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.error { color: var(--ui-danger); font-size: 12px; }
+.actions { flex-wrap: wrap; }

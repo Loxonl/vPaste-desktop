@@ -27,10 +27,11 @@ type ClipboardListInteractionOptions = {
     wheelScrollingClassName: string;
     cardSelector: string;
     contextMenuSelector: string;
-    onActivateCard: (hash: string, plainText: boolean) => void;
+    onActivateCard: (hash: string, plainText: boolean, doubleClick?: boolean) => void;
     onLoadMore: (force?: boolean) => void;
     onPointerStart: () => void;
     onWheelStart: () => void;
+    onHoverCard: (hash: string, target: Element) => void;
 };
 
 type DragScrollState = {
@@ -61,6 +62,43 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
     });
     const dragScrollRef = useRef<DragScrollState | null>(null);
     const suppressClickAfterDragRef = useRef(false);
+    const capturedClickHashRef = useRef("");
+    const pointerPositionRef = useRef<{ x: number; y: number } | null>(null);
+    const pointerSelectionRef = useRef(false);
+    const scrollingRef = useRef(false);
+    const scrollIdleTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+    const suspendPointerSelection = useCallback(() => {
+        pointerSelectionRef.current = false;
+    }, []);
+
+    const handlePointerLeave = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+        pointerPositionRef.current = { x: event.clientX, y: event.clientY };
+        suspendPointerSelection();
+    }, [suspendPointerSelection]);
+
+    const selectPointedCard = useCallback((target: Element | null) => {
+        const { containerRef, cardSelector, tutorialActive, onHoverCard } = optionsRef.current;
+        if (!target || !pointerSelectionRef.current || scrollingRef.current || tutorialActive
+            || dragScrollRef.current?.active || dragScrollRef.current?.frame != null) return;
+        const card = target.closest<HTMLElement>(cardSelector);
+        if (card?.dataset.hash && containerRef.current?.contains(card)) {
+            onHoverCard(card.dataset.hash, target);
+        }
+    }, []);
+
+    const handleScroll = useCallback(() => {
+        scrollingRef.current = true;
+        clearTimeout(scrollIdleTimerRef.current);
+        scrollIdleTimerRef.current = setTimeout(() => {
+            scrollIdleTimerRef.current = undefined;
+            scrollingRef.current = false;
+            const point = pointerPositionRef.current;
+            if (pointerSelectionRef.current && point) {
+                selectPointedCard(document.elementFromPoint(point.x, point.y));
+            }
+        }, WHEEL_SCROLL_IDLE_MS);
+    }, [selectPointedCard]);
 
     const stopDragInertia = useCallback(() => {
         if (dragScrollRef.current?.frame !== null && dragScrollRef.current?.frame !== undefined) {
@@ -108,6 +146,11 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
     }, [deactivateWheelScrolling]);
 
     const resetPointerState = useCallback(() => {
+        suspendPointerSelection();
+        pointerPositionRef.current = null;
+        clearTimeout(scrollIdleTimerRef.current);
+        scrollIdleTimerRef.current = undefined;
+        scrollingRef.current = false;
         stopWheelScroll();
         const dragState = dragScrollRef.current;
         if (dragState?.frame !== null && dragState?.frame !== undefined) {
@@ -118,7 +161,7 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
         optionsRef.current.containerRef.current?.classList.remove(
             optionsRef.current.draggingClassName,
         );
-    }, [stopWheelScroll]);
+    }, [stopWheelScroll, suspendPointerSelection]);
 
     const clearClickSuppression = useCallback(() => {
         suppressClickAfterDragRef.current = false;
@@ -163,6 +206,8 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
     }, [stopDragInertia]);
 
     const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+        suspendPointerSelection();
+        capturedClickHashRef.current = "";
         if (!event.isPrimary) return;
         stopWheelScroll();
         stopDragInertia();
@@ -188,9 +233,18 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
             pendingDelta: 0,
             frame: null,
         };
-    }, [stopDragInertia, stopWheelScroll]);
+    }, [stopDragInertia, stopWheelScroll, suspendPointerSelection]);
 
     const handlePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+        if (event.pointerType === "mouse") {
+            const previous = pointerPositionRef.current;
+            pointerPositionRef.current = { x: event.clientX, y: event.clientY };
+            if (event.buttons) suspendPointerSelection();
+            else if (!previous || previous.x !== event.clientX || previous.y !== event.clientY) {
+                pointerSelectionRef.current = true;
+                selectPointedCard(event.target as Element);
+            }
+        }
         const state = dragScrollRef.current;
         const container = optionsRef.current.containerRef.current;
         if (!state?.active || !container) return;
@@ -228,7 +282,7 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
                 optionsRef.current.onLoadMore();
             });
         }
-    }, []);
+    }, [selectPointedCard, suspendPointerSelection]);
 
     const finishPointerDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
         const state = dragScrollRef.current;
@@ -245,6 +299,7 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
             event.currentTarget.releasePointerCapture(event.pointerId);
         }
         if (event.type === "pointerup" && !state.moved && !state.cancelActivation && state.targetHash) {
+            capturedClickHashRef.current = state.targetHash;
             event.preventDefault();
             window.getSelection()?.removeAllRanges();
             optionsRef.current.onActivateCard(state.targetHash, event.shiftKey);
@@ -269,6 +324,14 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
         event.preventDefault();
         event.stopPropagation();
         suppressClickAfterDragRef.current = false;
+    }, []);
+
+    const handleDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+        const target = event.target as HTMLElement;
+        if (suppressClickAfterDragRef.current || target.closest("button, a, input, textarea, [contenteditable=true]")) return;
+        const card = target.closest<HTMLElement>(optionsRef.current.cardSelector);
+        const hash = card?.dataset.hash || (event.target === event.currentTarget ? capturedClickHashRef.current : "");
+        if (hash) optionsRef.current.onActivateCard(hash, event.shiftKey, true);
     }, []);
 
     const startWheelScrollAnimation = useCallback(() => {
@@ -314,6 +377,9 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
     const handleWheel = useCallback((event: WheelEvent) => {
         if (optionsRef.current.tutorialActive || event.ctrlKey) return;
 
+        pointerPositionRef.current = { x: event.clientX, y: event.clientY };
+        pointerSelectionRef.current = true;
+        handleScroll();
         optionsRef.current.onWheelStart();
         const container = optionsRef.current.containerRef.current;
         if (!container) return;
@@ -364,7 +430,7 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
         );
         state.timeConstant = wheelTimeConstant(rawDelta, event.deltaMode, eventInterval);
         startWheelScrollAnimation();
-    }, [scheduleWheelScrollIdle, startWheelScrollAnimation]);
+    }, [handleScroll, scheduleWheelScrollIdle, startWheelScrollAnimation]);
 
     useEffect(() => {
         const container = optionsRef.current.containerRef.current;
@@ -381,9 +447,13 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
         clearClickSuppression,
         finishPointerDrag,
         handleClickCapture,
+        handleDoubleClick,
         handlePointerDown,
+        handlePointerLeave,
         handlePointerMove,
+        handleScroll,
         resetPointerState,
         stopWheelScroll,
+        suspendPointerSelection,
     };
 }

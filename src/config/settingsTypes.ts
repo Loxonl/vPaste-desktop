@@ -32,6 +32,8 @@ export interface ConfigData {
     retain_last_position: boolean;
     retain_tab_position: boolean;
     link_auto_preview: boolean;
+    mouse_paste_mode: "single" | "double";
+    hover_preview_enabled: boolean;
     sensitive_content_protection: boolean;
     quick_input_enabled: boolean;
     tab_quick_select_enabled: boolean;
@@ -120,6 +122,8 @@ export const DEFAULT_CONFIG: ConfigData = {
     retain_last_position: false,
     retain_tab_position: false,
     link_auto_preview: true,
+    mouse_paste_mode: "single",
+    hover_preview_enabled: false,
     sensitive_content_protection: true,
     quick_input_enabled: true,
     tab_quick_select_enabled: true,

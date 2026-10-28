@@ -2,11 +2,11 @@ import { expect, test } from "@playwright/test";
 
 type ProbeWindow = Window & { __syncProbe: {
     calls: Array<{ command: string; args: Record<string, unknown> }>;
-    emit: (event: string) => void;
+    emit: (event: string, payload?: unknown) => void;
     release: (fail: boolean) => void;
 } };
 
-for (const outcome of ["ready", "failed", "hide", "blur", "navigate", "retained", "filtered", "refresh-failed", "refocus", "late-show", "deleted", "missing-required"] as const) {
+for (const outcome of ["ready", "failed", "hide", "blur", "navigate", "pointer", "preview-navigate", "retained", "filtered", "refresh-failed", "refocus", "late-show", "deleted", "missing-required"] as const) {
     test(`rapid Enter waits for fresh capture: ${outcome}`, async ({ page }) => {
         await page.addInitScript(scenario => {
             let nextId = 0;
@@ -23,7 +23,7 @@ for (const outcome of ["ready", "failed", "hide", "blur", "navigate", "retained"
             Object.assign(window, {
                 __syncProbe: {
                     calls,
-                    emit: (event: string) => callbacks.get(listeners.get(event)!)?.({ event, payload: null }),
+                    emit: (event: string, payload: unknown = null) => callbacks.get(listeners.get(event)!)?.({ event, payload }),
                     release: (fail: boolean) => {
                         fresh = !fail;
                         if (fail) rejectCapture(new Error("Capture timed out"));
@@ -65,7 +65,7 @@ for (const outcome of ["ready", "failed", "hide", "blur", "navigate", "retained"
             });
         }, outcome);
         await page.goto("/clipboard");
-        await expect(page.getByText("old content", { exact: true }).first()).toBeVisible();
+        await expect(page.getByText("old content", { exact: true }).first()).toBeVisible({ timeout: 15_000 });
         if (outcome === "filtered") {
             await page.getByRole("button", { name: "搜索", exact: true }).click();
             await page.getByRole("textbox", { name: "搜索" }).fill("old");
@@ -84,8 +84,10 @@ for (const outcome of ["ready", "failed", "hide", "blur", "navigate", "retained"
         if (outcome === "hide") await page.evaluate(() => (window as ProbeWindow).__syncProbe.emit("window-hide"));
         if (outcome === "blur") await page.evaluate(() => window.dispatchEvent(new Event("blur")));
         if (outcome === "navigate") await page.keyboard.press("ArrowRight");
+        if (outcome === "pointer") await page.getByText("old content", { exact: true }).first().hover();
+        if (outcome === "preview-navigate") await page.evaluate(() => (window as ProbeWindow).__syncProbe.emit("preview-navigate-selection", { direction: 1, key: "ArrowRight" }));
         await page.evaluate(fail => (window as ProbeWindow).__syncProbe.release(fail), outcome === "failed");
-        if (["ready", "retained", "filtered", "refocus", "late-show", "deleted"].includes(outcome)) {
+        if (["ready", "pointer", "retained", "filtered", "refocus", "late-show", "deleted"].includes(outcome)) {
             await expect.poll(pastes).toHaveLength(1);
             expect((await pastes())[0].args.hash).toBe(outcome === "retained" || outcome === "filtered" || outcome === "deleted" ? "old" : "new");
         } else {

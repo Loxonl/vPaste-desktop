@@ -175,9 +175,8 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
     const appIconSrc = appIconPath ? convertFileSrc(appIconPath) : "";
     const formatTagColor = getFormatTagColor(visualType, headerColor, Boolean(appIconSrc));
     const headerBackground = getHeaderBackground(visualType, headerColor, Boolean(appIconSrc));
-    const [hovered, setHovered] = useState(false);
     const isMacosAppIcon = appIconPath.endsWith("-macos.png");
-    const previewActive = selected || hovered || simulatedHover;
+    const previewActive = selected || simulatedHover;
     const updateGifFormat = useCallback((gif: boolean) => {
         setIsGifFormat(gif);
     }, []);
@@ -330,12 +329,10 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
             tabIndex={-1}
             draggable={!dragDisabled && !selectionMode && !nativeFileDrag}
             onMouseEnter={() => {
-                setHovered(true);
                 dragTextHoveredRef.current = true;
                 if (!dragDisabled && !selectionMode) prepareDragText();
             }}
             onMouseLeave={() => {
-                setHovered(false);
                 dragTextHoveredRef.current = false;
                 dragTextRef.current = null;
                 if (!nativeDragStateRef.current?.started) {
@@ -398,6 +395,7 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                 setDragging(false);
             }}
             onClick={(event) => {
+                if (event.detail > 1) return;
                 if (dragDisabled || selectionMode || isExternalDragExcludedTarget(event.target)) return;
                 if (dragStartedRef.current) {
                     dragStartedRef.current = false;

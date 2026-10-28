@@ -36,6 +36,65 @@ function options() {
 }
 
 describe("clipboard preview runtime", () => {
+    for (const outcome of ["limited", "failed"]) {
+        it(`does not close an existing preview or toast during an automatic image selection (${outcome})`, async () => {
+            const callbacks = options();
+            if (outcome === "failed") tauri.invoke.mockRejectedValue(new Error("metadata unavailable"));
+            else tauri.invoke.mockResolvedValue({ previewLimited: true });
+            await createClipboardPreviewRuntime(callbacks).openPreviewItem(item(ItemType.Image), 0, "selection");
+            expect(tauri.invoke).not.toHaveBeenCalledWith("hide_preview_window");
+            expect(tauri.invoke).not.toHaveBeenCalledWith("show_preview_window", expect.anything());
+            expect(callbacks.showToast).not.toHaveBeenCalled();
+        });
+    }
+
+    it("uses the Space preview window command for hover links without fetching the webpage first", async () => {
+        const callbacks = options();
+        const link = new Item(1, "link-hash", ItemType.Link, "https://example.com/page", 0);
+        await createClipboardPreviewRuntime(callbacks).openPreviewItem(link, 0, "hover", 123);
+        expect(tauri.invoke.mock.calls).toEqual([["show_preview_window", expect.objectContaining({
+            itemType: ItemType.Link, content: "https://example.com/page", mode: "hover", hoverRequest: 123,
+        })]]);
+        expect(callbacks.selectItem).not.toHaveBeenCalled();
+    });
+
+    it("does not show a disk-backed hover after the pointer leaves during the read", async () => {
+        let complete!: (value: string) => void;
+        let valid = true;
+        tauri.invoke.mockImplementation(async (command: string) => command === "plain_text_content"
+            ? new Promise<string>(resolve => { complete = resolve; }) : undefined);
+        const target = item(ItemType.TextFile);
+        const pending = createClipboardPreviewRuntime(options()).openPreviewItem(target, 0, "hover", 123, () => valid);
+        valid = false;
+        complete("old content");
+        await pending;
+        expect(tauri.invoke).not.toHaveBeenCalledWith("show_preview_window", expect.anything());
+    });
+
+    it("opens hover content without changing selection or dismissing menus", async () => {
+        const callbacks = options();
+        await createClipboardPreviewRuntime(callbacks).openPreviewItem(item(), 0, "hover", 123);
+        expect(callbacks.selectItem).not.toHaveBeenCalled();
+        expect(callbacks.closeContextMenu).not.toHaveBeenCalled();
+        expect(tauri.invoke).toHaveBeenLastCalledWith("show_preview_window", expect.objectContaining({ mode: "hover", hoverRequest: 123 }));
+    });
+
+    it("updates an open preview without asking it to take focus on mouse selection", async () => {
+        const callbacks = options();
+        tauri.invoke.mockImplementation(async (command: string) => command === "is_preview_window_visible" ? true : undefined);
+        createClipboardPreviewRuntime(callbacks).refreshPreviewIfVisible(item(), true);
+        await vi.waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("show_preview_window", expect.objectContaining({ mode: "selection" })));
+    });
+
+    it("does not toast or open a resource-limited hover image", async () => {
+        const callbacks = options();
+        tauri.invoke.mockResolvedValue({ previewLimited: true });
+        await createClipboardPreviewRuntime(callbacks).openPreviewItem(item(ItemType.Image), 0, "hover", 123);
+        expect(callbacks.showToast).not.toHaveBeenCalled();
+        expect(tauri.invoke).not.toHaveBeenCalledWith("hide_preview_window");
+        expect(tauri.invoke).not.toHaveBeenCalledWith("show_preview_window", expect.anything());
+    });
+
     it("loads the full disk-backed text before opening its preview", async () => {
         const callbacks = options();
         const body = "long text\n".repeat(2000) + "THE END";

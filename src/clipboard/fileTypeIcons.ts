@@ -1,4 +1,4 @@
-import materialIconManifest from "material-icon-theme/dist/material-icons.json";
+import { manifest as materialIconManifest, iconUrls } from "virtual:file-type-icon-index";
 import type { ResolvedTheme } from "../theme";
 
 type IconAssociations = {
@@ -17,12 +17,8 @@ export type ResolvedFileTypeIcon = {
 };
 
 const manifest = materialIconManifest as MaterialIconManifest;
-const materialIconUrls = import.meta.glob(
-    "/node_modules/material-icon-theme/icons/*.svg",
-    { eager: true, query: "?no-inline", import: "default" },
-) as Record<string, string>;
 const iconUrlByFileName = new Map(
-    Object.entries(materialIconUrls).map(([path, url]) => [path.split("/").pop() || "", url]),
+    Object.entries(iconUrls),
 );
 
 function extensionCandidates(fileName: string): string[] {

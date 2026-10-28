@@ -63,6 +63,7 @@ rdev = { version = "0.5", features = ["unstable_grab"] }
 infer = { version = "0.15.0", default-features = false, features = ["std"] }
 arboard = "3.6.1"
 reqwest = { version = "0.12.24", features = ["blocking", "cookies"] }
+hyper-util = { version = "0.1.20", features = ["client-proxy-system"] }
 scraper = "0.24.0"
 rtf-parser = { version = "=0.4.3", default-features = false }
 tauri-plugin-clipboard-manager = "=2.3.2"

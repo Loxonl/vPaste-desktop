@@ -1504,8 +1504,8 @@ fn run_paste_queue_case_with_active_queue(case_id: &str) -> Result<String, Strin
     }
 }
 
-fn run_paste_queue_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
-    crate::set_paste_queue_active_impl(app, true)?;
+async fn run_paste_queue_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
+    crate::set_paste_queue_active_impl(app, true).await?;
     let message = run_paste_queue_case_with_active_queue(case_id)?;
     crate::paste_queue::emit_state(app);
     Ok(message)
@@ -1764,7 +1764,7 @@ pub fn cleanup_test_room_history(app: tauri::AppHandle) -> Result<TestRoomOperat
     })
 }
 
-fn run_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
+async fn run_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
     #[cfg(any(test, debug_assertions))]
     if crate::office_test_fixtures::catalog()?
         .cases
@@ -1804,7 +1804,7 @@ fn run_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
         "qq-two-images" => run_qq_two_images_case(),
         "gif-history" => run_gif_history_case(case_id),
         "paste-queue-mixed" | "paste-queue-order" | "paste-queue-undo" | "paste-queue-target" => {
-            run_paste_queue_case(app, case_id)
+            run_paste_queue_case(app, case_id).await
         }
         "external-drag-values"
         | "external-drag-png"
@@ -1858,13 +1858,13 @@ fn run_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn run_test_room_case(
+pub async fn run_test_room_case(
     app: tauri::AppHandle,
     case_id: String,
 ) -> Result<TestCaseResult, String> {
     ensure_enabled()?;
     let started = Instant::now();
-    let result = match run_case(&app, &case_id) {
+    let result = match run_case(&app, &case_id).await {
         Ok(message) => Ok(TestCaseResult {
             passed: !case_needs_manual_check(&case_id),
             status: if case_needs_manual_check(&case_id) {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { notifyAuxiliaryWindowReady } from "../auxiliaryWindowReady";
 import AddRoundedIcon from "@mui/icons-material/AddRounded";
 import ArrowDownwardRoundedIcon from "@mui/icons-material/ArrowDownwardRounded";
 import ArrowUpwardRoundedIcon from "@mui/icons-material/ArrowUpwardRounded";
@@ -189,6 +190,7 @@ export default function TestRoom() {
                 }
             })
             .catch(reason => setError(String(reason)));
+        return notifyAuxiliaryWindowReady();
     }, []);
 
     const selectedGroup = useMemo(

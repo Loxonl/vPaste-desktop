@@ -13,7 +13,7 @@ import {
     useReducedMotionConfig,
 } from "../ui/motion";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
 import { Item, ItemTag, ItemType } from "./Item.ts";
 import { useLanguage } from "../lang";
@@ -49,7 +49,6 @@ import {
 import ClipboardCard from "./ClipboardCard";
 import { ClipboardResultsSurface } from "./ClipboardResultsSurface";
 import {
-    parseLinkContent,
     isEditableTextItem,
 } from "./itemPresentation";
 import {
@@ -139,12 +138,6 @@ type ToastState = {
     onAction?: () => void;
 } | null;
 
-type LinkPreviewUpdate = {
-    url: string;
-    title: string;
-    image_path: string;
-    image_kind?: string;
-};
 
 type TabEditorMode = "add" | "edit";
 type TagEditorKind = "filter" | "record";
@@ -238,8 +231,6 @@ export default function Clipboard() {
     const addTabButtonRef = useRef<HTMLButtonElement>(null);
     const toastTimerRef = useRef<number | null>(null);
     const scrollRefreshTimerRef = useRef<number | null>(null);
-    const imagePrewarmTimerRef = useRef<number | null>(null);
-    const imagePrewarmIdleRef = useRef<number | null>(null);
     const loadMoreCheckFrameRef = useRef<number | null>(null);
     const searchDebounceTimerRef = useRef<number | null>(null);
     const searchRequestSeqRef = useRef(0);
@@ -260,18 +251,20 @@ export default function Clipboard() {
     const pasteAsTextShortcutRef = useRef(DEFAULT_PASTE_AS_TEXT_SHORTCUT);
     const quickInputEnabledRef = useRef(true);
     const pasteInFlightRef = useRef(false);
+    const mainWindowActiveRef = useRef(true);
+    const resourceEpochRef = useRef<number | null>(null);
+    const pendingResourceEpochRef = useRef<number | null>(null);
+    const flushResourceRefreshRef = useRef<() => void>(() => undefined);
     const showGateRef = useRef<ReturnType<typeof createClipboardShowGate> | null>(null);
     if (!showGateRef.current) {
         showGateRef.current = createClipboardShowGate(reason => {
             error(`Failed to synchronize clipboard before activation: ${reason}`);
             showToast(t("clipboard.actionFailed", { error: String(reason) }), "error");
-        });
+        }, () => flushResourceRefreshRef.current());
     }
     const tabQuickSelectEnabledRef = useRef(true);
-    const linkAutoPreviewRef = useRef(true);
-    const linkPreviewRefreshingRef = useRef(false);
-    const imageClipboardCachePrewarmRef = useRef<Set<string>>(new Set());
     const hasMoreHistoryRef = useRef(true);
+    const nextHistoryCursorRef = useRef({ id: 0, time: 0 });
     const isLoadingMoreRef = useRef(false);
     const customTabsStorageReadyRef = useRef(false);
     const pendingRecordTagAssignTargetRef = useRef<Item | null>(null);
@@ -874,82 +867,8 @@ export default function Clipboard() {
         return item;
     };
 
-    const isPreviewableDomainLink = (url: string) => {
-        try {
-            const parsed = new URL(url.trim());
-            if (parsed.protocol !== "https:") return false;
-            const host = parsed.hostname;
-            if (!host.includes(".")) return false;
-            if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return false;
-            return /^[a-z0-9.-]+$/i.test(host);
-        } catch {
-            return false;
-        }
-    };
-
-    const scheduleLinkPreviewRefresh = (items: Item[]) => {
-        if (!linkAutoPreviewRef.current || linkPreviewRefreshingRef.current) return;
-        const urls = items
-            .filter(item => item.getType() === ItemType.Link)
-            .slice(0, 10)
-            .map(item => parseLinkContent(item.getContent()).url)
-            .filter(isPreviewableDomainLink);
-
-        if (urls.length === 0) return;
-
-        linkPreviewRefreshingRef.current = true;
-        void invoke<LinkPreviewUpdate[]>("refresh_link_previews", { urls })
-            .then(updates => {
-                if (updates.length > 0) {
-                    window.setTimeout(() => {
-                        void fetchHistoryWith(searchWordRef.current, activeTabRef.current, { background: true });
-                    }, 220);
-                }
-            })
-            .catch(e => error(`Failed to refresh link previews: ${e}`))
-            .finally(() => {
-                linkPreviewRefreshingRef.current = false;
-            });
-    };
-
-    const scheduleImageClipboardCachePrewarm = (items: Item[]) => {
-        const paths = items
-            .filter(item => item.getType() === ItemType.Image)
-            .map(item => item.getContent())
-            .filter(path => path && !imageClipboardCachePrewarmRef.current.has(path))
-            .slice(0, 6);
-
-        if (paths.length === 0) return;
-        paths.forEach(path => imageClipboardCachePrewarmRef.current.add(path));
-        if (imagePrewarmTimerRef.current !== null) {
-            window.clearTimeout(imagePrewarmTimerRef.current);
-        }
-        imagePrewarmTimerRef.current = window.setTimeout(() => {
-            imagePrewarmTimerRef.current = null;
-            const prewarm = () => {
-                imagePrewarmIdleRef.current = null;
-                void invoke("prewarm_image_preview_cache", { paths })
-                    .then(() => {
-                        window.setTimeout(() => {
-                            void invoke("prewarm_image_clipboard_cache", { paths: paths.slice(0, 2) })
-                                .catch(e => error(`Failed to prewarm image clipboard cache: ${e}`));
-                        }, 1800);
-                    })
-                    .catch(e => {
-                        paths.forEach(path => imageClipboardCachePrewarmRef.current.delete(path));
-                        error(`Failed to prewarm image preview cache: ${e}`);
-                    });
-            };
-            if (typeof window.requestIdleCallback === "function") {
-                imagePrewarmIdleRef.current = window.requestIdleCallback(prewarm, { timeout: 1800 });
-            } else {
-                imagePrewarmIdleRef.current = window.setTimeout(prewarm, 320);
-            }
-        }, 900);
-    };
-
     async function fetchHistoryWith(keywords: string, tab: string, options: { selectFirst?: boolean, background?: boolean, isCurrent?: () => boolean } = {}) {
-        if (showGateRef.current!.pending && !options.isCurrent) return false;
+        if (!mainWindowActiveRef.current || (showGateRef.current!.pending && !options.isCurrent)) return false;
         const requestSeq = ++searchRequestSeqRef.current;
         historyRefreshingRef.current = true;
         if (!options.background && keywords.trim()) {
@@ -965,9 +884,13 @@ export default function Clipboard() {
                 0,
                 HISTORY_PAGE_LIMIT,
                 () => requestSeq === searchRequestSeqRef.current && (options.isCurrent?.() ?? true),
+                undefined,
+                { background: options.background },
             );
             if (!page || !(options.isCurrent?.() ?? true)) return false;
             const items = page.items;
+            resourceEpochRef.current = page.resourceEpoch ?? 0;
+            nextHistoryCursorRef.current = { id: page.nextId, time: page.nextTime };
             const previousRequest = lastHistoryFetchRef.current;
             const filterChanged = previousRequest !== null
                 && (previousRequest.keywords !== keywords || previousRequest.tab !== tab);
@@ -1001,10 +924,6 @@ export default function Clipboard() {
             } else if (selectedIndex >= 0) {
                 scrollCardIntoView(selectedIndex);
             }
-            if (!options.background) {
-                scheduleLinkPreviewRefresh(items);
-                scheduleImageClipboardCachePrewarm(items);
-            }
             return true;
         } catch (e) {
             if (requestSeq === searchRequestSeqRef.current) {
@@ -1014,17 +933,25 @@ export default function Clipboard() {
             if (requestSeq === searchRequestSeqRef.current) {
                 historyRefreshingRef.current = false;
                 setIsSearching(false);
+                flushResourceRefreshRef.current();
             }
         }
     }
 
+    flushResourceRefreshRef.current = () => {
+        if (!mainWindowActiveRef.current || historyRefreshingRef.current || showGateRef.current!.pending
+            || pendingResourceEpochRef.current === null || pendingResourceEpochRef.current !== resourceEpochRef.current) return;
+        pendingResourceEpochRef.current = null;
+        void fetchHistoryWith(searchWordRef.current, activeTabRef.current, { background: true });
+    };
+
     const loadMoreHistory = async () => {
         const currentList = pageListRef.current;
-        if (isLoadingMoreRef.current || !hasMoreHistoryRef.current || currentList.length === 0) {
+        if (!mainWindowActiveRef.current || isLoadingMoreRef.current || !hasMoreHistoryRef.current || currentList.length === 0) {
             return;
         }
 
-        const lastItem = currentList[currentList.length - 1];
+        const cursor = nextHistoryCursorRef.current;
         setIsLoadingMore(true);
         isLoadingMoreRef.current = true;
         try {
@@ -1034,19 +961,19 @@ export default function Clipboard() {
             const page = await fetchSearchPage(
                 tagSearch.keywords,
                 label,
-                lastItem.getId(),
-                lastItem.getTime(),
+                cursor.id,
+                cursor.time,
                 HISTORY_PAGE_LIMIT,
                 () => requestSeq === searchRequestSeqRef.current,
             );
             if (!page) return;
             const nextItems = page.items;
+            nextHistoryCursorRef.current = { id: page.nextId, time: page.nextTime };
             const existingHashes = new Set(currentList.map(item => item.getHash()));
             const merged = currentList.concat(nextItems.filter((item: Item) => !existingHashes.has(item.getHash())));
             pageListRef.current = merged;
             setPage(new ClipboardPage(merged, page.consumed));
             setHasMoreHistory(page.hasMore);
-            scheduleImageClipboardCachePrewarm(nextItems);
         } catch (e) {
             error(`Failed to load more history: ${e}`);
         } finally {
@@ -1097,7 +1024,6 @@ export default function Clipboard() {
             hideAltHints();
         }
         tabQuickSelectEnabledRef.current = preferences.tabQuickSelectEnabled;
-        linkAutoPreviewRef.current = preferences.linkAutoPreview;
     };
 
     const synchronizeClipboardHistory = async (isCurrent: () => boolean) => {
@@ -1176,6 +1102,9 @@ export default function Clipboard() {
                 applyRuntimeBehaviorPreferences(preferences);
             },
             onWindowShow: payload => {
+                mainWindowActiveRef.current = true;
+                resourceEpochRef.current = null;
+                pendingResourceEpochRef.current = null;
                 resetCardsPointerState();
                 if (retainLastPositionRef.current === false) {
                     selectFirstLoadedItem(true);
@@ -1204,6 +1133,9 @@ export default function Clipboard() {
                 setAnimationState("entered");
             },
             onWindowHide: () => {
+                mainWindowActiveRef.current = false;
+                resourceEpochRef.current = null;
+                pendingResourceEpochRef.current = null;
                 hoverPreviewRef.current?.cancel();
                 showGateRef.current!.cancel(true);
                 retainedScrollLeftRef.current = cardsContainerRef.current?.scrollLeft ?? 0;
@@ -1212,18 +1144,6 @@ export default function Clipboard() {
                 if (scrollRefreshTimerRef.current !== null) {
                     window.clearTimeout(scrollRefreshTimerRef.current);
                     scrollRefreshTimerRef.current = null;
-                }
-                if (imagePrewarmTimerRef.current !== null) {
-                    window.clearTimeout(imagePrewarmTimerRef.current);
-                    imagePrewarmTimerRef.current = null;
-                }
-                if (imagePrewarmIdleRef.current !== null) {
-                    if (typeof window.cancelIdleCallback === "function") {
-                        window.cancelIdleCallback(imagePrewarmIdleRef.current);
-                    } else {
-                        window.clearTimeout(imagePrewarmIdleRef.current);
-                    }
-                    imagePrewarmIdleRef.current = null;
                 }
                 if (loadMoreCheckFrameRef.current !== null) {
                     window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
@@ -1236,8 +1156,14 @@ export default function Clipboard() {
                 setAnimationState("hidden");
             },
             onClipboardChanged: () => {
-                if (showGateRef.current!.pending) return;
+                if (!mainWindowActiveRef.current || showGateRef.current!.pending) return;
                 void fetchHistory();
+            },
+            onResourcesUpdated: payload => {
+                if (!mainWindowActiveRef.current) return;
+                if (resourceEpochRef.current !== null && payload.epoch !== resourceEpochRef.current) return;
+                pendingResourceEpochRef.current = payload.epoch;
+                flushResourceRefreshRef.current();
             },
             onTutorialStarted: () => {
                 void startTutorial();
@@ -1310,6 +1236,7 @@ export default function Clipboard() {
             },
         },
         onMount: () => {
+            mainWindowActiveRef.current = true;
             void loadClipboardBehaviorConfig().then(config => {
                 if (Object.keys(config).length > 0) {
                     clipboardBehaviorConfigRef.current ??= config;
@@ -1321,15 +1248,15 @@ export default function Clipboard() {
             initializeTutorial();
         },
         onBeforeCleanup: () => {
+            mainWindowActiveRef.current = false;
+            searchRequestSeqRef.current += 1;
+            pendingResourceEpochRef.current = null;
             showGateRef.current!.cancel(true);
             if (toastTimerRef.current !== null) {
                 window.clearTimeout(toastTimerRef.current);
             }
             if (scrollRefreshTimerRef.current !== null) {
                 window.clearTimeout(scrollRefreshTimerRef.current);
-            }
-            if (imagePrewarmTimerRef.current !== null) {
-                window.clearTimeout(imagePrewarmTimerRef.current);
             }
             if (loadMoreCheckFrameRef.current !== null) {
                 window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
@@ -1926,6 +1853,18 @@ export default function Clipboard() {
             .catch(e => error(`Failed to open test room: ${e}`));
     };
 
+    const openMemoryMonitor = () => {
+        if (!import.meta.env.DEV || !developerMode) return;
+        void invoke("open_dev_memory_window", { languageCode, themePreview: getResolvedTheme() })
+            .catch(e => error(`Failed to open memory monitor: ${e}`));
+    };
+
+    const publishMemoryPreview = (language: string, theme: ResolvedTheme) => {
+        if (!import.meta.env.DEV || !developerMode) return;
+        void emitTo("devMemory", "dev-memory-open", { languageCode: language, themePreview: theme })
+            .catch(e => error(`Failed to update memory preview: ${e}`));
+    };
+
     const openTutorialFromDebug = (platform: TutorialPlatform) => {
         void startTutorial(platform);
     };
@@ -1940,13 +1879,16 @@ export default function Clipboard() {
     };
 
     const toggleDeveloperLanguage = () => {
-        setPreviewLanguageCode(languageCode === "Chinese" ? "English" : "Chinese");
+        const next = languageCode === "Chinese" ? "English" : "Chinese";
+        setPreviewLanguageCode(next);
+        publishMemoryPreview(next, getResolvedTheme());
     };
 
     const toggleDeveloperTheme = () => {
         const nextTheme: ResolvedTheme = getResolvedTheme() === "dark" ? "light" : "dark";
         setThemePreview(nextTheme);
         setDeveloperTheme(nextTheme);
+        publishMemoryPreview(languageCode, nextTheme);
     };
 
     const blockTutorialNavigation = () => {
@@ -2144,6 +2086,7 @@ export default function Clipboard() {
                     onToggleTheme={toggleDeveloperTheme}
                     onOpenUiLab={openUiLab}
                     onOpenTestRoom={openTestRoom}
+                    onOpenMemoryMonitor={openMemoryMonitor}
                     onOpenSettings={tutorialActive ? blockTutorialNavigation : openConfigWindow}
                     updateReadyVersion={updateEntryVisible(updateState) ? updateState.availableVersion || "" : null}
                     updateInstalling={updateState.status === "installing"}

@@ -1,6 +1,6 @@
 // One deferred keyboard intent per capture/search synchronization. Never replay
 // it after hide, explicit navigation/editing, or failed synchronization.
-export function createClipboardShowGate(onError: (error: unknown) => void) {
+export function createClipboardShowGate(onError: (error: unknown) => void, onSynchronized?: () => void) {
     let generation = 0;
     let pending = false;
     let needsSync = true;
@@ -27,6 +27,7 @@ export function createClipboardShowGate(onError: (error: unknown) => void) {
                 deferred = undefined;
                 queuedNavigation.forEach(navigate => navigate());
                 action?.();
+                onSynchronized?.();
             }).catch(error => {
                 if (current !== generation) return;
                 pending = false;

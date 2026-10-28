@@ -37,6 +37,7 @@ function handlers() {
         tauri: {
             onBehaviorConfigChanged: vi.fn(),
             onClipboardChanged: vi.fn(),
+            onResourcesUpdated: vi.fn(),
             onCustomTabsChanged: vi.fn(),
             onItemTagsChanged: vi.fn(),
             onPermissionStatusChanged: vi.fn(),
@@ -68,6 +69,7 @@ describe("useClipboardLifecycleSubscriptions", () => {
             "window-hide",
             "window-hidden",
             "listen_new_clipboard",
+            "clipboard-resources-updated",
             "tutorial-started",
             "tutorial-completed",
             "onboarding-permission-status-changed",
@@ -80,6 +82,7 @@ describe("useClipboardLifecycleSubscriptions", () => {
 
         act(() => {
             tauri.callbacks.get("window-show")?.({ payload: { x: 12, y: 24 } });
+            tauri.callbacks.get("clipboard-resources-updated")?.({ payload: { epoch: 7 } });
             tauri.callbacks.get("clipboard-behavior-config-changed")?.({
                 payload: { link_auto_preview: false },
             });
@@ -96,6 +99,7 @@ describe("useClipboardLifecycleSubscriptions", () => {
         });
 
         expect(callbacks.tauri.onWindowShow).toHaveBeenCalledWith({ x: 12, y: 24 });
+        expect(callbacks.tauri.onResourcesUpdated).toHaveBeenCalledWith({ epoch: 7 });
         expect(callbacks.tauri.onBehaviorConfigChanged)
             .toHaveBeenCalledWith({ link_auto_preview: false });
         expect(callbacks.tauri.onCustomTabsChanged)

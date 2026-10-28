@@ -26,7 +26,7 @@ function sourceBetween(start: string, end: string): string {
 describe("preview window outer shell", () => {
     it("uses one CSS-owned rounded surface without a competing Win32 region", () => {
         const creation = sourceBetween(
-            "fn get_or_create_preview_window",
+            "fn build_preview_window",
             "fn preview_window_active",
         );
         const showing = sourceBetween(

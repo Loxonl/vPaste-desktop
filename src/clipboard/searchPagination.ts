@@ -23,12 +23,16 @@ type SearchPagePayload = {
     hasMore: boolean;
     nextId: number;
     nextTime: number;
+    resourceEpoch?: number;
 };
 
 export type SearchPageResult = {
     items: Item[];
     consumed: number;
     hasMore: boolean;
+    nextId: number;
+    nextTime: number;
+    resourceEpoch?: number;
 };
 
 export type SearchRequest = {
@@ -37,6 +41,7 @@ export type SearchRequest = {
     lastTime: number;
     limit: number;
     label: string;
+    background?: boolean;
 };
 
 export type SearchInvoker = (request: SearchRequest) => Promise<string>;
@@ -69,39 +74,21 @@ export async function fetchSearchPage(
     limit: number,
     isCurrent: () => boolean,
     search: SearchInvoker = invokeSearch,
+    options: { background?: boolean } = {},
 ): Promise<SearchPageResult | null> {
-    const items: Item[] = [];
-    let consumed = 0;
-    let hasMore = true;
-    let cursorId = lastId;
-    let cursorTime = lastTime;
-
-    while (items.length < limit && hasMore) {
-        if (!isCurrent()) return null;
-        const response = await search({
-            keywords,
-            lastId: cursorId,
-            lastTime: cursorTime,
-            limit: limit - items.length,
-            label,
-        });
-        if (!isCurrent()) return null;
-
-        const page = JSON.parse(response) as SearchPagePayload;
-        items.push(...page.list.map(itemFromPayload));
-        consumed += page.consumed;
-        hasMore = page.hasMore;
-        if (!hasMore || items.length >= limit) break;
-        if (
-            (page.nextId === 0 && page.nextTime === 0)
-            || (page.nextId === cursorId && page.nextTime === cursorTime)
-        ) {
-            hasMore = false;
-            break;
-        }
-        cursorId = page.nextId;
-        cursorTime = page.nextTime;
-    }
-
-    return { items, consumed, hasMore };
+    if (!isCurrent()) return null;
+    const response = await search({
+        keywords, lastId, lastTime, limit, label,
+        ...(options.background ? { background: true } : {}),
+    });
+    if (!isCurrent()) return null;
+    const page = JSON.parse(response) as SearchPagePayload;
+    return {
+        items: page.list.map(itemFromPayload),
+        consumed: page.consumed,
+        hasMore: page.hasMore,
+        nextId: page.nextId,
+        nextTime: page.nextTime,
+        resourceEpoch: page.resourceEpoch,
+    };
 }

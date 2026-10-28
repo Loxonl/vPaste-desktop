@@ -141,4 +141,15 @@ describe("clipboard show synchronization", () => {
         expect(navigate).toHaveBeenCalledOnce();
         expect(paste).not.toHaveBeenCalled();
     });
+    it("flushes resource refreshes only after successful show synchronization has settled", async () => {
+        let finish!: () => void;
+        const work = new Promise<void>(resolve => { finish = resolve; });
+        const pendingStates: boolean[] = [];
+        const gate = createClipboardShowGate(vi.fn(), () => pendingStates.push(gate.pending));
+        gate.start(async () => work);
+        expect(pendingStates).toEqual([]);
+        finish();
+        await vi.waitFor(() => expect(pendingStates).toEqual([false]));
+    });
+
 });

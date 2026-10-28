@@ -21,14 +21,9 @@ import {
 const HISTORY_IMAGE_CACHE_LIMIT = 96;
 const ACTIVE_IMAGE_LOAD_DELAY_MS = 140;
 
-const historyDataUrlCache = new Map<string, string>();
 const historyPreviewSrcCache = new Map<string, string>();
 const historyOriginalSrcCache = new Map<string, string>();
 const historyImageMetadataCache = new Map<string, HistoryImageMetadata>();
-const historyDataUrlPending = new Map<string, Promise<string>>();
-const historyPreviewSrcPending = new Map<string, Promise<string>>();
-const historyOriginalSrcPending = new Map<string, Promise<string>>();
-const historyImageMetadataPending = new Map<string, Promise<HistoryImageMetadata>>();
 
 type HistoryImageMetadata = {
     width: number;
@@ -38,6 +33,9 @@ type HistoryImageMetadata = {
     previewLimited?: boolean;
     animationLimited?: boolean;
 };
+
+type MediaResource = { assetPath: string; metadata: HistoryImageMetadata };
+const mediaPending = new Map<string, Promise<MediaResource>>();
 
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
 
@@ -69,69 +67,41 @@ function rememberValue<T>(cache: Map<string, T>, key: string, value: T) {
     }
 }
 
-function loadSingleFlight<T>(
-    cache: Map<string, T>,
-    pending: Map<string, Promise<T>>,
-    key: string,
-    loader: () => Promise<T>,
-): Promise<T> {
-    const cached = cachedValue(cache, key);
-    if (cached !== undefined) return Promise.resolve(cached);
-    const active = pending.get(key);
-    if (active) return active;
-
-    const request = loader()
-        .then(value => {
-            rememberValue(cache, key, value);
-            return value;
+function loadHistoryMedia(path: string, intent: "card" | "animated", refresh = false): Promise<MediaResource> {
+    const key = JSON.stringify([path, intent, refresh]);
+    const pending = mediaPending.get(key);
+    if (pending) return pending;
+    const request = invoke<MediaResource>("resolve_history_media", { path, intent, refresh })
+        .then(resource => {
+            const src = resource.assetPath ? convertFileSrc(resource.assetPath) : "";
+            rememberValue(historyImageMetadataCache, path, resource.metadata);
+            rememberValue(intent === "card" ? historyPreviewSrcCache : historyOriginalSrcCache, path, src);
+            return { ...resource, assetPath: src };
         })
-        .finally(() => pending.delete(key));
-    pending.set(key, request);
+        .finally(() => mediaPending.delete(key));
+    mediaPending.set(key, request);
     return request;
-}
-
-async function loadHistoryDataUrl(path: string): Promise<string> {
-    if (!path) return "";
-    return loadSingleFlight(historyDataUrlCache, historyDataUrlPending, path, async () => {
-        try {
-            return await invoke<string>("history_file_data_url", { path });
-        } catch {
-            return convertFileSrc(path);
-        }
-    });
 }
 
 async function loadHistoryPreviewSrc(path: string): Promise<string> {
     if (!path) return "";
-    return loadSingleFlight(historyPreviewSrcCache, historyPreviewSrcPending, path, async () => {
-        try {
-            const assetPath = await invoke<string>("history_image_card_preview_asset_path", { path });
-            return convertFileSrc(assetPath);
-        } catch {
-            return loadHistoryDataUrl(path);
-        }
-    });
+    const cached = cachedValue(historyPreviewSrcCache, path);
+    if (cached !== undefined) return cached;
+    try { return (await loadHistoryMedia(path, "card")).assetPath; }
+    catch (reason) { error(`Failed to load image preview: ${reason}`); return ""; }
 }
 
 async function loadHistoryOriginalSrc(path: string): Promise<string> {
     if (!path) return "";
-    return loadSingleFlight(historyOriginalSrcCache, historyOriginalSrcPending, path, async () => {
-        try {
-            const assetPath = await invoke<string>("history_file_preview_asset_path", { path });
-            return convertFileSrc(assetPath);
-        } catch {
-            return loadHistoryDataUrl(path);
-        }
-    });
+    const cached = cachedValue(historyOriginalSrcCache, path);
+    if (cached !== undefined) return cached;
+    try { return (await loadHistoryMedia(path, "animated")).assetPath; }
+    catch (reason) { error(`Failed to load animated preview: ${reason}`); return ""; }
 }
 
 async function loadHistoryImageMetadata(path: string): Promise<HistoryImageMetadata> {
-    return loadSingleFlight(
-        historyImageMetadataCache,
-        historyImageMetadataPending,
-        path,
-        () => invoke<HistoryImageMetadata>("history_image_metadata", { path }),
-    );
+    const cached = cachedValue(historyImageMetadataCache, path);
+    return cached ?? (await loadHistoryMedia(path, "card")).metadata;
 }
 
 function formatByteSize(bytes: number | undefined): string {
@@ -395,6 +365,7 @@ export function ImagePreview({
         };
 
         const loadWithMetadata = (metadata: HistoryImageMetadata) => {
+            if (cancelled) return;
             if (!cancelled) {
                 onGifFormatChange(metadata.isGif);
                 setPreviewLimited(Boolean(metadata.previewLimited));
@@ -428,9 +399,11 @@ export function ImagePreview({
         fallbackAttemptedRef.current = true;
         historyPreviewSrcCache.delete(previewPath);
         historyOriginalSrcCache.delete(sourcePath);
-        historyDataUrlCache.delete(sourcePath);
-        void invoke<string>("history_file_data_url", { path: sourcePath })
-            .then(setImageSrc)
+        void loadHistoryMedia(sourcePath, "card", true)
+            .then(resource => {
+                setPreviewLimited(Boolean(resource.metadata.previewLimited));
+                setImageSrc(resource.assetPath);
+            })
             .catch(e => error(`Failed to recover history image preview: ${e}`));
     };
 
@@ -483,6 +456,8 @@ function FilePreview({
     const [isVisible, setIsVisible] = useState(false);
     const [imageSize, setImageSize] = useState<{ width: number, height: number } | null>(null);
     const [previewSrc, setPreviewSrc] = useState("");
+    const [previewLimited, setPreviewLimited] = useState(false);
+    const [sourceBytes, setSourceBytes] = useState(0);
     const previewRef = useRef<HTMLDivElement>(null);
     const fallbackPaths = parseFilePaths(item.getContent());
     const firstPath = previewInfo?.display_path || fallbackPaths[0] || item.getContent();
@@ -551,22 +526,33 @@ function FilePreview({
         setImageSize(null);
         setPreviewSrc("");
         let cancelled = false;
+        setPreviewLimited(false);
         if (previewInfo?.preview_path) {
-            const loader = isGifFile ? loadHistoryOriginalSrc : loadHistoryPreviewSrc;
-            loader(previewInfo.preview_path)
-                .then(src => {
-                    if (!cancelled) setPreviewSrc(src);
-                });
+            void loadHistoryMedia(previewInfo.preview_path, isGifFile ? "animated" : "card", true)
+                .then(resource => {
+                    if (cancelled) return;
+                    setPreviewSrc(resource.assetPath);
+                    setPreviewLimited(Boolean(resource.metadata.previewLimited));
+                    setSourceBytes(resource.metadata.sourceBytes || 0);
+                    setImageSize(naturalSizeFromMetadata(resource.metadata));
+                })
+                .catch(reason => error(`Failed to load file image preview: ${reason}`));
         }
         return () => {
             cancelled = true;
         };
-    }, [item.getHash(), previewInfo?.preview_path, isGifFile]);
+    }, [item.getHash(), previewInfo?.preview_path, isGifFile, refreshKey]);
 
     return (
         <div className={classes(styles, `file-preview ${isInvalid ? 'invalid' : ''}`)} ref={previewRef}>
             <div className={classes(styles, `file-preview-stage ${isImageFile ? 'image-file-stage' : ''}`)}>
-                {previewInfo?.kind === "single-preview" && previewInfo.preview_path ? (
+                {previewLimited ? (
+                    <div className={classes(styles, "image-preview-limited")} data-image-preview-limited="true">
+                        <WarningAmberOutlinedIcon />
+                        <span>{t("clipboard.largeImagePreview")}</span>
+                        {sourceBytes > 0 && <small>{formatByteSize(sourceBytes)}</small>}
+                    </div>
+                ) : previewInfo?.kind === "single-preview" && previewInfo.preview_path && previewSrc ? (
                     <>
                         <img
                             key={previewSrc}

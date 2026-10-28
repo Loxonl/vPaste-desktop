@@ -33,6 +33,11 @@ impl PreviewRequests {
     pub(crate) fn current(&self, request: u64) -> bool {
         request & 1 == 1 && self.0.load(Ordering::SeqCst) == request
     }
+
+    /// Call while holding the pending-preview lock, shared with begin/cancel.
+    pub(crate) fn should_discard_cancelled_window(&self, pinned: bool) -> bool {
+        !self.active() && !pinned
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -100,6 +105,22 @@ mod tests {
         let reopened = requests.begin();
         assert!(reopened > next && requests.current(reopened));
         assert!(!requests.current(next));
+    }
+
+    #[test]
+    fn a_cancelled_cold_open_only_discards_an_idle_unpinned_window() {
+        let requests = PreviewRequests::new();
+        let cancelled = requests.begin();
+        requests.cancel();
+        assert!(!requests.current(cancelled));
+        assert!(requests.should_discard_cancelled_window(false));
+        assert!(!requests.should_discard_cancelled_window(true));
+
+        let newer = requests.begin();
+        assert!(!requests.should_discard_cancelled_window(false));
+        assert!(requests.current(newer));
+        requests.cancel();
+        assert!(requests.should_discard_cancelled_window(false));
     }
 
     #[test]

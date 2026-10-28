@@ -41,25 +41,7 @@
   },
   "app": {
     "macOSPrivateApi": true,
-    "windows": [
-      {
-        "label": "clipboardPreview",
-        "url": "/clipboard/preview",
-        "fullscreen": false,
-        "resizable": false,
-        "visible": false,
-        "focus": false,
-        "skipTaskbar": true,
-        "decorations": false,
-        "transparent": true,
-        "backgroundColor": [0, 0, 0, 0],
-        "hiddenTitle": true,
-        "alwaysOnTop": true,
-        "titleBarStyle": "Overlay",
-        "height": 500,
-        "width": 500
-      }
-    ],
+    "windows": [],
     "security": {
       "assetProtocol": {
         "scope": [

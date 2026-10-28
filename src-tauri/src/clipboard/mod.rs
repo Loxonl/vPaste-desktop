@@ -29,6 +29,7 @@ pub(crate) mod editor;
 pub(crate) mod item;
 #[cfg(target_os = "macos")]
 pub mod macos;
+mod search_page;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
@@ -626,6 +627,24 @@ pub fn search(
 }
 
 pub fn search_with_cancellation(
+    keywords: &str,
+    last_id: u64,
+    last_time: u64,
+    limit: usize,
+    label: &str,
+    is_current: impl Fn() -> bool,
+) -> Result<Option<Page<Item>>, String> {
+    search_page::collect(
+        (last_id, last_time),
+        limit,
+        &is_current,
+        |id, time, remaining| {
+            search_batch_with_cancellation(keywords, id, time, remaining, label, &is_current)
+        },
+    )
+}
+
+fn search_batch_with_cancellation(
     keywords: &str,
     mut last_id: u64,
     mut last_time: u64,
@@ -3301,11 +3320,21 @@ fn link_preview_is_fresh_for_day(record: &LinkPreviewRecord, local_day: &str) ->
 }
 
 pub fn refresh_link_previews(urls: Vec<String>) -> Result<Vec<LinkPreviewUpdate>, String> {
+    refresh_link_previews_with_cancellation(urls, || true)
+}
+
+pub(crate) fn refresh_link_previews_with_cancellation(
+    urls: Vec<String>,
+    is_current: impl Fn() -> bool,
+) -> Result<Vec<LinkPreviewUpdate>, String> {
     let _cleanup = crate::auto_cleanup::pause();
     let mut updates = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let local_day = Local::now().format("%Y-%m-%d").to_string();
     for raw_url in urls.into_iter().take(10) {
+        if !is_current() {
+            break;
+        }
         let url = raw_url.trim().to_string();
         if url.is_empty() || !seen.insert(url.clone()) || !is_previewable_domain_link(&url) {
             continue;
@@ -3335,7 +3364,11 @@ pub fn refresh_link_previews(urls: Vec<String>) -> Result<Vec<LinkPreviewUpdate>
             }
         }
 
-        let update = match fetch_link_preview(&url) {
+        let fetched = fetch_link_preview(&url);
+        if !is_current() {
+            break;
+        }
+        let update = match fetched {
             Ok(update) => {
                 remember_link_preview_attempt(&url, false);
                 update
@@ -3362,6 +3395,9 @@ pub fn refresh_link_previews(urls: Vec<String>) -> Result<Vec<LinkPreviewUpdate>
         }
         let stored_next_content = next_content.clone();
 
+        if !is_current() {
+            break;
+        }
         db().execute(
             "update clipboard set content = ?1, search_index = 0 where hash = ?2 and item_type = ?3",
             [

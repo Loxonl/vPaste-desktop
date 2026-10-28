@@ -3240,8 +3240,10 @@ async fn discard_cancelled_preview_window(window: tauri::WebviewWindow) -> Resul
         let _pending = PREVIEW_PENDING
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if PREVIEW_REQUESTS.should_discard_cancelled_window(PREVIEW_PINNED.load(Ordering::SeqCst))
-            && auxiliary_windows::is_open(&window)
+        if PREVIEW_REQUESTS.should_discard_cancelled_window(
+            PREVIEW_PINNED.load(Ordering::SeqCst),
+            window.is_visible().unwrap_or(true),
+        ) && auxiliary_windows::is_open(&window)
         {
             auxiliary_windows::destroy(&window)?;
         }

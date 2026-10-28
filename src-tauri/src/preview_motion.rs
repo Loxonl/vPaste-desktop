@@ -35,8 +35,8 @@ impl PreviewRequests {
     }
 
     /// Call while holding the pending-preview lock, shared with begin/cancel.
-    pub(crate) fn should_discard_cancelled_window(&self, pinned: bool) -> bool {
-        !self.active() && !pinned
+    pub(crate) fn should_discard_cancelled_window(&self, pinned: bool, visible: bool) -> bool {
+        !self.active() && !pinned && !visible
     }
 }
 
@@ -113,14 +113,16 @@ mod tests {
         let cancelled = requests.begin();
         requests.cancel();
         assert!(!requests.current(cancelled));
-        assert!(requests.should_discard_cancelled_window(false));
-        assert!(!requests.should_discard_cancelled_window(true));
+        assert!(requests.should_discard_cancelled_window(false, false));
+        assert!(!requests.should_discard_cancelled_window(true, false));
+        // Pinning cancels preparation; unpinning must keep the displayed item.
+        assert!(!requests.should_discard_cancelled_window(false, true));
 
         let newer = requests.begin();
-        assert!(!requests.should_discard_cancelled_window(false));
+        assert!(!requests.should_discard_cancelled_window(false, false));
         assert!(requests.current(newer));
         requests.cancel();
-        assert!(requests.should_discard_cancelled_window(false));
+        assert!(requests.should_discard_cancelled_window(false, false));
     }
 
     #[test]

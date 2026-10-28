@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
+import Button from "@mui/material/Button";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
 import { ToolbarIconButton } from "../ui/ToolbarIconButton";
@@ -36,6 +37,17 @@ type PreviewPayload = {
 };
 
 type PreviewNavigationDirection = -1 | 0 | 1;
+
+const LINK_PREVIEW_ERROR_MESSAGES = new Map<string, string>([
+    ["link_preview_proxy_unavailable", "preview.linkProxyUnavailable"],
+    ["link_preview_fake_ip", "preview.linkFakeIp"],
+    ["link_preview_timeout", "preview.linkTimeout"],
+    ["link_preview_blocked", "preview.linkBlocked"],
+    ["link_preview_network", "preview.linkNetworkError"],
+    ["link_preview_not_html", "preview.linkNotHtml"],
+    ["link_preview_redirect_limit", "preview.linkRedirectLimit"],
+    ["link_preview_http_status", "preview.linkHttpError"],
+]);
 
 function parseFilePaths(content: string): string[] {
     try {
@@ -220,8 +232,9 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
                 if (!cancelled) setLinkDocument(document);
             })
             .catch(e => {
-                if (!cancelled) setLinkError(String(e));
-                error(`Failed to fetch link preview document: ${e}`);
+                const message = LINK_PREVIEW_ERROR_MESSAGES.get(typeof e === "string" ? e : "") || "preview.linkNetworkError";
+                if (!cancelled) setLinkError(message);
+                error(`Link preview failed: ${message}`);
             });
         return () => {
             cancelled = true;
@@ -286,7 +299,13 @@ export function PreviewBody({ payload, t }: { payload: PreviewPayload, t: (key: 
                     />
                 ) : (
                     <div className={styles["preview-link-loading"]}>
-                        {linkError || t("preview.generating")}
+                        <span role={linkError ? "alert" : undefined}>{t(linkError || "preview.generating")}</span>
+                        {linkError && (
+                            <Button size="small" onClick={() => {
+                                void invoke("open_url_in_browser", { url: linkUrl })
+                                    .catch(() => error("Failed to open original preview link"));
+                            }}>{t("preview.openOriginalLink")}</Button>
+                        )}
                     </div>
                 )}
             </div>

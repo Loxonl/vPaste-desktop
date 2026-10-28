@@ -17,6 +17,10 @@ use twox_hash::XxHash64;
 
 use crate::clipboard::db::db;
 use crate::clipboard::item::{convert_type, Item, ItemTag, ItemType, Page};
+#[cfg(test)]
+use crate::preview_http::is_public_preview_ip;
+use crate::preview_http::PreviewHttpClient;
+pub(crate) use crate::preview_http::{is_previewable_domain_link, preview_http_client};
 use crate::{app_runtime_dir, history_storage_dir, history_store, search::engine};
 
 pub mod color;
@@ -2792,108 +2796,6 @@ fn save_rich_format_to_disk(data: &[u8], hash: &str, extension: &str) -> String 
     native_path_string(&file_path)
 }
 
-pub(crate) fn is_previewable_domain_link(url: &str) -> bool {
-    let parsed = match reqwest::Url::parse(url.trim()) {
-        Ok(parsed) => parsed,
-        Err(_) => return false,
-    };
-    if parsed.scheme() != "https" {
-        return false;
-    }
-    let Some(host) = parsed.host_str() else {
-        return false;
-    };
-    if host.parse::<std::net::IpAddr>().is_ok() {
-        return false;
-    }
-    let host = host.trim_end_matches('.');
-    if ["localhost", "local", "internal", "test", "invalid"]
-        .iter()
-        .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")))
-    {
-        return false;
-    }
-    host.contains('.')
-        && host
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '.')
-}
-
-fn is_public_preview_ip(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(address) => {
-            let [a, b, c, _] = address.octets();
-            !matches!(a, 0 | 10 | 127 | 224..=255)
-                && !(a == 100 && (64..=127).contains(&b))
-                && !(a == 169 && b == 254)
-                && !(a == 172 && (16..=31).contains(&b))
-                && !(a == 192
-                    && (b == 168 || (b == 0 && matches!(c, 0 | 2)) || (b == 88 && c == 99)))
-                && !(a == 198 && (matches!(b, 18 | 19) || (b == 51 && c == 100)))
-                && !(a == 203 && b == 0 && c == 113)
-        }
-        std::net::IpAddr::V6(address) => {
-            let octets = address.octets();
-            octets[0] & 0xe0 == 0x20
-                && !(octets[0] == 0x20 && octets[1] == 0x02)
-                && !(octets[0] == 0x20
-                    && octets[1] == 0x01
-                    && octets[2] == 0x00
-                    && octets[3] == 0x00)
-                && !(octets[0] == 0x20
-                    && octets[1] == 0x01
-                    && octets[2] == 0x0d
-                    && octets[3] == 0xb8)
-        }
-    }
-}
-
-struct PublicPreviewResolver;
-
-impl reqwest::dns::Resolve for PublicPreviewResolver {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let host = name.as_str().to_string();
-        Box::pin(async move {
-            let addresses = tokio::net::lookup_host((host.as_str(), 0))
-                .await?
-                .filter(|address| is_public_preview_ip(address.ip()))
-                .collect::<Vec<_>>();
-            if addresses.is_empty() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "link preview hostname has no public address",
-                )
-                .into());
-            }
-            Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
-        })
-    }
-}
-
-pub(crate) fn preview_http_client(
-    user_agent: &str,
-    max_redirects: usize,
-    cookie_store: bool,
-) -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(8))
-        .no_proxy()
-        .dns_resolver(std::sync::Arc::new(PublicPreviewResolver))
-        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
-            if attempt.previous().len() >= max_redirects
-                || !is_previewable_domain_link(attempt.url().as_str())
-            {
-                attempt.stop()
-            } else {
-                attempt.follow()
-            }
-        }))
-        .cookie_store(cookie_store)
-        .user_agent(user_agent)
-        .build()
-        .map_err(|err| err.to_string())
-}
-
 fn meta_content(document: &scraper::Html, selector: &str) -> String {
     scraper::Selector::parse(selector)
         .ok()
@@ -2964,7 +2866,7 @@ fn icon_hrefs_from_html(document: &scraper::Html) -> Vec<String> {
 }
 
 fn fetch_preview_image(
-    client: &reqwest::blocking::Client,
+    client: &PreviewHttpClient,
     base_url: &reqwest::Url,
     image_url: &str,
 ) -> String {
@@ -2977,15 +2879,16 @@ fn fetch_preview_image(
     if !is_previewable_domain_link(resolved_image_url.as_str()) {
         return String::new();
     }
-    let Ok(image_response) = client
-        .get(resolved_image_url)
-        .header(
-            reqwest::header::ACCEPT,
-            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-        )
-        .header(reqwest::header::REFERER, base_url.as_str())
-        .send()
-    else {
+    let Ok(image_response) = client.get(
+        resolved_image_url,
+        &[
+            (
+                reqwest::header::ACCEPT,
+                "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            ),
+            (reqwest::header::REFERER, base_url.as_str()),
+        ],
+    ) else {
         return String::new();
     };
     if !image_response.status().is_success() {
@@ -3104,7 +3007,7 @@ fn fallback_icon_candidates(url: &reqwest::Url) -> Vec<String> {
 }
 
 fn fallback_link_preview(
-    client: &reqwest::blocking::Client,
+    client: &PreviewHttpClient,
     url: &reqwest::Url,
     title: &str,
 ) -> LinkPreviewUpdate {
@@ -3158,14 +3061,10 @@ fn fetch_link_preview(url: &str) -> Result<LinkPreviewUpdate, String> {
         true,
     )?;
 
-    let response = match client
-        .get(preview_url.clone())
-        .header(
-            reqwest::header::ACCEPT,
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        )
-        .header(reqwest::header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9,en;q=0.8")
-        .send()
+    let response = match client.get(preview_url.clone(), &[
+        (reqwest::header::ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"),
+        (reqwest::header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9,en;q=0.8"),
+    ])
     {
         Ok(response) => response,
         Err(_) => {
@@ -3201,7 +3100,7 @@ fn fetch_link_preview(url: &str) -> Result<LinkPreviewUpdate, String> {
         return Ok(fallback);
     }
     let final_url = response.url().clone();
-    let html = response.text().map_err(|err| err.to_string())?;
+    let html = client.text(response)?;
     let document = scraper::Html::parse_document(&html);
     let title = title_from_html(&document);
     let image_url = meta_content(&document, "meta[property='og:image']")

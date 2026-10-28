@@ -72,6 +72,9 @@ mod office_test_fixtures;
 mod paste_queue;
 #[cfg(any(target_os = "windows", test))]
 mod portable_autostart;
+mod preview_http;
+#[cfg(test)]
+mod preview_proxy_tests;
 mod runtime_mode;
 mod search;
 mod startup_panel;
@@ -3160,21 +3163,16 @@ fn resize_preview_image_window(
 #[tauri::command]
 async fn fetch_link_preview_document(url: String) -> Result<LinkPreviewDocument, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let parsed = reqwest::Url::parse(url.trim()).map_err(|err| err.to_string())?;
+        let parsed = reqwest::Url::parse(url.trim()).map_err(|_| "link_preview_blocked".to_string())?;
         if !clipboard::is_previewable_domain_link(parsed.as_str()) {
-            return Err("unsupported link preview destination".to_string());
+            return Err("link_preview_blocked".to_string());
         }
         let client = clipboard::preview_http_client(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 vPaste/1.0",
             6,
             false,
         )?;
-        let response = client
-            .get(parsed.clone())
-            .send()
-            .map_err(|err| err.to_string())?
-            .error_for_status()
-            .map_err(|err| err.to_string())?;
+        let response = client.get(parsed.clone(), &[])?;
         let final_url = response.url().clone();
         let content_type = response
             .headers()
@@ -3183,9 +3181,9 @@ async fn fetch_link_preview_document(url: String) -> Result<LinkPreviewDocument,
             .unwrap_or("")
             .to_ascii_lowercase();
         if !content_type.is_empty() && !content_type.contains("text/html") {
-            return Err("preview only supports html pages".to_string());
+            return Err("link_preview_not_html".to_string());
         }
-        let mut html = response.text().map_err(|err| err.to_string())?;
+        let mut html = client.text(response)?;
         let base = format!(r#"<base href="{}">"#, final_url);
         if html.to_ascii_lowercase().contains("<head") {
             html = html.replacen("<head>", &format!("<head>{}", base), 1);

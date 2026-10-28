@@ -67,6 +67,8 @@ mod image_preview;
 mod mac_app_store;
 mod maintenance;
 mod media_resources;
+#[cfg(debug_assertions)]
+mod memory_profile;
 #[cfg(target_os = "macos")]
 mod native_drag_preview;
 #[cfg(target_os = "macos")]
@@ -1823,7 +1825,7 @@ fn activate_native_window(window: &tauri::WebviewWindow, context: &str) {
 fn activate_native_window(_window: &tauri::WebviewWindow, _context: &str) {}
 
 fn focus_clipboard_window(window: &tauri::WebviewWindow, context: &str) {
-    if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+    if memory_profile_active() || !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
         return;
     }
     activate_native_window(window, context);
@@ -1947,6 +1949,11 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
             None
         }
     });
+    let cursor = if memory_profile_active() {
+        None
+    } else {
+        cursor
+    };
     if let Err(err) = window.emit("window-show", cursor) {
         error!("Failed to emit window-show event: {:?}", err);
     }
@@ -2026,7 +2033,7 @@ async fn finish_hide_clipboard_window(
 
 #[tauri::command]
 fn hide_clipboard_if_inactive(window: tauri::WebviewWindow) {
-    if clipboard_blur_hide_suppressed() {
+    if memory_profile_active() || clipboard_blur_hide_suppressed() {
         return;
     }
     let app = window.app_handle();
@@ -7107,7 +7114,7 @@ async fn cleanup_storage_history(days: u64) -> Result<StorageCleanupInfo, String
 
 #[tauri::command]
 fn get_config(app: tauri::AppHandle, skip_autostart_refresh: Option<bool>) -> String {
-    if skip_autostart_refresh != Some(true) {
+    if skip_autostart_refresh != Some(true) && !memory_profile_active() {
         if let Err(err) = refresh_stored_autostart_from_system(&app) {
             error!("Failed to refresh stored autostart status: {}", err);
         }
@@ -11359,7 +11366,12 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
         };
 
     let window_height = CLIPBOARD_WINDOW_HEIGHT;
-    let clipboard_window = WebviewWindowBuilder::new(handle, "clipboard", App("clipboard".into()))
+    let url = if memory_profile_active() {
+        tauri::WebviewUrl::External("http://127.0.0.1:1421/clipboard".parse().unwrap())
+    } else {
+        App("clipboard".into())
+    };
+    let clipboard_window = WebviewWindowBuilder::new(handle, "clipboard", url)
         .title("vPaste")
         .visible(false)
         .focused(false)
@@ -11381,6 +11393,15 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
             screen_x - CLIPBOARD_HORIZONTAL_BLEED,
             screen_y + screen_height - window_height,
         );
+
+    #[cfg(debug_assertions)]
+    let clipboard_window = if memory_profile_active() {
+        clipboard_window
+            .incognito(true)
+            .initialization_script(include_str!("../../scripts/profile-main-window-driver.js"))
+    } else {
+        clipboard_window
+    };
 
     #[cfg(target_os = "macos")]
     let clipboard_window = clipboard_window
@@ -11530,7 +11551,32 @@ fn show_startup_error(message: &str) {
     eprintln!("{message}");
 }
 
+fn memory_profile_active() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        memory_profile::directory().is_some()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
+}
+
 fn main() {
+    #[cfg(debug_assertions)]
+    match memory_profile::configure() {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("Memory profile startup failed: {error}");
+            std::process::exit(2);
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    if std::env::args().any(|arg| arg == "--memory-profile-dir") {
+        eprintln!("Isolated memory profiling requires a Debug build");
+        std::process::exit(2);
+    }
     #[cfg(target_os = "windows")]
     if windows_main_shortcut::run_if_requested() {
         return;
@@ -11577,12 +11623,18 @@ fn main() {
         error!("{:?}", backtrace::Backtrace::new())
     }));
 
-    let context = tauri::generate_context!();
+    let mut context = tauri::generate_context!();
+    if memory_profile_active() {
+        context.config_mut().build.dev_url = Some("http://127.0.0.1:1421".parse().unwrap());
+    }
     info!("running vPaste");
     let builder = tauri::Builder::default()
         .manage(auxiliary_windows::Readiness::default())
-        .manage(background_resources::BackgroundResources::default())
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        .manage(background_resources::BackgroundResources::default());
+    let builder = if memory_profile_active() {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if maintenance::installer_exit_requested_for_args(&args) {
                 app.exit(0);
                 return;
@@ -11595,6 +11647,8 @@ fn main() {
                 focus_clipboard_window(&window, "second instance launch");
             }
         }))
+    };
+    let builder = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init());
@@ -11747,6 +11801,7 @@ fn main() {
             }
             if let tauri::WindowEvent::Focused(false) = event {
                 if window.label() == "clipboard"
+                    && !memory_profile_active()
                     && CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
                     && !clipboard_blur_hide_suppressed()
                 {
@@ -11805,7 +11860,16 @@ fn main() {
                 app.handle().exit(0);
                 return Ok(());
             }
-            let default_app_data_dir: PathBuf = app.path().app_local_data_dir().unwrap();
+            let default_app_data_dir: PathBuf = {
+                #[cfg(debug_assertions)]
+                if let Some(root) = memory_profile::directory() {
+                    root.to_path_buf()
+                } else {
+                    app.path().app_local_data_dir().unwrap()
+                }
+                #[cfg(not(debug_assertions))]
+                { app.path().app_local_data_dir().unwrap() }
+            };
             let app_local_data_dir = runtime_mode::initialize(default_app_data_dir)
                 .map_err(|err| io::Error::new(io::ErrorKind::PermissionDenied, err))?;
             if !app_local_data_dir.exists() {
@@ -11823,6 +11887,11 @@ fn main() {
             );
             info!("app_path: {:?}", &app_data_dir);
             *GLOBAL_APP_DATA_DIR.lock().unwrap() = app_data_dir;
+            #[cfg(debug_assertions)]
+            if memory_profile_active() {
+                memory_profile::setup(app.handle()).map_err(io::Error::other)?;
+                return Ok(());
+            }
             app_updater::start_background_checks(app.handle().clone());
             install_vpaste_tray(app.handle())?;
 
@@ -11943,6 +12012,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(debug_assertions)]
+            memory_profile::memory_profile_record,
             open_dev_memory_window,
             close_dev_memory_window,
             get_dev_memory_report,

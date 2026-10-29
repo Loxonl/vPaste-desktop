@@ -24,10 +24,13 @@ describe("loading rich clipboard text", () => {
             text: "# Example\r\n\r\n- **Website**: [site](https://example.com/)\r\n- Second item",
             html: '<h1>Example</h1><ul><li><p><strong>Website</strong>: <a href="https://example.com/">site</a></p></li><li><p>Second item</p></li></ul>',
         });
-        await waitFor(() => expect(screen.getByRole("textbox", { name: "editor.content" })).toHaveAttribute("contenteditable", "true"));
+        await waitFor(() => {
+            const field = screen.getByRole("textbox", { name: "editor.content" });
+            expect(field).toHaveAttribute("contenteditable", "true");
+            expect(field.querySelector("strong")).toHaveTextContent("Website");
+            expect(field.querySelector("a")).toHaveAttribute("href", "https://example.com/");
+        });
         const field = screen.getByRole("textbox", { name: "editor.content" });
-        expect(field.querySelector("strong")).toHaveTextContent("Website");
-        expect(field.querySelector("a")).toHaveAttribute("href", "https://example.com/");
         fireEvent.input(field, { target: { innerHTML: field.innerHTML.replace("Example", "Updated") } });
         fireEvent.click(screen.getByRole("button", { name: "editor.save" }));
         await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_clipboard_text", {
@@ -41,8 +44,11 @@ describe("loading rich clipboard text", () => {
 
     it("still opens matching plain text and HTML with explicit line breaks", async () => {
         open({ text: "Title\r\n\r\nFirst item\r\nSecond item", html: "<b>Title</b><br><br>First item<br>Second item" });
-        await waitFor(() => expect(screen.getByRole("textbox", { name: "editor.content" })).toHaveAttribute("contenteditable", "true"));
-        expect(screen.getByRole("textbox", { name: "editor.content" }).querySelector("b")).toHaveTextContent("Title");
+        await waitFor(() => {
+            const field = screen.getByRole("textbox", { name: "editor.content" });
+            expect(field).toHaveAttribute("contenteditable", "true");
+            expect(field.querySelector("b")).toHaveTextContent("Title");
+        });
     });
 
     it("refuses real HTML body-text loss without saving", async () => {

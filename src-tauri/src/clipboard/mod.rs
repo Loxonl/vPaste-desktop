@@ -122,7 +122,7 @@ const RICH_CARD_SOURCE_MAX_BYTES: u64 = 256 * 1024;
 const RICH_CARD_HTML_MAX_BYTES: usize = 256 * 1024;
 const RICH_CARD_INLINE_IMAGE_MAX_BYTES: u64 = 1024 * 1024;
 const RICH_CARD_INLINE_IMAGES_MAX_BYTES: u64 = 4 * RICH_CARD_INLINE_IMAGE_MAX_BYTES;
-const MAX_AUTOMATIC_CAPTURE_BYTES: usize = 256 * 1024 * 1024;
+const MAX_EDITOR_CONTENT_BYTES: usize = crate::clipboard_budget::RICH_CAPTURE_BYTES;
 
 pub fn try_get_by_hash(hash: &String) -> Option<Item> {
     let stored: rusqlite::Result<StoredItem> = db().query_row(
@@ -2087,20 +2087,61 @@ pub fn plain_text_content(hash: &str) -> Result<String, String> {
     plain_text_from_stored_item(&stored)
 }
 
+pub fn plain_text_preview(hash: &str) -> Result<crate::clipboard_budget::TextPreview, String> {
+    let stored = db()
+        .query_row(
+            "select * from clipboard where hash = ?1",
+            [hash],
+            read_stored_item,
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or("粘贴项不存在")?;
+    if stored.item_type == "TextFile"
+        && (stored.source.is_empty() || is_rich_meta_source(&stored.source))
+    {
+        return crate::clipboard_budget::read_text_preview(&stored.content);
+    }
+    let text = if !stored.source.is_empty() && !is_rich_meta_source(&stored.source) {
+        stored.source.as_str()
+    } else if stored.item_type == "Link" {
+        stored.content.split("|||").next().unwrap_or("")
+    } else {
+        stored.content.as_str()
+    };
+    crate::clipboard_budget::text_preview(
+        text.as_bytes()[..text
+            .len()
+            .min(crate::clipboard_budget::TEXT_PREVIEW_BYTES + 1)]
+            .to_vec(),
+    )
+}
+
 pub(crate) fn plain_text_from_stored_item(stored: &StoredItem) -> Result<String, String> {
     let item_type = ItemType::from_str(&stored.item_type).map_err(|err| err.to_string())?;
-    let content = stored.content.clone();
-    let source = stored.source.clone();
+    let content = &stored.content;
+    let source = &stored.source;
     if !source.is_empty() && !is_rich_meta_source(&source) {
-        return Ok(source);
+        if source.len() > crate::clipboard_budget::TEXT_CAPTURE_BYTES {
+            return Err(crate::clipboard_budget::limit_error());
+        }
+        return Ok(source.clone());
     }
 
     match item_type {
-        ItemType::TextFile => history_store::read_file(&content)
-            .and_then(|bytes| String::from_utf8(bytes).map_err(|err| err.to_string()))
-            .map_err(|err| format!("读取文本内容失败：{}", err)),
+        ItemType::TextFile => crate::clipboard_budget::read_file_limited(
+            &content,
+            crate::clipboard_budget::TEXT_CAPTURE_BYTES,
+        )
+        .and_then(|bytes| String::from_utf8(bytes).map_err(|err| err.to_string()))
+        .map_err(|err| format!("读取文本内容失败：{}", err)),
         ItemType::Link => Ok(content.split("|||").next().unwrap_or("").to_string()),
-        _ => Ok(content),
+        _ => {
+            if content.len() > crate::clipboard_budget::TEXT_CAPTURE_BYTES {
+                return Err(crate::clipboard_budget::limit_error());
+            }
+            Ok(content.clone())
+        }
     }
 }
 
@@ -2460,7 +2501,9 @@ fn insert_rich_text_from_app_impl(
         .saturating_add(html.as_ref().map(Vec::len).unwrap_or(0))
         .saturating_add(rtf.as_ref().map(Vec::len).unwrap_or(0))
         .saturating_add(png.as_ref().map(Vec::len).unwrap_or(0));
-    if payload_bytes > MAX_AUTOMATIC_CAPTURE_BYTES {
+    if plain_text.len() > crate::clipboard_budget::TEXT_CAPTURE_BYTES
+        || payload_bytes > crate::clipboard_budget::RICH_CAPTURE_BYTES
+    {
         error!(
             "skip oversized rich clipboard payload: {} bytes",
             payload_bytes
@@ -2605,7 +2648,7 @@ fn insert_text_from_app_impl(
     if is_semantically_blank_text(&content) {
         return None;
     }
-    if content.len() > MAX_AUTOMATIC_CAPTURE_BYTES {
+    if content.len() > crate::clipboard_budget::TEXT_CAPTURE_BYTES {
         error!(
             "skip oversized text clipboard payload: {} bytes",
             content.len()
@@ -2692,7 +2735,7 @@ fn insert_image_with_text_and_app_impl(
     context: CaptureContext,
 ) -> Option<String> {
     let _cleanup = crate::auto_cleanup::pause();
-    if content.len() > MAX_AUTOMATIC_CAPTURE_BYTES {
+    if content.len() > crate::clipboard_budget::IMAGE_SOURCE_BYTES {
         error!(
             "skip oversized image clipboard payload: {} bytes",
             content.len()
@@ -4391,7 +4434,7 @@ mod tests {
         });
         db::init();
 
-        let content = "边界长文本-".repeat(2_400);
+        let content = "边界长文本-".repeat(30_000);
         let hash = calculate_xxhash64(content.as_bytes());
         insert_text_from_app(content.clone(), "Notepad", "");
 
@@ -4415,8 +4458,85 @@ mod tests {
         );
         assert_ne!(stored.preview_content, content);
         assert_eq!(plain_text_content(&hash).unwrap(), content);
+        let preview = plain_text_preview(&hash).unwrap();
+        assert!(preview.truncated);
+        assert!(preview.text.len() <= crate::clipboard_budget::TEXT_PREVIEW_BYTES);
+        assert!(content.starts_with(&preview.text));
+        assert_eq!(plain_text_content(&hash).unwrap(), content);
+
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&stored.content)
+            .unwrap()
+            .set_len(crate::clipboard_budget::TEXT_CAPTURE_BYTES as u64 + 1)
+            .unwrap();
+        assert!(plain_text_preview(&hash).unwrap().truncated);
+        assert!(crate::clipboard_budget::is_limit_error(
+            &plain_text_content(&hash).unwrap_err()
+        ));
 
         delete_by_hash(&hash).unwrap();
+        crate::config::save(crate::config::Config::default());
+    }
+
+    #[test]
+    fn capture_budgets_reject_before_persisting_but_leave_file_copies_as_paths() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        crate::config::save(crate::config::Config {
+            storage_dir: root.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        });
+        db::init();
+        assert!(capture_text_from_app(
+            "x".repeat(crate::clipboard_budget::TEXT_CAPTURE_BYTES + 1),
+            "test",
+            "",
+            false
+        )
+        .is_none());
+        assert!(capture_rich_text_from_app(
+            "x".into(),
+            Some(vec![b'x'; crate::clipboard_budget::RICH_CAPTURE_BYTES]),
+            None,
+            None,
+            "test",
+            "",
+            false
+        )
+        .is_none());
+        assert!(capture_image_with_text_and_app(
+            &vec![0; crate::clipboard_budget::IMAGE_SOURCE_BYTES + 1],
+            "",
+            "test",
+            "",
+            false
+        )
+        .is_none());
+        let count = || {
+            db().query_row("select count(*) from clipboard", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(count(), 0);
+
+        let path = root.path().join("200MiB.png");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(200 * crate::clipboard_budget::MIB as u64)
+            .unwrap();
+        let hash = capture_file_from_app(
+            &vec![path.to_string_lossy().into_owned()],
+            "test",
+            "",
+            false,
+        )
+        .unwrap();
+        assert_eq!(try_get_by_hash(&hash).unwrap().item_type, ItemType::File);
+        assert_eq!(count(), 1);
         crate::config::save(crate::config::Config::default());
     }
 

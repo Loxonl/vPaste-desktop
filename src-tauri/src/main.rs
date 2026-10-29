@@ -58,6 +58,7 @@ mod auto_cleanup;
 mod auxiliary_windows;
 mod background_resources;
 mod clipboard;
+mod clipboard_budget;
 mod config;
 #[cfg(debug_assertions)]
 mod dev_memory;
@@ -75,6 +76,8 @@ mod native_drag_snapshot;
 mod office_test_fixtures;
 mod paste_queue;
 mod preview_behavior;
+#[cfg(test)]
+mod resource_budget_tests;
 use preview_behavior::PreviewMode;
 mod preview_motion;
 use preview_motion::{PreviewRect, PreviewRequests};
@@ -388,6 +391,7 @@ struct ClipboardHistoryPausePayload {
 
 #[derive(Clone, Serialize)]
 struct PreviewPayload {
+    text_truncated: bool,
     request_id: u64,
     navigation_direction: i8,
     hover: bool,
@@ -3481,6 +3485,7 @@ async fn show_preview_window(
     mode: Option<PreviewMode>,
     hover_request: Option<u64>,
     navigation_direction: Option<i8>,
+    text_truncated: Option<bool>,
 ) -> Result<(), String> {
     let mode = mode.unwrap_or_default();
     if mode == PreviewMode::Hover {
@@ -3530,10 +3535,10 @@ async fn show_preview_window(
     let preview_bounds = preview_bounds_avoiding_clipboard(&app, bounds);
     // File materialization and thumbnail reads must not block the native event loop.
     let (payload, size) = tauri::async_runtime::spawn_blocking(move || {
-        let source_image_path = if preview_content.is_empty() {
-            &content
-        } else {
+        let source_image_path = if content.is_empty() {
             &preview_content
+        } else {
+            &content
         };
         let preview_asset_path = if item_type == "Image" {
             image_preview_asset_path(source_image_path).unwrap_or_default()
@@ -3550,6 +3555,7 @@ async fn show_preview_window(
         );
         (
             PreviewPayload {
+                text_truncated: text_truncated.unwrap_or(false),
                 request_id,
                 navigation_direction: navigation_direction.unwrap_or(0).clamp(-1, 1),
                 hover: mode == PreviewMode::Hover,
@@ -4090,7 +4096,15 @@ unsafe fn create_shell_file_item_array(
 fn materialize_native_drag_image(path: &str) -> Result<String, String> {
     use sha2::{Digest, Sha256};
 
-    let source_bytes = history_store::read_file(path)?;
+    let _decode_guard = image_preview::decode_lock()?;
+    let metadata = image_preview::metadata_for_path(path)?;
+    clipboard_budget::validate_dimensions(
+        metadata.width,
+        metadata.height,
+        clipboard_budget::ImageOperation::Restore,
+    )?;
+    let source_bytes =
+        clipboard_budget::read_file_limited(path, clipboard_budget::IMAGE_SOURCE_BYTES)?;
     let is_gif = image_mime_from_bytes(&source_bytes) == "image/gif";
     let (extension, drag_bytes) = if is_gif {
         ("gif", source_bytes)
@@ -4435,14 +4449,8 @@ fn is_image_preview_extension(extension: &str) -> bool {
 }
 
 #[tauri::command]
-fn read_preview_text_file(path: String) -> Result<String, String> {
-    let metadata = fs::metadata(&path).map_err(|err| format!("读取文件信息失败：{}", err))?;
-    if metadata.len() > 1024 * 1024 {
-        return Err("文本文件超过 1 MB，暂不预览".to_string());
-    }
-    history_store::read_file(&path)
-        .and_then(|bytes| String::from_utf8(bytes).map_err(|err| err.to_string()))
-        .map_err(|err| format!("读取文本失败：{}", err))
+fn read_preview_text_file(path: String) -> Result<clipboard_budget::TextPreview, String> {
+    clipboard_budget::read_text_preview(&path)
 }
 
 #[tauri::command]
@@ -4899,6 +4907,11 @@ fn plain_text_content(hash: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn plain_text_preview(hash: String) -> Result<clipboard_budget::TextPreview, String> {
+    clipboard::plain_text_preview(&hash)
+}
+
+#[tauri::command]
 async fn open_text_editor_window(app: tauri::AppHandle, hash: String) -> Result<(), String> {
     let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::TextEditor).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
@@ -5000,6 +5013,7 @@ fn color_conversion_options(content: String) -> Vec<clipboard::color::ColorVaria
 
 #[tauri::command]
 fn export_image_item(source_path: String, target_path: String) -> Result<(), String> {
+    let _decode_guard = image_preview::decode_lock()?;
     let source = PathBuf::from(source_path);
     let target = PathBuf::from(target_path);
     if !source.exists() {
@@ -5032,13 +5046,13 @@ fn rasterize_svg_for_export(source: &Path) -> Result<image::DynamicImage, String
         ..Default::default()
     };
     options.fontdb_mut().load_system_fonts();
-    let bytes = history_store::read_file(source)?;
+    let bytes = clipboard_budget::read_file_limited(source, clipboard_budget::IMAGE_SOURCE_BYTES)?;
     let tree = resvg::usvg::Tree::from_data(&bytes, &options).map_err(|err| err.to_string())?;
     let size = tree.size().to_int_size();
     if size.width() > 16_384
         || size.height() > 16_384
         || u64::from(size.width()) * u64::from(size.height())
-            > image_preview::CARD_PREVIEW_MAX_PIXELS
+            > clipboard_budget::ImageOperation::Restore.pixels()
     {
         return Err("SVG dimensions exceed the export pixel limit".to_string());
     }
@@ -8160,7 +8174,10 @@ fn image_dib_cache_path(path: &str) -> Option<PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn read_image_dib_cache(cache_path: &Path) -> Result<Vec<u8>, String> {
-    fs::read(cache_path).map_err(|err| format!("read image clipboard cache failed: {err}"))
+    clipboard_budget::read_file_limited(
+        cache_path,
+        clipboard_budget::ImageOperation::Restore.pixels() as usize * 4 + 124,
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -8237,30 +8254,31 @@ fn png_clipboard_bytes_from_image_bytes(bytes: Vec<u8>) -> Option<Vec<u8>> {
         return Some(bytes);
     }
 
-    let image = image::load_from_memory(&bytes).ok()?;
-    let mut png_bytes = Vec::new();
+    let image =
+        clipboard_budget::decode_image(&bytes, clipboard_budget::ImageOperation::Restore).ok()?;
+    let mut png_bytes = clipboard_budget::ImageWriter(Vec::new());
     image
-        .write_to(
-            &mut std::io::Cursor::new(&mut png_bytes),
-            image::ImageFormat::Png,
-        )
+        .write_to(&mut png_bytes, image::ImageFormat::Png)
         .ok()?;
-    Some(png_bytes)
+    Some(png_bytes.0)
 }
 
 #[cfg(target_os = "windows")]
 fn cached_or_load_png_bytes(path: &str, dib_cache_path: &Path) -> Result<Option<Vec<u8>>, String> {
     let png_cache_path = image_png_cache_path(dib_cache_path);
     if png_cache_path.exists() {
-        return fs::read(&png_cache_path)
-            .map(Some)
-            .map_err(|err| format!("read image PNG clipboard cache failed: {err}"));
+        return clipboard_budget::read_file_limited(
+            &png_cache_path,
+            clipboard_budget::IMAGE_SOURCE_BYTES,
+        )
+        .map(Some)
+        .map_err(|err| format!("read image PNG clipboard cache failed: {err}"));
     }
     if image_not_png_marker_path(dib_cache_path).exists() {
         return Ok(None);
     }
 
-    let bytes = history_store::read_file(path)?;
+    let bytes = clipboard_budget::read_file_limited(path, clipboard_budget::IMAGE_SOURCE_BYTES)?;
     if let Some(png_bytes) = png_clipboard_bytes_from_image_bytes(bytes) {
         let _ = write_image_png_cache(dib_cache_path, &png_bytes);
         Ok(Some(png_bytes))
@@ -8278,6 +8296,15 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
     };
 
     let start = Instant::now();
+    let metadata = history_image_metadata_for_path(path)?;
+    if metadata.source_bytes > clipboard_budget::IMAGE_SOURCE_BYTES as u64 {
+        return Err(clipboard_budget::limit_error());
+    }
+    clipboard_budget::validate_dimensions(
+        metadata.width,
+        metadata.height,
+        clipboard_budget::ImageOperation::Restore,
+    )?;
     let cache_path = image_dib_cache_path(path);
     let mut png_bytes: Option<Vec<u8>> = None;
     let dib = if let Some(cache_path) = cache_path.as_ref() {
@@ -8292,7 +8319,8 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
             dib
         } else {
             let convert_start = Instant::now();
-            let image_bytes = history_store::read_file(path)?;
+            let image_bytes =
+                clipboard_budget::read_file_limited(path, clipboard_budget::IMAGE_SOURCE_BYTES)?;
             if copy_gif_bytes_to_clipboard_as_file(path, &image_bytes)? {
                 info!(
                     "Copied GIF image as file list in {}ms",
@@ -8315,7 +8343,8 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
             dib
         }
     } else {
-        let image_bytes = history_store::read_file(path)?;
+        let image_bytes =
+            clipboard_budget::read_file_limited(path, clipboard_budget::IMAGE_SOURCE_BYTES)?;
         if copy_gif_bytes_to_clipboard_as_file(path, &image_bytes)? {
             info!(
                 "Copied GIF image as file list in {}ms",
@@ -8475,7 +8504,9 @@ fn prewarm_image_clipboard_cache_path(path: &str) -> Result<bool, String> {
         info!("Skip large image clipboard cache prewarm for {}", path);
         return Ok(false);
     }
-    let image_bytes = history_store::read_file(path)?;
+    let _decode_guard = image_preview::decode_lock()?;
+    let image_bytes =
+        clipboard_budget::read_file_limited(path, clipboard_budget::IMAGE_SOURCE_BYTES)?;
     let metadata = history_image_metadata_from_bytes(path, &image_bytes)?;
     if metadata.preview_limited {
         return Ok(false);
@@ -8611,20 +8642,17 @@ mod internal_clipboard_marker_tests {
     }
 }
 
-fn image_dimensions_from_bytes(bytes: &[u8]) -> Result<(u32, u32), String> {
-    image::load_from_memory(&bytes)
-        .map(|image| (image.width(), image.height()))
-        .map_err(|err| err.to_string())
-}
-
 fn image_dimensions_secure(path: &str) -> Result<(u32, u32), String> {
-    let bytes = history_store::read_file(path)?;
-    image_dimensions_from_bytes(&bytes)
+    let metadata = image_preview::metadata_for_path(path)?;
+    if metadata.preview_limited {
+        return Err(clipboard_budget::limit_error());
+    }
+    Ok((metadata.width, metadata.height))
 }
 
 fn image_reader_secure(path: &Path) -> Result<image::DynamicImage, String> {
-    let bytes = history_store::read_file(path)?;
-    image::load_from_memory(&bytes).map_err(|err| err.to_string())
+    let bytes = clipboard_budget::read_file_limited(path, clipboard_budget::IMAGE_SOURCE_BYTES)?;
+    clipboard_budget::decode_image(&bytes, clipboard_budget::ImageOperation::Restore)
 }
 
 fn image_mime_from_bytes(bytes: &[u8]) -> &'static str {
@@ -8659,7 +8687,8 @@ fn image_extension_from_bytes(bytes: &[u8]) -> &'static str {
 
 fn image_data_url(path: &str) -> Result<String, String> {
     use base64::{engine::general_purpose, Engine as _};
-    let bytes = history_store::read_file(path)?;
+    let asset = image_preview_asset_path(path)?;
+    let bytes = image_preview::read_card_source(&asset)?;
     let mime = image_mime_from_bytes(&bytes);
     Ok(format!(
         "data:{};base64,{}",
@@ -8722,8 +8751,11 @@ fn publish_image_cache_file(
 }
 
 fn image_preview_asset_path(path: &str) -> Result<String, String> {
-    let bytes = history_store::read_file(path)?;
-    image_preview_asset_from_bytes(path, &bytes)
+    let resource = media_resources::build(path, media_resources::MediaIntent::Preview, false)?;
+    if resource.asset_path.is_empty() {
+        return Err(clipboard_budget::limit_error());
+    }
+    Ok(resource.asset_path)
 }
 
 fn image_preview_asset_from_bytes(path: &str, bytes: &[u8]) -> Result<String, String> {
@@ -8760,24 +8792,6 @@ fn history_image_metadata_from_bytes(
 
 fn history_image_metadata_for_path(path: &str) -> Result<HistoryImageMetadata, String> {
     image_preview::metadata_for_path(path)
-}
-
-fn image_thumbnail_preview_asset_path(path: &str, bytes: &[u8]) -> Result<String, String> {
-    use std::io::Cursor;
-
-    let cache_path = image_preview::card_preview_cache_path(path)?;
-    if valid_png_cache_file(&cache_path) {
-        return Ok(cache_path.to_string_lossy().to_string());
-    }
-
-    let image = image_preview::decode_card_image(bytes)?;
-    let thumb = image.thumbnail(720, 420);
-    let mut png = Vec::new();
-    thumb
-        .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(|err| format!("encode card preview failed: {err}"))?;
-    publish_image_cache_file(&cache_path, &png, valid_png_cache_file)?;
-    Ok(cache_path.to_string_lossy().to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -8866,23 +8880,11 @@ fn release_quick_input_keys(trigger_key: Option<&str>) {
 fn release_quick_input_keys(_trigger_key: Option<&str>) {}
 
 fn image_card_preview_asset_path(path: &str) -> Result<String, String> {
-    let cache_path = image_preview::card_preview_cache_path(path)?;
-    if valid_png_cache_file(&cache_path) {
-        return Ok(cache_path.to_string_lossy().to_string());
+    let resource = media_resources::build(path, media_resources::MediaIntent::Card, false)?;
+    if resource.asset_path.is_empty() {
+        return Err(clipboard_budget::limit_error());
     }
-    let metadata = history_image_metadata_for_path(path)?;
-    if metadata.preview_limited {
-        return Err(format!(
-            "image preview exceeds automatic budget: {} bytes, {}x{}",
-            metadata.source_bytes, metadata.width, metadata.height
-        ));
-    }
-    let _decode_guard = image_preview::decode_lock()?;
-    if valid_png_cache_file(&cache_path) {
-        return Ok(cache_path.to_string_lossy().to_string());
-    }
-    let bytes = history_store::read_file(path)?;
-    image_thumbnail_preview_asset_path(path, &bytes).or_else(|_| image_preview_asset_path(path))
+    Ok(resource.asset_path)
 }
 
 #[cfg(test)]
@@ -9097,7 +9099,7 @@ fn write_registered_clipboard_file(format_name: &str, path: &str) -> Result<(), 
     }
     let format = registered_clipboard_format(format_name)
         .ok_or_else(|| format!("register clipboard format failed: {}", format_name))?;
-    let bytes = history_store::read_file(path)
+    let bytes = clipboard_budget::read_file_limited(path, clipboard_budget::RICH_CAPTURE_BYTES)
         .map_err(|err| format!("read {} failed: {}", format_name, err))?;
     if bytes.is_empty() {
         return Ok(());
@@ -9179,7 +9181,7 @@ fn prepare_macos_rich_formats(
     .into_iter()
     .filter(|(_, path)| !path.is_empty())
     .map(|(pasteboard_type, path)| {
-        let bytes = history_store::read_file(path)
+        let bytes = clipboard_budget::read_file_limited(path, clipboard_budget::RICH_CAPTURE_BYTES)
             .map_err(|err| format!("read {pasteboard_type} rich clipboard file failed: {err}"))?;
         if bytes.is_empty() {
             return Err(format!("{pasteboard_type} rich clipboard file is empty"));
@@ -9378,6 +9380,25 @@ fn copy(
     Ok(())
 }
 
+fn validate_rich_restore_budget(
+    text: &str,
+    meta: &clipboard::RichClipboardMeta,
+) -> Result<(), String> {
+    let mut size = text.len() as u64;
+    if size > clipboard_budget::TEXT_CAPTURE_BYTES as u64 {
+        return Err(clipboard_budget::limit_error());
+    }
+    for path in [&meta.html_path, &meta.rtf_path, &meta.png_path] {
+        if !path.is_empty() && Path::new(path).exists() {
+            size = size.saturating_add(history_store::file_len(path)?);
+        }
+    }
+    if size > clipboard_budget::RICH_CAPTURE_BYTES as u64 {
+        return Err(clipboard_budget::limit_error());
+    }
+    Ok(())
+}
+
 fn copy_with_rich_meta(
     app: tauri::AppHandle,
     item: String,
@@ -9397,17 +9418,21 @@ fn copy_with_rich_meta(
     };
 
     if item_type == "Image" {
+        let _decode_guard = image_preview::decode_lock()?;
         info!("Copying image from path: {}", item);
         #[cfg(target_os = "windows")]
         {
             if let Err(err) = copy_image_to_clipboard_fast(&item) {
+                if clipboard_budget::is_limit_error(&err) {
+                    return Err(err);
+                }
                 error!("Fast image clipboard copy failed, falling back: {}", err);
                 let fallback_start = Instant::now();
                 let img = image_reader_secure(Path::new(&item)).map_err(|e| {
                     error!("Failed to decode image: {}", e);
                     e.to_string()
                 })?;
-                let rgba = img.to_rgba8();
+                let rgba = img.into_rgba8();
                 let width = rgba.width();
                 let height = rgba.height();
                 let bytes = rgba.into_vec();
@@ -9428,11 +9453,20 @@ fn copy_with_rich_meta(
         #[cfg(not(target_os = "windows"))]
         {
             let fallback_start = Instant::now();
+            #[cfg(target_os = "macos")]
+            let gif_bytes = if image_preview::metadata_for_path(&item)?.is_gif {
+                Some(clipboard_budget::read_file_limited(
+                    &item,
+                    clipboard_budget::IMAGE_SOURCE_BYTES,
+                )?)
+            } else {
+                None
+            };
             let img = image_reader_secure(Path::new(&item)).map_err(|e| {
                 error!("Failed to decode image: {}", e);
                 e.to_string()
             })?;
-            let rgba = img.to_rgba8();
+            let rgba = img.into_rgba8();
             let width = rgba.width();
             let height = rgba.height();
             let bytes = rgba.into_vec();
@@ -9442,6 +9476,18 @@ fn copy_with_rich_meta(
                 error!("Failed to set image: {}", e);
                 e.to_string()
             })?;
+            #[cfg(target_os = "macos")]
+            if let Some(bytes) = gif_bytes {
+                unsafe {
+                    use cocoa::base::{id, nil};
+                    use objc::{class, msg_send, sel, sel_impl};
+                    let pasteboard: id = msg_send![class!(NSPasteboard), generalPasteboard];
+                    if pasteboard == nil {
+                        return Err("macOS pasteboard is not available".into());
+                    }
+                    write_macos_pasteboard_data(pasteboard, "com.compuserve.gif", &bytes)?;
+                }
+            }
             info!(
                 "Image clipboard copy consumed {}ms",
                 fallback_start.elapsed().as_millis()
@@ -9494,9 +9540,13 @@ fn copy_with_rich_meta(
     } else {
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         if let Some(meta) = rich_meta.as_ref() {
+            validate_rich_restore_budget(&item, meta)?;
             info!("Copying rich text formats");
             mark_internal();
             return copy_rich_to_clipboard(&item, meta);
+        }
+        if item.len() > clipboard_budget::TEXT_CAPTURE_BYTES {
+            return Err(clipboard_budget::limit_error());
         }
         info!("Copying text payload: {} bytes", item.len());
         mark_internal();
@@ -12072,6 +12122,7 @@ fn main() {
             remove_item_tag,
             delete_clipboard_item,
             plain_text_content,
+            plain_text_preview,
             open_text_editor_window,
             get_text_editor_document,
             save_clipboard_text,

@@ -66,7 +66,7 @@ export function createClipboardPreviewRuntime(
                     { path: item.getContent() },
                 );
                 if (!current()) return;
-                if (metadata.previewLimited || metadata.animationLimited) {
+                if (metadata.previewLimited) {
                     if (mode !== "manual") return;
                     try {
                         await invoke("hide_preview_window");
@@ -93,15 +93,16 @@ export function createClipboardPreviewRuntime(
         if (!current()) return;
         if (mode !== "hover") options.selectItem(item.getHash());
         try {
-            const textContent = item.getType() === "TextFile"
-                ? await invoke<string>("plain_text_content", { hash: item.getHash() })
-                : item.getTextContent();
+            const textPreview = item.getType() === "TextFile"
+                ? await invoke<{ text: string; truncated: boolean }>("plain_text_preview", { hash: item.getHash() })
+                : { text: item.getTextContent(), truncated: false };
             if (!current()) return;
             await invoke("show_preview_window", {
                 itemType: item.getType(),
                 content: item.getContent(),
                 previewContent: item.getPreviewContent(),
-                textContent,
+                textContent: textPreview.text,
+                ...(textPreview.truncated ? { textTruncated: true } : {}),
                 richHtml: item.getRichHtml(),
                 appSource: item.getAppSource(),
                 ...(mode !== "manual" ? { mode } : {}),

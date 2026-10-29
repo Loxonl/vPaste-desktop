@@ -17,12 +17,6 @@ import { notifyAuxiliaryWindowReady } from "../auxiliaryWindowReady";
 import { m, motionDurationsMs, motionTokens, useMotionPreset, useReducedMotionConfig } from "../ui/motion";
 import styles from "./Preview.module.css";
 
-type HistoryImageMetadata = {
-    width: number;
-    height: number;
-    isGif: boolean;
-};
-
 type PreviewPayload = {
     request_id?: number;
     navigation_direction?: number;
@@ -36,6 +30,8 @@ type PreviewPayload = {
     previewAssetPath?: string;
     text_content?: string;
     textContent?: string;
+    text_truncated?: boolean;
+    textTruncated?: boolean;
     rich_html?: string;
     richHtml?: string;
 };
@@ -138,6 +134,7 @@ export function PreviewBody({ payload, t, onReady }: {
     const [fileInfo, setFileInfo] = useState<FilePreviewInfo | null>(null);
     const [fileError, setFileError] = useState("");
     const [fileText, setFileText] = useState("");
+    const [fileTextTruncated, setFileTextTruncated] = useState(false);
     const [fileTextReady, setFileTextReady] = useState(false);
     const [imageLoaded, setImageLoaded] = useState(false);
     const [imageError, setImageError] = useState(false);
@@ -157,7 +154,7 @@ export function PreviewBody({ payload, t, onReady }: {
     const text = useMemo(() => {
         if (type === ItemType.Link) return linkUrl;
         return payloadTextContent(payload) || payload.content;
-    }, [linkUrl, payload.content, payload.text_content, type]);
+    }, [linkUrl, payload.content, payload.text_content, payload.textContent, type]);
 
     const ready = type === ItemType.Image
         ? imageLoaded
@@ -187,6 +184,7 @@ export function PreviewBody({ payload, t, onReady }: {
         setFileInfo(null);
         setFileError("");
         setFileText("");
+        setFileTextTruncated(false);
         setFileTextReady(false);
         setFilePreviewSrc("");
         if (type !== ItemType.File) return;
@@ -194,10 +192,11 @@ export function PreviewBody({ payload, t, onReady }: {
             .then(info => {
                 if (!cancelled) setFileInfo(info);
                 if (info.kind === "text-preview" && info.display_path) {
-                    return invoke<string>("read_preview_text_file", { path: info.display_path })
-                        .then(text => {
+                    return invoke<{ text: string; truncated: boolean }>("read_preview_text_file", { path: info.display_path })
+                        .then(preview => {
                             if (!cancelled) {
-                                setFileText(text);
+                                setFileText(preview.text);
+                                setFileTextTruncated(preview.truncated);
                                 setFileTextReady(true);
                             }
                         });
@@ -220,42 +219,17 @@ export function PreviewBody({ payload, t, onReady }: {
         const assetPath = payloadPreviewAssetPath(payload);
         if (!sourcePath) return;
 
-        invoke<HistoryImageMetadata>("history_image_metadata", { path: sourcePath })
-            .then(metadata => {
-                if (metadata.isGif) {
-                    return invoke<string>("history_file_preview_asset_path", { path: sourcePath })
-                        .then(src => {
-                            if (!cancelled) setImageSrc(convertFileSrc(src));
-                        });
-                }
-                if (assetPath) {
-                    if (!cancelled) setImageSrc(convertFileSrc(assetPath));
-                    return;
-                }
-                const path = payloadPreviewContent(payload) || sourcePath;
-                return invoke<string>("history_file_preview_asset_path", { path })
-                    .then(src => {
-                        if (!cancelled) setImageSrc(convertFileSrc(src));
-                    })
-                    .catch(() => {
-                        return invoke<string>("history_file_data_url", { path: sourcePath })
-                            .then(src => {
-                                if (!cancelled) setImageSrc(src);
-                            })
-                            .catch(() => {
-                                if (!cancelled) setImageSrc(convertFileSrc(sourcePath));
-                            });
-                    });
+        if (assetPath) {
+            setImageSrc(convertFileSrc(assetPath));
+            return;
+        }
+        invoke<{ assetPath: string }>("resolve_history_media", { path: sourcePath, intent: "preview" })
+            .then(resource => {
+                if (cancelled) return;
+                if (resource.assetPath) setImageSrc(convertFileSrc(resource.assetPath));
+                else imageFailed();
             })
-            .catch(() => {
-                invoke<string>("history_file_data_url", { path: sourcePath })
-                    .then(src => {
-                        if (!cancelled) setImageSrc(src);
-                    })
-                    .catch(() => {
-                        if (!cancelled) setImageSrc(convertFileSrc(sourcePath));
-                    });
-            });
+            .catch(() => { if (!cancelled) imageFailed(); });
         return () => {
             cancelled = true;
         };
@@ -284,19 +258,13 @@ export function PreviewBody({ payload, t, onReady }: {
         let cancelled = false;
         setFilePreviewSrc("");
         if (!fileInfo?.preview_path) return;
-        invoke<string>("history_file_preview_asset_path", { path: fileInfo.preview_path })
-            .then(src => {
-                if (!cancelled) setFilePreviewSrc(convertFileSrc(src));
+        invoke<{ assetPath: string }>("resolve_history_media", { path: fileInfo.preview_path, intent: "preview" })
+            .then(resource => {
+                if (cancelled) return;
+                if (resource.assetPath) setFilePreviewSrc(convertFileSrc(resource.assetPath));
+                else imageFailed();
             })
-            .catch(() => {
-                invoke<string>("history_file_data_url", { path: fileInfo.preview_path })
-                    .then(src => {
-                        if (!cancelled) setFilePreviewSrc(src);
-                    })
-                    .catch(() => {
-                        if (!cancelled) setFilePreviewSrc(convertFileSrc(fileInfo.preview_path));
-                    });
-            });
+            .catch(() => { if (!cancelled) imageFailed(); });
         return () => {
             cancelled = true;
         };
@@ -372,7 +340,10 @@ export function PreviewBody({ payload, t, onReady }: {
         }
         if (fileInfo.kind === "text-preview") {
             return (
-                <pre className={styles["preview-text"]}>{fileText || t("preview.readingText")}</pre>
+                <div className={styles["preview-text-stage"]}>
+                    <pre className={styles["preview-text"]}>{fileTextReady ? fileText : t("preview.readingText")}</pre>
+                    {fileTextTruncated && <div role="status" className={styles["preview-text-note"]}>{t("preview.textTruncated")}</div>}
+                </div>
             );
         }
         if (fileInfo.kind === "single-preview" && fileInfo.preview_path) {
@@ -424,7 +395,10 @@ export function PreviewBody({ payload, t, onReady }: {
     }
 
     return (
-        <pre className={styles["preview-text"]}>{text || t("preview.noText")}</pre>
+        <div className={styles["preview-text-stage"]}>
+            <pre className={styles["preview-text"]}>{text || t("preview.noText")}</pre>
+            {(payload.text_truncated || payload.textTruncated) && <div role="status" className={styles["preview-text-note"]}>{t("preview.textTruncated")}</div>}
+        </div>
     );
 }
 
@@ -440,6 +414,7 @@ function samePreviewContent(a: PreviewPayload, b: PreviewPayload) {
         && payloadPreviewContent(a) === payloadPreviewContent(b)
         && payloadPreviewAssetPath(a) === payloadPreviewAssetPath(b)
         && payloadTextContent(a) === payloadTextContent(b)
+        && Boolean(a.text_truncated || a.textTruncated) === Boolean(b.text_truncated || b.textTruncated)
         && payloadRichHtml(a) === payloadRichHtml(b);
 }
 

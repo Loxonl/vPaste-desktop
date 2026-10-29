@@ -3496,6 +3496,9 @@ pub fn save_to_disk(data: &[u8], hash: &String) -> String {
 }
 
 #[cfg(test)]
+mod link_preview_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::params;

@@ -31,7 +31,7 @@ pub struct HistoryImageMetadata {
     pub animation_limited: bool,
 }
 
-fn image_dimensions_from_bytes(bytes: &[u8]) -> Result<(u32, u32), String> {
+pub(crate) fn image_dimensions_from_bytes(bytes: &[u8]) -> Result<(u32, u32), String> {
     image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|err| err.to_string())?

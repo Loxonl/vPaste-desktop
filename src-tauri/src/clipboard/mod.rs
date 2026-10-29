@@ -3417,14 +3417,24 @@ fn cached_link_image_is_usable(path: &str) -> bool {
     if html_text {
         return false;
     }
+    if crate::image_preview::is_svg_bytes(&bytes) {
+        return bytes.len() <= 5 * 1024 * 1024
+            && crate::image_preview::image_dimensions_from_bytes(&bytes).is_ok_and(
+                |(width, height)| {
+                    crate::clipboard_budget::validate_dimensions(
+                        width,
+                        height,
+                        crate::clipboard_budget::ImageOperation::Automatic,
+                    )
+                    .is_ok()
+                },
+            );
+    }
     infer::get(&bytes)
         .map(|kind| kind.mime_type().starts_with("image/"))
         .unwrap_or_else(|| {
             bytes.starts_with(&[0x00, 0x00, 0x01, 0x00])
                 || bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP")
-                || std::str::from_utf8(&bytes)
-                    .map(|text| text.trim_start().starts_with("<svg"))
-                    .unwrap_or(false)
         })
 }
 
@@ -3465,10 +3475,15 @@ pub(crate) fn refresh_link_previews_with_cancellation(
 pub(crate) fn refresh_loaded_link_previews(
     records: Vec<LinkPreviewRecord>,
     is_current: impl Fn() -> bool,
+    on_updated: impl FnMut(&str),
 ) -> Result<Vec<LinkPreviewUpdate>, String> {
-    refresh_link_records_with(records, true, &is_current, |url| {
-        fetch_link_preview(url, &is_current)
-    })
+    refresh_link_records_with_updates(
+        records,
+        true,
+        &is_current,
+        |url| fetch_link_preview(url, &is_current),
+        on_updated,
+    )
 }
 
 fn link_preview_needs_refresh(
@@ -3499,7 +3514,17 @@ fn refresh_link_records_with(
     records: Vec<LinkPreviewRecord>,
     allow_old_missing: bool,
     is_current: &impl Fn() -> bool,
+    fetch: impl FnMut(&str) -> Result<LinkPreviewUpdate, String>,
+) -> Result<Vec<LinkPreviewUpdate>, String> {
+    refresh_link_records_with_updates(records, allow_old_missing, is_current, fetch, |_| {})
+}
+
+fn refresh_link_records_with_updates(
+    records: Vec<LinkPreviewRecord>,
+    allow_old_missing: bool,
+    is_current: &impl Fn() -> bool,
     mut fetch: impl FnMut(&str) -> Result<LinkPreviewUpdate, String>,
+    mut on_updated: impl FnMut(&str),
 ) -> Result<Vec<LinkPreviewUpdate>, String> {
     let _cleanup = crate::auto_cleanup::pause();
     let mut updates = Vec::new();
@@ -3525,30 +3550,34 @@ fn refresh_link_records_with(
         else {
             continue;
         };
-        if link_url_from_content(&record.content) != url
-            || !link_preview_needs_refresh(
-                &record,
-                &local_day,
-                current_timestamp_millis(),
-                allow_old_missing,
-            )
-        {
+        if link_url_from_content(&record.content) != url {
+            continue;
+        }
+        if !link_preview_needs_refresh(
+            &record,
+            &local_day,
+            current_timestamp_millis(),
+            allow_old_missing,
+        ) {
+            // Completion can race with the search snapshot before it enters the queue.
+            if record.content != candidate.content {
+                on_updated(&url);
+            }
             continue;
         }
         let cached_image_path = link_record_cached_image_path(&record);
         let cached_image_kind = link_record_cached_image_kind(&record);
 
         let fetched = fetch(&url);
-        if !is_current() {
+        let completed_image = fetched
+            .as_ref()
+            .is_ok_and(|update| cached_link_image_is_usable(&update.image_path));
+        if !is_current() && !completed_image {
             break;
         }
         let mut update = match fetched {
-            Ok(update) => {
-                remember_link_preview_attempt(&url, update.image_kind == "request-failed");
-                update
-            }
+            Ok(update) => update,
             Err(_) => {
-                remember_link_preview_attempt(&url, true);
                 info!("link preview refresh skipped after a fetch failure");
                 LinkPreviewUpdate {
                     url: url.clone(),
@@ -3558,6 +3587,7 @@ fn refresh_link_records_with(
                 }
             }
         };
+        let request_failed = update.image_kind == "request-failed";
         let host = reqwest::Url::parse(&url)
             .ok()
             .and_then(|url| url.host_str().map(str::to_string))
@@ -3600,7 +3630,7 @@ fn refresh_link_records_with(
         }
         let stored_next_content = next_content.clone();
 
-        if !is_current() {
+        if !is_current() && !completed_image {
             break;
         }
         let changed = db()
@@ -3613,6 +3643,7 @@ fn refresh_link_records_with(
         if changed == 0 {
             continue;
         }
+        remember_link_preview_attempt(&url, request_failed);
         if let Some(stored) = db()
             .query_row(
                 "select * from clipboard where hash = ?1",
@@ -3630,12 +3661,14 @@ fn refresh_link_records_with(
             );
         }
 
-        updates.push(LinkPreviewUpdate {
+        let update = LinkPreviewUpdate {
             url,
             title: sanitized_title,
             image_path: sanitized_image_path,
             image_kind: sanitized_image_kind,
-        });
+        };
+        on_updated(&update.url);
+        updates.push(update);
     }
     Ok(updates)
 }

@@ -3123,10 +3123,14 @@ fn fallback_link_preview(
     client: &PreviewHttpClient,
     url: &reqwest::Url,
     title: &str,
+    is_current: &dyn Fn() -> bool,
 ) -> LinkPreviewUpdate {
     let mut image_path = String::new();
     let mut image_kind = String::new();
     for icon_url in fallback_icon_candidates(url) {
+        if !is_current() {
+            break;
+        }
         image_path = fetch_preview_image(client, url, &icon_url);
         if !image_path.is_empty() {
             image_kind = "icon".to_string();
@@ -3162,7 +3166,13 @@ impl NonEmptyOr for String {
     }
 }
 
-fn fetch_link_preview(url: &str) -> Result<LinkPreviewUpdate, String> {
+fn fetch_link_preview(
+    url: &str,
+    is_current: &dyn Fn() -> bool,
+) -> Result<LinkPreviewUpdate, String> {
+    if !is_current() {
+        return Err("link_preview_cancelled".into());
+    }
     if !is_previewable_domain_link(url) {
         return Err("unsupported link".to_string());
     }
@@ -3181,14 +3191,20 @@ fn fetch_link_preview(url: &str) -> Result<LinkPreviewUpdate, String> {
     {
         Ok(response) => response,
         Err(_) => {
-            let fallback = fallback_link_preview(&client, &preview_url, "");
+            let mut fallback = fallback_link_preview(&client, &preview_url, "", is_current);
+            if fallback.image_path.is_empty() {
+                fallback.image_kind = "request-failed".into();
+            }
             info!("link preview fetch failed; using a local icon");
             return Ok(fallback);
         }
     };
     if !response.status().is_success() {
         let status = response.status();
-        let fallback = fallback_link_preview(&client, &preview_url, "");
+        let mut fallback = fallback_link_preview(&client, &preview_url, "", is_current);
+        if fallback.image_path.is_empty() {
+            fallback.image_kind = "request-failed".into();
+        }
         info!(
             "link preview fetch returned HTTP {}; using a local icon",
             status
@@ -3205,7 +3221,7 @@ fn fetch_link_preview(url: &str) -> Result<LinkPreviewUpdate, String> {
         && !content_type.starts_with("text/html")
         && !content_type.starts_with("application/xhtml+xml")
     {
-        let fallback = fallback_link_preview(&client, &preview_url, "");
+        let fallback = fallback_link_preview(&client, &preview_url, "", is_current);
         info!(
             "link preview fetch returned non-html {}; using a local icon",
             content_type
@@ -3213,7 +3229,22 @@ fn fetch_link_preview(url: &str) -> Result<LinkPreviewUpdate, String> {
         return Ok(fallback);
     }
     let final_url = response.url().clone();
-    let html = client.text(response)?;
+    if !is_current() {
+        return Err("link_preview_cancelled".into());
+    }
+    let html = match client.text(response) {
+        Ok(html) => html,
+        Err(_) => {
+            let mut fallback = fallback_link_preview(&client, &preview_url, "", is_current);
+            if fallback.image_path.is_empty() {
+                fallback.image_kind = "request-failed".into();
+            }
+            return Ok(fallback);
+        }
+    };
+    if !is_current() {
+        return Err("link_preview_cancelled".into());
+    }
     let document = scraper::Html::parse_document(&html);
     let title = title_from_html(&document);
     let image_url = meta_content(&document, "meta[property='og:image']")
@@ -3246,6 +3277,9 @@ fn fetch_link_preview(url: &str) -> Result<LinkPreviewUpdate, String> {
             ])
             .collect::<Vec<_>>();
         for icon_url in icon_candidates {
+            if !is_current() {
+                break;
+            }
             image_path = fetch_preview_image(&client, &final_url, &icon_url);
             if !image_path.is_empty() {
                 break;
@@ -3261,7 +3295,11 @@ fn fetch_link_preview(url: &str) -> Result<LinkPreviewUpdate, String> {
 
     Ok(LinkPreviewUpdate {
         url: url.to_string(),
-        title,
+        title: if title.is_empty() {
+            fallback_title_from_url(&preview_url)
+        } else {
+            title
+        },
         image_path,
         image_kind,
     })
@@ -3300,11 +3338,11 @@ fn remember_link_preview_attempt(url: &str, failed: bool) {
 }
 
 #[derive(Clone)]
-struct LinkPreviewRecord {
-    id: u64,
-    hash: String,
-    time: u64,
-    content: String,
+pub(crate) struct LinkPreviewRecord {
+    pub(crate) id: u64,
+    pub(crate) hash: String,
+    pub(crate) time: u64,
+    pub(crate) content: String,
 }
 
 fn link_url_from_content(content: &str) -> String {
@@ -3408,64 +3446,150 @@ pub(crate) fn refresh_link_previews_with_cancellation(
     urls: Vec<String>,
     is_current: impl Fn() -> bool,
 ) -> Result<Vec<LinkPreviewUpdate>, String> {
+    let mut records = Vec::new();
+    for url in urls.into_iter().take(10) {
+        if !is_current() {
+            break;
+        }
+        if is_previewable_domain_link(url.trim()) {
+            if let Some(record) = find_link_record_for_preview(url.trim())? {
+                records.push(record);
+            }
+        }
+    }
+    refresh_link_records_with(records, false, &is_current, |url| {
+        fetch_link_preview(url, &is_current)
+    })
+}
+
+pub(crate) fn refresh_loaded_link_previews(
+    records: Vec<LinkPreviewRecord>,
+    is_current: impl Fn() -> bool,
+) -> Result<Vec<LinkPreviewUpdate>, String> {
+    refresh_link_records_with(records, true, &is_current, |url| {
+        fetch_link_preview(url, &is_current)
+    })
+}
+
+fn link_preview_needs_refresh(
+    record: &LinkPreviewRecord,
+    local_day: &str,
+    now: u64,
+    allow_old_missing: bool,
+) -> bool {
+    let kind = link_record_cached_image_kind(record);
+    let legacy_generated = kind == "generated-icon" || kind == "brand-icon";
+    if !legacy_generated && link_preview_is_fresh_for_day(record, local_day) {
+        return false;
+    }
+    let image_path = link_record_cached_image_path(record);
+    let usable = cached_link_image_is_usable(&image_path);
+    if record.time < now.saturating_sub(LINK_PREVIEW_HISTORY_WINDOW_MILLIS)
+        && (!allow_old_missing || usable)
+    {
+        return false;
+    }
+    legacy_generated
+        || !(link_record_cached_refresh_day(record).is_empty()
+            && should_skip_link_preview_refresh(&link_url_from_content(&record.content))
+            && (kind == "default-icon" || usable))
+}
+
+fn refresh_link_records_with(
+    records: Vec<LinkPreviewRecord>,
+    allow_old_missing: bool,
+    is_current: &impl Fn() -> bool,
+    mut fetch: impl FnMut(&str) -> Result<LinkPreviewUpdate, String>,
+) -> Result<Vec<LinkPreviewUpdate>, String> {
     let _cleanup = crate::auto_cleanup::pause();
     let mut updates = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let local_day = Local::now().format("%Y-%m-%d").to_string();
-    for raw_url in urls.into_iter().take(10) {
+    for candidate in records {
         if !is_current() {
             break;
         }
-        let url = raw_url.trim().to_string();
+        let url = link_url_from_content(&candidate.content);
         if url.is_empty() || !seen.insert(url.clone()) || !is_previewable_domain_link(&url) {
             continue;
         }
-        let Some(record) = find_link_record_for_preview(&url)? else {
+        let Some(record) = db()
+            .query_row(
+                "select id, hash, cast(time as integer), content from clipboard
+             where id = ?1 and hash = ?2 and item_type = 'Link'",
+                rusqlite::params![candidate.id, candidate.hash],
+                read_link_preview_record,
+            )
+            .optional()
+            .map_err(|err| err.to_string())?
+        else {
             continue;
         };
-        let cutoff = current_timestamp_millis().saturating_sub(LINK_PREVIEW_HISTORY_WINDOW_MILLIS);
-        if record.time < cutoff {
+        if link_url_from_content(&record.content) != url
+            || !link_preview_needs_refresh(
+                &record,
+                &local_day,
+                current_timestamp_millis(),
+                allow_old_missing,
+            )
+        {
             continue;
         }
         let cached_image_path = link_record_cached_image_path(&record);
         let cached_image_kind = link_record_cached_image_kind(&record);
-        let has_legacy_generated_icon =
-            cached_image_kind == "generated-icon" || cached_image_kind == "brand-icon";
-        let cached_refresh_day = link_record_cached_refresh_day(&record);
-        if !has_legacy_generated_icon {
-            if link_preview_is_fresh_for_day(&record, &local_day) {
-                continue;
-            }
-            if cached_refresh_day.is_empty()
-                && should_skip_link_preview_refresh(&url)
-                && (cached_image_kind == "default-icon"
-                    || cached_link_image_is_usable(&cached_image_path))
-            {
-                continue;
-            }
-        }
 
-        let fetched = fetch_link_preview(&url);
+        let fetched = fetch(&url);
         if !is_current() {
             break;
         }
-        let update = match fetched {
+        let mut update = match fetched {
             Ok(update) => {
-                remember_link_preview_attempt(&url, false);
+                remember_link_preview_attempt(&url, update.image_kind == "request-failed");
                 update
             }
             Err(_) => {
                 remember_link_preview_attempt(&url, true);
                 info!("link preview refresh skipped after a fetch failure");
-                continue;
+                LinkPreviewUpdate {
+                    url: url.clone(),
+                    title: String::new(),
+                    image_path: String::new(),
+                    image_kind: "request-failed".into(),
+                }
             }
         };
+        let host = reqwest::Url::parse(&url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_string))
+            .unwrap_or_default();
+        let outcome = if update.image_kind == "request-failed" {
+            "request-failed"
+        } else if update.image_path.is_empty() {
+            "no-image"
+        } else if update.image_kind == "icon" {
+            "icon"
+        } else {
+            "preview"
+        };
+        info!("link preview result: host={host} stage=metadata outcome={outcome}");
+        if update.image_path.is_empty() && cached_link_image_is_usable(&cached_image_path) {
+            update.image_path = cached_image_path;
+            update.image_kind = cached_image_kind;
+            update.title = record
+                .content
+                .split("|||")
+                .nth(2)
+                .unwrap_or_default()
+                .to_string();
+        }
         let sanitized_title = update.title.replace("|||", " ").trim().to_string();
+        let sanitized_title = if sanitized_title.is_empty() {
+            host
+        } else {
+            sanitized_title
+        };
         let sanitized_image_path = update.image_path.replace("|||", " ");
         let sanitized_image_kind = update.image_kind.replace("|||", " ");
-        if sanitized_title.is_empty() && sanitized_image_path.is_empty() {
-            continue;
-        }
 
         let next_content = format!(
             "{}|||{}|||{}|||{}|||{}",
@@ -3479,15 +3603,16 @@ pub(crate) fn refresh_link_previews_with_cancellation(
         if !is_current() {
             break;
         }
-        db().execute(
-            "update clipboard set content = ?1, search_index = 0 where hash = ?2 and item_type = ?3",
-            [
-                &stored_next_content,
-                &record.hash,
-                &ItemType::Link.to_string(),
-            ],
-        )
-        .map_err(|err| err.to_string())?;
+        let changed = db()
+            .execute(
+                "update clipboard set content = ?1, search_index = 0
+             where id = ?2 and hash = ?3 and item_type = 'Link' and content = ?4",
+                rusqlite::params![stored_next_content, record.id, record.hash, record.content],
+            )
+            .map_err(|err| err.to_string())?;
+        if changed == 0 {
+            continue;
+        }
         if let Some(stored) = db()
             .query_row(
                 "select * from clipboard where hash = ?1",

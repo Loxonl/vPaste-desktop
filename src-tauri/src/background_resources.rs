@@ -325,6 +325,78 @@ pub(crate) fn set_visible(app: &tauri::AppHandle, visible: bool) {
 mod tests {
     use super::*;
 
+    fn link(id: usize) -> Item {
+        Item {
+            id,
+            hash: format!("link-{id}"),
+            content: format!("https://example.com/{id}"),
+            item_type: ItemType::Link,
+            preview_content: String::new(),
+            text_content: String::new(),
+            rich_html: String::new(),
+            app_source: String::new(),
+            app_icon_path: String::new(),
+            title_color: String::new(),
+            time: 1,
+            search_index: 1,
+            label: 0,
+            tags: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn link_queue_drains_all_loaded_records_in_ten_item_batches() {
+        let mut state = State { visible: true, ..Default::default() };
+        state.enqueue_links(&(1..=26).map(link).collect::<Vec<_>>(), true);
+        let batches = std::iter::from_fn(|| state.take_link_batch()).collect::<Vec<_>>();
+        assert_eq!(batches.iter().map(|batch| batch.records.len()).collect::<Vec<_>>(), [10, 10, 6]);
+        assert_eq!(batches.iter().flat_map(|batch| &batch.records).map(|record| record.id).collect::<Vec<_>>(), (1..=26).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn link_pagination_appends_without_cancelling_or_duplicating_existing_work() {
+        let mut state = State { visible: true, ..Default::default() };
+        state.enqueue_links(&(1..=12).map(link).collect::<Vec<_>>(), true);
+        let first = state.take_link_batch().unwrap();
+        state.enqueue_links(&(11..=23).map(link).collect::<Vec<_>>(), false);
+        assert_eq!(first.revision, state.link_revision);
+        let remaining = std::iter::from_fn(|| state.take_link_batch())
+            .flat_map(|batch| batch.records).map(|record| record.id).collect::<Vec<_>>();
+        assert_eq!(remaining, (11..=23).collect::<Vec<_>>());
+        state.enqueue_links(&[link(1)], false);
+        assert!(state.take_link_batch().is_none());
+    }
+
+    #[test]
+    fn a_new_search_replaces_link_work_and_hiding_clears_the_queue() {
+        let service = BackgroundResources::default();
+        service.set_visible(true);
+        let old = {
+            let mut state = service.0.state.lock().unwrap();
+            state.enqueue_links(&[link(1)], true);
+            let old = state.take_link_batch().unwrap();
+            state.enqueue_links(&[link(2)], true);
+            assert_ne!(state.link_revision, old.revision);
+            old
+        };
+        assert!(!service.link_current(&old));
+        service.set_visible(false);
+        assert!(service.0.state.lock().unwrap().take_link_batch().is_none());
+        service.set_visible(true);
+        assert!(!service.link_current(&old));
+    }
+
+    #[test]
+    fn link_queue_does_not_accept_non_links_or_unsafe_destinations() {
+        let mut state = State { visible: true, ..Default::default() };
+        let mut text = link(1);
+        text.item_type = ItemType::Text;
+        let mut local = link(2);
+        local.content = "https://127.0.0.1/secret".into();
+        state.enqueue_links(&[text, local], true);
+        assert!(state.take_link_batch().is_none());
+    }
+
     #[test]
     fn an_old_visibility_epoch_cannot_resume_after_hide_and_reopen() {
         let service = BackgroundResources::default();

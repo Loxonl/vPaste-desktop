@@ -23,6 +23,7 @@ export type PreviewNavigationPayload = {
 type ClipboardTauriEventHandlers = {
     onBehaviorConfigChanged: (config: ClipboardBehaviorConfig) => void;
     onClipboardChanged: () => void;
+    onCaptureRejected?: () => void;
     onResourcesUpdated?: (payload: { epoch: number }) => void;
     onCustomTabsChanged: (payload: CustomTabsChangedPayload) => void;
     onItemTagsChanged: (payload: ItemTagsChangedPayload) => void;
@@ -82,6 +83,9 @@ export function useClipboardLifecycleSubscriptions(
         });
         const unlistenClipboard = listen("listen_new_clipboard", () => {
             subscriptions.tauri.onClipboardChanged();
+        });
+        const unlistenCaptureRejected = listen("clipboard-capture-rejected", () => {
+            subscriptions.tauri.onCaptureRejected?.();
         });
         const unlistenResources = listen<{ epoch: number }>("clipboard-resources-updated", event => {
             subscriptions.tauri.onResourcesUpdated?.(event.payload);
@@ -146,6 +150,7 @@ export function useClipboardLifecycleSubscriptions(
             unlistenHide,
             unlistenHidden,
             unlistenClipboard,
+            unlistenCaptureRejected,
             unlistenResources,
             unlistenTutorialStarted,
             unlistenTutorialCompleted,
@@ -175,6 +180,7 @@ export function useClipboardLifecycleSubscriptions(
             removeTauriListener(unlistenHide, "hide");
             removeTauriListener(unlistenHidden, "hidden");
             removeTauriListener(unlistenClipboard, "clipboard");
+            removeTauriListener(unlistenCaptureRejected, "capture rejection");
             removeTauriListener(unlistenResources, "resources");
             removeTauriListener(unlistenCustomTabs, "custom tabs");
             removeTauriListener(unlistenItemTags, "item tags");

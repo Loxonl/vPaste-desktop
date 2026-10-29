@@ -1154,11 +1154,12 @@ fn run_large_image_boundary_case() -> Result<String, String> {
     let mut hashes = Vec::with_capacity(1);
 
     let result = (|| {
-        let mut large_image = image_bytes("image-grid")?;
-        large_image.resize(
-            crate::image_preview::CARD_PREVIEW_MAX_SOURCE_BYTES as usize + 1,
-            0,
-        );
+        let image = image::RgbImage::from_pixel(4000, 4001, image::Rgb([240, 240, 240]));
+        let mut large_image = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut large_image, image::ImageFormat::Png)
+            .map_err(|error| error.to_string())?;
+        let mut large_image = large_image.into_inner();
         large_image.extend_from_slice(run_scope.as_bytes());
         let image_hash = clipboard::calculate_xxhash64(&large_image);
         clipboard::insert_image_with_text_and_app(
@@ -1176,7 +1177,8 @@ fn run_large_image_boundary_case() -> Result<String, String> {
         let metadata = crate::image_preview::metadata_for_path(&image_item.content)?;
         if image_item.item_type != ItemType::Image
             || !metadata.preview_limited
-            || metadata.source_bytes <= crate::image_preview::CARD_PREVIEW_MAX_SOURCE_BYTES
+            || u64::from(metadata.width) * u64::from(metadata.height)
+                <= crate::image_preview::CARD_PREVIEW_MAX_PIXELS
         {
             return Err("超大图片未进入受控预览降级路径".to_string());
         }

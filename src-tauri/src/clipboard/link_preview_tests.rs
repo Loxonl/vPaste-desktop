@@ -24,13 +24,23 @@ fn inline_png_icon_is_cached_without_a_network_request() {
         let _root = test_store();
         let client = preview_http_client("inline-icon-test", 1, false).unwrap();
         let source = include_bytes!("../../icons/32x32.png");
-        let uri = format!("data:image/png;base64,{}", general_purpose::STANDARD.encode(source));
-        let path = fetch_preview_image(&client, &reqwest::Url::parse("https://example.com/login").unwrap(), &uri);
+        let uri = format!(
+            "data:image/png;base64,{}",
+            general_purpose::STANDARD.encode(source)
+        );
+        let path = fetch_preview_image(
+            &client,
+            &reqwest::Url::parse("https://example.com/login").unwrap(),
+            &uri,
+        );
         let bytes = fs::read(&path).unwrap_or_default();
         finish_store();
         (path, bytes)
     };
-    assert!(!path.is_empty(), "a valid embedded favicon must not be discarded as a non-HTTPS URL");
+    assert!(
+        !path.is_empty(),
+        "a valid embedded favicon must not be discarded as a non-HTTPS URL"
+    );
     assert_eq!(bytes, include_bytes!("../../icons/32x32.png"));
 }
 
@@ -43,7 +53,10 @@ fn inline_icon_rejects_html_svg_invalid_and_mislabeled_payloads() {
         "data:image/png;base64,PGh0bWw+PC9odG1sPg==".to_string(),
         "data:image/svg+xml;base64,PHN2Zy8+".to_string(),
         "data:image/png;base64,not-base64!".to_string(),
-        format!("data:image/jpeg;base64,{}", general_purpose::STANDARD.encode(include_bytes!("../../icons/32x32.png"))),
+        format!(
+            "data:image/jpeg;base64,{}",
+            general_purpose::STANDARD.encode(include_bytes!("../../icons/32x32.png"))
+        ),
         format!("data:image/png;base64,{}", "A".repeat(8 * 1024 * 1024)),
     ] {
         assert!(fetch_preview_image(&client, &base, &uri).is_empty());
@@ -73,9 +86,15 @@ fn lookup_can_find_a_link_behind_five_hundred_newer_records() {
                 params![format!("link-{index}"), index + 1, format!("https://example.com/{index}")],
             ).unwrap();
         }
-        let found = find_link_record_for_preview("https://example.com/0").unwrap().map(|record| record.id);
+        let found = find_link_record_for_preview("https://example.com/0")
+            .unwrap()
+            .map(|record| record.id);
         finish_store();
         found
     };
-    assert_eq!(found, Some(1), "a loaded old link must not be hidden by a recent-500 scan");
+    assert_eq!(
+        found,
+        Some(1),
+        "a loaded old link must not be hidden by a recent-500 scan"
+    );
 }

@@ -2927,6 +2927,41 @@ fn icon_hrefs_from_html(document: &scraper::Html) -> Vec<String> {
     regular_icons
 }
 
+fn decode_inline_preview_image(value: &str) -> Result<Vec<u8>, &'static str> {
+    const MAX_BYTES: usize = 1024 * 1024;
+    let (header, encoded) = value.split_once(',').ok_or("inline-image-invalid")?;
+    let format = match header.to_ascii_lowercase().as_str() {
+        "data:image/png;base64" => image::ImageFormat::Png,
+        "data:image/jpeg;base64" | "data:image/jpg;base64" => image::ImageFormat::Jpeg,
+        "data:image/gif;base64" => image::ImageFormat::Gif,
+        "data:image/webp;base64" => image::ImageFormat::WebP,
+        "data:image/x-icon;base64" | "data:image/vnd.microsoft.icon;base64" => {
+            image::ImageFormat::Ico
+        }
+        _ => return Err("inline-image-unsupported"),
+    };
+    if encoded.len() > MAX_BYTES.div_ceil(3) * 4 {
+        return Err("inline-image-too-large");
+    }
+    let bytes = general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| "inline-image-invalid")?;
+    if bytes.is_empty() || bytes.len() > MAX_BYTES {
+        return Err("inline-image-too-large");
+    }
+    if image::guess_format(&bytes).ok() != Some(format) {
+        return Err("inline-image-mismatched");
+    }
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(&bytes), format);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(2048);
+    limits.max_image_height = Some(2048);
+    limits.max_alloc = Some(16 * 1024 * 1024);
+    reader.limits(limits);
+    reader.decode().map_err(|_| "inline-image-invalid")?;
+    Ok(bytes)
+}
+
 fn fetch_preview_image(
     client: &PreviewHttpClient,
     base_url: &reqwest::Url,
@@ -2934,6 +2969,22 @@ fn fetch_preview_image(
 ) -> String {
     if image_url.trim().is_empty() {
         return String::new();
+    }
+    let image_url = image_url.trim();
+    if image_url
+        .get(..5)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("data:"))
+    {
+        return match decode_inline_preview_image(image_url) {
+            Ok(bytes) => save_to_disk(&bytes, &calculate_xxhash64(&bytes)),
+            Err(kind) => {
+                info!(
+                    "link preview image rejected: host={} stage=inline-icon kind={kind}",
+                    base_url.host_str().unwrap_or_default()
+                );
+                String::new()
+            }
+        };
     }
     let Ok(resolved_image_url) = base_url.join(image_url.trim()) else {
         return String::new();
@@ -3262,39 +3313,24 @@ fn link_url_from_content(content: &str) -> String {
 
 fn find_link_record_for_preview(url: &str) -> Result<Option<LinkPreviewRecord>, String> {
     let conn = db();
-    let mut statement = conn
-        .prepare(
-            "select id, hash, cast(time as integer), content
-             from clipboard
-             where item_type = ?1
-             order by time desc, id desc
-             limit 500",
-        )
-        .map_err(|err| err.to_string())?;
-    let rows = statement
-        .query_map([ItemType::Link.to_string()], |row| {
-            Ok((
-                row.get::<_, u64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })
-        .map_err(|err| err.to_string())?;
+    conn.query_row(
+        "select id, hash, cast(time as integer), content from clipboard
+         where item_type = ?1 and substr(content, 1, instr(content || '|||', '|||') - 1) = ?2
+         order by time desc, id desc limit 1",
+        rusqlite::params![ItemType::Link.to_string(), url],
+        read_link_preview_record,
+    )
+    .optional()
+    .map_err(|err| err.to_string())
+}
 
-    for row in rows {
-        let (id, hash, time, stored_content) = row.map_err(|err| err.to_string())?;
-        let content = stored_content.clone();
-        if link_url_from_content(&content) == url {
-            return Ok(Some(LinkPreviewRecord {
-                id,
-                hash,
-                time: time.max(0) as u64,
-                content,
-            }));
-        }
-    }
-    Ok(None)
+fn read_link_preview_record(row: &Row<'_>) -> rusqlite::Result<LinkPreviewRecord> {
+    Ok(LinkPreviewRecord {
+        id: row.get(0)?,
+        hash: row.get(1)?,
+        time: row.get::<_, i64>(2)?.max(0) as u64,
+        content: row.get(3)?,
+    })
 }
 
 fn link_record_cached_image_path(record: &LinkPreviewRecord) -> String {
@@ -3358,8 +3394,10 @@ fn link_preview_is_fresh_for_day(record: &LinkPreviewRecord, local_day: &str) ->
     if local_day.is_empty() || link_record_cached_refresh_day(record) != local_day {
         return false;
     }
-    link_record_cached_image_kind(record) == "default-icon"
-        || cached_link_image_is_usable(&link_record_cached_image_path(record))
+    matches!(
+        link_record_cached_image_kind(record).as_str(),
+        "default-icon" | "request-failed"
+    ) || cached_link_image_is_usable(&link_record_cached_image_path(record))
 }
 
 pub fn refresh_link_previews(urls: Vec<String>) -> Result<Vec<LinkPreviewUpdate>, String> {

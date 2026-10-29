@@ -10,6 +10,8 @@ use tokio::sync::Notify;
 
 use crate::clipboard::item::{Item, ItemType};
 
+const LINK_UPDATE_COALESCE: Duration = Duration::from_millis(100);
+
 #[derive(Clone)]
 struct Batch {
     epoch: u64,
@@ -34,6 +36,7 @@ struct State {
     media: Option<Batch>,
     links: VecDeque<crate::clipboard::LinkPreviewRecord>,
     link_seen: HashSet<String>,
+    link_update: Option<(u64, u64)>,
     warmed: VecDeque<String>,
 }
 
@@ -43,6 +46,7 @@ impl State {
             self.link_revision = self.link_revision.wrapping_add(1);
             self.links.clear();
             self.link_seen.clear();
+            self.link_update = None;
         }
         if !self.visible {
             return;
@@ -73,6 +77,20 @@ impl State {
             records: self.links.drain(..self.links.len().min(10)).collect(),
         })
     }
+
+    fn mark_link_update(&mut self, url: &str) -> bool {
+        // A completed image may survive an older search; refresh only a current view of that URL.
+        if !self.visible || !self.link_seen.contains(url) {
+            return false;
+        }
+        self.link_update = Some((self.epoch, self.link_revision));
+        true
+    }
+
+    fn take_link_update(&mut self) -> Option<u64> {
+        let (epoch, revision) = self.link_update.take()?;
+        (self.visible && self.epoch == epoch && self.link_revision == revision).then_some(epoch)
+    }
 }
 
 #[derive(Default)]
@@ -81,6 +99,7 @@ struct Inner {
     started: AtomicBool,
     media_wake: Notify,
     link_wake: Notify,
+    link_update_wake: Notify,
 }
 
 #[derive(Clone, Default)]
@@ -111,6 +130,7 @@ impl BackgroundResources {
         state.media = None;
         state.links.clear();
         state.link_seen.clear();
+        state.link_update = None;
         drop(state);
         self.0.media_wake.notify_one();
         self.0.link_wake.notify_one();
@@ -156,6 +176,7 @@ impl BackgroundResources {
             state.link_revision = state.link_revision.wrapping_add(1);
             state.links.clear();
             state.link_seen.clear();
+            state.link_update = None;
         }
         let has_work = state.media.is_some() || !state.links.is_empty();
         drop(state);
@@ -167,7 +188,11 @@ impl BackgroundResources {
             });
             let service = self.clone();
             tauri::async_runtime::spawn(async move {
-                service.link_loop(app).await;
+                service.link_loop().await;
+            });
+            let service = self.clone();
+            tauri::async_runtime::spawn(async move {
+                service.link_update_loop(app).await;
             });
         }
         self.0.media_wake.notify_one();
@@ -233,6 +258,45 @@ impl BackgroundResources {
                 return batch;
             }
             notified.await;
+        }
+    }
+
+    fn link_record_updated(&self, url: &str) {
+        let pending = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .mark_link_update(url);
+        if pending {
+            self.0.link_update_wake.notify_one();
+        }
+    }
+
+    async fn next_link_update(&self) -> u64 {
+        loop {
+            self.0.link_update_wake.notified().await;
+            tokio::time::sleep(LINK_UPDATE_COALESCE).await;
+            if let Some(epoch) = self
+                .0
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take_link_update()
+            {
+                return epoch;
+            }
+        }
+    }
+
+    async fn link_update_loop(&self, app: tauri::AppHandle) {
+        loop {
+            let epoch = self.next_link_update().await;
+            let _ = app.emit_to(
+                "clipboard",
+                "clipboard-resources-updated",
+                serde_json::json!({ "epoch": epoch }),
+            );
         }
     }
 
@@ -324,7 +388,7 @@ impl BackgroundResources {
         }
     }
 
-    async fn link_loop(&self, app: tauri::AppHandle) {
+    async fn link_loop(&self) {
         loop {
             let batch = self.next_links().await;
             if !self.link_current(&batch) || !crate::config::get().link_auto_preview {
@@ -333,28 +397,14 @@ impl BackgroundResources {
             let service = self.clone();
             let request = batch.clone();
             let result = tauri::async_runtime::spawn_blocking(move || {
-                crate::clipboard::refresh_loaded_link_previews(request.records.clone(), || {
-                    service.link_current(&request) && crate::config::get().link_auto_preview
-                })
+                crate::clipboard::refresh_loaded_link_previews(
+                    request.records.clone(),
+                    || service.link_current(&request) && crate::config::get().link_auto_preview,
+                    |url| service.link_record_updated(url),
+                )
             })
             .await;
-            if let Ok(Ok(updates)) = result {
-                let visible = {
-                    let state = self
-                        .0
-                        .state
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    state.visible && state.epoch == batch.epoch
-                };
-                if !updates.is_empty() && visible {
-                    let _ = app.emit_to(
-                        "clipboard",
-                        "clipboard-resources-updated",
-                        serde_json::json!({ "epoch": batch.epoch }),
-                    );
-                }
-            } else {
+            if !matches!(result, Ok(Ok(_))) {
                 log::warn!("link preview batch failed: stage=refresh");
             }
         }
@@ -494,5 +544,78 @@ mod tests {
         service.set_visible(true);
         assert!(!service.current(&batch, true));
         assert_ne!(service.epoch(), batch.epoch);
+    }
+
+    #[tokio::test]
+    async fn link_progress_can_refresh_while_the_batch_is_still_in_flight() {
+        let service = BackgroundResources::default();
+        service.set_visible(true);
+        let batch = {
+            let mut state = service.0.state.lock().unwrap();
+            state.enqueue_links(&[link(1), link(2)], true);
+            state.take_link_batch().unwrap()
+        };
+        service.link_record_updated("https://example.com/1");
+        let epoch = tokio::time::timeout(Duration::from_secs(5), service.next_link_update())
+            .await
+            .expect("a finished first record must not wait for the later batch records");
+        assert_eq!(epoch, batch.epoch);
+        assert!(service.link_current(&batch));
+    }
+
+    #[test]
+    fn link_progress_coalesces_updates_and_rejects_superseded_search_notifications() {
+        let mut state = State {
+            visible: true,
+            epoch: 7,
+            ..Default::default()
+        };
+        state.enqueue_links(&[link(1), link(2)], true);
+        assert!(state.mark_link_update("https://example.com/1"));
+        assert!(state.mark_link_update("https://example.com/2"));
+        assert_eq!(state.take_link_update(), Some(7));
+        assert_eq!(state.take_link_update(), None);
+        assert!(state.mark_link_update("https://example.com/1"));
+        state.enqueue_links(&[link(3)], true);
+        assert_eq!(state.take_link_update(), None);
+        assert!(!state.mark_link_update("https://example.com/1"));
+        assert!(state.mark_link_update("https://example.com/3"));
+        assert_eq!(state.take_link_update(), Some(7));
+    }
+
+    #[test]
+    fn late_link_completion_only_notifies_a_current_visible_view_of_that_url() {
+        let service = BackgroundResources::default();
+        service.set_visible(true);
+        let old_epoch = service.epoch();
+        service
+            .0
+            .state
+            .lock()
+            .unwrap()
+            .enqueue_links(&[link(1)], true);
+        service.link_record_updated("https://example.com/1");
+        service.set_visible(false);
+        service.link_record_updated("https://example.com/1");
+        assert_eq!(service.0.state.lock().unwrap().take_link_update(), None);
+        service.set_visible(true);
+        service
+            .0
+            .state
+            .lock()
+            .unwrap()
+            .enqueue_links(&[link(2)], true);
+        service.link_record_updated("https://example.com/1");
+        assert_eq!(service.0.state.lock().unwrap().take_link_update(), None);
+        service
+            .0
+            .state
+            .lock()
+            .unwrap()
+            .enqueue_links(&[link(1)], true);
+        service.link_record_updated("https://example.com/1");
+        let epoch = service.0.state.lock().unwrap().take_link_update().unwrap();
+        assert_eq!(epoch, service.epoch());
+        assert_ne!(epoch, old_epoch);
     }
 }

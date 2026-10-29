@@ -461,3 +461,253 @@ fn cancelled_link_fetch_and_icon_fallback_do_not_start_network_requests() {
     );
     assert!(preview.image_path.is_empty());
 }
+
+#[test]
+fn xml_declared_svg_link_icons_are_usable_and_keep_daily_and_old_image_caches() {
+    let root = tempfile::tempdir().unwrap();
+    let image = root.path().join("xml-icon");
+    fs::write(&image, br#"<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><rect width="48" height="48" fill="blue"/></svg>"#).unwrap();
+    let mut record = LinkPreviewRecord {
+        id: 1,
+        hash: "xml-icon".into(),
+        time: 1,
+        content: format!(
+            "https://example.com|||{}|||Site|||icon|||2026-10-29",
+            image.display()
+        ),
+    };
+    assert!(cached_link_image_is_usable(image.to_str().unwrap()));
+    assert!(link_preview_is_fresh_for_day(&record, "2026-10-29"));
+    record.content = record.content.replace("2026-10-29", "2026-10-01");
+    assert!(!link_preview_needs_refresh(
+        &record,
+        "2026-10-29",
+        LINK_PREVIEW_HISTORY_WINDOW_MILLIS * 2,
+        true
+    ));
+}
+
+#[test]
+fn cached_link_svg_validation_rejects_xml_html_malformed_and_over_budget_images() {
+    let root = tempfile::tempdir().unwrap();
+    let image = root.path().join("not-an-icon");
+    for body in [
+        r#"<?xml version="1.0"?><document>not an image</document>"#,
+        r#"<!doctype html><html><svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"/></html>"#,
+        r#"<?xml version="1.0"?><html><svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"/></html>"#,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><broken"#,
+        r#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="20000" height="1"/>"#,
+        r#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="5000" height="5000"/>"#,
+    ] {
+        fs::write(&image, body).unwrap();
+        assert!(
+            !cached_link_image_is_usable(image.to_str().unwrap()),
+            "must reject {body}"
+        );
+    }
+    let mut oversized =
+        br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"/>"#
+            .to_vec();
+    oversized.resize(5 * 1024 * 1024 + 1, b' ');
+    fs::write(&image, oversized).unwrap();
+    assert!(!cached_link_image_is_usable(image.to_str().unwrap()));
+}
+
+#[test]
+fn a_completed_valid_link_image_survives_cancellation_without_fetching_the_next_record() {
+    let observed = {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = test_store();
+        let image = root.path().join("finished.png");
+        fs::write(&image, include_bytes!("../../icons/32x32.png")).unwrap();
+        let records = vec![seed_link(1, 1, ""), seed_link(2, 2, "")];
+        let current = std::cell::Cell::new(true);
+        let mut calls = 0;
+        let updates = refresh_link_records_with(records, true, &|| current.get(), |url| {
+            calls += 1;
+            current.set(false);
+            Ok(LinkPreviewUpdate {
+                url: url.into(),
+                title: "Finished".into(),
+                image_path: image.to_string_lossy().into_owned(),
+                image_kind: "icon".into(),
+            })
+        })
+        .unwrap();
+        let stored = find_link_record_for_preview("https://example.com/1")
+            .unwrap()
+            .unwrap();
+        let next = find_link_record_for_preview("https://example.com/2")
+            .unwrap()
+            .unwrap();
+        let observed = (
+            calls,
+            updates.len(),
+            stored.time,
+            stored.hash == "seed-1",
+            stored.content.contains("|||Finished|||icon|||"),
+            next.content == "https://example.com/2",
+        );
+        finish_store();
+        observed
+    };
+    assert_eq!(observed, (1, 1, 1, true, true, true));
+}
+
+#[test]
+fn cancelled_no_image_attempts_do_not_persist_a_daily_outcome() {
+    let observed = {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let _root = test_store();
+        let record = seed_link(1, 1, "");
+        let current = std::cell::Cell::new(true);
+        let updates = refresh_link_records_with(vec![record], true, &|| current.get(), |url| {
+            current.set(false);
+            Ok(LinkPreviewUpdate {
+                url: url.into(),
+                title: "Incomplete".into(),
+                image_path: String::new(),
+                image_kind: "default-icon".into(),
+            })
+        })
+        .unwrap();
+        let stored = find_link_record_for_preview("https://example.com/1")
+            .unwrap()
+            .unwrap();
+        finish_store();
+        (updates.len(), stored.content)
+    };
+    assert_eq!(observed, (0, "https://example.com/1".into()));
+}
+
+#[test]
+fn cancelled_completed_images_still_cannot_overwrite_a_changed_record() {
+    let observed = {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = test_store();
+        let image = root.path().join("late.png");
+        fs::write(&image, include_bytes!("../../icons/32x32.png")).unwrap();
+        let record = seed_link(1, 1, "");
+        let current = std::cell::Cell::new(true);
+        let replacement = "https://example.com/1||||||New title|||default-icon|||2099-01-01";
+        let updates =
+            refresh_link_records_with(vec![record.clone()], true, &|| current.get(), |url| {
+                db().execute(
+                    "update clipboard set content=?1 where id=?2",
+                    params![replacement, record.id],
+                )
+                .unwrap();
+                current.set(false);
+                Ok(LinkPreviewUpdate {
+                    url: url.into(),
+                    title: "Late".into(),
+                    image_path: image.to_string_lossy().into_owned(),
+                    image_kind: "icon".into(),
+                })
+            })
+            .unwrap();
+        let stored = find_link_record_for_preview("https://example.com/1")
+            .unwrap()
+            .unwrap();
+        finish_store();
+        (updates.len(), stored.content == replacement)
+    };
+    assert_eq!(observed, (0, true));
+}
+
+#[test]
+fn link_progress_is_notified_before_fetching_the_next_record() {
+    let observed = {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let _root = test_store();
+        let records = vec![seed_link(1, 1, ""), seed_link(2, 2, "")];
+        let notifications = std::cell::Cell::new(0);
+        let mut calls = 0;
+        let mut progress_before_second_fetch = 0;
+        let updates = refresh_link_records_with_updates(
+            records,
+            true,
+            &|| true,
+            |url| {
+                calls += 1;
+                if calls == 2 {
+                    progress_before_second_fetch = notifications.get();
+                }
+                Ok(LinkPreviewUpdate {
+                    url: url.into(),
+                    title: "Ready".into(),
+                    image_path: String::new(),
+                    image_kind: "default-icon".into(),
+                })
+            },
+            |_| notifications.set(notifications.get() + 1),
+        )
+        .unwrap();
+        finish_store();
+        (
+            calls,
+            updates.len(),
+            progress_before_second_fetch,
+            notifications.get(),
+        )
+    };
+    assert_eq!(observed, (2, 2, 1, 2));
+}
+
+#[test]
+fn link_progress_notifies_a_loaded_snapshot_that_was_updated_before_queueing() {
+    let observed = {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = test_store();
+        let loaded = seed_link(1, 1, "");
+        let image = root.path().join("already-finished.png");
+        fs::write(&image, include_bytes!("../../icons/32x32.png")).unwrap();
+        let completed = format!(
+            "https://example.com/1|||{}|||Finished|||icon|||{}",
+            image.display(),
+            Local::now().format("%Y-%m-%d")
+        );
+        db().execute(
+            "update clipboard set content=?1 where id=?2",
+            params![completed, loaded.id],
+        )
+        .unwrap();
+        let mut calls = 0;
+        let mut notifications = 0;
+        let stale_updates = refresh_link_records_with_updates(
+            vec![loaded],
+            true,
+            &|| true,
+            |_| {
+                calls += 1;
+                Err("must use the completed cache".into())
+            },
+            |_| notifications += 1,
+        )
+        .unwrap();
+        let stored = find_link_record_for_preview("https://example.com/1")
+            .unwrap()
+            .unwrap();
+        let before_fresh = notifications;
+        let fresh_updates = refresh_link_records_with_updates(
+            vec![stored],
+            true,
+            &|| true,
+            |_| {
+                calls += 1;
+                Err("must not refetch the current cache".into())
+            },
+            |_| notifications += 1,
+        )
+        .unwrap();
+        finish_store();
+        (
+            calls,
+            stale_updates.len(),
+            fresh_updates.len(),
+            before_fresh,
+            notifications,
+        )
+    };
+    assert_eq!(observed, (0, 0, 0, 1, 1));
+}

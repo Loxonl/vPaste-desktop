@@ -16,6 +16,10 @@ vPaste uses React 18 and MUI 5 as its component system. Tailwind is intentionall
 Use `sx` only for a one-off layout relationship such as flex sizing, alignment, or a calculated width. Do not put colors, font sizes, radii, shadows, or control heights in `sx`.
 `npm run check:styles` enforces this split for object-form `sx`; move visual values to `appTheme.ts` or the feature's CSS Module instead of weakening the check.
 
+Use `--ui-shadow-menu` for dropdowns and inline menus, and `--ui-shadow-dialog` for dialogs. MUI Theme owns dialog shadow and edge styling, including shared confirmations; feature CSS must not override them. Clipboard selection keeps its visible outline at the ordinary card elevation, without an additional colored glow. Keep `--ui-window-shadow` separate: auxiliary-window gutters, rounded edges, and native-shadow ownership do not change when internal elevation is adjusted.
+
+Queue multiselection uses that same card elevation and retains its selection markers. Main-toolbar actions retain their circular filled surfaces with compact default/hover shadows; a keyboard focus ring takes priority over decorative elevation. Preview media uses a small content shadow, and pinning changes the control's fill/icon without adding a blue glow. Use the corresponding shared clipboard/preview shadow tokens rather than feature-local values.
+
 ## Choosing Components
 
 - Use MUI for interactive controls such as buttons, selects, text fields, switches, tabs, menus, dialogs, and progress indicators.

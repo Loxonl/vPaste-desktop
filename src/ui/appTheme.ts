@@ -121,6 +121,9 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                         width: "var(--ui-control-height)",
                         height: "var(--ui-control-height)",
                         borderRadius: "var(--ui-radius-control)",
+                        "&.Mui-focusVisible:hover": {
+                            boxShadow: "var(--ui-focus-ring)",
+                        },
                     },
                     sizeSmall: {
                         width: "var(--ui-control-compact)",
@@ -324,7 +327,7 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                         backgroundColor: "var(--ui-surface-solid)",
                         border: "1px solid var(--ui-border-strong)",
                         borderRadius: "var(--ui-radius-control)",
-                        boxShadow: "var(--ui-shadow)",
+                        boxShadow: "var(--ui-shadow-menu)",
                     },
                     list: {
                         padding: 0,
@@ -372,7 +375,9 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
             MuiDialog: {
                 styleOverrides: {
                     paper: {
+                        border: "1px solid var(--ui-border)",
                         borderRadius: "var(--ui-radius-surface)",
+                        boxShadow: "var(--ui-shadow-dialog)",
                     },
                 },
             },

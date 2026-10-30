@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
@@ -7,7 +7,6 @@ import PushPinIcon from "@mui/icons-material/PushPin";
 import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
 import { ToolbarIconButton } from "../ui/ToolbarIconButton";
 import { ItemType } from "./Item";
-import { FileTypePresentation } from "./FileTypePresentation";
 import { isImagePath, type FilePreviewInfo } from "./itemPresentation";
 import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
 import { richResourceUrls, type RichImageResource } from "./historyResourceTypes";
@@ -17,6 +16,9 @@ import { useLanguage } from "../lang";
 import { notifyAuxiliaryWindowReady } from "../auxiliaryWindowReady";
 import { m, motionDurationsMs, motionTokens, useMotionPreset, useReducedMotionConfig } from "../ui/motion";
 import styles from "./Preview.module.css";
+
+const FileTypePresentation = lazy(() => import("./FileTypePresentation")
+    .then(module => ({ default: module.FileTypePresentation })));
 
 type PreviewPayload = {
     request_id?: number;
@@ -129,11 +131,17 @@ function disableDocumentNavigation(html: string): string {
     return `<!doctype html>${parsed.documentElement.outerHTML}`;
 }
 
-export function PreviewBody({ payload, t, onReady }: {
+type PreviewBodyProps = {
     payload: PreviewPayload;
     t: (key: string, params?: Record<string, string | number>) => string;
     onReady?: () => void;
-}) {
+};
+
+export function PreviewBody(props: PreviewBodyProps) {
+    return <Suspense fallback={null}><PreviewContent {...props} /></Suspense>;
+}
+
+function PreviewContent({ payload, t, onReady }: PreviewBodyProps) {
     const [fileInfo, setFileInfo] = useState<FilePreviewInfo | null>(null);
     const [fileError, setFileError] = useState("");
     const [fileText, setFileText] = useState("");
@@ -495,6 +503,8 @@ export default function Preview() {
             pendingLayerRef.current = null;
             currentLayerRef.current = null;
             hoverRef.current = false;
+            pinnedRef.current = false;
+            setPinned(false);
             pendingNavigationDirectionRef.current = 0;
             setLayers([]);
         });

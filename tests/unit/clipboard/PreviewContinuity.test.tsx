@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Preview from "../../../src/clipboard/Preview";
 import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
 import { motionDurationsMs, motionTokens } from "../../../src/ui/motion";
+import userEvent from "@testing-library/user-event";
 
 const tauri = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: tauri.invoke, convertFileSrc: (path: string) => `asset://${path}` }));
@@ -32,6 +33,23 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("continuous preview session", () => {
+    it.each(["never", "always"] as const)("clears pin and content before reusing the page (reduced motion: %s)", async reducedMotion => {
+        const user = userEvent.setup();
+        render(<MotionTestProvider reducedMotion={reducedMotion}><Preview /></MotionTestProvider>);
+        emit("preview-item", text(1, "Closed content"));
+        await waitFor(() => expect(screen.getByText("Closed content").closest("[data-preview-phase]"))
+            .toHaveAttribute("data-preview-phase", "current"));
+        await user.click(screen.getByRole("button", { name: "preview.pin" }));
+        expect(screen.getByRole("button", { name: "preview.unpin" })).toHaveAttribute("aria-pressed", "true");
+        emit("preview-clear");
+        expect(screen.queryByText("Closed content")).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "preview.pin" })).toHaveAttribute("aria-pressed", "false");
+        emit("preview-item", text(3, "Reopened content"));
+        await waitFor(() => expect(screen.getByText("Reopened content").closest("[data-preview-phase]"))
+            .toHaveAttribute("data-preview-phase", "current"));
+        expect(screen.queryByText("Closed content")).not.toBeInTheDocument();
+    });
+
     it("does not close on repeated Space but closes on the next physical press", () => {
         render(<MotionTestProvider><Preview /></MotionTestProvider>);
         fireEvent.keyDown(window, { key: " ", repeat: true });
@@ -141,5 +159,20 @@ describe("continuous preview session", () => {
         fireEvent.load(image);
         expect(tauri.invoke).not.toHaveBeenCalledWith("commit_preview_window", expect.objectContaining({ requestId: 6 }));
         expect(screen.queryByText("Newest")).not.toBeInTheDocument();
+    });
+
+    it.each(["never", "always"] as const)("keeps a warm reopened item when a closed image finishes late (reduced motion: %s)", async reducedMotion => {
+        const { container } = render(<MotionTestProvider reducedMotion={reducedMotion}><Preview /></MotionTestProvider>);
+        emit("preview-item", { request_id: 1, item_type: "Image", content: "closed.png", preview_asset_path: "closed.png" });
+        await waitFor(() => expect(container.querySelector("img")).not.toBeNull());
+        const image = container.querySelector("img")!;
+        emit("preview-clear");
+        emit("preview-item", text(3, "New session"));
+        await waitFor(() => expect(screen.getByText("New session").closest("[data-preview-phase]"))
+            .toHaveAttribute("data-preview-phase", "current"));
+        fireEvent.load(image);
+        expect(tauri.invoke).not.toHaveBeenCalledWith("commit_preview_window", expect.objectContaining({ requestId: 1 }));
+        expect(screen.getByText("New session")).toBeInTheDocument();
+        expect(container.querySelector("img")).toBeNull();
     });
 });

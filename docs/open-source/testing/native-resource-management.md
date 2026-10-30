@@ -30,11 +30,32 @@ Rust owns the following resource work:
   replacements. Original fallback is permitted only by native budgets.
 
 Existing persisted formats, system proxy rules, native geometry, mouse paste
-preferences, editor drafts, auxiliary destruction and the DEV monitor are
+preferences, editor drafts, other auxiliary destruction and the DEV monitor are
 preserved. List virtualization, large-text hover interaction, network response
 caps and native permission-object cleanup are separate work.
 
-## Verification for this change
+## Preview window reuse
+
+After the main page is ready, one asynchronous warmup shares the serialized
+window creation/readiness path with ordinary preview requests. It creates only
+a hidden, unfocused, empty page; no clipboard payload, media or website is loaded.
+Repeated page-ready signals do not schedule another warmup.
+
+Ordinary preview closure clears pending content/geometry and pin/hover state,
+then hides the existing WebView until app exit. Reopening reuses its page and
+listeners without an idle timer. Cancelled preparations return without hiding,
+clearing or destroying a page that a newer request may have adopted. Other
+auxiliary windows keep their destruction/recreation lifecycle.
+
+File presentation and its icon modules are loaded only when needed. A local
+Suspense boundary delays the file preview's ready signal until that content has
+committed, preserving readiness-before-show. Image/text budgets, rich HTML
+sanitization, pinning, geometry and focus behavior are unchanged. Native logs
+separate window creation/readiness, payload preparation, render wait and visible
+commit using scalar timings, never clipboard content or paths. Browser page-ready
+benchmarks exclude native window creation and are not key-to-visible timings.
+
+## Original resource migration verification
 
 The user explicitly requested no regression test runs. Only frontend build/type
 checking, style architecture checking, native `cargo check`, and independent

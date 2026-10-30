@@ -425,6 +425,9 @@ struct PreparedPreview {
     mode: PreviewMode,
     rect: PreviewRect,
     scale_factor: f64,
+    started: Instant,
+    window_ready_ms: u128,
+    prepare_ms: u128,
 }
 
 #[derive(Serialize)]
@@ -1590,7 +1593,7 @@ fn finish_hide_window_locked(
         window.hide().map_err(|err| err.to_string())?;
     }
     if !PREVIEW_PINNED.load(Ordering::SeqCst) {
-        let _ = destroy_preview_window(window.app_handle());
+        let _ = retain_preview_window(window.app_handle());
     }
     CLIPBOARD_VISIBLE.store(false, Ordering::SeqCst);
     background_resources::set_visible(window.app_handle(), false);
@@ -2585,6 +2588,21 @@ fn set_onboarding_shortcut_demo_enabled(enabled: bool) {
     ONBOARDING_SHORTCUT_DEMO_ENABLED.store(enabled && active, Ordering::SeqCst);
 }
 
+fn prewarm_preview_window(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let started = Instant::now();
+        match auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::ClipboardPreview).await
+        {
+            Ok(window) => info!(
+                "preview warmup complete: elapsed_ms={} visible={}",
+                started.elapsed().as_millis(),
+                window.is_visible().unwrap_or(false)
+            ),
+            Err(err) => log::warn!("Preview warmup failed; manual opening can retry: {err}"),
+        }
+    });
+}
+
 fn build_preview_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     let builder =
         WebviewWindowBuilder::new(app, "clipboardPreview", App("clipboard/preview".into()))
@@ -2639,14 +2657,16 @@ fn app_window_is_foreground(app: &tauri::AppHandle, label: &str, context: &str) 
         .unwrap_or(false)
 }
 
-fn destroy_preview_window(app: &tauri::AppHandle) -> Result<(), String> {
+fn retain_preview_window(app: &tauri::AppHandle) -> Result<(), String> {
     PREVIEW_HOVER.store(false, Ordering::SeqCst);
     PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
     PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
     if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
         clear_preview_content(&preview_window);
-        auxiliary_windows::destroy(&preview_window)?;
+        if auxiliary_windows::is_open(&preview_window) {
+            preview_window.hide().map_err(|err| err.to_string())?;
+        }
     } else {
         cancel_preview_content();
     }
@@ -2655,7 +2675,7 @@ fn destroy_preview_window(app: &tauri::AppHandle) -> Result<(), String> {
 
 fn hide_preview_and_clipboard(app: &tauri::AppHandle, context: &str) {
     info!("Hide preview and clipboard: {}", context);
-    let _ = destroy_preview_window(app);
+    let _ = retain_preview_window(app);
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
         hide_clipboard_window(&clipboard_window);
     }
@@ -3168,7 +3188,7 @@ fn handle_preview_focus_lost(app: tauri::AppHandle) {
         match action {
             Action::Keep | Action::Recheck => {}
             Action::HidePreview => {
-                let _ = destroy_preview_window(&app);
+                let _ = retain_preview_window(&app);
                 if let Some(clipboard_window) = app.get_webview_window("clipboard") {
                     focus_clipboard_window(&clipboard_window, "preview blur to clipboard");
                 }
@@ -3366,25 +3386,6 @@ fn clear_preview_content(window: &tauri::WebviewWindow) {
     let _ = window.emit("preview-clear", ());
 }
 
-async fn discard_cancelled_preview_window(window: tauri::WebviewWindow) -> Result<(), String> {
-    auxiliary_windows::on_main_thread(window.app_handle().clone(), move || {
-        // Keep a newer request from adopting this instance between the check and
-        // marking it Closing. Never cancel global state from a stale completion.
-        let _pending = PREVIEW_PENDING
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if PREVIEW_REQUESTS.should_discard_cancelled_window(
-            PREVIEW_PINNED.load(Ordering::SeqCst),
-            window.is_visible().unwrap_or(true),
-        ) && auxiliary_windows::is_open(&window)
-        {
-            auxiliary_windows::destroy(&window)?;
-        }
-        Ok(())
-    })
-    .await
-}
-
 #[cfg(target_os = "windows")]
 fn set_preview_rect(
     window: &tauri::WebviewWindow,
@@ -3557,6 +3558,12 @@ fn commit_preview_window(
         }
         pending.take().unwrap()
     };
+    let render_wait_ms = prepared
+        .started
+        .elapsed()
+        .as_millis()
+        .saturating_sub(prepared.window_ready_ms + prepared.prepare_ms);
+    let commit_started = Instant::now();
     let Some(window) = app.get_webview_window("clipboardPreview") else {
         return Ok(false);
     };
@@ -3599,6 +3606,16 @@ fn commit_preview_window(
             .set_focus()
             .map_err(|err| err.to_string())?;
     }
+    info!(
+        "preview timing: request={} first_show={} window_ready_ms={} prepare_ms={} render_wait_ms={} commit_ms={} total_ms={}",
+        request_id,
+        !visible,
+        prepared.window_ready_ms,
+        prepared.prepare_ms,
+        render_wait_ms,
+        commit_started.elapsed().as_millis(),
+        prepared.started.elapsed().as_millis()
+    );
     Ok(true)
 }
 
@@ -3618,6 +3635,7 @@ async fn show_preview_window(
     history_hash: Option<String>,
     text_truncated: Option<bool>,
 ) -> Result<(), String> {
+    let started = Instant::now();
     let mode = mode.unwrap_or_default();
     if mode == PreviewMode::Hover {
         let navigation_foreground = ["clipboard", "clipboardPreview"].iter().any(|label| {
@@ -3647,6 +3665,7 @@ async fn show_preview_window(
         let mut pending = PREVIEW_PENDING
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
         let request_id = PREVIEW_REQUESTS.begin();
         *pending = None;
         PREVIEW_HOVER.store(mode == PreviewMode::Hover, Ordering::SeqCst);
@@ -3658,10 +3677,11 @@ async fn show_preview_window(
     };
     let window =
         auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::ClipboardPreview).await?;
+    let window_ready_ms = started.elapsed().as_millis();
     if !PREVIEW_REQUESTS.current(request_id) {
-        discard_cancelled_preview_window(window).await?;
         return Ok(());
     }
+    let prepare_started = Instant::now();
     let bounds = clipboard_screen_bounds(&app, &window);
     let preview_bounds = preview_bounds_avoiding_clipboard(&app, bounds);
     // File materialization and thumbnail reads must not block the native event loop.
@@ -3745,8 +3765,8 @@ async fn show_preview_window(
     })
     .await
     .map_err(|err| err.to_string())??;
+    let prepare_ms = prepare_started.elapsed().as_millis();
     if !PREVIEW_REQUESTS.current(request_id) {
-        discard_cancelled_preview_window(window).await?;
         return Ok(());
     }
     if mode == PreviewMode::Hover
@@ -3788,6 +3808,9 @@ async fn show_preview_window(
                     height: size.height,
                 },
                 scale_factor: bounds.scale_factor,
+                started,
+                window_ready_ms,
+                prepare_ms,
             });
         }
         window
@@ -3883,7 +3906,7 @@ fn dismiss_hover_preview_window(app: tauri::AppHandle, request: Option<u64>) -> 
         PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
     }
     if PREVIEW_HOVER.swap(false, Ordering::SeqCst) && !PREVIEW_PINNED.load(Ordering::SeqCst) {
-        destroy_preview_window(&app)?;
+        retain_preview_window(&app)?;
     }
     Ok(())
 }
@@ -3965,7 +3988,7 @@ fn maybe_hide_macos_dock_icon() {
 
 #[tauri::command]
 fn hide_preview_window(app: tauri::AppHandle) -> Result<(), String> {
-    destroy_preview_window(&app)?;
+    retain_preview_window(&app)?;
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
         focus_clipboard_window(&clipboard_window, "preview closed");
     }
@@ -12195,14 +12218,7 @@ fn main() {
                 }
                 if window.label() == "clipboardPreview" {
                     api.prevent_close();
-                    PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
-                    if let Some(preview) = window.app_handle().get_webview_window("clipboardPreview") {
-                        clear_preview_content(&preview);
-                    } else {
-                        cancel_preview_content();
-                    }
-                    PREVIEW_PINNED.store(false, Ordering::SeqCst);
-                    let _ = auxiliary_windows::destroy_native(window);
+                    let _ = retain_preview_window(window.app_handle());
                     if let Some(clipboard_window) =
                         window.app_handle().get_webview_window("clipboard")
                     {

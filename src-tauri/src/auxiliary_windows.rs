@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tauri::Manager;
 use tokio::sync::{oneshot, watch};
@@ -190,21 +190,26 @@ async fn ensure_open(
     loop {
         let ready = app.state::<Readiness>().subscribe(kind);
         let handle = app.clone();
-        let window = tauri::async_runtime::spawn_blocking(move || {
-            // WebView2 creation must run outside synchronous UI event handlers.
-            // Serialize the check/build pair so concurrent cold opens share a window.
-            let state = handle.state::<Readiness>();
-            let _creation = state.creation.lock().unwrap();
-            match handle.get_webview_window(kind.label()) {
-                Some(window) => Ok(window),
-                None => {
-                    state.reset(kind);
-                    crate::build_auxiliary_window(&handle, kind).map_err(|err| err.to_string())
+        let (window, created, native_create_ms) =
+            tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+                // WebView2 creation must run outside synchronous UI event handlers.
+                // Serialize the check/build pair so concurrent cold opens share a window.
+                let state = handle.state::<Readiness>();
+                let _creation = state.creation.lock().unwrap();
+                match handle.get_webview_window(kind.label()) {
+                    Some(window) => Ok((window, false, 0)),
+                    None => {
+                        state.reset(kind);
+                        let started = Instant::now();
+                        let window = crate::build_auxiliary_window(&handle, kind)
+                            .map_err(|err| err.to_string())?;
+                        Ok((window, true, started.elapsed().as_millis()))
+                    }
                 }
-            }
-        })
-        .await
-        .map_err(|err| err.to_string())??;
+            })
+            .await
+            .map_err(|err| err.to_string())??;
+        let page_started = Instant::now();
         let instance = instance(&native_window(&window));
         let lifecycle = instance.0.subscribe();
         if *lifecycle.borrow() == Lifecycle::Open {
@@ -214,6 +219,14 @@ async fn ensure_open(
             }
             if *lifecycle.borrow() == Lifecycle::Open {
                 if *ready.borrow() {
+                    if matches!(kind, WindowKind::ClipboardPreview) {
+                        log::info!(
+                            "preview window ready: created={} native_create_ms={} page_ready_ms={}",
+                            created,
+                            native_create_ms,
+                            page_started.elapsed().as_millis()
+                        );
+                    }
                     return Ok(window);
                 }
                 continue;

@@ -10,11 +10,10 @@ use sha2::{Digest, Sha256};
 use crate::{app_runtime_dir, history_store};
 
 pub const CARD_PREVIEW_MAX_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
-pub const CARD_PREVIEW_MAX_PIXELS: u64 = 40_000_000;
-pub const ANIMATED_PREVIEW_MAX_SOURCE_BYTES: u64 = 20 * 1024 * 1024;
+pub const CARD_PREVIEW_MAX_PIXELS: u64 = crate::clipboard_budget::AUTOMATIC_PIXELS;
+pub const ANIMATED_PREVIEW_MAX_SOURCE_BYTES: u64 = crate::clipboard_budget::ANIMATION_SOURCE_BYTES;
 pub(crate) const CARD_PREVIEW_MAX_DIMENSION: u32 = 16_384;
-const CARD_PREVIEW_MAX_ALLOCATION_BYTES: u64 = 192 * 1024 * 1024;
-const CARD_PREVIEW_CACHE_VERSION: &str = "card-preview-v5";
+const CARD_PREVIEW_CACHE_VERSION: &str = "card-preview-v6";
 
 static IMAGE_DECODE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -32,7 +31,7 @@ pub struct HistoryImageMetadata {
     pub animation_limited: bool,
 }
 
-fn image_dimensions_from_bytes(bytes: &[u8]) -> Result<(u32, u32), String> {
+pub(crate) fn image_dimensions_from_bytes(bytes: &[u8]) -> Result<(u32, u32), String> {
     image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|err| err.to_string())?
@@ -69,16 +68,7 @@ pub(crate) fn is_svg_bytes(bytes: &[u8]) -> bool {
 }
 
 pub(crate) fn read_card_source(path: &str) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
-    fs::File::open(path)
-        .map_err(|error| error.to_string())?
-        .take(CARD_PREVIEW_MAX_SOURCE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    if bytes.len() as u64 > CARD_PREVIEW_MAX_SOURCE_BYTES {
-        return Err("image source exceeds automatic preview budget".into());
-    }
-    Ok(bytes)
+    crate::clipboard_budget::read_file_limited(path, CARD_PREVIEW_MAX_SOURCE_BYTES as usize)
 }
 
 // AVIF/HEIF spatial extents are readable without a native pixel decoder.
@@ -166,7 +156,9 @@ fn apply_limits(mut metadata: HistoryImageMetadata) -> HistoryImageMetadata {
         || metadata.width > CARD_PREVIEW_MAX_DIMENSION
         || metadata.height > CARD_PREVIEW_MAX_DIMENSION;
     metadata.animation_limited = metadata.is_gif
-        && (metadata.source_bytes > ANIMATED_PREVIEW_MAX_SOURCE_BYTES || metadata.preview_limited);
+        && (metadata.animation_limited
+            || metadata.source_bytes > ANIMATED_PREVIEW_MAX_SOURCE_BYTES
+            || metadata.preview_limited);
     metadata
 }
 
@@ -213,7 +205,7 @@ fn write_metadata_cache(path: &Path, metadata: HistoryImageMetadata) {
 
 pub fn metadata_from_bytes(path: &str, bytes: &[u8]) -> Result<HistoryImageMetadata, String> {
     let (width, height) = image_dimensions_from_bytes(bytes)?;
-    let metadata = apply_limits(HistoryImageMetadata {
+    let mut metadata = apply_limits(HistoryImageMetadata {
         width,
         height,
         is_gif: bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
@@ -221,6 +213,9 @@ pub fn metadata_from_bytes(path: &str, bytes: &[u8]) -> Result<HistoryImageMetad
         preview_limited: false,
         animation_limited: false,
     });
+    if metadata.is_gif && !metadata.animation_limited {
+        metadata.animation_limited = !gif_animation_within_budget(bytes, width, height);
+    }
     if let Some(cache_path) = metadata_cache_path(path) {
         write_metadata_cache(&cache_path, metadata);
     }
@@ -273,6 +268,9 @@ pub fn metadata_for_path(path: &str) -> Result<HistoryImageMetadata, String> {
         let bytes = read_card_source(path)?;
         return metadata_from_bytes(path, &bytes);
     };
+    if metadata.is_gif && !metadata.animation_limited {
+        return metadata_from_bytes(path, &read_card_source(path)?);
+    }
     if let Some(path) = &cache_path {
         write_metadata_cache(path, metadata);
     }
@@ -300,20 +298,128 @@ pub fn decode_lock() -> Result<MutexGuard<'static, ()>, String> {
 }
 
 pub fn decode_card_image(bytes: &[u8]) -> Result<image::DynamicImage, String> {
-    let mut reader = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|err| err.to_string())?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(CARD_PREVIEW_MAX_DIMENSION);
-    limits.max_image_height = Some(CARD_PREVIEW_MAX_DIMENSION);
-    limits.max_alloc = Some(CARD_PREVIEW_MAX_ALLOCATION_BYTES);
-    reader.limits(limits);
-    reader.decode().map_err(|err| err.to_string())
+    crate::clipboard_budget::decode_image(bytes, crate::clipboard_budget::ImageOperation::Automatic)
+}
+
+fn gif_animation_within_budget(bytes: &[u8], width: u32, height: u32) -> bool {
+    use crate::clipboard_budget::{ANIMATION_FRAMES, ANIMATION_PIXELS};
+    fn skip_blocks(bytes: &[u8], offset: &mut usize) -> Option<()> {
+        loop {
+            let size = *bytes.get(*offset)? as usize;
+            *offset += 1;
+            if size == 0 {
+                return Some(());
+            }
+            bytes.get(*offset..*offset + size)?;
+            *offset += size;
+        }
+    }
+    let scan = || -> Option<bool> {
+        let packed = *bytes.get(10)?;
+        let mut offset = 13
+            + if packed & 0x80 != 0 {
+                3 * (1 << ((packed & 7) + 1))
+            } else {
+                0
+            };
+        let mut frames = 0_u64;
+        loop {
+            match *bytes.get(offset)? {
+                0x3b => return Some(frames > 0),
+                0x21 => {
+                    offset += 2;
+                    skip_blocks(bytes, &mut offset)?;
+                }
+                0x2c => {
+                    let descriptor = bytes.get(offset + 1..offset + 10)?;
+                    let value =
+                        |at| u32::from(u16::from_le_bytes([descriptor[at], descriptor[at + 1]]));
+                    let (left, top, frame_width, frame_height) =
+                        (value(0), value(2), value(4), value(6));
+                    if frame_width == 0
+                        || frame_height == 0
+                        || left + frame_width > width
+                        || top + frame_height > height
+                    {
+                        return Some(false);
+                    }
+                    let packed = *bytes.get(offset + 9)?;
+                    frames += 1;
+                    if frames > ANIMATION_FRAMES
+                        || frames.saturating_mul(u64::from(width) * u64::from(height))
+                            > ANIMATION_PIXELS
+                    {
+                        return Some(false);
+                    }
+                    offset += 10
+                        + if packed & 0x80 != 0 {
+                            3 * (1 << ((packed & 7) + 1))
+                        } else {
+                            0
+                        };
+                    bytes.get(offset)?;
+                    offset += 1;
+                    skip_blocks(bytes, &mut offset)?;
+                }
+                _ => return None,
+            }
+        }
+    };
+    scan().unwrap_or(false)
 }
 
 #[cfg(test)]
 mod svg_metadata_tests {
     use super::*;
+
+    fn gif_frames(width: u16, height: u16, count: usize) -> Vec<u8> {
+        let mut gif = b"GIF89a".to_vec();
+        gif.extend(width.to_le_bytes());
+        gif.extend(height.to_le_bytes());
+        gif.extend([0x80, 0, 0, 0, 0, 0, 255, 255, 255]);
+        for _ in 0..count {
+            gif.extend([0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 1, 0]);
+        }
+        gif.push(0x3b);
+        gif
+    }
+
+    #[test]
+    fn gif_scan_bounds_frame_count_canvas_pixels_and_corrupt_blocks() {
+        assert!(gif_animation_within_budget(&gif_frames(1, 1, 200), 1, 1));
+        assert!(!gif_animation_within_budget(&gif_frames(1, 1, 201), 1, 1));
+        assert!(gif_animation_within_budget(
+            &gif_frames(1000, 1000, 64),
+            1000,
+            1000
+        ));
+        assert!(!gif_animation_within_budget(
+            &gif_frames(1000, 1000, 65),
+            1000,
+            1000
+        ));
+        let mut malformed = gif_frames(1, 1, 2);
+        malformed.truncate(malformed.len() - 3);
+        assert!(!gif_animation_within_budget(&malformed, 1, 1));
+        let mut too_wide = gif_frames(1, 1, 1);
+        too_wide[24] = 2;
+        assert!(!gif_animation_within_budget(&too_wide, 1, 1));
+    }
+
+    #[test]
+    fn gif_frame_budget_survives_metadata_cache_reload() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        let path = root.path().join("many-frames.gif");
+        fs::write(&path, gif_frames(1, 1, 201)).unwrap();
+        let path = path.to_str().unwrap();
+        let first = metadata_for_path(path).unwrap();
+        assert!(first.animation_limited);
+        assert!(!first.preview_limited);
+        assert_eq!(metadata_for_path(path).unwrap(), first);
+    }
 
     #[test]
     fn svg_dimensions_participate_in_the_existing_pixel_budget() {

@@ -1193,6 +1193,9 @@ export default function Clipboard() {
                 if (!mainWindowActiveRef.current || showGateRef.current!.pending) return;
                 void fetchHistory();
             },
+            onCaptureRejected: () => {
+                showToast(t("clipboard.captureTooLarge"), "warning");
+            },
             onResourcesUpdated: payload => {
                 if (!mainWindowActiveRef.current) return;
                 if (resourceEpochRef.current !== null && payload.epoch !== resourceEpochRef.current) return;

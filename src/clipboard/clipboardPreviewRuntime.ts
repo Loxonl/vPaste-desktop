@@ -66,7 +66,7 @@ export function createClipboardPreviewRuntime(
                     { path: item.getContent() },
                 );
                 if (!current()) return;
-                if (metadata.previewLimited || metadata.animationLimited) {
+                if (metadata.previewLimited) {
                     if (mode !== "manual") return;
                     try {
                         await invoke("hide_preview_window");

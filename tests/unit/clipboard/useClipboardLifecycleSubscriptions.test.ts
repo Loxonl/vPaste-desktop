@@ -37,6 +37,7 @@ function handlers() {
         tauri: {
             onBehaviorConfigChanged: vi.fn(),
             onClipboardChanged: vi.fn(),
+            onCaptureRejected: vi.fn(),
             onResourcesUpdated: vi.fn(),
             onCustomTabsChanged: vi.fn(),
             onItemTagsChanged: vi.fn(),
@@ -71,6 +72,7 @@ describe("useClipboardLifecycleSubscriptions", () => {
             "window-hidden",
             "window-parked",
             "listen_new_clipboard",
+            "clipboard-capture-rejected",
             "clipboard-resources-updated",
             "tutorial-started",
             "tutorial-completed",
@@ -83,6 +85,7 @@ describe("useClipboardLifecycleSubscriptions", () => {
         expect(callbacks.onMount).toHaveBeenCalledOnce();
 
         act(() => {
+            tauri.callbacks.get("clipboard-capture-rejected")?.({ payload: null });
             tauri.callbacks.get("window-show")?.({ payload: { x: 12, y: 24 } });
             tauri.callbacks.get("clipboard-resources-updated")?.({ payload: { epoch: 7 } });
             tauri.callbacks.get("clipboard-behavior-config-changed")?.({
@@ -102,6 +105,7 @@ describe("useClipboardLifecycleSubscriptions", () => {
 
         expect(callbacks.tauri.onWindowShow).toHaveBeenCalledWith({ x: 12, y: 24 });
         expect(callbacks.tauri.onResourcesUpdated).toHaveBeenCalledWith({ epoch: 7 });
+        expect(callbacks.tauri.onCaptureRejected).toHaveBeenCalledOnce();
         expect(callbacks.tauri.onBehaviorConfigChanged)
             .toHaveBeenCalledWith({ link_auto_preview: false });
         expect(callbacks.tauri.onCustomTabsChanged)

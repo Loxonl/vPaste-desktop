@@ -76,7 +76,7 @@ pub fn start(window: WebviewWindow) {
             // Cocoa returns autoreleased pasteboard, workspace, image, and data objects.
             // Drain them before this long-lived listener thread goes back to sleep.
             let captured = autoreleasepool(|| {
-                poll_clipboard_once(&mut system_clipboard, &mut last_change_count)
+                poll_clipboard_once(&window, &mut system_clipboard, &mut last_change_count)
             });
             if let Some((hash, queue_only)) = captured {
                 emit_clipboard_event(&window, queue_only);
@@ -104,6 +104,7 @@ pub fn start(window: WebviewWindow) {
 }
 
 fn poll_clipboard_once(
+    window: &WebviewWindow,
     system_clipboard: &mut Clipboard,
     last_change_count: &mut isize,
 ) -> Option<(String, bool)> {
@@ -126,7 +127,7 @@ fn poll_clipboard_once(
 
     let start = Instant::now();
     let queue_only = crate::paste_queue::is_active();
-    if let Some(hash) = parse_with_retry(system_clipboard, queue_only) {
+    if let Some(hash) = parse_with_retry(window, system_clipboard, queue_only) {
         info!("clipboard parsed in {}ms", start.elapsed().as_millis());
         Some((hash, queue_only))
     } else {
@@ -135,11 +136,24 @@ fn poll_clipboard_once(
     }
 }
 
-fn parse_with_retry(system_clipboard: &mut Clipboard, queue_only: bool) -> Option<String> {
+fn parse_with_retry(
+    window: &WebviewWindow,
+    system_clipboard: &mut Clipboard,
+    queue_only: bool,
+) -> Option<String> {
     for attempt in 0..READ_ATTEMPTS {
         match parse(system_clipboard, queue_only) {
             Ok(hash) => return hash,
             Err(err) => {
+                if crate::clipboard_budget::is_limit_error(&err) {
+                    error!("clipboard capture rejected: {err}");
+                    let _ = window.emit("clipboard-capture-rejected", ());
+                    if queue_only {
+                        crate::paste_queue::set_error(None, err);
+                        crate::paste_queue::emit_state(window.app_handle());
+                    }
+                    return None;
+                }
                 let delay = INITIAL_RETRY_DELAY_MS * (attempt as u64 + 1);
                 info!(
                     "clipboard read failed on attempt {}/{}: {}; retrying in {}ms",
@@ -157,7 +171,7 @@ fn parse_with_retry(system_clipboard: &mut Clipboard, queue_only: bool) -> Optio
     None
 }
 
-fn parse(system_clipboard: &mut Clipboard, queue_only: bool) -> Result<Option<String>, String> {
+fn parse(_system_clipboard: &mut Clipboard, queue_only: bool) -> Result<Option<String>, String> {
     let app_source = clipboard_app_source();
     if config::get().sensitive_content_protection
         && SENSITIVE_PASTEBOARD_TYPES
@@ -187,7 +201,7 @@ fn parse(system_clipboard: &mut Clipboard, queue_only: bool) -> Result<Option<St
         pasteboard_contains_type("public.png") || pasteboard_contains_type("public.tiff"),
         has_rich_or_text,
     ) {
-        if let Some(hash) = insert_image_if_present(system_clipboard, &app_source, queue_only)? {
+        if let Some(hash) = insert_image_if_present(&app_source, queue_only)? {
             return Ok(Some(hash));
         }
     }
@@ -196,12 +210,15 @@ fn parse(system_clipboard: &mut Clipboard, queue_only: bool) -> Result<Option<St
         return Ok(Some(hash));
     }
 
-    let text_content = read_text_content(system_clipboard);
-    let html = read_pasteboard_data(HTML_PASTEBOARD_TYPES);
-    let rtf = read_pasteboard_data(RTF_PASTEBOARD_TYPES);
+    let text_content = read_text_content()?;
+    let mut remaining =
+        crate::clipboard_budget::RICH_CAPTURE_BYTES - text_content.as_ref().map_or(0, String::len);
+    let html = read_pasteboard_data(HTML_PASTEBOARD_TYPES, remaining)?;
+    remaining -= html.as_ref().map_or(0, Vec::len);
+    let rtf = read_pasteboard_data(RTF_PASTEBOARD_TYPES, remaining)?;
 
     if let Some(hash) =
-        insert_rich_text_if_present(text_content.as_deref(), html, rtf, &app_source, queue_only)
+        insert_rich_text_if_present(text_content.as_deref(), html, rtf, &app_source, queue_only)?
     {
         return Ok(Some(hash));
     }
@@ -216,7 +233,7 @@ fn parse(system_clipboard: &mut Clipboard, queue_only: bool) -> Result<Option<St
         ));
     }
 
-    if let Some(hash) = insert_image_if_present(system_clipboard, &app_source, queue_only)? {
+    if let Some(hash) = insert_image_if_present(&app_source, queue_only)? {
         return Ok(Some(hash));
     }
 
@@ -253,11 +270,39 @@ fn insert_file_if_present(app_source: &AppSource, queue_only: bool) -> Option<St
     clipboard::capture_file_from_app(&files, &app_source.name, &app_source.icon_path, queue_only)
 }
 
-fn read_text_content(system_clipboard: &mut Clipboard) -> Option<String> {
-    system_clipboard
-        .get_text()
-        .ok()
-        .filter(|text| !text.is_empty())
+fn read_text_content() -> Result<Option<String>, String> {
+    let limit = crate::clipboard_budget::TEXT_CAPTURE_BYTES;
+    let text = if let Some(bytes) =
+        read_pasteboard_data(&["public.utf8-plain-text", "NSStringPboardType"], limit)?
+    {
+        String::from_utf8(bytes).map_err(|error| error.to_string())?
+    } else if let Some(bytes) =
+        read_pasteboard_data(&["public.utf16-external-plain-text"], limit * 2 + 2)?
+    {
+        let big_endian = bytes.starts_with(&[0xfe, 0xff]);
+        let start = if bytes.starts_with(&[0xff, 0xfe]) || big_endian {
+            2
+        } else {
+            0
+        };
+        let units: Vec<_> = bytes[start..]
+            .chunks_exact(2)
+            .map(|pair| {
+                if big_endian {
+                    u16::from_be_bytes([pair[0], pair[1]])
+                } else {
+                    u16::from_le_bytes([pair[0], pair[1]])
+                }
+            })
+            .collect();
+        String::from_utf16(&units).map_err(|error| error.to_string())?
+    } else {
+        return Ok(None);
+    };
+    if text.len() > limit {
+        return Err(crate::clipboard_budget::limit_error());
+    }
+    Ok((!text.is_empty()).then_some(text))
 }
 
 fn insert_rich_text_if_present(
@@ -266,9 +311,9 @@ fn insert_rich_text_if_present(
     rtf: Option<Vec<u8>>,
     app_source: &AppSource,
     queue_only: bool,
-) -> Option<String> {
+) -> Result<Option<String>, String> {
     if html.is_none() && rtf.is_none() {
-        return None;
+        return Ok(None);
     }
 
     let html_text = rich_preview_text(html.as_deref(), None);
@@ -292,8 +337,17 @@ fn insert_rich_text_if_present(
             .is_some_and(|text| !text.trim().is_empty());
 
     if has_meaningful_text || rtf.is_some() {
+        if plain_text.len() > crate::clipboard_budget::TEXT_CAPTURE_BYTES
+            || plain_text
+                .len()
+                .saturating_add(html.as_ref().map_or(0, Vec::len))
+                .saturating_add(rtf.as_ref().map_or(0, Vec::len))
+                > crate::clipboard_budget::RICH_CAPTURE_BYTES
+        {
+            return Err(crate::clipboard_budget::limit_error());
+        }
         info!("New rich text clipboard content detected");
-        return clipboard::capture_rich_text_from_app(
+        return Ok(clipboard::capture_rich_text_from_app(
             plain_text,
             html,
             rtf,
@@ -301,34 +355,30 @@ fn insert_rich_text_if_present(
             &app_source.name,
             &app_source.icon_path,
             queue_only,
-        );
+        ));
     }
 
-    None
+    Ok(None)
 }
 
 fn insert_image_if_present(
-    system_clipboard: &mut Clipboard,
     app_source: &AppSource,
     queue_only: bool,
 ) -> Result<Option<String>, String> {
-    let image = match system_clipboard.get_image() {
-        Ok(image) => image,
-        Err(_) => return Ok(None),
+    // Check NSData length before copying; do not ask arboard to decode an unbounded raster.
+    let Some(bytes) = read_pasteboard_data(
+        &[
+            "com.compuserve.gif",
+            "public.png",
+            "public.tiff",
+            "public.jpeg",
+        ],
+        crate::clipboard_budget::IMAGE_SOURCE_BYTES,
+    )?
+    else {
+        return Ok(None);
     };
-
-    let width = image.width as u32;
-    let height = image.height as u32;
-    let raw_bytes = image.bytes.into_owned();
-    let img_buffer =
-        image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(width, height, raw_bytes)
-            .ok_or_else(|| "image buffer size does not match dimensions".to_string())?;
-
-    let mut bytes: Vec<u8> = Vec::new();
-    let mut cursor = std::io::Cursor::new(&mut bytes);
-    img_buffer
-        .write_to(&mut cursor, image::ImageFormat::Png)
-        .map_err(|err| format!("encode image as PNG failed: {}", err))?;
+    crate::image_preview::metadata_from_bytes("", &bytes)?;
 
     info!("New image clipboard content detected");
     Ok(clipboard::capture_image_with_text_and_app(
@@ -752,40 +802,46 @@ fn nsstring_to_string(value: id) -> Option<String> {
     }
 }
 
-fn read_pasteboard_data(types: &[&str]) -> Option<Vec<u8>> {
+fn read_pasteboard_data(types: &[&str], limit: usize) -> Result<Option<Vec<u8>>, String> {
     for pasteboard_type in types {
-        if let Some(data) = read_pasteboard_data_for_type(pasteboard_type) {
+        if let Some(data) = read_pasteboard_data_for_type(pasteboard_type, limit)? {
             if !data.is_empty() {
-                return Some(data);
+                return Ok(Some(data));
             }
         }
     }
-    None
+    Ok(None)
 }
 
-fn read_pasteboard_data_for_type(pasteboard_type: &str) -> Option<Vec<u8>> {
+fn read_pasteboard_data_for_type(
+    pasteboard_type: &str,
+    limit: usize,
+) -> Result<Option<Vec<u8>>, String> {
     unsafe {
         let pasteboard: id = msg_send![class!(NSPasteboard), generalPasteboard];
         if pasteboard == nil {
-            return None;
+            return Ok(None);
         }
 
         let ns_type = NSString::alloc(nil).init_str(pasteboard_type);
         let data: id = msg_send![pasteboard, dataForType: ns_type];
         let _: () = msg_send![ns_type, release];
         if data == nil {
-            return None;
+            return Ok(None);
         }
 
         let len: usize = msg_send![data, length];
         if len == 0 {
-            return None;
+            return Ok(None);
+        }
+        if len > limit {
+            return Err(crate::clipboard_budget::limit_error());
         }
         let bytes: *const u8 = msg_send![data, bytes];
         if bytes.is_null() {
-            return None;
+            return Ok(None);
         }
-        Some(slice::from_raw_parts(bytes, len).to_vec())
+        Ok(Some(slice::from_raw_parts(bytes, len).to_vec()))
     }
 }
 

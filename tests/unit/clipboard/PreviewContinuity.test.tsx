@@ -69,16 +69,21 @@ describe("continuous preview session", () => {
         expect(document.querySelectorAll("[data-preview-phase]")).toHaveLength(1);
     });
 
-    it("retains the outgoing layer until its own exit animation completes", async () => {
-        render(<MotionTestProvider><Preview /></MotionTestProvider>);
+    it.each(["never", "always"] as const)("retains the outgoing layer until its own exit animation completes (reduced motion: %s)", async reducedMotion => {
+        render(<MotionTestProvider reducedMotion={reducedMotion}><Preview /></MotionTestProvider>);
         emit("preview-item", text(1, "Outgoing"));
         await waitFor(() => expect(screen.getByText("Outgoing").closest("[data-preview-phase]"))
             .toHaveAttribute("data-preview-phase", "current"));
+        // A current layer can still be entering at opacity zero; test the exit of a fully visible viewer.
+        await waitFor(() => expect(screen.getByText("Outgoing").closest("[data-preview-phase]"))
+            .toHaveStyle({ opacity: "1" }));
         emit("preview-item", text(2, "Incoming"));
         await waitFor(() => expect(screen.getByText("Incoming").closest("[data-preview-phase]"))
             .toHaveAttribute("data-preview-phase", "current"));
-        expect(screen.getByText("Outgoing").closest("[data-preview-phase]"))
-            .toHaveAttribute("data-preview-phase", "exiting");
+        const outgoing = screen.getByText("Outgoing").closest("[data-preview-phase]");
+        expect(outgoing).toHaveAttribute("data-preview-phase", "exiting");
+        expect(outgoing).toHaveAttribute("inert");
+        expect(outgoing).toHaveAttribute("aria-hidden", "true");
         await waitFor(() => expect(screen.queryByText("Outgoing")).not.toBeInTheDocument());
     });
 

@@ -36,6 +36,13 @@ function options() {
 }
 
 describe("clipboard preview runtime", () => {
+    it("delegates the bounded text read and truncation flag to Rust without reading the body in the main window", async () => {
+        tauri.invoke.mockResolvedValue(undefined);
+        await createClipboardPreviewRuntime(options()).openPreviewItem(item(ItemType.TextFile));
+        expect(tauri.invoke).not.toHaveBeenCalledWith("plain_text_preview", expect.anything());
+        expect(tauri.invoke).not.toHaveBeenCalledWith("plain_text_content", expect.anything());
+        expect(tauri.invoke).toHaveBeenLastCalledWith("show_history_preview", { hash: "preview-hash", itemType: ItemType.TextFile });
+    });
     it("refreshes keyboard selection without reopening or refocusing the preview", async () => {
         tauri.invoke.mockImplementation(async (command: string) => command === "is_preview_window_visible" ? true : undefined);
         createClipboardPreviewRuntime(options()).refreshPreviewIfVisible(item(), -1);
@@ -103,7 +110,7 @@ describe("clipboard preview runtime", () => {
         expect(tauri.invoke).not.toHaveBeenCalledWith("show_history_preview", expect.anything());
     });
 
-    it("asks Rust to open full disk-backed text by hash without transferring its body", async () => {
+    it("asks Rust to prepare disk-backed text by hash without transferring its body", async () => {
         const callbacks = options();
         tauri.invoke.mockResolvedValue(undefined);
         const target = new Item(2, "long-text", ItemType.TextFile, "C:\\history\\long-text", 0, undefined, "short card preview");
@@ -189,17 +196,6 @@ describe("clipboard preview runtime", () => {
                 animationLimited: false,
             },
         ],
-        [
-            "oversized animated GIF",
-            {
-                width: 96,
-                height: 64,
-                isGif: true,
-                sourceBytes: 24 * 1024 * 1024,
-                previewLimited: false,
-                animationLimited: true,
-            },
-        ],
     ])("blocks %s preview before the full image is read", async (_name, metadata) => {
         const callbacks = options();
         tauri.invoke.mockImplementation(async (command: string) => {
@@ -252,6 +248,15 @@ describe("clipboard preview runtime", () => {
             hash: "preview-hash",
             itemType: ItemType.Image,
         });
+        expect(callbacks.showToast).not.toHaveBeenCalled();
+    });
+
+    it("opens an animation-limited GIF so the native preview can show its static first frame", async () => {
+        const callbacks = options();
+        tauri.invoke.mockImplementation(async (command: string) => command === "history_image_metadata"
+            ? { isGif: true, previewLimited: false, animationLimited: true } : undefined);
+        await createClipboardPreviewRuntime(callbacks).openPreviewItem(item(ItemType.Image));
+        expect(tauri.invoke).toHaveBeenCalledWith("show_history_preview", expect.objectContaining({ hash: "preview-hash", itemType: ItemType.Image }));
         expect(callbacks.showToast).not.toHaveBeenCalled();
     });
 

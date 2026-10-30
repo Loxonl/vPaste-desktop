@@ -14,11 +14,31 @@ const option = (name, fallback) => {
 const binary = path.resolve(option('--binary', 'src-tauri/target/target/debug/vPaste'));
 const output = path.resolve(option('--output', '.superpowers/sdd/2026-10-29-main-window-memory/artifacts/baseline'));
 const runs = Number(option('--runs', '3'));
+const scenario = option('--scenario', 'full');
+if (!['full', 'first-page'].includes(scenario)) throw new Error('--scenario must be full or first-page');
+const profilePort = Number(option('--port', process.env.VPASTE_MEMORY_PROFILE_PORT || '1421'));
+if (!Number.isInteger(profilePort) || profilePort < 1024 || profilePort > 65535) throw new Error('invalid profile port');
 if (!Number.isInteger(runs) || runs < 1 || runs > 5) throw new Error('--runs must be between 1 and 5');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const temporaryRoot = process.platform === 'darwin' ? '/private/tmp' : os.tmpdir();
 const commit = spawnSync('git', ['rev-parse', 'HEAD'], {cwd:repo, encoding:'utf8'}).stdout.trim();
 await mkdir(output, {recursive:true});
+
+async function sourceIdentity() {
+    const tracked = spawnSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--',
+        'src', 'scripts', 'src-tauri/src', 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock',
+        'src-tauri/tauri.conf.json', 'package.json', 'package-lock.json', 'vite.config.ts', 'tsconfig.json',
+    ], {cwd:repo, encoding:'utf8'});
+    if (tracked.status !== 0) throw new Error('cannot identify profiling sources');
+    const hash = createHash('sha256');
+    for (const filename of [...new Set(tracked.stdout.split('\0').filter(Boolean))].sort()) {
+        hash.update(filename).update('\0').update(await readFile(path.join(repo, filename))).update('\0');
+    }
+    return hash.digest('hex');
+}
+const sourceSha256 = await sourceIdentity();
+const binarySha256 = createHash('sha256').update(await readFile(binary)).digest('hex');
+const driverSha256 = createHash('sha256').update(await readFile(path.join(repo, 'scripts/profile-main-window-driver.js'))).digest('hex');
 
 async function markedDirectory() {
     const root = await mkdtemp(path.join(temporaryRoot, 'vpaste-memory-'));
@@ -27,7 +47,7 @@ async function markedDirectory() {
 }
 async function launch(root, prepare) {
     const log = [];
-    const child = spawn(binary, ['--dev-mode', '--memory-profile-dir', root, ...(prepare ? ['--memory-profile-prepare'] : [])], {cwd:repo});
+    const child = spawn(binary, ['--dev-mode', '--memory-profile-dir', root, ...(prepare ? ['--memory-profile-prepare'] : scenario === 'first-page' ? ['--memory-profile-first-page'] : [])], {cwd:repo, env:{...process.env,VPASTE_MEMORY_PROFILE_PORT:String(profilePort)}});
     child.stdout.on('data', data => log.push(data));
     child.stderr.on('data', data => log.push(data));
     const timeout = setTimeout(() => child.kill('SIGTERM'), prepare ? 90000 : 360000);
@@ -54,7 +74,7 @@ const fixture = option('--fixture', null) || await markedDirectory();
 if (!option('--fixture', null)) await launch(fixture, true);
 const fixtureBytes = await readFile(path.join(fixture, 'fixture.json'));
 const fixtureHash = createHash('sha256').update(fixtureBytes).update(await readFile(path.join(fixture, 'vpaste.db'))).digest('hex');
-const manifest = {commit, buildMode:'dev', fixture, fixtureHash, binary, runs, startedAt:new Date().toISOString(), scenarios:['s1','s2-active','s2-settled','s3-hidden'], inspectorOpen:false, forcedGc:false};
+const manifest = {commit, sourceSha256, binarySha256, driverSha256, buildMode:option('--build-mode', 'dev'), cachePolicy:'default', devServerOrigin:`http://127.0.0.1:${profilePort}`, fixture, fixtureHash, binary, runs, startedAt:new Date().toISOString(), scenarios:scenario === 'first-page' ? ['s1'] : ['s1','s2-active','s2-settled','s3-hidden'], inspectorOpen:false, forcedGc:false};
 await writeFile(path.join(output, 'manifest.json'), JSON.stringify(manifest, null, 2));
 const summaries = [];
 const percentile = values => {
@@ -65,6 +85,10 @@ for (let run = 1; run <= runs; run += 1) {
     const root = await markedDirectory();
     await cp(fixture, root, {recursive:true, preserveTimestamps:true});
     await launch(root, false);
+    if (await sourceIdentity() !== sourceSha256
+        || createHash('sha256').update(await readFile(binary)).digest('hex') !== binarySha256) {
+        throw new Error(`source or executable changed during run ${run}; refusing a mixed cohort`);
+    }
     const text = await readFile(path.join(root, 'samples.jsonl'), 'utf8');
     await writeFile(path.join(output, `run-${run}.jsonl`), text);
     const rows = text.trim().split('\n').map(line => JSON.parse(line));

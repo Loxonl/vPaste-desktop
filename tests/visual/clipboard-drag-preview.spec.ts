@@ -1,4 +1,8 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { installHistoryMockBridge } from "../helpers/historyMockBridge";
+
+test.beforeEach(async ({ page }) => { await page.addInitScript(installHistoryMockBridge); });
+
 
 type DragKind = "Text" | "TextFile" | "Link" | "Color" | "Image" | "File";
 type FileCase = "image" | "document" | "folder" | "multiple";

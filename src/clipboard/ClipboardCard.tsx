@@ -50,6 +50,9 @@ type ClipboardCardProps = {
     onContextMenu: (item: Item, x: number, y: number) => void;
     onActivate?: (hash: string, plainText: boolean) => void;
     onDragUnavailable?: () => void;
+    animateEntry?: boolean;
+    virtualLeft?: number;
+    onRetainForInteraction?: () => () => void;
 };
 
 function getTypeLabel(type: ItemType, t: TFunction): string {
@@ -144,6 +147,9 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
     onContextMenu,
     onActivate,
     onDragUnavailable,
+    animateEntry = true,
+    virtualLeft,
+    onRetainForInteraction,
 }: ClipboardCardProps, ref) {
     const cardMotion = useMotionPreset("gridItem");
     const shortcutHintMotion = useMotionPreset("shortcutHint");
@@ -152,6 +158,7 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
     const [filterMotionRef, animateFilterMotion] = useAnimate<HTMLDivElement>();
     const [dragging, setDragging] = useState(false);
     const [dragCompleted, setDragCompleted] = useState(false);
+    const mountedRef = useRef(false);
     const dragFeedbackTimerRef = useRef<number | null>(null);
     const dragStartedRef = useRef(false);
     const dragTextRef = useRef<string | null>(null);
@@ -159,6 +166,22 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
     const dragTextLoadRef = useRef<Promise<void> | null>(null);
     const dragTextHoveredRef = useRef(false);
     const nativeDragStateRef = useRef<{ x: number; y: number; started: boolean; previewAbort?: AbortController } | null>(null);
+    const retainInteractionRef = useRef(onRetainForInteraction);
+    retainInteractionRef.current = onRetainForInteraction;
+    const interactionReleaseRef = useRef<(() => void) | null>(null);
+    const retainDrag = useCallback(() => {
+        interactionReleaseRef.current?.();
+        const release = retainInteractionRef.current?.();
+        let released = false;
+        const finish = () => {
+            if (released) return;
+            released = true;
+            release?.();
+            if (interactionReleaseRef.current === finish) interactionReleaseRef.current = null;
+        };
+        interactionReleaseRef.current = finish;
+        return finish;
+    }, []);
     const visualType = isSingleImageFileItem(item) ? ItemType.Image : item.getType();
     const nativeFileDrag = isNativeFileDragItem(item);
     const typeLabel = getTypeLabel(visualType, t);
@@ -198,6 +221,7 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
     }, [item]);
 
     const showDragCompleted = useCallback(() => {
+        if (!mountedRef.current) return;
         setDragCompleted(true);
         if (dragFeedbackTimerRef.current !== null) {
             window.clearTimeout(dragFeedbackTimerRef.current);
@@ -214,6 +238,7 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
         if (paths.length === 0) return false;
 
         const gesture = nativeDragStateRef.current;
+        const releaseInteraction = retainDrag();
         void (async () => {
             try {
                 let previewPng: number[] | undefined;
@@ -248,8 +273,8 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                     }
                     if (nativeDragStateRef.current !== gesture) return;
                 }
-                const dropped = await invoke<boolean>("native_drag_file", {
-                    paths,
+                const dropped = await invoke<boolean>(item.isHistoryRecord() ? "native_drag_history_file" : "native_drag_file", {
+                    ...(item.isHistoryRecord() ? { hash: item.getHash() } : { paths }),
                     isImage: item.getType() === ItemType.Image,
                     ...(previewPng ? { previewPng } : {}),
                 });
@@ -257,6 +282,7 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
             } catch (error) {
                 console.warn("Native file drag failed", error);
             } finally {
+                releaseInteraction();
                 if (nativeDragStateRef.current === gesture) {
                     setDragging(false);
                     nativeDragStateRef.current = null;
@@ -264,15 +290,23 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
             }
         })();
         return true;
-    }, [item, nativeFileDrag, showDragCompleted]);
+    }, [item, nativeFileDrag, retainDrag, showDragCompleted]);
 
-    useEffect(() => () => {
-        clearDragTextGesture();
-        nativeDragStateRef.current?.previewAbort?.abort();
-        nativeDragStateRef.current = null;
-        if (dragFeedbackTimerRef.current !== null) {
-            window.clearTimeout(dragFeedbackTimerRef.current);
-        }
+    useEffect(() => {
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+            dragTextHoveredRef.current = false;
+            dragTextRef.current = null;
+            clearDragTextGesture();
+            nativeDragStateRef.current?.previewAbort?.abort();
+            nativeDragStateRef.current = null;
+            interactionReleaseRef.current?.();
+            if (dragFeedbackTimerRef.current !== null) {
+                window.clearTimeout(dragFeedbackTimerRef.current);
+                dragFeedbackTimerRef.current = null;
+            }
+        };
     }, [clearDragTextGesture]);
 
     useEffect(() => {
@@ -309,10 +343,11 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
         <m.div
             ref={ref}
             className={classes(styles, "card-motion-item")}
+            style={virtualLeft === undefined ? undefined : { position: "absolute", left: virtualLeft }}
             variants={cardMotion}
             data-motion-preset="gridItem"
             data-card-hash={item.getHash() as string}
-            initial={filterMotionRequestSeq === undefined ? "initial" : false}
+            initial={animateEntry && filterMotionRequestSeq === undefined ? "initial" : false}
             animate="animate"
             exit="exit"
         >
@@ -344,6 +379,7 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                 dragStartedRef.current = false;
                 nativeDragStateRef.current?.previewAbort?.abort();
                 nativeDragStateRef.current = null;
+                interactionReleaseRef.current?.();
                 if (!dragDisabled && !selectionMode && event.button === 0) {
                     dragTextHoveredRef.current = true;
                     prepareDragText();
@@ -422,6 +458,7 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                 setDragCompleted(false);
                 setDragging(true);
                 dragStartedRef.current = true;
+                retainDrag();
 
                 const dragImage = createClipboardDragPreview(event.currentTarget);
                 document.body.appendChild(dragImage);
@@ -430,6 +467,7 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
             }}
             onDragEnd={(event) => {
                 setDragging(false);
+                interactionReleaseRef.current?.();
                 if (event.dataTransfer.dropEffect === "none") return;
                 showDragCompleted();
             }}
@@ -577,6 +615,8 @@ const ClipboardCard = React.memo(ClipboardCardComponent, (prev, next) => (
     && prev.filterMotionRequestSeq === next.filterMotionRequestSeq
     && prev.filterMotionIndex === next.filterMotionIndex
     && prev.mediaPlaybackReady === next.mediaPlaybackReady
+    && prev.animateEntry === next.animateEntry
+    && prev.virtualLeft === next.virtualLeft
     && prev.t === next.t
     && prev.onActivate === next.onActivate
 ));

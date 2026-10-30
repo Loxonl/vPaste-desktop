@@ -23,6 +23,44 @@ afterEach(() => {
 });
 
 describe("clipboard card header", () => {
+    it("does not retain a completion timer after a native drag source is unmounted", async () => {
+        vi.stubGlobal("navigator", { userAgent: "Windows", platform: "Win32" });
+        vi.stubGlobal("__TAURI_INTERNALS__", {});
+        let finishDrag!: (dropped: boolean) => void;
+        invokeMock.mockReturnValue(new Promise<boolean>(resolve => { finishDrag = resolve; }));
+        const release = vi.fn();
+        const item = new Item(901, "retired-native-drag", ItemType.Image, "C:/history/image.png", 0);
+        const view = render(<ClipboardCard item={item} selected={false} simulatedHover={false} refreshKey={0}
+            searchQuery="" filterMotionIndex={0} mediaPlaybackReady={false} t={key => key}
+            onContextMenu={vi.fn()} onRetainForInteraction={() => release} />);
+        const card = document.querySelector('[data-hash="retired-native-drag"]')!;
+        fireEvent.mouseDown(card, { button: 0, clientX: 10, clientY: 80 });
+        fireEvent.mouseMove(card, { buttons: 1, clientX: 18, clientY: 80 });
+        expect(invokeMock).toHaveBeenCalledWith("native_drag_file", expect.anything());
+        view.unmount();
+        const timeout = vi.spyOn(window, "setTimeout");
+        await act(async () => { finishDrag(true); });
+        expect(timeout.mock.calls.some(([, duration]) => duration === 420)).toBe(false);
+        expect(release).toHaveBeenCalledOnce();
+    });
+
+    it("retains an ordinary first rich-text drag until dragend without preparing different MIME content", () => {
+        const release = vi.fn();
+        const retain = vi.fn(() => release);
+        const item = new Item(900, "viewport-drag", ItemType.Text, "Original text", 0, undefined, "", "Original text", 0, "", "", "<b>Original text</b>");
+        const values = new Map<string, string>();
+        const dataTransfer = { effectAllowed: "", dropEffect: "none", setData: (type: string, value: string) => values.set(type, value), setDragImage: vi.fn() };
+        render(<ClipboardCard item={item} selected={false} simulatedHover={false} refreshKey={0} searchQuery="" filterMotionIndex={0} mediaPlaybackReady={false} t={key => key} onContextMenu={vi.fn()} onRetainForInteraction={retain} />);
+        const card = document.querySelector('[data-hash="viewport-drag"]')!;
+        expect(fireEvent.dragStart(card, { dataTransfer })).toBe(true);
+        expect(values.get("text/plain")).toBe("Original text");
+        expect(values.get("text/html")).toBe("<b>Original text</b>");
+        expect(retain).toHaveBeenCalledOnce();
+        expect(release).not.toHaveBeenCalled();
+        fireEvent.dragEnd(card, { dataTransfer });
+        expect(release).toHaveBeenCalledOnce();
+    });
+
     it("keeps the accepted source color for the background and format tag", () => {
         const item = new Item(
             1,

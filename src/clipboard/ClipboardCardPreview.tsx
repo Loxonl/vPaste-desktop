@@ -7,6 +7,9 @@ import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
 import { Item, ItemType } from "./Item";
 import { FileTypePresentation } from "./FileTypePresentation";
+import { HistoryMediaImage } from "./HistoryMediaImage";
+import { richResourceUrls, type RichRenderPayload } from "./historyResourceTypes";
+import { cardPreviewPixelWidth as cardPixelWidth, useCardPreviewPixelWidth } from "./useCardPreviewPixelWidth";
 import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
 import { useRichPreviewCanvas } from "./useRichPreviewCanvas";
 import {
@@ -36,6 +39,17 @@ type HistoryImageMetadata = {
 
 type MediaResource = { assetPath: string; metadata: HistoryImageMetadata };
 const mediaPending = new Map<string, Promise<MediaResource>>();
+let mediaGeneration = 0;
+
+export function releaseHistoryMediaResources() {
+    mediaGeneration += 1;
+    historyPreviewSrcCache.clear(); historyOriginalSrcCache.clear(); historyImageMetadataCache.clear();
+    mediaPending.clear();
+}
+
+function previewCacheKey(path: string): string {
+    return JSON.stringify([path, cardPixelWidth()]);
+}
 
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
 
@@ -68,24 +82,28 @@ function rememberValue<T>(cache: Map<string, T>, key: string, value: T) {
 }
 
 function loadHistoryMedia(path: string, intent: "card" | "animated", refresh = false): Promise<MediaResource> {
-    const key = JSON.stringify([path, intent, refresh]);
+    const width = intent === "card" ? cardPixelWidth() : undefined;
+    const key = JSON.stringify([path, intent, refresh, width]);
     const pending = mediaPending.get(key);
     if (pending) return pending;
-    const request = invoke<MediaResource>("resolve_history_media", { path, intent, refresh })
+    const generation = mediaGeneration;
+    const request = invoke<MediaResource>("resolve_history_media", { path, intent, refresh, ...(width ? { cardPixelWidth: width } : {}) })
         .then(resource => {
             const src = resource.assetPath ? convertFileSrc(resource.assetPath) : "";
-            rememberValue(historyImageMetadataCache, path, resource.metadata);
-            rememberValue(intent === "card" ? historyPreviewSrcCache : historyOriginalSrcCache, path, src);
+            if (generation === mediaGeneration) {
+                rememberValue(historyImageMetadataCache, path, resource.metadata);
+                rememberValue(intent === "card" ? historyPreviewSrcCache : historyOriginalSrcCache, width ? JSON.stringify([path, width]) : path, src);
+            }
             return { ...resource, assetPath: src };
         })
-        .finally(() => mediaPending.delete(key));
+        .finally(() => { if (mediaPending.get(key) === request) mediaPending.delete(key); });
     mediaPending.set(key, request);
     return request;
 }
 
 async function loadHistoryPreviewSrc(path: string): Promise<string> {
     if (!path) return "";
-    const cached = cachedValue(historyPreviewSrcCache, path);
+    const cached = cachedValue(historyPreviewSrcCache, previewCacheKey(path));
     if (cached !== undefined) return cached;
     try { return (await loadHistoryMedia(path, "card")).assetPath; }
     catch (reason) { error(`Failed to load image preview: ${reason}`); return ""; }
@@ -279,12 +297,13 @@ export function ImagePreview({
     onGifFormatChange: (isGif: boolean) => void;
 }) {
     const sourcePath = item.getContent();
+    const pixelWidth = useCardPreviewPixelWidth();
     const previewPath = item.getPreviewContent() || sourcePath;
     const stableIdentity = `${item.getHash()}\u0000${sourcePath}\u0000${previewPath}`;
     const initialMetadata = cachedValue(historyImageMetadataCache, sourcePath);
     const [naturalSize, setNaturalSize] = useState<{ width: number, height: number } | null>(null);
     const [stageSize, setStageSize] = useState<{ width: number, height: number }>({ width: 0, height: 0 });
-    const [imageSrc, setImageSrc] = useState(() => cachedValue(historyPreviewSrcCache, previewPath) || "");
+    const [imageSrc, setImageSrc] = useState(() => cachedValue(historyPreviewSrcCache, previewCacheKey(previewPath)) || "");
     const [previewLimited, setPreviewLimited] = useState(Boolean(initialMetadata?.previewLimited));
     const [sourceBytes, setSourceBytes] = useState(initialMetadata?.sourceBytes || 0);
     const [isVisible, setIsVisible] = useState(false);
@@ -307,10 +326,11 @@ export function ImagePreview({
         if (!stage) return;
 
         const updateStageSize = () => {
-            setStageSize({
+            const next = {
                 width: stage.clientWidth,
                 height: stage.clientHeight,
-            });
+            };
+            setStageSize(previous => previous.width === next.width && previous.height === next.height ? previous : next);
         };
         updateStageSize();
 
@@ -336,7 +356,7 @@ export function ImagePreview({
 
     useEffect(() => {
         const cachedMetadata = cachedValue(historyImageMetadataCache, sourcePath);
-        setImageSrc(cachedValue(historyPreviewSrcCache, previewPath) || "");
+        setImageSrc(cachedValue(historyPreviewSrcCache, previewCacheKey(previewPath)) || "");
         setNaturalSize(naturalSizeFromMetadata(cachedMetadata));
         setPreviewLimited(Boolean(cachedMetadata?.previewLimited));
         setSourceBytes(cachedMetadata?.sourceBytes || 0);
@@ -392,12 +412,12 @@ export function ImagePreview({
             cancelled = true;
             window.clearTimeout(timeout);
         };
-    }, [stableIdentity, sourcePath, previewPath, isVisible, active, onGifFormatChange]);
+    }, [stableIdentity, sourcePath, previewPath, isVisible, active, onGifFormatChange, pixelWidth]);
 
     const recoverImageSource = () => {
         if (!sourcePath || previewLimited || fallbackAttemptedRef.current) return;
         fallbackAttemptedRef.current = true;
-        historyPreviewSrcCache.delete(previewPath);
+        historyPreviewSrcCache.delete(previewCacheKey(previewPath));
         historyOriginalSrcCache.delete(sourcePath);
         void loadHistoryMedia(sourcePath, "card", true)
             .then(resource => {
@@ -411,7 +431,7 @@ export function ImagePreview({
         <div className={classes(styles, "image-preview")}>
             <div className={classes(styles, "image-preview-stage")} ref={stageRef}>
                 {imageSrc && (
-                    <img
+                    <HistoryMediaImage
                         src={imageSrc}
                         alt=""
                         draggable={false}
@@ -452,6 +472,7 @@ function FilePreview({
     searchQuery: string;
     t: TFunction;
 }) {
+    const pixelWidth = useCardPreviewPixelWidth();
     const [previewInfo, setPreviewInfo] = useState<FilePreviewInfo | null>(null);
     const [isVisible, setIsVisible] = useState(false);
     const [imageSize, setImageSize] = useState<{ width: number, height: number } | null>(null);
@@ -541,7 +562,7 @@ function FilePreview({
         return () => {
             cancelled = true;
         };
-    }, [item.getHash(), previewInfo?.preview_path, isGifFile, refreshKey]);
+    }, [item.getHash(), previewInfo?.preview_path, isGifFile, refreshKey, pixelWidth]);
 
     return (
         <div className={classes(styles, `file-preview ${isInvalid ? 'invalid' : ''}`)} ref={previewRef}>
@@ -554,7 +575,7 @@ function FilePreview({
                     </div>
                 ) : previewInfo?.kind === "single-preview" && previewInfo.preview_path && previewSrc ? (
                     <>
-                        <img
+                        <HistoryMediaImage
                             key={previewSrc}
                             className={classes(styles, `file-preview-image ${isImageFile ? 'transparency-grid' : ''}`)}
                             src={previewSrc}
@@ -614,6 +635,7 @@ function linkHost(url: string): string {
 }
 
 function LinkPreview({ item, searchQuery }: { item: Item; searchQuery: string }) {
+    const pixelWidth = useCardPreviewPixelWidth();
     const { url, imagePath, title, imageKind } = parseLinkContent(item.getContent());
     const [imageFailed, setImageFailed] = useState(false);
     const [imageSrc, setImageSrc] = useState("");
@@ -637,13 +659,13 @@ function LinkPreview({ item, searchQuery }: { item: Item; searchQuery: string })
         return () => {
             cancelled = true;
         };
-    }, [item.getHash(), imagePath]);
+    }, [item.getHash(), imagePath, pixelWidth]);
 
     return (
         <div className={classes(styles, "link-preview")}>
             <div className={classes(styles, `link-preview-media ${showImage ? '' : 'fallback'} ${isSmallImage ? 'icon' : ''}`)}>
                 {showImage ? (
-                    <img
+                    <HistoryMediaImage
                         src={imageSrc}
                         alt=""
                         draggable={false}
@@ -673,7 +695,19 @@ function LinkPreview({ item, searchQuery }: { item: Item; searchQuery: string })
 }
 
 function RichTextPreview({ item, active, searchQuery }: { item: Item; active: boolean; searchQuery: string }) {
-    const html = sanitizeRichHtml(item.getRichHtml());
+    const [loaded, setLoaded] = useState<{ hash: string; render: RichRenderPayload } | null>(null);
+    useEffect(() => {
+        if (!item.isHistoryRecord() || item.getRichRender()) return;
+        let current = true;
+        void invoke<RichRenderPayload>("read_history_rich_render", { hash: item.getHash() })
+            .then(render => { if (current) setLoaded({ hash: item.getHash(), render }); })
+            .catch(() => { if (current) setLoaded(null); });
+        return () => { current = false; };
+    }, [item]);
+    const render = item.getRichRender() ?? (loaded?.hash === item.getHash() ? loaded.render : undefined);
+    const html = item.isHistoryRecord()
+        ? sanitizeRichHtml(render?.html ?? "", 160, false, richResourceUrls(render?.resources ?? []))
+        : sanitizeRichHtml(item.getRichHtml());
     if (!richHtmlHasVisibleContent(html)) {
         return (
             <AutoScrollPreview active={active} className={classes(styles, "card-preview-text")}>

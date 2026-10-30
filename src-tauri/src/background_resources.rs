@@ -1,8 +1,9 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
+#[cfg(target_os = "windows")]
 use std::time::{Duration, Instant};
 
 use tauri::{Emitter, Manager};
@@ -14,6 +15,7 @@ use crate::clipboard::item::{Item, ItemType};
 struct Batch {
     epoch: u64,
     revision: u64,
+    #[cfg(target_os = "windows")]
     queued_at: Instant,
     values: Vec<String>,
 }
@@ -26,7 +28,6 @@ struct State {
     link_revision: u64,
     media: Option<Batch>,
     links: Option<Batch>,
-    warmed: VecDeque<String>,
 }
 
 #[derive(Default)]
@@ -70,6 +71,17 @@ impl BackgroundResources {
     }
 
     pub(crate) fn submit(&self, app: tauri::AppHandle, items: &[Item], epoch: u64, links: bool) {
+        self.submit_refs(app, &items.iter().collect::<Vec<_>>(), epoch, links);
+    }
+
+    pub(crate) fn submit_refs(
+        &self,
+        app: tauri::AppHandle,
+        items: &[&Item],
+        epoch: u64,
+        links: bool,
+    ) {
+        #[cfg(target_os = "windows")]
         let images = unique(
             items
                 .iter()
@@ -77,6 +89,8 @@ impl BackgroundResources {
                 .map(|item| item.content.as_str()),
             6,
         );
+        #[cfg(not(target_os = "windows"))]
+        let images: Vec<String> = Vec::new();
         let urls = if links && crate::config::get().link_auto_preview {
             unique(
                 items
@@ -104,6 +118,7 @@ impl BackgroundResources {
             Some(Batch {
                 epoch,
                 revision: state.media_revision,
+                #[cfg(target_os = "windows")]
                 queued_at: Instant::now(),
                 values: images,
             })
@@ -116,6 +131,7 @@ impl BackgroundResources {
                 Some(Batch {
                     epoch,
                     revision: state.link_revision,
+                    #[cfg(target_os = "windows")]
                     queued_at: Instant::now(),
                     values: urls,
                 })
@@ -124,11 +140,13 @@ impl BackgroundResources {
         let has_work = state.media.is_some() || state.links.is_some();
         drop(state);
         if has_work && !self.0.started.swap(true, Ordering::SeqCst) {
-            let service = self.clone();
-            let handle = app.clone();
-            tauri::async_runtime::spawn(async move {
-                service.media_loop(handle).await;
-            });
+            #[cfg(target_os = "windows")]
+            {
+                let service = self.clone();
+                tauri::async_runtime::spawn(async move {
+                    service.clipboard_warm_loop().await;
+                });
+            }
             let service = self.clone();
             tauri::async_runtime::spawn(async move {
                 service.link_loop(app).await;
@@ -182,6 +200,7 @@ impl BackgroundResources {
         }
     }
 
+    #[cfg(target_os = "windows")]
     async fn delay(&self, batch: &Batch, until: Instant) -> bool {
         loop {
             let notified = self.0.media_wake.notified();
@@ -201,71 +220,27 @@ impl BackgroundResources {
         }
     }
 
-    async fn media_loop(&self, _app: tauri::AppHandle) {
+    #[cfg(target_os = "windows")]
+    async fn clipboard_warm_loop(&self) {
         loop {
             let batch = self.next(true).await;
             if !self
-                .delay(&batch, batch.queued_at + Duration::from_millis(900))
+                .delay(&batch, batch.queued_at + Duration::from_millis(2700))
                 .await
             {
                 continue;
             }
-            for path in &batch.values {
+            // Preserve native clipboard-format warm work; display thumbnails are
+            // created synchronously during capture, or on a foreground cache miss.
+            for path in batch.values.iter().take(2) {
                 if !self.current(&batch, true) {
                     break;
                 }
-                let Some(identity) = crate::image_preview::source_cache_key(path) else {
-                    continue;
-                };
-                let seen = self
-                    .0
-                    .state
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .warmed
-                    .contains(&identity);
-                if seen {
-                    continue;
-                }
-                if crate::media_resources::resolve(
-                    path.clone(),
-                    crate::media_resources::MediaIntent::Card,
-                    false,
-                )
-                .await
-                .is_ok()
-                    && self.current(&batch, true)
-                {
-                    let mut state = self
-                        .0
-                        .state
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    state.warmed.retain(|old| old != &identity);
-                    state.warmed.push_back(identity);
-                    while state.warmed.len() > 256 {
-                        state.warmed.pop_front();
-                    }
-                }
-            }
-            #[cfg(target_os = "windows")]
-            {
-                if !self
-                    .delay(&batch, Instant::now() + Duration::from_millis(1800))
-                    .await
-                {
-                    continue;
-                }
-                for path in batch.values.iter().take(2) {
-                    if !self.current(&batch, true) {
-                        break;
-                    }
-                    let path = path.clone();
-                    let _ = tauri::async_runtime::spawn_blocking(move || {
-                        crate::prewarm_image_clipboard_cache_path(&path)
-                    })
-                    .await;
-                }
+                let path = path.clone();
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    crate::prewarm_image_clipboard_cache_path(&path)
+                })
+                .await;
             }
         }
     }
@@ -334,6 +309,7 @@ mod tests {
             Batch {
                 epoch: state.epoch,
                 revision: state.media_revision,
+                #[cfg(target_os = "windows")]
                 queued_at: Instant::now(),
                 values: vec!["image.png".into()],
             }

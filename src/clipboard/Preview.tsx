@@ -10,6 +10,7 @@ import { ItemType } from "./Item";
 import { FileTypePresentation } from "./FileTypePresentation";
 import { isImagePath, type FilePreviewInfo } from "./itemPresentation";
 import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
+import { richResourceUrls, type RichImageResource } from "./historyResourceTypes";
 import { useRichPreviewCanvas } from "./useRichPreviewCanvas";
 import { clipboardTabNavigationDirection } from "./clipboardKeyboard";
 import { useLanguage } from "../lang";
@@ -38,6 +39,8 @@ type PreviewPayload = {
     textContent?: string;
     rich_html?: string;
     richHtml?: string;
+    rich_resources?: RichImageResource[];
+    richResources?: RichImageResource[];
 };
 
 type PreviewNavigationDirection = -1 | 0 | 1;
@@ -148,7 +151,8 @@ export function PreviewBody({ payload, t, onReady }: {
     const [linkError, setLinkError] = useState("");
     const type = payloadType(payload);
     const linkUrl = type === ItemType.Link ? normalizeLinkUrl(payload.content.split("|||")[0]) : "";
-    const richHtml = useMemo(() => sanitizeRichHtml(payloadRichHtml(payload), 720), [payload]);
+    const richHtml = useMemo(() => sanitizeRichHtml(payloadRichHtml(payload), 720, false,
+        richResourceUrls(payload.rich_resources ?? payload.richResources ?? [])), [payload]);
     const richPreviewRef = useRichPreviewCanvas(richHtml);
     const linkPreviewHtml = useMemo(
         () => linkDocument ? disableDocumentNavigation(linkDocument.html) : "",
@@ -238,23 +242,11 @@ export function PreviewBody({ payload, t, onReady }: {
                         if (!cancelled) setImageSrc(convertFileSrc(src));
                     })
                     .catch(() => {
-                        return invoke<string>("history_file_data_url", { path: sourcePath })
-                            .then(src => {
-                                if (!cancelled) setImageSrc(src);
-                            })
-                            .catch(() => {
-                                if (!cancelled) setImageSrc(convertFileSrc(sourcePath));
-                            });
+                        if (!cancelled) setImageSrc(convertFileSrc(sourcePath));
                     });
             })
             .catch(() => {
-                invoke<string>("history_file_data_url", { path: sourcePath })
-                    .then(src => {
-                        if (!cancelled) setImageSrc(src);
-                    })
-                    .catch(() => {
-                        if (!cancelled) setImageSrc(convertFileSrc(sourcePath));
-                    });
+                if (!cancelled) setImageSrc(convertFileSrc(sourcePath));
             });
         return () => {
             cancelled = true;
@@ -289,13 +281,7 @@ export function PreviewBody({ payload, t, onReady }: {
                 if (!cancelled) setFilePreviewSrc(convertFileSrc(src));
             })
             .catch(() => {
-                invoke<string>("history_file_data_url", { path: fileInfo.preview_path })
-                    .then(src => {
-                        if (!cancelled) setFilePreviewSrc(src);
-                    })
-                    .catch(() => {
-                        if (!cancelled) setFilePreviewSrc(convertFileSrc(fileInfo.preview_path));
-                    });
+                if (!cancelled) setFilePreviewSrc(convertFileSrc(fileInfo.preview_path));
             });
         return () => {
             cancelled = true;

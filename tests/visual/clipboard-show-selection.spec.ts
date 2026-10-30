@@ -1,6 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
+import { installHistoryMockBridge } from "../helpers/historyMockBridge";
 
-type ProbeWindow = Window & { __showProbe: {
+test.beforeEach(async ({ page }) => { await page.addInitScript(installHistoryMockBridge); });
+
+
+type ProbeWindow = Window & typeof globalThis & { __showProbe: {
     calls: Array<{ command: string; args: Record<string, unknown> }>;
     captureCalls: () => number;
     configCalls: () => number;
@@ -99,6 +103,41 @@ async function openClipboard(page: Page, retainLastPosition = false, retainSearc
     await page.goto("/clipboard");
     await expect(card(page, "first")).toBeVisible();
 }
+
+test("parking retains card DOM and the bounded view until a fresh show synchronizes", async ({ page }) => {
+    await openClipboard(page, true);
+    const first = await card(page, "first").elementHandle();
+    const closeCount = await page.evaluate(() => (window as ProbeWindow).__showProbe.calls.filter(call => call.command === "close_history_view").length);
+    await page.evaluate(() => {
+        (window as ProbeWindow).__showProbe.emit("window-hide");
+        (window as ProbeWindow).__showProbe.emit("window-parked");
+    });
+    await expect(page.locator('[class*="clipboard-container"]')).toHaveClass(/parked/);
+    await expect(page.locator('[class*="clipboard-container"]')).toHaveAttribute("aria-hidden", "true");
+    await expect(page.locator('[class*="clipboard-container"]')).toHaveJSProperty("inert", true);
+    expect(await first!.evaluate(node => node.isConnected)).toBe(true);
+    expect(await page.evaluate(() => (window as ProbeWindow).__showProbe.calls.filter(call => call.command === "close_history_view").length)).toBe(closeCount);
+    await page.evaluate(() => {
+        (window as ProbeWindow).__showProbe.emit("window-show");
+        (window as ProbeWindow).__showProbe.releaseCapture();
+        (window as ProbeWindow).__showProbe.emit("window-show-complete");
+    });
+    await expect(card(page, "first")).toHaveClass(/selected/);
+    expect(await first!.evaluate(node => node.isConnected)).toBe(true);
+});
+
+test("direct parking cancels an unfinished show before the next synchronization", async ({ page }) => {
+    await openClipboard(page);
+    await page.evaluate(() => (window as ProbeWindow).__showProbe.emit("window-show"));
+    await expect.poll(() => page.evaluate(() => (window as ProbeWindow).__showProbe.captureCalls())).toBeGreaterThan(0);
+    const pending = await page.evaluate(() => (window as ProbeWindow).__showProbe.captureCalls());
+    await page.evaluate(() => {
+        (window as ProbeWindow).__showProbe.emit("window-parked");
+        (window as ProbeWindow).__showProbe.emit("window-show");
+    });
+    await expect.poll(() => page.evaluate(() => (window as ProbeWindow).__showProbe.captureCalls())).toBeGreaterThan(pending);
+    await page.evaluate(() => (window as ProbeWindow).__showProbe.releaseCapture());
+});
 
 test("quick navigation after show starts from the first card", async ({ page }) => {
     await openClipboard(page);

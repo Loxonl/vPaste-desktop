@@ -201,6 +201,13 @@ fn materialize_items(stored_items: Vec<StoredItem>) -> Vec<Item> {
 }
 
 fn materialize_item_with_tags(stored: StoredItem, tags: Vec<ItemTag>) -> Item {
+    let rich_html = rich_meta_from_source(&stored.source)
+        .and_then(|meta| read_rich_html_fragment(&meta.html_path))
+        .unwrap_or_default();
+    materialize_item_with_rich(stored, tags, rich_html)
+}
+
+fn materialize_item_with_rich(stored: StoredItem, tags: Vec<ItemTag>, rich_html: String) -> Item {
     let id = stored.id;
     let hash = stored.hash;
     let mut item_type = ItemType::from_str(stored.item_type.as_str()).unwrap();
@@ -211,9 +218,6 @@ fn materialize_item_with_tags(stored: StoredItem, tags: Vec<ItemTag>) -> Item {
     if rich_source && item_type == ItemType::Text && content.len() > LARGE_TEXT_THRESHOLD_BYTES {
         content = preview_content.clone();
     }
-    let rich_html = rich_meta_from_source(&source)
-        .and_then(|meta| read_rich_html_fragment(&meta.html_path))
-        .unwrap_or_default();
     match &item_type {
         ItemType::Image => {
             let stored_preview = native_path_string(&data_dir().join(&hash));
@@ -646,12 +650,162 @@ pub fn search_with_cancellation(
 
 fn search_batch_with_cancellation(
     keywords: &str,
+    last_id: u64,
+    last_time: u64,
+    limit: usize,
+    label: &str,
+    is_current: impl Fn() -> bool,
+) -> Result<Option<Page<Item>>, String> {
+    let Some(page) = search_stored_batch_with_cancellation(
+        keywords,
+        last_id,
+        last_time,
+        limit,
+        label,
+        &is_current,
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut list = materialize_items(page.list);
+    list.retain(is_displayable_history_item);
+    Ok(Some(Page {
+        list,
+        consumed: page.consumed,
+        has_more: page.has_more,
+        next_id: page.next_id,
+        next_time: page.next_time,
+    }))
+}
+
+pub(crate) fn history_ref_page(
+    keywords: &str,
+    last_id: u64,
+    last_time: u64,
+    limit: usize,
+    label: &str,
+    is_current: impl Fn() -> bool,
+) -> Result<Option<Page<crate::history_views::HistoryRef>>, String> {
+    search_page::collect(
+        (last_id, last_time),
+        limit,
+        &is_current,
+        |id, time, remaining| {
+            let Some(page) = search_stored_batch_with_cancellation(
+                keywords,
+                id,
+                time,
+                remaining,
+                label,
+                &is_current,
+            )?
+            else {
+                return Ok(None);
+            };
+            let mut list = Vec::new();
+            for stored in page.list {
+                if !is_current() {
+                    return Ok(None);
+                }
+                if stored.item_type == "Text" && is_semantically_blank_text(&stored.content) {
+                    let rich = rich_meta_from_source(&stored.source)
+                        .and_then(|meta| rich_render_from_path(&meta.html_path));
+                    if !rich.is_some_and(|rich| {
+                        rich.html.contains("vpaste-rich-image:")
+                            || rich_html_has_renderable_image(&rich.html)
+                    }) {
+                        continue;
+                    }
+                }
+                let mut item_type =
+                    ItemType::from_str(&stored.item_type).map_err(|err| err.to_string())?;
+                if item_type == ItemType::Image
+                    && !data_dir().join(&stored.hash).exists()
+                    && Path::new(&stored.content).exists()
+                {
+                    item_type = ItemType::File;
+                }
+                let tags = tags_for_clipboard_id(stored.id as i64).unwrap_or_default();
+                let app_icon_path = resolve_app_icon_path(&stored.app_source, stored.app_icon_path);
+                let title_color =
+                    app_icon_dominant_color(&app_icon_path).unwrap_or(stored.title_color);
+                list.push(crate::history_views::HistoryRef {
+                    id: stored.id,
+                    hash: stored.hash,
+                    item_type,
+                    time: stored.time,
+                    label: stored.label,
+                    tags,
+                    app_source: stored.app_source,
+                    app_icon_path,
+                    title_color,
+                });
+            }
+            Ok(Some(Page {
+                list,
+                consumed: page.consumed,
+                has_more: page.has_more,
+                next_id: page.next_id,
+                next_time: page.next_time,
+            }))
+        },
+    )
+}
+
+pub(crate) fn history_action_item(hash: &str) -> Result<Item, String> {
+    let stored = db()
+        .query_row(
+            "select * from clipboard where hash = ?1",
+            [hash],
+            read_stored_item,
+        )
+        .map_err(|err| err.to_string())?;
+    Ok(materialize_item_with_rich(
+        stored,
+        Vec::new(),
+        String::new(),
+    ))
+}
+
+pub(crate) fn history_card_payload(
+    hash: &str,
+    include_drag: bool,
+) -> Result<crate::history_views::HistoryCardPayload, String> {
+    let stored = db()
+        .query_row(
+            "select * from clipboard where hash = ?1",
+            [hash],
+            read_stored_item,
+        )
+        .map_err(|err| err.to_string())?;
+    let render = rich_meta_from_source(&stored.source)
+        .and_then(|meta| rich_render_from_path(&meta.html_path));
+    let drag_html = if include_drag {
+        render
+            .as_ref()
+            .map(|render| render.drag_html())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let tags = tags_for_clipboard_id(stored.id as i64).unwrap_or_default();
+    let item = materialize_item_with_rich(stored, tags, drag_html);
+    let mime_bytes = item.content.len() + item.text_content.len() + item.rich_html.len();
+    Ok(crate::history_views::HistoryCardPayload {
+        item,
+        rich_render: render,
+        mime_bytes,
+    })
+}
+
+fn search_stored_batch_with_cancellation(
+    keywords: &str,
     mut last_id: u64,
     mut last_time: u64,
     limit: usize,
     label: &str,
     is_current: impl Fn() -> bool,
-) -> Result<Option<Page<Item>>, String> {
+) -> Result<Option<Page<StoredItem>>, String> {
     if !is_current() {
         return Ok(None);
     }
@@ -680,7 +834,7 @@ fn search_batch_with_cancellation(
         };
         next_cursor = stored_items.last().map(|item| (item.id as u64, item.time));
         has_more = stored_items.len() == limit;
-        items.extend(materialize_items(stored_items));
+        items.extend(stored_items);
     } else {
         if !engine::is_ready() {
             rebuild_search_index()?;
@@ -737,7 +891,7 @@ fn search_batch_with_cancellation(
         stored_items.truncate(limit);
         next_cursor = stored_items.last().map(|item| (item.id as u64, item.time));
         let materialize_started = Instant::now();
-        items.extend(materialize_items(stored_items));
+        items.extend(stored_items);
         info!(
             "clipboard search stages candidates={} index_ms={} database_ms={} materialize_ms={} results={}",
             candidate_count,
@@ -748,7 +902,6 @@ fn search_batch_with_cancellation(
         );
     }
 
-    items.retain(is_displayable_history_item);
     let (next_id, next_time) = next_cursor.unwrap_or((0, 0));
     // let count = conn.query_row("select count(*) from clipboard", [], |row| row.get(0)).expect("count clipoard error");
     Ok(Some(Page {
@@ -1384,7 +1537,7 @@ fn wrap_excel_table_fragment(fragment: String) -> String {
     fragment
 }
 
-fn file_url_to_path(src: &str) -> Option<PathBuf> {
+pub(crate) fn file_url_to_path(src: &str) -> Option<PathBuf> {
     let src = src.trim();
     let lower = src.to_ascii_lowercase();
     if !lower.starts_with("file:") {
@@ -1486,7 +1639,10 @@ pub(crate) fn word_vml_local_image_urls(html: &str) -> Vec<String> {
 // Prefer Word's `<![if !vml]><img>` fallback in the preview. Its redundant VML
 // can contain large o:gfxdata metadata that must not exhaust the markup budget.
 // Only VML without that fallback is converted, so a picture is not shown twice.
-fn inline_word_vml_images(html: &str) -> String {
+fn transform_word_vml_images(
+    html: &str,
+    resolve: &mut impl FnMut(&str) -> Option<String>,
+) -> String {
     let Ok(pattern) = regex::Regex::new(
         r"(?is)<!--\s*\[if\b[^\]]*\]>(.*?)<!\s*\[endif\]\s*-->(\s*<!\[if\s+!vml\]>)?|<!--.*?-->|<v:imagedata\b[^>]*>",
     ) else {
@@ -1504,7 +1660,7 @@ fn inline_word_vml_images(html: &str) -> String {
                 _ => return original,
             }
             .iter()
-            .filter_map(|src| local_file_image_data_url(src))
+            .filter_map(|src| resolve(src))
             .map(|data_url| format!("<img src=\"{data_url}\">"))
             .collect::<String>();
             if images.is_empty() {
@@ -1516,34 +1672,114 @@ fn inline_word_vml_images(html: &str) -> String {
         .into_owned()
 }
 
-fn inline_local_file_images(html: &str) -> String {
+fn rewrite_image_source(tag: &str, source: &str) -> String {
+    let bytes = tag.as_bytes();
+    let mut cursor = 4; // <img, case-insensitive tag matching is done by the caller
+    let mut ranges = Vec::new();
+    while cursor < bytes.len() {
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() || matches!(bytes[cursor], b'>' | b'/') {
+            break;
+        }
+        let start = cursor;
+        while cursor < bytes.len()
+            && !bytes[cursor].is_ascii_whitespace()
+            && !matches!(bytes[cursor], b'=' | b'>' | b'/')
+        {
+            cursor += 1;
+        }
+        if cursor == start {
+            cursor += 1;
+            continue;
+        }
+        let is_src = tag[start..cursor].eq_ignore_ascii_case("src");
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor < bytes.len() && bytes[cursor] == b'=' {
+            cursor += 1;
+            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            if cursor < bytes.len() && matches!(bytes[cursor], b'\'' | b'"') {
+                let quote = bytes[cursor];
+                cursor += 1;
+                while cursor < bytes.len() && bytes[cursor] != quote {
+                    cursor += 1;
+                }
+                if cursor < bytes.len() {
+                    cursor += 1;
+                }
+            } else {
+                while cursor < bytes.len()
+                    && !bytes[cursor].is_ascii_whitespace()
+                    && bytes[cursor] != b'>'
+                {
+                    cursor += 1;
+                }
+            }
+        }
+        if is_src {
+            ranges.push((start, cursor));
+        }
+    }
+    let mut output = tag.to_string();
+    for (start, end) in ranges.into_iter().rev() {
+        output.replace_range(
+            start..end,
+            &format!("src=\"{}\"", escape_attr_value(source)),
+        );
+    }
+    output
+}
+
+fn transform_rich_images(
+    html: &str,
+    resolve: &mut impl FnMut(&str) -> Option<String>,
+    embedded: bool,
+) -> String {
     let Ok(selector) = scraper::Selector::parse("img") else {
         return html.to_string();
     };
-    let mut output = inline_word_vml_images(html);
-    let document = scraper::Html::parse_fragment(&output);
-    let replacements = document
+    let Ok(tags) = regex::Regex::new(r#"(?is)<img\b(?:[^>"']|"[^"]*"|'[^']*')*>"#) else {
+        return html.to_string();
+    };
+    let output = transform_word_vml_images(html, resolve);
+    let parsed = scraper::Html::parse_fragment(&output);
+    let visible_sources: HashSet<String> = parsed
         .select(&selector)
-        .filter_map(|element| element.value().attr("src"))
-        .filter(|src| src.to_ascii_lowercase().starts_with("file:"))
-        .filter_map(|src| {
-            local_file_image_data_url(src).map(|data_url| (src.to_string(), data_url))
-        })
-        .collect::<Vec<_>>();
+        .filter_map(|element| element.value().attr("src").map(str::to_string))
+        .collect();
+    tags.replace_all(&output, |capture: &regex::Captures<'_>| {
+        let tag = &capture[0];
+        let document = scraper::Html::parse_fragment(tag);
+        let Some(src) = document
+            .select(&selector)
+            .next()
+            .and_then(|element| element.value().attr("src"))
+        else {
+            return tag.to_string();
+        };
+        if !visible_sources.contains(src) {
+            return tag.to_string();
+        }
+        let lower = src.to_ascii_lowercase();
+        if !lower.starts_with("file:") && !(embedded && lower.starts_with("data:")) {
+            return tag.to_string();
+        }
+        match resolve(src) {
+            Some(resource) => rewrite_image_source(tag, &resource),
+            None if embedded => rewrite_image_source(tag, ""),
+            None => tag.to_string(),
+        }
+    })
+    .into_owned()
+}
 
-    for (src, data_url) in replacements {
-        output = output
-            .replace(
-                &format!("src=\"{}\"", src),
-                &format!("src=\"{}\"", data_url),
-            )
-            .replace(&format!("src='{}'", src), &format!("src=\"{}\"", data_url))
-            .replace(
-                &format!("src={}", src),
-                &format!("src=\"{}\"", escape_attr_value(&data_url)),
-            );
-    }
-    output
+fn inline_local_file_images(html: &str) -> String {
+    transform_rich_images(html, &mut local_file_image_data_url, false)
 }
 
 fn rich_html_file_stamp(path: &str) -> Option<RichHtmlFileStamp> {
@@ -1608,6 +1844,30 @@ fn read_rich_html_fragment_with_limit(path: &str, limit: u64) -> Option<String> 
     if let Some(cached) = stamp.and_then(|stamp| cached_rich_html(path, stamp)) {
         return rich_card_html_within_budget(&cached, limit).then_some(cached);
     }
+    let (fragment, style_blocks) = rich_fragment_parts(path, limit)?;
+    let fragment = wrap_excel_table_fragment(inline_local_file_images(&fragment));
+    let html = if style_blocks.is_empty() {
+        fragment
+    } else {
+        format!("{}\n{}", style_blocks, fragment)
+    };
+    let html = html.trim().to_string();
+    if html.is_empty() || !rich_card_html_within_budget(&html, limit) {
+        return None;
+    }
+    if let Some(stamp) = stamp {
+        cache_rich_html(path, stamp, &html);
+    }
+    Some(html)
+}
+
+fn rich_fragment_parts(path: &str, limit: u64) -> Option<(String, String)> {
+    if path.is_empty()
+        || history_store::file_len(path).ok()?
+            > limit + base64_len(RICH_CARD_INLINE_IMAGES_MAX_BYTES)
+    {
+        return None;
+    }
     let bytes = history_store::read_file(path).ok()?;
     if bytes.is_empty() {
         return None;
@@ -1630,20 +1890,51 @@ fn read_rich_html_fragment_with_limit(path: &str, limit: u64) -> Option<String> 
         .replace("<!--EndFragment-->", "")
         .trim()
         .to_string();
-    let fragment = wrap_excel_table_fragment(inline_local_file_images(&fragment));
-    let html = if style_blocks.is_empty() {
-        fragment
+    Some((fragment, style_blocks))
+}
+
+pub(crate) fn rich_render_for_hash(
+    hash: &str,
+) -> Option<crate::rich_card_assets::RichRenderPayload> {
+    let meta = rich_clipboard_meta(hash)?;
+    rich_render_from_path(&meta.html_path)
+}
+
+pub(crate) fn rich_render_from_path(
+    path: &str,
+) -> Option<crate::rich_card_assets::RichRenderPayload> {
+    let stamp = rich_html_file_stamp(path)?;
+    if let Some(render) =
+        crate::rich_card_assets::cached_render(path, stamp.len, stamp.modified_nanos)
+    {
+        return Some(render);
+    }
+    let limit = RICH_CARD_SOURCE_MAX_BYTES.min(RICH_CARD_HTML_MAX_BYTES as u64);
+    let (fragment, mut styles) = rich_fragment_parts(path, limit)?;
+    let mut images = crate::rich_card_assets::Images::new(path);
+    let mut html = transform_rich_images(&fragment, &mut |src| images.resolve(src), true);
+    // Transition safely from the old temporary-image keepalive cache, if available.
+    if images.missing_local {
+        if let Some(cached) =
+            rich_html_file_stamp(path).and_then(|stamp| cached_rich_html(path, stamp))
+        {
+            images = crate::rich_card_assets::Images::new(path);
+            html = transform_rich_images(&cached, &mut |src| images.resolve(src), true);
+            styles.clear();
+        }
+    }
+    let html = wrap_excel_table_fragment(html);
+    let html = if styles.is_empty() {
+        html
     } else {
-        format!("{}\n{}", style_blocks, fragment)
+        format!("{styles}\n{html}")
     };
-    let html = html.trim().to_string();
-    if html.is_empty() || !rich_card_html_within_budget(&html, limit) {
+    if html.trim().is_empty() || !rich_card_html_within_budget(&html, limit) {
         return None;
     }
-    if let Some(stamp) = stamp {
-        cache_rich_html(path, stamp, &html);
-    }
-    Some(html)
+    let render = images.finish(html)?;
+    crate::rich_card_assets::cache_render(path, stamp.len, stamp.modified_nanos, &render).ok()?;
+    Some(render)
 }
 
 fn base64_len(bytes: u64) -> u64 {
@@ -1786,6 +2077,7 @@ fn internal_paths_for_cleanup(
     }
 
     if let Some(meta) = rich_meta_from_source(source) {
+        paths.extend(crate::rich_card_assets::files_for_source(&meta.html_path));
         for path in [meta.html_path, meta.rtf_path, meta.png_path] {
             let path = PathBuf::from(path);
             if path.exists() && is_path_inside_history_storage(&path) {
@@ -2701,7 +2993,9 @@ fn insert_image_with_text_and_app_impl(
     }
     let hash = calculate_xxhash64(content);
     let path = save_to_disk(content, &hash);
-    let _ = crate::image_preview::metadata_from_bytes(&path, content);
+    if let Err(err) = crate::media_resources::prepare_captured_card(&path, Some(content)) {
+        error!("Failed to prepare captured image thumbnail: {err}");
+    }
     let item = Item {
         id: 0,
         content: path,
@@ -2760,6 +3054,17 @@ fn insert_file_from_app_impl(
     context: CaptureContext,
 ) -> Option<String> {
     let _cleanup = crate::auto_cleanup::pause();
+    if let [path] = content.as_slice() {
+        let extension = Path::new(path)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if crate::is_image_preview_extension(extension) && Path::new(path).is_file() {
+            if let Err(err) = crate::media_resources::prepare_captured_card(path, None) {
+                error!("Failed to prepare captured image-file thumbnail: {err}");
+            }
+        }
+    }
     let content = serde_json::to_string(content).unwrap();
     let hash = calculate_xxhash64(&content.clone().into_bytes());
     let item = Item {
@@ -3942,6 +4247,54 @@ mod tests {
             Some(PathBuf::from("/tmp/excel temp.png"))
         );
         assert_eq!(file_url_to_path("file://remote-host/tmp/image.png"), None);
+    }
+
+    #[test]
+    fn rich_asset_rewrite_handles_attribute_case_spaces_quotes_and_entities() {
+        let html = r#"<IMG alt="src='leave > this'" SRC = 'data:image/png;base64,AA=='><img src = "file:///tmp/a&amp;b.png">"#;
+        let mut sources = Vec::new();
+        let result = transform_rich_images(
+            html,
+            &mut |src| {
+                sources.push(src.to_string());
+                Some("vpaste-rich-image:known.png".into())
+            },
+            true,
+        );
+        assert!(!result.contains("base64"));
+        assert_eq!(
+            result
+                .matches("src=\"vpaste-rich-image:known.png\"")
+                .count(),
+            2
+        );
+        assert!(result.contains("src='leave > this'"));
+        assert_eq!(sources[1], "file:///tmp/a&b.png");
+    }
+
+    #[test]
+    fn migrated_temporary_image_survives_old_memory_cache_release() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        let image = root.path().join("temporary.png");
+        image::RgbImage::new(2, 2).save(&image).unwrap();
+        let url = reqwest::Url::from_file_path(&image).unwrap();
+        let document = root.path().join("rich.html");
+        fs::write(&document, format!("<img src=\"{url}\">")).unwrap();
+        read_rich_html_fragment(document.to_str().unwrap()).unwrap();
+        fs::remove_file(image).unwrap();
+        let first = rich_render_from_path(document.to_str().unwrap()).unwrap();
+        RICH_HTML_CACHE.lock().unwrap().clear();
+        let second = rich_render_from_path(document.to_str().unwrap()).unwrap();
+        assert_eq!(first.html, second.html);
+        assert_eq!(
+            first.resources[0].asset_path,
+            second.resources[0].asset_path
+        );
+        assert!(!second.html.contains("base64"));
+        assert!(Path::new(&second.resources[0].asset_path).is_file());
     }
 
     #[test]

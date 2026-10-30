@@ -93,17 +93,10 @@ export function createClipboardPreviewRuntime(
         if (!current()) return;
         if (mode !== "hover") options.selectItem(item.getHash());
         try {
-            const textContent = item.getType() === "TextFile"
-                ? await invoke<string>("plain_text_content", { hash: item.getHash() })
-                : item.getTextContent();
             if (!current()) return;
-            await invoke("show_preview_window", {
+            await invoke("show_history_preview", {
+                hash: item.getHash(),
                 itemType: item.getType(),
-                content: item.getContent(),
-                previewContent: item.getPreviewContent(),
-                textContent,
-                richHtml: item.getRichHtml(),
-                appSource: item.getAppSource(),
                 ...(mode !== "manual" ? { mode } : {}),
                 ...(mode === "selection" ? { navigationDirection } : {}),
                 ...(hoverRequest !== undefined ? { hoverRequest } : {}),

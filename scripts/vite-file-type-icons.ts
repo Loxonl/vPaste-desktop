@@ -52,7 +52,12 @@ export function fileTypeIconsPlugin(): Plugin {
                     : JSON.stringify(`${devPrefix()}${encodeURIComponent(filename)}`);
                 return `${JSON.stringify(filename)}:${expression}`;
             });
-            return `export const manifest=${JSON.stringify(manifest)};\nexport const iconUrls={${entries.join(",")}};`;
+            return {
+                code: `export const manifest=${JSON.stringify(manifest)};\nexport const iconUrls={${entries.join(",")}};`,
+                // This generated data has no source locations. Avoid retaining a
+                // second, base64-encoded copy as an inline development source map.
+                map: { mappings: "" },
+            };
         },
         configureServer(server) {
             server.middlewares.use(devPrefix(), (request, response, next) => {

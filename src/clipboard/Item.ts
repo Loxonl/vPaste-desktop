@@ -1,3 +1,5 @@
+import type { RichRenderPayload } from "./historyResourceTypes";
+
 export enum ItemType {
     Text = "Text",
     TextFile = "TextFile",
@@ -27,7 +29,7 @@ export class Item {
     private readonly label: number;
     private readonly tags: ItemTag[];
 
-    constructor(id: number, hash: string, type: ItemType, content: string, time: number, titleColor?: string, previewContent: string = "", textContent: string = "", label: number = 0, appSource: string = "", appIconPath: string = "", richHtml: string = "", tags: ItemTag[] = []) {
+    constructor(id: number, hash: string, type: ItemType, content: string, time: number, titleColor?: string, previewContent: string = "", textContent: string = "", label: number = 0, appSource: string = "", appIconPath: string = "", richHtml: string = "", tags: ItemTag[] = [], private readonly richRender?: RichRenderPayload, private readonly historyRecord = false) {
         this.id = id;
         this.hash = hash;
         this.type = type;
@@ -79,6 +81,12 @@ export class Item {
         return this.richHtml;
     }
 
+    getRichRender() {
+        return this.richRender;
+    }
+
+    isHistoryRecord() { return this.historyRecord; }
+
     isRichText() {
         return this.richHtml.trim().length > 0;
     }
@@ -118,6 +126,8 @@ export class Item {
             this.appIconPath,
             this.richHtml,
             tags,
+            this.richRender,
+            this.historyRecord,
         );
     }
 }

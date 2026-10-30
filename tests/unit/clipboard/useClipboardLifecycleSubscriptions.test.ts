@@ -45,6 +45,7 @@ function handlers() {
             onTutorialCompleted: vi.fn(),
             onTutorialStarted: vi.fn(),
             onWindowHidden: vi.fn(),
+            onWindowParked: vi.fn(),
             onWindowHide: vi.fn(),
             onWindowShow: vi.fn(),
             onWindowShowComplete: vi.fn(),
@@ -68,6 +69,7 @@ describe("useClipboardLifecycleSubscriptions", () => {
             "window-show-complete",
             "window-hide",
             "window-hidden",
+            "window-parked",
             "listen_new_clipboard",
             "clipboard-resources-updated",
             "tutorial-started",
@@ -110,6 +112,15 @@ describe("useClipboardLifecycleSubscriptions", () => {
         expect(callbacks.tauri.onPreviewNavigation)
             .toHaveBeenCalledWith({ direction: -1, key: "Tab" });
 
+        unmount();
+    });
+
+    it("routes parking separately from the real-hidden cleanup event", () => {
+        const callbacks = handlers();
+        const { unmount } = renderHook(() => useClipboardLifecycleSubscriptions(callbacks));
+        act(() => { tauri.callbacks.get("window-parked")?.({ payload: null }); });
+        expect(callbacks.tauri.onWindowParked).toHaveBeenCalledOnce();
+        expect(callbacks.tauri.onWindowHidden).not.toHaveBeenCalled();
         unmount();
     });
 

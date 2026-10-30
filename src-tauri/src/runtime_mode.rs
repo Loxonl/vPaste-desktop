@@ -51,7 +51,7 @@ pub(crate) fn portable_data_directory() -> Result<Option<PathBuf>, String> {
     Ok(portable_data_directory_for(executable_dir))
 }
 
-fn portable_data_directory_for(executable_dir: &Path) -> Option<PathBuf> {
+pub(crate) fn portable_data_directory_for(executable_dir: &Path) -> Option<PathBuf> {
     executable_dir
         .join(PORTABLE_MARKER)
         .is_file()

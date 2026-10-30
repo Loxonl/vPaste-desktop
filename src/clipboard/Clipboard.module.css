@@ -939,15 +939,37 @@ body {
   min-height: 100%;
 }
 
+.tutorial-loading {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+}
+
 .cards-grid {
+  --clipboard-card-width: 220px;
+  --clipboard-card-gap: 16px;
   grid-area: 1 / 1;
   z-index: 1;
   display: flex;
-  gap: 16px;
+  gap: var(--clipboard-card-gap);
   width: max-content;
   min-width: 100%;
   min-height: 100%;
   align-items: center;
+}
+
+.virtual-list-probe {
+  position: absolute;
+  width: var(--clipboard-card-width);
+  height: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.virtual-list-track {
+  position: relative;
+  flex: 0 0 auto;
+  height: 230px;
 }
 
 .cards-grid[data-results-active="false"] {
@@ -960,7 +982,7 @@ body {
 
 .card-motion-item {
   flex: 0 0 auto;
-  width: 220px;
+  width: var(--clipboard-card-width, 220px);
   height: 230px;
 }
 

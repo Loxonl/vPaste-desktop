@@ -51,7 +51,7 @@
       },
       "csp": {
         "default-src": "'self' 'unsafe-inline' 'unsafe-eval' customprotocol: asset:",
-        "connect-src": "ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420 https: http:",
+        "connect-src": "ipc: asset: http://ipc.localhost http://localhost:1420 ws://localhost:1420 https: http:",
         "frame-src": "https: http: asset:",
         "font-src": [
           "https://fonts.gstatic.com"

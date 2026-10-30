@@ -12,6 +12,13 @@
     const record = async (phase, error = null) => {
         const list = cards();
         const target = container();
+        const media = [...(results()?.querySelectorAll('img[data-history-media], [class*="card-preview-rich"] img') || [])];
+        const mediaState = { total: media.length, withSource: media.filter(image => !!image.getAttribute('src')).length,
+            decoded: media.filter(image => image.complete && image.naturalWidth > 0).length,
+            inline: media.filter(image => /^(?:data:|blob:)/i.test(image.getAttribute('src') || '')).length };
+        if ((phase === 's1' || phase === 's2-settled') && (mediaState.inline || mediaState.withSource !== mediaState.total || mediaState.decoded !== mediaState.total)) {
+            throw new Error('settled media did not load through file resources: ' + JSON.stringify(mediaState));
+        }
         await invoke('memory_profile_record', {metrics: {
             phase, elapsedMs: performance.now() - started,
             domCount: list.length, imageCount: results()?.querySelectorAll('img').length || 0,
@@ -19,6 +26,7 @@
             scrollLeft: target?.scrollLeft || 0, viewportWidth: target?.clientWidth || innerWidth,
             dpr: devicePixelRatio, svgModuleCount: performance.getEntriesByType('resource').filter(entry => /material-icon-theme\/icons\/.*\?.*(?:import|no-inline)/.test(entry.name)).length,
             misses, error,
+            diagnostics: { history: target?.dataset.historyMemory ? JSON.parse(target.dataset.historyMemory) : null, media: mediaState },
         }});
     };
     const sampleFor = async (phase, seconds) => {
@@ -35,6 +43,10 @@
         await invoke('show_main_panel');
         await sleep(30000);
         await sampleFor('s1', 30);
+        if (window.__vpasteMemoryProfileFirstPage) {
+            await record('complete');
+            return;
+        }
         const target = container();
         const stride = target.clientWidth - 48;
         let desired = 0;

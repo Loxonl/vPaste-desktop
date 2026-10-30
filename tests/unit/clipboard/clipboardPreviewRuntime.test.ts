@@ -39,7 +39,7 @@ describe("clipboard preview runtime", () => {
     it("refreshes keyboard selection without reopening or refocusing the preview", async () => {
         tauri.invoke.mockImplementation(async (command: string) => command === "is_preview_window_visible" ? true : undefined);
         createClipboardPreviewRuntime(options()).refreshPreviewIfVisible(item(), -1);
-        await vi.waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("show_preview_window", expect.objectContaining({
+        await vi.waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("show_history_preview", expect.objectContaining({
             mode: "selection", navigationDirection: -1,
         })));
         expect(tauri.invoke).not.toHaveBeenCalledWith("hide_preview_window");
@@ -52,7 +52,7 @@ describe("clipboard preview runtime", () => {
             else tauri.invoke.mockResolvedValue({ previewLimited: true });
             await createClipboardPreviewRuntime(callbacks).openPreviewItem(item(ItemType.Image), 0, "selection");
             expect(tauri.invoke).not.toHaveBeenCalledWith("hide_preview_window");
-            expect(tauri.invoke).not.toHaveBeenCalledWith("show_preview_window", expect.anything());
+            expect(tauri.invoke).not.toHaveBeenCalledWith("show_history_preview", expect.anything());
             expect(callbacks.showToast).not.toHaveBeenCalled();
         });
     }
@@ -61,23 +61,22 @@ describe("clipboard preview runtime", () => {
         const callbacks = options();
         const link = new Item(1, "link-hash", ItemType.Link, "https://example.com/page", 0);
         await createClipboardPreviewRuntime(callbacks).openPreviewItem(link, 0, "hover", 123);
-        expect(tauri.invoke.mock.calls).toEqual([["show_preview_window", expect.objectContaining({
-            itemType: ItemType.Link, content: "https://example.com/page", mode: "hover", hoverRequest: 123,
+        expect(tauri.invoke.mock.calls).toEqual([["show_history_preview", expect.objectContaining({
+            hash: "link-hash", itemType: ItemType.Link, mode: "hover", hoverRequest: 123,
         })]]);
         expect(callbacks.selectItem).not.toHaveBeenCalled();
     });
 
-    it("does not show a disk-backed hover after the pointer leaves during the read", async () => {
-        let complete!: (value: string) => void;
+    it("dismisses a disk-backed hover if the pointer leaves while Rust prepares it", async () => {
+        let complete!: () => void;
         let valid = true;
-        tauri.invoke.mockImplementation(async (command: string) => command === "plain_text_content"
-            ? new Promise<string>(resolve => { complete = resolve; }) : undefined);
-        const target = item(ItemType.TextFile);
-        const pending = createClipboardPreviewRuntime(options()).openPreviewItem(target, 0, "hover", 123, () => valid);
-        valid = false;
-        complete("old content");
+        tauri.invoke.mockImplementation(async (command: string) => command === "show_history_preview"
+            ? new Promise<void>(resolve => { complete = resolve; }) : undefined);
+        const pending = createClipboardPreviewRuntime(options()).openPreviewItem(item(ItemType.TextFile), 0, "hover", 123, () => valid);
+        valid = false; complete();
         await pending;
-        expect(tauri.invoke).not.toHaveBeenCalledWith("show_preview_window", expect.anything());
+        expect(tauri.invoke).toHaveBeenCalledWith("dismiss_hover_preview_window", { request: 123 });
+        expect(tauri.invoke).not.toHaveBeenCalledWith("plain_text_content", expect.anything());
     });
 
     it("opens hover content without changing selection or dismissing menus", async () => {
@@ -85,14 +84,14 @@ describe("clipboard preview runtime", () => {
         await createClipboardPreviewRuntime(callbacks).openPreviewItem(item(), 0, "hover", 123);
         expect(callbacks.selectItem).not.toHaveBeenCalled();
         expect(callbacks.closeContextMenu).not.toHaveBeenCalled();
-        expect(tauri.invoke).toHaveBeenLastCalledWith("show_preview_window", expect.objectContaining({ mode: "hover", hoverRequest: 123 }));
+        expect(tauri.invoke).toHaveBeenLastCalledWith("show_history_preview", expect.objectContaining({ mode: "hover", hoverRequest: 123 }));
     });
 
     it("updates an open preview without asking it to take focus on mouse selection", async () => {
         const callbacks = options();
         tauri.invoke.mockImplementation(async (command: string) => command === "is_preview_window_visible" ? true : undefined);
         createClipboardPreviewRuntime(callbacks).refreshPreviewIfVisible(item());
-        await vi.waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("show_preview_window", expect.objectContaining({ mode: "selection" })));
+        await vi.waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("show_history_preview", expect.objectContaining({ mode: "selection" })));
     });
 
     it("does not toast or open a resource-limited hover image", async () => {
@@ -101,38 +100,34 @@ describe("clipboard preview runtime", () => {
         await createClipboardPreviewRuntime(callbacks).openPreviewItem(item(ItemType.Image), 0, "hover", 123);
         expect(callbacks.showToast).not.toHaveBeenCalled();
         expect(tauri.invoke).not.toHaveBeenCalledWith("hide_preview_window");
-        expect(tauri.invoke).not.toHaveBeenCalledWith("show_preview_window", expect.anything());
+        expect(tauri.invoke).not.toHaveBeenCalledWith("show_history_preview", expect.anything());
     });
 
-    it("loads the full disk-backed text before opening its preview", async () => {
+    it("asks Rust to open full disk-backed text by hash without transferring its body", async () => {
         const callbacks = options();
-        const body = "long text\n".repeat(2000) + "THE END";
-        const target = new Item(2, "long-text", ItemType.TextFile, "C:\\history\\data\\long-text", 0, undefined, body.slice(0, 1800));
-        tauri.invoke.mockImplementation(async (command: string) => {
-            if (command === "plain_text_content") return body;
-            return undefined;
-        });
+        tauri.invoke.mockResolvedValue(undefined);
+        const target = new Item(2, "long-text", ItemType.TextFile, "C:\\history\\long-text", 0, undefined, "short card preview");
         await createClipboardPreviewRuntime(callbacks).openPreviewItem(target);
-        expect(tauri.invoke).toHaveBeenCalledWith("plain_text_content", { hash: "long-text" });
-        expect(tauri.invoke).toHaveBeenLastCalledWith("show_preview_window", expect.objectContaining({ textContent: body }));
-        expect(target.getPreviewContent()).toBe(body.slice(0, 1800));
+        expect(tauri.invoke).toHaveBeenLastCalledWith("show_history_preview", { hash: "long-text", itemType: ItemType.TextFile });
+        expect(tauri.invoke).not.toHaveBeenCalledWith("plain_text_content", expect.anything());
+        expect(target.getPreviewContent()).toBe("short card preview");
     });
 
-    it("reports a missing text body without opening a path-only preview", async () => {
+    it("reports Rust's missing-body failure without sending a path-only preview", async () => {
         const callbacks = options();
         tauri.invoke.mockRejectedValue(new Error("history file missing"));
         await createClipboardPreviewRuntime(callbacks).openPreviewItem(item(ItemType.TextFile));
-        expect(tauri.invoke).toHaveBeenCalledWith("plain_text_content", { hash: "preview-hash" });
+        expect(tauri.invoke).toHaveBeenCalledWith("show_history_preview", { hash: "preview-hash", itemType: ItemType.TextFile });
         expect(tauri.invoke).not.toHaveBeenCalledWith("show_preview_window", expect.anything());
         expect(callbacks.showToast).toHaveBeenCalledWith("clipboard.previewFailed", "error");
     });
 
-    it.each([false, true])("ignores an obsolete text read (reject: %s)", async reject => {
+    it.each([false, true])("ignores obsolete Rust preview preparation (reject: %s)", async reject => {
         const callbacks = options();
         let finish: () => void = () => undefined;
-        tauri.invoke.mockImplementation((command: string) => {
-            if (command === "plain_text_content") return new Promise((resolve, fail) => {
-                finish = () => reject ? fail(new Error("old read failed")) : resolve("old body");
+        tauri.invoke.mockImplementation((command: string, args?: { itemType?: ItemType }) => {
+            if (command === "show_history_preview" && args?.itemType === ItemType.TextFile) return new Promise((resolve, fail) => {
+                finish = () => reject ? fail(new Error("old read failed")) : resolve(undefined);
             });
             return Promise.resolve(undefined);
         });
@@ -141,7 +136,7 @@ describe("clipboard preview runtime", () => {
         await runtime.openPreviewItem(item());
         finish();
         await pending;
-        expect(tauri.invoke.mock.calls.filter(([command]) => command === "show_preview_window")).toHaveLength(1);
+        expect(tauri.invoke.mock.calls.filter(([command]) => command === "show_history_preview")).toHaveLength(2);
         expect(callbacks.showToast).not.toHaveBeenCalled();
     });
 
@@ -150,7 +145,7 @@ describe("clipboard preview runtime", () => {
         logger.error.mockReset();
     });
 
-    it("opens a preview with the full established item payload", async () => {
+    it("opens a preview by stable history identity", async () => {
         const callbacks = options();
         tauri.invoke.mockResolvedValue(undefined);
         const runtime = createClipboardPreviewRuntime(callbacks);
@@ -159,13 +154,9 @@ describe("clipboard preview runtime", () => {
 
         expect(callbacks.closeContextMenu).toHaveBeenCalledOnce();
         expect(callbacks.selectItem).toHaveBeenCalledWith("preview-hash");
-        expect(tauri.invoke).toHaveBeenCalledWith("show_preview_window", {
+        expect(tauri.invoke).toHaveBeenCalledWith("show_history_preview", {
+            hash: "preview-hash",
             itemType: ItemType.Text,
-            content: "content",
-            previewContent: "preview",
-            textContent: "plain",
-            richHtml: "<p>rich</p>",
-            appSource: "source",
         });
     });
 
@@ -181,7 +172,7 @@ describe("clipboard preview runtime", () => {
             "warning",
         );
         expect(tauri.invoke).not.toHaveBeenCalledWith(
-            "show_preview_window",
+            "show_history_preview",
             expect.anything(),
         );
     });
@@ -225,7 +216,7 @@ describe("clipboard preview runtime", () => {
         });
         expect(tauri.invoke).toHaveBeenNthCalledWith(2, "hide_preview_window");
         expect(tauri.invoke).not.toHaveBeenCalledWith(
-            "show_preview_window",
+            "show_history_preview",
             expect.anything(),
         );
         expect(callbacks.showToast).toHaveBeenCalledWith(
@@ -247,7 +238,7 @@ describe("clipboard preview runtime", () => {
                     animationLimited: false,
                 };
             }
-            if (command === "show_preview_window") return undefined;
+            if (command === "show_history_preview") return undefined;
             throw new Error("Unexpected command: " + command);
         });
         const runtime = createClipboardPreviewRuntime(callbacks);
@@ -257,13 +248,9 @@ describe("clipboard preview runtime", () => {
         expect(tauri.invoke).toHaveBeenNthCalledWith(1, "history_image_metadata", {
             path: "content",
         });
-        expect(tauri.invoke).toHaveBeenNthCalledWith(2, "show_preview_window", {
+        expect(tauri.invoke).toHaveBeenNthCalledWith(2, "show_history_preview", {
+            hash: "preview-hash",
             itemType: ItemType.Image,
-            content: "content",
-            previewContent: "preview",
-            textContent: "plain",
-            richHtml: "<p>rich</p>",
-            appSource: "source",
         });
         expect(callbacks.showToast).not.toHaveBeenCalled();
     });
@@ -277,7 +264,7 @@ describe("clipboard preview runtime", () => {
 
         expect(tauri.invoke).toHaveBeenCalledOnce();
         expect(tauri.invoke).not.toHaveBeenCalledWith(
-            "show_preview_window",
+            "show_history_preview",
             expect.anything(),
         );
         expect(callbacks.showToast).toHaveBeenCalledWith(
@@ -304,13 +291,9 @@ describe("clipboard preview runtime", () => {
         await first;
 
         expect(tauri.invoke).toHaveBeenCalledTimes(2);
-        expect(tauri.invoke).toHaveBeenLastCalledWith("show_preview_window", {
+        expect(tauri.invoke).toHaveBeenLastCalledWith("show_history_preview", {
+            hash: "preview-hash",
             itemType: ItemType.Text,
-            content: "content",
-            previewContent: "preview",
-            textContent: "plain",
-            richHtml: "<p>rich</p>",
-            appSource: "source",
         });
     });
 

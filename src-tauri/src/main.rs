@@ -98,6 +98,8 @@ mod startup_panel;
 mod test_room;
 #[cfg(target_os = "windows")]
 mod windows_main_shortcut;
+#[cfg(target_os = "windows")]
+mod windows_paste_focus;
 
 #[cfg(test)]
 #[ctor]
@@ -2023,6 +2025,8 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
         let was_visible = window.is_visible().unwrap_or(false);
         let was_presented = CLIPBOARD_VISIBLE.load(Ordering::SeqCst);
         if !was_presented {
+            #[cfg(target_os = "windows")]
+            windows_paste_focus::capture_foreground();
             record_foreground_app_before_clipboard();
         }
         generation = CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
@@ -11095,6 +11099,11 @@ fn paste(
     }
     std::thread::sleep(std::time::Duration::from_millis(40));
 
+    #[cfg(target_os = "windows")]
+    windows_paste_focus::restore_before_paste(
+        LAST_FOREGROUND_HWND_BEFORE_CLIPBOARD.load(Ordering::SeqCst) as usize,
+    )?;
+
     if let Err(err) = simulate_paste_shortcut() {
         error!("Failed to simulate paste shortcut: {}", err);
         return Err(err);
@@ -12438,6 +12447,8 @@ fn main() {
                         .build(),
                 )
                 .expect("load log plugin error");
+            #[cfg(target_os = "windows")]
+            windows_paste_focus::initialize();
             #[cfg(target_os = "windows")]
             windows_main_shortcut::log_status();
             std::thread::spawn(move || {

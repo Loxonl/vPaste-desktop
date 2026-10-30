@@ -1027,7 +1027,6 @@ body {
 :root[data-theme="dark"] .settings-button {
   background: var(--ui-clipboard-header-control-surface);
   color: var(--theme-text);
-  box-shadow: var(--ui-clipboard-header-control-shadow);
 }
 
 :root[data-theme="dark"] .search-input {

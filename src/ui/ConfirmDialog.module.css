@@ -9,9 +9,7 @@
   margin: var(--ui-space-4);
   color: var(--ui-text);
   background: var(--ui-surface-solid);
-  border: 1px solid var(--ui-border-strong);
   border-radius: var(--ui-radius-surface);
-  box-shadow: var(--ui-shadow);
 }
 
 .title.title {

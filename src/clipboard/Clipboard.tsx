@@ -507,6 +507,8 @@ export default function Clipboard() {
 
     useEffect(() => {
         const unsubscribe = historyStore.subscribe(() => {
+            // A refresh publishes its items and result key together after readiness.
+            if (historyRefreshingRef.current) return;
             const items = historyStore.residentItems();
             pageListRef.current = items;
             setPage(new ClipboardPage(items, 0, historyStore.knownCount,

@@ -72,7 +72,7 @@ preview page is prewarmed after the main page is ready. Closing the preview
 clears its content/state and hides it, retaining its WebView until app exit.
 Warmup does not load clipboard content, media or websites. Account for this
 resident renderer when reviewing memory; there is no idle-release timer.
-The main clipboard window keeps its existing hide/show lifecycle; the text
+The main clipboard window keeps its own presentation lifecycle; the text
 editor still confirms dirty drafts before closing. Cold openings wait for their
 new page's listeners before sending payloads.
 

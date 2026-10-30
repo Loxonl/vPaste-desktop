@@ -277,7 +277,7 @@ for (const retainLastPosition of [false, true]) {
     });
 }
 
-test("first reopening resets selection before the show-time config request returns", async ({ page }) => {
+test("first reopening from parking resets selection before the show-time config request returns", async ({ page }) => {
     await openClipboard(page);
     await expect.poll(() => page.evaluate(() => (window as ProbeWindow).__showProbe.configCalls())).toBeGreaterThan(0);
     await page.keyboard.press("ArrowRight");
@@ -287,7 +287,7 @@ test("first reopening resets selection before the show-time config request retur
     await page.evaluate(() => {
         const probe = (window as ProbeWindow).__showProbe;
         probe.emit("window-hide");
-        probe.emit("window-hidden");
+        probe.emit("window-parked");
         probe.holdConfig();
         probe.emit("window-show");
     });

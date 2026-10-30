@@ -42,7 +42,8 @@ export function installHistoryMockBridge() {
             if (command === "set_history_viewport") return;
             if (command === "read_history_card_payloads") return {
                 token: { viewId: args.viewId, revision: 1 }, resourceEpoch: views.get(args.viewId)?.pages.get(0)?.resourceEpoch ?? 0,
-                cards: args.hashes.map((hash: string) => rows.get(hash)).filter(Boolean).map((item: Row) => ({ item, richRender: render(item) })),
+                cards: args.hashes.map((hash: string) => rows.get(hash)).filter(Boolean).map((item: Row) => ({ item, richRender: render(item),
+                    mimeBytes: (String(item.content ?? "").length + String(item.textContent ?? "").length + String(item.richHtml ?? "").length) * 2 })),
             };
             if (command === "read_history_rich_render") return render(rows.get(args.hash) ?? {});
             if (command === "history_item_action_info") {

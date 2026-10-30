@@ -239,9 +239,10 @@ describe("PreviewBody transparency", () => {
             />,
         );
 
+        // File-only icons now include their cold module transform in this test.
         await waitFor(() => {
             expect(container.querySelector("[data-file-presentation='known']")).toHaveTextContent("DOC");
-        });
+        }, { timeout: 5_000 });
         expect(container.querySelectorAll("[data-file-presentation='known'] img")).toHaveLength(1);
         expect(container.querySelector("[class*='preview-file-symbol']")).toBeNull();
     });

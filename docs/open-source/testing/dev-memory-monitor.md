@@ -67,10 +67,14 @@ timestamp. Windows still requires a native Windows runtime smoke check.
 
 ## Auxiliary lifecycle
 
-All auxiliary windows now use destruction and lazy recreation instead of
-remaining hidden after close. The main clipboard window keeps its existing
-hide/show lifecycle; the text editor still confirms dirty drafts before closing.
-Cold openings wait for their new page's listeners before sending payloads.
+Auxiliary windows use destruction and lazy recreation, except that one blank
+preview page is prewarmed after the main page is ready. Closing the preview
+clears its content/state and hides it, retaining its WebView until app exit.
+Warmup does not load clipboard content, media or websites. Account for this
+resident renderer when reviewing memory; there is no idle-release timer.
+The main clipboard window keeps its own presentation lifecycle; the text
+editor still confirms dirty drafts before closing. Cold openings wait for their
+new page's listeners before sending payloads.
 
 Tauri queues `destroy()`. A resource on each native window marks it Open,
 Closing or Closed, and recreation waits for `Destroyed` before reusing its label.

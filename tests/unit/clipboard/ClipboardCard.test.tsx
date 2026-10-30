@@ -61,6 +61,23 @@ describe("clipboard card header", () => {
         expect(release).toHaveBeenCalledOnce();
     });
 
+    it.each(["dragend", "unmount"] as const)("removes a browser drag preview before its next frame on %s", ending => {
+        const item = new Item(902, `pending-drag-${ending}`, ItemType.Text, "Original text", 0);
+        const transfer = { effectAllowed: "", dropEffect: "none", setData: vi.fn(), setDragImage: vi.fn() };
+        const view = render(<ClipboardCard item={item} selected={false} simulatedHover={false} refreshKey={0}
+            searchQuery="" filterMotionIndex={0} mediaPlaybackReady={false} t={key => key} onContextMenu={vi.fn()} />);
+        const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(12345);
+        const cancel = vi.spyOn(window, "cancelAnimationFrame");
+        const card = view.container.querySelector('[data-hash]')!;
+        fireEvent.dragStart(card, { dataTransfer: transfer });
+        const preview = transfer.setDragImage.mock.calls[0][0] as HTMLElement;
+        expect(preview.isConnected).toBe(true);
+        if (ending === "dragend") fireEvent.dragEnd(card, { dataTransfer: transfer });
+        else view.unmount();
+        expect(preview.isConnected).toBe(false);
+        expect(cancel).toHaveBeenCalledWith(frame.mock.results[0].value);
+    });
+
     it("keeps the accepted source color for the background and format tag", () => {
         const item = new Item(
             1,

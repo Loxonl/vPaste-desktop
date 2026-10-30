@@ -166,6 +166,14 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
     const dragTextLoadRef = useRef<Promise<void> | null>(null);
     const dragTextHoveredRef = useRef(false);
     const nativeDragStateRef = useRef<{ x: number; y: number; started: boolean; previewAbort?: AbortController } | null>(null);
+    const browserDragPreviewRef = useRef<{ element: HTMLElement; frame: number | null } | null>(null);
+    const clearBrowserDragPreview = useCallback(() => {
+        const preview = browserDragPreviewRef.current;
+        browserDragPreviewRef.current = null;
+        if (!preview) return;
+        if (preview.frame !== null) window.cancelAnimationFrame(preview.frame);
+        preview.element.remove();
+    }, []);
     const retainInteractionRef = useRef(onRetainForInteraction);
     retainInteractionRef.current = onRetainForInteraction;
     const interactionReleaseRef = useRef<(() => void) | null>(null);
@@ -301,13 +309,14 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
             clearDragTextGesture();
             nativeDragStateRef.current?.previewAbort?.abort();
             nativeDragStateRef.current = null;
+            clearBrowserDragPreview();
             interactionReleaseRef.current?.();
             if (dragFeedbackTimerRef.current !== null) {
                 window.clearTimeout(dragFeedbackTimerRef.current);
                 dragFeedbackTimerRef.current = null;
             }
         };
-    }, [clearDragTextGesture]);
+    }, [clearDragTextGesture, clearBrowserDragPreview]);
 
     useEffect(() => {
         setHeaderColor(headerColorFromSource(item.getTitleColor()));
@@ -460,12 +469,18 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                 dragStartedRef.current = true;
                 retainDrag();
 
+                clearBrowserDragPreview();
                 const dragImage = createClipboardDragPreview(event.currentTarget);
+                const preview = { element: dragImage, frame: null as number | null };
+                browserDragPreviewRef.current = preview;
                 document.body.appendChild(dragImage);
                 event.dataTransfer.setDragImage?.(dragImage, 18, 18);
-                window.requestAnimationFrame(() => dragImage.remove());
+                preview.frame = window.requestAnimationFrame(() => {
+                    if (browserDragPreviewRef.current === preview) clearBrowserDragPreview();
+                });
             }}
             onDragEnd={(event) => {
+                clearBrowserDragPreview();
                 setDragging(false);
                 interactionReleaseRef.current?.();
                 if (event.dataTransfer.dropEffect === "none") return;

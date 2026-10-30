@@ -11,7 +11,7 @@
   background: color-mix(in srgb, var(--ui-surface-solid) 97%, transparent);
   border: 1px solid var(--ui-border-strong);
   border-radius: var(--ui-radius-popover);
-  box-shadow: var(--ui-shadow);
+  box-shadow: var(--ui-shadow-menu);
   backdrop-filter: blur(14px);
 }
 

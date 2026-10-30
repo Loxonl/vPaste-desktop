@@ -78,7 +78,11 @@ function installDesktopInteractionGuards() {
 
 installDesktopInteractionGuards();
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+if (import.meta.env.DEV && "__vpasteMemoryProfileDiagnostics" in window) {
+    Object.defineProperty(window, "__vpasteMemoryProfileUnmount", { value: () => root.unmount() });
+}
+root.render(
     <React.StrictMode>
         <AppMotionProvider>
             <AppThemeProvider>

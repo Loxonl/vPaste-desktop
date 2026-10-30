@@ -32,6 +32,7 @@ type ClipboardTauriEventHandlers = {
     onTutorialCompleted: () => void;
     onTutorialStarted: () => void;
     onWindowHidden: () => void;
+    onWindowParked?: () => void;
     onWindowHide: () => void;
     onWindowShow: (payload: WindowShowPayload) => void;
     onWindowShowComplete: () => void;
@@ -80,6 +81,9 @@ export function useClipboardLifecycleSubscriptions(
         });
         const unlistenHidden = listen("window-hidden", () => {
             subscriptions.tauri.onWindowHidden();
+        });
+        const unlistenParked = listen("window-parked", () => {
+            subscriptions.tauri.onWindowParked?.();
         });
         const unlistenClipboard = listen("listen_new_clipboard", () => {
             subscriptions.tauri.onClipboardChanged();
@@ -149,6 +153,7 @@ export function useClipboardLifecycleSubscriptions(
             unlistenShowComplete,
             unlistenHide,
             unlistenHidden,
+            unlistenParked,
             unlistenClipboard,
             unlistenCaptureRejected,
             unlistenResources,
@@ -179,6 +184,7 @@ export function useClipboardLifecycleSubscriptions(
             removeTauriListener(unlistenShowComplete, "show completion");
             removeTauriListener(unlistenHide, "hide");
             removeTauriListener(unlistenHidden, "hidden");
+            removeTauriListener(unlistenParked, "parked");
             removeTauriListener(unlistenClipboard, "clipboard");
             removeTauriListener(unlistenCaptureRejected, "capture rejection");
             removeTauriListener(unlistenResources, "resources");

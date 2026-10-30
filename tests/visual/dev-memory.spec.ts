@@ -1,4 +1,8 @@
 import { expect, test } from "@playwright/test";
+import { installHistoryMockBridge } from "../helpers/historyMockBridge";
+
+test.beforeEach(async ({ page }) => { await page.addInitScript(installHistoryMockBridge); });
+
 type Preview = { languageCode: string; themePreview: string };
 type ProbeWindow = Window & { __memoryWindowProbe: { opened: unknown[]; sent: Preview[]; closed: number; preview: (payload: Preview) => void; theme: (theme: string) => void } };
 

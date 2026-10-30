@@ -12,7 +12,7 @@ function hasExternalCssResource(value: string): boolean {
     return /\\|\/\*|url\s*\(|image-set\s*\(|expression\s*\(|@import/i.test(value);
 }
 
-export function sanitizeRichHtml(html: string, maxWidthPx = 160, editable = false): string {
+export function sanitizeRichHtml(html: string, maxWidthPx = 160, editable = false, trustedImages?: ReadonlyMap<string, string>): string {
     if (!html.trim()) return "";
     const document = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
     document.querySelectorAll(
@@ -31,9 +31,16 @@ export function sanitizeRichHtml(html: string, maxWidthPx = 160, editable = fals
         const tag = element.tagName.toLowerCase();
         Array.from(element.attributes).forEach(attribute => {
             const name = attribute.name.toLowerCase();
-            if (tag === "img" && name === "src" && !safeRichImageSource(attribute.value)) {
-                element.remove();
-                return;
+            if (tag === "img" && name === "src") {
+                const resource = trustedImages?.get(attribute.value);
+                if (resource) {
+                    element.setAttribute("src", resource);
+                    return;
+                }
+                if (trustedImages !== undefined || !safeRichImageSource(attribute.value)) {
+                    element.remove();
+                    return;
+                }
             }
             if (name === "style" && hasExternalCssResource(attribute.value)) {
                 element.removeAttribute(attribute.name);

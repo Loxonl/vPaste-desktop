@@ -161,7 +161,7 @@ describe("ImagePreview", () => {
             );
         });
         expect(invokeMock).toHaveBeenCalledWith("resolve_history_media", {
-            path: "C:\\history\\recover-image.bin", intent: "card", refresh: true,
+            path: "C:\\history\\recover-image.bin", intent: "card", refresh: true, cardPixelWidth: 240,
         });
     });
 

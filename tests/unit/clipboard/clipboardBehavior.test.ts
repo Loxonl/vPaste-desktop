@@ -3,6 +3,7 @@ import {
     clampRetainedScrollLeft,
     loadClipboardBehaviorConfig,
     mainShortcutFromConfig,
+    requestClipboardHide,
     resolveClipboardShowPreferences,
     resolveClipboardShowPlan,
 } from "../../../src/clipboard/clipboardBehavior";
@@ -31,6 +32,38 @@ describe("clipboard behavior preferences", () => {
     beforeEach(() => {
         tauri.invoke.mockReset();
         logger.error.mockReset();
+    });
+
+    it("does not treat an old native hide response as confirmation that a reopened window is hidden", async () => {
+        let finish!: () => void;
+        tauri.invoke.mockImplementation((command: string) => command === "begin_hide_clipboard_window"
+            ? Promise.resolve(12)
+            : new Promise<void>(resolve => { finish = resolve; }));
+        let current = true;
+        const phases: string[] = [];
+        const pending = requestClipboardHide(() => current, phase => phases.push(phase));
+        await Promise.resolve();
+        await Promise.resolve();
+        current = false;
+        phases.push("entering");
+        finish();
+        await pending;
+        expect(phases).toEqual(["exiting", "entering"]);
+    });
+
+    it("restores a denied hide only while that request is current", async () => {
+        let deny!: (generation: number) => void;
+        tauri.invoke.mockReturnValueOnce(new Promise<number>(resolve => { deny = resolve; }));
+        let current = true;
+        const phase = vi.fn();
+        const pending = requestClipboardHide(() => current, phase);
+        current = false;
+        deny(0);
+        await pending;
+        expect(phase).toHaveBeenCalledExactlyOnceWith("exiting");
+        tauri.invoke.mockResolvedValueOnce(0);
+        await requestClipboardHide(() => true, phase);
+        expect(phase).toHaveBeenLastCalledWith("entered");
     });
 
     it("loads saved clipboard behavior without querying system login item status", async () => {

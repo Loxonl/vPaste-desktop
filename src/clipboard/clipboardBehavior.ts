@@ -8,6 +8,26 @@ import {
 
 export type ClipboardBehaviorConfig = Partial<ConfigData>;
 
+/** Native window-parked retains the card layer; window-hidden releases it. */
+export async function requestClipboardHide(
+    isCurrent: () => boolean,
+    setPhase: (phase: "exiting" | "entered") => void,
+): Promise<void> {
+    setPhase("exiting");
+    const generation = await invoke<number>("begin_hide_clipboard_window")
+        .catch(reason => {
+            error(`Failed to mark clipboard hiding: ${reason}`);
+            return 0;
+        });
+    if (generation === 0) {
+        if (isCurrent()) setPhase("entered");
+        return;
+    }
+    await invoke("finish_hide_clipboard_window", { generation })
+        .catch(reason => error(`Failed to finish clipboard hiding: ${reason}`));
+    // A stale native generation also resolves successfully. It cannot set hidden.
+}
+
 export type ClipboardShowPreferences = {
     activeTab: string;
     linkAutoPreview: boolean;

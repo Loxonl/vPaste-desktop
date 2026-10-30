@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import materialIconManifest from "material-icon-theme/dist/material-icons.json";
 import {
     resolveFileTypeIcon,
     resolveMaterialIcon,
@@ -22,5 +23,23 @@ describe("file type icon resolution", () => {
         expect(resolveMaterialIcon("document")?.name).toBe("document");
         expect(resolveMaterialIcon("folder")?.name).toBe("folder");
         expect(resolveMaterialIcon("folder-resource")?.name).toBe("folder-resource");
+    });
+
+    it("preserves every available manifest icon when resource modules become static assets", () => {
+        for (const [name, definition] of Object.entries(materialIconManifest.iconDefinitions)) {
+            const filename = definition.iconPath.split("/").pop();
+            const result = resolveMaterialIcon(name);
+            expect(result, name).not.toBeNull();
+            expect(new URL(result!.url, "http://localhost").pathname, name).toMatch(
+                new RegExp(`/${filename!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`),
+            );
+        }
+    });
+
+    it("preserves light-specific extension associations", () => {
+        for (const [extension, name] of Object.entries(materialIconManifest.light.fileExtensions)) {
+            if (extension.includes("/")) continue;
+            expect(resolveFileTypeIcon(`/workspace/profile.${extension}`, "light")?.name).toBe(name);
+        }
     });
 });

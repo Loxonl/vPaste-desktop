@@ -1,5 +1,9 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { officeCatalog, officeHtml } from "../support/officeFixtures";
+import { installHistoryMockBridge } from "../helpers/historyMockBridge";
+
+test.beforeEach(async ({ page }) => { await page.addInitScript(installHistoryMockBridge); });
+
 
 const samples = [
     { id: "light-page", html: '<p style="color: #222; background-color: #fff">Light page</p>', text: "Light page", color: "rgb(34, 34, 34)", background: "rgb(255, 255, 255)" },

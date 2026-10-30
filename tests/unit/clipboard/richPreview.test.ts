@@ -14,6 +14,14 @@ function firstElement(html: string): HTMLElement {
 }
 
 describe("rich clipboard preview", () => {
+    it("only resolves tokens from this Rust payload and rejects inline bytes in resource mode", () => {
+        const html = sanitizeRichHtml('<p>kept</p><img src="vpaste-rich-image:known"><img src="asset://localhost/private.png"><img src="vpaste-rich-image:fake"><img src="data:image/png;base64,AA==">',
+            160, false, new Map([["vpaste-rich-image:known", "asset://localhost/owned.png"]]));
+        const document = new DOMParser().parseFromString(html, "text/html");
+        expect(document.querySelectorAll("img")).toHaveLength(1);
+        expect(document.querySelector("img")?.getAttribute("src")).toBe("asset://localhost/owned.png");
+        expect(document.body.textContent).toContain("kept");
+    });
     it("drops executable URL surfaces while keeping raster clipboard images", () => {
         const html = sanitizeRichHtml(`
             <svg><animate attributeName="href" values="javascript:alert(1)" /></svg>

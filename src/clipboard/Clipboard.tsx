@@ -869,9 +869,7 @@ export default function Clipboard() {
         const resolved = await historyStore.navigationRef(index);
         if (!resolved || !current()) return null;
         const { index: target, ref } = resolved;
-        const visible = Math.ceil((cardsContainerRef.current?.clientWidth ?? window.innerWidth) / 236);
-        await historyStore.ensureRange(Math.max(0, target - 2), target + visible + 2);
-        if (!current()) return null;
+        // Only the measured viewport may evict resident cards; navigation reads one item.
         const item = await historyStore.actionItem(ref.hash);
         if (!item || !current()) return null;
         selectedLogicalIndexRef.current = target;

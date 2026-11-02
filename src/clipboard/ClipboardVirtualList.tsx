@@ -26,17 +26,17 @@ type RenderCard = (
     item: Item, index: number, ref: Ref<HTMLDivElement>, retain: () => () => void,
     animateEntry: boolean, left: number,
 ) => ReactElement;
-type ListLife = { active: boolean; hashes: Set<string>; retiring: Set<string>; held: Set<string> };
+type ListLife = { active: boolean; hashes: Set<string>; retiring: Set<string>; held: Set<string>; renderCard: RenderCard };
 const ListLifeContext = createContext<ListLife | null>(null);
 type RegisterNode = (hash: string, node: HTMLDivElement | null, previous: HTMLDivElement | null) => void;
 type SlotProps = {
     item: Item; index: number; left: number; animateEntry: boolean;
-    renderCard: RenderCard; retain: () => () => void;
+    retain: () => () => void;
     registerNode: RegisterNode;
 };
 
 const CardSlot = forwardRef<HTMLDivElement, SlotProps>(function CardSlot({
-    item, index, left, animateEntry, renderCard, retain, registerNode,
+    item, index, left, animateEntry, retain, registerNode,
 }, ref) {
     const life = useContext(ListLifeContext)!;
     const [present, safeToRemove] = usePresence();
@@ -54,7 +54,8 @@ const CardSlot = forwardRef<HTMLDivElement, SlotProps>(function CardSlot({
     // Scrolling releases DOM immediately. Actual record removal keeps its existing
     // Motion exit. No slot or animation context is retained for offscreen records.
     if (!life.active || (!present && (life.hashes.has(hash) || !life.retiring.has(hash)))) return null;
-    return renderCard(item, index, attach, retain, animateEntry, left);
+    // Presence may retain an older element; its card still needs current render state.
+    return life.renderCard(item, index, attach, retain, animateEntry, left);
 });
 
 export const ClipboardVirtualList = forwardRef<ClipboardVirtualListHandle, {
@@ -83,7 +84,7 @@ export const ClipboardVirtualList = forwardRef<ClipboardVirtualListHandle, {
     const itemsRef = useRef(items);
     itemsRef.current = items;
     const currentHashes = useMemo(() => new Set(items.map(item => item.getHash())), [items]);
-    const life = useRef<ListLife>({ active, hashes: currentHashes, retiring: new Set(), held: new Set() });
+    const life = useRef<ListLife>({ active, hashes: currentHashes, retiring: new Set(), held: new Set(), renderCard });
     const knownHashes = useRef(new Set<string>());
     const arrivingHashes = useMemo(() => {
         const range = clipboardViewport({ ...geometryRef.current, count: countRef.current });
@@ -175,7 +176,7 @@ export const ClipboardVirtualList = forwardRef<ClipboardVirtualListHandle, {
             && left < currentGeometry.scrollLeft + currentGeometry.viewportWidth + overscan;
         if (active && (visible || leases.current.has(hash))) retiring.add(hash);
     }
-    life.current = { active, hashes: currentHashes, retiring, held: new Set(leases.current.hashes()) };
+    life.current = { active, hashes: currentHashes, retiring, held: new Set(leases.current.hashes()), renderCard };
     const capacity = clipboardViewport({ ...geometry, count: Number.MAX_SAFE_INTEGER });
     let indices: number[] = [];
     if (active) {
@@ -198,7 +199,7 @@ export const ClipboardVirtualList = forwardRef<ClipboardVirtualListHandle, {
                         key={hash}
                         registerNode={registerNode}
                         item={item} index={index} left={index * (geometry.cardWidth + geometry.gap)}
-                        animateEntry={arrivingHashes.has(hash) && !mountedHashes.current.has(hash)} renderCard={renderCard}
+                        animateEntry={arrivingHashes.has(hash) && !mountedHashes.current.has(hash)}
                         retain={() => {
                             const release = leases.current.acquire(hash);
                             const releaseData = sourceRef.current?.retain(hash);

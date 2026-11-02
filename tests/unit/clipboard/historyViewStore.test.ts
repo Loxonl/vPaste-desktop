@@ -31,6 +31,25 @@ function backend(total = 5000) {
 }
 
 describe("bounded history data", () => {
+    it("publishes navigation metadata growth without replacing the resident viewport", async () => {
+        const native = backend(200);
+        const store = new HistoryViewStore(native.call);
+        await store.open({ keywords: "", label: "all" }, { start: 0, end: 14 });
+        const resident = store.residentItems().map(item => item.getHash());
+        const updates: Array<{ count: number; hashes: string[] }> = [];
+        store.subscribe(() => updates.push({ count: store.knownCount, hashes: store.residentItems().map(item => item.getHash()) }));
+        const previousPayloads = native.calls.filter(call => call.command === "read_history_card_payloads").length;
+
+        expect((await store.navigationRef(40))?.ref.hash).toBe("record-40");
+        expect(updates).toEqual([{ count: 72, hashes: resident }]);
+        expect(native.calls.filter(call => call.command === "read_history_card_payloads")).toHaveLength(previousPayloads);
+        expect((await store.actionItem("record-40"))?.getContent()).toBe("complete 40");
+        expect(native.calls.filter(call => call.command === "read_history_card_payloads").at(-1)?.args.hashes).toEqual(["record-40"]);
+        expect(store.residentItems().map(item => item.getHash())).toEqual(resident);
+        await store.navigationRef(41);
+        expect(updates).toHaveLength(1);
+    });
+
     it("does not return a cached navigation record after its view closes in the same turn", async () => {
         const store = new HistoryViewStore(backend().call);
         await store.open({ keywords: "", label: "all" }, { start: 0, end: 14 });

@@ -13,8 +13,8 @@ type MousePreviewWindow = Window & { __mousePreview: {
 const card = (page: Page, hash: string) => page.locator(`[data-results-active="true"] [data-hash="${hash}"][class*="clipboard-card"]`);
 const callCount = (page: Page, command: string) => page.evaluate(command => (window as MousePreviewWindow).__mousePreview.calls.filter(call => call.command === command).length, command);
 
-async function openPanel(page: Page, mode: "single" | "double", hover: boolean, mac = false, linkCard = false, recordCount = 3) {
-    await page.emulateMedia({ reducedMotion: mac ? "reduce" : "no-preference" });
+async function openPanel(page: Page, mode: "single" | "double", hover: boolean, mac = false, linkCard = false, recordCount = 3, reducedMotion = mac) {
+    await page.emulateMedia({ reducedMotion: reducedMotion ? "reduce" : "no-preference" });
     await page.addInitScript(({ mode, hover, mac, linkCard, recordCount }) => {
         Object.defineProperty(navigator, "platform", { value: mac ? "MacIntel" : "Win32", configurable: true });
         Object.defineProperty(navigator, "userAgentData", { value: { platform: mac ? "macOS" : "Windows" }, configurable: true });
@@ -254,6 +254,77 @@ test("forwarded preview keyboard navigation keeps selection while the list scrol
     await page.locator('[class*="cards-container"]').dispatchEvent("scroll");
     await page.clock.runFor(350);
     await expect(card(page, "record-8")).toHaveClass(/selected/);
+});
+
+async function expectVisibleCardCoverage(page: Page, count: number) {
+    const coverage = () => page.evaluate(count => {
+        const surface = document.querySelector<HTMLElement>('[data-results-active="true"]')!;
+        const container = surface.closest<HTMLElement>('[class*="cards-container"]')!;
+        const track = surface.querySelector<HTMLElement>('[class*="virtual-list-track"]')!;
+        const probe = surface.querySelector<HTMLElement>('[class*="virtual-list-probe"]')!;
+        const bounds = container.getBoundingClientRect();
+        const left = track.getBoundingClientRect().left;
+        const width = probe.offsetWidth;
+        const stride = width + (parseFloat(getComputedStyle(probe.parentElement!).columnGap) || 16);
+        const cards = Array.from(surface.querySelectorAll<HTMLElement>('[data-hash][class*="clipboard-card"]'));
+        const visible = Array.from({ length: count }, (_, index) => index)
+            .filter(index => left + index * stride < bounds.right && left + index * stride + width > bounds.left)
+            .map(index => ["first", "second", "third"][index] ?? `record-${index + 1}`);
+        return {
+            missing: visible.filter(hash => !cards.some(card => card.dataset.hash === hash
+                && Number(getComputedStyle(card.closest<HTMLElement>("[data-card-hash]")!).opacity) > 0.99)),
+            visibleCount: visible.length, mountedCount: cards.length, scrollLeft: container.scrollLeft,
+        };
+    }, count);
+    await expect.poll(async () => (await coverage()).missing).toEqual([]);
+    const result = await coverage();
+    expect(result.visibleCount).toBeGreaterThan(0);
+    expect(result.mountedCount).toBeLessThanOrEqual(result.visibleCount + 6);
+    return result;
+}
+
+for (const mac of [false, true]) {
+    for (const reducedMotion of [false, true]) {
+        test(`preview navigation preserves every visible card before scrolling (mac: ${mac}, reduced: ${reducedMotion})`, async ({ page }) => {
+            await page.setViewportSize({ width: 1600, height: 720 });
+            await page.clock.install();
+            await openPanel(page, "double", false, mac, false, 80, reducedMotion);
+            await page.clock.runFor(700);
+            await page.keyboard.press("Space");
+            await expect.poll(() => page.evaluate(() => (window as MousePreviewWindow).__mousePreview.mode())).toBe("manual");
+            let previous = 0;
+            for (const index of [1, 2, 3, 4, 5, 4, 3, 2, 1, 0]) {
+                await page.evaluate(direction => (window as MousePreviewWindow).__mousePreview.emit("preview-navigate-selection", { direction, key: direction > 0 ? "ArrowRight" : "ArrowLeft" }), index > previous ? 1 : -1);
+                previous = index;
+                const hash = ["first", "second", "third"][index] ?? `record-${index + 1}`;
+                await expect.poll(() => page.evaluate(() => (window as MousePreviewWindow).__mousePreview.calls.filter(call => call.command === "show_preview_window").at(-1)?.args.content)).toBe(`${hash} local record`);
+                // Let exits finish: old card nodes must not conceal a viewport hole.
+                await page.clock.runFor(600);
+                await expect(card(page, hash)).toHaveClass(/selected/);
+                expect((await expectVisibleCardCoverage(page, 80)).scrollLeft).toBe(0);
+            }
+            expect(await callCount(page, "delete_clipboard_item")).toBe(0);
+            expect(await callCount(page, "paste")).toBe(0);
+        });
+    }
+}
+
+test("rapid preview navigation crosses pages and returns without viewport holes", async ({ page }) => {
+    await page.clock.install();
+    await openPanel(page, "double", false, false, false, 80);
+    await page.clock.runFor(700);
+    await page.keyboard.press("Space");
+    await expect.poll(() => page.evaluate(() => (window as MousePreviewWindow).__mousePreview.mode())).toBe("manual");
+    for (const [direction, steps, hash] of [[1, 40, "record-41"], [1, 60, "record-80"], [-1, 79, "first"]] as const) {
+        await page.evaluate(({ direction, steps }) => {
+            for (let index = 0; index < steps; index += 1) (window as MousePreviewWindow).__mousePreview.emit("preview-navigate-selection", { direction, key: direction > 0 ? "ArrowRight" : "ArrowLeft" });
+        }, { direction, steps });
+        await expect.poll(() => page.evaluate(() => (window as MousePreviewWindow).__mousePreview.calls.filter(call => call.command === "show_preview_window").at(-1)?.args.content)).toBe(`${hash} local record`);
+        await page.clock.runFor(600);
+        await expect(card(page, hash)).toHaveClass(/selected/);
+        await expectVisibleCardCoverage(page, 80);
+        await expect(card(page, hash)).toBeInViewport();
+    }
 });
 
 test("hover yields to explicit previews and cancels for menus, scrolling, categories and disable", async ({ page }) => {

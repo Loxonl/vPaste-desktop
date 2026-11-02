@@ -3049,48 +3049,82 @@ mod tests {
         let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader_done = done.clone();
         let (ready, started) = mpsc::channel();
+        let (request_sample, sample_requests) = mpsc::channel::<()>();
+        let (sample_observed, observed_samples) = mpsc::channel::<()>();
         let reader = thread::spawn(move || {
             let monitor = CaptureMonitor::new().unwrap();
             ready.send(()).unwrap();
             let mut unmarked = 0;
             let mut marked = 0;
+            let mut sample_pending = false;
             while !reader_done.load(Ordering::SeqCst) {
+                // A checkpoint must acknowledge a read started after its request,
+                // not a queued observation from before the writer's latest batch.
+                sample_pending |= sample_requests.try_recv().is_ok();
+                let sequence = clipboard_sequence_number();
                 match read_snapshot(
                     &monitor,
-                    clipboard_sequence_number(),
+                    sequence,
                     false,
                     clipboard::CaptureContext {
                         time: 1,
                         queue_epoch: None,
                     },
-                    &ReadTrace::new(clipboard_sequence_number(), 1),
+                    &ReadTrace::new(sequence, 1),
                 ) {
                     Ok(Some(snapshot)) if snapshot.text.is_some() => unmarked += 1,
-                    Ok(None) => marked += 1,
+                    Ok(None) => {
+                        marked += 1;
+                        if sample_pending {
+                            sample_observed.send(()).unwrap();
+                            sample_pending = false;
+                        }
+                    }
                     _ => {}
                 }
                 thread::yield_now();
             }
             (unmarked, marked)
         });
-        started.recv().unwrap();
+        let observation_timeout = Duration::from_secs(5);
+        started
+            .recv_timeout(observation_timeout)
+            .expect("native reader did not initialize");
         let mut successful_writes = 0;
-        for _ in 0..500 {
+        let mut observed_batches = 0;
+        let mut observation_error = None;
+        for attempt in 0..500 {
             if crate::copy_text_to_windows_clipboard("internal queue text").is_ok() {
                 successful_writes += 1;
             }
             thread::yield_now();
+            // Keep all 500 concurrent write attempts, but give the native reader
+            // an acknowledged turn between batches instead of stopping it unseen.
+            if (attempt + 1) % 25 == 0 && observation_error.is_none() {
+                if let Err(error) = request_sample.send(()) {
+                    observation_error = Some(format!("reader request failed: {error}"));
+                } else if let Err(error) = observed_samples.recv_timeout(observation_timeout) {
+                    observation_error = Some(format!("marked read was not observed: {error}"));
+                } else {
+                    observed_batches += 1;
+                }
+            }
         }
         done.store(true, Ordering::SeqCst);
         let (unmarked, marked) = reader.join().unwrap();
         assert!(
             successful_writes > 0 && marked > 0,
-            "native reader/writer did not run"
+            "native reader/writer did not run: writes={successful_writes}, marked={marked}, batches={observed_batches}, observation_error={observation_error:?}"
         );
         assert_eq!(
             unmarked, 0,
             "a capture can re-enqueue vPaste's own text before its marker is written"
         );
+        assert!(
+            observation_error.is_none(),
+            "native interleaving failed: {observation_error:?}; writes={successful_writes}, marked={marked}, batches={observed_batches}"
+        );
+        assert_eq!(observed_batches, 20, "every write batch needs a fresh read");
     }
 
     fn qq_text_snapshot(sequence: u32, text: &str, rich: bool) -> ClipboardSnapshot {

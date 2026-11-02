@@ -23,6 +23,34 @@ beforeEach(() => {
 afterEach(() => { cleanup(); container.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("clipboard virtual DOM lifetime", () => {
+    it.each([false, true])("keeps current selection while scrolling slots retire (reduced: %s)", async reduced => {
+        const features = await loadMotionFeatures();
+        const handle = createRef<ClipboardVirtualListHandle>();
+        const tree = (selected: string) => <LazyMotion features={features} strict>
+            <ClipboardVirtualList ref={handle} items={items} containerRef={{ current: container }} active
+                renderCard={(item, _index, ref, _retain, _entry, left) => (
+                    <m.div ref={ref} style={{ position: "absolute", left }} variants={motionPresetFor("gridItem", reduced)} initial={false} animate="animate" exit="exit">
+                        <div data-hash={item.getHash()}>{item.getHash() === selected ? "Selected" : "Unselected"}</div>
+                    </m.div>
+                )} />
+        </LazyMotion>;
+        vi.useFakeTimers();
+        try {
+            const view = render(tree("record-0"), { container });
+            for (let index = 1; index <= 35; index += 1) {
+                act(() => { handle.current!.scrollToIndex(index); });
+                view.rerender(tree(`record-${index}`));
+                await act(async () => { vi.advanceTimersByTime(32); });
+                expect(handle.current!.getCard(`record-${index}`)).toHaveTextContent(/^Selected$/);
+            }
+            await act(async () => { vi.advanceTimersByTime(1000); });
+            expect(handle.current!.getCard("record-35")).toHaveTextContent(/^Selected$/);
+            expect(container.querySelectorAll("[data-hash]").length).toBeLessThanOrEqual(14);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("mounts only the viewport and overscan, and resolves an offscreen logical index by hash", () => {
         const handle = createRef<ClipboardVirtualListHandle>();
         const view = render(<ClipboardVirtualList ref={handle} items={items} containerRef={{ current: container }} active renderCard={(item, _index, ref) => <div ref={ref}><div data-hash={item.getHash()}>{item.getContent()}</div></div>} />, { container });

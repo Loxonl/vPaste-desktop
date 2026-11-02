@@ -1494,10 +1494,13 @@ fn read_bitmap(
     app_source: &AppSource,
     context: clipboard::CaptureContext,
 ) -> Result<Option<String>, String> {
-    let _decode_guard = crate::image_preview::decode_lock()?;
-    let png = image_convert::convert_bitmap_to_png(raw.as_slice())
-        .map_err(|err| format!("convert {} bitmap failed: {}", name, err))?;
+    let png = {
+        let _decode_guard = crate::image_preview::decode_lock()?;
+        image_convert::convert_bitmap_to_png(raw.as_slice())
+            .map_err(|err| format!("convert {} bitmap failed: {}", name, err))?
+    };
 
+    // Capture prepares a thumbnail, which acquires the same decode lock.
     Ok(clipboard::capture_image_with_text_and_app(
         &png,
         text_content.unwrap_or(""),
@@ -2107,6 +2110,147 @@ fn is_vpaste_exe(exe_path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bitmap_capture_prepares_cold_thumbnails_and_continues_with_text() {
+        const ROOT_ENV: &str = "VPASTE_TEST_BITMAP_CAPTURE_ROOT";
+        let Some(root) = std::env::var_os(ROOT_ENV) else {
+            use std::os::windows::io::AsRawHandle;
+            use std::process::{Command, Stdio};
+            use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+            use windows::Win32::System::Threading::WaitForSingleObject;
+
+            // A regressed non-reentrant lock must fail this test, not hang the
+            // suite or leave a blocked worker holding the shared test-data lock.
+            let root = tempfile::tempdir().unwrap();
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "clipboard::windows::listen::tests::bitmap_capture_prepares_cold_thumbnails_and_continues_with_text",
+                    "--nocapture",
+                ])
+                .env(ROOT_ENV, root.path())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let finished =
+                unsafe { WaitForSingleObject(HANDLE(child.as_raw_handle() as isize), 10_000) }
+                    == WAIT_OBJECT_0;
+            if !finished {
+                child.kill().unwrap();
+            }
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                finished && output.status.success(),
+                "bitmap capture child finished={finished}, status={}\n{}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(root.to_string_lossy().into_owned());
+        config::save(config::Config::default());
+        clipboard::db::init();
+        crate::media_resources::set_capture_scale_factor(1.0);
+        let mut captured = Vec::new();
+        for (index, (v5, queue)) in [(false, false), (true, false), (false, true), (true, true)]
+            .into_iter()
+            .enumerate()
+        {
+            crate::paste_queue::set_active(queue);
+            let mut header = vec![0; 40];
+            header[..4].copy_from_slice(&40_u32.to_le_bytes());
+            header[4..8].copy_from_slice(&5000_i32.to_le_bytes());
+            header[8..12].copy_from_slice(&5000_i32.to_le_bytes());
+            header[12..14].copy_from_slice(&1_u16.to_le_bytes());
+            header[14..16].copy_from_slice(&32_u16.to_le_bytes());
+            for invalid in [vec![0], header] {
+                assert!(read_bitmap(
+                    invalid,
+                    "CF_DIB",
+                    None,
+                    &AppSource::default(),
+                    clipboard::CaptureContext::from(queue),
+                )
+                .is_err());
+            }
+
+            let pixels =
+                image::RgbaImage::from_pixel(16, 12, image::Rgba([index as u8 * 40, 90, 180, 255]));
+            let mut png = std::io::Cursor::new(Vec::new());
+            pixels.write_to(&mut png, image::ImageFormat::Png).unwrap();
+            let dib = image_convert::convert_image_bytes_to_dib(png.get_ref()).unwrap();
+            let mut snapshot = ClipboardSnapshot {
+                context: Some(clipboard::CaptureContext::from(queue)),
+                png: Some(png.into_inner()),
+                ..Default::default()
+            };
+            if v5 {
+                snapshot.dib_v5 = Some(image_convert::convert_bitmap_to_dibv5(&dib).unwrap());
+            } else {
+                snapshot.dib = Some(dib);
+            }
+            println!("capture cold bitmap: v5={v5}, queue={queue}");
+            let hash = parse_snapshot(&mut snapshot).unwrap().unwrap();
+            let item = clipboard::try_get_by_hash(&hash).unwrap();
+            assert_eq!(item.item_type, clipboard::item::ItemType::Image);
+            let stored = crate::history_store::read_file(&item.content).unwrap();
+            assert_eq!(image::load_from_memory(&stored).unwrap().to_rgba8(), pixels);
+            let key = crate::image_preview::source_cache_key(&item.content).unwrap();
+            let thumbnail = crate::image_preview::card_preview_cache_path_for_key(&format!(
+                "{key}:card-240x180"
+            ))
+            .unwrap();
+            assert!(crate::valid_png_cache_file(&thumbnail));
+            assert_eq!(image::image_dimensions(&thumbnail).unwrap(), (240, 180));
+
+            assert_eq!(
+                read_bitmap(
+                    image_convert::convert_image_bytes_to_dib(&stored).unwrap(),
+                    "CF_DIB",
+                    None,
+                    &AppSource::default(),
+                    clipboard::CaptureContext::from(queue),
+                )
+                .unwrap(),
+                Some(hash.clone())
+            );
+            assert_eq!(clipboard::count_by_hash(&hash), 1);
+            let text = format!("text after bitmap {index}");
+            let text_hash = parse_snapshot(&mut ClipboardSnapshot {
+                context: Some(clipboard::CaptureContext::from(queue)),
+                text: Some(text.clone()),
+                ..Default::default()
+            })
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                clipboard::try_get_by_hash(&text_hash).unwrap().content,
+                text
+            );
+            assert_eq!(
+                crate::paste_queue::ordered_hashes().unwrap(),
+                if queue {
+                    vec![hash.clone(), text_hash.clone()]
+                } else {
+                    Vec::new()
+                }
+            );
+            captured.extend([hash, text_hash]);
+            crate::paste_queue::set_active(false);
+        }
+        assert_eq!(
+            clipboard::db::db()
+                .query_row("SELECT count(*) FROM clipboard", [], |row| row
+                    .get::<_, usize>(0))
+                .unwrap(),
+            captured.len()
+        );
+    }
 
     #[test]
     fn word_optional_formats_retry_access_errors_instead_of_losing_images() {

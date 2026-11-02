@@ -112,10 +112,13 @@ export class HistoryViewStore {
         const token = this.token;
         if (!token) return undefined;
         const generation = this.generation;
+        const previousCount = this.knownCount;
+        const previousHasMore = this.hasMore;
         const page = await this.page(Math.floor(index / PAGE_SIZE));
         if (!this.current(generation, token)) return undefined;
         const ref = page?.items[index - page.startIndex];
         this.trimPages();
+        if (this.knownCount !== previousCount || this.hasMore !== previousHasMore) this.emit();
         return ref;
     }
     async navigationRef(index: number) {

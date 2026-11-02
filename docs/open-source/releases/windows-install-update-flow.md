@@ -10,6 +10,7 @@ Windows 官方交付物为 Inno Setup 6.7.3 编译的 x64 当前用户安装包�
 - 系统版本由 Inno 原生 `MinVersion` 统一检查，交互安装和静默更新使用同一门槛；不再在欢迎页单独拦截低于 22H2 的系统。WinGet 清单使用相同最低版本。
 - 缺少 WebView2 时才下载微软 Evergreen Bootstrapper，并在运行前验证 Microsoft Authenticode 签名。
 - 同版本进入修复模式；默认阻止降级，开发测试只能显式传入 `/ALLOWDOWNGRADE` 并再次确认。
+- 由 Windows Restart Manager 检测并关闭占用目标安装文件的应用，不在按钮回调中同步等待全局 `taskkill`；交互安装必要时以紧凑布局展示原生占用确认，保留关闭选择与继续/取消操作，静默安装自动处理。真正的准备失败保留原始错误信息，不替换为占用提示。其他目录的同名开发版或 Portable 进程不会因名称相同而被结束。
 
 ## 从旧 NSIS 迁移
 
@@ -23,6 +24,7 @@ Windows 官方交付物为 Inno Setup 6.7.3 编译的 x64 当前用户安装包�
 - Windows 把验签后的 Inno EXE 先写入临时文件、从磁盘复验后再原子提交 `pending.json` 元数据；下次启动在后台离线复核缓存签名、版本和平台，再恢复“重启更新”状态，不重复下载。
 - 默认启动 60 秒后检查，此后在上次成功检查 24 小时后再检查并静默下载；失败按 15 分钟 → 1 小时 → 6 小时退避，不记为成功检查。下载完成并验签落盘后，设置页、主面板（设置按钮右侧的蓝色圆形更新图标，点击后先确认）和托盘提供同一个“更新并重启”操作，系统通知同一版本最多提醒一次。
 - 用户点击“重启更新”后，应用先复验缓存，再以静默参数启动安装器并退出；安装器无法启动时不退出，缓存仍有效时可直接重试；安装器完成替换后使用 `--updated-from` 启动新版本。
+- 新版更新器显式传入 `/NORESTARTAPPLICATIONS /RESTARTAPP`，由安装器既有的启动条目统一重启应用，避免 Restart Manager 与安装器分别启动一次。
 - 更新重启参数与当前版本匹配时，在采集监听已启动、主面板事件订阅就绪后自动打开一次主面板；普通启动、开机自启和未完成引导时不因此打开主面板。macOS 保持原有的启动显示行为，并同样等待主面板订阅就绪。
 - Stable 使用 `https://vpaste.app/download/stable/latest.json`；RC 构建使用 `https://vpaste.app/download/rc/latest.json`，由 Release workflow 写入 `VPASTE_UPDATE_CHANNEL=rc` 选择。发布 Release 后，合并的 `latest.json` 经匿名下载校验后写入 `Loxonl/vPaste-website` 对应通道，详见 [update-feed-publication.md](update-feed-publication.md)。
 - 私有 Draft Release 仍硬性禁用公共 feed。Debug 可通过 `VPASTE_DEBUG_UPDATE_ENDPOINT` 使用本地签名测试源。

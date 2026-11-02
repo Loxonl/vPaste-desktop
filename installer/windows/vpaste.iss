@@ -72,7 +72,7 @@ WizardBackColor=#ffffff
 WizardBackColorDynamicDark=#171b23
 ShowLanguageDialog=no
 LanguageDetectionMethod=uilanguage
-CloseApplications=yes
+CloseApplications=force
 RestartApplications=no
 AllowNoIcons=no
 UsePreviousAppDir=yes
@@ -132,6 +132,7 @@ const
   ExpandedHeight = 400;
   InstallingHeight = 280;
   FinishedHeight = 250;
+  PreparingHeight = 300;
   NativeFallbackHeight = 420;
   UninstallHeight = 260;
   BackgroundDesignWidth = 1000;
@@ -179,6 +180,7 @@ var
   WelcomeCloseButton: TBitmapImage;
   InstallingCloseButton: TBitmapImage;
   FinishedCloseButton: TBitmapImage;
+  PreparingCloseButton: TBitmapImage;
   AdvancedPanel: TPanel;
   DirectoryLabel: TNewStaticText;
   DirectoryEditFrame: TPanel;
@@ -190,7 +192,6 @@ var
   LegacyUninstallKey: String;
   PreviousExecutableBackup: String;
   InstallCompleted: Boolean;
-  ExistingAppPrepared: Boolean;
   CreateDesktopShortcut: Boolean;
   RemoveUserData: Boolean;
   UninstallAppDataDir: String;
@@ -959,6 +960,7 @@ begin
   CreateSetupCloseButton(WelcomeCloseButton, WizardForm.WelcomePage);
   CreateSetupCloseButton(InstallingCloseButton, WizardForm.InstallingPage);
   CreateSetupCloseButton(FinishedCloseButton, WizardForm.FinishedPage);
+  CreateSetupCloseButton(PreparingCloseButton, PageFromID(wpPreparing).Surface);
 
   LogoImage := TBitmapImage.Create(WizardForm);
   LoadLogo(LogoImage, 88, 48, WizardForm.WelcomePage);
@@ -1088,37 +1090,8 @@ begin
   ConfigureFinishedPage;
 end;
 
-function RequestExistingAppExit: Boolean;
-  forward;
-
-procedure ShowInstallPreparation;
-begin
-  WizardForm.InnerNotebook.ActivePage := WizardForm.InstallingPage;
-  WelcomeCloseButton.Visible := False;
-  InstallingCloseButton.Visible := True;
-  ConfigureNativeProgressControls(True);
-  InstallingCloseButton.BringToFront;
-  WizardForm.InstallingPage.Repaint;
-  WizardForm.Update;
-end;
-
-procedure RestoreWelcomePage;
-begin
-  WizardForm.InnerNotebook.ActivePage := WizardForm.WelcomePage;
-  InstallingCloseButton.Visible := False;
-  WelcomeCloseButton.Visible := True;
-  ConfigureNativeProgressControls(False);
-  if AdvancedPanel.Visible then
-    SetInstallerHeight(ExpandedHeight)
-  else
-    SetInstallerHeight(CollapsedHeight);
-  WelcomeCloseButton.BringToFront;
-  WizardForm.Update;
-end;
-
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
-  ExistingExecutable: String;
   IsDowngrade: Boolean;
 begin
   Result := True;
@@ -1169,45 +1142,7 @@ begin
   WizardForm.DirEdit.Text := RemoveBackslashUnlessRoot(DirectoryEdit.Text);
   CreateDesktopShortcut := DesktopCheck.Checked;
 
-  ExistingExecutable :=
-    AddBackslash(RemoveBackslashUnlessRoot(WizardForm.DirEdit.Text)) +
-    'vPaste.exe';
-  if FileExists(ExistingExecutable) and (not ExistingAppPrepared) then
-  begin
-    ShowInstallPreparation;
-    if not RequestExistingAppExit then
-    begin
-      RestoreWelcomePage;
-      MsgBox(Localized(
-        '无法关闭正在运行的 vPaste，请从托盘退出后重试',
-        'The running vPaste could not be closed. Quit it from the tray and retry'),
-        mbError, MB_OK);
-      Result := False;
-      Exit;
-    end;
-    ExistingAppPrepared := True;
-  end;
   Log('Quick installation settings are valid');
-end;
-
-function RequestExistingAppExit: Boolean;
-var
-  TaskKillExitCode: Integer;
-  CurrentUser: String;
-  TaskFilter: String;
-begin
-  CurrentUser := GetEnv('USERNAME');
-  if GetEnv('USERDOMAIN') <> '' then
-    CurrentUser := GetEnv('USERDOMAIN') + '\' + CurrentUser;
-  TaskFilter := '/F /T /FI "USERNAME eq ' + CurrentUser + '" /IM "vPaste.exe"';
-  Result := Exec(
-    ExpandConstant('{sys}\taskkill.exe'),
-    TaskFilter,
-    '',
-    SW_HIDE,
-    ewWaitUntilTerminated,
-    TaskKillExitCode) and
-    ((TaskKillExitCode = 0) or (TaskKillExitCode = 128));
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -1221,14 +1156,7 @@ begin
   ExistingExecutable := ExpandConstant('{app}\vPaste.exe');
   if FileExists(ExistingExecutable) then
   begin
-    if (not ExistingAppPrepared) and (not RequestExistingAppExit) then
-    begin
-      Result := Localized(
-        '无法关闭正在运行的 vPaste，请从托盘退出后重试',
-        'The running vPaste could not be closed. Quit it from the tray and retry');
-      Exit;
-    end;
-    ExistingAppPrepared := True;
+    Log('Backing up the existing executable before native occupied-file handling');
     PreviousExecutableBackup := ExpandConstant('{tmp}\vPaste-previous.exe');
     if not CopyFile(ExistingExecutable, PreviousExecutableBackup, False) then
     begin
@@ -1257,6 +1185,72 @@ begin
   end;
 end;
 
+procedure ConfigurePreparingPage;
+var
+  ClosingApplications: Boolean;
+begin
+  ClosingApplications := WizardForm.PreparingMemo.Visible;
+  if ClosingApplications or (not WizardForm.PreparingLabel.Visible) then
+    SetInstallerHeight(PreparingHeight)
+  else
+    SetInstallerHeight(NativeFallbackHeight);
+
+  WizardForm.Color := BodySurfaceColor;
+  PageFromID(wpPreparing).Surface.Color := BodySurfaceColor;
+  WizardForm.Bevel.Visible := False;
+  WizardForm.OuterNotebook.Height := WizardForm.ClientHeight - ScaleY(60);
+  WizardForm.InnerNotebook.Height := WizardForm.OuterNotebook.Height;
+
+  { The same native page also displays preparation failures. Only replace
+    the informational occupied-file prompt, never an actual error message. }
+  if ClosingApplications then
+  begin
+    WizardForm.PreparingErrorBitmapImage.Visible := False;
+    WizardForm.PreparingLabel.Caption := Localized(
+      '安装前需要关闭以下应用', 'Close these apps to continue');
+    WizardForm.PreparingLabel.AutoSize := False;
+    WizardForm.PreparingLabel.SetBounds(ScaleX(32), ScaleY(30), ScaleX(416), ScaleY(40));
+    WizardForm.PreparingLabel.Font.Size := 14;
+    WizardForm.PreparingLabel.Font.Style := [fsBold];
+    WizardForm.PreparingLabel.Font.Color := WizardForm.WelcomeLabel1.Font.Color;
+    WizardForm.PreparingLabel.Color := BodySurfaceColor;
+
+    WizardForm.PreparingMemo.SetBounds(ScaleX(32), ScaleY(82), ScaleX(416), ScaleY(64));
+    WizardForm.PreparingMemo.BorderStyle := bsNone;
+    WizardForm.PreparingMemo.Color := InputSurfaceColor;
+    WizardForm.PreparingMemo.Font.Size := 10;
+    WizardForm.PreparingMemo.Font.Color := WizardForm.WelcomeLabel1.Font.Color;
+    WizardForm.PreparingMemo.WordWrap := True;
+    WizardForm.PreparingMemo.ScrollBars := ssVertical;
+    ApplyRoundedRegion(WizardForm.PreparingMemo, 7);
+
+    WizardForm.PreparingYesRadio.SetBounds(ScaleX(32), ScaleY(160), ScaleX(416), ScaleY(24));
+    WizardForm.PreparingYesRadio.Caption := Localized('自动关闭并继续(&A)', '&Close apps automatically');
+    WizardForm.PreparingYesRadio.Font.Size := 10;
+    WizardForm.PreparingNoRadio.SetBounds(ScaleX(32), ScaleY(190), ScaleX(416), ScaleY(24));
+    WizardForm.PreparingNoRadio.Caption := Localized('不关闭应用(&D)', 'Do &not close apps');
+    WizardForm.PreparingNoRadio.Font.Size := 10;
+    WizardForm.NextButton.Caption := Localized('继续安装(&N)', '&Continue');
+  end;
+
+  WizardForm.NextButton.Visible := True;
+  WizardForm.NextButton.Style := bsPushButton;
+  WizardForm.NextButton.CommandLinkHint := '';
+  WizardForm.NextButton.Font.Size := 10;
+  WizardForm.NextButton.Font.Style := [];
+  WizardForm.NextButton.SetBounds(
+    ScaleX(308), WizardForm.ClientHeight - ScaleY(50), ScaleX(140), ScaleY(34));
+  WizardForm.NextButton.TabStop := True;
+  WizardForm.NextButton.BringToFront;
+  WizardForm.CancelButton.Style := bsPushButton;
+  WizardForm.CancelButton.CommandLinkHint := '';
+  WizardForm.CancelButton.Font.Size := 10;
+  WizardForm.CancelButton.SetBounds(
+    ScaleX(212), WizardForm.ClientHeight - ScaleY(50), ScaleX(84), ScaleY(34));
+  WizardForm.CancelButton.TabStop := True;
+  WizardForm.CancelButton.BringToFront;
+end;
+
 procedure CurPageChanged(CurPageID: Integer);
 begin
   WizardForm.MainPanel.Visible := False;
@@ -1269,6 +1263,7 @@ begin
   WelcomeCloseButton.Visible := CurPageID = wpWelcome;
   InstallingCloseButton.Visible := CurPageID = wpInstalling;
   FinishedCloseButton.Visible := CurPageID = wpFinished;
+  PreparingCloseButton.Visible := CurPageID = wpPreparing;
   QuickInstallButton.Visible := CurPageID = wpWelcome;
   FinishButton.Visible := CurPageID = wpFinished;
   ConfigureNativeProgressControls(CurPageID = wpInstalling);
@@ -1290,27 +1285,7 @@ begin
     WizardForm.ActiveControl := InteractionFocusSink;
   end
   else if CurPageID = wpPreparing then
-  begin
-    SetInstallerHeight(NativeFallbackHeight);
-    WizardForm.OuterNotebook.Height :=
-      WizardForm.ClientHeight - ScaleY(64);
-    WizardForm.InnerNotebook.Height := WizardForm.OuterNotebook.Height;
-    WizardForm.NextButton.Visible := True;
-    WizardForm.NextButton.SetBounds(
-      ScaleX(250),
-      WizardForm.ClientHeight - ScaleY(52),
-      ScaleX(170),
-      ScaleY(38));
-    WizardForm.NextButton.TabStop := True;
-    WizardForm.NextButton.BringToFront;
-    WizardForm.CancelButton.SetBounds(
-      ScaleX(60),
-      WizardForm.ClientHeight - ScaleY(52),
-      ScaleX(120),
-      ScaleY(38));
-    WizardForm.CancelButton.TabStop := True;
-    WizardForm.CancelButton.BringToFront;
-  end
+    ConfigurePreparingPage
   else
   begin
     SetInstallerHeight(CollapsedHeight);
@@ -1326,7 +1301,9 @@ begin
   else if CurPageID = wpInstalling then
     InstallingCloseButton.BringToFront
   else if CurPageID = wpFinished then
-    FinishedCloseButton.BringToFront;
+    FinishedCloseButton.BringToFront
+  else if CurPageID = wpPreparing then
+    PreparingCloseButton.BringToFront;
   SendMessage(
     WizardForm.Handle, WMUpdateUIState, HideFocusUIState, 0);
 end;

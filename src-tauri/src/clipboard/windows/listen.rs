@@ -1494,10 +1494,13 @@ fn read_bitmap(
     app_source: &AppSource,
     context: clipboard::CaptureContext,
 ) -> Result<Option<String>, String> {
-    let _decode_guard = crate::image_preview::decode_lock()?;
-    let png = image_convert::convert_bitmap_to_png(raw.as_slice())
-        .map_err(|err| format!("convert {} bitmap failed: {}", name, err))?;
+    let png = {
+        let _decode_guard = crate::image_preview::decode_lock()?;
+        image_convert::convert_bitmap_to_png(raw.as_slice())
+            .map_err(|err| format!("convert {} bitmap failed: {}", name, err))?
+    };
 
+    // Capture prepares a thumbnail, which acquires the same decode lock.
     Ok(clipboard::capture_image_with_text_and_app(
         &png,
         text_content.unwrap_or(""),
@@ -2203,7 +2206,7 @@ mod tests {
             ))
             .unwrap();
             assert!(crate::valid_png_cache_file(&thumbnail));
-            assert_eq!(image::image_dimensions(&thumbnail).unwrap(), (16, 12));
+            assert_eq!(image::image_dimensions(&thumbnail).unwrap(), (240, 180));
 
             assert_eq!(
                 read_bitmap(

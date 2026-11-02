@@ -177,6 +177,9 @@ export default function Clipboard() {
     const stateIndicatorMotion = useMotionPreset("stateIndicator");
     const [selected, setSelectedState] = useState<String>("");
     const selectedLogicalIndexRef = useRef(0);
+    const [pendingSelectionScroll, setPendingSelectionScroll] = useState<{
+        hash: string; index: number; generation: number; behavior: ScrollBehavior;
+    } | null>(null);
     const historyStoreRef = useRef<HistoryViewStore | null>(null);
     if (!historyStoreRef.current) historyStoreRef.current = new HistoryViewStore();
     const historyStore = historyStoreRef.current;
@@ -863,6 +866,17 @@ export default function Clipboard() {
         if (virtualListRef.current?.scrollToIndex(index, behavior)) maybeLoadMoreHistory();
     };
 
+    useLayoutEffect(() => {
+        if (!pendingSelectionScroll) return;
+        const { generation, hash, index, behavior } = pendingSelectionScroll;
+        if (generation === searchRequestSeqRef.current && mainWindowActiveRef.current && hash === selectedRef.current) {
+            // The logical track must be committed before it can scroll to a new page.
+            if (index >= clipboardPage.logicalCount) return;
+            scrollCardIntoView(index, behavior);
+        }
+        setPendingSelectionScroll(current => current === pendingSelectionScroll ? null : current);
+    }, [pendingSelectionScroll, clipboardPage.logicalCount]);
+
     const selectCardAt = async (index: number, behavior: ScrollBehavior = 'auto', isCurrent: () => boolean = () => true): Promise<Item | null> => {
         const generation = searchRequestSeqRef.current;
         const current = () => generation === searchRequestSeqRef.current && mainWindowActiveRef.current && isCurrent();
@@ -875,7 +889,7 @@ export default function Clipboard() {
         selectedLogicalIndexRef.current = target;
         selectedRef.current = ref.hash;
         setSelected(ref.hash);
-        window.requestAnimationFrame(() => { if (generation === searchRequestSeqRef.current && selectedRef.current === ref.hash) scrollCardIntoView(target, behavior); });
+        setPendingSelectionScroll({ generation, hash: ref.hash, index: target, behavior });
         return item;
     };
 

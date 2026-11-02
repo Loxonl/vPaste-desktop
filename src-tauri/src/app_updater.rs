@@ -42,6 +42,15 @@ const PENDING_METADATA_FILE: &str = "pending.json";
 #[cfg(target_os = "windows")]
 const NOTIFIED_VERSION_FILE: &str = "ready-notified-version";
 const PARTIAL_SUFFIX: &str = "partial";
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_INSTALLER_ARGUMENTS: [&str; 6] = [
+    "/VERYSILENT",
+    "/SUPPRESSMSGBOXES",
+    "/NORESTART",
+    "/CLOSEAPPLICATIONS",
+    "/NORESTARTAPPLICATIONS",
+    "/RESTARTAPP",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1279,14 +1288,7 @@ async fn install_pending_update(
         installer_path.display()
     );
     Command::new(installer_path)
-        .args([
-            "/VERYSILENT",
-            "/SUPPRESSMSGBOXES",
-            "/NORESTART",
-            "/CLOSEAPPLICATIONS",
-            "/RESTARTAPPLICATIONS",
-            "/RESTARTAPP",
-        ])
+        .args(WINDOWS_INSTALLER_ARGUMENTS)
         .arg(format!("/LOG={}", log_path.display()))
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
@@ -1362,6 +1364,21 @@ mod tests {
         assert_eq!(
             public_update_feed_enabled(),
             option_env!("VPASTE_PUBLIC_UPDATE_FEED") == Some("1")
+        );
+    }
+
+    #[test]
+    fn windows_update_has_one_restart_owner() {
+        let arguments = super::WINDOWS_INSTALLER_ARGUMENTS;
+        assert!(arguments.contains(&"/CLOSEAPPLICATIONS"));
+        assert!(arguments.contains(&"/NORESTARTAPPLICATIONS"));
+        assert!(!arguments.contains(&"/RESTARTAPPLICATIONS"));
+        assert_eq!(
+            arguments
+                .iter()
+                .filter(|arg| **arg == "/RESTARTAPP")
+                .count(),
+            1
         );
     }
 

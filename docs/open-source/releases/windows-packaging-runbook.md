@@ -185,6 +185,28 @@ successful build on Windows 11 does not count as a Windows 10 runtime test.
 - Default downgrade block and explicit development-only downgrade confirmation
 - Keyboard navigation, close actions, progress state, and completion action
 
+For installer preparation changes, run the isolated native regression on Windows
+after populating the Inno asset cache with a local Windows build:
+
+```powershell
+./scripts/test-windows-installer-update.ps1 -Scenario running
+./scripts/test-windows-installer-update.ps1 -Scenario stopped
+./scripts/test-windows-installer-update.ps1 -Scenario repair
+./scripts/test-windows-installer-update.ps1 -Scenario fresh
+```
+
+The test compiles the real installer script against a synthetic executable,
+disables real installation discovery, registration, shortcuts and app launch,
+and uses a unique temporary destination. It checks occupied-file shutdown,
+replacement, unrelated-file preservation and a bounded completion time; its
+external-shutdown stall injection reproduces the previous unbounded wait.
+It also checks the occupied-file prompt's native control bounds and that error
+messages retain their separate fallback layout. It does not install vPaste or
+verify the interactive appearance. Also manually check
+that the occupied-application prompt is readable and operable. Keep process
+shutdown in native Restart Manager handling, outside `NextButtonClick`; do not
+restore a synchronous global `taskkill /IM vPaste.exe` call.
+
 ### Legacy migration
 
 Install the local 1.5.0 NSIS package, create representative data, and then run

@@ -1,5 +1,312 @@
 use super::*;
 
+use base64::Engine as _;
+use sha2::{Digest, Sha256};
+
+fn persisted_rich_image_roundtrip(inline: bool, copy_all_files: bool) -> usize {
+    let _guard = TEST_APP_DATA_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let workspace = tempfile::tempdir().unwrap();
+    let runtime = workspace.path().join("runtime");
+    let source = workspace.path().join("source");
+    let target = workspace.path().join("target");
+    fs::create_dir_all(&runtime).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    *GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(runtime.to_string_lossy().into_owned());
+    config::save(config::Config {
+        storage_dir: source.to_string_lossy().into_owned(),
+        ..Default::default()
+    });
+    ensure_history_storage_dirs().unwrap();
+    clipboard::db::init();
+    let picture = workspace.path().join("word-temporary-image.png");
+    image::RgbImage::from_pixel(8, 8, image::Rgb([50, 120, 210]))
+        .save(&picture)
+        .unwrap();
+    let image_src = if inline {
+        format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(fs::read(&picture).unwrap())
+        )
+    } else {
+        reqwest::Url::from_file_path(&picture).unwrap().to_string()
+    };
+    let hash = clipboard::capture_rich_text_from_app(
+        "audit rich record".into(),
+        Some(format!("<p>audit rich record<img src=\"{image_src}\"></p>").into_bytes()),
+        None,
+        None,
+        "synthetic-audit",
+        "",
+        false,
+    )
+    .unwrap();
+    let before = clipboard::rich_render_for_hash(&hash).unwrap();
+    assert_eq!(
+        before.resources.len(),
+        1,
+        "test setup must persist an actual image"
+    );
+    assert!(Path::new(&before.resources[0].asset_path).is_file());
+    fs::remove_file(&picture).unwrap();
+    assert_eq!(
+        clipboard::rich_render_for_hash(&hash)
+            .unwrap()
+            .resources
+            .len(),
+        1,
+        "the source history must still display the image after the temporary source is gone"
+    );
+
+    let mut archived_assets = false;
+    if copy_all_files {
+        let _: (i64, i64, i64) = clipboard::db::db()
+            .query_row("PRAGMA wal_checkpoint(full)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .unwrap();
+        for directory in ["data", "rich_formats", "rich_preview_assets"] {
+            copy_history_dir_contents_recursive(&source.join(directory), &target.join(directory))
+                .unwrap();
+        }
+        assert!(target.join("rich_preview_assets").is_dir());
+        assert_eq!(
+            merge_clipboard_database(
+                source.to_str().unwrap(),
+                target.to_str().unwrap(),
+                source.to_str().unwrap()
+            )
+            .unwrap(),
+            (1, 0, 3)
+        );
+    } else {
+        let archive = workspace.path().join("history.vpaste");
+        export_history_archive_impl(None, archive.to_string_lossy().into_owned()).unwrap();
+        let mut reader = File::open(&archive).unwrap();
+        let (_, entries) = read_history_archive_header(&mut reader).unwrap();
+        for _ in 0..entries {
+            let (name, size) = read_history_archive_entry_header(&mut reader).unwrap();
+            archived_assets |= name.starts_with("rich_preview_assets/");
+            reader.seek(SeekFrom::Current(size as i64)).unwrap();
+        }
+        let mut progress =
+            HistoryArchiveProgressState::new(None, "import", HistoryArchiveTotals::empty());
+        let (extracted, old_root) = prepare_history_import(
+            archive.to_str().unwrap(),
+            target.to_str().unwrap(),
+            &mut progress,
+        )
+        .unwrap();
+        for directory in HISTORY_IMPORT_COPY_DIRS {
+            copy_history_dir_contents_recursive(
+                &extracted.path().join(directory),
+                &target.join(directory),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            merge_clipboard_database(
+                extracted.path().to_str().unwrap(),
+                target.to_str().unwrap(),
+                &old_root
+            )
+            .unwrap(),
+            (1, 0, if inline { 2 } else { 3 })
+        );
+        let old_directory = Path::new(&before.resources[0].asset_path)
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap();
+        assert!(
+            !target
+                .join("rich_preview_assets")
+                .join(old_directory)
+                .exists(),
+            "import must not leave an unreferenced old-path image directory"
+        );
+    }
+    config::save(config::Config {
+        storage_dir: target.to_string_lossy().into_owned(),
+        ..Default::default()
+    });
+    clipboard::db::init();
+    let after = clipboard::rich_render_for_hash(&hash).unwrap();
+    println!("inline={inline} copy_all_files={copy_all_files} before_images=1 archive_has_rich_assets={archived_assets} after_images={} retained_text={}", after.resources.len(), after.html.contains("audit rich record"));
+    let count = after.resources.len();
+    if let Some(resource) = after.resources.first() {
+        assert_eq!(
+            fs::read(&resource.asset_path).unwrap(),
+            fs::read(&before.resources[0].asset_path).unwrap()
+        );
+    }
+    assert!(after.html.contains("audit rich record"));
+    config::save(config::Config::default());
+    count
+}
+
+#[test]
+fn inline_image_archive_roundtrip_control() {
+    assert_eq!(persisted_rich_image_roundtrip(true, false), 1);
+}
+
+#[test]
+fn local_image_archive_roundtrip_retains_persisted_picture() {
+    assert_eq!(
+        persisted_rich_image_roundtrip(false, false),
+        1,
+        "export/import lost the only persisted picture after its temporary source was removed"
+    );
+}
+
+#[test]
+fn local_image_relocation_with_all_asset_files_retains_picture() {
+    assert_eq!(
+        persisted_rich_image_roundtrip(false, true),
+        1,
+        "copying every asset still loses lookup when the rich-source absolute path changes"
+    );
+}
+
+#[test]
+fn rich_images_rebind_windows_and_macos_sources_without_following_manifest_paths() {
+    let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
+    for old in [r"C:\Users\old\History", "/Users/old/History"] {
+        let workspace = tempfile::tempdir().unwrap();
+        let extracted = workspace.path().join("extracted");
+        let target = workspace.path().join("target");
+        fs::create_dir_all(extracted.join("rich_formats")).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(workspace.path().join("runtime")).unwrap();
+        *GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(
+            workspace
+                .path()
+                .join("runtime")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        config::save(config::Config {
+            storage_dir: extracted.to_string_lossy().into_owned(),
+            ..Default::default()
+        });
+        let separator = if old.contains('\\') { "\\" } else { "/" };
+        let old_path = format!("{old}{separator}rich_formats{separator}picture.html");
+        let picture = workspace.path().join("temporary.png");
+        image::RgbImage::from_pixel(8, 8, image::Rgb([50, 120, 210]))
+            .save(&picture)
+            .unwrap();
+        let picture_bytes = fs::read(&picture).unwrap();
+        let temporary_url = reqwest::Url::from_file_path(&picture).unwrap().to_string();
+        let url = if old.contains('\\') {
+            "file:///C:/Users/old/AppData/Local/Temp/vpaste-test-picture.png"
+        } else {
+            "file:///var/folders/vpaste-test-picture.png"
+        };
+        let html = format!("<p>Imported picture<img src=\"{url}\"></p>");
+        fs::write(extracted.join("rich_formats/picture.html"), &html).unwrap();
+        let mut images = rich_card_assets::Images::new(&old_path);
+        let token = images.resolve(&temporary_url).unwrap();
+        let mut render = images
+            .finish(format!("<p>Imported picture<img src=\"{token}\"></p>"))
+            .unwrap();
+        let asset_dir = Path::new(&render.resources[0].asset_path).parent().unwrap();
+        let index_name =
+            |value: &str| format!("source-{}", hex::encode(Sha256::digest(value.as_bytes())));
+        // Model an archive created on the source OS, whose temporary file URL
+        // might not even be convertible to a filesystem path on this OS.
+        fs::rename(
+            asset_dir.join(index_name(&temporary_url)),
+            asset_dir.join(index_name(url)),
+        )
+        .unwrap();
+        // Even a manifest naming an unrelated absolute file must only use the
+        // actual packaged attachment, never that absolute path's contents.
+        let outside = workspace.path().join(
+            Path::new(&render.resources[0].asset_path)
+                .file_name()
+                .unwrap(),
+        );
+        fs::write(&outside, b"not the packaged picture").unwrap();
+        render.resources[0].asset_path = outside.to_string_lossy().into_owned();
+        rich_card_assets::cache_render(&old_path, 0, 0, &render).unwrap();
+        fs::remove_file(picture).unwrap();
+        let meta = serde_json::json!({"version": 1, "html_path": old_path, "rtf_path": "", "png_path": ""});
+        let source = format!("vpaste-rich:{meta}");
+        let db = rusqlite::Connection::open(extracted.join("vpaste.db")).unwrap();
+        clipboard::db::init_schema(&db).unwrap();
+        db.execute("insert into clipboard(hash,time,content,preview_content,item_type,source) values('picture',1,'Imported picture','Imported picture','Text',?1)", [&source]).unwrap();
+        db.execute("insert into paste_queue(hash,position,queued_at,time,content,preview_content,item_type,source) values('picture',0,1,1,'Imported picture','Imported picture','Text',?1)", [&source]).unwrap();
+        drop(db);
+        for name in ["data", "rich_formats", "rich_preview_assets"] {
+            copy_history_dir_contents_recursive(&extracted.join(name), &target.join(name)).unwrap();
+        }
+        assert_eq!(
+            merge_clipboard_database(extracted.to_str().unwrap(), target.to_str().unwrap(), old)
+                .unwrap(),
+            (1, 0, 3)
+        );
+        config::save(config::Config {
+            storage_dir: target.to_string_lossy().into_owned(),
+            ..Default::default()
+        });
+        clipboard::db::init();
+        let imported = clipboard::rich_render_for_hash("picture").unwrap();
+        assert_eq!(imported.resources.len(), 1);
+        let asset = Path::new(&imported.resources[0].asset_path);
+        assert!(asset.starts_with(&target));
+        assert_eq!(fs::read(asset).unwrap(), picture_bytes);
+        // Check the relocated source index too, not just the rebased manifest.
+        fs::remove_file(asset.parent().unwrap().join("render.json")).unwrap();
+        assert_eq!(
+            clipboard::rich_render_for_hash("picture")
+                .unwrap()
+                .resources
+                .len(),
+            1
+        );
+        assert_eq!(
+            merge_clipboard_database(extracted.to_str().unwrap(), target.to_str().unwrap(), old)
+                .unwrap(),
+            (0, 1, 0)
+        );
+        let queue_source: String = clipboard::db::db()
+            .query_row(
+                "select source from paste_queue where hash='picture'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let queue_meta: clipboard::RichClipboardMeta =
+            serde_json::from_str(queue_source.strip_prefix("vpaste-rich:").unwrap()).unwrap();
+        assert!(Path::new(&queue_meta.html_path).starts_with(&target));
+        assert_eq!(
+            clipboard::rich_render_from_path(&queue_meta.html_path)
+                .unwrap()
+                .resources
+                .len(),
+            1
+        );
+        config::save(config::Config::default());
+    }
+}
+
+#[test]
+fn rich_resource_archive_paths_keep_traversal_restrictions() {
+    assert!(validate_archive_entry_name("rich_preview_assets/record/picture.png").is_ok());
+    for name in [
+        "rich_preview_assets/../outside",
+        "rich_preview_assets/record/../../outside",
+        "rich_preview_assets\\record\\picture.png",
+        "/rich_preview_assets/picture.png",
+    ] {
+        assert!(
+            validate_archive_entry_name(name).is_err(),
+            "accepted {name}"
+        );
+    }
+}
+
 #[test]
 fn unsupported_import_database_is_rejected_before_creating_destination() {
     let root = tempfile::tempdir().unwrap();
@@ -134,7 +441,7 @@ fn plain_text_import_preserves_literal_paths_and_hashes() {
         assert_eq!(
             merge_clipboard_database(source.to_str().unwrap(), target.to_str().unwrap(), old)
                 .unwrap(),
-            (1, 0)
+            (1, 0, 0)
         );
         let db = rusqlite::Connection::open(target.join("vpaste.db")).unwrap();
         for table in ["clipboard", "paste_queue"] {
@@ -228,7 +535,7 @@ fn rich_import_relocates_only_packaged_attachments() {
         assert_eq!(
             merge_clipboard_database(extracted.to_str().unwrap(), target.to_str().unwrap(), old)
                 .unwrap(),
-            (2, 0)
+            (2, 0, 0)
         );
         let db = rusqlite::Connection::open(target.join("vpaste.db")).unwrap();
         for table in ["clipboard", "paste_queue"] {
@@ -281,7 +588,9 @@ fn rich_import_preserves_unknown_fields_and_unpackaged_paths() {
         root.path().to_str().unwrap(),
         r"C:\old",
         target.to_str().unwrap(),
-    );
+    )
+    .unwrap()
+    .0;
     let before: serde_json::Value =
         serde_json::from_str(source.strip_prefix("vpaste-rich:").unwrap()).unwrap();
     let after: serde_json::Value =
@@ -289,7 +598,9 @@ fn rich_import_preserves_unknown_fields_and_unpackaged_paths() {
     assert_eq!(before, after);
     let invalid = "vpaste-rich:not-json";
     assert_eq!(
-        relocate_imported_rich_source(invalid.to_string(), "", r"C:\old", "new"),
+        relocate_imported_rich_source(invalid.to_string(), "", r"C:\old", "new")
+            .unwrap()
+            .0,
         invalid
     );
 }
@@ -310,7 +621,7 @@ fn ordinary_image_and_textfile_import_paths_still_relocate() {
     assert_eq!(
         merge_clipboard_database(source.to_str().unwrap(), target.to_str().unwrap(), "/old")
             .unwrap(),
-        (2, 0)
+        (2, 0, 0)
     );
     let db = rusqlite::Connection::open(target.join("vpaste.db")).unwrap();
     for kind in ["Image", "TextFile"] {

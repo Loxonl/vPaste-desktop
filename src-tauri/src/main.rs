@@ -6103,17 +6103,21 @@ fn relocate_imported_rich_source(
     archive_dir: &str,
     old_dir: &str,
     target_dir: &str,
-) -> String {
+) -> Result<(String, usize), String> {
     let Some(json) = source.strip_prefix("vpaste-rich:") else {
-        return rewrite_internal_storage_paths(source, old_dir, target_dir);
+        return Ok((
+            rewrite_internal_storage_paths(source, old_dir, target_dir),
+            0,
+        ));
     };
     let Ok(mut meta) = serde_json::from_str::<serde_json::Value>(json) else {
-        return source;
+        return Ok((source, 0));
     };
     let prefix = format!("{}/", old_dir.replace('\\', "/").trim_end_matches('/'));
     if old_dir.is_empty() {
-        return source;
+        return Ok((source, 0));
     }
+    let mut copied = 0;
     for field in ["html_path", "rtf_path", "png_path"] {
         let Some(path) = meta.get(field).and_then(|value| value.as_str()) else {
             continue;
@@ -6124,7 +6128,7 @@ fn relocate_imported_rich_source(
         };
         let parts: Vec<_> = relative.split('/').collect();
         if parts.len() < 2
-            || !HISTORY_ARCHIVE_DIRS.contains(&parts[0])
+            || !["data", "rich_formats"].contains(&parts[0])
             || parts
                 .iter()
                 .any(|part| part.is_empty() || *part == "." || *part == ".." || part.contains(':'))
@@ -6135,20 +6139,28 @@ fn relocate_imported_rich_source(
         let target = Path::new(target_dir).join(&relative);
         // Only rebind attachments actually carried by this archive and copied to the target.
         if Path::new(archive_dir).join(&relative).is_file() && target.is_file() {
+            if field == "html_path" {
+                copied += rich_card_assets::relocate(
+                    path,
+                    &target.to_string_lossy(),
+                    Path::new(archive_dir),
+                    Path::new(target_dir),
+                )?;
+            }
             meta[field] = serde_json::Value::String(target.to_string_lossy().into_owned());
         }
     }
-    format!("vpaste-rich:{meta}")
+    Ok((format!("vpaste-rich:{meta}"), copied))
 }
 
 fn merge_clipboard_database(
     source_dir: &str,
     target_dir: &str,
     rewrite_source_dir: &str,
-) -> Result<(usize, usize), String> {
+) -> Result<(usize, usize, usize), String> {
     let source_db = PathBuf::from(source_dir).join("vpaste.db");
     if !source_db.exists() {
-        return Ok((0, 0));
+        return Ok((0, 0, 0));
     }
 
     let source_conn = rusqlite::Connection::open_with_flags(
@@ -6194,6 +6206,7 @@ fn merge_clipboard_database(
 
     let mut merged = 0_usize;
     let mut skipped = 0_usize;
+    let mut copied_resources = 0_usize;
     for row in rows {
         let (
             hash,
@@ -6214,7 +6227,10 @@ fn merge_clipboard_database(
             preview_content =
                 rewrite_internal_storage_paths(preview_content, rewrite_source_dir, target_dir);
         }
-        source = relocate_imported_rich_source(source, source_dir, rewrite_source_dir, target_dir);
+        let relocated =
+            relocate_imported_rich_source(source, source_dir, rewrite_source_dir, target_dir)?;
+        source = relocated.0;
+        copied_resources += relocated.1;
         app_icon_path =
             rewrite_internal_storage_paths(app_icon_path, rewrite_source_dir, target_dir);
         let changed = transaction
@@ -6384,8 +6400,10 @@ fn merge_clipboard_database(
                 preview_content =
                     rewrite_internal_storage_paths(preview_content, rewrite_source_dir, target_dir);
             }
-            source =
-                relocate_imported_rich_source(source, source_dir, rewrite_source_dir, target_dir);
+            let relocated =
+                relocate_imported_rich_source(source, source_dir, rewrite_source_dir, target_dir)?;
+            source = relocated.0;
+            copied_resources += relocated.1;
             app_icon_path =
                 rewrite_internal_storage_paths(app_icon_path, rewrite_source_dir, target_dir);
             let changed = transaction
@@ -6419,7 +6437,7 @@ fn merge_clipboard_database(
 
     transaction.commit().map_err(|err| err.to_string())?;
 
-    Ok((merged, skipped))
+    Ok((merged, skipped, copied_resources))
 }
 
 fn rebuild_current_search_index() -> Result<(), String> {
@@ -6433,7 +6451,9 @@ const HISTORY_ARCHIVE_VERSION: u32 = 3;
 const HISTORY_ARCHIVE_MAGIC: &[u8] = b"VPASTE-HISTORY";
 const HISTORY_ARCHIVE_METADATA_MAX_BYTES: u64 = 1024 * 1024;
 const HISTORY_ARCHIVE_PATH_MAX_BYTES: u32 = 4096;
-const HISTORY_ARCHIVE_DIRS: [&str; 2] = ["data", "rich_formats"];
+const HISTORY_ARCHIVE_DIRS: [&str; 3] = ["data", "rich_formats", "rich_preview_assets"];
+// Rich assets are copied by record while rebinding their source-path identity.
+const HISTORY_IMPORT_COPY_DIRS: [&str; 2] = ["data", "rich_formats"];
 const HISTORY_ARCHIVE_FILES: [&str; 1] = [CUSTOM_TABS_FILE];
 impl HistoryArchiveTotals {
     fn empty() -> Self {
@@ -6542,7 +6562,7 @@ fn history_import_payload_totals(root: &Path) -> Result<HistoryArchiveTotals, St
     for file_name in HISTORY_ARCHIVE_FILES {
         add_path_totals(&root.join(file_name), &mut totals)?;
     }
-    for dir_name in HISTORY_ARCHIVE_DIRS {
+    for dir_name in HISTORY_IMPORT_COPY_DIRS {
         add_path_totals(&root.join(dir_name), &mut totals)?;
     }
     Ok(totals)
@@ -6680,6 +6700,7 @@ fn validate_archive_entry_name(name: &str) -> Result<(), String> {
         && name != CUSTOM_TABS_FILE
         && !name.starts_with("data/")
         && !name.starts_with("rich_formats/")
+        && !name.starts_with("rich_preview_assets/")
     {
         return Err("vPaste 历史包包含不受支持的路径".to_string());
     }
@@ -6957,7 +6978,7 @@ fn import_history_archive_impl(
             copied_files += 1;
         }
     }
-    for dir_name in HISTORY_ARCHIVE_DIRS {
+    for dir_name in HISTORY_IMPORT_COPY_DIRS {
         copied_files += copy_history_dir_contents_recursive_with_progress(
             &temp_dir.path().join(dir_name),
             &PathBuf::from(&target_dir).join(dir_name),
@@ -6967,11 +6988,12 @@ fn import_history_archive_impl(
 
     progress.set_totals(HistoryArchiveTotals::empty());
     progress.set_stage("merge");
-    let (merged_items, skipped_items) = merge_clipboard_database(
+    let (merged_items, skipped_items, copied_resources) = merge_clipboard_database(
         temp_dir.path().to_str().unwrap_or(""),
         &target_dir,
         &rewrite_source_dir,
     )?;
+    copied_files += copied_resources;
     clipboard::db::try_init().map_err(|err| err.to_string())?;
     progress.set_stage("index");
     if let Err(err) = rebuild_current_search_index() {
@@ -7175,7 +7197,7 @@ mod history_archive_v3_tests {
                 "/old/history",
             )
             .unwrap(),
-            (1, 0)
+            (1, 0, 0)
         );
 
         let target_conn = rusqlite::Connection::open(target_db).unwrap();

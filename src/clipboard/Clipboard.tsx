@@ -39,6 +39,7 @@ import {
     type CustomTab,
 } from "./customTabs";
 import { HistoryViewStore } from "./historyViewStore";
+import type { HistoryRef } from "./historyViewTypes";
 import {
     resolveClipboardEmptyState,
     searchDebounceDelay,
@@ -410,13 +411,21 @@ export default function Clipboard() {
     };
 
     const selectFirstLoadedItem = (scroll: boolean = false) => {
-        void historyStore.ensureRef(0).then(item => {
-            if (!item || !mainWindowActiveRef.current) return;
+        if (scroll) {
+            retainedScrollLeftRef.current = 0;
+            if (cardsContainerRef.current) cardsContainerRef.current.scrollLeft = 0;
+        }
+        const generation = searchRequestSeqRef.current;
+        const selectFirst = (item: HistoryRef | undefined) => {
+            if (!item || !mainWindowActiveRef.current || generation !== searchRequestSeqRef.current) return;
             selectedLogicalIndexRef.current = 0;
             selectedRef.current = item.hash;
             setSelected(item.hash);
-            if (scroll && cardsContainerRef.current) cardsContainerRef.current.scrollLeft = 0;
-        });
+        };
+        const first = historyStore.getRef(0);
+        if (first) selectFirst(first);
+        else void historyStore.ensureRef(0).then(selectFirst)
+            .catch(reason => error(`Failed to select first history item: ${reason}`));
     };
 
     const pasteFirstHistoryItem = async (plainText: boolean) => {
@@ -920,7 +929,9 @@ export default function Clipboard() {
             const label = mergeTagSearchFilter(tabLabelForBackend(tab), tagSearch.tagNames);
             const previous = lastHistoryFetchRef.current;
             const sameQuery = previous?.keywords === keywords && previous.tab === tab;
-            const left = sameQuery ? (cardsContainerRef.current?.scrollLeft ?? retainedScrollLeftRef.current) : 0;
+            const resetPosition = options.selectFirst || !sameQuery;
+            if (resetPosition && cardsContainerRef.current) cardsContainerRef.current.scrollLeft = 0;
+            const left = resetPosition ? 0 : (cardsContainerRef.current?.scrollLeft ?? retainedScrollLeftRef.current);
             const width = cardsContainerRef.current?.clientWidth ?? window.innerWidth;
             const start = Math.max(0, Math.floor(Math.max(0, left - 24) / 236) - 2);
             releaseHistoryMediaResources();
@@ -957,6 +968,7 @@ export default function Clipboard() {
                 || (selectedIndex < 0 && selectedLogicalIndexRef.current >= start && selectedLogicalIndexRef.current < start + Math.ceil(width / 236) + 5)))) {
                 const first = items[0];
                 const firstHash = first?.getHash() ?? "";
+                selectedLogicalIndexRef.current = first ? historyStore.indexOf(firstHash) : 0;
                 selectedRef.current = firstHash;
                 setSelected(firstHash);
                 if (!sameQuery || options.selectFirst) scrollCardIntoView(0);

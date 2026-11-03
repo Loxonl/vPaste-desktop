@@ -6,6 +6,9 @@ use tauri::{Emitter, Manager};
 
 use crate::{auxiliary_windows, config};
 
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) mod layout_check;
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelSize {

@@ -12451,6 +12451,8 @@ fn main() {
             #[cfg(debug_assertions)]
             if memory_profile_active() {
                 memory_profile::setup(app.handle()).map_err(io::Error::other)?;
+                #[cfg(target_os = "macos")]
+                panel_size::layout_check::start(app.handle().clone());
                 return Ok(());
             }
             app_updater::start_background_checks(app.handle().clone());

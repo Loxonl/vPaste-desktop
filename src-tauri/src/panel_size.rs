@@ -231,6 +231,8 @@ fn apply_preview(
         .map(crate::screen_bounds_from_monitor)
         .unwrap_or_else(|| crate::screen_bounds(source));
     let layout = crate::clipboard_window_layout(bounds, size.scale());
+    #[cfg(target_os = "macos")]
+    crate::panel_animation::macos::set_fraction(&window, 0.0)?;
     window.set_focusable(false).map_err(|err| err.to_string())?;
     window
         .set_ignore_cursor_events(true)

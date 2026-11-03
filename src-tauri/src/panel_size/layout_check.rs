@@ -5,7 +5,7 @@
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
 
-async fn dom(window: &tauri::WebviewWindow) -> Result<Value, String> {
+pub(crate) async fn dom(window: &tauri::WebviewWindow) -> Result<Value, String> {
     use cocoa::base::{id, nil};
     use cocoa::foundation::NSString;
     use objc::{msg_send, sel, sel_impl};

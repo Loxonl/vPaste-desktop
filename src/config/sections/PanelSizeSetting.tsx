@@ -176,8 +176,7 @@ export default function PanelSizeSetting({ bridge, value, onSaved, t }: {
             marks={PANEL_SIZES.map((size, index) => ({ value: index, label: `${t(`settings.panelSize.${size}`)} ${panelSizePercent(size)}%` }))}
             aria-labelledby="settings-panel-size-label" aria-describedby="settings-panel-size-description"
             getAriaValueText={index => text(PANEL_SIZES[index])}
-            valueLabelFormat={index => text(PANEL_SIZES[index])}
-            valueLabelDisplay={previewing ? "on" : "auto"}
+            valueLabelDisplay="off"
             onPointerDownCapture={event => {
                 if (!ready || event.button !== 0 || savingRef.current) return;
                 keyboardGesture.current = false;

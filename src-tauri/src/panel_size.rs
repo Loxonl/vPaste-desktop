@@ -154,18 +154,19 @@ fn show_without_activation(
     {
         use windows::Win32::Foundation::HWND;
         use windows::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE,
+            SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+            SW_SHOWNOACTIVATE,
         };
         let panel = window.hwnd().map_err(|err| err.to_string())?;
-        let settings = source.hwnd().map_err(|err| err.to_string())?;
+        let _ = source;
         window
-            .set_always_on_top(false)
+            .set_always_on_top(true)
             .map_err(|err| err.to_string())?;
         unsafe {
             ShowWindow(HWND(panel.0 as isize), SW_SHOWNOACTIVATE);
             SetWindowPos(
                 HWND(panel.0 as isize),
-                HWND(settings.0 as isize),
+                HWND_TOPMOST,
                 0,
                 0,
                 0,
@@ -183,10 +184,11 @@ fn show_without_activation(
         let panel = window.ns_window().map_err(|err| err.to_string())? as id;
         let settings = source.ns_window().map_err(|err| err.to_string())? as id;
         unsafe {
-            let level: isize = msg_send![settings, level];
-            let number: isize = msg_send![settings, windowNumber];
+            let source_level: isize = msg_send![settings, level];
+            // Above the main panel (101), previews (102), and DEV monitor (103).
+            let level = source_level.saturating_add(1).max(104);
             let _: () = msg_send![panel, setLevel:level];
-            let _: () = msg_send![panel, orderWindow:-1isize relativeTo:number];
+            let _: () = msg_send![panel, orderFrontRegardless];
         }
         Ok(())
     }

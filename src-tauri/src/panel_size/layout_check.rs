@@ -64,8 +64,31 @@ async fn run(app: tauri::AppHandle) -> Result<Value, String> {
             .await?;
             tokio::time::sleep(std::time::Duration::from_millis(350)).await;
             let layout = dom(&panel).await?;
+            let handle = app.clone();
+            let layer = crate::auxiliary_windows::on_main_thread(app.clone(), move || {
+                use cocoa::base::{id, BOOL, NO};
+                use objc::{msg_send, sel, sel_impl};
+                let panel = handle
+                    .get_webview_window("clipboard")
+                    .ok_or("missing panel")?;
+                let settings = handle
+                    .get_webview_window("config")
+                    .ok_or("missing settings")?;
+                let native = panel.ns_window().map_err(|error| error.to_string())? as id;
+                let source = settings.ns_window().map_err(|error| error.to_string())? as id;
+                let (level, settings_level, click_through) = unsafe {
+                    let level: isize = msg_send![native, level];
+                    let settings_level: isize = msg_send![source, level];
+                    let ignored: BOOL = msg_send![native, ignoresMouseEvents];
+                    (level, settings_level, ignored != NO)
+                };
+                Ok(json!({ "level": level, "settingsLevel": settings_level,
+                    "focused": panel.is_focused().map_err(|error| error.to_string())?,
+                    "clickThrough": click_through }))
+            })
+            .await?;
             records.push(
-                json!({"size":size,"phase":if preview {"preview"} else {"normal"},"layout":layout}),
+                json!({"size":size,"phase":if preview {"preview"} else {"normal"},"layout":layout,"native":layer}),
             );
         }
     }
@@ -76,9 +99,19 @@ async fn run(app: tauri::AppHandle) -> Result<Value, String> {
         let header = layout["boxes"]["clipboard-header"]["bottom"]
             .as_f64()
             .unwrap_or(0.0);
-        card["bottom"]
-            .as_f64()
-            .is_some_and(|bottom| bottom <= viewport - 8.0)
+        let native = &record["native"];
+        let layer_ok = if record["phase"] == "preview" {
+            native["level"].as_i64().is_some_and(|level| {
+                level >= 104 && level > native["settingsLevel"].as_i64().unwrap_or(i64::MAX)
+            }) && native["focused"] == false
+                && native["clickThrough"] == true
+        } else {
+            native["level"] == 101
+        };
+        layer_ok
+            && card["bottom"]
+                .as_f64()
+                .is_some_and(|bottom| bottom <= viewport - 8.0)
             && card["y"].as_f64().is_some_and(|top| top >= header + 8.0)
             && card["height"]
                 .as_f64()

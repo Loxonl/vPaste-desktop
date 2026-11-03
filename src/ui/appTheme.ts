@@ -93,8 +93,9 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                         border: 0,
                     },
                     thumb: {
-                        width: 20,
-                        height: 20,
+                        width: 44,
+                        height: 26,
+                        borderRadius: "var(--ui-radius-pill)",
                         border: "3px solid currentColor",
                         backgroundColor: "var(--ui-surface-solid)",
                         boxShadow: "var(--ui-shadow-control)",
@@ -105,7 +106,18 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                             boxShadow: "var(--ui-focus-ring)",
                         },
                         "&::before": {
+                            width: 8,
+                            height: 10,
+                            borderLeft: "2px solid currentColor",
+                            borderRight: "2px solid currentColor",
+                            borderRadius: 0,
                             boxShadow: "none",
+                            opacity: 0.55,
+                        },
+                        "&::after": {
+                            width: 52,
+                            height: 40,
+                            borderRadius: "var(--ui-radius-pill)",
                         },
                     },
                     markLabel: {

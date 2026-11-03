@@ -114,6 +114,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn panel_zoom_and_text_size_compose_once_without_changing_the_css_viewport() {
+        for panel_zoom in [0.8, 0.9, 1.0] {
+            for text_scale in [1.0, 1.25, 1.5, 2.0] {
+                let height = clipboard_height(panel_zoom, text_scale, 1200.0);
+                for dpi in [1.0, 1.5, 2.0] {
+                    let css_height = height * dpi / (dpi * panel_zoom * text_scale);
+                    assert!((css_height - crate::CLIPBOARD_WINDOW_HEIGHT).abs() < 0.0001);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn combined_panel_and_text_scaling_stays_bounded_on_a_small_screen() {
+        assert_eq!(clipboard_height(0.8, 2.0, 400.0), 400.0);
+        assert_eq!(clipboard_height(0.8, 1.25, 1200.0), 302.0);
+    }
+
+    #[test]
     fn large_windows_fit_negative_origin_monitors_without_changing_coordinate_scale() {
         assert_eq!(
             fit_rect((-3800, 1300, 2200, 1900), (-3840, 0, 3840, 2080)),

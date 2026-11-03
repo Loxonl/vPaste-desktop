@@ -242,6 +242,7 @@ fn apply_preview(
         .map_err(|err| err.to_string())?;
     crate::set_window_size_for_scale(&window, layout.width, layout.height, layout.scale_factor)?;
     crate::set_window_position_for_scale(&window, layout.x, layout.target_y, layout.scale_factor)?;
+    crate::ui_text_scale::remember(&window, layout.content_scale);
     PERCENT.store(size.percent(), Ordering::SeqCst);
     show_without_activation(&window, source)?;
     Ok(window)

@@ -292,4 +292,33 @@ describe("useClipboardListInteractions", () => {
         expect(onPointerStart).not.toHaveBeenCalled();
         expect(onLoadMore).toHaveBeenCalledOnce();
     });
+
+    it("leaves vertical wheel scrolling native when enlarged content exceeds the panel height", () => {
+        vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);
+        render(<Harness />);
+        const container = screen.getByTestId("cards");
+        Object.defineProperties(container, {
+            clientWidth: { configurable: true, value: 400 }, scrollWidth: { configurable: true, value: 1000 },
+            clientHeight: { configurable: true, value: 180 }, scrollHeight: { configurable: true, value: 254 },
+        });
+        container.scrollLeft = 100;
+        const event = new WheelEvent("wheel", { deltaY: 30, bubbles: true, cancelable: true });
+        container.dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(false);
+        expect(container.scrollLeft).toBe(100);
+    });
+
+    it("still supports explicit horizontal wheel gestures in a vertically scrollable panel", () => {
+        vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);
+        render(<Harness />);
+        const container = screen.getByTestId("cards");
+        Object.defineProperties(container, {
+            clientWidth: { configurable: true, value: 400 }, scrollWidth: { configurable: true, value: 1000 },
+            clientHeight: { configurable: true, value: 180 }, scrollHeight: { configurable: true, value: 254 },
+        });
+        const event = new WheelEvent("wheel", { deltaY: 30, shiftKey: true, bubbles: true, cancelable: true });
+        container.dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(true);
+        expect(container.scrollLeft).toBe(30);
+    });
 });

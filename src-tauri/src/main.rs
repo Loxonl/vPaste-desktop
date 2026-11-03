@@ -12085,7 +12085,9 @@ fn build_auxiliary_window(
     let builder = match kind {
         #[cfg(debug_assertions)]
         WindowKind::DevMemory => {
-            return dev_memory::build_window(handle, App("__dev-memory".into()))
+            let window = dev_memory::build_window(handle, App("__dev-memory".into()), text_scale)?;
+            ui_text_scale::remember(&window, text_scale);
+            return Ok(window);
         }
         WindowKind::ClipboardPreview => return build_preview_window(handle),
         WindowKind::PasteQueue => return build_paste_queue_window(handle),

@@ -77,6 +77,7 @@ mod native_drag_preview;
 mod native_drag_snapshot;
 #[cfg(any(test, debug_assertions))]
 mod office_test_fixtures;
+mod panel_animation;
 mod panel_size;
 mod paste_queue;
 mod preview_behavior;
@@ -184,8 +185,8 @@ static LAST_FOREGROUND_APP_PID: Mutex<Option<i32>> = Mutex::new(None);
 pub static TEST_APP_DATA_LOCK: Mutex<()> = Mutex::new(());
 const CLIPBOARD_WINDOW_HEIGHT: f64 = 302.0;
 const CLIPBOARD_WINDOW_SHADOW: bool = cfg!(target_os = "windows");
-const CLIPBOARD_SHOW_ANIMATION_MS: u64 = 170;
-const CLIPBOARD_HIDE_ANIMATION_MS: u64 = 140;
+const CLIPBOARD_SHOW_ANIMATION_MS: u64 = panel_animation::model::SHOW_DURATION_MS;
+const CLIPBOARD_HIDE_ANIMATION_MS: u64 = panel_animation::model::HIDE_DURATION_MS;
 const CLIPBOARD_ANIMATION_FRAME_MS: u64 = 8;
 // Trial: keep the bounded main view warm while the native window is parked.
 const CLIPBOARD_PARK_WHEN_COLLAPSED: bool = true;
@@ -1029,6 +1030,10 @@ mod clipboard_monitor_selection_tests {
 
 #[cfg(target_os = "windows")]
 fn system_reduces_motion() -> bool {
+    #[cfg(debug_assertions)]
+    if panel_animation::probe::FORCE_REDUCED.load(Ordering::SeqCst) {
+        return true;
+    }
     use std::ffi::c_void;
     use windows::Win32::UI::WindowsAndMessaging::{
         SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
@@ -1049,6 +1054,10 @@ fn system_reduces_motion() -> bool {
 
 #[cfg(target_os = "macos")]
 fn system_reduces_motion() -> bool {
+    #[cfg(debug_assertions)]
+    if panel_animation::probe::FORCE_REDUCED.load(Ordering::SeqCst) {
+        return true;
+    }
     use cocoa::base::{id, nil};
     use objc::{class, msg_send, sel, sel_impl};
 
@@ -1064,6 +1073,10 @@ fn system_reduces_motion() -> bool {
 
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn system_reduces_motion() -> bool {
+    #[cfg(debug_assertions)]
+    if panel_animation::probe::FORCE_REDUCED.load(Ordering::SeqCst) {
+        return true;
+    }
     false
 }
 
@@ -1310,12 +1323,9 @@ fn restore_foreground_app_before_paste() {
     }
 }
 
-#[derive(Clone, Copy)]
-enum ClipboardWindowAnimation {
-    Show,
-    Hide,
-}
+use panel_animation::model::Animation as ClipboardWindowAnimation;
 
+#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy)]
 struct ClipboardWindowMotion {
     x: f64,
@@ -1324,14 +1334,12 @@ struct ClipboardWindowMotion {
     scale_factor: f64,
 }
 
+#[cfg(any(test, not(target_os = "macos")))]
 fn clipboard_window_animation_progress(progress: f64, animation: ClipboardWindowAnimation) -> f64 {
-    let progress = progress.clamp(0.0, 1.0);
-    match animation {
-        ClipboardWindowAnimation::Show => 1.0 - (1.0 - progress).powi(3),
-        ClipboardWindowAnimation::Hide => progress.powi(3),
-    }
+    animation.progress(progress)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn current_window_logical_y(
     window: &tauri::WebviewWindow,
     target_scale_factor: f64,
@@ -1443,8 +1451,19 @@ fn animate_clipboard_window_y(
         if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
             return Ok(false);
         }
-        set_window_position_for_scale(window, motion.x, motion.to_y, motion.scale_factor)?;
-        return Ok(true);
+        #[cfg(target_os = "windows")]
+        return panel_animation::windows::set_position(
+            window,
+            motion.x,
+            motion.to_y,
+            motion.scale_factor,
+            generation,
+        );
+        #[cfg(not(target_os = "windows"))]
+        {
+            set_window_position_for_scale(window, motion.x, motion.to_y, motion.scale_factor)?;
+            return Ok(true);
+        }
     }
 
     let started = Instant::now();
@@ -1457,11 +1476,25 @@ fn animate_clipboard_window_y(
         let progress = (started.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0);
         let eased = clipboard_window_animation_progress(progress, animation);
         let y = motion.from_y + (motion.to_y - motion.from_y) * eased;
+        #[cfg(target_os = "windows")]
+        if !panel_animation::windows::set_position(
+            window,
+            motion.x,
+            y,
+            motion.scale_factor,
+            generation,
+        )? {
+            return Ok(false);
+        }
+        #[cfg(not(target_os = "windows"))]
         set_window_position_for_scale(window, motion.x, y, motion.scale_factor)?;
 
         if progress >= 1.0 {
             return Ok(true);
         }
+        #[cfg(target_os = "windows")]
+        panel_animation::windows::wait_for_frame();
+        #[cfg(not(target_os = "windows"))]
         std::thread::sleep(std::time::Duration::from_millis(
             CLIPBOARD_ANIMATION_FRAME_MS,
         ));
@@ -1509,43 +1542,6 @@ fn set_macos_clipboard_window_position(
     positioned_rx
         .recv()
         .map_err(|err| format!("failed to update macOS clipboard window position: {err}"))?
-}
-
-#[cfg(target_os = "macos")]
-fn animate_clipboard_window_y(
-    window: &tauri::WebviewWindow,
-    motion: ClipboardWindowMotion,
-    duration_ms: u64,
-    generation: u64,
-    animation: ClipboardWindowAnimation,
-) -> Result<bool, String> {
-    if system_reduces_motion() || (motion.from_y - motion.to_y).abs() < 0.5 {
-        if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
-            return Ok(false);
-        }
-        set_macos_clipboard_window_position(window, motion.x, motion.to_y)?;
-        return Ok(true);
-    }
-
-    let started = Instant::now();
-    let duration = std::time::Duration::from_millis(duration_ms);
-    loop {
-        if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
-            return Ok(false);
-        }
-
-        let progress = (started.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0);
-        let eased = clipboard_window_animation_progress(progress, animation);
-        let y = motion.from_y + (motion.to_y - motion.from_y) * eased;
-        set_macos_clipboard_window_position(window, motion.x, y)?;
-
-        if progress >= 1.0 {
-            return Ok(true);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(
-            CLIPBOARD_ANIMATION_FRAME_MS,
-        ));
-    }
 }
 
 fn park_clipboard_window(window: &tauri::WebviewWindow) -> Result<(), String> {
@@ -1620,6 +1616,10 @@ fn finish_hide_window_locked(
     if !parked {
         window.hide().map_err(|err| err.to_string())?;
     }
+    #[cfg(target_os = "macos")]
+    if let Err(error) = panel_animation::macos::set_fraction(window, 0.0) {
+        error!("Failed to restore parked main-panel content: {error}");
+    }
     if !PREVIEW_PINNED.load(Ordering::SeqCst) {
         let _ = retain_preview_window(window.app_handle());
     }
@@ -1641,6 +1641,10 @@ fn finish_hide_window_locked(
 }
 
 fn finish_hide_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if !panel_animation::macos::is_main_thread() {
+        return panel_animation::macos::on_main(window, |owned| finish_hide_window(&owned));
+    }
     let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1656,24 +1660,57 @@ fn finish_animated_hide_window(
         return Ok(());
     }
 
-    let bounds = screen_bounds(window);
-    let x = bounds.x - CLIPBOARD_HORIZONTAL_BLEED;
-    let target_y = bounds.y + bounds.height;
-    let start_y = current_window_logical_y(window, bounds.scale_factor)
-        .unwrap_or(bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT * panel_size::scale());
-    let animation_result = animate_clipboard_window_y(
+    #[cfg(target_os = "macos")]
+    let animation_result = panel_animation::macos::animate(
         window,
-        ClipboardWindowMotion {
-            x,
-            from_y: start_y,
-            to_y: target_y,
-            scale_factor: bounds.scale_factor,
-        },
+        ClipboardWindowAnimation::Hide,
         CLIPBOARD_HIDE_ANIMATION_MS,
         generation,
-        ClipboardWindowAnimation::Hide,
     );
+    #[cfg(not(target_os = "macos"))]
+    let animation_result = {
+        let bounds = screen_bounds(window);
+        let x = bounds.x - CLIPBOARD_HORIZONTAL_BLEED;
+        let target_y = bounds.y + bounds.height;
+        let start_y = current_window_logical_y(window, bounds.scale_factor)
+            .unwrap_or(bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT * panel_size::scale());
+        animate_clipboard_window_y(
+            window,
+            ClipboardWindowMotion {
+                x,
+                from_y: start_y,
+                to_y: target_y,
+                scale_factor: bounds.scale_factor,
+            },
+            CLIPBOARD_HIDE_ANIMATION_MS,
+            generation,
+            ClipboardWindowAnimation::Hide,
+        )
+    };
+    #[cfg(target_os = "macos")]
+    return panel_animation::macos::on_main(window, move |owned| {
+        complete_animated_clipboard_hide(
+            &owned,
+            generation,
+            allow_onboarding_shortcut_demo,
+            animation_result,
+        )
+    });
+    #[cfg(not(target_os = "macos"))]
+    complete_animated_clipboard_hide(
+        window,
+        generation,
+        allow_onboarding_shortcut_demo,
+        animation_result,
+    )
+}
 
+fn complete_animated_clipboard_hide(
+    window: &tauri::WebviewWindow,
+    generation: u64,
+    allow_onboarding_shortcut_demo: bool,
+    animation_result: Result<bool, String>,
+) -> Result<(), String> {
     let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1685,6 +1722,10 @@ fn finish_animated_hide_window(
     ) {
         if clipboard_hide_blocked() {
             CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
+            #[cfg(target_os = "macos")]
+            if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) == generation {
+                panel_animation::macos::set_fraction(window, 0.0)?;
+            }
         }
         return Ok(());
     }
@@ -1737,9 +1778,12 @@ mod clipboard_window_animation_tests {
     }
 
     #[test]
-    fn show_arrives_quickly_and_hide_leaves_quickly() {
+    fn show_arrives_quickly_and_hide_uses_symmetric_acceleration() {
         assert!(clipboard_window_animation_progress(0.5, ClipboardWindowAnimation::Show) > 0.5);
-        assert!(clipboard_window_animation_progress(0.5, ClipboardWindowAnimation::Hide) < 0.5);
+        assert!(
+            (clipboard_window_animation_progress(0.5, ClipboardWindowAnimation::Hide) - 0.5).abs()
+                < 0.0001
+        );
     }
 }
 
@@ -2042,7 +2086,29 @@ fn hide_clipboard_window_with_onboarding_policy(
     });
 }
 
+fn complete_clipboard_show(window: &tauri::WebviewWindow, generation: u64) {
+    let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if panel_animation::model::may_complete_show(
+        generation,
+        CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst),
+        CLIPBOARD_VISIBLE.load(Ordering::SeqCst),
+        CLIPBOARD_HIDING.load(Ordering::SeqCst),
+    ) {
+        let _ = window.emit("window-show-complete", ());
+    }
+}
+
 fn show_clipboard_window(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    if !panel_animation::macos::is_main_thread() {
+        let owned = window.clone();
+        if let Err(error) = window.run_on_main_thread(move || show_clipboard_window(&owned)) {
+            error!("Failed to schedule main-panel show: {error}");
+        }
+        return;
+    }
     if panel_size::is_previewing() {
         return;
     }
@@ -2054,6 +2120,7 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
     let layout;
     let panel_scale;
     let generation;
+    #[cfg(not(target_os = "macos"))]
     let start_y;
 
     {
@@ -2067,6 +2134,7 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
         panel_scale = panel_size::use_configured_size(monitor.as_ref()).scale();
         layout = clipboard_window_layout(bounds, panel_scale);
         let x = layout.x;
+        #[cfg(not(target_os = "macos"))]
         let hidden_y = layout.hidden_y;
 
         let was_visible = window.is_visible().unwrap_or(false);
@@ -2078,17 +2146,40 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
         }
         generation = CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
 
-        start_y = if was_visible && was_presented {
-            current_window_logical_y(window, layout.scale_factor).unwrap_or(hidden_y)
+        #[cfg(not(target_os = "macos"))]
+        {
+            start_y = if was_visible && was_presented {
+                current_window_logical_y(window, layout.scale_factor).unwrap_or(hidden_y)
+            } else {
+                hidden_y
+            };
+            let _ = set_window_position_for_scale(window, x, start_y, layout.scale_factor);
+        }
+        #[cfg(target_os = "macos")]
+        let content_fraction = if system_reduces_motion() {
+            0.0
+        } else if was_visible && was_presented {
+            panel_animation::macos::current_fraction(window).unwrap_or(1.0)
         } else {
-            hidden_y
+            1.0
         };
-        let _ = set_window_position_for_scale(window, x, start_y, layout.scale_factor);
         if let Err(err) = window.set_zoom(panel_scale) {
             error!("Failed to apply main panel zoom: {err}");
         }
         let _ = set_window_size_for_scale(window, layout.width, layout.height, layout.scale_factor);
+        #[cfg(not(target_os = "macos"))]
         let _ = set_window_position_for_scale(window, x, start_y, layout.scale_factor);
+        #[cfg(target_os = "macos")]
+        {
+            if let Err(error) = set_macos_clipboard_window_position(window, x, layout.target_y) {
+                error!("Failed to dock main-panel host: {error}");
+            }
+            // NSWindow updates its root view's frame while docking. Set the
+            // animation origin afterwards, in this same AppKit event turn.
+            if let Err(error) = panel_animation::macos::set_fraction(window, content_fraction) {
+                error!("Failed to prepare main-panel content: {error}");
+            }
+        }
 
         if !memory_profile_active() {
             let _ = window.set_ignore_cursor_events(false);
@@ -2140,7 +2231,15 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
 
     let animation_window = window.clone();
     std::thread::spawn(move || {
-        match animate_clipboard_window_y(
+        #[cfg(target_os = "macos")]
+        let result = panel_animation::macos::animate(
+            &animation_window,
+            ClipboardWindowAnimation::Show,
+            CLIPBOARD_SHOW_ANIMATION_MS,
+            generation,
+        );
+        #[cfg(not(target_os = "macos"))]
+        let result = animate_clipboard_window_y(
             &animation_window,
             ClipboardWindowMotion {
                 x,
@@ -2151,21 +2250,42 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
             CLIPBOARD_SHOW_ANIMATION_MS,
             generation,
             ClipboardWindowAnimation::Show,
-        ) {
-            Ok(true) => {
-                let _ = animation_window.emit("window-show-complete", ());
-            }
+        );
+        match result {
+            Ok(true) => complete_clipboard_show(&animation_window, generation),
             Ok(false) => info!("Skip stale clipboard show generation {}", generation),
             Err(err) => {
                 error!("Failed to animate clipboard window up: {}", err);
                 if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) == generation {
-                    let _ = set_window_position_for_scale(
+                    #[cfg(target_os = "macos")]
+                    let restored =
+                        panel_animation::macos::on_main(&animation_window, move |owned| {
+                            if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
+                                return Ok(false);
+                            }
+                            panel_animation::macos::set_fraction(&owned, 0.0)?;
+                            set_macos_clipboard_window_position(&owned, x, target_y)?;
+                            Ok(true)
+                        });
+                    #[cfg(target_os = "windows")]
+                    let restored = panel_animation::windows::set_position(
                         &animation_window,
                         x,
                         target_y,
                         layout.scale_factor,
+                        generation,
                     );
-                    let _ = animation_window.emit("window-show-complete", ());
+                    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+                    let restored = set_window_position_for_scale(
+                        &animation_window,
+                        x,
+                        target_y,
+                        layout.scale_factor,
+                    )
+                    .map(|()| true);
+                    if restored == Ok(true) {
+                        complete_clipboard_show(&animation_window, generation);
+                    }
                 }
             }
         }
@@ -12475,6 +12595,7 @@ fn main() {
                 memory_profile::setup(app.handle()).map_err(io::Error::other)?;
                 #[cfg(target_os = "macos")]
                 panel_size::layout_check::start(app.handle().clone());
+                panel_animation::probe::start(app.handle().clone());
                 return Ok(());
             }
             app_updater::start_background_checks(app.handle().clone());

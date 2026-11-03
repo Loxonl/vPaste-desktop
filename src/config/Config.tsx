@@ -150,7 +150,7 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
     const saveConfig = async (newConfig: ConfigData): Promise<SettingsSaveInfo | null> => {
         const previousConfig = config;
         const applyConfig = (nextConfig: ConfigData) => {
-            setConfig(nextConfig);
+            setConfig(current => ({ ...nextConfig, clipboard_panel_size: current.clipboard_panel_size }));
             setLanguageCode(nextConfig.multilingual || DEFAULT_CONFIG.multilingual);
             applyThemeMode(nextConfig.theme_mode || DEFAULT_CONFIG.theme_mode);
         };
@@ -184,7 +184,8 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
     const nativeWindowsSurface = nativeWindowsPreview
         || ("__TAURI_INTERNALS__" in window && !isMac);
     const activeSection = [
-        <GeneralSettings bridge={bridge} config={config} languages={languages} t={t} onSave={saveConfig} />,
+        <GeneralSettings bridge={bridge} config={config} languages={languages} t={t} onSave={saveConfig}
+            onPanelSizeSaved={size => setConfig(current => ({ ...current, clipboard_panel_size: size }))} />,
         <DataSettings bridge={bridge} config={config} storagePaths={storagePaths} t={t} onSave={saveConfig} onBlockingOperationChange={setBlockingOperation} dialogBackdropClassName={nativeWindowsSurface ? layout.windowSurfaceBackdrop : undefined} />,
         <ShortcutSettings bridge={bridge} config={config} t={t} onSave={saveConfig} />,
         <AboutSettings bridge={bridge} config={config} dir={dir} t={t} onSave={saveConfig} dialogBackdropClassName={nativeWindowsSurface ? layout.windowSurfaceBackdrop : undefined} />,

@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG, parseSettingsConfig } from "../../../src/config/settingsTypes";
 
 describe("parseSettingsConfig", () => {
+    it("uses automatic sizing for missing preferences and preserves existing manual sizes", () => {
+        for (const clipboard_panel_size of [undefined, null, "extra_large", 0.8]) {
+            expect(parseSettingsConfig(JSON.stringify({ clipboard_panel_size })).clipboard_panel_size).toBeNull();
+        }
+        for (const clipboard_panel_size of ["small", "medium", "large"]) {
+            expect(parseSettingsConfig(JSON.stringify({ clipboard_panel_size })).clipboard_panel_size).toBe(clipboard_panel_size);
+        }
+    });
     it("merges persisted values with safe defaults", () => {
         expect(parseSettingsConfig(JSON.stringify({
             multilingual: "en-US",

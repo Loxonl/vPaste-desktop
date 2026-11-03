@@ -1,0 +1,60 @@
+.heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ui-space-3);
+}
+
+.value {
+    flex-shrink: 0;
+    color: var(--settings-muted);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+}
+
+.control {
+    width: 100%;
+    padding: var(--ui-space-4) var(--ui-space-3) var(--ui-space-2);
+}
+
+.markLabel[data-index="0"] {
+    transform: none;
+}
+
+.markLabel[data-index="2"] {
+    transform: translateX(-100%);
+}
+
+.description {
+    display: block;
+    margin-top: var(--ui-space-4);
+    color: var(--settings-muted);
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+.description[data-previewing] {
+    color: var(--ui-accent-strong);
+}
+
+.footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--ui-space-2);
+    margin-top: var(--ui-space-2);
+}
+
+.mode {
+    color: var(--settings-text);
+    font-size: 12px;
+}
+
+.details {
+    display: grid;
+    gap: var(--ui-space-1);
+    color: var(--settings-muted);
+    font-size: 12px;
+    line-height: 1.4;
+}

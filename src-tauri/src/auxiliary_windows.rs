@@ -240,10 +240,10 @@ async fn ensure_open(
     }
 }
 
-pub(crate) async fn on_main_thread(
+pub(crate) async fn on_main_thread<T: Send + 'static>(
     app: tauri::AppHandle,
-    action: impl FnOnce() -> Result<(), String> + Send + 'static,
-) -> Result<(), String> {
+    action: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
     let (sender, receiver) = oneshot::channel();
     // Creation must be asynchronous, but keep the existing native focus/hide
     // operations on the UI thread and serialize concurrent opening requests.

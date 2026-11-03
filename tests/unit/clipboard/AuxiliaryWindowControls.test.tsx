@@ -277,4 +277,58 @@ describe("auxiliary window controls", () => {
         await waitFor(() => expect(update.openAppStore).toHaveBeenCalledOnce());
         expect(tauri.invoke).toHaveBeenCalledWith("hide_tray_menu");
     });
+
+    it("waits for the first tray resize before acknowledging native readiness", async () => {
+        const previous = Object.getOwnPropertyDescriptor(window, "__TAURI_INTERNALS__");
+        Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+        let finishResize!: () => void;
+        const resized = new Promise<void>(resolve => { finishResize = resolve; });
+        const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+            .mockReturnValue({ x: 0, y: 0, width: 216, height: 184, top: 0, right: 216, bottom: 184, left: 0, toJSON: () => ({}) });
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "resize_tray_menu") return resized;
+            if (command === "get_clipboard_history_paused") return false;
+            return undefined;
+        });
+        try {
+            render(<TrayMenu />);
+            await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("resize_tray_menu", { width: 216, height: 184 }));
+            expect(tauri.invoke).not.toHaveBeenCalledWith("auxiliary_window_ready");
+            await act(async () => { finishResize(); await resized; });
+            await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("auxiliary_window_ready"));
+        } finally {
+            finishResize();
+            cleanup();
+            bounds.mockRestore();
+            if (previous) Object.defineProperty(window, "__TAURI_INTERNALS__", previous);
+            else delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+        }
+    });
+
+    it("remeasures the complete tray after layout changes without a state toggle", async () => {
+        let contentHeight = 184;
+        let observerCallback: ResizeObserverCallback | undefined;
+        const disconnect = vi.fn();
+        vi.stubGlobal("ResizeObserver", class {
+            constructor(callback: ResizeObserverCallback) { observerCallback = callback; }
+            observe = vi.fn();
+            disconnect = disconnect;
+        });
+        const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+            .mockImplementation(() => ({ x: 0, y: 0, width: 216, height: contentHeight, top: 0, right: 216, bottom: contentHeight, left: 0, toJSON: () => ({}) }));
+        try {
+            const view = render(<TrayMenu />);
+            await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("resize_tray_menu", { width: 216, height: 184 }));
+            expect(observerCallback).toBeTypeOf("function");
+            tauri.invoke.mockClear();
+            contentHeight = 260;
+            act(() => observerCallback!([], {} as ResizeObserver));
+            await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("resize_tray_menu", { width: 216, height: 260 }));
+            view.unmount();
+            expect(disconnect).toHaveBeenCalled();
+        } finally {
+            bounds.mockRestore();
+            vi.unstubAllGlobals();
+        }
+    });
 });

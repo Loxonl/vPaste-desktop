@@ -11985,6 +11985,31 @@ mod clipboard_native_frame_tests {
     }
 }
 
+#[cfg(test)]
+mod ui_text_scale_regression_tests {
+    #[test]
+    fn text_scale_is_added_to_content_size_not_screen_coordinates() {
+        let (width, height) = crate::ui_text_scale::content_size(216.0, 170.0, 1.25);
+        assert_eq!((width * 2.0, height * 2.0), (540.0, 425.0));
+        assert_eq!(crate::ui_text_scale::content_size(216.0, 170.0, 1.0), (216.0, 170.0));
+    }
+
+    #[test]
+    fn enlarged_panel_has_room_for_the_original_css_height_and_padding() {
+        let native_height = crate::ui_text_scale::clipboard_height(1.25, 1200.0);
+        let physical_height = native_height * 2.0;
+        assert_eq!(physical_height, 755.0);
+        assert_eq!(physical_height / (2.0 * 1.25), super::CLIPBOARD_WINDOW_HEIGHT);
+        assert_eq!(2400.0 - physical_height, 1645.0);
+    }
+
+    #[test]
+    fn oversized_panel_is_bounded_by_its_monitor_without_disabling_text_scaling() {
+        assert_eq!(crate::ui_text_scale::clipboard_height(2.0, 500.0), 500.0);
+        assert_eq!(crate::ui_text_scale::clipboard_height(1.0, 1200.0), super::CLIPBOARD_WINDOW_HEIGHT);
+    }
+}
+
 fn build_paste_queue_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     let window = WebviewWindowBuilder::new(handle, "pasteQueue", App("paste-queue".into()))
         .title("Paste Queue")

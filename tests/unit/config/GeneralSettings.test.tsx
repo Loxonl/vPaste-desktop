@@ -14,6 +14,22 @@ afterEach(() => {
 
 const bridge: SettingsBridge = {
     invoke: vi.fn(async (command: string) => {
+        if (command === "get_clipboard_panel_size_state") {
+            return {
+                preference: null,
+                recommended: "medium",
+                effective: "medium",
+                display: {
+                    pixel_width: 1920,
+                    pixel_height: 1080,
+                    scale_factor: 1.25,
+                    logical_width: 1536,
+                    logical_height: 864,
+                    work_width: 1536,
+                    work_height: 824,
+                },
+            };
+        }
         if (command === "get_update_state") {
             return {
                 status: "idle",
@@ -38,6 +54,18 @@ const bridge: SettingsBridge = {
 };
 
 describe("General settings accessibility", () => {
+    it("loads the native automatic panel size without entering an error state", async () => {
+        render(<AppThemeProvider><MotionTestProvider><GeneralSettings bridge={bridge} config={DEFAULT_CONFIG} languages={[]} onSave={vi.fn(async () => null)} t={key => key} /></MotionTestProvider></AppThemeProvider>);
+
+        expect(await screen.findByText("settings.panelSize.recommendation")).toBeVisible();
+        const slider = screen.getByRole("slider", { name: /settings.panelSize/ });
+        expect(slider).toBeEnabled();
+        expect(slider).toHaveAttribute("aria-valuenow", "1");
+        expect(slider).toHaveAttribute("aria-valuetext", "settings.panelSize.medium · 90%");
+        expect(screen.getByText("settings.panelSize.automatic")).toBeVisible();
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
     it("offers immediate single-click paste by default, double-click paste, and opt-in hover preview", async () => {
         const onSave = vi.fn(async () => null);
         render(<AppThemeProvider><MotionTestProvider><GeneralSettings bridge={bridge} config={DEFAULT_CONFIG} languages={[]} onSave={onSave} t={key => key} /></MotionTestProvider></AppThemeProvider>);
@@ -69,7 +97,7 @@ describe("General settings accessibility", () => {
                         releaseUrl: "",
                     };
                 }
-                return null;
+                return bridge.invoke(command);
             }) as SettingsBridge["invoke"],
         };
         const onSave = vi.fn(async () => null);
@@ -100,7 +128,7 @@ describe("General settings accessibility", () => {
             ...bridge,
             invoke: vi.fn(async (command: string) => command === "get_update_state"
                 ? { portable: true, status: "idle", currentVersion: "1.6.0", availableVersion: null, downloadedBytes: 0, totalBytes: null, error: null, feedEnabled: true, releaseUrl: "" }
-                : null) as SettingsBridge["invoke"],
+                : bridge.invoke(command)) as SettingsBridge["invoke"],
         };
         render(
             <MotionTestProvider>
@@ -168,7 +196,7 @@ describe("General settings accessibility", () => {
                         paste: { done: false },
                     };
                 }
-                return null;
+                return bridge.invoke(command);
             }) as SettingsBridge["invoke"],
         };
 

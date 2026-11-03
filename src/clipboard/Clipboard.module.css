@@ -797,6 +797,9 @@ body {
 
 /* Cards Grid */
 .cards-container {
+  /* Grid rows avoid WebKit page-zoom errors in nested percentage min-heights. */
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
   position: relative;
   box-sizing: border-box;
   flex: 1;
@@ -875,6 +878,10 @@ body {
   .cards-container::-webkit-scrollbar {
     display: block;
   }
+
+  .cards-container .cards-grid {
+    align-items: flex-start;
+  }
 }
 
 .cards-container.queue-selection-mode .clipboard-card {
@@ -947,7 +954,7 @@ body {
   display: grid;
   position: relative;
   min-width: 100%;
-  min-height: 100%;
+  min-height: 0;
 }
 
 .tutorial-loading {
@@ -965,7 +972,7 @@ body {
   gap: var(--clipboard-card-gap);
   width: max-content;
   min-width: 100%;
-  min-height: 100%;
+  min-height: 0;
   align-items: center;
 }
 
@@ -1021,8 +1028,6 @@ body {
   flex-direction: column;
   flex-shrink: 0;
   contain: layout paint style;
-  content-visibility: auto;
-  contain-intrinsic-size: 220px 230px;
   user-select: none;
   -webkit-user-select: none;
 }

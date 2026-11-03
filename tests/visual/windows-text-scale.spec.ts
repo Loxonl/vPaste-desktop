@@ -85,6 +85,7 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
                     const container = page.locator("[class*='cards-container']").first();
                     await expect(card).toBeVisible();
                     if (height < 302) {
+                        expect((await card.boundingBox())!.y).toBeGreaterThanOrEqual((await container.boundingBox())!.y);
                         await container.hover();
                         await page.mouse.wheel(0, 200);
                         await expect.poll(() => container.evaluate(node => node.scrollTop)).toBeGreaterThan(0);

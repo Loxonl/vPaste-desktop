@@ -115,22 +115,25 @@ fn native_webview_preserves_cards_quit_and_bounds_with_enlarged_text() {
                     let _ = window_vibrancy::apply_acrylic(&probe, Some((232, 235, 229, 30)));
                     crate::refresh_clipboard_window_frame(&AsRef::<tauri::Webview>::as_ref(&probe).window()).map_err(|error| error.to_string())?;
                     let dpi = probe.scale_factor().map_err(|error| error.to_string())?;
-                    for (index, zoom) in [1.0, 1.25, 1.5, 2.0].into_iter().enumerate() {
+                    for (index, (panel_scale, zoom)) in [0.8, 0.9, 1.0].into_iter()
+                        .flat_map(|panel| [1.0, 1.25, 1.5, 2.0].map(move |text| (panel, text))).enumerate() {
                         // Simulate extra content magnification in this disposable WebView only.
                         let text_scale = set_probe_zoom(&probe, zoom)?;
                         FACTOR.store(text_scale.to_bits(), Ordering::SeqCst);
+                        set_probe_zoom(&probe, zoom * panel_scale)?;
                         let bounds = crate::screen_bounds(&probe);
-                        let layout = crate::clipboard_window_layout(bounds);
-                        crate::set_window_size_for_scale(&probe, 500.0 * text_scale, layout.height, dpi)?;
-                        let expected = layout.height / text_scale;
+                        let layout = crate::clipboard_window_layout(bounds, panel_scale);
+                        crate::set_window_size_for_scale(&probe, 500.0 * text_scale * panel_scale, layout.height, dpi)?;
+                        let expected = layout.height / (text_scale * panel_scale);
                         let metrics = check_layout(&probe, &receiver, index * 2, false, expected)?;
                         if (metrics["height"].as_f64().unwrap() - expected).abs() > 1.0 {
-                            return Err(format!("wrong CSS viewport at zoom {zoom}: {metrics}"));
+                            return Err(format!("wrong CSS viewport at panel={panel_scale}, text={zoom}: {metrics}"));
                         }
+                        set_probe_zoom(&probe, zoom)?;
                         crate::resize_tray_menu(probe.clone(), 216, 170)?;
                         let tray_height = probe.inner_size().map_err(|error| error.to_string())?.height as f64 / (dpi * text_scale);
                         let tray = check_layout(&probe, &receiver, index * 2 + 1, true, tray_height)?;
-                        eprintln!("native text-size case zoom={zoom}, dpi={dpi}, cards={metrics}, tray={tray}");
+                        eprintln!("native text-size case panel={panel_scale}, text={zoom}, dpi={dpi}, cards={metrics}, tray={tray}");
                     }
                     probe.hide().map_err(|error| error.to_string())?;
 

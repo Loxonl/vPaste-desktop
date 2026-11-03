@@ -9,8 +9,8 @@ pub(crate) fn content_size(width: f64, height: f64, text_scale: f64) -> (f64, f6
 }
 
 #[cfg(any(target_os = "windows", test))]
-pub(crate) fn clipboard_height(text_scale: f64, screen_height: f64) -> f64 {
-    (crate::CLIPBOARD_WINDOW_HEIGHT * text_scale).min(screen_height)
+pub(crate) fn clipboard_height(panel_scale: f64, text_scale: f64, screen_height: f64) -> f64 {
+    (crate::CLIPBOARD_WINDOW_HEIGHT * (panel_scale * text_scale)).min(screen_height)
 }
 
 pub(crate) fn current() -> f64 {

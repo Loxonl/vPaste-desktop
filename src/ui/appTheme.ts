@@ -77,6 +77,62 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
         },
         spacing: 4,
         components: {
+            MuiSlider: {
+                defaultProps: {
+                    size: "small",
+                },
+                styleOverrides: {
+                    root: {
+                        height: 4,
+                    },
+                    rail: {
+                        opacity: 1,
+                        backgroundColor: "var(--ui-border-strong)",
+                    },
+                    track: {
+                        border: 0,
+                    },
+                    thumb: {
+                        width: 44,
+                        height: 26,
+                        borderRadius: "var(--ui-radius-pill)",
+                        border: "3px solid currentColor",
+                        backgroundColor: "var(--ui-surface-solid)",
+                        boxShadow: "var(--ui-shadow-control)",
+                        "&:hover, &.Mui-active": {
+                            boxShadow: "var(--ui-field-focus-ring)",
+                        },
+                        "&.Mui-focusVisible": {
+                            boxShadow: "var(--ui-focus-ring)",
+                        },
+                        "&::before": {
+                            width: 8,
+                            height: 10,
+                            borderLeft: "2px solid currentColor",
+                            borderRight: "2px solid currentColor",
+                            borderRadius: 0,
+                            boxShadow: "none",
+                            opacity: 0.55,
+                        },
+                        "&::after": {
+                            width: 52,
+                            height: 40,
+                            borderRadius: "var(--ui-radius-pill)",
+                        },
+                    },
+                    markLabel: {
+                        color: "var(--settings-muted)",
+                        fontSize: 12,
+                    },
+                    valueLabel: {
+                        borderRadius: "var(--ui-radius-control)",
+                        backgroundColor: "var(--ui-text)",
+                        color: "var(--ui-surface-solid)",
+                        fontSize: 12,
+                        fontWeight: 500,
+                    },
+                },
+            },
             MuiButtonBase: {
                 defaultProps: {
                     disableRipple: true,

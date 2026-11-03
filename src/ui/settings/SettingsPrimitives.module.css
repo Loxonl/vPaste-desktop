@@ -61,6 +61,19 @@
   align-items: center;
 }
 
+.stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--ui-space-3);
+  padding-block: var(--ui-space-4);
+}
+
+.stacked .copy,
+.stacked .control {
+  width: 100%;
+  margin-left: 0;
+}
+
 @container (max-width: 400px) {
   .row {
     align-items: flex-start;

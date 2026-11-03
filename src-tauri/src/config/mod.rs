@@ -56,6 +56,9 @@ pub struct Config {
     pub link_auto_preview: bool,
     #[serde(default)]
     pub mouse_paste_mode: MousePasteMode,
+    // None follows the target screen; Some is a manual override, including Large.
+    #[serde(default)]
+    pub clipboard_panel_size: Option<crate::panel_size::PanelSize>,
     #[serde(default)]
     pub hover_preview_enabled: bool,
     #[serde(default = "default_true")]
@@ -91,6 +94,7 @@ impl Default for Config {
             retain_tab_position: false,
             link_auto_preview: true,
             mouse_paste_mode: MousePasteMode::Single,
+            clipboard_panel_size: None,
             hover_preview_enabled: false,
             sensitive_content_protection: true,
             quick_input_enabled: true,

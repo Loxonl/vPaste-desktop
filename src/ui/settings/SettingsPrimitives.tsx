@@ -19,15 +19,17 @@ export function SettingsRow({
     label,
     description,
     control,
+    stacked = false,
 }: {
     labelId?: string;
     descriptionId?: string;
     label: ReactNode;
     description?: ReactNode;
     control: ReactNode;
+    stacked?: boolean;
 }) {
     return (
-        <div className={styles.row}>
+        <div className={`${styles.row}${stacked ? ` ${styles.stacked}` : ""}`}>
             <div className={styles.copy}>
                 <span id={labelId} className={styles.label}>{label}</span>
                 {description ? <span id={descriptionId} className={styles.description}>{description}</span> : null}

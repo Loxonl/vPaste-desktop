@@ -18,6 +18,7 @@ fn build_auxiliary_window(
         let window = dev_memory::build_window(
             app,
             tauri::WebviewUrl::External("memory-probe://localhost/index.html".parse().unwrap()),
+            1.0,
         )?;
         app.state::<auxiliary_windows::Readiness>()
             .signal(kind.label())

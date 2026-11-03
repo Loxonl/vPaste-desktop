@@ -1,4 +1,5 @@
 pub mod shortcuts;
+mod system_language;
 
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
@@ -128,37 +129,9 @@ fn default_theme_mode() -> String {
 }
 
 fn default_language() -> String {
-    system_locale()
-        .map(|locale| {
-            if locale.to_ascii_lowercase().starts_with("zh") {
-                "Chinese".to_string()
-            } else {
-                "English".to_string()
-            }
-        })
-        .unwrap_or_else(|| "English".to_string())
+    system_language::default_language()
 }
 
-#[cfg(target_os = "windows")]
-fn system_locale() -> Option<String> {
-    use windows::Win32::Globalization::GetUserDefaultLocaleName;
-
-    let mut buffer = [0_u16; 85];
-    let len = unsafe { GetUserDefaultLocaleName(&mut buffer) };
-    if len <= 1 {
-        return None;
-    }
-    Some(String::from_utf16_lossy(&buffer[..(len as usize - 1)]))
-}
-
-#[cfg(not(target_os = "windows"))]
-fn system_locale() -> Option<String> {
-    std::env::var("LC_ALL")
-        .or_else(|_| std::env::var("LC_MESSAGES"))
-        .or_else(|_| std::env::var("LANG"))
-        .ok()
-        .filter(|locale| !locale.trim().is_empty())
-}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Shortcutkey {
     pub main_window: Option<String>,

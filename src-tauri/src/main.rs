@@ -2945,6 +2945,7 @@ fn build_preview_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewW
             .background_color(tauri::window::Color(0, 0, 0, 0))
             .skip_taskbar(true)
             .always_on_top(true)
+            .visible_on_all_workspaces(true)
             .resizable(false)
             .shadow(false)
             .inner_size(PREVIEW_WINDOW_WIDTH, PREVIEW_WINDOW_HEIGHT);
@@ -2957,7 +2958,10 @@ fn build_preview_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewW
         let _ = window.set_shadow(false);
         apply_vpaste_window_icon(window);
         #[cfg(target_os = "macos")]
-        set_macos_window_level(window, 102); // Above NSPopUpMenuWindowLevel
+        {
+            set_macos_window_level(window, 102); // Above NSPopUpMenuWindowLevel
+            configure_macos_overlay_window(window);
+        }
     })
 }
 
@@ -4295,6 +4299,49 @@ fn enable_macos_mouse_moved_events(window: &tauri::WebviewWindow) {
             }
         }
     });
+}
+
+#[cfg(target_os = "macos")]
+fn macos_overlay_collection_behavior() -> cocoa::appkit::NSWindowCollectionBehavior {
+    use cocoa::appkit::NSWindowCollectionBehavior;
+    NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
+        | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary
+        | NSWindowCollectionBehavior::NSWindowCollectionBehaviorIgnoresCycle
+}
+
+#[cfg(target_os = "macos")]
+fn configure_macos_overlay_window(window: &tauri::WebviewWindow) {
+    use cocoa::appkit::NSWindow;
+    use cocoa::base::id;
+    let window_clone = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        if let Ok(ns_window) = window_clone.ns_window() {
+            unsafe {
+                if !ns_window.is_null() {
+                    let ns_window = ns_window as id;
+                    ns_window.setCollectionBehavior_(macos_overlay_collection_behavior());
+                }
+            }
+        }
+    });
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_overlay_window_tests {
+    use super::macos_overlay_collection_behavior;
+    use cocoa::appkit::NSWindowCollectionBehavior;
+
+    #[test]
+    fn overlay_collection_behavior_enables_all_spaces_and_fullscreen_auxiliary() {
+        let behavior = macos_overlay_collection_behavior();
+        assert!(behavior
+            .contains(NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces));
+        assert!(behavior
+            .contains(NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary));
+        assert!(
+            behavior.contains(NSWindowCollectionBehavior::NSWindowCollectionBehaviorIgnoresCycle)
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -12122,6 +12169,7 @@ fn build_auxiliary_window(
                 .background_color(tauri::window::Color(0, 0, 0, 0))
                 .skip_taskbar(true)
                 .always_on_top(true)
+                .visible_on_all_workspaces(true)
                 .resizable(false)
                 .shadow(false)
                 .inner_size(
@@ -12183,6 +12231,9 @@ fn build_auxiliary_window(
                 101
             },
         );
+        if matches!(kind, WindowKind::TrayMenu) {
+            configure_macos_overlay_window(&window);
+        }
         if matches!(
             kind,
             WindowKind::OnboardingPermission | WindowKind::TrayMenu
@@ -12323,6 +12374,7 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
         .background_color(tauri::window::Color(0, 0, 0, 0))
         .skip_taskbar(true)
         .always_on_top(true)
+        .visible_on_all_workspaces(true)
         .accept_first_mouse(true)
         .disable_drag_drop_handler()
         .inner_size(
@@ -12359,6 +12411,7 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
     #[cfg(target_os = "macos")]
     {
         set_macos_window_level(&clipboard_window, 101);
+        configure_macos_overlay_window(&clipboard_window);
         enable_macos_mouse_moved_events(&clipboard_window);
         let window_clone = clipboard_window.clone();
         let _ = clipboard_window.run_on_main_thread(move || {
@@ -12489,6 +12542,7 @@ fn build_paste_queue_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::W
             PASTE_QUEUE_WINDOW_HEIGHT * text_scale,
         )
         .always_on_top(true)
+        .visible_on_all_workspaces(true)
         .skip_taskbar(true);
     #[cfg(target_os = "windows")]
     let window = window.shadow(false);
@@ -12504,6 +12558,7 @@ fn build_paste_queue_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::W
     #[cfg(target_os = "macos")]
     {
         set_macos_window_level(&window, 102);
+        configure_macos_overlay_window(&window);
         enable_macos_mouse_moved_events(&window);
         configure_macos_transparent_window(&window);
     }

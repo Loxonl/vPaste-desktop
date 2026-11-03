@@ -331,4 +331,28 @@ describe("auxiliary window controls", () => {
             vi.unstubAllGlobals();
         }
     });
+
+    it("measures overflowing menu content even when the viewport caps the frame height", async () => {
+        let observeChange: ResizeObserverCallback | undefined;
+        vi.stubGlobal("ResizeObserver", class {
+            constructor(callback: ResizeObserverCallback) { observeChange = callback; }
+            observe = vi.fn();
+            disconnect = vi.fn();
+        });
+        const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+            .mockReturnValue({ x: 0, y: 0, width: 216, height: 184, top: 0, right: 216, bottom: 184, left: 0, toJSON: () => ({}) });
+        try {
+            render(<TrayMenu />);
+            await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("resize_tray_menu", { width: 216, height: 184 }));
+            const frame = document.querySelector("[class*='tray-menu-frame']")!;
+            Object.defineProperty(frame, "scrollHeight", { configurable: true, value: 260 });
+            tauri.invoke.mockClear();
+            act(() => observeChange!([], {} as ResizeObserver));
+            await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("resize_tray_menu", { width: 216, height: 260 }));
+        } finally {
+            cleanup();
+            bounds.mockRestore();
+            vi.unstubAllGlobals();
+        }
+    });
 });

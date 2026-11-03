@@ -126,15 +126,24 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
             await expect(quit).toBeInViewport({ ratio: 1 });
         });
 
-        test("the existing preview stays scrollable and its close control remains accessible", async ({ page }) => {
+        test("the existing preview stays scrollable, pinnable and dismissible", async ({ page }) => {
             await page.setViewportSize({ width: 320, height: 240 });
             await installProbe(page, "clipboardPreview");
             await page.goto("/clipboard/preview");
             await expect.poll(() => page.evaluate(() => (window as ProbeWindow).__textScaleProbe.calls.some(call => call.command === "auxiliary_window_ready"))).toBe(true);
             await page.evaluate(() => (window as ProbeWindow).__textScaleProbe.emit("preview-item", { request_id: 1, item_type: "Text", content: "Enlarged text preview\n".repeat(200) }));
             await expect(page.locator('[data-preview-phase="current"]')).toContainText("Enlarged text preview");
-            const close = page.getByRole("button", { name: /关闭|Close/ }).first();
-            await expect(close).toBeInViewport({ ratio: 1 });
+            const pin = page.getByRole("button", { name: /固定预览|Pin preview/ }).first();
+            await expect(pin).toBeInViewport({ ratio: 1 });
+            expect(await page.evaluate(() => {
+                const scrollable = Array.from(document.querySelectorAll<HTMLElement>("*"))
+                    .find(node => ["auto", "scroll"].includes(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight);
+                if (!scrollable) return false;
+                scrollable.scrollTop = scrollable.scrollHeight;
+                return scrollable.scrollTop > 0;
+            })).toBe(true);
+            await page.keyboard.press("Escape");
+            await expect.poll(() => page.evaluate(() => (window as ProbeWindow).__textScaleProbe.calls.some(call => call.command === "hide_preview_window"))).toBe(true);
         });
     });
 }

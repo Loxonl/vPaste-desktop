@@ -413,7 +413,10 @@ export default function Clipboard() {
     const selectFirstLoadedItem = (scroll: boolean = false) => {
         if (scroll) {
             retainedScrollLeftRef.current = 0;
-            if (cardsContainerRef.current) cardsContainerRef.current.scrollLeft = 0;
+            if (cardsContainerRef.current) {
+                cardsContainerRef.current.scrollLeft = 0;
+                cardsContainerRef.current.scrollTop = 0;
+            }
         }
         const generation = searchRequestSeqRef.current;
         const selectFirst = (item: HistoryRef | undefined) => {
@@ -799,9 +802,14 @@ export default function Clipboard() {
     const openTabEditorWindow = (mode: TabEditorMode, kind: TagEditorKind, tab?: CustomTab, recordTag?: ItemTag, anchor?: HTMLElement | null) => {
         const popupHeight = kind === "record" ? RECORD_TAG_EDITOR_HEIGHT : FILTER_TAG_EDITOR_HEIGHT;
         const position = screenFloatingPositionFromAnchor(anchor, TAB_EDITOR_WIDTH, popupHeight);
+        const anchorRect = anchor?.getBoundingClientRect();
         const payload = JSON.stringify({ mode, kind, tab, recordTag, tabs: customTabs, languageCode });
         localStorage.setItem("vpaste.pendingTabEditorPayload", payload);
-        void invoke('open_tab_editor_window', { x: position.x, y: position.y, width: TAB_EDITOR_WIDTH, height: popupHeight, payload })
+        void invoke('open_tab_editor_window', {
+            x: position.x, y: position.y, width: TAB_EDITOR_WIDTH, height: popupHeight, payload,
+            offsetX: anchorRect ? anchorRect.right + CONTEXT_MENU_GAP : undefined,
+            offsetY: anchorRect ? anchorRect.bottom - popupHeight : undefined,
+        })
             .catch(e => {
                 error(`Failed to open tab editor window: ${e}`);
                 showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
@@ -819,6 +827,8 @@ export default function Clipboard() {
             width: TAB_EDITOR_WIDTH,
             height: popupHeight,
             payload,
+            offsetX: clientX + CONTEXT_MENU_GAP,
+            offsetY: clientY - popupHeight,
         }).catch(e => {
             error(`Failed to open tab editor window: ${e}`);
             showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
@@ -930,7 +940,10 @@ export default function Clipboard() {
             const previous = lastHistoryFetchRef.current;
             const sameQuery = previous?.keywords === keywords && previous.tab === tab;
             const resetPosition = options.selectFirst || !sameQuery;
-            if (resetPosition && cardsContainerRef.current) cardsContainerRef.current.scrollLeft = 0;
+            if (resetPosition && cardsContainerRef.current) {
+                cardsContainerRef.current.scrollLeft = 0;
+                cardsContainerRef.current.scrollTop = 0;
+            }
             const left = resetPosition ? 0 : (cardsContainerRef.current?.scrollLeft ?? retainedScrollLeftRef.current);
             const width = cardsContainerRef.current?.clientWidth ?? window.innerWidth;
             const start = Math.max(0, Math.floor(Math.max(0, left - 24) / 236) - 2);

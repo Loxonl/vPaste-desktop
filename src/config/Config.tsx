@@ -215,7 +215,7 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
                         onChange={handleChange}
                         aria-label="Configuration tabs"
                         TabIndicatorProps={{ style: { display: 'none' } }} // Hide default indicator
-                        sx={{ borderRight: 0, width: '100%', minWidth: 0 }}
+                        sx={{ borderRight: 0, width: '100%', minWidth: 0, flexShrink: 0 }}
                         data-tauri-no-drag="true"
                     >
                         <Tab disabled={isSettingsBlocked} icon={<TuneIcon fontSize="small" />} iconPosition="start" label={t("settings.tabs.general")} {...a11yProps(0)} data-tauri-no-drag="true" />

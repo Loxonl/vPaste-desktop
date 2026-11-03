@@ -29,7 +29,7 @@ use rand::RngCore;
 use serde::Serialize;
 use tauri::image::Image as TauriImage;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
-use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(target_os = "macos")]
 use tauri::utils::TitleBarStyle;
@@ -96,6 +96,7 @@ mod runtime_mode;
 mod search;
 mod startup_panel;
 mod test_room;
+mod ui_text_scale;
 #[cfg(target_os = "windows")]
 mod windows_main_shortcut;
 #[cfg(target_os = "windows")]
@@ -345,6 +346,7 @@ struct ClipboardWindowLayout {
     width: f64,
     height: f64,
     scale_factor: f64,
+    content_scale: f64,
 }
 
 #[derive(Clone, Serialize)]
@@ -747,13 +749,19 @@ fn target_clipboard_screen_bounds(window: &tauri::WebviewWindow) -> ScreenBounds
 }
 
 fn clipboard_window_layout(bounds: ScreenBounds) -> ClipboardWindowLayout {
+    let content_scale = ui_text_scale::current();
+    #[cfg(target_os = "windows")]
+    let height = ui_text_scale::clipboard_height(content_scale, bounds.height);
+    #[cfg(not(target_os = "windows"))]
+    let height = CLIPBOARD_WINDOW_HEIGHT;
     ClipboardWindowLayout {
         x: bounds.x - CLIPBOARD_HORIZONTAL_BLEED,
-        target_y: bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT,
+        target_y: bounds.y + bounds.height - height,
         hidden_y: bounds.y + bounds.height,
         width: bounds.width + CLIPBOARD_HORIZONTAL_BLEED * 2.0,
-        height: CLIPBOARD_WINDOW_HEIGHT,
+        height,
         scale_factor: bounds.scale_factor,
+        content_scale,
     }
 }
 
@@ -762,6 +770,151 @@ fn clipboard_window_physical_size(layout: ClipboardWindowLayout) -> (u32, u32) {
         (layout.width * layout.scale_factor).round() as u32,
         (layout.height * layout.scale_factor).round() as u32,
     )
+}
+
+#[cfg(target_os = "windows")]
+fn fit_content_window_to_work_area(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let Some(monitor) = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+    fit_content_window_to_monitor(window, &monitor)
+}
+
+#[cfg(target_os = "windows")]
+fn fit_content_window_to_monitor(
+    window: &tauri::WebviewWindow,
+    monitor: &tauri::Monitor,
+) -> Result<(), String> {
+    let position = window.outer_position().map_err(|error| error.to_string())?;
+    let outer = window.outer_size().map_err(|error| error.to_string())?;
+    let inner = window.inner_size().map_err(|error| error.to_string())?;
+    let work = monitor.work_area();
+    let target = ui_text_scale::fit_rect(
+        (position.x, position.y, outer.width, outer.height),
+        (
+            work.position.x,
+            work.position.y,
+            work.size.width,
+            work.size.height,
+        ),
+    );
+    if matches!(window.label(), "config" | "testRoom" | "devMemory") {
+        let dpi = monitor.scale_factor();
+        let minimum = if window.label() == "config" {
+            ui_text_scale::logical_size(640.0, 520.0)
+        } else if window.label() == "testRoom" {
+            ui_text_scale::logical_size(860.0, 620.0)
+        } else {
+            ui_text_scale::logical_size(620.0, 420.0)
+        };
+        window
+            .set_min_size(Some(tauri::PhysicalSize::new(
+                (minimum.width * dpi).round().min(
+                    work.size
+                        .width
+                        .saturating_sub(outer.width.saturating_sub(inner.width))
+                        as f64,
+                ) as u32,
+                (minimum.height * dpi).round().min(
+                    work.size
+                        .height
+                        .saturating_sub(outer.height.saturating_sub(inner.height))
+                        as f64,
+                ) as u32,
+            )))
+            .map_err(|error| error.to_string())?;
+    }
+    if (target.2, target.3) != (outer.width, outer.height) {
+        window
+            .set_size(tauri::PhysicalSize::new(
+                target
+                    .2
+                    .saturating_sub(outer.width.saturating_sub(inner.width)),
+                target
+                    .3
+                    .saturating_sub(outer.height.saturating_sub(inner.height)),
+            ))
+            .map_err(|error| error.to_string())?;
+    }
+    if (target.0, target.1) != (position.x, position.y) {
+        window
+            .set_position(tauri::PhysicalPosition::new(target.0, target.1))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn apply_ui_text_scale_change(app: &tauri::AppHandle, scale: f64) {
+    if scale != ui_text_scale::current() {
+        return;
+    }
+    for (label, window) in app.webview_windows() {
+        // Preview owns its bounded screen-relative geometry and scrollable content.
+        // Do not race its pending/animated native rectangle with a second size owner.
+        if label == "clipboardPreview" {
+            continue;
+        }
+        let previous = ui_text_scale::applied(&window);
+        if previous == scale {
+            continue;
+        }
+        let result = (|| -> Result<(), String> {
+            if label == "clipboard" {
+                let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+                    || CLIPBOARD_HIDING.load(Ordering::SeqCst)
+                {
+                    return Ok(());
+                }
+                let layout = clipboard_window_layout(screen_bounds(&window));
+                CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
+                set_window_size_for_scale(
+                    &window,
+                    layout.width,
+                    layout.height,
+                    layout.scale_factor,
+                )?;
+                set_window_position_for_scale(
+                    &window,
+                    layout.x,
+                    layout.target_y,
+                    layout.scale_factor,
+                )?;
+                window
+                    .emit("window-show-complete", ())
+                    .map_err(|error| error.to_string())?;
+            } else {
+                let inner = window.inner_size().map_err(|error| error.to_string())?;
+                if matches!(label.as_str(), "config" | "testRoom" | "devMemory") {
+                    window
+                        .set_min_size(None::<tauri::Size>)
+                        .map_err(|error| error.to_string())?;
+                }
+                window
+                    .set_size(tauri::PhysicalSize::new(
+                        (inner.width as f64 * scale / previous).round() as u32,
+                        (inner.height as f64 * scale / previous).round() as u32,
+                    ))
+                    .map_err(|error| error.to_string())?;
+                if window.is_visible().unwrap_or(false)
+                    || matches!(label.as_str(), "config" | "testRoom" | "devMemory")
+                {
+                    fit_content_window_to_work_area(&window)?;
+                }
+            }
+            ui_text_scale::remember(&window, scale);
+            Ok(())
+        })();
+        if let Err(error) = result {
+            error!("Failed to update text scaling for {label}: {error}");
+        }
+    }
 }
 
 fn should_restore_foreground_after_hide(generation: u64, marked_generation: u64) -> bool {
@@ -884,7 +1037,12 @@ fn center_window_on_source_monitor(
     );
     window
         .set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }))
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+    #[cfg(target_os = "windows")]
+    if ui_text_scale::current() > 1.0 {
+        fit_content_window_to_monitor(window, &monitor)?;
+    }
+    Ok(())
 }
 
 fn clipboard_screen_bounds(
@@ -1396,9 +1554,12 @@ fn reapply_clipboard_size_after_scale_change(window: &tauri::WebviewWindow, scal
     let bounds = screen_bounds(window);
     let monitor_physical_width = bounds.width * bounds.scale_factor;
     let logical_width = monitor_physical_width / scale_factor + CLIPBOARD_HORIZONTAL_BLEED * 2.0;
-    if let Err(err) =
-        set_window_size_for_scale(window, logical_width, CLIPBOARD_WINDOW_HEIGHT, scale_factor)
-    {
+    if let Err(err) = set_window_size_for_scale(
+        window,
+        logical_width,
+        clipboard_window_layout(bounds).height,
+        scale_factor,
+    ) {
         error!("Failed to reapply clipboard size after DPI change: {}", err);
     }
 }
@@ -1632,7 +1793,7 @@ fn finish_animated_hide_window(
     let x = bounds.x - CLIPBOARD_HORIZONTAL_BLEED;
     let target_y = bounds.y + bounds.height;
     let start_y = current_window_logical_y(window, bounds.scale_factor)
-        .unwrap_or(bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT);
+        .unwrap_or(clipboard_window_layout(bounds).target_y);
     let animation_result = animate_clipboard_window_y(
         window,
         ClipboardWindowMotion {
@@ -2041,6 +2202,7 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
         };
         let _ = set_window_position_for_scale(window, x, start_y, layout.scale_factor);
         let _ = set_window_size_for_scale(window, layout.width, layout.height, layout.scale_factor);
+        ui_text_scale::remember(window, layout.content_scale);
         let _ = set_window_position_for_scale(window, x, start_y, layout.scale_factor);
 
         if !memory_profile_active() {
@@ -2066,8 +2228,9 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
         let (width, height) = clipboard_window_physical_size(layout);
         let width = width as i32;
         let height = height as i32;
-        let cursor_x = (cursor.x - target_x) as f64 / scale_factor;
-        let cursor_y = (cursor.y - target_y) as f64 / scale_factor;
+        let content_scale = scale_factor * layout.content_scale;
+        let cursor_x = (cursor.x - target_x) as f64 / content_scale;
+        let cursor_y = (cursor.y - target_y) as f64 / content_scale;
         if cursor_x >= 0.0
             && cursor_y >= 0.0
             && cursor.x <= target_x + width
@@ -2336,17 +2499,20 @@ async fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String>
         auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::PasteFallbackNotice).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
         let bounds = screen_bounds(&clipboard_window);
-        let x = bounds.x + (bounds.width - PASTE_FALLBACK_NOTICE_WIDTH) / 2.0;
+        let text_scale = ui_text_scale::current();
+        let size =
+            ui_text_scale::logical_size(PASTE_FALLBACK_NOTICE_WIDTH, PASTE_FALLBACK_NOTICE_HEIGHT);
+        let x = bounds.x + (bounds.width - size.width) / 2.0;
         let y =
-            bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT + PASTE_FALLBACK_NOTICE_TOP_INSET;
+            clipboard_window_layout(bounds).target_y + PASTE_FALLBACK_NOTICE_TOP_INSET * text_scale;
 
-        set_window_size_for_scale(
-            &notice_window,
-            PASTE_FALLBACK_NOTICE_WIDTH,
-            PASTE_FALLBACK_NOTICE_HEIGHT,
-            bounds.scale_factor,
-        )?;
+        set_window_size_for_scale(&notice_window, size.width, size.height, bounds.scale_factor)?;
         set_window_position_for_scale(&notice_window, x, y, bounds.scale_factor)?;
+        ui_text_scale::remember(&notice_window, text_scale);
+        #[cfg(target_os = "windows")]
+        if text_scale > 1.0 {
+            fit_content_window_to_work_area(&notice_window)?;
+        }
         let generation = PASTE_FALLBACK_NOTICE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
         notice_window.show().map_err(|err| err.to_string())?;
         let notice_for_timer = notice_window.clone();
@@ -4015,38 +4181,74 @@ fn hide_tray_menu(window: tauri::WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 fn resize_tray_menu(window: tauri::WebviewWindow, width: u32, height: u32) -> Result<(), String> {
-    window
-        .set_size(tauri::Size::Logical(LogicalSize {
-            width: width as f64,
-            height: height as f64,
-        }))
-        .map_err(|err| err.to_string())
+    ui_text_scale::set_content_size(&window, width as f64, height as f64)?;
+    #[cfg(target_os = "windows")]
+    if ui_text_scale::current() > 1.0 {
+        fit_content_window_to_work_area(&window)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
 async fn open_tab_editor_window(
     app: tauri::AppHandle,
+    source_window: tauri::WebviewWindow,
     x: f64,
     y: f64,
     width: Option<f64>,
     height: Option<f64>,
     payload: String,
+    offset_x: Option<f64>,
+    offset_y: Option<f64>,
 ) -> Result<(), String> {
+    // Capture the client origin before the source panel can be parked while loading.
+    let local_position = if cfg!(target_os = "windows") && ui_text_scale::current() > 1.0 {
+        if let (Some(offset_x), Some(offset_y)) = (offset_x, offset_y) {
+            let origin = source_window
+                .inner_position()
+                .map_err(|error| error.to_string())?;
+            let dpi = source_window
+                .scale_factor()
+                .map_err(|error| error.to_string())?;
+            let text_scale = ui_text_scale::current();
+            Some((
+                origin.x as f64 / dpi + offset_x * text_scale,
+                origin.y as f64 / dpi + offset_y * text_scale,
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let bounds = clipboard_screen_bounds(&app, &source_window);
+    #[cfg(target_os = "windows")]
+    let source_monitor = source_window_monitor(&source_window)
+        .or_else(|| source_window.current_monitor().ok().flatten());
     let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::TabEditor).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
         let content_width = width.unwrap_or(TAB_EDITOR_CONTENT_WIDTH);
         let content_height = height.unwrap_or(TAB_EDITOR_DEFAULT_CONTENT_HEIGHT);
-        let bounds = clipboard_screen_bounds(&app, &window);
-        let _ = window.set_size(tauri::Size::Logical(LogicalSize {
-            width: content_width + AUXILIARY_WINDOW_GUTTER * 2.0,
-            height: content_height + AUXILIARY_WINDOW_GUTTER * 2.0,
-        }));
+        ui_text_scale::set_content_size(
+            &window,
+            content_width + AUXILIARY_WINDOW_GUTTER * 2.0,
+            content_height + AUXILIARY_WINDOW_GUTTER * 2.0,
+        )?;
+        let (x, y) = local_position.unwrap_or((x, y));
         set_window_position_for_scale(
             &window,
-            x - AUXILIARY_WINDOW_GUTTER,
-            y - AUXILIARY_WINDOW_GUTTER,
+            x - ui_text_scale::value(AUXILIARY_WINDOW_GUTTER),
+            y - ui_text_scale::value(AUXILIARY_WINDOW_GUTTER),
             bounds.scale_factor,
         )?;
+        #[cfg(target_os = "windows")]
+        if ui_text_scale::current() > 1.0 {
+            if let Some(monitor) = source_monitor.as_ref() {
+                fit_content_window_to_monitor(&window, monitor)?;
+            } else {
+                fit_content_window_to_work_area(&window)?;
+            }
+        }
         window.show().map_err(|err| err.to_string())?;
         let _ = activate_native_window(&window, "tab editor open");
         window.set_focus().map_err(|err| err.to_string())?;
@@ -4099,7 +4301,8 @@ async fn open_emoji_picker_window(
         auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::EmojiPicker).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
         let editor_position = editor.outer_position().map_err(|err| err.to_string())?;
-        let scale_factor = editor.scale_factor().map_err(|err| err.to_string())?;
+        let scale_factor =
+            editor.scale_factor().map_err(|err| err.to_string())? * ui_text_scale::current();
         let picker_width = EMOJI_PICKER_CONTENT_WIDTH * scale_factor;
         let picker_height = EMOJI_PICKER_CONTENT_HEIGHT * scale_factor;
         let window_gutter = AUXILIARY_WINDOW_GUTTER * scale_factor;
@@ -4128,16 +4331,21 @@ async fn open_emoji_picker_window(
             (min_x, min_y, max_x, max_y),
         );
 
-        let _ = window.set_size(tauri::Size::Logical(LogicalSize {
-            width: EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
-            height: EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
-        }));
+        ui_text_scale::set_content_size(
+            &window,
+            EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
+            EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+        )?;
         window
             .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
                 x: (x - window_gutter).round() as i32,
                 y: (y - window_gutter).round() as i32,
             }))
             .map_err(|err| err.to_string())?;
+        #[cfg(target_os = "windows")]
+        if ui_text_scale::current() > 1.0 {
+            fit_content_window_to_monitor(&window, &monitor)?;
+        }
         window.show().map_err(|err| err.to_string())?;
         let _ = activate_native_window(&window, "emoji picker open");
         window.set_focus().map_err(|err| err.to_string())?;
@@ -5171,6 +5379,7 @@ fn hide_text_editor_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn build_text_editor_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let text_scale = ui_text_scale::current();
     let window = WebviewWindowBuilder::new(app, "textEditor", App("text-editor".into()))
         .title("vPaste")
         .visible(false)
@@ -5182,8 +5391,9 @@ fn build_text_editor_window(app: &tauri::AppHandle) -> tauri::Result<tauri::Webv
         .always_on_top(true)
         .resizable(false)
         .shadow(false)
-        .inner_size(596.0, 476.0)
+        .inner_size(596.0 * text_scale, 476.0 * text_scale)
         .build()?;
+    ui_text_scale::remember(&window, text_scale);
     apply_vpaste_window_icon(&window);
     #[cfg(target_os = "macos")]
     set_macos_window_level(&window, 101);
@@ -10876,15 +11086,16 @@ fn show_paste_queue_window(
         .get_webview_window("clipboard")
         .map(|clipboard_window| target_clipboard_screen_bounds(&clipboard_window))
         .unwrap_or_else(|| screen_bounds(&window));
-    let x = bounds.x + bounds.width - PASTE_QUEUE_WINDOW_WIDTH - 24.0;
-    let y = bounds.y + (bounds.height - PASTE_QUEUE_WINDOW_HEIGHT) / 2.0;
-    set_window_size_for_scale(
-        &window,
-        PASTE_QUEUE_WINDOW_WIDTH,
-        PASTE_QUEUE_WINDOW_HEIGHT,
-        bounds.scale_factor,
-    )?;
+    let size = ui_text_scale::logical_size(PASTE_QUEUE_WINDOW_WIDTH, PASTE_QUEUE_WINDOW_HEIGHT);
+    let x = bounds.x + bounds.width - size.width - 24.0;
+    let y = bounds.y + (bounds.height - size.height) / 2.0;
+    set_window_size_for_scale(&window, size.width, size.height, bounds.scale_factor)?;
     set_window_position_for_scale(&window, x, y, bounds.scale_factor)?;
+    ui_text_scale::remember(window, ui_text_scale::current());
+    #[cfg(target_os = "windows")]
+    if ui_text_scale::current() > 1.0 {
+        fit_content_window_to_work_area(window)?;
+    }
     window.show().map_err(|err| err.to_string())
 }
 
@@ -11203,12 +11414,16 @@ fn set_window_size(
     } else {
         None
     };
+    let text_scale = ui_text_scale::current();
+    let (scaled_width, scaled_height) =
+        ui_text_scale::content_size(width as f64, height as f64, text_scale);
     window
-        .set_size(LogicalSize { width, height })
+        .set_size(tauri::LogicalSize::new(scaled_width, scaled_height))
         .map_err(|_| ())?;
+    ui_text_scale::remember_native(&window, text_scale);
     if let Some(((position, size), scale_factor)) = previous_position {
         let previous_height = size.height as f64 / scale_factor;
-        let next_y = position.y as f64 / scale_factor - (height as f64 - previous_height);
+        let next_y = position.y as f64 / scale_factor - (scaled_height - previous_height);
         let _ = window.set_position(LogicalPosition {
             x: position.x as f64 / scale_factor,
             y: next_y,
@@ -11500,10 +11715,6 @@ async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
                 let icon_size = rect.size.to_physical::<u32>(scale_factor);
                 let icon_center_x = icon_position.x + icon_size.width as i32 / 2;
                 let icon_bottom_y = icon_position.y + icon_size.height as i32;
-                let menu_size = window.outer_size().unwrap_or(tauri::PhysicalSize {
-                    width: TRAY_MENU_WIDTH as u32,
-                    height: TRAY_MENU_HEIGHT as u32,
-                });
                 let monitor = cursor
                     .and_then(|position| {
                         app.monitor_from_point(position.x as f64, position.y as f64)
@@ -11512,6 +11723,28 @@ async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
                     })
                     .or_else(|| window.current_monitor().ok().flatten())
                     .or_else(|| window.primary_monitor().ok().flatten());
+                #[cfg(target_os = "windows")]
+                if ui_text_scale::current() > 1.0 {
+                    if let Some(target) = monitor.as_ref() {
+                        let logical_size = window
+                            .inner_size()
+                            .map_err(|error| error.to_string())?
+                            .to_logical::<f64>(scale_factor);
+                        // Move before the physical resize so mixed-DPI creation cannot
+                        // apply the primary monitor's size to the target monitor.
+                        window
+                            .set_position(target.work_area().position)
+                            .map_err(|error| error.to_string())?;
+                        window
+                            .set_size(logical_size.to_physical::<u32>(target.scale_factor()))
+                            .map_err(|error| error.to_string())?;
+                        fit_content_window_to_monitor(&window, target)?;
+                    }
+                }
+                let menu_size = window.outer_size().unwrap_or(tauri::PhysicalSize {
+                    width: TRAY_MENU_WIDTH as u32,
+                    height: TRAY_MENU_HEIGHT as u32,
+                });
                 let (min_x, min_y, max_x, max_y) = monitor
                     .map(|monitor| {
                         let pos = monitor.position();
@@ -11519,8 +11752,8 @@ async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
                         (
                             pos.x,
                             pos.y,
-                            pos.x + size.width as i32 - menu_size.width as i32,
-                            pos.y + size.height as i32 - menu_size.height as i32,
+                            (pos.x + size.width as i32 - menu_size.width as i32).max(pos.x),
+                            (pos.y + size.height as i32 - menu_size.height as i32).max(pos.y),
                         )
                     })
                     .unwrap_or((0, 0, i32::MAX, i32::MAX));
@@ -11602,18 +11835,20 @@ fn sync_tray_visibility(app: &tauri::AppHandle, visible: bool) -> Result<bool, S
 }
 
 fn build_test_room_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let text_scale = ui_text_scale::current();
     let window = WebviewWindowBuilder::new(handle, "testRoom", App("__test-room".into()))
         .title("vPaste 测试间")
         .visible(false)
         .focused(false)
-        .inner_size(1080.0, 760.0)
-        .min_inner_size(860.0, 620.0)
+        .inner_size(1080.0 * text_scale, 760.0 * text_scale)
+        .min_inner_size(860.0 * text_scale, 620.0 * text_scale)
         .resizable(true)
         .maximizable(true)
         .closable(true)
         .decorations(true)
         .center()
         .build()?;
+    ui_text_scale::remember(&window, text_scale);
     apply_vpaste_window_icon(&window);
     Ok(window)
 }
@@ -11621,6 +11856,7 @@ fn build_test_room_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
 fn build_paste_fallback_notice_window(
     handle: &tauri::AppHandle,
 ) -> tauri::Result<tauri::WebviewWindow> {
+    let text_scale = ui_text_scale::current();
     #[cfg(target_os = "macos")]
     let route = "paste-fallback-notice";
     #[cfg(not(target_os = "macos"))]
@@ -11641,8 +11877,12 @@ fn build_paste_fallback_notice_window(
         .minimizable(false)
         .maximizable(false)
         .shadow(false)
-        .inner_size(PASTE_FALLBACK_NOTICE_WIDTH, PASTE_FALLBACK_NOTICE_HEIGHT)
+        .inner_size(
+            PASTE_FALLBACK_NOTICE_WIDTH * text_scale,
+            PASTE_FALLBACK_NOTICE_HEIGHT * text_scale,
+        )
         .build()?;
+    ui_text_scale::remember(&window, text_scale);
     let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
     let _ = window.set_shadow(false);
     #[cfg(target_os = "macos")]
@@ -11659,6 +11899,7 @@ fn build_auxiliary_window(
 ) -> tauri::Result<tauri::WebviewWindow> {
     use auxiliary_windows::WindowKind;
 
+    let text_scale = ui_text_scale::current();
     let builder = match kind {
         #[cfg(debug_assertions)]
         WindowKind::DevMemory => {
@@ -11686,7 +11927,7 @@ fn build_auxiliary_window(
         .maximizable(false)
         .always_on_top(true)
         .shadow(false)
-        .inner_size(940_f64, 430_f64),
+        .inner_size(940.0 * text_scale, 430.0 * text_scale),
         WindowKind::TrayMenu => {
             WebviewWindowBuilder::new(handle, "trayMenu", App("tray-menu".into()))
                 .title("vPaste Tray")
@@ -11699,7 +11940,10 @@ fn build_auxiliary_window(
                 .always_on_top(true)
                 .resizable(false)
                 .shadow(false)
-                .inner_size(TRAY_MENU_WIDTH as f64, TRAY_MENU_HEIGHT as f64)
+                .inner_size(
+                    TRAY_MENU_WIDTH as f64 * text_scale,
+                    TRAY_MENU_HEIGHT as f64 * text_scale,
+                )
         }
         WindowKind::EmojiPicker => {
             WebviewWindowBuilder::new(handle, "emojiPicker", App("emoji-picker".into()))
@@ -11714,8 +11958,8 @@ fn build_auxiliary_window(
                 .resizable(false)
                 .shadow(false)
                 .inner_size(
-                    EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
-                    EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+                    (EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0) * text_scale,
+                    (EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0) * text_scale,
                 )
         }
         WindowKind::TabEditor => {
@@ -11731,12 +11975,14 @@ fn build_auxiliary_window(
                 .resizable(false)
                 .shadow(false)
                 .inner_size(
-                    TAB_EDITOR_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
-                    TAB_EDITOR_DEFAULT_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+                    (TAB_EDITOR_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0) * text_scale,
+                    (TAB_EDITOR_DEFAULT_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0)
+                        * text_scale,
                 )
         }
     };
     let window = builder.build()?;
+    ui_text_scale::remember(&window, text_scale);
     let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
     let _ = window.set_shadow(false);
     apply_vpaste_window_icon(&window);
@@ -11764,6 +12010,7 @@ fn build_auxiliary_window(
 }
 
 fn build_config_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let text_scale = ui_text_scale::current();
     let builder = WebviewWindowBuilder::new(handle, "config", App("config".into()))
         .title("vPaste设置")
         .visible(false)
@@ -11775,8 +12022,8 @@ fn build_config_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Webvie
         .decorations(false)
         .transparent(true)
         .background_color(tauri::window::Color(0, 0, 0, 0))
-        .inner_size(720_f64, 700_f64)
-        .min_inner_size(640_f64, 520_f64)
+        .inner_size(720.0 * text_scale, 700.0 * text_scale)
+        .min_inner_size(640.0 * text_scale, 520.0 * text_scale)
         .always_on_top(false);
     #[cfg(target_os = "windows")]
     let builder = builder.shadow(false);
@@ -11785,6 +12032,7 @@ fn build_config_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Webvie
         .hidden_title(true)
         .title_bar_style(TitleBarStyle::Overlay);
     let window = builder.build()?;
+    ui_text_scale::remember(&window, text_scale);
     let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
     apply_vpaste_window_icon(&window);
     #[cfg(target_os = "windows")]
@@ -11858,6 +12106,10 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
             (0.0, 0.0, DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT)
         };
 
+    let text_scale = ui_text_scale::current();
+    #[cfg(target_os = "windows")]
+    let window_height = ui_text_scale::clipboard_height(text_scale, screen_height);
+    #[cfg(not(target_os = "windows"))]
     let window_height = CLIPBOARD_WINDOW_HEIGHT;
     let url = App("clipboard".into());
     #[cfg(debug_assertions)]
@@ -11904,6 +12156,7 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
         .title_bar_style(TitleBarStyle::Overlay);
 
     let clipboard_window = clipboard_window.build()?;
+    ui_text_scale::remember(&clipboard_window, text_scale);
     media_resources::set_capture_scale_factor(clipboard_window.scale_factor().unwrap_or(1.0));
     let _ = clipboard_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
     let _ = clipboard_window.set_shadow(CLIPBOARD_WINDOW_SHADOW);
@@ -11991,7 +12244,10 @@ mod ui_text_scale_regression_tests {
     fn text_scale_is_added_to_content_size_not_screen_coordinates() {
         let (width, height) = crate::ui_text_scale::content_size(216.0, 170.0, 1.25);
         assert_eq!((width * 2.0, height * 2.0), (540.0, 425.0));
-        assert_eq!(crate::ui_text_scale::content_size(216.0, 170.0, 1.0), (216.0, 170.0));
+        assert_eq!(
+            crate::ui_text_scale::content_size(216.0, 170.0, 1.0),
+            (216.0, 170.0)
+        );
     }
 
     #[test]
@@ -11999,18 +12255,25 @@ mod ui_text_scale_regression_tests {
         let native_height = crate::ui_text_scale::clipboard_height(1.25, 1200.0);
         let physical_height = native_height * 2.0;
         assert_eq!(physical_height, 755.0);
-        assert_eq!(physical_height / (2.0 * 1.25), super::CLIPBOARD_WINDOW_HEIGHT);
+        assert_eq!(
+            physical_height / (2.0 * 1.25),
+            super::CLIPBOARD_WINDOW_HEIGHT
+        );
         assert_eq!(2400.0 - physical_height, 1645.0);
     }
 
     #[test]
     fn oversized_panel_is_bounded_by_its_monitor_without_disabling_text_scaling() {
         assert_eq!(crate::ui_text_scale::clipboard_height(2.0, 500.0), 500.0);
-        assert_eq!(crate::ui_text_scale::clipboard_height(1.0, 1200.0), super::CLIPBOARD_WINDOW_HEIGHT);
+        assert_eq!(
+            crate::ui_text_scale::clipboard_height(1.0, 1200.0),
+            super::CLIPBOARD_WINDOW_HEIGHT
+        );
     }
 }
 
 fn build_paste_queue_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let text_scale = ui_text_scale::current();
     let window = WebviewWindowBuilder::new(handle, "pasteQueue", App("paste-queue".into()))
         .title("Paste Queue")
         .visible(false)
@@ -12024,7 +12287,10 @@ fn build_paste_queue_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::W
         .decorations(false)
         .transparent(true)
         .background_color(tauri::window::Color(0, 0, 0, 0))
-        .inner_size(PASTE_QUEUE_WINDOW_WIDTH, PASTE_QUEUE_WINDOW_HEIGHT)
+        .inner_size(
+            PASTE_QUEUE_WINDOW_WIDTH * text_scale,
+            PASTE_QUEUE_WINDOW_HEIGHT * text_scale,
+        )
         .always_on_top(true)
         .skip_taskbar(true);
     #[cfg(target_os = "windows")]
@@ -12034,6 +12300,7 @@ fn build_paste_queue_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::W
         .hidden_title(true)
         .title_bar_style(TitleBarStyle::Overlay);
     let window = window.build()?;
+    ui_text_scale::remember(&window, text_scale);
     let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
     let _ = window.set_shadow(false);
     apply_vpaste_window_icon(&window);
@@ -12157,6 +12424,8 @@ fn main() {
     let builder = tauri::Builder::default()
         .manage(auxiliary_windows::Readiness::default())
         .manage(background_resources::BackgroundResources::default());
+    #[cfg(target_os = "windows")]
+    let builder = builder.plugin(ui_text_scale::plugin());
     let builder = if memory_profile_active() {
         builder
     } else {
@@ -12236,6 +12505,15 @@ fn main() {
                         window.app_handle().get_webview_window(window.label())
                     {
                         reapply_clipboard_size_after_scale_change(&webview_window, *scale_factor);
+                    }
+                }
+                if window.label() != "clipboard" && window.label() != "clipboardPreview"
+                    && ui_text_scale::current() > 1.0 && window.is_visible().unwrap_or(false)
+                {
+                    if let Some(webview_window) = window.app_handle().get_webview_window(window.label()) {
+                        if let Err(error) = fit_content_window_to_work_area(&webview_window) {
+                            error!("Failed to fit scaled window after DPI change: {error}");
+                        }
                     }
                 }
             }

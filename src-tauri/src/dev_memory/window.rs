@@ -2,6 +2,7 @@ pub(crate) fn build_window(
     app: &tauri::AppHandle,
     url: tauri::WebviewUrl,
 ) -> tauri::Result<tauri::WebviewWindow> {
+    let text_scale = crate::ui_text_scale::current();
     let mut builder = tauri::WebviewWindowBuilder::new(app, "devMemory", url)
         .title("vPaste · Memory monitor")
         .visible(false)
@@ -10,12 +11,14 @@ pub(crate) fn build_window(
         .transparent(false)
         .always_on_top(true)
         .resizable(true)
-        .inner_size(880.0, 680.0)
-        .min_inner_size(620.0, 420.0);
+        .inner_size(880.0 * text_scale, 680.0 * text_scale)
+        .min_inner_size(620.0 * text_scale, 420.0 * text_scale);
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone())?;
     }
-    builder.build()
+    builder
+        .build()
+        .inspect(|window| crate::ui_text_scale::remember(window, text_scale))
 }
 
 pub(crate) fn keep_on_top(window: &tauri::WebviewWindow) -> Result<(), String> {

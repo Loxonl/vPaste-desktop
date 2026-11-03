@@ -800,8 +800,9 @@ body {
   position: relative;
   box-sizing: border-box;
   flex: 1;
+  min-height: 0;
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: auto;
   padding: 12px 24px;
   cursor: grab;
   user-select: none;
@@ -864,6 +865,16 @@ body {
 .cards-container::-webkit-scrollbar {
   display: none;
   /* Chrome, Safari, Opera */
+}
+
+@media (max-height: 301px) {
+  .cards-container {
+    scrollbar-width: thin;
+  }
+
+  .cards-container::-webkit-scrollbar {
+    display: block;
+  }
 }
 
 .cards-container.queue-selection-mode .clipboard-card {

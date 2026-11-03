@@ -1013,8 +1013,6 @@ body {
   flex-direction: column;
   flex-shrink: 0;
   contain: layout paint style;
-  content-visibility: auto;
-  contain-intrinsic-size: 220px 230px;
   user-select: none;
   -webkit-user-select: none;
 }

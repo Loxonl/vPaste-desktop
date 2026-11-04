@@ -87,6 +87,7 @@ describe("clipboard tutorial runtime", () => {
         });
 
         expect(options.onBeforeStart).toHaveBeenCalledOnce();
+        expect(options.onBeforeStart).toHaveBeenCalledWith(false);
         expect(options.setPlatform).toHaveBeenCalledWith("windows");
         expect(options.incrementRunId).toHaveBeenCalledOnce();
         expect(options.setActive).toHaveBeenCalledWith(true);
@@ -114,6 +115,18 @@ describe("clipboard tutorial runtime", () => {
         expect(tauri.invoke).toHaveBeenCalledWith(
             "get_onboarding_permission_status",
         );
+    });
+
+    it.each(["windows", "mac"] as const)("requests fresh defaults only for the Debug %s preview", async platform => {
+        const options = runtimeOptions();
+        const runtime = createClipboardTutorialRuntime(options);
+
+        await runtime.start(platform, true);
+
+        expect(options.onBeforeStart).toHaveBeenLastCalledWith(true);
+        expect(options.setPlatform).toHaveBeenLastCalledWith(platform);
+        await runtime.start(platform);
+        expect(options.onBeforeStart).toHaveBeenLastCalledWith(false);
     });
 
     it("stores permission context and opens the permission window without hiding the main window", async () => {

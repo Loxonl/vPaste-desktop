@@ -1,60 +1,27 @@
-.heading {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--ui-space-3);
-}
-
-.value {
-    flex-shrink: 0;
-    color: var(--settings-muted);
-    font-size: 13px;
-    font-variant-numeric: tabular-nums;
-}
-
 .control {
-    width: 100%;
-    padding: var(--ui-space-4) var(--ui-space-3) var(--ui-space-2);
+    display: grid;
+    gap: var(--ui-space-2);
+    width: 160px;
 }
 
-.markLabel[data-index="0"] {
-    transform: none;
-}
-
-.markLabel[data-index="2"] {
-    transform: translateX(-100%);
-}
-
-.description {
-    display: block;
-    margin-top: var(--ui-space-4);
-    color: var(--settings-muted);
-    font-size: 12px;
-    line-height: 1.35;
-}
-
-.description[data-previewing] {
-    color: var(--ui-accent-strong);
-}
-
-.footer {
+.slider {
+    position: relative;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: var(--ui-space-2);
-    margin-top: var(--ui-space-2);
+    padding-inline: var(--ui-space-2);
+    padding-inline-end: var(--ui-space-4);
+    transform: translateY(calc(-1 * var(--ui-space-1)));
 }
 
-.mode {
-    color: var(--settings-text);
-    font-size: 12px;
-}
-
-.details {
-    display: grid;
-    gap: var(--ui-space-1);
+.defaultMark {
+    position: absolute;
+    top: calc(50% + 10px);
+    left: calc(100% - var(--ui-space-4));
+    transform: translateX(-50%);
+    width: max-content;
     color: var(--settings-muted);
-    font-size: 12px;
-    line-height: 1.4;
+    font-size: 11px;
+    line-height: 1.2;
+    white-space: nowrap;
+    pointer-events: none;
 }

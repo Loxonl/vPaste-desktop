@@ -1,6 +1,5 @@
 import * as React from "react";
 import Alert from "@mui/material/Alert";
-import Button from "@mui/material/Button";
 import Slider from "@mui/material/Slider";
 import { error } from "@tauri-apps/plugin-log";
 import { SettingsRow } from "../../ui/settings/SettingsPrimitives";
@@ -21,7 +20,6 @@ export default function PanelSizeSetting({ bridge, value, onSaved, t }: {
     const [draft, setDraft] = React.useState<PanelSize>(value ?? "large");
     const [screen, setScreen] = React.useState<PanelSizeState | null>(null);
     const [ready, setReady] = React.useState(false);
-    const [previewing, setPreviewing] = React.useState(false);
     const [saving, setSaving] = React.useState(false);
     const [failed, setFailed] = React.useState(false);
     const gesture = React.useRef<Gesture | null>(null);
@@ -58,7 +56,7 @@ export default function PanelSizeSetting({ bridge, value, onSaved, t }: {
         ++requestSequence.current;
         keyboardGesture.current = false;
         savingRef.current = true;
-        if (mounted.current) { setPreviewing(false); setSaving(true); }
+        if (mounted.current) setSaving(true);
         void active.finish(commit).then(state => {
             if (state) current.current.onSaved?.(state.preference);
             if (!mounted.current) return;
@@ -77,7 +75,6 @@ export default function PanelSizeSetting({ bridge, value, onSaved, t }: {
         if (!ready || gesture.current || savingRef.current) return;
         ++requestSequence.current;
         setFailed(false);
-        setPreviewing(true);
         setDraft(size);
         gesture.current = createPanelSizePreview(bridge, size, cause => {
             error(`Failed to preview main panel size: ${cause}`);
@@ -139,27 +136,7 @@ export default function PanelSizeSetting({ bridge, value, onSaved, t }: {
         };
     }, [bridge, finish, refresh]);
 
-    const restoreAutomatic = async () => {
-        if (!ready || gesture.current || savingRef.current) return;
-        ++requestSequence.current;
-        savingRef.current = true;
-        setSaving(true);
-        setFailed(false);
-        try {
-            const state = await bridge.invoke<PanelSizeState>("reset_clipboard_panel_size");
-            if (!isPanelSizeState(state)) throw new Error("Invalid automatic panel size result");
-            current.current.onSaved?.(state.preference);
-            if (mounted.current) { setScreen(state); setDraft(state.effective); }
-        } catch (cause) {
-            error(`Failed to restore automatic panel sizing: ${cause}`);
-            if (mounted.current) setFailed(true);
-        } finally {
-            savingRef.current = false;
-            if (mounted.current) setSaving(false);
-        }
-    };
-
-    const text = (size: PanelSize) => `${t(`settings.panelSize.${size}`)} · ${panelSizePercent(size)}%`;
+    const text = (size: PanelSize) => `${t(`settings.panelSize.${size}`)} · ${panelSizePercent(size)}%${size === "large" ? ` · ${t("settings.panelSize.default")}` : ""}`;
     const change = (_event: Event, next: number | number[]) => {
         const size = PANEL_SIZES[Number(next)];
         if (!ready || !size || savingRef.current) return;
@@ -168,42 +145,27 @@ export default function PanelSizeSetting({ bridge, value, onSaved, t }: {
         gesture.current?.update(size);
     };
 
-    return <SettingsRow stacked labelId="settings-panel-size-label" label={
-        <span className={styles.heading}><span>{t("settings.panelSize")}</span><span className={styles.value} aria-live="polite">{ready ? text(draft) : t("settings.panelSize.detecting")}</span></span>
-    } control={<div className={styles.control}>
-        <Slider min={0} max={2} step={1} value={PANEL_SIZES.indexOf(draft)} disabled={!ready || saving}
-            classes={{ markLabel: styles.markLabel }}
-            marks={PANEL_SIZES.map((size, index) => ({ value: index, label: `${t(`settings.panelSize.${size}`)} ${panelSizePercent(size)}%` }))}
-            aria-labelledby="settings-panel-size-label" aria-describedby="settings-panel-size-description"
-            getAriaValueText={index => text(PANEL_SIZES[index])}
-            valueLabelDisplay="off"
-            onPointerDownCapture={event => {
-                if (!ready || event.button !== 0 || savingRef.current) return;
-                keyboardGesture.current = false;
-                const rect = event.currentTarget.getBoundingClientRect();
-                const index = Math.round(Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * 2);
-                begin(PANEL_SIZES[index]);
-                if (event.target instanceof HTMLElement) event.target.setPointerCapture?.(event.pointerId);
-            }}
-            onKeyDownCapture={event => { if (navigationKeys.has(event.key)) { keyboardGesture.current = true; begin(draft); } }}
-            onBlur={() => finish(false)} onChange={change}
-            onChangeCommitted={() => { if (!keyboardGesture.current) finish(true); }} />
-        <span id="settings-panel-size-description" className={styles.description} data-previewing={previewing || undefined}>
-            {t(previewing ? "settings.panelSize.previewing" : "settings.panelSize.hint")}
-        </span>
-        <div className={styles.footer}>
-            <span className={styles.mode} aria-live="polite">{t(value === null ? "settings.panelSize.automatic" : "settings.panelSize.manual")}</span>
-            <Button variant="text" size="small" disabled={!ready || value === null || previewing || saving} onClick={() => void restoreAutomatic()}>
-                {t("settings.panelSize.restoreAuto")}
-            </Button>
+    return <SettingsRow labelId="settings-panel-size-label" label={t("settings.panelSize")} control={<div className={styles.control}>
+        <div className={styles.slider}>
+            <Slider min={0} max={2} step={1} value={PANEL_SIZES.indexOf(draft)} disabled={!ready || saving}
+                marks={PANEL_SIZES.map((_size, value) => ({ value }))}
+                aria-labelledby="settings-panel-size-label"
+                slotProps={{ input: { "aria-describedby": failed ? "settings-panel-size-error" : undefined } }}
+                getAriaValueText={index => text(PANEL_SIZES[index])}
+                valueLabelDisplay="off"
+                onPointerDownCapture={event => {
+                    if (!ready || event.button !== 0 || savingRef.current) return;
+                    keyboardGesture.current = false;
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const index = Math.round(Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * 2);
+                    begin(PANEL_SIZES[index]);
+                    if (event.target instanceof HTMLElement) event.target.setPointerCapture?.(event.pointerId);
+                }}
+                onKeyDownCapture={event => { if (navigationKeys.has(event.key)) { keyboardGesture.current = true; begin(draft); } }}
+                onBlur={() => finish(false)} onChange={change}
+                onChangeCommitted={() => { if (!keyboardGesture.current) finish(true); }} />
+            <span className={styles.defaultMark} aria-hidden="true">{t("settings.panelSize.default")}</span>
         </div>
-        {screen && <div className={styles.details}>
-            <span>{t("settings.panelSize.recommendation", { size: text(screen.recommended) })}</span>
-            <span>{screen.display ? t("settings.panelSize.display", {
-                width: Math.round(screen.display.work_width), height: Math.round(screen.display.work_height),
-                scale: Number(screen.display.scale_factor.toFixed(2)),
-            }) : t("settings.panelSize.displayUnavailable")}</span>
-        </div>}
-        {failed && <Alert severity="error">{t("settings.panelSize.error")}</Alert>}
+        {failed && <Alert id="settings-panel-size-error" severity="error">{t("settings.panelSize.error")}</Alert>}
     </div>} />;
 }

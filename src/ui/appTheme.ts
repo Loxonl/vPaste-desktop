@@ -93,10 +93,10 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                         border: 0,
                     },
                     thumb: {
-                        width: 44,
-                        height: 26,
+                        width: 26,
+                        height: 14,
                         borderRadius: "var(--ui-radius-pill)",
-                        border: "3px solid currentColor",
+                        border: "2px solid currentColor",
                         backgroundColor: "var(--ui-surface-solid)",
                         boxShadow: "var(--ui-shadow-control)",
                         "&:hover, &.Mui-active": {
@@ -106,19 +106,24 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                             boxShadow: "var(--ui-focus-ring)",
                         },
                         "&::before": {
-                            width: 8,
-                            height: 10,
-                            borderLeft: "2px solid currentColor",
-                            borderRight: "2px solid currentColor",
-                            borderRadius: 0,
                             boxShadow: "none",
-                            opacity: 0.55,
                         },
                         "&::after": {
-                            width: 52,
-                            height: 40,
+                            width: 32,
+                            height: 32,
                             borderRadius: "var(--ui-radius-pill)",
                         },
+                    },
+                    mark: {
+                        width: 2,
+                        height: 10,
+                        borderRadius: "var(--ui-radius-pill)",
+                        backgroundColor: "var(--settings-muted)",
+                        opacity: 1,
+                    },
+                    markActive: {
+                        backgroundColor: "currentColor",
+                        opacity: 1,
                     },
                     markLabel: {
                         color: "var(--settings-muted)",

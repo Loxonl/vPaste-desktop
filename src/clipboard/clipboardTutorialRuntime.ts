@@ -18,7 +18,7 @@ type ClipboardTutorialRuntimeOptions = {
     isActive: () => boolean;
     languageCode: string;
     onActionError: (actionError: unknown) => void;
-    onBeforeStart: () => void;
+    onBeforeStart: (previewDefaults: boolean) => void;
     onComplete: () => void;
     setActive: (active: boolean) => void;
     setMainShortcut: (shortcut: string) => void;
@@ -56,6 +56,7 @@ export function createClipboardTutorialRuntime(
     const start = async (
         platform: TutorialPlatform =
             isMacPlatform() ? "mac" : "windows",
+        previewDefaults = false,
     ) => {
         try {
             await invoke("begin_onboarding");
@@ -63,7 +64,7 @@ export function createClipboardTutorialRuntime(
             options.onActionError(actionError);
             return;
         }
-        options.onBeforeStart();
+        options.onBeforeStart(previewDefaults);
         options.setPlatform(platform);
         options.incrementRunId();
         options.setActive(true);

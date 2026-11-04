@@ -334,6 +334,18 @@ fn diagnostic_detail(detail: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn direct_requests_delegate_dns_to_the_http_clients_default_resolver() {
+        let production = include_str!("preview_http.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(
+            !production.contains(".dns_resolver("),
+            "the shared preview client must not install a destination-IP filtering resolver"
+        );
+    }
+
     fn client(proxies: Matcher) -> PreviewHttpClient {
         PreviewHttpClient::new("vPaste-preview-test", 2, true, proxies).unwrap()
     }

@@ -32,10 +32,20 @@ describe("preview window outer shell", () => {
         expect(commit).toContain("set_focusable(focus_target == Some(preview_focus::FocusTarget::Preview))");
         expect(commit).not.toContain("set_focusable(prepared.mode.takes_focus())");
         expect(commit).not.toContain("if prepared.mode.takes_focus()");
-        const follow = sourceBetween("fn focus_window_under_cursor", "fn handle_preview_focus_lost");
-        expect(follow).toContain("preview_focus::follow_cursor(requester, state)");
-        expect(follow).toContain("cursor_inside_window(&window)");
-        expect(mainSource).toMatch(/hide_preview_window,\s*focus_window_under_cursor,/);
+        expect(mainSource).not.toContain("fn focus_window_under_cursor");
+    });
+
+    it("returns focus to the clipboard whenever the cursor enters it, without WebView pointer events", () => {
+        const watch = sourceBetween("fn ensure_focus_watch", "fn activate_from_background");
+        expect(watch).toContain("watch.pending(cursor_focus_region(&app))");
+        expect(watch).toContain("preview_focus::eligibility(target, focus_watch_state(&app))");
+        expect(watch).toMatch(/activate_from_background\(\s*&clipboard_window/);
+        const show = sourceBetween("CLIPBOARD_VISIBLE.store(true, Ordering::SeqCst);", "let x = layout.x;");
+        expect(show).toContain("ensure_focus_watch(window.app_handle())");
+        const state = sourceBetween("fn focus_watch_state", "fn focus_watch_needed");
+        expect(state).toContain("!other_vpaste_window_focused(app)");
+        expect(state).toContain("!PREVIEW_HOVER.load(Ordering::SeqCst)");
+        expect(mainSource).toContain("AttachThreadInput(current_thread, foreground_thread, 1)");
     });
 
     it("keeps one cleared hidden preview resident without an idle destruction timer", () => {

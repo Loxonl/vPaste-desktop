@@ -7,6 +7,23 @@ import { fileURLToPath } from "node:url";
 const start = "<!-- vpaste-downloads:start -->";
 const end = "<!-- vpaste-downloads:end -->";
 
+function normalizeBoldLabels(body) {
+  let fence;
+  return body.replace(/^.*$/gm, line => {
+    const marker = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (marker) {
+      if (!fence) fence = marker[1];
+      else if (marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = undefined;
+      return line;
+    }
+    if (fence) return line;
+    return line.replace(
+      /^( {0,3}(?:[-*+]|\d+[.)])[ \t]+)\*\*([^*\\\r\n]+?)([：:])\*\*(?=[\p{L}\p{N}])/u,
+      "$1**$2**$3",
+    );
+  });
+}
+
 function englishFirst(body) {
   const headings = [];
   let fence;
@@ -54,7 +71,7 @@ export function renderReleaseNotes(release, repo, tag, { requireUniversal = fals
     }
     body = `${body.slice(0, body.indexOf(start)).trimEnd()}\n\n${body.slice(body.indexOf(end) + end.length).trimStart()}`;
   }
-  body = englishFirst(body);
+  body = englishFirst(normalizeBoldLabels(body));
   const table = rows.map(([platform, description, suffix]) =>
     `| ${platform} | ${description} | ${link("Download / 下载", `vPaste_${version}_${suffix}`)} |`,
   );

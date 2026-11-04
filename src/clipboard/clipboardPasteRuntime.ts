@@ -23,6 +23,7 @@ type ClipboardPasteRuntimeOptions = {
     pasteInFlight: { current: boolean };
     closeContextMenu: () => void;
     getItems: () => Item[];
+    nativeHistory?: () => boolean;
     hideWindow: () => Promise<void>;
     refreshHistory: () => Promise<void>;
     selectItem: (hash: string) => void;
@@ -99,6 +100,34 @@ export function createClipboardPasteRuntime(
         }
     };
 
+    const performHistoryPaste = async (
+        hash: string, plainText: boolean, restoreAlt: boolean, triggerKey: string, hasPermission: boolean,
+    ) => {
+        try {
+            const info = await invoke<{ itemType: string; missingPaths: string[] }>("history_item_action_info", { hash });
+            if (info.missingPaths.length > 0) {
+                options.showToast(options.t(info.missingPaths.length === 1 ? "clipboard.sourceMissingOne" : "clipboard.sourceMissingMany",
+                    { path: compactPath(info.missingPaths[0], info.missingPaths.length === 1 ? 46 : 42) }), "warning");
+                return;
+            }
+            options.selectItem(hash);
+            if (restoreAlt) {
+                await options.hideWindow();
+                await waitForQuickInputModifierRelease(triggerKey);
+            }
+            const hide = info.itemType === "Image" && hasPermission && !restoreAlt ? options.hideWindow() : null;
+            await invoke("copy_history_record", { hash, plainText });
+            if (hide) await hide;
+            else if (hasPermission && !restoreAlt) await options.hideWindow();
+            if (!hasPermission) { await finishCopyWithoutAutoPaste(restoreAlt); return; }
+            await invokePaste({ hash, restoreAlt, triggerKey });
+            await options.refreshHistory();
+        } catch (pasteError) {
+            error(`Failed to copy/paste history record: ${pasteError}`);
+            options.showToast(options.t("clipboard.actionFailed", { error: String(pasteError) }), "error");
+        }
+    };
+
     const performPasteItem = async (
         hash: string,
         plainText: boolean = false,
@@ -106,6 +135,10 @@ export function createClipboardPasteRuntime(
         triggerKey: string = "",
     ) => {
         const hasPermission = await checkAccessibilityPermission();
+        if (options.nativeHistory?.()) {
+            await performHistoryPaste(hash, plainText, restoreAlt, triggerKey, hasPermission);
+            return;
+        }
         const item = options.getItems().find(candidate =>
             candidate.getHash() === hash
         );
@@ -198,6 +231,10 @@ export function createClipboardPasteRuntime(
 
     const pastePlainTextItem = (item: Item) => withPasteLock(async () => {
         const hasPermission = await checkAccessibilityPermission();
+        if (options.nativeHistory?.()) {
+            await performHistoryPaste(item.getHash(), true, false, "", hasPermission);
+            return;
+        }
         options.closeContextMenu();
         options.selectItem(item.getHash());
         try {

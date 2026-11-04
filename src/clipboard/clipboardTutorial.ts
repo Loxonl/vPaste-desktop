@@ -34,6 +34,7 @@ export type TutorialFilterTab = {
 
 export const PENDING_PERMISSION_WINDOW_KEY =
     "vpaste.pendingOnboardingPermission.v1";
+const FILTERS_INITIALIZED_KEY = "vpaste.onboardingFiltersInitialized.v1";
 
 export const TUTORIAL_FILTER_DEFINITIONS: Array<{
     id: TutorialFilterId;
@@ -44,8 +45,8 @@ export const TUTORIAL_FILTER_DEFINITIONS: Array<{
     { id: "text", emoji: "📝", titleKey: "type.text", itemType: ItemType.Text },
     { id: "image", emoji: "🖼️", titleKey: "type.image", itemType: ItemType.Image },
     { id: "link", emoji: "🔗", titleKey: "type.link", itemType: ItemType.Link },
-    { id: "color", emoji: "🎨", titleKey: "type.color", itemType: ItemType.Color },
     { id: "file", emoji: "📁", titleKey: "type.file", itemType: ItemType.File },
+    { id: "color", emoji: "🎨", titleKey: "type.color", itemType: ItemType.Color },
 ];
 
 export function tutorialFilterTabId(id: TutorialFilterId): string {
@@ -97,6 +98,28 @@ export function buildTutorialFilterTabs(
         name: `${filter.emoji} ${t(filter.titleKey)}`,
         enabled: tabs.some(tab => tab.id === tutorialFilterTabId(filter.id)),
     }));
+}
+
+export function initializeTutorialFilterTabs(
+    tabs: CustomTab[],
+    firstRun: boolean,
+    t: TFunction,
+): CustomTab[] {
+    if (!firstRun || localStorage.getItem(FILTERS_INITIALIZED_KEY)) return tabs;
+    // Remember an intentionally empty selection even before onboarding finishes.
+    markTutorialFiltersInitialized();
+    if (tabs.length > 0) return tabs;
+    return createDefaultTutorialFilterTabs(t);
+}
+
+export function createDefaultTutorialFilterTabs(t: TFunction): CustomTab[] {
+    return TUTORIAL_FILTER_DEFINITIONS
+        .filter(filter => filter.id !== "color")
+        .reduce<CustomTab[]>((next, filter) => updateTutorialFilterTabs(next, filter.id, true, t), []);
+}
+
+export function markTutorialFiltersInitialized() {
+    localStorage.setItem(FILTERS_INITIALIZED_KEY, "true");
 }
 
 export function buildTutorialPermissions(

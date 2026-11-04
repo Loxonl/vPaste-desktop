@@ -77,14 +77,18 @@ pub fn load(hash: &str) -> Result<TextDocument, String> {
     let html = match rich_meta_from_source(&stored.source) {
         None => String::new(),
         Some(meta) => {
+            crate::validate_rich_restore_budget(&text, &meta)?;
             if !meta.html_path.is_empty() {
-                read_rich_html_fragment_with_limit(
-                    &meta.html_path,
-                    MAX_AUTOMATIC_CAPTURE_BYTES as u64,
-                )
-                .ok_or("editor.richUnavailable")?
+                read_rich_html_fragment_with_limit(&meta.html_path, MAX_EDITOR_CONTENT_BYTES as u64)
+                    .ok_or("editor.richUnavailable")?
             } else if !meta.rtf_path.is_empty() {
-                rtf_to_html(&history_store::read_file(&meta.rtf_path)?, &text)?
+                rtf_to_html(
+                    &crate::clipboard_budget::read_file_limited(
+                        &meta.rtf_path,
+                        MAX_EDITOR_CONTENT_BYTES,
+                    )?,
+                    &text,
+                )?
             } else {
                 return Err("editor.richUnavailable".into());
             }
@@ -129,12 +133,13 @@ pub fn save(update: TextUpdate) -> Result<Item, String> {
     if is_semantically_blank_text(&update.text) {
         return Err("editor.blank".into());
     }
-    if update
-        .text
-        .len()
-        .saturating_add(update.html.len())
-        .saturating_add(update.rtf.len())
-        > MAX_AUTOMATIC_CAPTURE_BYTES
+    if update.text.len() > crate::clipboard_budget::TEXT_CAPTURE_BYTES
+        || update
+            .text
+            .len()
+            .saturating_add(update.html.len())
+            .saturating_add(update.rtf.len())
+            > MAX_EDITOR_CONTENT_BYTES
     {
         return Err("editor.tooLarge".into());
     }
@@ -195,7 +200,7 @@ pub fn save(update: TextUpdate) -> Result<Item, String> {
             .len()
             .saturating_add(html_bytes.len())
             .saturating_add(rtf_bytes.len())
-            > MAX_AUTOMATIC_CAPTURE_BYTES
+            > MAX_EDITOR_CONTENT_BYTES
         {
             return Err("editor.tooLarge".into());
         }
@@ -590,5 +595,22 @@ mod tests {
         let edited = save(update(&load(&edited.hash).unwrap(), "  plain\ntext  ")).unwrap();
         assert_eq!(edited.item_type, ItemType::Text);
         assert_eq!(plain_text_content(&edited.hash).unwrap(), "  plain\ntext  ");
+    }
+
+    #[test]
+    fn oversized_edits_leave_the_original_item_unchanged() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let _root = setup();
+        let hash = capture("original");
+        let document = load(&hash).unwrap();
+        assert!(save(update(
+            &document,
+            &"x".repeat(crate::clipboard_budget::TEXT_CAPTURE_BYTES + 1)
+        ))
+        .is_err());
+        let mut rich_update = update(&document, "valid text");
+        rich_update.html = "x".repeat(crate::clipboard_budget::RICH_CAPTURE_BYTES);
+        assert!(save(rich_update).is_err());
+        assert_eq!(load(&hash).unwrap().text, "original");
     }
 }

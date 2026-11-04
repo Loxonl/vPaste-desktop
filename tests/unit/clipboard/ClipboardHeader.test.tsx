@@ -137,6 +137,7 @@ describe("clipboard header", () => {
             onToggleTheme: vi.fn(),
             onOpenUiLab: vi.fn(),
             onOpenTestRoom: vi.fn(),
+            onOpenMemoryMonitor: vi.fn(),
             onOpenSettings: vi.fn(),
         };
 
@@ -164,6 +165,7 @@ describe("clipboard header", () => {
         await user.click(screen.getByRole("button", { name: "tutorial.debug.theme.dark" }));
         await user.click(screen.getByRole("button", { name: "tutorial.debug.uiLab" }));
         await user.click(screen.getByRole("button", { name: "tutorial.debug.testRoom" }));
+        await user.click(screen.getByRole("button", { name: "memory.title" }));
         await user.click(screen.getByRole("button", { name: "common.settings" }));
         const pasteQueueButton = screen.getByRole("button", { name: "pasteQueue.close" });
         expect(pasteQueueButton).toHaveAttribute("aria-pressed", "true");
@@ -175,6 +177,7 @@ describe("clipboard header", () => {
         expect(callbacks.onToggleTheme).toHaveBeenCalledOnce();
         expect(callbacks.onOpenUiLab).toHaveBeenCalledOnce();
         expect(callbacks.onOpenTestRoom).toHaveBeenCalledOnce();
+        expect(callbacks.onOpenMemoryMonitor).toHaveBeenCalledOnce();
         expect(callbacks.onOpenSettings).toHaveBeenCalledOnce();
         expect(callbacks.onOpenPasteQueue).toHaveBeenCalledOnce();
     });

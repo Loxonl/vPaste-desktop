@@ -39,6 +39,20 @@ function options(items: Item[]) {
 }
 
 describe("clipboard paste runtime", () => {
+    it("pastes an evicted selection by hash without requesting its body from the main window", async () => {
+        const callbacks = { ...options([]), nativeHistory: () => true };
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "check_paste_accessibility_permission") return { granted: true };
+            if (command === "history_item_action_info") return { itemType: "Text", missingPaths: [] };
+            return undefined;
+        });
+        await createClipboardPasteRuntime(callbacks).pasteItem("evicted-hash", true);
+        expect(callbacks.getItems).not.toHaveBeenCalled();
+        expect(tauri.invoke).toHaveBeenCalledWith("copy_history_record", { hash: "evicted-hash", plainText: true });
+        expect(tauri.invoke).toHaveBeenCalledWith("paste", { hash: "evicted-hash", restoreAlt: false, triggerKey: "" });
+        expect(tauri.invoke).not.toHaveBeenCalledWith("copy", expect.anything());
+    });
+
     beforeEach(() => {
         tauri.invoke.mockReset();
         logger.error.mockReset();

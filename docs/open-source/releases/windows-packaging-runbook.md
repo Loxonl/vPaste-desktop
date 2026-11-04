@@ -185,6 +185,28 @@ successful build on Windows 11 does not count as a Windows 10 runtime test.
 - Default downgrade block and explicit development-only downgrade confirmation
 - Keyboard navigation, close actions, progress state, and completion action
 
+For installer preparation changes, run the isolated native regression on Windows
+after populating the Inno asset cache with a local Windows build:
+
+```powershell
+./scripts/test-windows-installer-update.ps1 -Scenario running
+./scripts/test-windows-installer-update.ps1 -Scenario stopped
+./scripts/test-windows-installer-update.ps1 -Scenario repair
+./scripts/test-windows-installer-update.ps1 -Scenario fresh
+```
+
+The test compiles the real installer script against a synthetic executable,
+disables real installation discovery, registration, shortcuts and app launch,
+and uses a unique temporary destination. It checks occupied-file shutdown,
+replacement, unrelated-file preservation and a bounded completion time; its
+external-shutdown stall injection reproduces the previous unbounded wait.
+It also checks the occupied-file prompt's native control bounds and that error
+messages retain their separate fallback layout. It does not install vPaste or
+verify the interactive appearance. Also manually check
+that the occupied-application prompt is readable and operable. Keep process
+shutdown in native Restart Manager handling, outside `NextButtonClick`; do not
+restore a synchronous global `taskkill /IM vPaste.exe` call.
+
 ### Legacy migration
 
 Install the local 1.5.0 NSIS package, create representative data, and then run
@@ -231,7 +253,7 @@ record.
 
 ## Update validation
 
-Private Draft Releases keep public update delivery disabled. Publishing a new Release triggers `.github/workflows/tag-release.yml`, which builds signed updater payloads and attaches them to the existing Release after protected environment approval. After every package passes an anonymous download check, it publishes the channel's website `latest.json` (Stable or RC, from the tag); see [update-feed-publication.md](update-feed-publication.md). Never embed a GitHub token in the client; public updater delivery also requires anonymously downloadable packages, which the current private source repository does not provide.
+Private Draft Releases keep public update delivery disabled. Publishing a new Release triggers `.github/workflows/tag-release.yml`, which builds signed updater payloads and attaches them to the existing Release after protected environment approval. After every package passes an anonymous download check, it publishes the channel's website `latest.json` (Stable or RC, from the tag); see [update-feed-publication.md](update-feed-publication.md). Never embed a GitHub token in the client; public updater delivery requires anonymously downloadable packages, not private Release assets.
 
 For a debug-only local signed feed:
 
@@ -335,6 +357,23 @@ Windows 安装包暂未签名，可能显示「未知发布者」或 SmartScreen
 Keep this package section to at most two short sentences per language. The final
 download table provides links; do not repeat build workflow, SBOM, metadata, or
 updater-signature details in the Release notes.
+
+Use punctuation outside bold labels, for example `**Windows fixes**: details`
+and `**Windows 修复**：说明`. Do not write `**中文标题：**正文`: the punctuation
+before the closing delimiter and adjacent body text prevent GitHub from treating
+it as bold. The download-table helper normalizes unsafe list labels, while
+preserving fenced/inline examples and already valid prose. Preview notes through
+GitHub's Markdown renderer, for example:
+
+```powershell
+gh api markdown -f mode=gfm -f "text=**鼠标操作**：支持单击或双击粘贴"
+```
+
+Write actual English and Chinese user-facing changes rather than publishing only
+generated PR titles. Original references may remain in a collapsed details block.
+When repairing historical notes, preserve maintenance warnings and lifecycle
+metadata; never rebuild, replace, or compact already published assets to change
+the appearance of a Release page.
 
 The helper recognizes the exact `## English` and `## 中文` headings, keeps
 subsections within their language, and preserves shared notes and source links.

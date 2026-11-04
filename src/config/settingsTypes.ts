@@ -1,6 +1,7 @@
 import { DEFAULT_LANGUAGE } from "../lang";
 import type { ThemeMode } from "../theme";
 import type { SettingsBridge } from "./SettingsBridge";
+import { isPanelSize, type PanelSizePreference } from "./panelSizePreview";
 import {
     DEFAULT_MAIN_SHORTCUT,
     DEFAULT_PASTE_AS_TEXT_SHORTCUT,
@@ -33,6 +34,7 @@ export interface ConfigData {
     retain_tab_position: boolean;
     link_auto_preview: boolean;
     mouse_paste_mode: "single" | "double";
+    clipboard_panel_size: PanelSizePreference;
     hover_preview_enabled: boolean;
     sensitive_content_protection: boolean;
     quick_input_enabled: boolean;
@@ -123,6 +125,7 @@ export const DEFAULT_CONFIG: ConfigData = {
     retain_tab_position: false,
     link_auto_preview: true,
     mouse_paste_mode: "single",
+    clipboard_panel_size: null,
     hover_preview_enabled: false,
     sensitive_content_protection: true,
     quick_input_enabled: true,
@@ -150,6 +153,7 @@ export function parseSettingsConfig(raw: string): ConfigData {
             ? parsed.ignored_app_sources
             : [],
         theme_mode: parsed.theme_mode || DEFAULT_CONFIG.theme_mode,
+        clipboard_panel_size: isPanelSize(parsed.clipboard_panel_size) ? parsed.clipboard_panel_size : null,
         shortcut_keys: {
             ...DEFAULT_CONFIG.shortcut_keys,
             ...shortcutKeys,

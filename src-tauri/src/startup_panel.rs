@@ -8,9 +8,16 @@ struct StartupPanel {
     ready: bool,
     requested: bool,
     shown: bool,
+    preview_warmup_started: bool,
 }
 
 impl StartupPanel {
+    fn take_preview_warmup(&mut self) -> bool {
+        let warm = self.ready && !self.preview_warmup_started;
+        self.preview_warmup_started |= warm;
+        warm
+    }
+
     fn take_show(&mut self) -> bool {
         let show = self.ready && self.requested && !self.shown;
         self.shown |= show;
@@ -22,6 +29,7 @@ static PANEL: Mutex<StartupPanel> = Mutex::new(StartupPanel {
     ready: false,
     requested: false,
     shown: false,
+    preview_warmup_started: false,
 });
 
 pub fn is_update_restart<I, S>(args: I, current_version: &str) -> bool
@@ -39,16 +47,21 @@ where
 }
 
 fn show_if_ready(app: &AppHandle, ready: bool, requested: bool) -> Result<(), String> {
-    let show = {
+    let (show, prewarm) = {
         let mut panel = PANEL.lock().unwrap();
         panel.ready |= ready;
         panel.requested |= requested;
-        panel.take_show()
+        (panel.take_show(), panel.take_preview_warmup())
     };
-    if show {
-        crate::show_main_panel_for_app(app)?;
+    let result = if show {
+        crate::show_main_panel_for_app(app)
+    } else {
+        Ok(())
+    };
+    if prewarm {
+        crate::prewarm_preview_window(app.clone());
     }
-    Ok(())
+    result
 }
 
 pub fn request_show(app: &AppHandle) -> Result<(), String> {
@@ -68,6 +81,27 @@ pub fn clipboard_window_ready(window: tauri::WebviewWindow) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::{is_update_restart, StartupPanel};
+
+    #[test]
+    fn resident_preview_warmup_waits_for_readiness_and_is_taken_only_once() {
+        let mut panel = StartupPanel::default();
+        assert!(!panel.take_preview_warmup());
+        panel.ready = true;
+        assert!(panel.take_preview_warmup());
+        assert!(!panel.take_preview_warmup());
+        assert!(!panel.take_show());
+    }
+
+    #[test]
+    fn warming_the_preview_does_not_consume_an_update_restart_panel_show() {
+        let mut panel = StartupPanel::default();
+        panel.ready = true;
+        panel.requested = true;
+        assert!(panel.take_preview_warmup());
+        assert!(panel.take_show());
+        assert!(!panel.take_preview_warmup());
+        assert!(!panel.take_show());
+    }
 
     #[test]
     fn only_the_installers_exact_current_version_argument_requests_an_update_show() {

@@ -712,9 +712,9 @@ pub fn emit_state(app: &AppHandle) {
     }
 }
 
-pub fn hide_window(app: &AppHandle) {
+pub fn destroy_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("pasteQueue") {
-        let _ = window.hide();
+        let _ = crate::auxiliary_windows::destroy(&window);
     }
 }
 

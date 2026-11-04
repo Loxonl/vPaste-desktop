@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -31,7 +32,7 @@ const MAX_RETRY_DELAY_MS: u64 = 40;
 // QQ can publish Unicode text first, then HTML for the same copy 10–22ms later.
 // Keep both raw captures; only delay finalizing a plain-text candidate briefly.
 const TEXT_FORMAT_COMPLETION_GRACE: Duration = Duration::from_millis(50);
-const MAX_BUFFERED_CAPTURE_BYTES: usize = 256 * 1024 * 1024;
+const MAX_BUFFERED_CAPTURE_BYTES: usize = crate::clipboard_budget::BUFFERED_BYTES;
 const MAX_BUFFERED_CAPTURES: usize = 128;
 pub(crate) const VPASTE_INTERNAL_CLIPBOARD_FORMAT: &str = "vPaste Internal Clipboard";
 
@@ -365,6 +366,9 @@ pub fn start(window: WebviewWindow) {
                 );
                 if let Err(err) = &result {
                     error!("failed to process clipboard snapshot: {err}");
+                    if crate::clipboard_budget::is_limit_error(err) {
+                        let _ = worker_window.emit("clipboard-capture-rejected", ());
+                    }
                 }
                 if epoch.is_some_and(|epoch| {
                     crate::paste_queue::is_active()
@@ -425,6 +429,9 @@ pub fn start(window: WebviewWindow) {
                     Err(err.clone()),
                 );
                 error!("failed to capture clipboard snapshot: {err}");
+                if crate::clipboard_budget::is_limit_error(&err) {
+                    let _ = window.emit("clipboard-capture-rejected", ());
+                }
                 if context.queue_epoch.is_some_and(|epoch| {
                     crate::paste_queue::is_active()
                         && crate::paste_queue::activation_epoch() == epoch
@@ -490,7 +497,7 @@ fn retry_snapshot_read(
         match read(*sequence, attempt + 1, *context, &trace) {
             Ok(snapshot) => return Ok(snapshot),
             Err(err) => {
-                if err.starts_with("复制内容超过") {
+                if crate::clipboard_budget::is_limit_error(&err) {
                     trace.event("size_limit", true, None);
                     return Err(err);
                 }
@@ -559,7 +566,7 @@ fn read_snapshot(
     let text: Option<String> = if is_format_avail(formats::Unicode.into()) {
         check_snapshot_format_size(
             formats::Unicode.into(),
-            MAX_BUFFERED_CAPTURE_BYTES,
+            crate::clipboard_budget::TEXT_CAPTURE_BYTES * 2 + 2,
             trace,
             "CF_UNICODETEXT",
         )?;
@@ -574,7 +581,13 @@ fn read_snapshot(
         None
     }
     .filter(|text| !looks_like_cf_html_header_text(text));
-    let mut remaining_bytes = MAX_BUFFERED_CAPTURE_BYTES;
+    let mut remaining_bytes = crate::clipboard_budget::SNAPSHOT_BYTES;
+    if text
+        .as_ref()
+        .is_some_and(|text| text.len() > crate::clipboard_budget::TEXT_CAPTURE_BYTES)
+    {
+        return Err("复制内容超过安全大小限制，未加入记录".into());
+    }
     reserve_snapshot_bytes(
         text.as_ref().map(String::len).unwrap_or(0),
         &mut remaining_bytes,
@@ -599,9 +612,24 @@ fn read_snapshot(
         trace.event("snapshot_ready", false, Some(snapshot_size));
         return Ok(Some(snapshot));
     }
-    let html = read_snapshot_registered_format("HTML Format", &mut remaining_bytes, trace)?;
-    let rtf = read_snapshot_registered_format("Rich Text Format", &mut remaining_bytes, trace)?;
-    let png = read_snapshot_registered_format("PNG", &mut remaining_bytes, trace)?;
+    let mut rich_remaining = crate::clipboard_budget::RICH_CAPTURE_BYTES
+        .saturating_sub(text.as_ref().map(String::len).unwrap_or(0));
+    let html = read_snapshot_registered_format("HTML Format", &mut rich_remaining, trace)?;
+    let rtf = read_snapshot_registered_format("Rich Text Format", &mut rich_remaining, trace)?;
+    reserve_snapshot_bytes(
+        html.as_ref().map(Vec::len).unwrap_or(0) + rtf.as_ref().map(Vec::len).unwrap_or(0),
+        &mut remaining_bytes,
+    )?;
+    let png = if html.is_some() || rtf.is_some() {
+        let png = read_snapshot_registered_format("PNG", &mut rich_remaining, trace)?;
+        reserve_snapshot_bytes(
+            png.as_ref().map(Vec::len).unwrap_or(0),
+            &mut remaining_bytes,
+        )?;
+        png
+    } else {
+        read_snapshot_registered_format("PNG", &mut remaining_bytes, trace)?
+    };
     let dib_v5 = read_snapshot_raw_format(CF_DIBV5, &mut remaining_bytes, trace, "CF_DIBV5")?;
     let dib = if dib_v5.is_none() {
         read_snapshot_raw_format(CF_DIB, &mut remaining_bytes, trace, "CF_DIB")?
@@ -696,11 +724,20 @@ fn read_snapshot_raw_format(
     if !is_format_avail(format) {
         return Ok(None);
     }
-    check_snapshot_format_size(format, *remaining_bytes, trace, name)
+    let format_limit = match name {
+        "PNG" | "GIF" | "image/gif" => crate::clipboard_budget::IMAGE_SOURCE_BYTES,
+        "CF_DIB" | "CF_DIBV5" => crate::clipboard_budget::BITMAP_CAPTURE_BYTES,
+        "HTML Format" | "Rich Text Format" => crate::clipboard_budget::RICH_CAPTURE_BYTES,
+        _ => crate::clipboard_budget::SNAPSHOT_BYTES,
+    };
+    check_snapshot_format_size(format, (*remaining_bytes).min(format_limit), trace, name)
         .map_err(|_| SnapshotFormatError::SizeLimit)?;
     let bytes: Vec<u8> = trace
         .native("read", name, format, || get(formats::RawData(format)))
         .map_err(SnapshotFormatError::Native)?;
+    if bytes.len() > format_limit {
+        return Err(SnapshotFormatError::SizeLimit);
+    }
     reserve_snapshot_bytes(bytes.len(), remaining_bytes)
         .map_err(|_| SnapshotFormatError::SizeLimit)?;
     Ok(Some(bytes))
@@ -782,6 +819,16 @@ fn parse_snapshot(snapshot: &mut ClipboardSnapshot) -> Result<Option<String>, St
             .filter(|text| !clipboard::is_semantically_blank_text(text));
         let plain_text =
             preferred_rich_plain_text(clipboard_text.clone(), html_text.clone(), rtf_text.clone());
+        let rich_bytes = plain_text
+            .len()
+            .saturating_add(html.as_ref().map_or(0, Vec::len))
+            .saturating_add(rtf.as_ref().map_or(0, Vec::len))
+            .saturating_add(png.as_ref().map_or(0, Vec::len));
+        if plain_text.len() > crate::clipboard_budget::TEXT_CAPTURE_BYTES
+            || rich_bytes > crate::clipboard_budget::RICH_CAPTURE_BYTES
+        {
+            return Err(crate::clipboard_budget::limit_error());
+        }
         let local_images = html
             .as_deref()
             .map(local_images_from_html)
@@ -800,7 +847,10 @@ fn parse_snapshot(snapshot: &mut ClipboardSnapshot) -> Result<Option<String>, St
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("gif"))
         {
-            Some(fs::read(&local_images[0]))
+            Some(crate::clipboard_budget::read_file_limited(
+                &local_images[0],
+                crate::clipboard_budget::IMAGE_SOURCE_BYTES,
+            ))
         } else {
             None
         };
@@ -845,10 +895,17 @@ fn parse_snapshot(snapshot: &mut ClipboardSnapshot) -> Result<Option<String>, St
 
         if local_images.len() == 1 && !has_meaningful_text {
             let image_bytes = local_gif_candidate
-                .unwrap_or_else(|| fs::read(&local_images[0]))
+                .unwrap_or_else(|| {
+                    crate::clipboard_budget::read_file_limited(
+                        &local_images[0],
+                        crate::clipboard_budget::IMAGE_SOURCE_BYTES,
+                    )
+                })
                 .map_err(|err| format!("read local html image failed: {}", err))?;
-            image::load_from_memory(&image_bytes)
-                .map_err(|err| format!("decode local html image failed: {}", err))?;
+            crate::image_preview::metadata_from_bytes(
+                &local_images[0].to_string_lossy(),
+                &image_bytes,
+            )?;
             if has_local_gif {
                 info!("preserve local GIF clipboard image before bitmap fallback");
             }
@@ -1335,7 +1392,11 @@ fn fetch_remote_gif_bytes(url: &str) -> Option<Vec<u8>> {
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let bytes = response.bytes().ok()?.to_vec();
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_GIF_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
     if bytes.len() as u64 > MAX_GIF_BYTES {
         return None;
     }
@@ -1433,9 +1494,13 @@ fn read_bitmap(
     app_source: &AppSource,
     context: clipboard::CaptureContext,
 ) -> Result<Option<String>, String> {
-    let png = image_convert::convert_bitmap_to_png(raw.as_slice())
-        .map_err(|err| format!("convert {} bitmap failed: {}", name, err))?;
+    let png = {
+        let _decode_guard = crate::image_preview::decode_lock()?;
+        image_convert::convert_bitmap_to_png(raw.as_slice())
+            .map_err(|err| format!("convert {} bitmap failed: {}", name, err))?
+    };
 
+    // Capture prepares a thumbnail, which acquires the same decode lock.
     Ok(clipboard::capture_image_with_text_and_app(
         &png,
         text_content.unwrap_or(""),
@@ -2045,6 +2110,147 @@ fn is_vpaste_exe(exe_path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bitmap_capture_prepares_cold_thumbnails_and_continues_with_text() {
+        const ROOT_ENV: &str = "VPASTE_TEST_BITMAP_CAPTURE_ROOT";
+        let Some(root) = std::env::var_os(ROOT_ENV) else {
+            use std::os::windows::io::AsRawHandle;
+            use std::process::{Command, Stdio};
+            use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+            use windows::Win32::System::Threading::WaitForSingleObject;
+
+            // A regressed non-reentrant lock must fail this test, not hang the
+            // suite or leave a blocked worker holding the shared test-data lock.
+            let root = tempfile::tempdir().unwrap();
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "clipboard::windows::listen::tests::bitmap_capture_prepares_cold_thumbnails_and_continues_with_text",
+                    "--nocapture",
+                ])
+                .env(ROOT_ENV, root.path())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let finished =
+                unsafe { WaitForSingleObject(HANDLE(child.as_raw_handle() as isize), 10_000) }
+                    == WAIT_OBJECT_0;
+            if !finished {
+                child.kill().unwrap();
+            }
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                finished && output.status.success(),
+                "bitmap capture child finished={finished}, status={}\n{}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(root.to_string_lossy().into_owned());
+        config::save(config::Config::default());
+        clipboard::db::init();
+        crate::media_resources::set_capture_scale_factor(1.0);
+        let mut captured = Vec::new();
+        for (index, (v5, queue)) in [(false, false), (true, false), (false, true), (true, true)]
+            .into_iter()
+            .enumerate()
+        {
+            crate::paste_queue::set_active(queue);
+            let mut header = vec![0; 40];
+            header[..4].copy_from_slice(&40_u32.to_le_bytes());
+            header[4..8].copy_from_slice(&5000_i32.to_le_bytes());
+            header[8..12].copy_from_slice(&5000_i32.to_le_bytes());
+            header[12..14].copy_from_slice(&1_u16.to_le_bytes());
+            header[14..16].copy_from_slice(&32_u16.to_le_bytes());
+            for invalid in [vec![0], header] {
+                assert!(read_bitmap(
+                    invalid,
+                    "CF_DIB",
+                    None,
+                    &AppSource::default(),
+                    clipboard::CaptureContext::from(queue),
+                )
+                .is_err());
+            }
+
+            let pixels =
+                image::RgbaImage::from_pixel(16, 12, image::Rgba([index as u8 * 40, 90, 180, 255]));
+            let mut png = std::io::Cursor::new(Vec::new());
+            pixels.write_to(&mut png, image::ImageFormat::Png).unwrap();
+            let dib = image_convert::convert_image_bytes_to_dib(png.get_ref()).unwrap();
+            let mut snapshot = ClipboardSnapshot {
+                context: Some(clipboard::CaptureContext::from(queue)),
+                png: Some(png.into_inner()),
+                ..Default::default()
+            };
+            if v5 {
+                snapshot.dib_v5 = Some(image_convert::convert_bitmap_to_dibv5(&dib).unwrap());
+            } else {
+                snapshot.dib = Some(dib);
+            }
+            println!("capture cold bitmap: v5={v5}, queue={queue}");
+            let hash = parse_snapshot(&mut snapshot).unwrap().unwrap();
+            let item = clipboard::try_get_by_hash(&hash).unwrap();
+            assert_eq!(item.item_type, clipboard::item::ItemType::Image);
+            let stored = crate::history_store::read_file(&item.content).unwrap();
+            assert_eq!(image::load_from_memory(&stored).unwrap().to_rgba8(), pixels);
+            let key = crate::image_preview::source_cache_key(&item.content).unwrap();
+            let thumbnail = crate::image_preview::card_preview_cache_path_for_key(&format!(
+                "{key}:card-240x180"
+            ))
+            .unwrap();
+            assert!(crate::valid_png_cache_file(&thumbnail));
+            assert_eq!(image::image_dimensions(&thumbnail).unwrap(), (240, 180));
+
+            assert_eq!(
+                read_bitmap(
+                    image_convert::convert_image_bytes_to_dib(&stored).unwrap(),
+                    "CF_DIB",
+                    None,
+                    &AppSource::default(),
+                    clipboard::CaptureContext::from(queue),
+                )
+                .unwrap(),
+                Some(hash.clone())
+            );
+            assert_eq!(clipboard::count_by_hash(&hash), 1);
+            let text = format!("text after bitmap {index}");
+            let text_hash = parse_snapshot(&mut ClipboardSnapshot {
+                context: Some(clipboard::CaptureContext::from(queue)),
+                text: Some(text.clone()),
+                ..Default::default()
+            })
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                clipboard::try_get_by_hash(&text_hash).unwrap().content,
+                text
+            );
+            assert_eq!(
+                crate::paste_queue::ordered_hashes().unwrap(),
+                if queue {
+                    vec![hash.clone(), text_hash.clone()]
+                } else {
+                    Vec::new()
+                }
+            );
+            captured.extend([hash, text_hash]);
+            crate::paste_queue::set_active(false);
+        }
+        assert_eq!(
+            clipboard::db::db()
+                .query_row("SELECT count(*) FROM clipboard", [], |row| row
+                    .get::<_, usize>(0))
+                .unwrap(),
+            captured.len()
+        );
+    }
 
     #[test]
     fn word_optional_formats_retry_access_errors_instead_of_losing_images() {
@@ -2843,48 +3049,82 @@ mod tests {
         let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader_done = done.clone();
         let (ready, started) = mpsc::channel();
+        let (request_sample, sample_requests) = mpsc::channel::<()>();
+        let (sample_observed, observed_samples) = mpsc::channel::<()>();
         let reader = thread::spawn(move || {
             let monitor = CaptureMonitor::new().unwrap();
             ready.send(()).unwrap();
             let mut unmarked = 0;
             let mut marked = 0;
+            let mut sample_pending = false;
             while !reader_done.load(Ordering::SeqCst) {
+                // A checkpoint must acknowledge a read started after its request,
+                // not a queued observation from before the writer's latest batch.
+                sample_pending |= sample_requests.try_recv().is_ok();
+                let sequence = clipboard_sequence_number();
                 match read_snapshot(
                     &monitor,
-                    clipboard_sequence_number(),
+                    sequence,
                     false,
                     clipboard::CaptureContext {
                         time: 1,
                         queue_epoch: None,
                     },
-                    &ReadTrace::new(clipboard_sequence_number(), 1),
+                    &ReadTrace::new(sequence, 1),
                 ) {
                     Ok(Some(snapshot)) if snapshot.text.is_some() => unmarked += 1,
-                    Ok(None) => marked += 1,
+                    Ok(None) => {
+                        marked += 1;
+                        if sample_pending {
+                            sample_observed.send(()).unwrap();
+                            sample_pending = false;
+                        }
+                    }
                     _ => {}
                 }
                 thread::yield_now();
             }
             (unmarked, marked)
         });
-        started.recv().unwrap();
+        let observation_timeout = Duration::from_secs(5);
+        started
+            .recv_timeout(observation_timeout)
+            .expect("native reader did not initialize");
         let mut successful_writes = 0;
-        for _ in 0..500 {
+        let mut observed_batches = 0;
+        let mut observation_error = None;
+        for attempt in 0..500 {
             if crate::copy_text_to_windows_clipboard("internal queue text").is_ok() {
                 successful_writes += 1;
             }
             thread::yield_now();
+            // Keep all 500 concurrent write attempts, but give the native reader
+            // an acknowledged turn between batches instead of stopping it unseen.
+            if (attempt + 1) % 25 == 0 && observation_error.is_none() {
+                if let Err(error) = request_sample.send(()) {
+                    observation_error = Some(format!("reader request failed: {error}"));
+                } else if let Err(error) = observed_samples.recv_timeout(observation_timeout) {
+                    observation_error = Some(format!("marked read was not observed: {error}"));
+                } else {
+                    observed_batches += 1;
+                }
+            }
         }
         done.store(true, Ordering::SeqCst);
         let (unmarked, marked) = reader.join().unwrap();
         assert!(
             successful_writes > 0 && marked > 0,
-            "native reader/writer did not run"
+            "native reader/writer did not run: writes={successful_writes}, marked={marked}, batches={observed_batches}, observation_error={observation_error:?}"
         );
         assert_eq!(
             unmarked, 0,
             "a capture can re-enqueue vPaste's own text before its marker is written"
         );
+        assert!(
+            observation_error.is_none(),
+            "native interleaving failed: {observation_error:?}; writes={successful_writes}, marked={marked}, batches={observed_batches}"
+        );
+        assert_eq!(observed_batches, 20, "every write batch needs a fresh read");
     }
 
     fn qq_text_snapshot(sequence: u32, text: &str, rich: bool) -> ClipboardSnapshot {

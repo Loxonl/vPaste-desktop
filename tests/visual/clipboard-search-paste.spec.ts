@@ -1,4 +1,8 @@
 import { expect, test } from "@playwright/test";
+import { installHistoryMockBridge } from "../helpers/historyMockBridge";
+
+test.beforeEach(async ({ page }) => { await page.addInitScript(installHistoryMockBridge); });
+
 
 for (const plainText of [false, true]) {
     test(`search submits rich text with plainText=${plainText}`, async ({ page }) => {

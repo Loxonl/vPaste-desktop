@@ -77,6 +77,67 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
         },
         spacing: 4,
         components: {
+            MuiSlider: {
+                defaultProps: {
+                    size: "small",
+                },
+                styleOverrides: {
+                    root: {
+                        height: 4,
+                    },
+                    rail: {
+                        opacity: 1,
+                        backgroundColor: "var(--ui-border-strong)",
+                    },
+                    track: {
+                        border: 0,
+                    },
+                    thumb: {
+                        width: 26,
+                        height: 14,
+                        borderRadius: "var(--ui-radius-pill)",
+                        border: "2px solid currentColor",
+                        backgroundColor: "var(--ui-surface-solid)",
+                        boxShadow: "var(--ui-shadow-control)",
+                        "&:hover, &.Mui-active": {
+                            boxShadow: "var(--ui-field-focus-ring)",
+                        },
+                        "&.Mui-focusVisible": {
+                            boxShadow: "var(--ui-focus-ring)",
+                        },
+                        "&::before": {
+                            boxShadow: "none",
+                        },
+                        "&::after": {
+                            width: 32,
+                            height: 32,
+                            borderRadius: "var(--ui-radius-pill)",
+                        },
+                    },
+                    mark: {
+                        width: 2,
+                        height: 10,
+                        borderRadius: "var(--ui-radius-pill)",
+                        backgroundColor: "var(--settings-muted)",
+                        opacity: 1,
+                    },
+                    markActive: {
+                        backgroundColor: "currentColor",
+                        opacity: 1,
+                    },
+                    markLabel: {
+                        color: "var(--settings-muted)",
+                        fontSize: 12,
+                    },
+                    valueLabel: {
+                        borderRadius: "var(--ui-radius-control)",
+                        backgroundColor: "var(--ui-text)",
+                        color: "var(--ui-surface-solid)",
+                        fontSize: 12,
+                        fontWeight: 500,
+                    },
+                },
+            },
             MuiButtonBase: {
                 defaultProps: {
                     disableRipple: true,
@@ -121,6 +182,9 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                         width: "var(--ui-control-height)",
                         height: "var(--ui-control-height)",
                         borderRadius: "var(--ui-radius-control)",
+                        "&.Mui-focusVisible:hover": {
+                            boxShadow: "var(--ui-focus-ring)",
+                        },
                     },
                     sizeSmall: {
                         width: "var(--ui-control-compact)",
@@ -324,7 +388,7 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
                         backgroundColor: "var(--ui-surface-solid)",
                         border: "1px solid var(--ui-border-strong)",
                         borderRadius: "var(--ui-radius-control)",
-                        boxShadow: "var(--ui-shadow)",
+                        boxShadow: "var(--ui-shadow-menu)",
                     },
                     list: {
                         padding: 0,
@@ -372,7 +436,9 @@ export function createAppTheme(mode: ResolvedTheme): Theme {
             MuiDialog: {
                 styleOverrides: {
                     paper: {
+                        border: "1px solid var(--ui-border)",
                         borderRadius: "var(--ui-radius-surface)",
+                        boxShadow: "var(--ui-shadow-dialog)",
                     },
                 },
             },

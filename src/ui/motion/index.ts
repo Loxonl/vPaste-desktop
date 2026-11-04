@@ -7,6 +7,7 @@ export {
     stagger,
     useAnimate,
     useIsPresent,
+    usePresence,
     useReducedMotion,
     useReducedMotionConfig,
 } from "motion/react";

@@ -1,6 +1,4 @@
-use std::io::Cursor;
-
-use image::{ImageFormat, ImageReader, Rgba, RgbaImage};
+use image::{ImageFormat, Rgba, RgbaImage};
 
 const BI_RGB: u32 = 0;
 const BI_BITFIELDS: u32 = 3;
@@ -128,10 +126,25 @@ fn bitfield_mask_size(header: BitmapInfoHeader) -> usize {
     }
 }
 
-fn convert_bitmap_to_rgba_image(data: &[u8]) -> Result<RgbaImage, String> {
+fn convert_bitmap_to_rgba_image(
+    data: &[u8],
+    operation: crate::clipboard_budget::ImageOperation,
+) -> Result<RgbaImage, String> {
     let header = parse_bitmap_info_header(data)?;
     let width = header.bi_width as u32;
     let height = header.bi_height.unsigned_abs();
+    crate::clipboard_budget::validate_dimensions(width, height, operation)?;
+    let byte_limit = match operation {
+        crate::clipboard_budget::ImageOperation::Automatic => {
+            crate::clipboard_budget::BITMAP_CAPTURE_BYTES
+        }
+        crate::clipboard_budget::ImageOperation::Restore => {
+            operation.pixels() as usize * 4 + BITMAPV5HEADER_SIZE
+        }
+    };
+    if data.len() > byte_limit {
+        return Err(crate::clipboard_budget::limit_error());
+    }
     let bytes_per_pixel = (header.bi_bit_count / 8) as usize;
     let row_bytes = width as usize * bytes_per_pixel;
     let stride = (row_bytes + 3) & !3;
@@ -184,22 +197,29 @@ fn convert_bitmap_to_rgba_image(data: &[u8]) -> Result<RgbaImage, String> {
 }
 
 pub fn convert_bitmap_to_png(data: &[u8]) -> Result<Vec<u8>, String> {
-    let img = convert_bitmap_to_rgba_image(data)?;
+    let img =
+        convert_bitmap_to_rgba_image(data, crate::clipboard_budget::ImageOperation::Automatic)?;
 
-    let mut image_buffer = Vec::new();
-    img.write_to(&mut Cursor::new(&mut image_buffer), ImageFormat::Png)
+    let mut image_buffer = crate::clipboard_budget::ImageWriter(Vec::new());
+    img.write_to(&mut image_buffer, ImageFormat::Png)
         .map_err(|err| format!("encode png failed: {}", err))?;
 
-    Ok(image_buffer)
+    Ok(image_buffer.0)
 }
 
 pub fn convert_bitmap_to_dibv5(data: &[u8]) -> Result<Vec<u8>, String> {
-    let rgba = convert_bitmap_to_rgba_image(data)?;
+    let rgba =
+        convert_bitmap_to_rgba_image(data, crate::clipboard_budget::ImageOperation::Restore)?;
     convert_rgba_image_to_dibv5(&rgba)
 }
 
 pub fn legacy_dib_is_compatible(data: &[u8]) -> Result<bool, String> {
     let header = parse_bitmap_info_header(data)?;
+    crate::clipboard_budget::validate_dimensions(
+        header.bi_width as u32,
+        header.bi_height.unsigned_abs(),
+        crate::clipboard_budget::ImageOperation::Restore,
+    )?;
     if header.bi_bit_count != 32 {
         return Ok(true);
     }
@@ -296,24 +316,28 @@ fn convert_rgba_image_to_dibv5(rgba: &RgbaImage) -> Result<Vec<u8>, String> {
 
 #[allow(dead_code)]
 pub fn convert_image_file_to_dib(path: &str) -> Result<Vec<u8>, String> {
-    let img = ImageReader::open(path)
-        .map_err(|err| format!("open image failed: {}", err))?
-        .with_guessed_format()
-        .map_err(|err| format!("guess image format failed: {}", err))?
-        .decode()
-        .map_err(|err| format!("decode image failed: {}", err))?;
-
-    convert_dynamic_image_to_dib(img)
+    let bytes = crate::clipboard_budget::read_file_limited(
+        path,
+        crate::clipboard_budget::IMAGE_SOURCE_BYTES,
+    )?;
+    convert_image_bytes_to_dib(&bytes)
 }
 
 pub fn convert_image_bytes_to_dib(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let img =
-        image::load_from_memory(bytes).map_err(|err| format!("decode image failed: {}", err))?;
+    let img = crate::clipboard_budget::decode_image(
+        bytes,
+        crate::clipboard_budget::ImageOperation::Restore,
+    )?;
     convert_dynamic_image_to_dib(img)
 }
 
 fn convert_dynamic_image_to_dib(img: image::DynamicImage) -> Result<Vec<u8>, String> {
-    let rgba = img.to_rgba8();
+    crate::clipboard_budget::validate_dimensions(
+        img.width(),
+        img.height(),
+        crate::clipboard_budget::ImageOperation::Restore,
+    )?;
+    let rgba = img.into_rgba8();
     let width = rgba.width();
     let height = rgba.height();
     let pixel_size = width
@@ -351,6 +375,26 @@ fn convert_dynamic_image_to_dib(img: image::DynamicImage) -> Result<Vec<u8>, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_bitmap_rejects_dimensions_before_allocating_or_reading_pixels() {
+        let mut header = vec![0; BITMAPINFOHEADER_SIZE];
+        header[0..4].copy_from_slice(&(BITMAPINFOHEADER_SIZE as u32).to_le_bytes());
+        header[4..8].copy_from_slice(&5000_i32.to_le_bytes());
+        header[8..12].copy_from_slice(&5000_i32.to_le_bytes());
+        header[12..14].copy_from_slice(&1_u16.to_le_bytes());
+        header[14..16].copy_from_slice(&32_u16.to_le_bytes());
+        assert_eq!(
+            convert_bitmap_to_png(&header).unwrap_err(),
+            crate::clipboard_budget::limit_error()
+        );
+        header[4..8].copy_from_slice(&8001_i32.to_le_bytes());
+        header[8..12].copy_from_slice(&4000_i32.to_le_bytes());
+        assert_eq!(
+            convert_bitmap_to_dibv5(&header).unwrap_err(),
+            crate::clipboard_budget::limit_error()
+        );
+    }
 
     fn read_u32_at(data: &[u8], start: usize) -> u32 {
         u32::from_le_bytes([

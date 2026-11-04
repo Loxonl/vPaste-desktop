@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import GeneralSettings from "../../../src/config/sections/GeneralSettings";
@@ -14,6 +14,22 @@ afterEach(() => {
 
 const bridge: SettingsBridge = {
     invoke: vi.fn(async (command: string) => {
+        if (command === "get_clipboard_panel_size_state") {
+            return {
+                preference: null,
+                recommended: "medium",
+                effective: "medium",
+                display: {
+                    pixel_width: 1920,
+                    pixel_height: 1080,
+                    scale_factor: 1.25,
+                    logical_width: 1536,
+                    logical_height: 864,
+                    work_width: 1536,
+                    work_height: 824,
+                },
+            };
+        }
         if (command === "get_update_state") {
             return {
                 status: "idle",
@@ -38,6 +54,46 @@ const bridge: SettingsBridge = {
 };
 
 describe("General settings accessibility", () => {
+    it("loads the native automatic panel size without entering an error state", async () => {
+        render(<AppThemeProvider><MotionTestProvider><GeneralSettings bridge={bridge} config={DEFAULT_CONFIG} languages={[]} onSave={vi.fn(async () => null)} t={key => key} /></MotionTestProvider></AppThemeProvider>);
+
+        const slider = await screen.findByRole("slider", { name: "settings.panelSize" });
+        await waitFor(() => expect(slider).toBeEnabled());
+        expect(slider).toHaveAttribute("aria-valuenow", "1");
+        expect(slider).toHaveAttribute("aria-valuetext", "settings.panelSize.medium · 90%");
+        expect(screen.getByText("settings.panelSize.default")).toBeVisible();
+        expect(screen.queryByText("settings.panelSize.recommendation")).not.toBeInTheDocument();
+        expect(screen.queryByText("settings.panelSize.automatic")).not.toBeInTheDocument();
+        expect(screen.queryByText("settings.panelSize.hint")).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "settings.panelSize.restoreAuto" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it.each([false, true])("preserves keyboard height preview and release/escape handling (cancel=%s)", async cancel => {
+        const onSaved = vi.fn();
+        const invoke = vi.fn(async (command: string, args?: unknown) => {
+            if (command === "begin_clipboard_size_preview") return 7;
+            if (command === "update_clipboard_size_preview") return undefined;
+            if (command === "finish_clipboard_size_preview") {
+                const size = (args as { size: "large" | null }).size;
+                return { preference: size, effective: size ?? "medium", recommended: "medium", display: null };
+            }
+            return bridge.invoke(command);
+        }) as SettingsBridge["invoke"];
+        render(<AppThemeProvider><MotionTestProvider><GeneralSettings bridge={{ ...bridge, invoke }} config={DEFAULT_CONFIG} languages={[]} onSave={vi.fn(async () => null)} onPanelSizeSaved={onSaved} t={key => key} /></MotionTestProvider></AppThemeProvider>);
+        const slider = await screen.findByRole("slider", { name: "settings.panelSize" });
+        await waitFor(() => expect(slider).toBeEnabled());
+        fireEvent.keyDown(slider, { key: "End" });
+        fireEvent.change(slider, { target: { value: "2" } });
+        if (cancel) fireEvent.keyDown(slider, { key: "Escape" });
+        fireEvent.keyUp(slider, { key: "End" });
+
+        await waitFor(() => expect(invoke).toHaveBeenCalledWith("finish_clipboard_size_preview", { sessionId: 7, size: cancel ? null : "large" }));
+        expect(invoke).toHaveBeenCalledWith("begin_clipboard_size_preview", { size: "medium" });
+        await waitFor(() => expect(onSaved).toHaveBeenLastCalledWith(cancel ? null : "large"));
+        expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "finish_clipboard_size_preview")).toHaveLength(1);
+    });
+
     it("offers immediate single-click paste by default, double-click paste, and opt-in hover preview", async () => {
         const onSave = vi.fn(async () => null);
         render(<AppThemeProvider><MotionTestProvider><GeneralSettings bridge={bridge} config={DEFAULT_CONFIG} languages={[]} onSave={onSave} t={key => key} /></MotionTestProvider></AppThemeProvider>);
@@ -69,7 +125,7 @@ describe("General settings accessibility", () => {
                         releaseUrl: "",
                     };
                 }
-                return null;
+                return bridge.invoke(command);
             }) as SettingsBridge["invoke"],
         };
         const onSave = vi.fn(async () => null);
@@ -100,7 +156,7 @@ describe("General settings accessibility", () => {
             ...bridge,
             invoke: vi.fn(async (command: string) => command === "get_update_state"
                 ? { portable: true, status: "idle", currentVersion: "1.6.0", availableVersion: null, downloadedBytes: 0, totalBytes: null, error: null, feedEnabled: true, releaseUrl: "" }
-                : null) as SettingsBridge["invoke"],
+                : bridge.invoke(command)) as SettingsBridge["invoke"],
         };
         render(
             <MotionTestProvider>
@@ -168,7 +224,7 @@ describe("General settings accessibility", () => {
                         paste: { done: false },
                     };
                 }
-                return null;
+                return bridge.invoke(command);
             }) as SettingsBridge["invoke"],
         };
 

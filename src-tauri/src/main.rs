@@ -29,7 +29,7 @@ use rand::RngCore;
 use serde::Serialize;
 use tauri::image::Image as TauriImage;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
-use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(target_os = "macos")]
 use tauri::utils::TitleBarStyle;
@@ -56,33 +56,53 @@ use crate::config::Config;
 mod app_updater;
 mod auto_cleanup;
 mod auxiliary_windows;
+mod background_resources;
 mod clipboard;
+mod clipboard_budget;
 mod config;
+#[cfg(debug_assertions)]
+mod dev_memory;
 mod history_store;
+mod history_views;
 mod image_preview;
 #[cfg(all(target_os = "macos", feature = "mac-app-store"))]
 mod mac_app_store;
 mod maintenance;
+mod media_resources;
+#[cfg(debug_assertions)]
+mod memory_profile;
 #[cfg(target_os = "macos")]
 mod native_drag_preview;
 #[cfg(target_os = "macos")]
 mod native_drag_snapshot;
 #[cfg(any(test, debug_assertions))]
 mod office_test_fixtures;
+mod panel_animation;
+mod panel_size;
 mod paste_queue;
 mod preview_behavior;
+#[cfg(test)]
+mod resource_budget_tests;
 use preview_behavior::PreviewMode;
+mod preview_motion;
+use preview_motion::{PreviewRect, PreviewRequests};
+mod paste_queue_activation;
 #[cfg(any(target_os = "windows", test))]
 mod portable_autostart;
+mod preview_focus;
 mod preview_http;
 #[cfg(test)]
 mod preview_proxy_tests;
+mod rich_card_assets;
 mod runtime_mode;
 mod search;
 mod startup_panel;
 mod test_room;
+mod ui_text_scale;
 #[cfg(target_os = "windows")]
 mod windows_main_shortcut;
+#[cfg(target_os = "windows")]
+mod windows_paste_focus;
 
 #[cfg(test)]
 #[ctor]
@@ -126,20 +146,33 @@ pub(crate) static CLIPBOARD_IGNORE_CHANGES_UNTIL: AtomicU64 = AtomicU64::new(0);
 pub(crate) static CLIPBOARD_INTERNAL_MARKER: Mutex<[u8; 16]> = Mutex::new([0; 16]);
 static CLIPBOARD_WINDOW_GENERATION: AtomicU64 = AtomicU64::new(0);
 static LAST_CLIPBOARD_MONITOR_CENTER: Mutex<Option<(f64, f64)>> = Mutex::new(None);
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 static CLIPBOARD_RESTORE_FOCUS_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_PINNED: AtomicBool = AtomicBool::new(false);
 static PREVIEW_HOVER: AtomicBool = AtomicBool::new(false);
 static PREVIEW_HOVER_REQUEST: AtomicU64 = AtomicU64::new(0);
+static PREVIEW_WINDOW_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
+static PREVIEW_FOCUS_HANDOFF_UNTIL: AtomicU64 = AtomicU64::new(0);
+// Long enough for the 35 ms + 120 ms preview blur checks to see a deliberate
+// clipboard <-> preview focus move, including asynchronous macOS activation.
+const PREVIEW_FOCUS_HANDOFF_MS: u64 = 400;
+static FOCUS_WATCH_RUNNING: AtomicBool = AtomicBool::new(false);
+// Cursor sampling while the clipboard is shown. Each tick reads the cursor and
+// window bounds; focus state is read only after the cursor enters a window.
+const FOCUS_WATCH_INTERVAL_MS: u64 = 50;
+static PREVIEW_REQUESTS: PreviewRequests = PreviewRequests::new();
+static PREVIEW_PENDING: Mutex<Option<PreparedPreview>> = Mutex::new(None);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static ONBOARDING_ACTIVE: AtomicBool = AtomicBool::new(false);
 static ONBOARDING_SHORTCUT_DEMO_ENABLED: AtomicBool = AtomicBool::new(false);
-static TRAY_MENU_WATCHING: AtomicBool = AtomicBool::new(false);
+static TRAY_MENU_WATCH_GENERATION: AtomicU64 = AtomicU64::new(0);
 static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
 static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
 static PASTE_FALLBACK_NOTICE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PASTE_QUEUE_INTERCEPTOR_READY: AtomicBool = AtomicBool::new(false);
+static PASTE_QUEUE_ACTIVATION: Mutex<paste_queue_activation::Requests> =
+    Mutex::new(paste_queue_activation::Requests::new());
 static PASTE_QUEUE_INTERCEPTOR_STARTING: AtomicBool = AtomicBool::new(false);
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 static PASTE_QUEUE_INTERNAL_PASTE: AtomicBool = AtomicBool::new(false);
@@ -161,9 +194,11 @@ static LAST_FOREGROUND_APP_PID: Mutex<Option<i32>> = Mutex::new(None);
 pub static TEST_APP_DATA_LOCK: Mutex<()> = Mutex::new(());
 const CLIPBOARD_WINDOW_HEIGHT: f64 = 302.0;
 const CLIPBOARD_WINDOW_SHADOW: bool = cfg!(target_os = "windows");
-const CLIPBOARD_SHOW_ANIMATION_MS: u64 = 170;
-const CLIPBOARD_HIDE_ANIMATION_MS: u64 = 140;
+const CLIPBOARD_SHOW_ANIMATION_MS: u64 = panel_animation::model::SHOW_DURATION_MS;
+const CLIPBOARD_HIDE_ANIMATION_MS: u64 = panel_animation::model::HIDE_DURATION_MS;
 const CLIPBOARD_ANIMATION_FRAME_MS: u64 = 8;
+// Trial: keep the bounded main view warm while the native window is parked.
+const CLIPBOARD_PARK_WHEN_COLLAPSED: bool = true;
 const CLIPBOARD_HORIZONTAL_BLEED: f64 = 12.0;
 const PASTE_FALLBACK_NOTICE_WIDTH: f64 = 560.0;
 const PASTE_FALLBACK_NOTICE_HEIGHT: f64 = 76.0;
@@ -210,11 +245,49 @@ fn get_developer_mode() -> bool {
     developer_mode_enabled_for_args(std::env::args(), cfg!(debug_assertions))
 }
 
-fn test_room_window_open_error(developer_mode: bool, window_exists: bool) -> Option<&'static str> {
+#[tauri::command]
+async fn get_dev_memory_report(
+    app: tauri::AppHandle,
+    refresh: bool,
+) -> Result<serde_json::Value, String> {
+    if !get_developer_mode() {
+        return Err("Memory monitor requires Debug + --dev-mode".into());
+    }
+    #[cfg(debug_assertions)]
+    {
+        serde_json::to_value(dev_memory::report(&app, refresh).await)
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (app, refresh);
+        Err("Memory monitor is unavailable in release builds".into())
+    }
+}
+
+#[tauri::command]
+async fn set_dev_memory_monitoring(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<serde_json::Value, String> {
+    if !get_developer_mode() {
+        return Err("Memory monitor requires Debug + --dev-mode".into());
+    }
+    #[cfg(debug_assertions)]
+    {
+        serde_json::to_value(dev_memory::set_monitoring(app, enabled).await)
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (app, enabled);
+        Err("Memory monitor is unavailable in release builds".into())
+    }
+}
+
+fn test_room_window_open_error(developer_mode: bool) -> Option<&'static str> {
     if !developer_mode {
         Some("测试间只在带 --dev-mode 参数的 Debug 构建中可用")
-    } else if !window_exists {
-        Some("测试间窗口尚未完成初始化，请稍后重试")
     } else {
         None
     }
@@ -250,10 +323,9 @@ mod developer_mode_tests {
     }
 
     #[test]
-    fn test_room_open_requires_developer_mode_and_a_prebuilt_window() {
-        assert!(test_room_window_open_error(false, false).is_some());
-        assert!(test_room_window_open_error(true, false).is_some());
-        assert!(test_room_window_open_error(true, true).is_none());
+    fn test_room_open_requires_developer_mode_but_not_a_prebuilt_window() {
+        assert!(test_room_window_open_error(false).is_some());
+        assert!(test_room_window_open_error(true).is_none());
     }
 }
 const PREVIEW_IMAGE_MIN_HEIGHT: f64 = 320.0;
@@ -284,6 +356,8 @@ struct ClipboardWindowLayout {
     width: f64,
     height: f64,
     scale_factor: f64,
+    // OS text size only; the main panel's user-selected zoom is independent.
+    content_scale: f64,
 }
 
 #[derive(Clone, Serialize)]
@@ -338,6 +412,9 @@ struct ClipboardHistoryPausePayload {
 
 #[derive(Clone, Serialize)]
 struct PreviewPayload {
+    text_truncated: bool,
+    request_id: u64,
+    navigation_direction: i8,
     hover: bool,
     item_type: String,
     content: String,
@@ -345,6 +422,7 @@ struct PreviewPayload {
     preview_asset_path: String,
     text_content: String,
     rich_html: String,
+    rich_resources: Vec<rich_card_assets::RichImageResource>,
     app_source: String,
 }
 
@@ -352,6 +430,17 @@ struct PreviewPayload {
 struct PreviewWindowSize {
     width: f64,
     height: f64,
+}
+
+#[derive(Clone)]
+struct PreparedPreview {
+    payload: PreviewPayload,
+    mode: PreviewMode,
+    rect: PreviewRect,
+    scale_factor: f64,
+    started: Instant,
+    window_ready_ms: u128,
+    prepare_ms: u128,
 }
 
 #[derive(Serialize)]
@@ -390,6 +479,7 @@ fn should_commit_clipboard_hide(
 
 fn clipboard_hide_blocked() -> bool {
     should_block_clipboard_hide(ONBOARDING_ACTIVE.load(Ordering::SeqCst))
+        || panel_size::is_previewing()
 }
 
 fn should_finish_clipboard_hide(
@@ -670,14 +760,20 @@ fn target_clipboard_screen_bounds(window: &tauri::WebviewWindow) -> ScreenBounds
         .unwrap_or_else(default_screen_bounds)
 }
 
-fn clipboard_window_layout(bounds: ScreenBounds) -> ClipboardWindowLayout {
+fn clipboard_window_layout(bounds: ScreenBounds, panel_scale: f64) -> ClipboardWindowLayout {
+    let content_scale = ui_text_scale::current();
+    #[cfg(target_os = "windows")]
+    let height = ui_text_scale::clipboard_height(panel_scale, content_scale, bounds.height);
+    #[cfg(not(target_os = "windows"))]
+    let height = CLIPBOARD_WINDOW_HEIGHT * panel_scale;
     ClipboardWindowLayout {
         x: bounds.x - CLIPBOARD_HORIZONTAL_BLEED,
-        target_y: bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT,
+        target_y: bounds.y + bounds.height - height,
         hidden_y: bounds.y + bounds.height,
         width: bounds.width + CLIPBOARD_HORIZONTAL_BLEED * 2.0,
-        height: CLIPBOARD_WINDOW_HEIGHT,
+        height,
         scale_factor: bounds.scale_factor,
+        content_scale,
     }
 }
 
@@ -686,6 +782,151 @@ fn clipboard_window_physical_size(layout: ClipboardWindowLayout) -> (u32, u32) {
         (layout.width * layout.scale_factor).round() as u32,
         (layout.height * layout.scale_factor).round() as u32,
     )
+}
+
+#[cfg(target_os = "windows")]
+fn fit_content_window_to_work_area(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let Some(monitor) = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+    fit_content_window_to_monitor(window, &monitor)
+}
+
+#[cfg(target_os = "windows")]
+fn fit_content_window_to_monitor(
+    window: &tauri::WebviewWindow,
+    monitor: &tauri::Monitor,
+) -> Result<(), String> {
+    let position = window.outer_position().map_err(|error| error.to_string())?;
+    let outer = window.outer_size().map_err(|error| error.to_string())?;
+    let inner = window.inner_size().map_err(|error| error.to_string())?;
+    let work = monitor.work_area();
+    let target = ui_text_scale::fit_rect(
+        (position.x, position.y, outer.width, outer.height),
+        (
+            work.position.x,
+            work.position.y,
+            work.size.width,
+            work.size.height,
+        ),
+    );
+    if matches!(window.label(), "config" | "testRoom" | "devMemory") {
+        let dpi = monitor.scale_factor();
+        let minimum = if window.label() == "config" {
+            ui_text_scale::logical_size(640.0, 520.0)
+        } else if window.label() == "testRoom" {
+            ui_text_scale::logical_size(860.0, 620.0)
+        } else {
+            ui_text_scale::logical_size(620.0, 420.0)
+        };
+        window
+            .set_min_size(Some(tauri::PhysicalSize::new(
+                (minimum.width * dpi).round().min(
+                    work.size
+                        .width
+                        .saturating_sub(outer.width.saturating_sub(inner.width))
+                        as f64,
+                ) as u32,
+                (minimum.height * dpi).round().min(
+                    work.size
+                        .height
+                        .saturating_sub(outer.height.saturating_sub(inner.height))
+                        as f64,
+                ) as u32,
+            )))
+            .map_err(|error| error.to_string())?;
+    }
+    if (target.2, target.3) != (outer.width, outer.height) {
+        window
+            .set_size(tauri::PhysicalSize::new(
+                target
+                    .2
+                    .saturating_sub(outer.width.saturating_sub(inner.width)),
+                target
+                    .3
+                    .saturating_sub(outer.height.saturating_sub(inner.height)),
+            ))
+            .map_err(|error| error.to_string())?;
+    }
+    if (target.0, target.1) != (position.x, position.y) {
+        window
+            .set_position(tauri::PhysicalPosition::new(target.0, target.1))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn apply_ui_text_scale_change(app: &tauri::AppHandle, scale: f64) {
+    if scale != ui_text_scale::current() {
+        return;
+    }
+    for (label, window) in app.webview_windows() {
+        // Preview owns its bounded screen-relative geometry and scrollable content.
+        // Do not race its pending/animated native rectangle with a second size owner.
+        if label == "clipboardPreview" {
+            continue;
+        }
+        let previous = ui_text_scale::applied(&window);
+        if previous == scale {
+            continue;
+        }
+        let result = (|| -> Result<(), String> {
+            if label == "clipboard" {
+                let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+                    || CLIPBOARD_HIDING.load(Ordering::SeqCst)
+                {
+                    return Ok(());
+                }
+                let layout = clipboard_window_layout(screen_bounds(&window), panel_size::scale());
+                CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
+                set_window_size_for_scale(
+                    &window,
+                    layout.width,
+                    layout.height,
+                    layout.scale_factor,
+                )?;
+                set_window_position_for_scale(
+                    &window,
+                    layout.x,
+                    layout.target_y,
+                    layout.scale_factor,
+                )?;
+                window
+                    .emit("window-show-complete", ())
+                    .map_err(|error| error.to_string())?;
+            } else {
+                let inner = window.inner_size().map_err(|error| error.to_string())?;
+                if matches!(label.as_str(), "config" | "testRoom" | "devMemory") {
+                    window
+                        .set_min_size(None::<tauri::Size>)
+                        .map_err(|error| error.to_string())?;
+                }
+                window
+                    .set_size(tauri::PhysicalSize::new(
+                        (inner.width as f64 * scale / previous).round() as u32,
+                        (inner.height as f64 * scale / previous).round() as u32,
+                    ))
+                    .map_err(|error| error.to_string())?;
+                if window.is_visible().unwrap_or(false)
+                    || matches!(label.as_str(), "config" | "testRoom" | "devMemory")
+                {
+                    fit_content_window_to_work_area(&window)?;
+                }
+            }
+            ui_text_scale::remember(&window, scale);
+            Ok(())
+        })();
+        if let Err(error) = result {
+            error!("Failed to update text scaling for {label}: {error}");
+        }
+    }
 }
 
 fn should_restore_foreground_after_hide(generation: u64, marked_generation: u64) -> bool {
@@ -775,7 +1016,7 @@ fn center_window_on_source_monitor(
     let source_monitor = source_window_monitor(source_window)
         .or_else(|| source_window.current_monitor().ok().flatten());
     let use_last_clipboard_monitor =
-        source_window.label() == "clipboard" && !source_window.is_visible().unwrap_or(false);
+        source_window.label() == "clipboard" && !CLIPBOARD_VISIBLE.load(Ordering::SeqCst);
     let last_clipboard_monitor = if use_last_clipboard_monitor {
         last_clipboard_monitor(source_window)
     } else {
@@ -808,7 +1049,12 @@ fn center_window_on_source_monitor(
     );
     window
         .set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }))
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+    #[cfg(target_os = "windows")]
+    if ui_text_scale::current() > 1.0 {
+        fit_content_window_to_monitor(window, &monitor)?;
+    }
+    Ok(())
 }
 
 fn clipboard_screen_bounds(
@@ -877,7 +1123,7 @@ mod clipboard_monitor_selection_tests {
             scale_factor: 1.25,
         };
 
-        let layout = clipboard_window_layout(bounds);
+        let layout = clipboard_window_layout(bounds, 1.0);
 
         assert_eq!(layout.x, -12.0);
         assert_eq!(layout.width, 2072.0);
@@ -950,6 +1196,10 @@ mod clipboard_monitor_selection_tests {
 
 #[cfg(target_os = "windows")]
 fn system_reduces_motion() -> bool {
+    #[cfg(debug_assertions)]
+    if panel_animation::probe::FORCE_REDUCED.load(Ordering::SeqCst) {
+        return true;
+    }
     use std::ffi::c_void;
     use windows::Win32::UI::WindowsAndMessaging::{
         SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
@@ -970,6 +1220,10 @@ fn system_reduces_motion() -> bool {
 
 #[cfg(target_os = "macos")]
 fn system_reduces_motion() -> bool {
+    #[cfg(debug_assertions)]
+    if panel_animation::probe::FORCE_REDUCED.load(Ordering::SeqCst) {
+        return true;
+    }
     use cocoa::base::{id, nil};
     use objc::{class, msg_send, sel, sel_impl};
 
@@ -985,6 +1239,10 @@ fn system_reduces_motion() -> bool {
 
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn system_reduces_motion() -> bool {
+    #[cfg(debug_assertions)]
+    if panel_animation::probe::FORCE_REDUCED.load(Ordering::SeqCst) {
+        return true;
+    }
     false
 }
 
@@ -1231,12 +1489,9 @@ fn restore_foreground_app_before_paste() {
     }
 }
 
-#[derive(Clone, Copy)]
-enum ClipboardWindowAnimation {
-    Show,
-    Hide,
-}
+use panel_animation::model::Animation as ClipboardWindowAnimation;
 
+#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy)]
 struct ClipboardWindowMotion {
     x: f64,
@@ -1245,14 +1500,12 @@ struct ClipboardWindowMotion {
     scale_factor: f64,
 }
 
+#[cfg(any(test, not(target_os = "macos")))]
 fn clipboard_window_animation_progress(progress: f64, animation: ClipboardWindowAnimation) -> f64 {
-    let progress = progress.clamp(0.0, 1.0);
-    match animation {
-        ClipboardWindowAnimation::Show => 1.0 - (1.0 - progress).powi(3),
-        ClipboardWindowAnimation::Hide => progress.powi(3),
-    }
+    animation.progress(progress)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn current_window_logical_y(
     window: &tauri::WebviewWindow,
     target_scale_factor: f64,
@@ -1317,13 +1570,36 @@ fn set_window_size_for_scale(
 
 #[cfg(target_os = "windows")]
 fn reapply_clipboard_size_after_scale_change(window: &tauri::WebviewWindow, scale_factor: f64) {
-    let bounds = screen_bounds(window);
+    if panel_size::is_previewing() || CLIPBOARD_HIDING.load(Ordering::SeqCst) {
+        return;
+    }
+    let monitor = source_window_monitor(window).or_else(|| window.current_monitor().ok().flatten());
+    let bounds = monitor
+        .as_ref()
+        .map(screen_bounds_from_monitor)
+        .unwrap_or_else(|| screen_bounds(window));
+    let previous_scale = panel_size::scale();
+    let panel_scale = panel_size::use_configured_size(monitor.as_ref()).scale();
+    if let Err(err) = window.set_zoom(panel_scale) {
+        error!("Failed to apply main panel zoom after DPI change: {err}");
+    }
     let monitor_physical_width = bounds.width * bounds.scale_factor;
     let logical_width = monitor_physical_width / scale_factor + CLIPBOARD_HORIZONTAL_BLEED * 2.0;
-    if let Err(err) =
-        set_window_size_for_scale(window, logical_width, CLIPBOARD_WINDOW_HEIGHT, scale_factor)
+    let layout = clipboard_window_layout(bounds, panel_scale);
+    if let Err(err) = set_window_size_for_scale(window, logical_width, layout.height, scale_factor)
     {
         error!("Failed to reapply clipboard size after DPI change: {}", err);
+    } else {
+        ui_text_scale::remember(window, layout.content_scale);
+    }
+    if previous_scale != panel_scale {
+        CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
+        let x = bounds.x * bounds.scale_factor / scale_factor - CLIPBOARD_HORIZONTAL_BLEED;
+        let y = (bounds.y + bounds.height) * bounds.scale_factor / scale_factor - layout.height;
+        if let Err(err) = set_window_position_for_scale(window, x, y, scale_factor) {
+            error!("Failed to dock resized main panel after DPI change: {err}");
+        }
+        let _ = window.emit("window-show-complete", ());
     }
 }
 
@@ -1339,8 +1615,19 @@ fn animate_clipboard_window_y(
         if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
             return Ok(false);
         }
-        set_window_position_for_scale(window, motion.x, motion.to_y, motion.scale_factor)?;
-        return Ok(true);
+        #[cfg(target_os = "windows")]
+        return panel_animation::windows::set_position(
+            window,
+            motion.x,
+            motion.to_y,
+            motion.scale_factor,
+            generation,
+        );
+        #[cfg(not(target_os = "windows"))]
+        {
+            set_window_position_for_scale(window, motion.x, motion.to_y, motion.scale_factor)?;
+            return Ok(true);
+        }
     }
 
     let started = Instant::now();
@@ -1353,11 +1640,25 @@ fn animate_clipboard_window_y(
         let progress = (started.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0);
         let eased = clipboard_window_animation_progress(progress, animation);
         let y = motion.from_y + (motion.to_y - motion.from_y) * eased;
+        #[cfg(target_os = "windows")]
+        if !panel_animation::windows::set_position(
+            window,
+            motion.x,
+            y,
+            motion.scale_factor,
+            generation,
+        )? {
+            return Ok(false);
+        }
+        #[cfg(not(target_os = "windows"))]
         set_window_position_for_scale(window, motion.x, y, motion.scale_factor)?;
 
         if progress >= 1.0 {
             return Ok(true);
         }
+        #[cfg(target_os = "windows")]
+        panel_animation::windows::wait_for_frame();
+        #[cfg(not(target_os = "windows"))]
         std::thread::sleep(std::time::Duration::from_millis(
             CLIPBOARD_ANIMATION_FRAME_MS,
         ));
@@ -1407,41 +1708,51 @@ fn set_macos_clipboard_window_position(
         .map_err(|err| format!("failed to update macOS clipboard window position: {err}"))?
 }
 
-#[cfg(target_os = "macos")]
-fn animate_clipboard_window_y(
-    window: &tauri::WebviewWindow,
-    motion: ClipboardWindowMotion,
-    duration_ms: u64,
-    generation: u64,
-    animation: ClipboardWindowAnimation,
-) -> Result<bool, String> {
-    if system_reduces_motion() || (motion.from_y - motion.to_y).abs() < 0.5 {
-        if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
-            return Ok(false);
-        }
-        set_macos_clipboard_window_position(window, motion.x, motion.to_y)?;
-        return Ok(true);
+fn park_clipboard_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let monitors = window.available_monitors().map_err(|err| err.to_string())?;
+    if monitors.is_empty() {
+        return Err("cannot park without display bounds".into());
     }
-
-    let started = Instant::now();
-    let duration = std::time::Duration::from_millis(duration_ms);
-    loop {
-        if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
-            return Ok(false);
-        }
-
-        let progress = (started.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0);
-        let eased = clipboard_window_animation_progress(progress, animation);
-        let y = motion.from_y + (motion.to_y - motion.from_y) * eased;
-        set_macos_clipboard_window_position(window, motion.x, y)?;
-
-        if progress >= 1.0 {
-            return Ok(true);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(
-            CLIPBOARD_ANIMATION_FRAME_MS,
-        ));
+    window
+        .set_ignore_cursor_events(true)
+        .map_err(|err| err.to_string())?;
+    window.set_focusable(false).map_err(|err| err.to_string())?;
+    #[cfg(target_os = "windows")]
+    {
+        // Windows desktop coordinates are physical, including mixed-DPI displays.
+        let bottom = monitors
+            .iter()
+            .map(|monitor| i64::from(monitor.position().y) + i64::from(monitor.size().height))
+            .max()
+            .unwrap();
+        let height = i64::from(window.outer_size().map_err(|err| err.to_string())?.height);
+        let y = i32::try_from(bottom + height)
+            .map_err(|_| "parking position exceeds desktop coordinates")?;
+        let x = window.outer_position().map_err(|err| err.to_string())?.x;
+        window
+            .set_position(tauri::PhysicalPosition::new(x, y))
+            .map_err(|err| err.to_string())?;
     }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let bounds = screen_bounds(window);
+        let y = monitors
+            .iter()
+            .map(screen_bounds_from_monitor)
+            .map(|screen| screen.y + screen.height)
+            .fold(f64::NEG_INFINITY, f64::max)
+            + CLIPBOARD_WINDOW_HEIGHT * panel_size::scale();
+        #[cfg(target_os = "macos")]
+        set_macos_clipboard_window_position(window, bounds.x - CLIPBOARD_HORIZONTAL_BLEED, y)?;
+        #[cfg(not(target_os = "macos"))]
+        set_window_position_for_scale(
+            window,
+            bounds.x - CLIPBOARD_HORIZONTAL_BLEED,
+            y,
+            bounds.scale_factor,
+        )?;
+    }
+    Ok(())
 }
 
 fn finish_hide_window_locked(
@@ -1455,24 +1766,49 @@ fn finish_hide_window_locked(
         CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
         return Ok(());
     }
-    let bounds = screen_bounds(window);
-    let _ = set_window_position_for_scale(
-        window,
-        bounds.x - CLIPBOARD_HORIZONTAL_BLEED,
-        bounds.y + bounds.height,
-        bounds.scale_factor,
-    );
-    window.hide().map_err(|err| err.to_string())?;
+    let parked = if CLIPBOARD_PARK_WHEN_COLLAPSED && window.is_visible().unwrap_or(false) {
+        match park_clipboard_window(window) {
+            Ok(()) => true,
+            Err(err) => {
+                error!("Failed to park clipboard window; falling back to native hide: {err}");
+                false
+            }
+        }
+    } else {
+        false
+    };
+    if !parked {
+        window.hide().map_err(|err| err.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    if let Err(error) = panel_animation::macos::set_fraction(window, 0.0) {
+        error!("Failed to restore parked main-panel content: {error}");
+    }
+    if !PREVIEW_PINNED.load(Ordering::SeqCst) {
+        let _ = retain_preview_window(window.app_handle());
+    }
     CLIPBOARD_VISIBLE.store(false, Ordering::SeqCst);
+    background_resources::set_visible(window.app_handle(), false);
     CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
     CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
-    let _ = window.emit("window-hidden", ());
+    let _ = window.emit(
+        if parked {
+            "window-parked"
+        } else {
+            "window-hidden"
+        },
+        (),
+    );
     #[cfg(target_os = "macos")]
     maybe_hide_macos_dock_icon();
     Ok(())
 }
 
 fn finish_hide_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if !panel_animation::macos::is_main_thread() {
+        return panel_animation::macos::on_main(window, |owned| finish_hide_window(&owned));
+    }
     let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1488,24 +1824,57 @@ fn finish_animated_hide_window(
         return Ok(());
     }
 
-    let bounds = screen_bounds(window);
-    let x = bounds.x - CLIPBOARD_HORIZONTAL_BLEED;
-    let target_y = bounds.y + bounds.height;
-    let start_y = current_window_logical_y(window, bounds.scale_factor)
-        .unwrap_or(bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT);
-    let animation_result = animate_clipboard_window_y(
+    #[cfg(target_os = "macos")]
+    let animation_result = panel_animation::macos::animate(
         window,
-        ClipboardWindowMotion {
-            x,
-            from_y: start_y,
-            to_y: target_y,
-            scale_factor: bounds.scale_factor,
-        },
+        ClipboardWindowAnimation::Hide,
         CLIPBOARD_HIDE_ANIMATION_MS,
         generation,
-        ClipboardWindowAnimation::Hide,
     );
+    #[cfg(not(target_os = "macos"))]
+    let animation_result = {
+        let bounds = screen_bounds(window);
+        let x = bounds.x - CLIPBOARD_HORIZONTAL_BLEED;
+        let target_y = bounds.y + bounds.height;
+        let start_y = current_window_logical_y(window, bounds.scale_factor)
+            .unwrap_or(clipboard_window_layout(bounds, panel_size::scale()).target_y);
+        animate_clipboard_window_y(
+            window,
+            ClipboardWindowMotion {
+                x,
+                from_y: start_y,
+                to_y: target_y,
+                scale_factor: bounds.scale_factor,
+            },
+            CLIPBOARD_HIDE_ANIMATION_MS,
+            generation,
+            ClipboardWindowAnimation::Hide,
+        )
+    };
+    #[cfg(target_os = "macos")]
+    return panel_animation::macos::on_main(window, move |owned| {
+        complete_animated_clipboard_hide(
+            &owned,
+            generation,
+            allow_onboarding_shortcut_demo,
+            animation_result,
+        )
+    });
+    #[cfg(not(target_os = "macos"))]
+    complete_animated_clipboard_hide(
+        window,
+        generation,
+        allow_onboarding_shortcut_demo,
+        animation_result,
+    )
+}
 
+fn complete_animated_clipboard_hide(
+    window: &tauri::WebviewWindow,
+    generation: u64,
+    allow_onboarding_shortcut_demo: bool,
+    animation_result: Result<bool, String>,
+) -> Result<(), String> {
     let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1517,6 +1886,10 @@ fn finish_animated_hide_window(
     ) {
         if clipboard_hide_blocked() {
             CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
+            #[cfg(target_os = "macos")]
+            if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) == generation {
+                panel_animation::macos::set_fraction(window, 0.0)?;
+            }
         }
         return Ok(());
     }
@@ -1525,7 +1898,7 @@ fn finish_animated_hide_window(
     }
     finish_hide_window_locked(window, allow_onboarding_shortcut_demo)?;
     drop(_transition);
-    restore_foreground_after_hide(generation);
+    restore_foreground_after_hide(window, generation);
     Ok(())
 }
 
@@ -1569,9 +1942,12 @@ mod clipboard_window_animation_tests {
     }
 
     #[test]
-    fn show_arrives_quickly_and_hide_leaves_quickly() {
+    fn show_arrives_quickly_and_hide_uses_symmetric_acceleration() {
         assert!(clipboard_window_animation_progress(0.5, ClipboardWindowAnimation::Show) > 0.5);
-        assert!(clipboard_window_animation_progress(0.5, ClipboardWindowAnimation::Hide) < 0.5);
+        assert!(
+            (clipboard_window_animation_progress(0.5, ClipboardWindowAnimation::Hide) - 0.5).abs()
+                < 0.0001
+        );
     }
 }
 
@@ -1598,7 +1974,7 @@ fn is_native_window_foreground(window: &tauri::WebviewWindow, _context: &str) ->
     window.is_focused().unwrap_or(false)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn mark_foreground_restore_for_hide(window: &tauri::WebviewWindow, generation: u64) {
     let restore_generation = if is_native_window_foreground(window, "clipboard hide") {
         generation
@@ -1608,23 +1984,71 @@ fn mark_foreground_restore_for_hide(window: &tauri::WebviewWindow, generation: u
     CLIPBOARD_RESTORE_FOCUS_GENERATION.store(restore_generation, Ordering::SeqCst);
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn mark_foreground_restore_for_hide(_window: &tauri::WebviewWindow, _generation: u64) {}
 
-#[cfg(target_os = "windows")]
-fn restore_foreground_after_hide(generation: u64) {
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn take_clipboard_focus_restore(generation: u64) -> bool {
+    if CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+        || CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation.wrapping_add(1)
+    {
+        return false;
+    }
     let marked_generation = CLIPBOARD_RESTORE_FOCUS_GENERATION.load(Ordering::SeqCst);
-    if should_restore_foreground_after_hide(generation, marked_generation)
+    should_restore_foreground_after_hide(generation, marked_generation)
         && CLIPBOARD_RESTORE_FOCUS_GENERATION
             .compare_exchange(generation, 0, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
-    {
+}
+
+#[cfg(target_os = "windows")]
+fn restore_foreground_after_hide(_window: &tauri::WebviewWindow, generation: u64) {
+    if take_clipboard_focus_restore(generation) {
         restore_foreground_app_before_paste();
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn restore_foreground_after_hide(_generation: u64) {}
+#[cfg(target_os = "macos")]
+fn restore_foreground_after_hide(window: &tauri::WebviewWindow, generation: u64) {
+    let parked = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        use cocoa::base::{id, nil};
+        use objc::{class, msg_send, sel, sel_impl};
+        if !take_clipboard_focus_restore(generation) {
+            return;
+        }
+        unsafe {
+            let app: id = msg_send![class!(NSApplication), sharedApplication];
+            let key: id = msg_send![app, keyWindow];
+            let native = parked
+                .ns_window()
+                .ok()
+                .map(|window| window as id)
+                .unwrap_or(nil);
+            // An auxiliary window that gained focus during collapse owns it now.
+            if key != nil && key != native {
+                return;
+            }
+            let active: bool = msg_send![app, isActive];
+            if !active {
+                return;
+            }
+            if LAST_FOREGROUND_APP_PID
+                .lock()
+                .ok()
+                .and_then(|pid| *pid)
+                .is_some()
+            {
+                restore_foreground_app_before_paste();
+            } else {
+                let _: () = msg_send![app, deactivate];
+            }
+        }
+    });
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn restore_foreground_after_hide(_window: &tauri::WebviewWindow, _generation: u64) {}
 
 #[cfg(target_os = "windows")]
 fn activate_native_window(window: &tauri::WebviewWindow, _context: &str) {
@@ -1759,7 +2183,10 @@ fn activate_native_window(window: &tauri::WebviewWindow, context: &str) {
 fn activate_native_window(_window: &tauri::WebviewWindow, _context: &str) {}
 
 fn focus_clipboard_window(window: &tauri::WebviewWindow, context: &str) {
-    if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+    if memory_profile_active()
+        || panel_size::is_previewing()
+        || !CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+    {
         return;
     }
     activate_native_window(window, context);
@@ -1779,6 +2206,9 @@ fn hide_clipboard_window_with_onboarding_policy(
     window: &tauri::WebviewWindow,
     allow_onboarding_shortcut_demo: bool,
 ) {
+    if panel_size::is_previewing() {
+        return;
+    }
     if should_block_clipboard_hide_for_shortcut_demo(
         ONBOARDING_ACTIVE.load(Ordering::SeqCst),
         allow_onboarding_shortcut_demo,
@@ -1801,6 +2231,7 @@ fn hide_clipboard_window_with_onboarding_policy(
         {
             return;
         }
+        background_resources::set_visible(window.app_handle(), false);
         CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
     };
     mark_foreground_restore_for_hide(window, generation);
@@ -1819,13 +2250,41 @@ fn hide_clipboard_window_with_onboarding_policy(
     });
 }
 
+fn complete_clipboard_show(window: &tauri::WebviewWindow, generation: u64) {
+    let _transition = CLIPBOARD_WINDOW_TRANSITION_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if panel_animation::model::may_complete_show(
+        generation,
+        CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst),
+        CLIPBOARD_VISIBLE.load(Ordering::SeqCst),
+        CLIPBOARD_HIDING.load(Ordering::SeqCst),
+    ) {
+        let _ = window.emit("window-show-complete", ());
+    }
+}
+
 fn show_clipboard_window(window: &tauri::WebviewWindow) {
-    let bounds = target_clipboard_screen_bounds(window);
-    let layout = clipboard_window_layout(bounds);
-    let x = layout.x;
-    let target_y = layout.target_y;
-    let hidden_y = layout.hidden_y;
+    #[cfg(target_os = "macos")]
+    if !panel_animation::macos::is_main_thread() {
+        let owned = window.clone();
+        if let Err(error) = window.run_on_main_thread(move || show_clipboard_window(&owned)) {
+            error!("Failed to schedule main-panel show: {error}");
+        }
+        return;
+    }
+    if panel_size::is_previewing() {
+        return;
+    }
+    let monitor = target_clipboard_monitor(window);
+    let bounds = monitor
+        .as_ref()
+        .map(screen_bounds_from_monitor)
+        .unwrap_or_else(default_screen_bounds);
+    let layout;
+    let panel_scale;
     let generation;
+    #[cfg(not(target_os = "macos"))]
     let start_y;
 
     {
@@ -1836,21 +2295,61 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
             return;
         }
 
+        panel_scale = panel_size::use_configured_size(monitor.as_ref()).scale();
+        layout = clipboard_window_layout(bounds, panel_scale);
+        let x = layout.x;
+        #[cfg(not(target_os = "macos"))]
+        let hidden_y = layout.hidden_y;
+
         let was_visible = window.is_visible().unwrap_or(false);
-        if !was_visible {
+        let was_presented = CLIPBOARD_VISIBLE.load(Ordering::SeqCst);
+        if !was_presented {
+            #[cfg(target_os = "windows")]
+            windows_paste_focus::capture_foreground();
             record_foreground_app_before_clipboard();
         }
         generation = CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
 
-        start_y = if was_visible {
-            current_window_logical_y(window, layout.scale_factor).unwrap_or(hidden_y)
+        #[cfg(not(target_os = "macos"))]
+        {
+            start_y = if was_visible && was_presented {
+                current_window_logical_y(window, layout.scale_factor).unwrap_or(hidden_y)
+            } else {
+                hidden_y
+            };
+            let _ = set_window_position_for_scale(window, x, start_y, layout.scale_factor);
+        }
+        #[cfg(target_os = "macos")]
+        let content_fraction = if system_reduces_motion() {
+            0.0
+        } else if was_visible && was_presented {
+            panel_animation::macos::current_fraction(window).unwrap_or(1.0)
         } else {
-            hidden_y
+            1.0
         };
-        let _ = set_window_position_for_scale(window, x, start_y, layout.scale_factor);
+        if let Err(err) = window.set_zoom(panel_scale) {
+            error!("Failed to apply main panel zoom: {err}");
+        }
         let _ = set_window_size_for_scale(window, layout.width, layout.height, layout.scale_factor);
+        ui_text_scale::remember(window, layout.content_scale);
+        #[cfg(not(target_os = "macos"))]
         let _ = set_window_position_for_scale(window, x, start_y, layout.scale_factor);
+        #[cfg(target_os = "macos")]
+        {
+            if let Err(error) = set_macos_clipboard_window_position(window, x, layout.target_y) {
+                error!("Failed to dock main-panel host: {error}");
+            }
+            // NSWindow updates its root view's frame while docking. Set the
+            // animation origin afterwards, in this same AppKit event turn.
+            if let Err(error) = panel_animation::macos::set_fraction(window, content_fraction) {
+                error!("Failed to prepare main-panel content: {error}");
+            }
+        }
 
+        if !memory_profile_active() {
+            let _ = window.set_ignore_cursor_events(false);
+            let _ = window.set_focusable(true);
+        }
         if !was_visible {
             if let Err(err) = window.show() {
                 error!("Failed to show clipboard window: {:?}", err);
@@ -1860,8 +2359,12 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
 
         CLIPBOARD_VISIBLE.store(true, Ordering::SeqCst);
         CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
+        background_resources::set_visible(window.app_handle(), true);
+        ensure_focus_watch(window.app_handle());
     }
 
+    let x = layout.x;
+    let target_y = layout.target_y;
     let cursor = cursor_physical_position().and_then(|cursor| {
         let scale_factor = layout.scale_factor;
         let target_x = (x * scale_factor).round() as i32;
@@ -1869,8 +2372,9 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
         let (width, height) = clipboard_window_physical_size(layout);
         let width = width as i32;
         let height = height as i32;
-        let cursor_x = (cursor.x - target_x) as f64 / scale_factor;
-        let cursor_y = (cursor.y - target_y) as f64 / scale_factor;
+        let content_scale = scale_factor * panel_scale * layout.content_scale;
+        let cursor_x = (cursor.x - target_x) as f64 / content_scale;
+        let cursor_y = (cursor.y - target_y) as f64 / content_scale;
         if cursor_x >= 0.0
             && cursor_y >= 0.0
             && cursor.x <= target_x + width
@@ -1881,6 +2385,11 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
             None
         }
     });
+    let cursor = if memory_profile_active() {
+        None
+    } else {
+        cursor
+    };
     if let Err(err) = window.emit("window-show", cursor) {
         error!("Failed to emit window-show event: {:?}", err);
     }
@@ -1889,7 +2398,15 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
 
     let animation_window = window.clone();
     std::thread::spawn(move || {
-        match animate_clipboard_window_y(
+        #[cfg(target_os = "macos")]
+        let result = panel_animation::macos::animate(
+            &animation_window,
+            ClipboardWindowAnimation::Show,
+            CLIPBOARD_SHOW_ANIMATION_MS,
+            generation,
+        );
+        #[cfg(not(target_os = "macos"))]
+        let result = animate_clipboard_window_y(
             &animation_window,
             ClipboardWindowMotion {
                 x,
@@ -1900,21 +2417,42 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
             CLIPBOARD_SHOW_ANIMATION_MS,
             generation,
             ClipboardWindowAnimation::Show,
-        ) {
-            Ok(true) => {
-                let _ = animation_window.emit("window-show-complete", ());
-            }
+        );
+        match result {
+            Ok(true) => complete_clipboard_show(&animation_window, generation),
             Ok(false) => info!("Skip stale clipboard show generation {}", generation),
             Err(err) => {
                 error!("Failed to animate clipboard window up: {}", err);
                 if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) == generation {
-                    let _ = set_window_position_for_scale(
+                    #[cfg(target_os = "macos")]
+                    let restored =
+                        panel_animation::macos::on_main(&animation_window, move |owned| {
+                            if CLIPBOARD_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
+                                return Ok(false);
+                            }
+                            panel_animation::macos::set_fraction(&owned, 0.0)?;
+                            set_macos_clipboard_window_position(&owned, x, target_y)?;
+                            Ok(true)
+                        });
+                    #[cfg(target_os = "windows")]
+                    let restored = panel_animation::windows::set_position(
                         &animation_window,
                         x,
                         target_y,
                         layout.scale_factor,
+                        generation,
                     );
-                    let _ = animation_window.emit("window-show-complete", ());
+                    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+                    let restored = set_window_position_for_scale(
+                        &animation_window,
+                        x,
+                        target_y,
+                        layout.scale_factor,
+                    )
+                    .map(|()| true);
+                    if restored == Ok(true) {
+                        complete_clipboard_show(&animation_window, generation);
+                    }
                 }
             }
         }
@@ -1938,6 +2476,7 @@ fn begin_hide_clipboard_window(window: tauri::WebviewWindow) -> u64 {
             return 0;
         }
         CLIPBOARD_HIDING.store(true, Ordering::SeqCst);
+        background_resources::set_visible(window.app_handle(), false);
         CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
     };
     mark_foreground_restore_for_hide(&window, generation);
@@ -1959,13 +2498,14 @@ async fn finish_hide_clipboard_window(
 
 #[tauri::command]
 fn hide_clipboard_if_inactive(window: tauri::WebviewWindow) {
-    if clipboard_blur_hide_suppressed() {
+    if memory_profile_active() || clipboard_blur_hide_suppressed() {
         return;
     }
     let app = window.app_handle();
     if preview_window_active(&app)
         || tab_editor_window_active(&app)
         || text_editor_window_active(&app)
+        || memory_monitor_window_active(&app)
     {
         return;
     }
@@ -1983,6 +2523,66 @@ fn auxiliary_window_ready(window: tauri::WebviewWindow) -> Result<(), String> {
         .app_handle()
         .state::<auxiliary_windows::Readiness>()
         .signal(window.label())
+}
+
+#[tauri::command]
+async fn open_dev_memory_window(
+    app: tauri::AppHandle,
+    source_window: tauri::WebviewWindow,
+    language_code: String,
+    theme_preview: String,
+) -> Result<(), String> {
+    if !get_developer_mode() {
+        return Err("Memory monitor requires Debug + --dev-mode".into());
+    }
+    #[cfg(debug_assertions)]
+    {
+        if !matches!(theme_preview.as_str(), "light" | "dark") {
+            return Err("unsupported theme preview".into());
+        }
+        let window =
+            auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::DevMemory).await?;
+        auxiliary_windows::on_main_thread(app.clone(), move || {
+            if !auxiliary_windows::is_open(&window) {
+                return Err("memory window closed while opening".into());
+            }
+            let was_visible = window.is_visible().unwrap_or(false);
+            let _ = window.unminimize();
+            if !was_visible {
+                center_window_on_source_monitor(&window, &source_window)?;
+            }
+            dev_memory::keep_on_top(&window)?;
+            window
+                .emit(
+                    "dev-memory-open",
+                    serde_json::json!({ "languageCode": language_code, "themePreview": theme_preview }),
+                )
+                .map_err(|error| error.to_string())?;
+            window.show().map_err(|error| error.to_string())?;
+            activate_native_window(&window, "memory monitor open");
+            window.set_focus().map_err(|error| error.to_string())?;
+            AsRef::<tauri::Webview>::as_ref(&window)
+                .set_focus()
+                .map_err(|error| error.to_string())
+        })
+        .await
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (app, source_window, language_code, theme_preview);
+        Err("Memory monitor is unavailable in release builds".into())
+    }
+}
+
+#[tauri::command]
+fn close_dev_memory_window(app: tauri::AppHandle) -> Result<(), String> {
+    if !get_developer_mode() {
+        return Err("Memory monitor requires Debug + --dev-mode".into());
+    }
+    if let Some(window) = app.get_webview_window("devMemory") {
+        auxiliary_windows::destroy(&window)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2014,28 +2614,43 @@ async fn open_config_window(
 }
 
 #[tauri::command]
-fn open_test_room_window(
+fn close_config_window(app: tauri::AppHandle) -> Result<(), String> {
+    panel_size::cancel(&app);
+    #[cfg(target_os = "windows")]
+    if windows_main_shortcut::set_recording(false) {
+        let _ = end_main_shortcut_recording(app.clone());
+    }
+    if let Some(window) = app.get_webview_window("config") {
+        auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_test_room_window(
     app: tauri::AppHandle,
     source_window: tauri::WebviewWindow,
 ) -> Result<(), String> {
-    let window = app.get_webview_window("testRoom");
-    if let Some(message) = test_room_window_open_error(get_developer_mode(), window.is_some()) {
+    if let Some(message) = test_room_window_open_error(get_developer_mode()) {
         return Err(message.to_string());
     }
-    let window = window.expect("test room window existence was checked above");
-    let _ = window.unminimize();
-    let was_maximized = window.is_maximized().unwrap_or(false);
-    if was_maximized {
-        let _ = window.unmaximize();
-    }
-    center_window_on_source_monitor(&window, &source_window)?;
-    window.show().map_err(|err| err.to_string())?;
-    if was_maximized {
-        let _ = window.maximize();
-    }
-    activate_native_window(&window, "test room show");
-    window.set_focus().map_err(|err| err.to_string())?;
-    Ok(())
+    let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::TestRoom).await?;
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        let _ = window.unminimize();
+        let was_maximized = window.is_maximized().unwrap_or(false);
+        if was_maximized {
+            let _ = window.unmaximize();
+        }
+        center_window_on_source_monitor(&window, &source_window)?;
+        window.show().map_err(|err| err.to_string())?;
+        if was_maximized {
+            let _ = window.maximize();
+        }
+        activate_native_window(&window, "test room show");
+        window.set_focus().map_err(|err| err.to_string())?;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2044,7 +2659,7 @@ fn close_test_room_window(app: tauri::AppHandle) -> Result<(), String> {
         return Err("测试间只在带 --dev-mode 参数的 Debug 构建中可用".to_string());
     }
     if let Some(window) = app.get_webview_window("testRoom") {
-        window.hide().map_err(|err| err.to_string())?;
+        auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
     }
     Ok(())
 }
@@ -2058,20 +2673,23 @@ async fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String>
         auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::PasteFallbackNotice).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
         let bounds = screen_bounds(&clipboard_window);
-        let x = bounds.x + (bounds.width - PASTE_FALLBACK_NOTICE_WIDTH) / 2.0;
-        let y =
-            bounds.y + bounds.height - CLIPBOARD_WINDOW_HEIGHT + PASTE_FALLBACK_NOTICE_TOP_INSET;
+        let text_scale = ui_text_scale::current();
+        let size =
+            ui_text_scale::logical_size(PASTE_FALLBACK_NOTICE_WIDTH, PASTE_FALLBACK_NOTICE_HEIGHT);
+        let x = bounds.x + (bounds.width - size.width) / 2.0;
+        let y = clipboard_window_layout(bounds, panel_size::scale()).target_y
+            + PASTE_FALLBACK_NOTICE_TOP_INSET * text_scale;
 
-        set_window_size_for_scale(
-            &notice_window,
-            PASTE_FALLBACK_NOTICE_WIDTH,
-            PASTE_FALLBACK_NOTICE_HEIGHT,
-            bounds.scale_factor,
-        )?;
+        set_window_size_for_scale(&notice_window, size.width, size.height, bounds.scale_factor)?;
         set_window_position_for_scale(&notice_window, x, y, bounds.scale_factor)?;
+        ui_text_scale::remember(&notice_window, text_scale);
+        #[cfg(target_os = "windows")]
+        if text_scale > 1.0 {
+            fit_content_window_to_work_area(&notice_window)?;
+        }
         let generation = PASTE_FALLBACK_NOTICE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
         notice_window.show().map_err(|err| err.to_string())?;
-        let app_for_timer = app.clone();
+        let notice_for_timer = notice_window.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(
                 PASTE_FALLBACK_NOTICE_DURATION_MS,
@@ -2079,9 +2697,7 @@ async fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String>
             if PASTE_FALLBACK_NOTICE_GENERATION.load(Ordering::SeqCst) != generation {
                 return;
             }
-            if let Some(window) = app_for_timer.get_webview_window("pasteFallbackNotice") {
-                let _ = window.hide();
-            }
+            let _ = auxiliary_windows::destroy(&notice_for_timer);
         });
         Ok(())
     })
@@ -2092,7 +2708,7 @@ async fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String>
 fn hide_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String> {
     PASTE_FALLBACK_NOTICE_GENERATION.fetch_add(1, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("pasteFallbackNotice") {
-        window.hide().map_err(|err| err.to_string())?;
+        auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
     }
     Ok(())
 }
@@ -2275,7 +2891,7 @@ fn hide_onboarding_permission_window(
     restore_parent: bool,
 ) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("onboardingPermission") {
-        window.hide().map_err(|err| err.to_string())?;
+        auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
     }
     if restore_parent {
         restore_parent_after_permission_guide(&app);
@@ -2312,32 +2928,50 @@ fn set_onboarding_shortcut_demo_enabled(enabled: bool) {
     ONBOARDING_SHORTCUT_DEMO_ENABLED.store(enabled && active, Ordering::SeqCst);
 }
 
-fn get_or_create_preview_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
-    if let Some(window) = app.get_webview_window("clipboardPreview") {
-        return Ok(window);
-    }
+fn prewarm_preview_window(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let started = Instant::now();
+        match auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::ClipboardPreview).await
+        {
+            Ok(window) => info!(
+                "preview warmup complete: elapsed_ms={} visible={}",
+                started.elapsed().as_millis(),
+                window.is_visible().unwrap_or(false)
+            ),
+            Err(err) => log::warn!("Preview warmup failed; manual opening can retry: {err}"),
+        }
+    });
+}
 
-    WebviewWindowBuilder::new(app, "clipboardPreview", App("clipboard/preview".into()))
-        .title("vPaste Preview")
-        .visible(false)
-        .focused(false)
-        .decorations(false)
-        .transparent(true)
-        .background_color(tauri::window::Color(0, 0, 0, 0))
-        .skip_taskbar(true)
-        .always_on_top(true)
-        .resizable(true)
-        .shadow(false)
-        .inner_size(PREVIEW_WINDOW_WIDTH, PREVIEW_WINDOW_HEIGHT)
-        .build()
-        .inspect(|window| {
-            let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-            let _ = window.set_shadow(false);
-            apply_vpaste_window_icon(window);
-            #[cfg(target_os = "macos")]
+fn build_preview_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let builder =
+        WebviewWindowBuilder::new(app, "clipboardPreview", App("clipboard/preview".into()))
+            .title("vPaste Preview")
+            .visible(false)
+            .focused(false)
+            .decorations(false)
+            .transparent(true)
+            .background_color(tauri::window::Color(0, 0, 0, 0))
+            .skip_taskbar(true)
+            .always_on_top(true)
+            .visible_on_all_workspaces(true)
+            .resizable(false)
+            .shadow(false)
+            .inner_size(PREVIEW_WINDOW_WIDTH, PREVIEW_WINDOW_HEIGHT);
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .hidden_title(true)
+        .title_bar_style(TitleBarStyle::Overlay);
+    builder.build().inspect(|window| {
+        let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+        let _ = window.set_shadow(false);
+        apply_vpaste_window_icon(window);
+        #[cfg(target_os = "macos")]
+        {
             set_macos_window_level(window, 102); // Above NSPopUpMenuWindowLevel
-        })
-        .map_err(|err| err.to_string())
+            configure_macos_overlay_window(window);
+        }
+    })
 }
 
 fn preview_window_active(app: &tauri::AppHandle) -> bool {
@@ -2367,15 +3001,25 @@ fn app_window_is_foreground(app: &tauri::AppHandle, label: &str, context: &str) 
         .unwrap_or(false)
 }
 
-fn hide_preview_and_clipboard(app: &tauri::AppHandle, context: &str) {
+fn retain_preview_window(app: &tauri::AppHandle) -> Result<(), String> {
     PREVIEW_HOVER.store(false, Ordering::SeqCst);
     PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
-    info!("Hide preview and clipboard: {}", context);
+    PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
     if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
-        let _ = preview_window.emit("preview-clear", ());
-        let _ = preview_window.hide();
+        clear_preview_content(&preview_window);
+        if auxiliary_windows::is_open(&preview_window) {
+            preview_window.hide().map_err(|err| err.to_string())?;
+        }
+    } else {
+        cancel_preview_content();
     }
+    Ok(())
+}
+
+fn hide_preview_and_clipboard(app: &tauri::AppHandle, context: &str) {
+    info!("Hide preview and clipboard: {}", context);
+    let _ = retain_preview_window(app);
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
         hide_clipboard_window(&clipboard_window);
     }
@@ -2390,7 +3034,7 @@ fn handle_config_focus_lost(app: tauri::AppHandle) {
         let config_focused = config_window.is_focused().unwrap_or(false);
         let config_foreground =
             is_native_window_foreground(&config_window, "config blur self guard");
-        if config_focused || config_foreground {
+        if config_focused || config_foreground || memory_monitor_window_active(&app) {
             return;
         }
 
@@ -2431,6 +3075,7 @@ fn cursor_inside_app_windows(app: &tauri::AppHandle) -> bool {
         "tabEditor",
         "emojiPicker",
         "textEditor",
+        "devMemory",
     ]
     .iter()
     .any(|label| {
@@ -2458,6 +3103,22 @@ fn text_editor_window_active(app: &tauri::AppHandle) -> bool {
                     || is_native_window_foreground(&window, "text editor active guard"))
         })
         .unwrap_or(false)
+}
+
+fn memory_monitor_window_active(app: &tauri::AppHandle) -> bool {
+    #[cfg(debug_assertions)]
+    {
+        app.get_webview_window("devMemory").is_some_and(|window| {
+            window.is_visible().unwrap_or(false)
+                && (window.is_focused().unwrap_or(false)
+                    || is_native_window_foreground(&window, "memory monitor active guard"))
+        })
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = app;
+        false
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -2581,27 +3242,23 @@ fn is_quick_input_modifier_pressed(_trigger_key: String) -> bool {
     false
 }
 
-fn watch_tray_menu_outside_click(app: tauri::AppHandle) {
-    if TRAY_MENU_WATCHING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
+fn watch_tray_menu_outside_click(window: tauri::WebviewWindow) {
+    let generation = TRAY_MENU_WATCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(160));
         loop {
-            let Some(window) = app.get_webview_window("trayMenu") else {
+            if TRAY_MENU_WATCH_GENERATION.load(Ordering::SeqCst) != generation {
                 break;
-            };
+            }
             if !window.is_visible().unwrap_or(false) {
                 break;
             }
             if mouse_button_pressed() && !cursor_inside_window(&window) {
-                let _ = window.hide();
+                let _ = auxiliary_windows::destroy(&window);
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
-        TRAY_MENU_WATCHING.store(false, Ordering::SeqCst);
     });
 }
 
@@ -2834,76 +3491,228 @@ mod paste_queue_menu_tests {
     }
 }
 
+fn preview_blur_state(app: &tauri::AppHandle) -> preview_focus::State {
+    preview_focus::State {
+        pinned: PREVIEW_PINNED.load(Ordering::SeqCst),
+        cursor_inside_app: cursor_inside_app_windows(app),
+        preview_foreground: app_window_is_foreground(app, "clipboardPreview", "preview blur guard"),
+        clipboard_foreground: app_window_is_foreground(
+            app,
+            "clipboard",
+            "preview blur guard clipboard",
+        ),
+        memory_monitor_active: memory_monitor_window_active(app),
+        focus_handoff: now_millis() < PREVIEW_FOCUS_HANDOFF_UNTIL.load(Ordering::SeqCst),
+    }
+}
+
+fn begin_preview_focus_handoff() {
+    PREVIEW_FOCUS_HANDOFF_UNTIL.store(
+        now_millis().saturating_add(PREVIEW_FOCUS_HANDOFF_MS),
+        Ordering::SeqCst,
+    );
+}
+
+fn focus_preview_window(window: &tauri::WebviewWindow, context: &str) -> Result<(), String> {
+    begin_preview_focus_handoff();
+    focus_clipboard_window(window, context);
+    window.set_focus().map_err(|err| err.to_string())?;
+    AsRef::<tauri::Webview>::as_ref(window)
+        .set_focus()
+        .map_err(|err| err.to_string())
+}
+
+fn move_focus_to_clipboard(app: &tauri::AppHandle, context: &str) {
+    if let Some(clipboard_window) = app.get_webview_window("clipboard") {
+        if !is_native_window_foreground(&clipboard_window, context) {
+            begin_preview_focus_handoff();
+            focus_clipboard_window(&clipboard_window, context);
+        }
+    }
+}
+
+/// Window under the cursor, preview first because it floats above the clipboard.
+fn cursor_focus_region(app: &tauri::AppHandle) -> Option<preview_focus::FocusTarget> {
+    use preview_focus::FocusTarget;
+    if preview_window_visible(app)
+        && app
+            .get_webview_window("clipboardPreview")
+            .is_some_and(|window| cursor_inside_window(&window))
+    {
+        return Some(FocusTarget::Preview);
+    }
+    if CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+        && app
+            .get_webview_window("clipboard")
+            .is_some_and(|window| cursor_inside_window(&window))
+    {
+        return Some(FocusTarget::Clipboard);
+    }
+    None
+}
+
+/// Another vPaste window (tag editor, text editor, settings, emoji picker...) is
+/// in use; moving the cursor across the clipboard must not pull focus from it.
+fn other_vpaste_window_focused(app: &tauri::AppHandle) -> bool {
+    app.webview_windows().iter().any(|(label, window)| {
+        label != "clipboard"
+            && label != "clipboardPreview"
+            && window.is_visible().unwrap_or(false)
+            && window.is_focused().unwrap_or(false)
+    })
+}
+
+fn focus_watch_state(app: &tauri::AppHandle) -> preview_focus::WatchState {
+    let clipboard_foreground = app_window_is_foreground(app, "clipboard", "focus watch");
+    let preview_foreground = app_window_is_foreground(app, "clipboardPreview", "focus watch");
+    preview_focus::WatchState {
+        clipboard_available: CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+            && !CLIPBOARD_HIDING.load(Ordering::SeqCst)
+            && !other_vpaste_window_focused(app),
+        clipboard_foreground,
+        preview_follows: preview_window_visible(app) && !PREVIEW_HOVER.load(Ordering::SeqCst),
+        preview_foreground,
+        vpaste_foreground: clipboard_foreground || preview_foreground,
+    }
+}
+
+fn focus_watch_needed() -> bool {
+    CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+}
+
+/// Lets keyboard focus follow the cursor: entering the clipboard always takes
+/// focus back (from the preview, another app or nowhere); entering a Space or
+/// pinned preview moves focus to it while vPaste is foreground. Polls the cursor
+/// natively because a WebView in an unfocused window does not reliably receive
+/// pointer-move events (notably WKWebView in a non-key window on macOS).
+fn ensure_focus_watch(app: &tauri::AppHandle) {
+    use preview_focus::{Eligibility, FocusTarget, FocusWatch};
+    if FOCUS_WATCH_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let mut watch = FocusWatch::new(cursor_focus_region(&app));
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(FOCUS_WATCH_INTERVAL_MS));
+            if !focus_watch_needed() {
+                FOCUS_WATCH_RUNNING.store(false, Ordering::SeqCst);
+                // A show that raced with this exit found the flag still set; keep running for it.
+                if focus_watch_needed() && !FOCUS_WATCH_RUNNING.swap(true, Ordering::SeqCst) {
+                    watch = FocusWatch::new(cursor_focus_region(&app));
+                    continue;
+                }
+                return;
+            }
+            let Some(target) = watch.pending(cursor_focus_region(&app)) else {
+                continue;
+            };
+            let eligibility = preview_focus::eligibility(target, focus_watch_state(&app));
+            watch.resolve(eligibility);
+            if eligibility != Eligibility::Ready {
+                continue;
+            }
+            match target {
+                FocusTarget::Clipboard => {
+                    if let Some(clipboard_window) = app.get_webview_window("clipboard") {
+                        begin_preview_focus_handoff();
+                        activate_from_background(
+                            &clipboard_window,
+                            "clipboard focus follows cursor",
+                        );
+                        focus_clipboard_window(&clipboard_window, "clipboard focus follows cursor");
+                    }
+                }
+                FocusTarget::Preview => {
+                    if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
+                        if let Err(err) =
+                            focus_preview_window(&preview_window, "preview focus follows cursor")
+                        {
+                            error!("Failed to focus preview under cursor: {err}");
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Windows refuses SetForegroundWindow from a background process; attaching to
+/// the foreground thread's input lets the clipboard take focus back from another app.
+#[cfg(target_os = "windows")]
+fn activate_from_background(window: &tauri::WebviewWindow, context: &str) {
+    use std::ffi::c_void;
+
+    type Hwnd = *mut c_void;
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
+        fn GetCurrentThreadId() -> u32;
+        fn GetForegroundWindow() -> Hwnd;
+        fn GetWindowThreadProcessId(hwnd: Hwnd, process_id: *mut u32) -> u32;
+    }
+
+    let window_clone = window.clone();
+    let context = context.to_string();
+    let _ = window.run_on_main_thread(move || unsafe {
+        let foreground = GetForegroundWindow();
+        let mut process_id = 0_u32;
+        let foreground_thread = if foreground.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(foreground, &mut process_id)
+        };
+        let current_thread = GetCurrentThreadId();
+        let attached = foreground_thread != 0
+            && process_id != std::process::id()
+            && foreground_thread != current_thread
+            && AttachThreadInput(current_thread, foreground_thread, 1) != 0;
+        activate_native_window(&window_clone, &context);
+        if attached {
+            let _ = AttachThreadInput(current_thread, foreground_thread, 0);
+        }
+    });
+}
+
+/// macOS activation (`activateIgnoringOtherApps`) already works from the background.
+#[cfg(not(target_os = "windows"))]
+fn activate_from_background(_window: &tauri::WebviewWindow, _context: &str) {}
+
 fn handle_preview_focus_lost(app: tauri::AppHandle) {
+    use preview_focus::{Action, Phase};
+    let generation = PREVIEW_WINDOW_GENERATION.load(Ordering::SeqCst);
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(35));
-
-        let now = now_millis();
-        let ignore_until = PREVIEW_IGNORE_BLUR_UNTIL.load(Ordering::SeqCst);
-        let pinned = PREVIEW_PINNED.load(Ordering::SeqCst);
-        let cursor_inside_app = cursor_inside_app_windows(&app);
-        let preview_foreground =
-            app_window_is_foreground(&app, "clipboardPreview", "preview blur guard");
-        let clipboard_foreground =
-            app_window_is_foreground(&app, "clipboard", "preview blur guard clipboard");
-
-        if pinned {
-            info!("Skip preview blur hide: pinned");
+        if PREVIEW_WINDOW_GENERATION.load(Ordering::SeqCst) != generation {
             return;
         }
 
-        if preview_foreground {
-            info!("Skip preview blur hide: preview is foreground");
-            return;
-        }
-
-        if !cursor_inside_app && !clipboard_foreground {
-            hide_preview_and_clipboard(&app, "preview blur cursor outside app");
-            return;
-        }
-
-        if clipboard_foreground {
-            // Keep the ordinary preview available while the panel changes selection.
-            return;
-        }
-
-        if now < ignore_until {
-            info!(
-                "Preview blur during open grace, will recheck, now={}, ignore_until={}",
-                now, ignore_until
-            );
+        let mut action = preview_focus::decide(
+            preview_blur_state(&app),
+            Phase::Initial {
+                opening_grace: now_millis() < PREVIEW_IGNORE_BLUR_UNTIL.load(Ordering::SeqCst),
+            },
+        );
+        if action == Action::Recheck {
             std::thread::sleep(std::time::Duration::from_millis(120));
-            if !preview_window_visible(&app) || PREVIEW_PINNED.load(Ordering::SeqCst) {
+            if PREVIEW_WINDOW_GENERATION.load(Ordering::SeqCst) != generation
+                || !preview_window_visible(&app)
+            {
                 return;
             }
-            let cursor_inside_app = cursor_inside_app_windows(&app);
-            let preview_foreground =
-                app_window_is_foreground(&app, "clipboardPreview", "preview grace recheck");
-            let clipboard_foreground =
-                app_window_is_foreground(&app, "clipboard", "preview grace recheck clipboard");
-            if preview_foreground {
-                info!("Skip preview grace recheck: preview is foreground");
-                return;
-            }
-            if clipboard_foreground {
-                info!("Hide preview on grace recheck to clipboard");
-                if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
-                    let _ = preview_window.hide();
-                }
-                if let Some(clipboard_window) = app.get_webview_window("clipboard") {
-                    focus_clipboard_window(&clipboard_window, "preview grace recheck to clipboard");
-                }
-                return;
-            }
-            if cursor_inside_app {
-                info!("Skip preview grace recheck: cursor inside app windows");
-                return;
-            }
-            hide_preview_and_clipboard(&app, "preview grace recheck outside app");
-            return;
+            action = preview_focus::decide(preview_blur_state(&app), Phase::GraceRecheck);
         }
-
-        hide_preview_and_clipboard(&app, "preview blur outside app");
+        match action {
+            Action::Keep | Action::Recheck => {}
+            Action::HidePreview => {
+                let _ = retain_preview_window(&app);
+                if let Some(clipboard_window) = app.get_webview_window("clipboard") {
+                    focus_clipboard_window(&clipboard_window, "preview blur to clipboard");
+                }
+            }
+            Action::HideBoth => hide_preview_and_clipboard(&app, "preview blur outside app"),
+        }
     });
 }
 
@@ -3026,7 +3835,7 @@ fn preview_position_avoiding_clipboard(
     let Some(clipboard_window) = app.get_webview_window("clipboard") else {
         return fallback;
     };
-    if !clipboard_window.is_visible().unwrap_or(false) {
+    if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
         return fallback;
     }
 
@@ -3059,7 +3868,7 @@ fn preview_bounds_avoiding_clipboard(app: &tauri::AppHandle, bounds: ScreenBound
     let Some(clipboard_window) = app.get_webview_window("clipboard") else {
         return bounds;
     };
-    if !clipboard_window.is_visible().unwrap_or(false) {
+    if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
         return bounds;
     }
 
@@ -3082,8 +3891,266 @@ fn preview_bounds_avoiding_clipboard(app: &tauri::AppHandle, bounds: ScreenBound
     }
 }
 
+fn cancel_preview_content() {
+    let mut pending = PREVIEW_PENDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    PREVIEW_REQUESTS.cancel();
+    *pending = None;
+}
+
+fn clear_preview_content(window: &tauri::WebviewWindow) {
+    cancel_preview_content();
+    let _ = window.emit("preview-clear", ());
+}
+
+#[cfg(target_os = "windows")]
+fn set_preview_rect(
+    window: &tauri::WebviewWindow,
+    rect: PreviewRect,
+    scale: f64,
+) -> Result<(), String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+    let handle = window.hwnd().map_err(|err| err.to_string())?;
+    // SetWindowPos sizes the outer frame; our target sizes the WebView client area.
+    let outer = window.outer_size().map_err(|err| err.to_string())?;
+    let inner = window.inner_size().map_err(|err| err.to_string())?;
+    unsafe {
+        SetWindowPos(
+            HWND(handle.0 as _),
+            HWND::default(),
+            (rect.x * scale).round() as i32,
+            (rect.y * scale).round() as i32,
+            (rect.width * scale).round() as i32 + outer.width.saturating_sub(inner.width) as i32,
+            (rect.height * scale).round() as i32 + outer.height.saturating_sub(inner.height) as i32,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        )
+    }
+    .map_err(|err| err.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn set_preview_rect(
+    window: &tauri::WebviewWindow,
+    rect: PreviewRect,
+    _scale: f64,
+) -> Result<(), String> {
+    use cocoa::appkit::NSWindow;
+    use cocoa::base::{id, YES};
+    use cocoa::foundation::{NSPoint, NSRect, NSSize};
+    // Called on the AppKit main thread. Keep Tao's screen coordinate conversion,
+    // including mixed-DPI monitors, by applying the delta to the current NSRect.
+    let position = window
+        .outer_position()
+        .map_err(|err| err.to_string())?
+        .to_logical::<f64>(window.scale_factor().map_err(|err| err.to_string())?);
+    let native = window.ns_window().map_err(|err| err.to_string())? as id;
+    unsafe {
+        let frame = native.frame();
+        native.setFrame_display_(
+            NSRect::new(
+                NSPoint::new(
+                    frame.origin.x + rect.x - position.x,
+                    frame.origin.y + position.y - rect.y + frame.size.height - rect.height,
+                ),
+                NSSize::new(rect.width, rect.height),
+            ),
+            YES,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn set_preview_rect(
+    window: &tauri::WebviewWindow,
+    rect: PreviewRect,
+    scale: f64,
+) -> Result<(), String> {
+    set_window_position_for_scale(window, rect.x, rect.y, scale)?;
+    set_window_size_for_scale(window, rect.width, rect.height, scale)
+}
+
+fn current_preview_rect(window: &tauri::WebviewWindow, scale: f64) -> Result<PreviewRect, String> {
+    let position = window
+        .outer_position()
+        .map_err(|err| err.to_string())?
+        .to_logical::<f64>(scale);
+    let size = window
+        .inner_size()
+        .map_err(|err| err.to_string())?
+        .to_logical::<f64>(scale);
+    Ok(PreviewRect {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    })
+}
+
+fn animate_preview_rect(
+    window: tauri::WebviewWindow,
+    prepared: &PreparedPreview,
+    from: PreviewRect,
+    duration_ms: u64,
+    easing: [f64; 4],
+) {
+    let request = prepared.payload.request_id;
+    let target = prepared.rect;
+    let scale = prepared.scale_factor;
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let duration = std::time::Duration::from_millis(duration_ms.clamp(1, 320));
+        let mut frames = 0;
+        let mut longest_frame = std::time::Duration::ZERO;
+        while PREVIEW_REQUESTS.current(request) {
+            let progress = (started.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0);
+            let rect = from.interpolate(target, preview_motion::eased_progress(progress, easing));
+            let update_window = window.clone();
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            let frame_started = Instant::now();
+            // One frame in flight, with the version check at the actual native write.
+            if window
+                .run_on_main_thread(move || {
+                    let result = if PREVIEW_REQUESTS.current(request) {
+                        set_preview_rect(&update_window, rect, scale)
+                    } else {
+                        Ok(())
+                    };
+                    let _ = tx.send(result);
+                })
+                .is_err()
+            {
+                return;
+            }
+            match rx.recv() {
+                Ok(Ok(())) => {}
+                failure => {
+                    error!("Failed to animate preview rectangle: {:?}", failure);
+                    return;
+                }
+            }
+            longest_frame = longest_frame.max(frame_started.elapsed());
+            frames += 1;
+            if progress >= 1.0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(
+                CLIPBOARD_ANIMATION_FRAME_MS,
+            ));
+        }
+        log::debug!("Preview geometry request={request}, frames={frames}, elapsed_ms={}, longest_frame_ms={}",
+            started.elapsed().as_millis(), longest_frame.as_millis());
+    });
+}
+
 #[tauri::command]
-fn show_preview_window(
+fn pending_preview_item() -> Option<PreviewPayload> {
+    PREVIEW_PENDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .filter(|pending| PREVIEW_REQUESTS.current(pending.payload.request_id))
+        .map(|pending| pending.payload.clone())
+}
+
+#[tauri::command]
+fn commit_preview_window(
+    app: tauri::AppHandle,
+    request_id: u64,
+    reduced_motion: bool,
+    duration_ms: u64,
+    easing: [f64; 4],
+) -> Result<bool, String> {
+    let prepared = {
+        let mut pending = PREVIEW_PENDING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !PREVIEW_REQUESTS.current(request_id)
+            || pending
+                .as_ref()
+                .is_none_or(|pending| pending.payload.request_id != request_id)
+        {
+            return Ok(false);
+        }
+        pending.take().unwrap()
+    };
+    let render_wait_ms = prepared
+        .started
+        .elapsed()
+        .as_millis()
+        .saturating_sub(prepared.window_ready_ms + prepared.prepare_ms);
+    let commit_started = Instant::now();
+    let Some(window) = app.get_webview_window("clipboardPreview") else {
+        return Ok(false);
+    };
+    if !auxiliary_windows::is_open(&window) || !PREVIEW_REQUESTS.current(request_id) {
+        return Ok(false);
+    }
+    let visible = window.is_visible().unwrap_or(false);
+    if !prepared.mode.allows(
+        visible || PREVIEW_REQUESTS.active(),
+        PREVIEW_HOVER.load(Ordering::SeqCst),
+        PREVIEW_PINNED.load(Ordering::SeqCst),
+    ) {
+        return Ok(false);
+    }
+    let cursor_in_preview = cursor_physical_position().is_some_and(|cursor| {
+        let rect = prepared.rect;
+        preview_focus::rect_contains_point(
+            (rect.x, rect.y, rect.width, rect.height),
+            prepared.scale_factor,
+            (cursor.x, cursor.y),
+        )
+    });
+    let focus_target =
+        preview_focus::commit_focus_target(prepared.mode.takes_focus(), cursor_in_preview);
+    let from = current_preview_rect(&window, prepared.scale_factor)?;
+    if visible
+        && !reduced_motion
+        && !system_reduces_motion()
+        && !from.near(prepared.rect)
+        && easing.iter().all(|value| value.is_finite())
+    {
+        animate_preview_rect(window.clone(), &prepared, from, duration_ms, easing);
+    } else {
+        set_preview_rect(&window, prepared.rect, prepared.scale_factor)?;
+    }
+    if !visible {
+        window
+            .set_focusable(focus_target == Some(preview_focus::FocusTarget::Preview))
+            .map_err(|err| err.to_string())?;
+        window.show().map_err(|err| err.to_string())?;
+        window.set_focusable(true).map_err(|err| err.to_string())?;
+        let _ = window.set_always_on_top(true);
+        #[cfg(target_os = "macos")]
+        set_macos_window_level(&window, 102);
+    }
+    match focus_target {
+        Some(preview_focus::FocusTarget::Preview) => {
+            focus_preview_window(&window, "preview show under cursor")?
+        }
+        Some(preview_focus::FocusTarget::Clipboard) => {
+            move_focus_to_clipboard(&app, "preview show keeps clipboard focus")
+        }
+        None => {}
+    }
+    info!(
+        "preview timing: request={} first_show={} window_ready_ms={} prepare_ms={} render_wait_ms={} commit_ms={} total_ms={}",
+        request_id,
+        !visible,
+        prepared.window_ready_ms,
+        prepared.prepare_ms,
+        render_wait_ms,
+        commit_started.elapsed().as_millis(),
+        prepared.started.elapsed().as_millis()
+    );
+    Ok(true)
+}
+
+#[tauri::command]
+async fn show_preview_window(
     app: tauri::AppHandle,
     item_type: String,
     content: String,
@@ -3093,7 +4160,12 @@ fn show_preview_window(
     app_source: String,
     mode: Option<PreviewMode>,
     hover_request: Option<u64>,
+    navigation_direction: Option<i8>,
+    rich_resources: Option<Vec<rich_card_assets::RichImageResource>>,
+    history_hash: Option<String>,
+    text_truncated: Option<bool>,
 ) -> Result<(), String> {
+    let started = Instant::now();
     let mode = mode.unwrap_or_default();
     if mode == PreviewMode::Hover {
         let navigation_foreground = ["clipboard", "clipboardPreview"].iter().any(|label| {
@@ -3113,62 +4185,101 @@ fn show_preview_window(
         PREVIEW_HOVER_REQUEST.fetch_max(hover_request.unwrap_or(0), Ordering::SeqCst);
     }
     if !mode.allows(
-        preview_window_visible(&app),
+        preview_window_visible(&app) || PREVIEW_REQUESTS.active(),
         PREVIEW_HOVER.load(Ordering::SeqCst),
         PREVIEW_PINNED.load(Ordering::SeqCst),
     ) {
         return Ok(());
     }
-    let window = get_or_create_preview_window(&app)?;
+    let request_id = {
+        let mut pending = PREVIEW_PENDING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
+        let request_id = PREVIEW_REQUESTS.begin();
+        *pending = None;
+        PREVIEW_HOVER.store(mode == PreviewMode::Hover, Ordering::SeqCst);
+        if mode == PreviewMode::Manual {
+            PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
+            PREVIEW_PINNED.store(false, Ordering::SeqCst);
+        }
+        request_id
+    };
+    let window =
+        auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::ClipboardPreview).await?;
+    let window_ready_ms = started.elapsed().as_millis();
+    if !PREVIEW_REQUESTS.current(request_id) {
+        return Ok(());
+    }
+    let prepare_started = Instant::now();
     let bounds = clipboard_screen_bounds(&app, &window);
-    let source_image_path = if preview_content.is_empty() {
-        content.as_str()
-    } else {
-        preview_content.as_str()
-    };
-    let preview_asset_path = if item_type == "Image" {
-        image_preview_asset_path(source_image_path).unwrap_or_default()
-    } else {
-        String::new()
-    };
     let preview_bounds = preview_bounds_avoiding_clipboard(&app, bounds);
-    let size = preview_window_size(
-        &item_type,
-        &content,
-        &preview_content,
-        &preview_asset_path,
-        &rich_html,
-        preview_bounds,
-    );
-    if mode == PreviewMode::Hover
-        && hover_request.unwrap_or(0) != PREVIEW_HOVER_REQUEST.load(Ordering::SeqCst)
-    {
-        return Ok(());
-    }
-    if !mode.allows(
-        preview_window_visible(&app),
-        PREVIEW_HOVER.load(Ordering::SeqCst),
-        PREVIEW_PINNED.load(Ordering::SeqCst),
-    ) {
-        return Ok(());
-    }
-    PREVIEW_HOVER.store(mode == PreviewMode::Hover, Ordering::SeqCst);
-    if mode == PreviewMode::Manual {
-        PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
-    }
-    PREVIEW_PINNED.store(false, Ordering::SeqCst);
-    PREVIEW_IGNORE_BLUR_UNTIL.store(
-        now_millis().saturating_add(if mode == PreviewMode::Hover { 0 } else { 1800 }),
-        Ordering::SeqCst,
-    );
-    let position = preview_position_avoiding_clipboard(&app, bounds, size);
-    set_window_position_for_scale(&window, position.x, position.y, bounds.scale_factor)?;
-    set_window_size_for_scale(&window, size.width, size.height, bounds.scale_factor)?;
-    let _ = window.emit("preview-clear", ());
-    window
-        .emit(
-            "preview-item",
+    // File materialization and thumbnail reads must not block the native event loop.
+    let (payload, size) = tauri::async_runtime::spawn_blocking(move || {
+        let (
+            item_type,
+            content,
+            preview_content,
+            text_content,
+            rich_html,
+            rich_resources,
+            app_source,
+            text_truncated,
+        ) = if let Some(hash) = history_hash {
+            let card = clipboard::history_card_payload(&hash, false)?;
+            let item = card.item;
+            let (text, truncated) = if item.item_type == clipboard::item::ItemType::TextFile {
+                let preview = clipboard::plain_text_preview(&hash)?;
+                (preview.text, preview.truncated)
+            } else {
+                (item.text_content, false)
+            };
+            let render = card.rich_render.unwrap_or_default();
+            (
+                item.item_type.to_string(),
+                item.content,
+                item.preview_content,
+                text,
+                render.html,
+                Some(render.resources),
+                item.app_source,
+                truncated,
+            )
+        } else {
+            (
+                item_type,
+                content,
+                preview_content,
+                text_content,
+                rich_html,
+                rich_resources,
+                app_source,
+                text_truncated.unwrap_or(false),
+            )
+        };
+        let source_image_path = if content.is_empty() {
+            &preview_content
+        } else {
+            &content
+        };
+        let preview_asset_path = if item_type == "Image" {
+            image_preview_asset_path(source_image_path).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let size = preview_window_size(
+            &item_type,
+            &content,
+            &preview_content,
+            &preview_asset_path,
+            &rich_html,
+            preview_bounds,
+        );
+        Ok::<_, String>((
             PreviewPayload {
+                text_truncated,
+                request_id,
+                navigation_direction: navigation_direction.unwrap_or(0).clamp(-1, 1),
                 hover: mode == PreviewMode::Hover,
                 item_type,
                 content,
@@ -3176,26 +4287,67 @@ fn show_preview_window(
                 preview_asset_path,
                 text_content,
                 rich_html,
+                rich_resources: rich_resources.unwrap_or_default(),
                 app_source,
             },
-        )
-        .map_err(|err| err.to_string())?;
-    window
-        .set_focusable(mode.takes_focus())
-        .map_err(|err| err.to_string())?;
-    window.show().map_err(|err| err.to_string())?;
-    window.set_focusable(true).map_err(|err| err.to_string())?;
-    let _ = window.set_always_on_top(true);
-    #[cfg(target_os = "macos")]
-    set_macos_window_level(&window, 102);
-    if !mode.takes_focus() {
+            size,
+        ))
+    })
+    .await
+    .map_err(|err| err.to_string())??;
+    let prepare_ms = prepare_started.elapsed().as_millis();
+    if !PREVIEW_REQUESTS.current(request_id) {
         return Ok(());
     }
-    focus_clipboard_window(&window, "preview show");
-    window.set_focus().map_err(|err| err.to_string())?;
-    AsRef::<tauri::Webview>::as_ref(&window)
-        .set_focus()
-        .map_err(|err| err.to_string())
+    if mode == PreviewMode::Hover
+        && hover_request.unwrap_or(0) != PREVIEW_HOVER_REQUEST.load(Ordering::SeqCst)
+    {
+        return Ok(());
+    }
+    if !mode.allows(
+        preview_window_visible(&app) || PREVIEW_REQUESTS.active(),
+        PREVIEW_HOVER.load(Ordering::SeqCst),
+        PREVIEW_PINNED.load(Ordering::SeqCst),
+    ) {
+        return Ok(());
+    }
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        if !auxiliary_windows::is_open(&window) || !PREVIEW_REQUESTS.current(request_id) {
+            return Ok(());
+        }
+        PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
+        PREVIEW_IGNORE_BLUR_UNTIL.store(
+            now_millis().saturating_add(if mode == PreviewMode::Hover { 0 } else { 1800 }),
+            Ordering::SeqCst,
+        );
+        let position = preview_position_avoiding_clipboard(&app, bounds, size);
+        {
+            let mut pending = PREVIEW_PENDING
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !PREVIEW_REQUESTS.current(request_id) {
+                return Ok(());
+            }
+            *pending = Some(PreparedPreview {
+                payload: payload.clone(),
+                mode,
+                rect: PreviewRect {
+                    x: position.x,
+                    y: position.y,
+                    width: size.width,
+                    height: size.height,
+                },
+                scale_factor: bounds.scale_factor,
+                started,
+                window_ready_ms,
+                prepare_ms,
+            });
+        }
+        window
+            .emit("preview-item", payload)
+            .map_err(|err| err.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3257,13 +4409,14 @@ async fn fetch_link_preview_document(url: String) -> Result<LinkPreviewDocument,
 
 #[tauri::command]
 fn is_preview_window_visible(app: tauri::AppHandle) -> bool {
-    preview_window_visible(&app)
+    preview_window_visible(&app) || PREVIEW_REQUESTS.active()
 }
 
 #[tauri::command]
 fn set_preview_pinned(app: tauri::AppHandle, pinned: bool) {
     PREVIEW_PINNED.store(pinned, Ordering::SeqCst);
     if pinned {
+        cancel_preview_content();
         PREVIEW_HOVER.store(false, Ordering::SeqCst);
         PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
         if let Some(window) = app.get_webview_window("clipboardPreview") {
@@ -3283,10 +4436,7 @@ fn dismiss_hover_preview_window(app: tauri::AppHandle, request: Option<u64>) -> 
         PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
     }
     if PREVIEW_HOVER.swap(false, Ordering::SeqCst) && !PREVIEW_PINNED.load(Ordering::SeqCst) {
-        if let Some(window) = app.get_webview_window("clipboardPreview") {
-            let _ = window.emit("preview-clear", ());
-            window.hide().map_err(|err| err.to_string())?;
-        }
+        retain_preview_window(&app)?;
     }
     Ok(())
 }
@@ -3347,6 +4497,49 @@ fn enable_macos_mouse_moved_events(window: &tauri::WebviewWindow) {
 }
 
 #[cfg(target_os = "macos")]
+fn macos_overlay_collection_behavior() -> cocoa::appkit::NSWindowCollectionBehavior {
+    use cocoa::appkit::NSWindowCollectionBehavior;
+    NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
+        | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary
+        | NSWindowCollectionBehavior::NSWindowCollectionBehaviorIgnoresCycle
+}
+
+#[cfg(target_os = "macos")]
+fn configure_macos_overlay_window(window: &tauri::WebviewWindow) {
+    use cocoa::appkit::NSWindow;
+    use cocoa::base::id;
+    let window_clone = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        if let Ok(ns_window) = window_clone.ns_window() {
+            unsafe {
+                if !ns_window.is_null() {
+                    let ns_window = ns_window as id;
+                    ns_window.setCollectionBehavior_(macos_overlay_collection_behavior());
+                }
+            }
+        }
+    });
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_overlay_window_tests {
+    use super::macos_overlay_collection_behavior;
+    use cocoa::appkit::NSWindowCollectionBehavior;
+
+    #[test]
+    fn overlay_collection_behavior_enables_all_spaces_and_fullscreen_auxiliary() {
+        let behavior = macos_overlay_collection_behavior();
+        assert!(behavior
+            .contains(NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces));
+        assert!(behavior
+            .contains(NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary));
+        assert!(
+            behavior.contains(NSWindowCollectionBehavior::NSWindowCollectionBehaviorIgnoresCycle)
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn hide_macos_dock_icon() {
     use cocoa::base::id;
     use objc::{class, msg_send, sel, sel_impl};
@@ -3368,13 +4561,7 @@ fn maybe_hide_macos_dock_icon() {
 
 #[tauri::command]
 fn hide_preview_window(app: tauri::AppHandle) -> Result<(), String> {
-    PREVIEW_HOVER.store(false, Ordering::SeqCst);
-    PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
-    PREVIEW_PINNED.store(false, Ordering::SeqCst);
-    if let Some(window) = app.get_webview_window("clipboardPreview") {
-        let _ = window.emit("preview-clear", ());
-        window.hide().map_err(|err| err.to_string())?;
-    }
+    retain_preview_window(&app)?;
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
         focus_clipboard_window(&clipboard_window, "preview closed");
     }
@@ -3396,43 +4583,84 @@ fn show_main_panel(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn hide_tray_menu(window: tauri::WebviewWindow) -> Result<(), String> {
-    window.hide().map_err(|err| err.to_string())
+    auxiliary_windows::destroy(&window).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 fn resize_tray_menu(window: tauri::WebviewWindow, width: u32, height: u32) -> Result<(), String> {
-    window
-        .set_size(tauri::Size::Logical(LogicalSize {
-            width: width as f64,
-            height: height as f64,
-        }))
-        .map_err(|err| err.to_string())
+    ui_text_scale::set_content_size(&window, width as f64, height as f64)?;
+    #[cfg(target_os = "windows")]
+    if ui_text_scale::current() > 1.0 {
+        fit_content_window_to_work_area(&window)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
 async fn open_tab_editor_window(
     app: tauri::AppHandle,
+    source_window: tauri::WebviewWindow,
     x: f64,
     y: f64,
     width: Option<f64>,
     height: Option<f64>,
     payload: String,
+    offset_x: Option<f64>,
+    offset_y: Option<f64>,
 ) -> Result<(), String> {
+    // Capture the client origin before the source panel can be parked while loading.
+    let source_scale = ui_text_scale::current()
+        * if source_window.label() == "clipboard" {
+            panel_size::scale()
+        } else {
+            1.0
+        };
+    let local_position = if cfg!(target_os = "windows") && source_scale != 1.0 {
+        if let (Some(offset_x), Some(offset_y)) = (offset_x, offset_y) {
+            let origin = source_window
+                .inner_position()
+                .map_err(|error| error.to_string())?;
+            let dpi = source_window
+                .scale_factor()
+                .map_err(|error| error.to_string())?;
+            Some((
+                origin.x as f64 / dpi + offset_x * source_scale,
+                origin.y as f64 / dpi + offset_y * source_scale,
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let bounds = clipboard_screen_bounds(&app, &source_window);
+    #[cfg(target_os = "windows")]
+    let source_monitor = source_window_monitor(&source_window)
+        .or_else(|| source_window.current_monitor().ok().flatten());
     let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::TabEditor).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
         let content_width = width.unwrap_or(TAB_EDITOR_CONTENT_WIDTH);
         let content_height = height.unwrap_or(TAB_EDITOR_DEFAULT_CONTENT_HEIGHT);
-        let bounds = clipboard_screen_bounds(&app, &window);
-        let _ = window.set_size(tauri::Size::Logical(LogicalSize {
-            width: content_width + AUXILIARY_WINDOW_GUTTER * 2.0,
-            height: content_height + AUXILIARY_WINDOW_GUTTER * 2.0,
-        }));
+        ui_text_scale::set_content_size(
+            &window,
+            content_width + AUXILIARY_WINDOW_GUTTER * 2.0,
+            content_height + AUXILIARY_WINDOW_GUTTER * 2.0,
+        )?;
+        let (x, y) = local_position.unwrap_or((x, y));
         set_window_position_for_scale(
             &window,
-            x - AUXILIARY_WINDOW_GUTTER,
-            y - AUXILIARY_WINDOW_GUTTER,
+            x - ui_text_scale::value(AUXILIARY_WINDOW_GUTTER),
+            y - ui_text_scale::value(AUXILIARY_WINDOW_GUTTER),
             bounds.scale_factor,
         )?;
+        #[cfg(target_os = "windows")]
+        if ui_text_scale::current() > 1.0 || local_position.is_some() {
+            if let Some(monitor) = source_monitor.as_ref() {
+                fit_content_window_to_monitor(&window, monitor)?;
+            } else {
+                fit_content_window_to_work_area(&window)?;
+            }
+        }
         window.show().map_err(|err| err.to_string())?;
         let _ = activate_native_window(&window, "tab editor open");
         window.set_focus().map_err(|err| err.to_string())?;
@@ -3485,7 +4713,8 @@ async fn open_emoji_picker_window(
         auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::EmojiPicker).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
         let editor_position = editor.outer_position().map_err(|err| err.to_string())?;
-        let scale_factor = editor.scale_factor().map_err(|err| err.to_string())?;
+        let scale_factor =
+            editor.scale_factor().map_err(|err| err.to_string())? * ui_text_scale::current();
         let picker_width = EMOJI_PICKER_CONTENT_WIDTH * scale_factor;
         let picker_height = EMOJI_PICKER_CONTENT_HEIGHT * scale_factor;
         let window_gutter = AUXILIARY_WINDOW_GUTTER * scale_factor;
@@ -3514,16 +4743,21 @@ async fn open_emoji_picker_window(
             (min_x, min_y, max_x, max_y),
         );
 
-        let _ = window.set_size(tauri::Size::Logical(LogicalSize {
-            width: EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
-            height: EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
-        }));
+        ui_text_scale::set_content_size(
+            &window,
+            EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
+            EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+        )?;
         window
             .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
                 x: (x - window_gutter).round() as i32,
                 y: (y - window_gutter).round() as i32,
             }))
             .map_err(|err| err.to_string())?;
+        #[cfg(target_os = "windows")]
+        if ui_text_scale::current() > 1.0 {
+            fit_content_window_to_monitor(&window, &monitor)?;
+        }
         window.show().map_err(|err| err.to_string())?;
         let _ = activate_native_window(&window, "emoji picker open");
         window.set_focus().map_err(|err| err.to_string())?;
@@ -3578,7 +4812,7 @@ mod popup_position_tests {
 #[tauri::command]
 fn hide_emoji_picker_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("emojiPicker") {
-        window.hide().map_err(|err| err.to_string())?;
+        auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
     }
     if let Some(tab_editor_window) = app.get_webview_window("tabEditor") {
         let _ = tab_editor_window.set_focus();
@@ -3590,9 +4824,9 @@ fn hide_emoji_picker_window(app: tauri::AppHandle) -> Result<(), String> {
 fn hide_tab_editor_window(window: tauri::WebviewWindow) -> Result<(), String> {
     let app = window.app_handle().clone();
     if let Some(emoji_picker_window) = app.get_webview_window("emojiPicker") {
-        let _ = emoji_picker_window.hide();
+        let _ = auxiliary_windows::destroy(&emoji_picker_window);
     }
-    window.hide().map_err(|err| err.to_string())?;
+    auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
         focus_clipboard_window(&clipboard_window, "tab editor closed");
     }
@@ -3678,7 +4912,15 @@ unsafe fn create_shell_file_item_array(
 fn materialize_native_drag_image(path: &str) -> Result<String, String> {
     use sha2::{Digest, Sha256};
 
-    let source_bytes = history_store::read_file(path)?;
+    let _decode_guard = image_preview::decode_lock()?;
+    let metadata = image_preview::metadata_for_path(path)?;
+    clipboard_budget::validate_dimensions(
+        metadata.width,
+        metadata.height,
+        clipboard_budget::ImageOperation::Restore,
+    )?;
+    let source_bytes =
+        clipboard_budget::read_file_limited(path, clipboard_budget::IMAGE_SOURCE_BYTES)?;
     let is_gif = image_mime_from_bytes(&source_bytes) == "image/gif";
     let (extension, drag_bytes) = if is_gif {
         ("gif", source_bytes)
@@ -3871,6 +5113,15 @@ async fn capture_native_drag_preview(
         return Err("drag card snapshots require the clipboard window".into());
     }
     rect.validate()?;
+    // DOM rectangles use CSS pixels; WKSnapshotConfiguration uses view points.
+    let zoom = panel_size::scale();
+    let rect = native_drag_snapshot::CardRect {
+        x: rect.x * zoom,
+        y: rect.y * zoom,
+        width: rect.width * zoom,
+        height: rect.height * zoom,
+        corner_radius: rect.corner_radius * zoom,
+    };
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     window
         .with_webview(move |webview| unsafe {
@@ -4023,14 +5274,8 @@ fn is_image_preview_extension(extension: &str) -> bool {
 }
 
 #[tauri::command]
-fn read_preview_text_file(path: String) -> Result<String, String> {
-    let metadata = fs::metadata(&path).map_err(|err| format!("读取文件信息失败：{}", err))?;
-    if metadata.len() > 1024 * 1024 {
-        return Err("文本文件超过 1 MB，暂不预览".to_string());
-    }
-    history_store::read_file(&path)
-        .and_then(|bytes| String::from_utf8(bytes).map_err(|err| err.to_string()))
-        .map_err(|err| format!("读取文本失败：{}", err))
+fn read_preview_text_file(path: String) -> Result<clipboard_budget::TextPreview, String> {
+    clipboard_budget::read_text_preview(&path)
 }
 
 #[tauri::command]
@@ -4487,6 +5732,11 @@ fn plain_text_content(hash: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn plain_text_preview(hash: String) -> Result<clipboard_budget::TextPreview, String> {
+    clipboard::plain_text_preview(&hash)
+}
+
+#[tauri::command]
 async fn open_text_editor_window(app: tauri::AppHandle, hash: String) -> Result<(), String> {
     let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::TextEditor).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
@@ -4535,7 +5785,7 @@ async fn save_clipboard_text(
 #[tauri::command]
 fn hide_text_editor_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("textEditor") {
-        window.hide().map_err(|err| err.to_string())?;
+        auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
     }
     *TEXT_EDITOR_TARGET.lock().unwrap() = None;
     TEXT_EDITOR_FOCUSED.store(false, Ordering::SeqCst);
@@ -4550,6 +5800,7 @@ fn hide_text_editor_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn build_text_editor_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let text_scale = ui_text_scale::current();
     let window = WebviewWindowBuilder::new(app, "textEditor", App("text-editor".into()))
         .title("vPaste")
         .visible(false)
@@ -4561,8 +5812,9 @@ fn build_text_editor_window(app: &tauri::AppHandle) -> tauri::Result<tauri::Webv
         .always_on_top(true)
         .resizable(false)
         .shadow(false)
-        .inner_size(596.0, 476.0)
+        .inner_size(596.0 * text_scale, 476.0 * text_scale)
         .build()?;
+    ui_text_scale::remember(&window, text_scale);
     apply_vpaste_window_icon(&window);
     #[cfg(target_os = "macos")]
     set_macos_window_level(&window, 101);
@@ -4588,6 +5840,7 @@ fn color_conversion_options(content: String) -> Vec<clipboard::color::ColorVaria
 
 #[tauri::command]
 fn export_image_item(source_path: String, target_path: String) -> Result<(), String> {
+    let _decode_guard = image_preview::decode_lock()?;
     let source = PathBuf::from(source_path);
     let target = PathBuf::from(target_path);
     if !source.exists() {
@@ -4620,13 +5873,13 @@ fn rasterize_svg_for_export(source: &Path) -> Result<image::DynamicImage, String
         ..Default::default()
     };
     options.fontdb_mut().load_system_fonts();
-    let bytes = history_store::read_file(source)?;
+    let bytes = clipboard_budget::read_file_limited(source, clipboard_budget::IMAGE_SOURCE_BYTES)?;
     let tree = resvg::usvg::Tree::from_data(&bytes, &options).map_err(|err| err.to_string())?;
     let size = tree.size().to_int_size();
     if size.width() > 16_384
         || size.height() > 16_384
         || u64::from(size.width()) * u64::from(size.height())
-            > image_preview::CARD_PREVIEW_MAX_PIXELS
+            > clipboard_budget::ImageOperation::Restore.pixels()
     {
         return Err("SVG dimensions exceed the export pixel limit".to_string());
     }
@@ -4836,10 +6089,12 @@ fn build_file_preview_info(content: String) -> Result<FilePreviewInfo, String> {
             String::new()
         };
     let image_dimensions = if !preview_path.is_empty() {
-        image::image_dimensions(&display_path)
-            .map_err(|err| err.to_string())
+        image_preview::metadata_for_path(&preview_path)
             .ok()
-            .or_else(|| image_dimensions_secure(&preview_path).ok())
+            .filter(|metadata| {
+                !metadata.preview_limited && metadata.width > 0 && metadata.height > 0
+            })
+            .map(|metadata| (metadata.width, metadata.height))
     } else {
         None
     };
@@ -5022,19 +6277,12 @@ fn toggle_clipboard_window(app: &tauri::AppHandle) {
         }
     }
     if let Some(window) = app.get_webview_window("clipboard") {
-        match window.is_visible() {
-            Ok(true) => {
-                let allow_onboarding_shortcut_demo =
-                    ONBOARDING_SHORTCUT_DEMO_ENABLED.load(Ordering::SeqCst);
-                hide_clipboard_window_with_onboarding_policy(
-                    &window,
-                    allow_onboarding_shortcut_demo,
-                );
-            }
-            Ok(false) => {
-                show_clipboard_window(&window);
-            }
-            Err(err) => error!("Failed to check window visibility: {:?}", err),
+        if CLIPBOARD_VISIBLE.load(Ordering::SeqCst) && !CLIPBOARD_HIDING.load(Ordering::SeqCst) {
+            let allow_onboarding_shortcut_demo =
+                ONBOARDING_SHORTCUT_DEMO_ENABLED.load(Ordering::SeqCst);
+            hide_clipboard_window_with_onboarding_policy(&window, allow_onboarding_shortcut_demo);
+        } else {
+            show_clipboard_window(&window);
         }
     } else {
         error!("Clipboard window handle not found when toggling shortcut");
@@ -5427,17 +6675,21 @@ fn relocate_imported_rich_source(
     archive_dir: &str,
     old_dir: &str,
     target_dir: &str,
-) -> String {
+) -> Result<(String, usize), String> {
     let Some(json) = source.strip_prefix("vpaste-rich:") else {
-        return rewrite_internal_storage_paths(source, old_dir, target_dir);
+        return Ok((
+            rewrite_internal_storage_paths(source, old_dir, target_dir),
+            0,
+        ));
     };
     let Ok(mut meta) = serde_json::from_str::<serde_json::Value>(json) else {
-        return source;
+        return Ok((source, 0));
     };
     let prefix = format!("{}/", old_dir.replace('\\', "/").trim_end_matches('/'));
     if old_dir.is_empty() {
-        return source;
+        return Ok((source, 0));
     }
+    let mut copied = 0;
     for field in ["html_path", "rtf_path", "png_path"] {
         let Some(path) = meta.get(field).and_then(|value| value.as_str()) else {
             continue;
@@ -5448,7 +6700,7 @@ fn relocate_imported_rich_source(
         };
         let parts: Vec<_> = relative.split('/').collect();
         if parts.len() < 2
-            || !HISTORY_ARCHIVE_DIRS.contains(&parts[0])
+            || !["data", "rich_formats"].contains(&parts[0])
             || parts
                 .iter()
                 .any(|part| part.is_empty() || *part == "." || *part == ".." || part.contains(':'))
@@ -5459,20 +6711,28 @@ fn relocate_imported_rich_source(
         let target = Path::new(target_dir).join(&relative);
         // Only rebind attachments actually carried by this archive and copied to the target.
         if Path::new(archive_dir).join(&relative).is_file() && target.is_file() {
+            if field == "html_path" {
+                copied += rich_card_assets::relocate(
+                    path,
+                    &target.to_string_lossy(),
+                    Path::new(archive_dir),
+                    Path::new(target_dir),
+                )?;
+            }
             meta[field] = serde_json::Value::String(target.to_string_lossy().into_owned());
         }
     }
-    format!("vpaste-rich:{meta}")
+    Ok((format!("vpaste-rich:{meta}"), copied))
 }
 
 fn merge_clipboard_database(
     source_dir: &str,
     target_dir: &str,
     rewrite_source_dir: &str,
-) -> Result<(usize, usize), String> {
+) -> Result<(usize, usize, usize), String> {
     let source_db = PathBuf::from(source_dir).join("vpaste.db");
     if !source_db.exists() {
-        return Ok((0, 0));
+        return Ok((0, 0, 0));
     }
 
     let source_conn = rusqlite::Connection::open_with_flags(
@@ -5518,6 +6778,7 @@ fn merge_clipboard_database(
 
     let mut merged = 0_usize;
     let mut skipped = 0_usize;
+    let mut copied_resources = 0_usize;
     for row in rows {
         let (
             hash,
@@ -5538,7 +6799,10 @@ fn merge_clipboard_database(
             preview_content =
                 rewrite_internal_storage_paths(preview_content, rewrite_source_dir, target_dir);
         }
-        source = relocate_imported_rich_source(source, source_dir, rewrite_source_dir, target_dir);
+        let relocated =
+            relocate_imported_rich_source(source, source_dir, rewrite_source_dir, target_dir)?;
+        source = relocated.0;
+        copied_resources += relocated.1;
         app_icon_path =
             rewrite_internal_storage_paths(app_icon_path, rewrite_source_dir, target_dir);
         let changed = transaction
@@ -5708,8 +6972,10 @@ fn merge_clipboard_database(
                 preview_content =
                     rewrite_internal_storage_paths(preview_content, rewrite_source_dir, target_dir);
             }
-            source =
-                relocate_imported_rich_source(source, source_dir, rewrite_source_dir, target_dir);
+            let relocated =
+                relocate_imported_rich_source(source, source_dir, rewrite_source_dir, target_dir)?;
+            source = relocated.0;
+            copied_resources += relocated.1;
             app_icon_path =
                 rewrite_internal_storage_paths(app_icon_path, rewrite_source_dir, target_dir);
             let changed = transaction
@@ -5743,7 +7009,7 @@ fn merge_clipboard_database(
 
     transaction.commit().map_err(|err| err.to_string())?;
 
-    Ok((merged, skipped))
+    Ok((merged, skipped, copied_resources))
 }
 
 fn rebuild_current_search_index() -> Result<(), String> {
@@ -5757,7 +7023,9 @@ const HISTORY_ARCHIVE_VERSION: u32 = 3;
 const HISTORY_ARCHIVE_MAGIC: &[u8] = b"VPASTE-HISTORY";
 const HISTORY_ARCHIVE_METADATA_MAX_BYTES: u64 = 1024 * 1024;
 const HISTORY_ARCHIVE_PATH_MAX_BYTES: u32 = 4096;
-const HISTORY_ARCHIVE_DIRS: [&str; 2] = ["data", "rich_formats"];
+const HISTORY_ARCHIVE_DIRS: [&str; 3] = ["data", "rich_formats", "rich_preview_assets"];
+// Rich assets are copied by record while rebinding their source-path identity.
+const HISTORY_IMPORT_COPY_DIRS: [&str; 2] = ["data", "rich_formats"];
 const HISTORY_ARCHIVE_FILES: [&str; 1] = [CUSTOM_TABS_FILE];
 impl HistoryArchiveTotals {
     fn empty() -> Self {
@@ -5866,7 +7134,7 @@ fn history_import_payload_totals(root: &Path) -> Result<HistoryArchiveTotals, St
     for file_name in HISTORY_ARCHIVE_FILES {
         add_path_totals(&root.join(file_name), &mut totals)?;
     }
-    for dir_name in HISTORY_ARCHIVE_DIRS {
+    for dir_name in HISTORY_IMPORT_COPY_DIRS {
         add_path_totals(&root.join(dir_name), &mut totals)?;
     }
     Ok(totals)
@@ -6004,6 +7272,7 @@ fn validate_archive_entry_name(name: &str) -> Result<(), String> {
         && name != CUSTOM_TABS_FILE
         && !name.starts_with("data/")
         && !name.starts_with("rich_formats/")
+        && !name.starts_with("rich_preview_assets/")
     {
         return Err("vPaste 历史包包含不受支持的路径".to_string());
     }
@@ -6281,7 +7550,7 @@ fn import_history_archive_impl(
             copied_files += 1;
         }
     }
-    for dir_name in HISTORY_ARCHIVE_DIRS {
+    for dir_name in HISTORY_IMPORT_COPY_DIRS {
         copied_files += copy_history_dir_contents_recursive_with_progress(
             &temp_dir.path().join(dir_name),
             &PathBuf::from(&target_dir).join(dir_name),
@@ -6291,11 +7560,12 @@ fn import_history_archive_impl(
 
     progress.set_totals(HistoryArchiveTotals::empty());
     progress.set_stage("merge");
-    let (merged_items, skipped_items) = merge_clipboard_database(
+    let (merged_items, skipped_items, copied_resources) = merge_clipboard_database(
         temp_dir.path().to_str().unwrap_or(""),
         &target_dir,
         &rewrite_source_dir,
     )?;
+    copied_files += copied_resources;
     clipboard::db::try_init().map_err(|err| err.to_string())?;
     progress.set_stage("index");
     if let Err(err) = rebuild_current_search_index() {
@@ -6499,7 +7769,7 @@ mod history_archive_v3_tests {
                 "/old/history",
             )
             .unwrap(),
-            (1, 0)
+            (1, 0, 0)
         );
 
         let target_conn = rusqlite::Connection::open(target_db).unwrap();
@@ -6693,7 +7963,7 @@ async fn cleanup_storage_history(days: u64) -> Result<StorageCleanupInfo, String
 
 #[tauri::command]
 fn get_config(app: tauri::AppHandle, skip_autostart_refresh: Option<bool>) -> String {
-    if skip_autostart_refresh != Some(true) {
+    if skip_autostart_refresh != Some(true) && !memory_profile_active() {
         if let Err(err) = refresh_stored_autostart_from_system(&app) {
             error!("Failed to refresh stored autostart status: {}", err);
         }
@@ -7652,6 +8922,9 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<SettingsSaveInfo
 
     let saved_config = config::try_update(|current| {
         config_struct.last_update_check_at = current.last_update_check_at.clone();
+        // The panel-size commands own this preference; another settings save
+        // must not overwrite a gesture that completed after its form snapshot.
+        config_struct.clipboard_panel_size = current.clipboard_panel_size;
         *current = config_struct;
     })?;
     app_updater::set_automatic_updates_enabled(automatic_updates_enabled);
@@ -7746,7 +9019,10 @@ fn image_dib_cache_path(path: &str) -> Option<PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn read_image_dib_cache(cache_path: &Path) -> Result<Vec<u8>, String> {
-    fs::read(cache_path).map_err(|err| format!("read image clipboard cache failed: {err}"))
+    clipboard_budget::read_file_limited(
+        cache_path,
+        clipboard_budget::ImageOperation::Restore.pixels() as usize * 4 + 124,
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -7823,30 +9099,31 @@ fn png_clipboard_bytes_from_image_bytes(bytes: Vec<u8>) -> Option<Vec<u8>> {
         return Some(bytes);
     }
 
-    let image = image::load_from_memory(&bytes).ok()?;
-    let mut png_bytes = Vec::new();
+    let image =
+        clipboard_budget::decode_image(&bytes, clipboard_budget::ImageOperation::Restore).ok()?;
+    let mut png_bytes = clipboard_budget::ImageWriter(Vec::new());
     image
-        .write_to(
-            &mut std::io::Cursor::new(&mut png_bytes),
-            image::ImageFormat::Png,
-        )
+        .write_to(&mut png_bytes, image::ImageFormat::Png)
         .ok()?;
-    Some(png_bytes)
+    Some(png_bytes.0)
 }
 
 #[cfg(target_os = "windows")]
 fn cached_or_load_png_bytes(path: &str, dib_cache_path: &Path) -> Result<Option<Vec<u8>>, String> {
     let png_cache_path = image_png_cache_path(dib_cache_path);
     if png_cache_path.exists() {
-        return fs::read(&png_cache_path)
-            .map(Some)
-            .map_err(|err| format!("read image PNG clipboard cache failed: {err}"));
+        return clipboard_budget::read_file_limited(
+            &png_cache_path,
+            clipboard_budget::IMAGE_SOURCE_BYTES,
+        )
+        .map(Some)
+        .map_err(|err| format!("read image PNG clipboard cache failed: {err}"));
     }
     if image_not_png_marker_path(dib_cache_path).exists() {
         return Ok(None);
     }
 
-    let bytes = history_store::read_file(path)?;
+    let bytes = clipboard_budget::read_file_limited(path, clipboard_budget::IMAGE_SOURCE_BYTES)?;
     if let Some(png_bytes) = png_clipboard_bytes_from_image_bytes(bytes) {
         let _ = write_image_png_cache(dib_cache_path, &png_bytes);
         Ok(Some(png_bytes))
@@ -7864,6 +9141,15 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
     };
 
     let start = Instant::now();
+    let metadata = history_image_metadata_for_path(path)?;
+    if metadata.source_bytes > clipboard_budget::IMAGE_SOURCE_BYTES as u64 {
+        return Err(clipboard_budget::limit_error());
+    }
+    clipboard_budget::validate_dimensions(
+        metadata.width,
+        metadata.height,
+        clipboard_budget::ImageOperation::Restore,
+    )?;
     let cache_path = image_dib_cache_path(path);
     let mut png_bytes: Option<Vec<u8>> = None;
     let dib = if let Some(cache_path) = cache_path.as_ref() {
@@ -7878,7 +9164,8 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
             dib
         } else {
             let convert_start = Instant::now();
-            let image_bytes = history_store::read_file(path)?;
+            let image_bytes =
+                clipboard_budget::read_file_limited(path, clipboard_budget::IMAGE_SOURCE_BYTES)?;
             if copy_gif_bytes_to_clipboard_as_file(path, &image_bytes)? {
                 info!(
                     "Copied GIF image as file list in {}ms",
@@ -7901,7 +9188,8 @@ fn copy_image_to_clipboard_fast(path: &str) -> Result<(), String> {
             dib
         }
     } else {
-        let image_bytes = history_store::read_file(path)?;
+        let image_bytes =
+            clipboard_budget::read_file_limited(path, clipboard_budget::IMAGE_SOURCE_BYTES)?;
         if copy_gif_bytes_to_clipboard_as_file(path, &image_bytes)? {
             info!(
                 "Copied GIF image as file list in {}ms",
@@ -8061,8 +9349,13 @@ fn prewarm_image_clipboard_cache_path(path: &str) -> Result<bool, String> {
         info!("Skip large image clipboard cache prewarm for {}", path);
         return Ok(false);
     }
-    let image_bytes = history_store::read_file(path)?;
-    let _ = history_image_metadata_from_bytes(path, &image_bytes);
+    let _decode_guard = image_preview::decode_lock()?;
+    let image_bytes =
+        clipboard_budget::read_file_limited(path, clipboard_budget::IMAGE_SOURCE_BYTES)?;
+    let metadata = history_image_metadata_from_bytes(path, &image_bytes)?;
+    if metadata.preview_limited {
+        return Ok(false);
+    }
     let is_gif = infer::get(&image_bytes)
         .map(|kind| kind.mime_type() == "image/gif")
         .unwrap_or_else(|| path.to_ascii_lowercase().ends_with(".gif"));
@@ -8194,20 +9487,17 @@ mod internal_clipboard_marker_tests {
     }
 }
 
-fn image_dimensions_from_bytes(bytes: &[u8]) -> Result<(u32, u32), String> {
-    image::load_from_memory(&bytes)
-        .map(|image| (image.width(), image.height()))
-        .map_err(|err| err.to_string())
-}
-
 fn image_dimensions_secure(path: &str) -> Result<(u32, u32), String> {
-    let bytes = history_store::read_file(path)?;
-    image_dimensions_from_bytes(&bytes)
+    let metadata = image_preview::metadata_for_path(path)?;
+    if metadata.preview_limited {
+        return Err(clipboard_budget::limit_error());
+    }
+    Ok((metadata.width, metadata.height))
 }
 
 fn image_reader_secure(path: &Path) -> Result<image::DynamicImage, String> {
-    let bytes = history_store::read_file(path)?;
-    image::load_from_memory(&bytes).map_err(|err| err.to_string())
+    let bytes = clipboard_budget::read_file_limited(path, clipboard_budget::IMAGE_SOURCE_BYTES)?;
+    clipboard_budget::decode_image(&bytes, clipboard_budget::ImageOperation::Restore)
 }
 
 fn image_mime_from_bytes(bytes: &[u8]) -> &'static str {
@@ -8217,10 +9507,7 @@ fn image_mime_from_bytes(bytes: &[u8]) -> &'static str {
     if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
         return "image/webp";
     }
-    if std::str::from_utf8(bytes)
-        .map(|text| text.trim_start().starts_with("<svg"))
-        .unwrap_or(false)
-    {
+    if image_preview::is_svg_bytes(bytes) {
         return "image/svg+xml";
     }
     infer::get(bytes)
@@ -8235,10 +9522,7 @@ fn image_extension_from_bytes(bytes: &[u8]) -> &'static str {
     if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
         return "webp";
     }
-    if std::str::from_utf8(bytes)
-        .map(|text| text.trim_start().starts_with("<svg"))
-        .unwrap_or(false)
-    {
+    if image_preview::is_svg_bytes(bytes) {
         return "svg";
     }
     infer::get(bytes)
@@ -8248,7 +9532,8 @@ fn image_extension_from_bytes(bytes: &[u8]) -> &'static str {
 
 fn image_data_url(path: &str) -> Result<String, String> {
     use base64::{engine::general_purpose, Engine as _};
-    let bytes = history_store::read_file(path)?;
+    let asset = image_preview_asset_path(path)?;
+    let bytes = image_preview::read_card_source(&asset)?;
     let mime = image_mime_from_bytes(&bytes);
     Ok(format!(
         "data:{};base64,{}",
@@ -8311,10 +9596,17 @@ fn publish_image_cache_file(
 }
 
 fn image_preview_asset_path(path: &str) -> Result<String, String> {
+    let resource = media_resources::build(path, media_resources::MediaIntent::Preview, false)?;
+    if resource.asset_path.is_empty() {
+        return Err(clipboard_budget::limit_error());
+    }
+    Ok(resource.asset_path)
+}
+
+fn image_preview_asset_from_bytes(path: &str, bytes: &[u8]) -> Result<String, String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let bytes = history_store::read_file(path)?;
     let extension = image_extension_from_bytes(&bytes);
     let mut hasher = DefaultHasher::new();
     "preview-asset-v3".hash(&mut hasher);
@@ -8345,24 +9637,6 @@ fn history_image_metadata_from_bytes(
 
 fn history_image_metadata_for_path(path: &str) -> Result<HistoryImageMetadata, String> {
     image_preview::metadata_for_path(path)
-}
-
-fn image_thumbnail_preview_asset_path(path: &str, bytes: &[u8]) -> Result<String, String> {
-    use std::io::Cursor;
-
-    let cache_path = image_preview::card_preview_cache_path(path)?;
-    if valid_png_cache_file(&cache_path) {
-        return Ok(cache_path.to_string_lossy().to_string());
-    }
-
-    let image = image_preview::decode_card_image(bytes)?;
-    let thumb = image.thumbnail(720, 420);
-    let mut png = Vec::new();
-    thumb
-        .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(|err| format!("encode card preview failed: {err}"))?;
-    publish_image_cache_file(&cache_path, &png, valid_png_cache_file)?;
-    Ok(cache_path.to_string_lossy().to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -8451,23 +9725,11 @@ fn release_quick_input_keys(trigger_key: Option<&str>) {
 fn release_quick_input_keys(_trigger_key: Option<&str>) {}
 
 fn image_card_preview_asset_path(path: &str) -> Result<String, String> {
-    let cache_path = image_preview::card_preview_cache_path(path)?;
-    if valid_png_cache_file(&cache_path) {
-        return Ok(cache_path.to_string_lossy().to_string());
+    let resource = media_resources::build(path, media_resources::MediaIntent::Card, false)?;
+    if resource.asset_path.is_empty() {
+        return Err(clipboard_budget::limit_error());
     }
-    let metadata = history_image_metadata_for_path(path)?;
-    if metadata.preview_limited {
-        return Err(format!(
-            "image preview exceeds automatic budget: {} bytes, {}x{}",
-            metadata.source_bytes, metadata.width, metadata.height
-        ));
-    }
-    let _decode_guard = image_preview::decode_lock()?;
-    if valid_png_cache_file(&cache_path) {
-        return Ok(cache_path.to_string_lossy().to_string());
-    }
-    let bytes = history_store::read_file(path)?;
-    image_thumbnail_preview_asset_path(path, &bytes).or_else(|_| image_preview_asset_path(path))
+    Ok(resource.asset_path)
 }
 
 #[cfg(test)]
@@ -8600,6 +9862,145 @@ mod image_cache_tests {
 }
 
 #[tauri::command]
+async fn open_history_view(
+    app: tauri::AppHandle,
+    query: history_views::HistoryQuery,
+) -> Result<history_views::HistoryViewPage, String> {
+    let resources = app
+        .state::<background_resources::BackgroundResources>()
+        .inner()
+        .clone();
+    let epoch = resources.epoch();
+    let request = history_views::reserve_open();
+    let page =
+        tauri::async_runtime::spawn_blocking(move || history_views::open(query, epoch, request))
+            .await
+            .map_err(|err| err.to_string())??;
+    if resources.epoch() != epoch {
+        history_views::close(&page.token.view_id);
+        return Err("history view expired".into());
+    }
+    resources.reset_links_for_view(epoch);
+    Ok(page)
+}
+
+#[tauri::command]
+async fn read_history_view_page(
+    view_id: String,
+    revision: u64,
+    page_index: usize,
+) -> Result<history_views::HistoryViewPage, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        history_views::read_page(&view_id, revision, page_index)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn read_history_card_payloads(
+    app: tauri::AppHandle,
+    view_id: String,
+    revision: u64,
+    hashes: Vec<String>,
+) -> Result<history_views::CardResponse, String> {
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        history_views::read_cards(&view_id, revision, hashes)
+    })
+    .await
+    .map_err(|err| err.to_string())??;
+    let resources = app
+        .state::<background_resources::BackgroundResources>()
+        .inner()
+        .clone();
+    resources.submit_refs(
+        app.clone(),
+        &response
+            .cards
+            .iter()
+            .map(|card| &card.item)
+            .collect::<Vec<_>>(),
+        response.resource_epoch,
+        false,
+    );
+    Ok(response)
+}
+
+#[tauri::command]
+async fn set_history_viewport(
+    view_id: String,
+    revision: u64,
+    start: usize,
+    end: usize,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        history_views::set_viewport(&view_id, revision, start, end)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+fn close_history_view(view_id: String) {
+    history_views::close(&view_id);
+}
+
+#[tauri::command]
+async fn show_history_preview(
+    app: tauri::AppHandle,
+    hash: String,
+    item_type: String,
+    mode: Option<PreviewMode>,
+    hover_request: Option<u64>,
+    navigation_direction: Option<i8>,
+) -> Result<(), String> {
+    show_preview_window(
+        app,
+        item_type,
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+        mode,
+        hover_request,
+        navigation_direction,
+        None,
+        Some(hash),
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn read_history_rich_render(
+    hash: String,
+) -> Result<rich_card_assets::RichRenderPayload, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        clipboard::rich_render_for_hash(&hash)
+            .ok_or_else(|| "rich preview is unavailable".to_string())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn resolve_history_media(
+    path: String,
+    intent: media_resources::MediaIntent,
+    refresh: Option<bool>,
+    card_pixel_width: Option<u32>,
+) -> Result<media_resources::MediaResource, String> {
+    match card_pixel_width {
+        Some(width) => {
+            media_resources::resolve_for_card_width(path, intent, refresh.unwrap_or(false), width)
+                .await
+        }
+        None => media_resources::resolve(path, intent, refresh.unwrap_or(false)).await,
+    }
+}
+
+#[tauri::command]
 async fn history_file_preview_asset_path(path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || image_preview_asset_path(&path))
         .await
@@ -8673,7 +10074,7 @@ fn write_registered_clipboard_file(format_name: &str, path: &str) -> Result<(), 
     }
     let format = registered_clipboard_format(format_name)
         .ok_or_else(|| format!("register clipboard format failed: {}", format_name))?;
-    let bytes = history_store::read_file(path)
+    let bytes = clipboard_budget::read_file_limited(path, clipboard_budget::RICH_CAPTURE_BYTES)
         .map_err(|err| format!("read {} failed: {}", format_name, err))?;
     if bytes.is_empty() {
         return Ok(());
@@ -8755,7 +10156,7 @@ fn prepare_macos_rich_formats(
     .into_iter()
     .filter(|(_, path)| !path.is_empty())
     .map(|(pasteboard_type, path)| {
-        let bytes = history_store::read_file(path)
+        let bytes = clipboard_budget::read_file_limited(path, clipboard_budget::RICH_CAPTURE_BYTES)
             .map_err(|err| format!("read {pasteboard_type} rich clipboard file failed: {err}"))?;
         if bytes.is_empty() {
             return Err(format!("{pasteboard_type} rich clipboard file is empty"));
@@ -8954,6 +10355,25 @@ fn copy(
     Ok(())
 }
 
+fn validate_rich_restore_budget(
+    text: &str,
+    meta: &clipboard::RichClipboardMeta,
+) -> Result<(), String> {
+    let mut size = text.len() as u64;
+    if size > clipboard_budget::TEXT_CAPTURE_BYTES as u64 {
+        return Err(clipboard_budget::limit_error());
+    }
+    for path in [&meta.html_path, &meta.rtf_path, &meta.png_path] {
+        if !path.is_empty() && Path::new(path).exists() {
+            size = size.saturating_add(history_store::file_len(path)?);
+        }
+    }
+    if size > clipboard_budget::RICH_CAPTURE_BYTES as u64 {
+        return Err(clipboard_budget::limit_error());
+    }
+    Ok(())
+}
+
 fn copy_with_rich_meta(
     app: tauri::AppHandle,
     item: String,
@@ -8973,17 +10393,21 @@ fn copy_with_rich_meta(
     };
 
     if item_type == "Image" {
+        let _decode_guard = image_preview::decode_lock()?;
         info!("Copying image from path: {}", item);
         #[cfg(target_os = "windows")]
         {
             if let Err(err) = copy_image_to_clipboard_fast(&item) {
+                if clipboard_budget::is_limit_error(&err) {
+                    return Err(err);
+                }
                 error!("Fast image clipboard copy failed, falling back: {}", err);
                 let fallback_start = Instant::now();
                 let img = image_reader_secure(Path::new(&item)).map_err(|e| {
                     error!("Failed to decode image: {}", e);
                     e.to_string()
                 })?;
-                let rgba = img.to_rgba8();
+                let rgba = img.into_rgba8();
                 let width = rgba.width();
                 let height = rgba.height();
                 let bytes = rgba.into_vec();
@@ -9004,11 +10428,20 @@ fn copy_with_rich_meta(
         #[cfg(not(target_os = "windows"))]
         {
             let fallback_start = Instant::now();
+            #[cfg(target_os = "macos")]
+            let gif_bytes = if image_preview::metadata_for_path(&item)?.is_gif {
+                Some(clipboard_budget::read_file_limited(
+                    &item,
+                    clipboard_budget::IMAGE_SOURCE_BYTES,
+                )?)
+            } else {
+                None
+            };
             let img = image_reader_secure(Path::new(&item)).map_err(|e| {
                 error!("Failed to decode image: {}", e);
                 e.to_string()
             })?;
-            let rgba = img.to_rgba8();
+            let rgba = img.into_rgba8();
             let width = rgba.width();
             let height = rgba.height();
             let bytes = rgba.into_vec();
@@ -9018,6 +10451,18 @@ fn copy_with_rich_meta(
                 error!("Failed to set image: {}", e);
                 e.to_string()
             })?;
+            #[cfg(target_os = "macos")]
+            if let Some(bytes) = gif_bytes {
+                unsafe {
+                    use cocoa::base::{id, nil};
+                    use objc::{class, msg_send, sel, sel_impl};
+                    let pasteboard: id = msg_send![class!(NSPasteboard), generalPasteboard];
+                    if pasteboard == nil {
+                        return Err("macOS pasteboard is not available".into());
+                    }
+                    write_macos_pasteboard_data(pasteboard, "com.compuserve.gif", &bytes)?;
+                }
+            }
             info!(
                 "Image clipboard copy consumed {}ms",
                 fallback_start.elapsed().as_millis()
@@ -9070,9 +10515,13 @@ fn copy_with_rich_meta(
     } else {
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         if let Some(meta) = rich_meta.as_ref() {
+            validate_rich_restore_budget(&item, meta)?;
             info!("Copying rich text formats");
             mark_internal();
             return copy_rich_to_clipboard(&item, meta);
+        }
+        if item.len() > clipboard_budget::TEXT_CAPTURE_BYTES {
+            return Err(clipboard_budget::limit_error());
         }
         info!("Copying text payload: {} bytes", item.len());
         mark_internal();
@@ -9086,6 +10535,110 @@ fn copy_with_rich_meta(
     }
     info!("Copy successful");
     Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryActionInfo {
+    item_type: String,
+    missing_paths: Vec<String>,
+}
+
+#[tauri::command]
+async fn history_item_action_info(hash: String) -> Result<HistoryActionInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let item = clipboard::history_action_item(&hash)?;
+        let missing_paths = if item.item_type == clipboard::item::ItemType::File {
+            validate_file_item(item.content)?
+        } else {
+            Vec::new()
+        };
+        Ok(HistoryActionInfo {
+            item_type: item.item_type.to_string(),
+            missing_paths,
+        })
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn copy_history_record(
+    app: tauri::AppHandle,
+    hash: String,
+    plain_text: bool,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _cleanup = auto_cleanup::pause();
+        let item = clipboard::history_action_item(&hash)?;
+        let should_touch = !plain_text || item.item_type == clipboard::item::ItemType::TextFile;
+        let mut item_type = item.item_type.to_string();
+        let content = if item.item_type == clipboard::item::ItemType::TextFile {
+            item_type = "Text".into();
+            clipboard::plain_text_content(&hash)?
+        } else if plain_text && !item.text_content.is_empty() {
+            item_type = "Text".into();
+            item.text_content
+        } else if item.item_type == clipboard::item::ItemType::Link {
+            item_type = "Text".into();
+            item.content
+                .split("|||")
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        } else {
+            item.content
+        };
+        let rich = if plain_text {
+            None
+        } else {
+            clipboard::rich_clipboard_meta(&hash)
+        };
+        copy_with_rich_meta(app, content, item_type, rich)?;
+        if should_touch {
+            if let Err(err) = clipboard::touch(&hash) {
+                error!("Failed to update clipboard item recency: {err}");
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+fn history_drag_paths(hash: &str) -> Result<Vec<String>, String> {
+    let item = clipboard::history_action_item(hash)?;
+    match item.item_type {
+        clipboard::item::ItemType::File => parse_file_clipboard_content(&item.content),
+        clipboard::item::ItemType::Image => Ok(vec![item.preview_content]),
+        _ => Err("history record is not a file drag source".into()),
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn native_drag_history_file(hash: String, is_image: bool) -> Result<bool, String> {
+    native_drag_file(history_drag_paths(&hash)?, is_image)
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn native_drag_history_file(
+    window: tauri::WebviewWindow,
+    hash: String,
+    is_image: bool,
+    preview_png: Option<Vec<u8>>,
+) -> Result<bool, String> {
+    let paths = tauri::async_runtime::spawn_blocking(move || history_drag_paths(&hash))
+        .await
+        .map_err(|err| err.to_string())??;
+    native_drag_file(window, paths, is_image, preview_png).await
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[tauri::command]
+fn native_drag_history_file(_hash: String, _is_image: bool) -> Result<bool, String> {
+    Err("native drag is unavailable".into())
 }
 
 #[tauri::command]
@@ -9931,9 +11484,8 @@ fn ensure_paste_queue_interceptor(app: &tauri::AppHandle) -> Result<(), String> 
             PASTE_QUEUE_INTERCEPTOR_READY.store(false, Ordering::SeqCst);
             PASTE_QUEUE_INTERCEPTOR_STARTING.store(false, Ordering::SeqCst);
             if let Err(err) = result {
-                paste_queue::set_active(false);
+                let _ = deactivate_paste_queue_window(&app);
                 paste_queue::set_error(None, format!("无法接管系统粘贴快捷键：{err}"));
-                paste_queue::hide_window(&app);
                 paste_queue::emit_state(&app);
             }
         });
@@ -9950,23 +11502,24 @@ fn ensure_paste_queue_interceptor(app: &tauri::AppHandle) -> Result<(), String> 
     Err("无法启动系统粘贴快捷键拦截".to_string())
 }
 
-fn show_paste_queue_window(app: &tauri::AppHandle) -> Result<(), String> {
-    let window = app
-        .get_webview_window("pasteQueue")
-        .ok_or_else(|| "粘贴队列窗口不存在".to_string())?;
+fn show_paste_queue_window(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Result<(), String> {
     let bounds = app
         .get_webview_window("clipboard")
         .map(|clipboard_window| target_clipboard_screen_bounds(&clipboard_window))
         .unwrap_or_else(|| screen_bounds(&window));
-    let x = bounds.x + bounds.width - PASTE_QUEUE_WINDOW_WIDTH - 24.0;
-    let y = bounds.y + (bounds.height - PASTE_QUEUE_WINDOW_HEIGHT) / 2.0;
-    set_window_size_for_scale(
-        &window,
-        PASTE_QUEUE_WINDOW_WIDTH,
-        PASTE_QUEUE_WINDOW_HEIGHT,
-        bounds.scale_factor,
-    )?;
+    let size = ui_text_scale::logical_size(PASTE_QUEUE_WINDOW_WIDTH, PASTE_QUEUE_WINDOW_HEIGHT);
+    let x = bounds.x + bounds.width - size.width - 24.0;
+    let y = bounds.y + (bounds.height - size.height) / 2.0;
+    set_window_size_for_scale(&window, size.width, size.height, bounds.scale_factor)?;
     set_window_position_for_scale(&window, x, y, bounds.scale_factor)?;
+    ui_text_scale::remember(window, ui_text_scale::current());
+    #[cfg(target_os = "windows")]
+    if ui_text_scale::current() > 1.0 {
+        fit_content_window_to_work_area(window)?;
+    }
     window.show().map_err(|err| err.to_string())
 }
 
@@ -9980,14 +11533,54 @@ fn schedule_paste_queue_cleanup(cleanup: paste_queue::DeferredCleanup) {
 }
 
 fn deactivate_paste_queue_window(app: &tauri::AppHandle) -> Result<(), String> {
-    paste_queue::hide_window(app);
+    let mut requests = PASTE_QUEUE_ACTIVATION.lock().unwrap();
+    let request = requests.request(false);
+    let result = deactivate_paste_queue_window_inner(app);
+    requests.finish(request);
+    result
+}
+
+fn deactivate_paste_queue_window_inner(app: &tauri::AppHandle) -> Result<(), String> {
+    PASTE_QUEUE_POINTER_GENERATION.fetch_add(1, Ordering::SeqCst);
+    PASTE_QUEUE_MENU_GENERATION.fetch_add(1, Ordering::SeqCst);
+    PASTE_QUEUE_MENU_OPEN.store(false, Ordering::SeqCst);
+    paste_queue::destroy_window(app);
     let cleanup = paste_queue::deactivate_with_deferred_cleanup()?;
     schedule_paste_queue_cleanup(cleanup);
     Ok(())
 }
 
-fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(), String> {
-    if active {
+async fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(), String> {
+    let request = PASTE_QUEUE_ACTIVATION.lock().unwrap().request(active);
+    apply_paste_queue_activation(app, request).await
+}
+
+async fn apply_paste_queue_activation(
+    app: &tauri::AppHandle,
+    request: paste_queue_activation::Request,
+) -> Result<(), String> {
+    let result = apply_paste_queue_activation_inner(app, request).await;
+    if result.is_err() {
+        let mut requests = PASTE_QUEUE_ACTIVATION.lock().unwrap();
+        if !requests.current(request) {
+            return Ok(());
+        }
+        if request.active {
+            let _ = deactivate_paste_queue_window_inner(app);
+        }
+        requests.finish(request);
+    }
+    result
+}
+
+async fn apply_paste_queue_activation_inner(
+    app: &tauri::AppHandle,
+    request: paste_queue_activation::Request,
+) -> Result<(), String> {
+    if !PASTE_QUEUE_ACTIVATION.lock().unwrap().current(request) {
+        return Ok(());
+    }
+    if request.active {
         if !is_process_trusted_with_prompt(false) {
             if let Some(source_window) = app.get_webview_window("clipboard") {
                 let app = app.clone();
@@ -10008,24 +11601,47 @@ fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(
             return Err("需要辅助功能权限才能启用粘贴队列".to_string());
         }
         ensure_paste_queue_interceptor(app)?;
-        if !paste_queue::is_active() && !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
-            record_foreground_app_before_clipboard();
-        }
-        paste_queue::set_active(true);
-        paste_queue::clear_error();
-        if let Err(err) = show_paste_queue_window(app) {
-            paste_queue::set_active(false);
-            return Err(err);
-        }
-        let generation = PASTE_QUEUE_POINTER_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-        watch_paste_queue_pointer(app.clone(), generation);
+        let window =
+            auxiliary_windows::ensure(app, auxiliary_windows::WindowKind::PasteQueue).await?;
+        let app = app.clone();
+        auxiliary_windows::on_main_thread(app.clone(), move || {
+            let mut requests = PASTE_QUEUE_ACTIVATION.lock().unwrap();
+            if !requests.current(request) {
+                if requests.discard_window(request, paste_queue::is_active()) {
+                    let _ = auxiliary_windows::destroy(&window);
+                }
+                return Ok(());
+            }
+            if !auxiliary_windows::is_open(&window) {
+                return Err("paste queue window closed while opening".into());
+            }
+            if !paste_queue::is_active() && !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+                record_foreground_app_before_clipboard();
+            }
+            show_paste_queue_window(&app, &window)?;
+            paste_queue::set_active(true);
+            paste_queue::clear_error();
+            let generation = PASTE_QUEUE_POINTER_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+            watch_paste_queue_pointer(app.clone(), generation);
+            requests.finish(request);
+            paste_queue::emit_state(&app);
+            Ok(())
+        })
+        .await?;
     } else {
-        PASTE_QUEUE_POINTER_GENERATION.fetch_add(1, Ordering::SeqCst);
-        PASTE_QUEUE_MENU_GENERATION.fetch_add(1, Ordering::SeqCst);
-        PASTE_QUEUE_MENU_OPEN.store(false, Ordering::SeqCst);
-        deactivate_paste_queue_window(app)?;
+        let app = app.clone();
+        auxiliary_windows::on_main_thread(app.clone(), move || {
+            let mut requests = PASTE_QUEUE_ACTIVATION.lock().unwrap();
+            if !requests.current(request) {
+                return Ok(());
+            }
+            deactivate_paste_queue_window_inner(&app)?;
+            requests.finish(request);
+            paste_queue::emit_state(&app);
+            Ok(())
+        })
+        .await?;
     }
-    paste_queue::emit_state(app);
     Ok(())
 }
 
@@ -10044,11 +11660,11 @@ fn set_paste_queue_menu_open(app: tauri::AppHandle, open: bool) {
 }
 
 #[tauri::command]
-fn set_paste_queue_active(
+async fn set_paste_queue_active(
     app: tauri::AppHandle,
     active: bool,
 ) -> Result<paste_queue::PasteQueueState, String> {
-    set_paste_queue_active_impl(&app, active)?;
+    set_paste_queue_active_impl(&app, active).await?;
     paste_queue::state()
 }
 
@@ -10163,6 +11779,11 @@ fn paste(
     }
     std::thread::sleep(std::time::Duration::from_millis(40));
 
+    #[cfg(target_os = "windows")]
+    windows_paste_focus::restore_before_paste(
+        LAST_FOREGROUND_HWND_BEFORE_CLIPBOARD.load(Ordering::SeqCst) as usize,
+    )?;
+
     if let Err(err) = simulate_paste_shortcut() {
         error!("Failed to simulate paste shortcut: {}", err);
         return Err(err);
@@ -10217,12 +11838,16 @@ fn set_window_size(
     } else {
         None
     };
+    let text_scale = ui_text_scale::current();
+    let (scaled_width, scaled_height) =
+        ui_text_scale::content_size(width as f64, height as f64, text_scale);
     window
-        .set_size(LogicalSize { width, height })
+        .set_size(tauri::LogicalSize::new(scaled_width, scaled_height))
         .map_err(|_| ())?;
+    ui_text_scale::remember_native(&window, text_scale);
     if let Some(((position, size), scale_factor)) = previous_position {
         let previous_height = size.height as f64 / scale_factor;
-        let next_y = position.y as f64 / scale_factor - (height as f64 - previous_height);
+        let next_y = position.y as f64 / scale_factor - (scaled_height - previous_height);
         let _ = window.set_position(LogicalPosition {
             x: position.x as f64 / scale_factor,
             y: next_y,
@@ -10241,19 +11866,31 @@ fn set_position(window: tauri::Window, position: LogicalPosition<u32>) -> Result
 
 #[tauri::command]
 async fn search(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     keywords: String,
     last_id: u64,
     last_time: Option<u64>,
     limit: usize,
     label: String,
+    background: Option<bool>,
 ) -> Result<String, String> {
     let last_time = last_time.unwrap_or(0);
+    let resources = app
+        .state::<background_resources::BackgroundResources>()
+        .inner()
+        .clone();
+    let resource_epoch = resources.epoch();
+    let is_main = window.label() == "clipboard";
     let generation = SEARCH_COMMAND_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = SEARCH_COMMAND_LOCK
             .lock()
             .map_err(|_| "search command lock is poisoned".to_string())?;
-        let is_current = || SEARCH_COMMAND_GENERATION.load(Ordering::SeqCst) == generation;
+        let is_current = || {
+            SEARCH_COMMAND_GENERATION.load(Ordering::SeqCst) == generation
+                && (!is_main || resources.epoch() == resource_epoch)
+        };
         if !is_current() {
             return Err("search superseded".to_string());
         }
@@ -10276,7 +11913,25 @@ async fn search(
             page.list.len(),
             page.has_more
         );
-        serde_json::to_string(&page).map_err(|err| err.to_string())
+        if !is_current() {
+            return Err("search superseded".into());
+        }
+        #[derive(Serialize)]
+        struct Response<'a> {
+            #[serde(flatten)]
+            page: &'a clipboard::item::Page<clipboard::item::Item>,
+            #[serde(rename = "resourceEpoch")]
+            resource_epoch: u64,
+        }
+        let response = serde_json::to_string(&Response {
+            page: &page,
+            resource_epoch,
+        })
+        .map_err(|err| err.to_string())?;
+        if is_main && !background.unwrap_or(false) && is_current() {
+            resources.submit(app, &page.list, resource_epoch, last_id == 0);
+        }
+        Ok(response)
     })
     .await
     .map_err(|err| err.to_string())?
@@ -10484,10 +12139,6 @@ async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
                 let icon_size = rect.size.to_physical::<u32>(scale_factor);
                 let icon_center_x = icon_position.x + icon_size.width as i32 / 2;
                 let icon_bottom_y = icon_position.y + icon_size.height as i32;
-                let menu_size = window.outer_size().unwrap_or(tauri::PhysicalSize {
-                    width: TRAY_MENU_WIDTH as u32,
-                    height: TRAY_MENU_HEIGHT as u32,
-                });
                 let monitor = cursor
                     .and_then(|position| {
                         app.monitor_from_point(position.x as f64, position.y as f64)
@@ -10496,6 +12147,28 @@ async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
                     })
                     .or_else(|| window.current_monitor().ok().flatten())
                     .or_else(|| window.primary_monitor().ok().flatten());
+                #[cfg(target_os = "windows")]
+                if ui_text_scale::current() > 1.0 {
+                    if let Some(target) = monitor.as_ref() {
+                        let logical_size = window
+                            .inner_size()
+                            .map_err(|error| error.to_string())?
+                            .to_logical::<f64>(scale_factor);
+                        // Move before the physical resize so mixed-DPI creation cannot
+                        // apply the primary monitor's size to the target monitor.
+                        window
+                            .set_position(target.work_area().position)
+                            .map_err(|error| error.to_string())?;
+                        window
+                            .set_size(logical_size.to_physical::<u32>(target.scale_factor()))
+                            .map_err(|error| error.to_string())?;
+                        fit_content_window_to_monitor(&window, target)?;
+                    }
+                }
+                let menu_size = window.outer_size().unwrap_or(tauri::PhysicalSize {
+                    width: TRAY_MENU_WIDTH as u32,
+                    height: TRAY_MENU_HEIGHT as u32,
+                });
                 let (min_x, min_y, max_x, max_y) = monitor
                     .map(|monitor| {
                         let pos = monitor.position();
@@ -10503,8 +12176,8 @@ async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
                         (
                             pos.x,
                             pos.y,
-                            pos.x + size.width as i32 - menu_size.width as i32,
-                            pos.y + size.height as i32 - menu_size.height as i32,
+                            (pos.x + size.width as i32 - menu_size.width as i32).max(pos.x),
+                            (pos.y + size.height as i32 - menu_size.height as i32).max(pos.y),
                         )
                     })
                     .unwrap_or((0, 0, i32::MAX, i32::MAX));
@@ -10530,7 +12203,7 @@ async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
                 }));
                 let _ = window.show();
                 let _ = window.set_focus();
-                watch_tray_menu_outside_click(app.clone());
+                watch_tray_menu_outside_click(window.clone());
                 Ok(())
             })
             .await
@@ -10586,18 +12259,20 @@ fn sync_tray_visibility(app: &tauri::AppHandle, visible: bool) -> Result<bool, S
 }
 
 fn build_test_room_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let text_scale = ui_text_scale::current();
     let window = WebviewWindowBuilder::new(handle, "testRoom", App("__test-room".into()))
         .title("vPaste 测试间")
         .visible(false)
         .focused(false)
-        .inner_size(1080.0, 760.0)
-        .min_inner_size(860.0, 620.0)
+        .inner_size(1080.0 * text_scale, 760.0 * text_scale)
+        .min_inner_size(860.0 * text_scale, 620.0 * text_scale)
         .resizable(true)
         .maximizable(true)
         .closable(true)
         .decorations(true)
         .center()
         .build()?;
+    ui_text_scale::remember(&window, text_scale);
     apply_vpaste_window_icon(&window);
     Ok(window)
 }
@@ -10605,6 +12280,7 @@ fn build_test_room_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
 fn build_paste_fallback_notice_window(
     handle: &tauri::AppHandle,
 ) -> tauri::Result<tauri::WebviewWindow> {
+    let text_scale = ui_text_scale::current();
     #[cfg(target_os = "macos")]
     let route = "paste-fallback-notice";
     #[cfg(not(target_os = "macos"))]
@@ -10625,8 +12301,12 @@ fn build_paste_fallback_notice_window(
         .minimizable(false)
         .maximizable(false)
         .shadow(false)
-        .inner_size(PASTE_FALLBACK_NOTICE_WIDTH, PASTE_FALLBACK_NOTICE_HEIGHT)
+        .inner_size(
+            PASTE_FALLBACK_NOTICE_WIDTH * text_scale,
+            PASTE_FALLBACK_NOTICE_HEIGHT * text_scale,
+        )
         .build()?;
+    ui_text_scale::remember(&window, text_scale);
     let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
     let _ = window.set_shadow(false);
     #[cfg(target_os = "macos")]
@@ -10643,10 +12323,20 @@ fn build_auxiliary_window(
 ) -> tauri::Result<tauri::WebviewWindow> {
     use auxiliary_windows::WindowKind;
 
+    let text_scale = ui_text_scale::current();
     let builder = match kind {
+        #[cfg(debug_assertions)]
+        WindowKind::DevMemory => {
+            let window = dev_memory::build_window(handle, App("__dev-memory".into()), text_scale)?;
+            ui_text_scale::remember(&window, text_scale);
+            return Ok(window);
+        }
+        WindowKind::ClipboardPreview => return build_preview_window(handle),
+        WindowKind::PasteQueue => return build_paste_queue_window(handle),
         WindowKind::Config => return build_config_window(handle),
         WindowKind::TextEditor => return build_text_editor_window(handle),
         WindowKind::PasteFallbackNotice => return build_paste_fallback_notice_window(handle),
+        WindowKind::TestRoom => return build_test_room_window(handle),
         WindowKind::OnboardingPermission => WebviewWindowBuilder::new(
             handle,
             "onboardingPermission",
@@ -10663,7 +12353,7 @@ fn build_auxiliary_window(
         .maximizable(false)
         .always_on_top(true)
         .shadow(false)
-        .inner_size(940_f64, 430_f64),
+        .inner_size(940.0 * text_scale, 430.0 * text_scale),
         WindowKind::TrayMenu => {
             WebviewWindowBuilder::new(handle, "trayMenu", App("tray-menu".into()))
                 .title("vPaste Tray")
@@ -10674,9 +12364,13 @@ fn build_auxiliary_window(
                 .background_color(tauri::window::Color(0, 0, 0, 0))
                 .skip_taskbar(true)
                 .always_on_top(true)
+                .visible_on_all_workspaces(true)
                 .resizable(false)
                 .shadow(false)
-                .inner_size(TRAY_MENU_WIDTH as f64, TRAY_MENU_HEIGHT as f64)
+                .inner_size(
+                    TRAY_MENU_WIDTH as f64 * text_scale,
+                    TRAY_MENU_HEIGHT as f64 * text_scale,
+                )
         }
         WindowKind::EmojiPicker => {
             WebviewWindowBuilder::new(handle, "emojiPicker", App("emoji-picker".into()))
@@ -10691,8 +12385,8 @@ fn build_auxiliary_window(
                 .resizable(false)
                 .shadow(false)
                 .inner_size(
-                    EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
-                    EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+                    (EMOJI_PICKER_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0) * text_scale,
+                    (EMOJI_PICKER_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0) * text_scale,
                 )
         }
         WindowKind::TabEditor => {
@@ -10708,12 +12402,14 @@ fn build_auxiliary_window(
                 .resizable(false)
                 .shadow(false)
                 .inner_size(
-                    TAB_EDITOR_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0,
-                    TAB_EDITOR_DEFAULT_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0,
+                    (TAB_EDITOR_CONTENT_WIDTH + AUXILIARY_WINDOW_GUTTER * 2.0) * text_scale,
+                    (TAB_EDITOR_DEFAULT_CONTENT_HEIGHT + AUXILIARY_WINDOW_GUTTER * 2.0)
+                        * text_scale,
                 )
         }
     };
     let window = builder.build()?;
+    ui_text_scale::remember(&window, text_scale);
     let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
     let _ = window.set_shadow(false);
     apply_vpaste_window_icon(&window);
@@ -10730,6 +12426,9 @@ fn build_auxiliary_window(
                 101
             },
         );
+        if matches!(kind, WindowKind::TrayMenu) {
+            configure_macos_overlay_window(&window);
+        }
         if matches!(
             kind,
             WindowKind::OnboardingPermission | WindowKind::TrayMenu
@@ -10741,7 +12440,15 @@ fn build_auxiliary_window(
 }
 
 fn build_config_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
-    let builder = WebviewWindowBuilder::new(handle, "config", App("config".into()))
+    let text_scale = ui_text_scale::current();
+    let url = App("config".into());
+    #[cfg(debug_assertions)]
+    let url = if memory_profile_active() {
+        tauri::WebviewUrl::External(memory_profile::dev_origin().join("config").unwrap())
+    } else {
+        url
+    };
+    let builder = WebviewWindowBuilder::new(handle, "config", url)
         .title("vPaste设置")
         .visible(false)
         .fullscreen(false)
@@ -10752,8 +12459,8 @@ fn build_config_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Webvie
         .decorations(false)
         .transparent(true)
         .background_color(tauri::window::Color(0, 0, 0, 0))
-        .inner_size(720_f64, 700_f64)
-        .min_inner_size(640_f64, 520_f64)
+        .inner_size(720.0 * text_scale, 700.0 * text_scale)
+        .min_inner_size(640.0 * text_scale, 520.0 * text_scale)
         .always_on_top(false);
     #[cfg(target_os = "windows")]
     let builder = builder.shadow(false);
@@ -10762,6 +12469,7 @@ fn build_config_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Webvie
         .hidden_title(true)
         .title_bar_style(TitleBarStyle::Overlay);
     let window = builder.build()?;
+    ui_text_scale::remember(&window, text_scale);
     let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
     apply_vpaste_window_icon(&window);
     #[cfg(target_os = "windows")]
@@ -10820,23 +12528,36 @@ fn refresh_clipboard_window_frame(window: &tauri::Window) -> tauri::Result<()> {
 }
 
 fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
-    let (screen_x, screen_y, screen_width, screen_height) =
-        if let Ok(Some(monitor)) = handle.primary_monitor() {
-            let scale_factor = monitor.scale_factor();
-            let size = monitor.size();
-            let position = monitor.position();
-            (
-                position.x as f64 / scale_factor,
-                position.y as f64 / scale_factor,
-                size.width as f64 / scale_factor,
-                size.height as f64 / scale_factor,
-            )
-        } else {
-            (0.0, 0.0, DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT)
-        };
+    let monitor = handle.primary_monitor().ok().flatten();
+    panel_size::use_configured_size(monitor.as_ref());
+    let (screen_x, screen_y, screen_width, screen_height) = if let Some(monitor) = monitor {
+        let scale_factor = monitor.scale_factor();
+        let size = monitor.size();
+        let position = monitor.position();
+        (
+            position.x as f64 / scale_factor,
+            position.y as f64 / scale_factor,
+            size.width as f64 / scale_factor,
+            size.height as f64 / scale_factor,
+        )
+    } else {
+        (0.0, 0.0, DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT)
+    };
 
-    let window_height = CLIPBOARD_WINDOW_HEIGHT;
-    let clipboard_window = WebviewWindowBuilder::new(handle, "clipboard", App("clipboard".into()))
+    let text_scale = ui_text_scale::current();
+    #[cfg(target_os = "windows")]
+    let window_height =
+        ui_text_scale::clipboard_height(panel_size::scale(), text_scale, screen_height);
+    #[cfg(not(target_os = "windows"))]
+    let window_height = CLIPBOARD_WINDOW_HEIGHT * panel_size::scale();
+    let url = App("clipboard".into());
+    #[cfg(debug_assertions)]
+    let url = if memory_profile_active() {
+        tauri::WebviewUrl::External(memory_profile::dev_origin().join("clipboard").unwrap())
+    } else {
+        url
+    };
+    let clipboard_window = WebviewWindowBuilder::new(handle, "clipboard", url)
         .title("vPaste")
         .visible(false)
         .focused(false)
@@ -10848,6 +12569,7 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
         .background_color(tauri::window::Color(0, 0, 0, 0))
         .skip_taskbar(true)
         .always_on_top(true)
+        .visible_on_all_workspaces(true)
         .accept_first_mouse(true)
         .disable_drag_drop_handler()
         .inner_size(
@@ -10859,12 +12581,24 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
             screen_y + screen_height - window_height,
         );
 
+    #[cfg(debug_assertions)]
+    let clipboard_window = if memory_profile_active() {
+        clipboard_window
+            .incognito(true)
+            .initialization_script(memory_profile::driver_script())
+    } else {
+        clipboard_window
+    };
+
     #[cfg(target_os = "macos")]
     let clipboard_window = clipboard_window
         .hidden_title(true)
         .title_bar_style(TitleBarStyle::Overlay);
 
     let clipboard_window = clipboard_window.build()?;
+    ui_text_scale::remember(&clipboard_window, text_scale);
+    clipboard_window.set_zoom(panel_size::scale())?;
+    media_resources::set_capture_scale_factor(clipboard_window.scale_factor().unwrap_or(1.0));
     let _ = clipboard_window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
     let _ = clipboard_window.set_shadow(CLIPBOARD_WINDOW_SHADOW);
     apply_vpaste_window_icon(&clipboard_window);
@@ -10872,6 +12606,7 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
     #[cfg(target_os = "macos")]
     {
         set_macos_window_level(&clipboard_window, 101);
+        configure_macos_overlay_window(&clipboard_window);
         enable_macos_mouse_moved_events(&clipboard_window);
         let window_clone = clipboard_window.clone();
         let _ = clipboard_window.run_on_main_thread(move || {
@@ -10945,7 +12680,45 @@ mod clipboard_native_frame_tests {
     }
 }
 
+#[cfg(test)]
+mod ui_text_scale_regression_tests {
+    #[test]
+    fn text_scale_is_added_to_content_size_not_screen_coordinates() {
+        let (width, height) = crate::ui_text_scale::content_size(216.0, 170.0, 1.25);
+        assert_eq!((width * 2.0, height * 2.0), (540.0, 425.0));
+        assert_eq!(
+            crate::ui_text_scale::content_size(216.0, 170.0, 1.0),
+            (216.0, 170.0)
+        );
+    }
+
+    #[test]
+    fn enlarged_panel_has_room_for_the_original_css_height_and_padding() {
+        let native_height = crate::ui_text_scale::clipboard_height(1.0, 1.25, 1200.0);
+        let physical_height = native_height * 2.0;
+        assert_eq!(physical_height, 755.0);
+        assert_eq!(
+            physical_height / (2.0 * 1.25),
+            super::CLIPBOARD_WINDOW_HEIGHT
+        );
+        assert_eq!(2400.0 - physical_height, 1645.0);
+    }
+
+    #[test]
+    fn oversized_panel_is_bounded_by_its_monitor_without_disabling_text_scaling() {
+        assert_eq!(
+            crate::ui_text_scale::clipboard_height(1.0, 2.0, 500.0),
+            500.0
+        );
+        assert_eq!(
+            crate::ui_text_scale::clipboard_height(1.0, 1.0, 1200.0),
+            super::CLIPBOARD_WINDOW_HEIGHT
+        );
+    }
+}
+
 fn build_paste_queue_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let text_scale = ui_text_scale::current();
     let window = WebviewWindowBuilder::new(handle, "pasteQueue", App("paste-queue".into()))
         .title("Paste Queue")
         .visible(false)
@@ -10959,8 +12732,12 @@ fn build_paste_queue_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::W
         .decorations(false)
         .transparent(true)
         .background_color(tauri::window::Color(0, 0, 0, 0))
-        .inner_size(PASTE_QUEUE_WINDOW_WIDTH, PASTE_QUEUE_WINDOW_HEIGHT)
+        .inner_size(
+            PASTE_QUEUE_WINDOW_WIDTH * text_scale,
+            PASTE_QUEUE_WINDOW_HEIGHT * text_scale,
+        )
         .always_on_top(true)
+        .visible_on_all_workspaces(true)
         .skip_taskbar(true);
     #[cfg(target_os = "windows")]
     let window = window.shadow(false);
@@ -10969,12 +12746,14 @@ fn build_paste_queue_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::W
         .hidden_title(true)
         .title_bar_style(TitleBarStyle::Overlay);
     let window = window.build()?;
+    ui_text_scale::remember(&window, text_scale);
     let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
     let _ = window.set_shadow(false);
     apply_vpaste_window_icon(&window);
     #[cfg(target_os = "macos")]
     {
         set_macos_window_level(&window, 102);
+        configure_macos_overlay_window(&window);
         enable_macos_mouse_moved_events(&window);
         configure_macos_transparent_window(&window);
     }
@@ -11007,7 +12786,32 @@ fn show_startup_error(message: &str) {
     eprintln!("{message}");
 }
 
+fn memory_profile_active() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        memory_profile::directory().is_some()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
+}
+
 fn main() {
+    #[cfg(debug_assertions)]
+    match memory_profile::configure() {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("Memory profile startup failed: {error}");
+            std::process::exit(2);
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    if std::env::args().any(|arg| arg == "--memory-profile-dir") {
+        eprintln!("Isolated memory profiling requires a Debug build");
+        std::process::exit(2);
+    }
     #[cfg(target_os = "windows")]
     if windows_main_shortcut::run_if_requested() {
         return;
@@ -11025,17 +12829,21 @@ fn main() {
     let show_panel_on_startup = cfg!(target_os = "macos")
         || startup_panel::is_update_restart(std::env::args_os(), env!("CARGO_PKG_VERSION"));
 
-    if let Err(err) = runtime_mode::configure_webview_data_directory() {
-        let message = format!("vPaste portable mode could not start:\n\n{err}");
-        show_startup_error(&message);
-        std::process::exit(1);
+    if !memory_profile_active() {
+        if let Err(err) = runtime_mode::configure_webview_data_directory() {
+            let message = format!("vPaste portable mode could not start:\n\n{err}");
+            show_startup_error(&message);
+            std::process::exit(1);
+        }
     }
 
     // The single-instance plugin may terminate this process before Tauri setup.
     // Refresh an opted-in portable path first so moving the folder still works.
     #[cfg(target_os = "windows")]
-    if let Err(err) = portable_autostart::reconcile_before_single_instance() {
-        eprintln!("Failed to reconcile portable autostart before single-instance setup: {err}");
+    if !memory_profile_active() {
+        if let Err(err) = portable_autostart::reconcile_before_single_instance() {
+            eprintln!("Failed to reconcile portable autostart before single-instance setup: {err}");
+        }
     }
 
     // env_logger::Builder::new()
@@ -11054,26 +12862,40 @@ fn main() {
         error!("{:?}", backtrace::Backtrace::new())
     }));
 
-    let context = tauri::generate_context!();
+    let mut context = tauri::generate_context!();
+    #[cfg(debug_assertions)]
+    if memory_profile_active() {
+        context.config_mut().build.dev_url = Some(memory_profile::dev_origin());
+    }
     info!("running vPaste");
     let builder = tauri::Builder::default()
         .manage(auxiliary_windows::Readiness::default())
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        .manage(background_resources::BackgroundResources::default());
+    #[cfg(target_os = "windows")]
+    let builder = builder.plugin(ui_text_scale::plugin());
+    let builder = if memory_profile_active() {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if maintenance::installer_exit_requested_for_args(&args) {
                 app.exit(0);
                 return;
             }
             if let Some(window) = app.get_webview_window("onboardingPermission") {
-                let _ = window.hide();
+                let _ = auxiliary_windows::destroy(&window);
             }
             if let Some(window) = app.get_webview_window("clipboard") {
                 show_clipboard_window(&window);
                 focus_clipboard_window(&window, "second instance launch");
             }
         }))
+    };
+    let builder = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init());
+    #[cfg(debug_assertions)]
+    let builder = builder.manage(dev_memory::Monitor::default());
     #[cfg(not(all(target_os = "macos", feature = "mac-app-store")))]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     builder
@@ -11097,11 +12919,16 @@ fn main() {
                         if let Some(s) = config.shortcut_keys.paste_queue_toggle {
                             if let Ok(parsed) = s.parse::<Shortcut>() {
                                 if shortcut == &parsed {
-                                    let active = !paste_queue::is_active();
-                                    if let Err(err) = set_paste_queue_active_impl(&app, active) {
-                                        paste_queue::set_error(None, err);
-                                        paste_queue::emit_state(&app);
-                                    }
+                                    let request = PASTE_QUEUE_ACTIVATION.lock().unwrap().toggle(paste_queue::is_active());
+                                    let app = app.clone();
+                                    tauri::async_runtime::spawn(async move {
+                                        if let Err(err) =
+                                            apply_paste_queue_activation(&app, request).await
+                                        {
+                                            paste_queue::set_error(None, err);
+                                            paste_queue::emit_state(&app);
+                                        }
+                                    });
                                 }
                             }
                         }
@@ -11110,6 +12937,20 @@ fn main() {
                 .build(),
         )
         .on_window_event(|window, event| {
+            if window.label() == "config" && matches!(event,
+                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }) {
+                let _ = window.emit("panel-size-display-changed", ());
+            }
+            if window.label() == "config"
+                && matches!(event, tauri::WindowEvent::Focused(false) | tauri::WindowEvent::Destroyed)
+            {
+                panel_size::cancel(window.app_handle());
+            }
+            if let tauri::WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                if window.label() == "clipboard" {
+                    media_resources::set_capture_scale_factor(*scale_factor);
+                }
+            }
             #[cfg(target_os = "windows")]
             if let tauri::WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
                 if should_reapply_clipboard_size_after_scale_change(
@@ -11122,8 +12963,21 @@ fn main() {
                         reapply_clipboard_size_after_scale_change(&webview_window, *scale_factor);
                     }
                 }
+                if window.label() != "clipboard" && window.label() != "clipboardPreview"
+                    && ui_text_scale::current() > 1.0 && window.is_visible().unwrap_or(false)
+                {
+                    if let Some(webview_window) = window.app_handle().get_webview_window(window.label()) {
+                        if let Err(error) = fit_content_window_to_work_area(&webview_window) {
+                            error!("Failed to fit scaled window after DPI change: {error}");
+                        }
+                    }
+                }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if matches!(window.label(), "trayMenu" | "pasteFallbackNotice" | "devMemory") {
+                    api.prevent_close();
+                    let _ = auxiliary_windows::destroy_native(window);
+                }
                 if window.label() == "textEditor" {
                     api.prevent_close();
                     let _ = window.emit("text-editor-close-requested", ());
@@ -11137,20 +12991,15 @@ fn main() {
                 }
                 if window.label() == "config" {
                     api.prevent_close();
-                    #[cfg(target_os = "windows")]
-                    if windows_main_shortcut::set_recording(false) {
-                        let _ = end_main_shortcut_recording(window.app_handle().clone());
-                    }
-                    let _ = window.hide();
+                    let _ = close_config_window(window.app_handle().clone());
                 }
                 if window.label() == "testRoom" {
                     api.prevent_close();
-                    let _ = window.hide();
+                    let _ = auxiliary_windows::destroy_native(window);
                 }
                 if window.label() == "clipboardPreview" {
                     api.prevent_close();
-                    let _ = window.hide();
-                    PREVIEW_PINNED.store(false, Ordering::SeqCst);
+                    let _ = retain_preview_window(window.app_handle());
                     if let Some(clipboard_window) =
                         window.app_handle().get_webview_window("clipboard")
                     {
@@ -11159,19 +13008,27 @@ fn main() {
                 }
                 if window.label() == "tabEditor" {
                     api.prevent_close();
-                    let _ = window.hide();
+                    let _ = auxiliary_windows::destroy_native(window);
                 }
                 if window.label() == "emojiPicker" {
                     api.prevent_close();
-                    let _ = window.hide();
+                    let _ = auxiliary_windows::destroy_native(window);
                 }
                 if window.label() == "onboardingPermission" {
                     api.prevent_close();
-                    let _ = window.hide();
+                    let _ = auxiliary_windows::destroy_native(window);
                     restore_parent_after_permission_guide(window.app_handle());
                 }
             }
             if let tauri::WindowEvent::Focused(focused) = event {
+                #[cfg(debug_assertions)]
+                if *focused && window.label() != "devMemory" {
+                    if let Some(monitor) = window.app_handle().get_webview_window("devMemory") {
+                        if monitor.is_visible().unwrap_or(false) {
+                            let _ = dev_memory::keep_on_top(&monitor);
+                        }
+                    }
+                }
                 if window.label() == "textEditor" {
                     TEXT_EDITOR_FOCUSED.store(*focused, Ordering::SeqCst);
                 }
@@ -11192,23 +13049,27 @@ fn main() {
             }
             if let tauri::WindowEvent::Focused(false) = event {
                 if window.label() == "trayMenu" {
-                    let _ = window.hide();
+                    let _ = auxiliary_windows::destroy_native(window);
                 }
             }
             if let tauri::WindowEvent::Focused(false) = event {
                 if window.label() == "emojiPicker" {
-                    let _ = window.hide();
+                    let _ = auxiliary_windows::destroy_native(window);
                 }
             }
             if let tauri::WindowEvent::Focused(false) = event {
                 if window.label() == "clipboard"
+                    && !memory_profile_active()
                     && CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
                     && !clipboard_blur_hide_suppressed()
                 {
                     let app = window.app_handle().clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(std::time::Duration::from_millis(35));
-                        if tab_editor_window_active(&app) || text_editor_window_active(&app) {
+                        if tab_editor_window_active(&app)
+                            || text_editor_window_active(&app)
+                            || memory_monitor_window_active(&app)
+                        {
                             return;
                         }
                         if preview_window_visible(&app) {
@@ -11238,7 +13099,8 @@ fn main() {
                             let tauri_focused = window.is_focused().unwrap_or(false);
                             let native_foreground =
                                 is_native_window_foreground(&window, "focus-loss hide guard");
-                            let tab_editor_active = tab_editor_window_active(&app);
+                            let tab_editor_active = tab_editor_window_active(&app)
+                                || memory_monitor_window_active(&app);
                             if CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
                                 && !tauri_focused
                                 && !native_foreground
@@ -11256,9 +13118,22 @@ fn main() {
                 app.handle().exit(0);
                 return Ok(());
             }
-            let default_app_data_dir: PathBuf = app.path().app_local_data_dir().unwrap();
-            let app_local_data_dir = runtime_mode::initialize(default_app_data_dir)
-                .map_err(|err| io::Error::new(io::ErrorKind::PermissionDenied, err))?;
+            let default_app_data_dir: PathBuf = {
+                #[cfg(debug_assertions)]
+                if let Some(root) = memory_profile::directory() {
+                    root.to_path_buf()
+                } else {
+                    app.path().app_local_data_dir().unwrap()
+                }
+                #[cfg(not(debug_assertions))]
+                { app.path().app_local_data_dir().unwrap() }
+            };
+            let app_local_data_dir = if memory_profile_active() {
+                default_app_data_dir
+            } else {
+                runtime_mode::initialize(default_app_data_dir)
+                    .map_err(|err| io::Error::new(io::ErrorKind::PermissionDenied, err))?
+            };
             if !app_local_data_dir.exists() {
                 match fs::create_dir_all(&app_local_data_dir) {
                     Ok(_) => info!("目录已成功创建: {:?}", app_local_data_dir),
@@ -11274,6 +13149,14 @@ fn main() {
             );
             info!("app_path: {:?}", &app_data_dir);
             *GLOBAL_APP_DATA_DIR.lock().unwrap() = app_data_dir;
+            #[cfg(debug_assertions)]
+            if memory_profile_active() {
+                memory_profile::setup(app.handle()).map_err(io::Error::other)?;
+                #[cfg(target_os = "macos")]
+                panel_size::layout_check::start(app.handle().clone());
+                panel_animation::probe::start(app.handle().clone());
+                return Ok(());
+            }
             app_updater::start_background_checks(app.handle().clone());
             install_vpaste_tray(app.handle())?;
 
@@ -11345,11 +13228,7 @@ fn main() {
                 error!("Failed to resume clipboard search index updates: {err}");
             }
             let _ = build_clipboard_window(app.handle())?;
-            let _ = build_paste_queue_window(app.handle())?;
             initialize_paste_queue_worker(app.handle());
-            if get_developer_mode() {
-                let _ = build_test_room_window(app.handle())?;
-            }
             get_app_data_dir();
             let handle = app.handle().clone();
 
@@ -11368,6 +13247,8 @@ fn main() {
                         .build(),
                 )
                 .expect("load log plugin error");
+            #[cfg(target_os = "windows")]
+            windows_paste_focus::initialize();
             #[cfg(target_os = "windows")]
             windows_main_shortcut::log_status();
             std::thread::spawn(move || {
@@ -11398,11 +13279,30 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(debug_assertions)]
+            memory_profile::memory_profile_record,
+            #[cfg(debug_assertions)]
+            memory_profile::memory_profile_trim_cache,
+            #[cfg(debug_assertions)]
+            memory_profile::memory_profile_parking_state,
+            open_dev_memory_window,
+            close_dev_memory_window,
+            get_dev_memory_report,
+            set_dev_memory_monitoring,
             auxiliary_window_ready,
+            close_config_window,
+            panel_size::get_clipboard_panel_size_state,
+            panel_size::reset_clipboard_panel_size,
+            panel_size::begin_clipboard_size_preview,
+            panel_size::update_clipboard_size_preview,
+            panel_size::finish_clipboard_size_preview,
             startup_panel::clipboard_window_ready,
             wait_for_clipboard_capture,
             copy,
             copy_history_item,
+            copy_history_record,
+            history_item_action_info,
+            native_drag_history_file,
             record_text_history,
             search,
             paste,
@@ -11483,6 +13383,8 @@ fn main() {
             is_alt_key_pressed,
             is_quick_input_modifier_pressed,
             show_preview_window,
+            pending_preview_item,
+            commit_preview_window,
             dismiss_hover_preview_window,
             is_preview_window_visible,
             set_preview_pinned,
@@ -11520,6 +13422,7 @@ fn main() {
             remove_item_tag,
             delete_clipboard_item,
             plain_text_content,
+            plain_text_preview,
             open_text_editor_window,
             get_text_editor_document,
             save_clipboard_text,
@@ -11527,6 +13430,14 @@ fn main() {
             color_conversion_options,
             export_image_item,
             read_preview_text_file,
+            resolve_history_media,
+            read_history_rich_render,
+            open_history_view,
+            read_history_view_page,
+            read_history_card_payloads,
+            set_history_viewport,
+            close_history_view,
+            show_history_preview,
             history_file_preview_asset_path,
             history_image_card_preview_asset_path,
             history_image_metadata,

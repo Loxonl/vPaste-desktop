@@ -1,4 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
+import { installHistoryMockBridge } from "../helpers/historyMockBridge";
+
+test.beforeEach(async ({ page }) => { await page.addInitScript(installHistoryMockBridge); });
+
 
 type Update = { id: number; revision: string; text: string; html: string; rtf: string };
 type Probe = Window & { __editorProbe: { saves: Update[]; opened: string[]; hidden: number; searches: number; text: string; emit: (event: string, payload?: unknown) => void } };

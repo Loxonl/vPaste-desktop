@@ -14,7 +14,7 @@ async function installPreviewBridge(page: Page, language: "Chinese" | "English",
                 for (const [id, listener] of listeners) {
                     if (listener.event === "preview-item") callbacks.get(listener.handler)?.({
                         event: "preview-item", id,
-                        payload: { item_type: "Link", content: "https://example.com/page" },
+                        payload: { request_id: 1, item_type: "Link", content: "https://example.com/page" },
                     });
                 }
             },
@@ -23,6 +23,7 @@ async function installPreviewBridge(page: Page, language: "Chinese" | "English",
                     calls.push({ cmd, args });
                     if (cmd === "get_config") return JSON.stringify({ multilingual: language, theme: "system" });
                     if (cmd === "list_language_packs") return [];
+                    if (cmd === "commit_preview_window") return args.requestId === 1;
                     if (cmd === "plugin:event|listen") {
                         const id = ++listenerId;
                         listeners.set(id, { event: String(args.event), handler: Number(args.handler) });

@@ -3,6 +3,7 @@ import Config from "./Config";
 import type { SettingsBridge } from "./SettingsBridge";
 import { DEFAULT_CONFIG } from "./settingsTypes";
 import type { UpdateState } from "../update";
+import { isPanelSize, type PanelSizeState } from "./panelSizePreview";
 
 function readPreviewConfig() {
     const params = new URLSearchParams(window.location.search);
@@ -34,6 +35,21 @@ const previewUpdateState: UpdateState = {
 
 function createPreviewBridge(): SettingsBridge {
     let config = readPreviewConfig();
+    let sizeSession = 0;
+    const requestedSize = new URLSearchParams(window.location.search).get("panel-recommendation");
+    const recommended = isPanelSize(requestedSize) ? requestedSize : "large";
+    // Fixed screen fixtures for the development preview; native Rust owns selection.
+    const display = {
+        small: { pixel_width: 1920, pixel_height: 1080, scale_factor: 1.5, logical_width: 1280, logical_height: 720, work_width: 1280, work_height: 672 },
+        medium: { pixel_width: 1920, pixel_height: 1080, scale_factor: 1.25, logical_width: 1536, logical_height: 864, work_width: 1536, work_height: 816 },
+        large: { pixel_width: 3840, pixel_height: 2160, scale_factor: 2, logical_width: 1920, logical_height: 1080, work_width: 1920, work_height: 990 },
+    }[recommended];
+    const panelSizeState = (): PanelSizeState => ({
+        preference: config.clipboard_panel_size,
+        recommended,
+        effective: config.clipboard_panel_size ?? recommended,
+        display,
+    });
 
     const invoke: SettingsBridge["invoke"] = async <T,>(
         command: string,
@@ -42,6 +58,25 @@ function createPreviewBridge(): SettingsBridge {
         let result: unknown;
 
         switch (command) {
+            case "get_clipboard_panel_size_state":
+                result = panelSizeState();
+                break;
+            case "reset_clipboard_panel_size":
+                config = { ...config, clipboard_panel_size: null };
+                result = panelSizeState();
+                break;
+            case "begin_clipboard_size_preview":
+                result = ++sizeSession;
+                break;
+            case "update_clipboard_size_preview":
+                result = null;
+                break;
+            case "finish_clipboard_size_preview": {
+                const size = (args as { size?: unknown } | undefined)?.size;
+                if (isPanelSize(size)) config = { ...config, clipboard_panel_size: size };
+                result = panelSizeState();
+                break;
+            }
             case "get_config":
                 result = JSON.stringify(config);
                 break;
@@ -49,7 +84,7 @@ function createPreviewBridge(): SettingsBridge {
                 result = [];
                 break;
             case "save_config":
-                config = JSON.parse(String((args as { config?: unknown } | undefined)?.config));
+                config = { ...JSON.parse(String((args as { config?: unknown } | undefined)?.config)), clipboard_panel_size: config.clipboard_panel_size };
                 result = {
                     message: "",
                 };

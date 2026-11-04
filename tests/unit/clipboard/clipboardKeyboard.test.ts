@@ -29,6 +29,12 @@ function context(overrides: Partial<Parameters<typeof clipboardKeyDownAction>[1]
 }
 
 describe("clipboardKeyDownAction", () => {
+    it.each([" ", "Spacebar"])("ignores held preview-key repeats (%s) without changing single-press toggle", key => {
+        expect(clipboardKeyDownAction(keyDown(key), context())).toEqual({ type: "toggle-preview" });
+        expect(clipboardKeyDownAction(keyDown(key, { repeat: true }), context())).toBeNull();
+        expect(clipboardKeyDownAction(keyDown(key), context())).toEqual({ type: "toggle-preview" });
+    });
+
     it("cycles categories with Control+Tab on both platforms independently of Tab selection", () => {
         for (const isMac of [false, true]) {
             for (const tabQuickSelectEnabled of [false, true]) {

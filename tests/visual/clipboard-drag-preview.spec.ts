@@ -1,4 +1,8 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { installHistoryMockBridge } from "../helpers/historyMockBridge";
+
+test.beforeEach(async ({ page }) => { await page.addInitScript(installHistoryMockBridge); });
+
 
 type DragKind = "Text" | "TextFile" | "Link" | "Color" | "Image" | "File";
 type FileCase = "image" | "document" | "folder" | "multiple";
@@ -64,6 +68,9 @@ async function openDragCard(page: Page, kind: DragKind, options: {
                         image_width: fileCase === "image" ? 200 : null, image_height: fileCase === "image" ? 160 : null,
                     };
                     if (command === "history_image_metadata") return { width: 200, height: 160, isGif: false };
+                    if (command === "resolve_history_media") return {
+                        assetPath: imageSrc, metadata: { width: 200, height: 160, isGif: false },
+                    };
                     if (["history_image_card_preview_asset_path", "history_file_data_url"].includes(command)) return imageSrc;
                     if (command === "get_paste_queue_state") return { active: false, revision: 0 };
                     if (command === "get_update_state") return { status: "disabled", currentVersion: "", downloadedBytes: 0, portable: false, feedEnabled: false, releaseUrl: "" };

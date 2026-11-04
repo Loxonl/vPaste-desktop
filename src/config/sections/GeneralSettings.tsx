@@ -9,10 +9,12 @@ import type { LanguageOption, PermissionId, PermissionStatus, SettingsSectionPro
 import { SettingsRow, SettingsSection } from "../../ui/settings/SettingsPrimitives";
 import StatusBadge from "../../ui/StatusBadge";
 import { AnimatePresence, m, useMotionPreset } from "../../ui/motion";
+import PanelSizeSetting from "./PanelSizeSetting";
+import type { PanelSizePreference } from "../panelSizePreview";
 
 const PENDING_PERMISSION_WINDOW_KEY = "vpaste.pendingOnboardingPermission.v1";
 
-export default function GeneralSettings({ bridge, config, languages, t, onSave }: SettingsSectionProps & { languages: LanguageOption[] }) {
+export default function GeneralSettings({ bridge, config, languages, t, onSave, onPanelSizeSaved }: SettingsSectionProps & { languages: LanguageOption[]; onPanelSizeSaved?: (size: PanelSizePreference) => void }) {
     const [permissionStatus, setPermissionStatus] = React.useState<PermissionStatus | null>(null);
     const permissionStatusMotion = useMotionPreset("stateIndicator");
     const { state: updateState } = useAppUpdateState(bridge);
@@ -210,6 +212,7 @@ export default function GeneralSettings({ bridge, config, languages, t, onSave }
             </SettingsSection>
 
             <SettingsSection title={t("settings.section.personalization")}>
+                    <PanelSizeSetting bridge={bridge} value={config.clipboard_panel_size} onSaved={onPanelSizeSaved} t={t} />
                     <SettingsRow
                         labelId="settings-mouse-paste-label"
                         label={t("settings.mousePaste")}

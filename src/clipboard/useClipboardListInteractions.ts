@@ -384,6 +384,12 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
         const container = optionsRef.current.containerRef.current;
         if (!container) return;
 
+        if (container.scrollHeight > container.clientHeight + 1
+            && !event.shiftKey && Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+            stopWheelScroll();
+            return;
+        }
+
         const { delta: scrollAmount, rawDelta } = normalizeWheelDelta(event, container.clientWidth);
         if (scrollAmount === 0) return;
 
@@ -430,7 +436,7 @@ export function useClipboardListInteractions(options: ClipboardListInteractionOp
         );
         state.timeConstant = wheelTimeConstant(rawDelta, event.deltaMode, eventInterval);
         startWheelScrollAnimation();
-    }, [handleScroll, scheduleWheelScrollIdle, startWheelScrollAnimation]);
+    }, [handleScroll, scheduleWheelScrollIdle, startWheelScrollAnimation, stopWheelScroll]);
 
     useEffect(() => {
         const container = optionsRef.current.containerRef.current;

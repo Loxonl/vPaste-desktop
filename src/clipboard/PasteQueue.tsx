@@ -16,6 +16,7 @@ import MoreHorizRoundedIcon from "@mui/icons-material/MoreHorizRounded";
 import SwapVertRoundedIcon from "@mui/icons-material/SwapVertRounded";
 import UndoRoundedIcon from "@mui/icons-material/UndoRounded";
 import { error } from "@tauri-apps/plugin-log";
+import { notifyAuxiliaryWindowReady } from "../auxiliaryWindowReady";
 import { useLanguage } from "../lang";
 import { isMacPlatform } from "../shortcutDisplay";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -220,7 +221,13 @@ export default function PasteQueue() {
                 setPointerHash(row?.dataset.queueHash ?? null);
             },
         );
+        const cancelReady = notifyAuxiliaryWindowReady([
+            unlisten,
+            unlistenMenuDismiss,
+            unlistenPointerPosition,
+        ]);
         return () => {
+            cancelReady();
             void unlisten.then(remove => remove());
             void unlistenMenuDismiss.then(remove => remove());
             void unlistenPointerPosition.then(remove => remove());

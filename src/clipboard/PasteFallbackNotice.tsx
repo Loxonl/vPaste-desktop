@@ -19,8 +19,9 @@ export default function PasteFallbackNotice({
 
     const openPermissionCenter = async () => {
         try {
-            await invoke("hide_paste_fallback_notice");
+            // Dispatch navigation while this webview can still send commands.
             await invoke("open_config_window", { target: "permissions" });
+            await invoke("hide_paste_fallback_notice");
         } catch (e) {
             error(`Failed to open permission settings from paste fallback notice: ${e}`);
         }

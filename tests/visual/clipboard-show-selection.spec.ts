@@ -1,6 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
+import { installHistoryMockBridge } from "../helpers/historyMockBridge";
 
-type ProbeWindow = Window & { __showProbe: {
+test.beforeEach(async ({ page }) => { await page.addInitScript(installHistoryMockBridge); });
+
+
+type ProbeWindow = Window & typeof globalThis & { __showProbe: {
     calls: Array<{ command: string; args: Record<string, unknown> }>;
     captureCalls: () => number;
     configCalls: () => number;
@@ -100,6 +104,41 @@ async function openClipboard(page: Page, retainLastPosition = false, retainSearc
     await expect(card(page, "first")).toBeVisible();
 }
 
+test("parking retains card DOM and the bounded view until a fresh show synchronizes", async ({ page }) => {
+    await openClipboard(page, true);
+    const first = await card(page, "first").elementHandle();
+    const closeCount = await page.evaluate(() => (window as ProbeWindow).__showProbe.calls.filter(call => call.command === "close_history_view").length);
+    await page.evaluate(() => {
+        (window as ProbeWindow).__showProbe.emit("window-hide");
+        (window as ProbeWindow).__showProbe.emit("window-parked");
+    });
+    await expect(page.locator('[class*="clipboard-container"]')).toHaveClass(/parked/);
+    await expect(page.locator('[class*="clipboard-container"]')).toHaveAttribute("aria-hidden", "true");
+    await expect(page.locator('[class*="clipboard-container"]')).toHaveJSProperty("inert", true);
+    expect(await first!.evaluate(node => node.isConnected)).toBe(true);
+    expect(await page.evaluate(() => (window as ProbeWindow).__showProbe.calls.filter(call => call.command === "close_history_view").length)).toBe(closeCount);
+    await page.evaluate(() => {
+        (window as ProbeWindow).__showProbe.emit("window-show");
+        (window as ProbeWindow).__showProbe.releaseCapture();
+        (window as ProbeWindow).__showProbe.emit("window-show-complete");
+    });
+    await expect(card(page, "first")).toHaveClass(/selected/);
+    expect(await first!.evaluate(node => node.isConnected)).toBe(true);
+});
+
+test("direct parking cancels an unfinished show before the next synchronization", async ({ page }) => {
+    await openClipboard(page);
+    await page.evaluate(() => (window as ProbeWindow).__showProbe.emit("window-show"));
+    await expect.poll(() => page.evaluate(() => (window as ProbeWindow).__showProbe.captureCalls())).toBeGreaterThan(0);
+    const pending = await page.evaluate(() => (window as ProbeWindow).__showProbe.captureCalls());
+    await page.evaluate(() => {
+        (window as ProbeWindow).__showProbe.emit("window-parked");
+        (window as ProbeWindow).__showProbe.emit("window-show");
+    });
+    await expect.poll(() => page.evaluate(() => (window as ProbeWindow).__showProbe.captureCalls())).toBeGreaterThan(pending);
+    await page.evaluate(() => (window as ProbeWindow).__showProbe.releaseCapture());
+});
+
 test("quick navigation after show starts from the first card", async ({ page }) => {
     await openClipboard(page);
     await page.keyboard.press("ArrowRight");
@@ -129,6 +168,73 @@ test("keyboard focus follows the selected card", async ({ page }) => {
     await expect(card(page, "second")).toHaveClass(/selected/);
     await expect.poll(() => page.evaluate(() => (document.activeElement as HTMLElement)?.dataset.hash)).toBe("second");
 });
+
+for (const theme of ["light", "dark"] as const) {
+    test(`${theme} toolbar keeps circular button surfaces and compact hover shadows`, async ({ page }, testInfo) => {
+        await page.emulateMedia({ colorScheme: theme });
+        await openClipboard(page);
+        const dark = theme === "dark";
+        const edge = dark ? "rgba(255, 255, 255, 0.08)" : "rgba(31, 38, 36, 0.05)";
+        const shadow = `rgba(0, 0, 0, ${dark ? "0.24" : "0.09"}) 0px 1px 3px 0px, ${edge} 0px 0px 0px 1px inset`;
+        const hoverShadow = `rgba(0, 0, 0, ${dark ? "0.28" : "0.1"}) 0px 2px 5px 0px, ${edge} 0px 0px 0px 1px inset`;
+        for (const label of ["搜索", "粘贴队列", "设置"]) {
+            const button = page.getByRole("button", { name: label, exact: true });
+            await page.mouse.move(0, 0);
+            await expect(button).toHaveCSS("background-color", dark ? "rgba(33, 38, 45, 0.64)" : "rgba(255, 255, 255, 0.72)");
+            await expect(button).toHaveCSS("border-radius", "50%");
+            await expect(button).toHaveCSS("width", "28px");
+            await expect(button).toHaveCSS("height", "28px");
+            await expect(button).toHaveCSS("box-shadow", shadow);
+            await button.hover();
+            await expect(button).toHaveCSS("background-color", dark ? "rgba(45, 51, 60, 0.82)" : "rgba(255, 255, 255, 0.92)");
+            await expect(button).toHaveCSS("box-shadow", hoverShadow);
+        }
+        const settings = page.getByRole("button", { name: "设置", exact: true });
+        await settings.focus();
+        await page.keyboard.press("Tab");
+        await page.keyboard.press("Shift+Tab");
+        await expect(settings).toBeFocused();
+        await expect(settings).toHaveClass(/Mui-focusVisible/);
+        await expect(settings).toHaveCSS("box-shadow", /0px 0px 0px 3px/);
+        await page.screenshot({ path: testInfo.outputPath("toolbar-focus.png") });
+    });
+
+    test(`${theme} queue multiselection keeps the ordinary card shadow and selection markers`, async ({ page }, testInfo) => {
+        await page.emulateMedia({ colorScheme: theme });
+        await openClipboard(page);
+        await page.evaluate(() => (window as ProbeWindow).__showProbe.emit("paste-queue-state-changed", { active: true, revision: 1 }));
+        await expect(page.getByRole("toolbar", { name: "选择要加入队列的项目" })).toBeVisible();
+        await card(page, "first").click();
+        await card(page, "second").click();
+        const shadow = `rgba(0, 0, 0, ${theme === "light" ? "0.06" : "0.18"}) 0px 2px 6px 0px`;
+        for (const hash of ["first", "second"]) {
+            await expect(card(page, hash)).toHaveClass(/selected/);
+            await expect(card(page, hash)).toHaveCSS("box-shadow", shadow);
+            await expect(card(page, hash)).toHaveCSS("outline-width", "2px");
+            await expect(card(page, hash).locator('[class*="queue-selection-indicator"] svg')).toBeVisible();
+        }
+        await expect(page.getByRole("button", { name: /加入\s*2\s*项/ })).toBeEnabled();
+        expect(await page.evaluate(() => (window as ProbeWindow).__showProbe.calls.filter(call => call.command === "paste"))).toHaveLength(0);
+        await page.screenshot({ path: testInfo.outputPath("queue-selection.png") });
+    });
+
+    test(`${theme} lightweight clipboard elevation keeps keyboard selection visible`, async ({ page }) => {
+        await page.emulateMedia({ colorScheme: theme });
+        await openClipboard(page);
+        await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+        const shadow = `rgba(0, 0, 0, ${theme === "light" ? "0.06" : "0.18"}) 0px 2px 6px 0px`;
+        await expect(card(page, "first")).toHaveCSS("box-shadow", shadow);
+        await expect(card(page, "second")).toHaveCSS("box-shadow", shadow);
+        await expect(card(page, "first")).toHaveCSS("outline-width", "2px");
+        await expect(card(page, "first")).toHaveCSS("outline-offset", "2px");
+
+        await page.keyboard.press("ArrowRight");
+        await expect(card(page, "second")).toHaveClass(/selected/);
+        await expect(card(page, "second")).toHaveCSS("box-shadow", shadow);
+        await expect(card(page, "second")).toHaveCSS("outline-style", "solid");
+        await expect(card(page, "first")).not.toHaveClass(/selected/);
+    });
+}
 
 test("reopening moves a previously focused card back to the first selection", async ({ page }) => {
     await openClipboard(page);
@@ -171,7 +277,7 @@ for (const retainLastPosition of [false, true]) {
     });
 }
 
-test("first reopening resets selection before the show-time config request returns", async ({ page }) => {
+test("first reopening from parking resets selection before the show-time config request returns", async ({ page }) => {
     await openClipboard(page);
     await expect.poll(() => page.evaluate(() => (window as ProbeWindow).__showProbe.configCalls())).toBeGreaterThan(0);
     await page.keyboard.press("ArrowRight");
@@ -181,7 +287,7 @@ test("first reopening resets selection before the show-time config request retur
     await page.evaluate(() => {
         const probe = (window as ProbeWindow).__showProbe;
         probe.emit("window-hide");
-        probe.emit("window-hidden");
+        probe.emit("window-parked");
         probe.holdConfig();
         probe.emit("window-show");
     });

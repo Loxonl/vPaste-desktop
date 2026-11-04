@@ -20,5 +20,5 @@ export const tauriSettingsBridge: SettingsBridge = {
     save,
     convertFileSrc,
     startWindowDragging: () => getCurrentWindow().startDragging(),
-    hideWindow: () => getCurrentWindow().hide(),
+    hideWindow: () => invoke("close_config_window"),
 };

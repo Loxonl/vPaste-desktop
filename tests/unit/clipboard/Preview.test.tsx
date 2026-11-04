@@ -1,8 +1,7 @@
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { error as logError } from "@tauri-apps/plugin-log";
-import { Item, ItemType } from "../../../src/clipboard/Item";
-import { createClipboardPreviewRuntime } from "../../../src/clipboard/clipboardPreviewRuntime";
+import { ItemType } from "../../../src/clipboard/Item";
 import { PreviewBody } from "../../../src/clipboard/Preview";
 
 const tauri = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -22,6 +21,39 @@ vi.mock("@tauri-apps/plugin-log", () => ({ error: vi.fn() }));
 const t = (key: string) => key;
 
 describe("PreviewBody transparency", () => {
+    it("labels truncated text without modifying the preview prefix", () => {
+        const { container } = render(<PreviewBody payload={{ item_type: ItemType.TextFile, content: "history-path", text_content: "bounded prefix", text_truncated: true }} t={t} />);
+        expect(container.querySelector("pre")?.textContent).toBe("bounded prefix");
+        expect(container.textContent).toContain("preview.textTruncated");
+    });
+
+    it("uses budget-checked media for GIF previews and can display the static first frame", async () => {
+        tauri.invoke.mockImplementation(async (command: string) => command === "resolve_history_media"
+            ? { assetPath: "first-frame.png", metadata: { isGif: true, animationLimited: true } }
+            : command === "history_image_metadata" ? { isGif: true, animationLimited: true } : "original.gif");
+        const { container } = render(<PreviewBody payload={{ item_type: ItemType.Image, content: "original.gif" }} t={t} />);
+        await waitFor(() => expect(container.querySelector("img")?.getAttribute("src")).toBe("asset://first-frame.png"));
+        expect(tauri.invoke).toHaveBeenCalledWith("resolve_history_media", expect.objectContaining({ path: "original.gif", intent: "preview" }));
+    });
+
+    it("does not bypass a rejected media resource with the original image path", async () => {
+        tauri.invoke.mockRejectedValue(new Error("resource exceeds budget"));
+        const ready = vi.fn();
+        const { container } = render(<PreviewBody payload={{ item_type: ItemType.Image, content: "large.png" }} t={t} onReady={ready} />);
+        await waitFor(() => expect(container).toHaveTextContent("preview.unsupported"));
+        expect(container.querySelector("img")).toBeNull();
+        expect(tauri.invoke.mock.calls).toEqual([["resolve_history_media", { path: "large.png", intent: "preview" }]]);
+        expect(ready).toHaveBeenCalledOnce();
+    });
+
+    it("labels a bounded external text file preview", async () => {
+        tauri.invoke.mockImplementation(async (command: string) => command === "file_preview_info"
+            ? { kind: "text-preview", display_path: "large.txt", paths: ["large.txt"] }
+            : { text: "file prefix", truncated: true });
+        const { container } = render(<PreviewBody payload={{ item_type: ItemType.File, content: '["large.txt"]' }} t={t} />);
+        await waitFor(() => expect(container.querySelector("pre")?.textContent).toBe("file prefix"));
+        expect(container).toHaveTextContent("preview.textTruncated");
+    });
     it("shows the existing link loading state while the webpage request is still pending", async () => {
         let complete!: (document: { url: string; html: string }) => void;
         tauri.invoke.mockImplementation(async (command: string) => {
@@ -117,22 +149,13 @@ describe("PreviewBody transparency", () => {
         expect(tauri.invoke).toHaveBeenLastCalledWith("open_url_in_browser", { url: "https://example.com/page" });
     });
 
-    it("renders the complete long text delivered by the preview runtime", async () => {
+    it("renders the complete long text delivered directly by Rust to the preview window", () => {
         const body = "line of saved text\n".repeat(1200) + "FINAL LINE";
         const path = "C:\\history\\data\\long-text";
-        tauri.invoke.mockImplementation(async (command: string) => {
-            if (command === "plain_text_content") return body;
-            return undefined;
-        });
-        await createClipboardPreviewRuntime({
-            closeContextMenu: vi.fn(), requestSequence: { current: 0 },
-            selectItem: vi.fn(), showToast: vi.fn(), t,
-        }).openPreviewItem(new Item(1, "long-text", ItemType.TextFile, path, 0, undefined, body.slice(0, 1800)));
-        const call = tauri.invoke.mock.calls.find(([command]) => command === "show_preview_window");
-        expect(call).toBeDefined();
-        const { container } = render(<PreviewBody payload={call![1]} t={t} />);
+        const { container } = render(<PreviewBody payload={{ item_type: ItemType.TextFile, content: path, text_content: body }} t={t} />);
         expect(container.querySelector("pre")?.textContent).toBe(body);
         expect(container).not.toHaveTextContent(path);
+        expect(tauri.invoke).not.toHaveBeenCalledWith("plain_text_content", expect.anything());
     });
 
     beforeEach(() => {
@@ -143,8 +166,8 @@ describe("PreviewBody transparency", () => {
             if (command === "history_image_metadata") {
                 return { width: 320, height: 180, isGif: false };
             }
-            if (command === "history_file_preview_asset_path") {
-                return "C:\\cache\\transparent.png";
+            if (command === "resolve_history_media") {
+                return { assetPath: "C:\\cache\\transparent.png", metadata: { width: 320, height: 180, isGif: false } };
             }
             if (command === "file_preview_info") {
                 return {
@@ -216,9 +239,10 @@ describe("PreviewBody transparency", () => {
             />,
         );
 
+        // File-only icons now include their cold module transform in this test.
         await waitFor(() => {
             expect(container.querySelector("[data-file-presentation='known']")).toHaveTextContent("DOC");
-        });
+        }, { timeout: 5_000 });
         expect(container.querySelectorAll("[data-file-presentation='known'] img")).toHaveLength(1);
         expect(container.querySelector("[class*='preview-file-symbol']")).toBeNull();
     });

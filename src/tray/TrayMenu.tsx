@@ -31,32 +31,53 @@ export default function TrayMenu() {
     const [toggleWorking, setToggleWorking] = React.useState(false);
     const menuRef = React.useRef<HTMLDivElement | null>(null);
 
-    const resizeToContent = React.useCallback(() => {
-        requestAnimationFrame(() => {
-            const height = Math.ceil(menuRef.current?.getBoundingClientRect().height ?? 0);
-            if (height > 0) {
+    React.useEffect(() => {
+        let disposed = false;
+        let frame = 0;
+        let lastHeight = 0;
+        let resolveFirstResize!: () => void;
+        let rejectFirstResize!: (reason: unknown) => void;
+        const firstResize = new Promise<void>((resolve, reject) => {
+            resolveFirstResize = resolve;
+            rejectFirstResize = reject;
+        });
+        const resizeToContent = () => {
+            cancelAnimationFrame(frame);
+            frame = requestAnimationFrame(() => {
+                if (disposed) return;
+                const menu = menuRef.current;
+                const height = Math.ceil(Math.max(menu?.getBoundingClientRect().height ?? 0, menu?.scrollHeight ?? 0));
+                if (height <= 0 || height === lastHeight) return;
+                lastHeight = height;
                 const width = isMacOS
                     ? TRAY_MENU_CONTENT_WIDTH + MACOS_TRAY_MENU_GUTTER_X * 2
                     : TRAY_MENU_CONTENT_WIDTH + WINDOW_SURFACE_GUTTER * 2;
                 void invoke("resize_tray_menu", { width, height })
-                    .catch(e => error(`Failed to resize tray menu: ${e}`));
-            }
-        });
-    }, []);
-
-    React.useEffect(() => {
+                    .then(() => { if (!disposed) resolveFirstResize(); })
+                    .catch(reason => {
+                        lastHeight = 0;
+                        rejectFirstResize(reason);
+                        void error(`Failed to resize tray menu: ${reason}`);
+                    });
+            });
+        };
+        const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resizeToContent);
+        if (menuRef.current) {
+            observer?.observe(menuRef.current);
+            if (menuRef.current.firstElementChild) observer?.observe(menuRef.current.firstElementChild);
+        }
         resizeToContent();
-    }, [paused, updateState.status, resizeToContent]);
-
-    React.useEffect(() => {
         void invoke<boolean>("get_clipboard_history_paused")
             .then(setPaused)
             .catch(e => error(`Failed to load clipboard history pause state: ${e}`));
         const unlisten = listen<PauseChangedPayload>("clipboard-history-pause-changed", event => {
             setPaused(event.payload.paused);
         });
-        const cancelReady = notifyAuxiliaryWindowReady([unlisten]);
+        const cancelReady = notifyAuxiliaryWindowReady([unlisten, firstResize]);
         return () => {
+            disposed = true;
+            cancelAnimationFrame(frame);
+            observer?.disconnect();
             cancelReady();
             unlisten.then(fn => fn()).catch(e => error(`Failed to unlisten pause state: ${e}`));
         };

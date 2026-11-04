@@ -3,6 +3,7 @@
   "description": "Allow auxiliary pages to receive opening payloads and log initialization errors.",
   "local": true,
   "windows": [
+    "devMemory",
     "pasteFallbackNotice",
     "onboardingPermission",
     "trayMenu",

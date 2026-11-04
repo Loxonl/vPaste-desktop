@@ -23,6 +23,8 @@ export type PreviewNavigationPayload = {
 type ClipboardTauriEventHandlers = {
     onBehaviorConfigChanged: (config: ClipboardBehaviorConfig) => void;
     onClipboardChanged: () => void;
+    onCaptureRejected?: () => void;
+    onResourcesUpdated?: (payload: { epoch: number }) => void;
     onCustomTabsChanged: (payload: CustomTabsChangedPayload) => void;
     onItemTagsChanged: (payload: ItemTagsChangedPayload) => void;
     onPermissionStatusChanged: () => void;
@@ -30,6 +32,7 @@ type ClipboardTauriEventHandlers = {
     onTutorialCompleted: () => void;
     onTutorialStarted: () => void;
     onWindowHidden: () => void;
+    onWindowParked?: () => void;
     onWindowHide: () => void;
     onWindowShow: (payload: WindowShowPayload) => void;
     onWindowShowComplete: () => void;
@@ -79,8 +82,17 @@ export function useClipboardLifecycleSubscriptions(
         const unlistenHidden = listen("window-hidden", () => {
             subscriptions.tauri.onWindowHidden();
         });
+        const unlistenParked = listen("window-parked", () => {
+            subscriptions.tauri.onWindowParked?.();
+        });
         const unlistenClipboard = listen("listen_new_clipboard", () => {
             subscriptions.tauri.onClipboardChanged();
+        });
+        const unlistenCaptureRejected = listen("clipboard-capture-rejected", () => {
+            subscriptions.tauri.onCaptureRejected?.();
+        });
+        const unlistenResources = listen<{ epoch: number }>("clipboard-resources-updated", event => {
+            subscriptions.tauri.onResourcesUpdated?.(event.payload);
         });
         const unlistenTutorialStarted = listen("tutorial-started", () => {
             subscriptions.tauri.onTutorialStarted();
@@ -141,7 +153,10 @@ export function useClipboardLifecycleSubscriptions(
             unlistenShowComplete,
             unlistenHide,
             unlistenHidden,
+            unlistenParked,
             unlistenClipboard,
+            unlistenCaptureRejected,
+            unlistenResources,
             unlistenTutorialStarted,
             unlistenTutorialCompleted,
             unlistenPermissionStatusChanged,
@@ -169,7 +184,10 @@ export function useClipboardLifecycleSubscriptions(
             removeTauriListener(unlistenShowComplete, "show completion");
             removeTauriListener(unlistenHide, "hide");
             removeTauriListener(unlistenHidden, "hidden");
+            removeTauriListener(unlistenParked, "parked");
             removeTauriListener(unlistenClipboard, "clipboard");
+            removeTauriListener(unlistenCaptureRejected, "capture rejection");
+            removeTauriListener(unlistenResources, "resources");
             removeTauriListener(unlistenCustomTabs, "custom tabs");
             removeTauriListener(unlistenItemTags, "item tags");
             removeTauriListener(unlistenPreviewNavigation, "preview navigation");

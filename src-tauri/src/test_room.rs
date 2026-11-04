@@ -1154,11 +1154,12 @@ fn run_large_image_boundary_case() -> Result<String, String> {
     let mut hashes = Vec::with_capacity(1);
 
     let result = (|| {
-        let mut large_image = image_bytes("image-grid")?;
-        large_image.resize(
-            crate::image_preview::CARD_PREVIEW_MAX_SOURCE_BYTES as usize + 1,
-            0,
-        );
+        let image = image::RgbImage::from_pixel(4000, 4001, image::Rgb([240, 240, 240]));
+        let mut large_image = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut large_image, image::ImageFormat::Png)
+            .map_err(|error| error.to_string())?;
+        let mut large_image = large_image.into_inner();
         large_image.extend_from_slice(run_scope.as_bytes());
         let image_hash = clipboard::calculate_xxhash64(&large_image);
         clipboard::insert_image_with_text_and_app(
@@ -1176,7 +1177,8 @@ fn run_large_image_boundary_case() -> Result<String, String> {
         let metadata = crate::image_preview::metadata_for_path(&image_item.content)?;
         if image_item.item_type != ItemType::Image
             || !metadata.preview_limited
-            || metadata.source_bytes <= crate::image_preview::CARD_PREVIEW_MAX_SOURCE_BYTES
+            || u64::from(metadata.width) * u64::from(metadata.height)
+                <= crate::image_preview::CARD_PREVIEW_MAX_PIXELS
         {
             return Err("超大图片未进入受控预览降级路径".to_string());
         }
@@ -1504,8 +1506,8 @@ fn run_paste_queue_case_with_active_queue(case_id: &str) -> Result<String, Strin
     }
 }
 
-fn run_paste_queue_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
-    crate::set_paste_queue_active_impl(app, true)?;
+async fn run_paste_queue_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
+    crate::set_paste_queue_active_impl(app, true).await?;
     let message = run_paste_queue_case_with_active_queue(case_id)?;
     crate::paste_queue::emit_state(app);
     Ok(message)
@@ -1764,7 +1766,7 @@ pub fn cleanup_test_room_history(app: tauri::AppHandle) -> Result<TestRoomOperat
     })
 }
 
-fn run_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
+async fn run_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
     #[cfg(any(test, debug_assertions))]
     if crate::office_test_fixtures::catalog()?
         .cases
@@ -1804,7 +1806,7 @@ fn run_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
         "qq-two-images" => run_qq_two_images_case(),
         "gif-history" => run_gif_history_case(case_id),
         "paste-queue-mixed" | "paste-queue-order" | "paste-queue-undo" | "paste-queue-target" => {
-            run_paste_queue_case(app, case_id)
+            run_paste_queue_case(app, case_id).await
         }
         "external-drag-values"
         | "external-drag-png"
@@ -1858,13 +1860,13 @@ fn run_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn run_test_room_case(
+pub async fn run_test_room_case(
     app: tauri::AppHandle,
     case_id: String,
 ) -> Result<TestCaseResult, String> {
     ensure_enabled()?;
     let started = Instant::now();
-    let result = match run_case(&app, &case_id) {
+    let result = match run_case(&app, &case_id).await {
         Ok(message) => Ok(TestCaseResult {
             passed: !case_needs_manual_check(&case_id),
             status: if case_needs_manual_check(&case_id) {

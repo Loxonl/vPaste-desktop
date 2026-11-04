@@ -1,0 +1,27 @@
+.control {
+    display: grid;
+    gap: var(--ui-space-2);
+    width: 160px;
+}
+
+.slider {
+    position: relative;
+    display: flex;
+    align-items: center;
+    padding-inline: var(--ui-space-2);
+    padding-inline-end: var(--ui-space-4);
+    transform: translateY(calc(-1 * var(--ui-space-1)));
+}
+
+.defaultMark {
+    position: absolute;
+    top: calc(50% + 10px);
+    left: calc(100% - var(--ui-space-4));
+    transform: translateX(-50%);
+    width: max-content;
+    color: var(--settings-muted);
+    font-size: 11px;
+    line-height: 1.2;
+    white-space: nowrap;
+    pointer-events: none;
+}

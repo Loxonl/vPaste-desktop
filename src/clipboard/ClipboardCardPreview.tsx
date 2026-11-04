@@ -7,6 +7,9 @@ import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
 import { Item, ItemType } from "./Item";
 import { FileTypePresentation } from "./FileTypePresentation";
+import { HistoryMediaImage } from "./HistoryMediaImage";
+import { richResourceUrls, type RichRenderPayload } from "./historyResourceTypes";
+import { cardPreviewPixelWidth as cardPixelWidth, useCardPreviewPixelWidth } from "./useCardPreviewPixelWidth";
 import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
 import { useRichPreviewCanvas } from "./useRichPreviewCanvas";
 import {
@@ -21,14 +24,9 @@ import {
 const HISTORY_IMAGE_CACHE_LIMIT = 96;
 const ACTIVE_IMAGE_LOAD_DELAY_MS = 140;
 
-const historyDataUrlCache = new Map<string, string>();
 const historyPreviewSrcCache = new Map<string, string>();
 const historyOriginalSrcCache = new Map<string, string>();
 const historyImageMetadataCache = new Map<string, HistoryImageMetadata>();
-const historyDataUrlPending = new Map<string, Promise<string>>();
-const historyPreviewSrcPending = new Map<string, Promise<string>>();
-const historyOriginalSrcPending = new Map<string, Promise<string>>();
-const historyImageMetadataPending = new Map<string, Promise<HistoryImageMetadata>>();
 
 type HistoryImageMetadata = {
     width: number;
@@ -38,6 +36,20 @@ type HistoryImageMetadata = {
     previewLimited?: boolean;
     animationLimited?: boolean;
 };
+
+type MediaResource = { assetPath: string; metadata: HistoryImageMetadata };
+const mediaPending = new Map<string, Promise<MediaResource>>();
+let mediaGeneration = 0;
+
+export function releaseHistoryMediaResources() {
+    mediaGeneration += 1;
+    historyPreviewSrcCache.clear(); historyOriginalSrcCache.clear(); historyImageMetadataCache.clear();
+    mediaPending.clear();
+}
+
+function previewCacheKey(path: string): string {
+    return JSON.stringify([path, cardPixelWidth()]);
+}
 
 type TFunction = (key: string, params?: Record<string, string | number>) => string;
 
@@ -69,69 +81,45 @@ function rememberValue<T>(cache: Map<string, T>, key: string, value: T) {
     }
 }
 
-function loadSingleFlight<T>(
-    cache: Map<string, T>,
-    pending: Map<string, Promise<T>>,
-    key: string,
-    loader: () => Promise<T>,
-): Promise<T> {
-    const cached = cachedValue(cache, key);
-    if (cached !== undefined) return Promise.resolve(cached);
-    const active = pending.get(key);
-    if (active) return active;
-
-    const request = loader()
-        .then(value => {
-            rememberValue(cache, key, value);
-            return value;
+function loadHistoryMedia(path: string, intent: "card" | "animated", refresh = false): Promise<MediaResource> {
+    const width = intent === "card" ? cardPixelWidth() : undefined;
+    const key = JSON.stringify([path, intent, refresh, width]);
+    const pending = mediaPending.get(key);
+    if (pending) return pending;
+    const generation = mediaGeneration;
+    const request = invoke<MediaResource>("resolve_history_media", { path, intent, refresh, ...(width ? { cardPixelWidth: width } : {}) })
+        .then(resource => {
+            const src = resource.assetPath ? convertFileSrc(resource.assetPath) : "";
+            if (generation === mediaGeneration) {
+                rememberValue(historyImageMetadataCache, path, resource.metadata);
+                rememberValue(intent === "card" ? historyPreviewSrcCache : historyOriginalSrcCache, width ? JSON.stringify([path, width]) : path, src);
+            }
+            return { ...resource, assetPath: src };
         })
-        .finally(() => pending.delete(key));
-    pending.set(key, request);
+        .finally(() => { if (mediaPending.get(key) === request) mediaPending.delete(key); });
+    mediaPending.set(key, request);
     return request;
-}
-
-async function loadHistoryDataUrl(path: string): Promise<string> {
-    if (!path) return "";
-    return loadSingleFlight(historyDataUrlCache, historyDataUrlPending, path, async () => {
-        try {
-            return await invoke<string>("history_file_data_url", { path });
-        } catch {
-            return convertFileSrc(path);
-        }
-    });
 }
 
 async function loadHistoryPreviewSrc(path: string): Promise<string> {
     if (!path) return "";
-    return loadSingleFlight(historyPreviewSrcCache, historyPreviewSrcPending, path, async () => {
-        try {
-            const assetPath = await invoke<string>("history_image_card_preview_asset_path", { path });
-            return convertFileSrc(assetPath);
-        } catch {
-            return loadHistoryDataUrl(path);
-        }
-    });
+    const cached = cachedValue(historyPreviewSrcCache, previewCacheKey(path));
+    if (cached !== undefined) return cached;
+    try { return (await loadHistoryMedia(path, "card")).assetPath; }
+    catch (reason) { error(`Failed to load image preview: ${reason}`); return ""; }
 }
 
 async function loadHistoryOriginalSrc(path: string): Promise<string> {
     if (!path) return "";
-    return loadSingleFlight(historyOriginalSrcCache, historyOriginalSrcPending, path, async () => {
-        try {
-            const assetPath = await invoke<string>("history_file_preview_asset_path", { path });
-            return convertFileSrc(assetPath);
-        } catch {
-            return loadHistoryDataUrl(path);
-        }
-    });
+    const cached = cachedValue(historyOriginalSrcCache, path);
+    if (cached !== undefined) return cached;
+    try { return (await loadHistoryMedia(path, "animated")).assetPath; }
+    catch (reason) { error(`Failed to load animated preview: ${reason}`); return ""; }
 }
 
 async function loadHistoryImageMetadata(path: string): Promise<HistoryImageMetadata> {
-    return loadSingleFlight(
-        historyImageMetadataCache,
-        historyImageMetadataPending,
-        path,
-        () => invoke<HistoryImageMetadata>("history_image_metadata", { path }),
-    );
+    const cached = cachedValue(historyImageMetadataCache, path);
+    return cached ?? (await loadHistoryMedia(path, "card")).metadata;
 }
 
 function formatByteSize(bytes: number | undefined): string {
@@ -309,12 +297,13 @@ export function ImagePreview({
     onGifFormatChange: (isGif: boolean) => void;
 }) {
     const sourcePath = item.getContent();
+    const pixelWidth = useCardPreviewPixelWidth();
     const previewPath = item.getPreviewContent() || sourcePath;
     const stableIdentity = `${item.getHash()}\u0000${sourcePath}\u0000${previewPath}`;
     const initialMetadata = cachedValue(historyImageMetadataCache, sourcePath);
     const [naturalSize, setNaturalSize] = useState<{ width: number, height: number } | null>(null);
     const [stageSize, setStageSize] = useState<{ width: number, height: number }>({ width: 0, height: 0 });
-    const [imageSrc, setImageSrc] = useState(() => cachedValue(historyPreviewSrcCache, previewPath) || "");
+    const [imageSrc, setImageSrc] = useState(() => cachedValue(historyPreviewSrcCache, previewCacheKey(previewPath)) || "");
     const [previewLimited, setPreviewLimited] = useState(Boolean(initialMetadata?.previewLimited));
     const [sourceBytes, setSourceBytes] = useState(initialMetadata?.sourceBytes || 0);
     const [isVisible, setIsVisible] = useState(false);
@@ -337,10 +326,11 @@ export function ImagePreview({
         if (!stage) return;
 
         const updateStageSize = () => {
-            setStageSize({
+            const next = {
                 width: stage.clientWidth,
                 height: stage.clientHeight,
-            });
+            };
+            setStageSize(previous => previous.width === next.width && previous.height === next.height ? previous : next);
         };
         updateStageSize();
 
@@ -366,7 +356,7 @@ export function ImagePreview({
 
     useEffect(() => {
         const cachedMetadata = cachedValue(historyImageMetadataCache, sourcePath);
-        setImageSrc(cachedValue(historyPreviewSrcCache, previewPath) || "");
+        setImageSrc(cachedValue(historyPreviewSrcCache, previewCacheKey(previewPath)) || "");
         setNaturalSize(naturalSizeFromMetadata(cachedMetadata));
         setPreviewLimited(Boolean(cachedMetadata?.previewLimited));
         setSourceBytes(cachedMetadata?.sourceBytes || 0);
@@ -395,6 +385,7 @@ export function ImagePreview({
         };
 
         const loadWithMetadata = (metadata: HistoryImageMetadata) => {
+            if (cancelled) return;
             if (!cancelled) {
                 onGifFormatChange(metadata.isGif);
                 setPreviewLimited(Boolean(metadata.previewLimited));
@@ -421,16 +412,18 @@ export function ImagePreview({
             cancelled = true;
             window.clearTimeout(timeout);
         };
-    }, [stableIdentity, sourcePath, previewPath, isVisible, active, onGifFormatChange]);
+    }, [stableIdentity, sourcePath, previewPath, isVisible, active, onGifFormatChange, pixelWidth]);
 
     const recoverImageSource = () => {
         if (!sourcePath || previewLimited || fallbackAttemptedRef.current) return;
         fallbackAttemptedRef.current = true;
-        historyPreviewSrcCache.delete(previewPath);
+        historyPreviewSrcCache.delete(previewCacheKey(previewPath));
         historyOriginalSrcCache.delete(sourcePath);
-        historyDataUrlCache.delete(sourcePath);
-        void invoke<string>("history_file_data_url", { path: sourcePath })
-            .then(setImageSrc)
+        void loadHistoryMedia(sourcePath, "card", true)
+            .then(resource => {
+                setPreviewLimited(Boolean(resource.metadata.previewLimited));
+                setImageSrc(resource.assetPath);
+            })
             .catch(e => error(`Failed to recover history image preview: ${e}`));
     };
 
@@ -438,7 +431,7 @@ export function ImagePreview({
         <div className={classes(styles, "image-preview")}>
             <div className={classes(styles, "image-preview-stage")} ref={stageRef}>
                 {imageSrc && (
-                    <img
+                    <HistoryMediaImage
                         src={imageSrc}
                         alt=""
                         draggable={false}
@@ -479,10 +472,13 @@ function FilePreview({
     searchQuery: string;
     t: TFunction;
 }) {
+    const pixelWidth = useCardPreviewPixelWidth();
     const [previewInfo, setPreviewInfo] = useState<FilePreviewInfo | null>(null);
     const [isVisible, setIsVisible] = useState(false);
     const [imageSize, setImageSize] = useState<{ width: number, height: number } | null>(null);
     const [previewSrc, setPreviewSrc] = useState("");
+    const [previewLimited, setPreviewLimited] = useState(false);
+    const [sourceBytes, setSourceBytes] = useState(0);
     const previewRef = useRef<HTMLDivElement>(null);
     const fallbackPaths = parseFilePaths(item.getContent());
     const firstPath = previewInfo?.display_path || fallbackPaths[0] || item.getContent();
@@ -551,24 +547,35 @@ function FilePreview({
         setImageSize(null);
         setPreviewSrc("");
         let cancelled = false;
+        setPreviewLimited(false);
         if (previewInfo?.preview_path) {
-            const loader = isGifFile ? loadHistoryOriginalSrc : loadHistoryPreviewSrc;
-            loader(previewInfo.preview_path)
-                .then(src => {
-                    if (!cancelled) setPreviewSrc(src);
-                });
+            void loadHistoryMedia(previewInfo.preview_path, isGifFile ? "animated" : "card", true)
+                .then(resource => {
+                    if (cancelled) return;
+                    setPreviewSrc(resource.assetPath);
+                    setPreviewLimited(Boolean(resource.metadata.previewLimited));
+                    setSourceBytes(resource.metadata.sourceBytes || 0);
+                    setImageSize(naturalSizeFromMetadata(resource.metadata));
+                })
+                .catch(reason => error(`Failed to load file image preview: ${reason}`));
         }
         return () => {
             cancelled = true;
         };
-    }, [item.getHash(), previewInfo?.preview_path, isGifFile]);
+    }, [item.getHash(), previewInfo?.preview_path, isGifFile, refreshKey, pixelWidth]);
 
     return (
         <div className={classes(styles, `file-preview ${isInvalid ? 'invalid' : ''}`)} ref={previewRef}>
             <div className={classes(styles, `file-preview-stage ${isImageFile ? 'image-file-stage' : ''}`)}>
-                {previewInfo?.kind === "single-preview" && previewInfo.preview_path ? (
+                {previewLimited ? (
+                    <div className={classes(styles, "image-preview-limited")} data-image-preview-limited="true">
+                        <WarningAmberOutlinedIcon />
+                        <span>{t("clipboard.largeImagePreview")}</span>
+                        {sourceBytes > 0 && <small>{formatByteSize(sourceBytes)}</small>}
+                    </div>
+                ) : previewInfo?.kind === "single-preview" && previewInfo.preview_path && previewSrc ? (
                     <>
-                        <img
+                        <HistoryMediaImage
                             key={previewSrc}
                             className={classes(styles, `file-preview-image ${isImageFile ? 'transparency-grid' : ''}`)}
                             src={previewSrc}
@@ -628,6 +635,7 @@ function linkHost(url: string): string {
 }
 
 function LinkPreview({ item, searchQuery }: { item: Item; searchQuery: string }) {
+    const pixelWidth = useCardPreviewPixelWidth();
     const { url, imagePath, title, imageKind } = parseLinkContent(item.getContent());
     const [imageFailed, setImageFailed] = useState(false);
     const [imageSrc, setImageSrc] = useState("");
@@ -651,13 +659,13 @@ function LinkPreview({ item, searchQuery }: { item: Item; searchQuery: string })
         return () => {
             cancelled = true;
         };
-    }, [item.getHash(), imagePath]);
+    }, [item.getHash(), imagePath, pixelWidth]);
 
     return (
         <div className={classes(styles, "link-preview")}>
             <div className={classes(styles, `link-preview-media ${showImage ? '' : 'fallback'} ${isSmallImage ? 'icon' : ''}`)}>
                 {showImage ? (
-                    <img
+                    <HistoryMediaImage
                         src={imageSrc}
                         alt=""
                         draggable={false}
@@ -687,7 +695,19 @@ function LinkPreview({ item, searchQuery }: { item: Item; searchQuery: string })
 }
 
 function RichTextPreview({ item, active, searchQuery }: { item: Item; active: boolean; searchQuery: string }) {
-    const html = sanitizeRichHtml(item.getRichHtml());
+    const [loaded, setLoaded] = useState<{ hash: string; render: RichRenderPayload } | null>(null);
+    useEffect(() => {
+        if (!item.isHistoryRecord() || item.getRichRender()) return;
+        let current = true;
+        void invoke<RichRenderPayload>("read_history_rich_render", { hash: item.getHash() })
+            .then(render => { if (current) setLoaded({ hash: item.getHash(), render }); })
+            .catch(() => { if (current) setLoaded(null); });
+        return () => { current = false; };
+    }, [item]);
+    const render = item.getRichRender() ?? (loaded?.hash === item.getHash() ? loaded.render : undefined);
+    const html = item.isHistoryRecord()
+        ? sanitizeRichHtml(render?.html ?? "", 160, false, richResourceUrls(render?.resources ?? []))
+        : sanitizeRichHtml(item.getRichHtml());
     if (!richHtmlHasVisibleContent(html)) {
         return (
             <AutoScrollPreview active={active} className={classes(styles, "card-preview-text")}>

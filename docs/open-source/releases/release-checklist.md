@@ -54,9 +54,16 @@ The workflow creates a Draft Release only. It never creates a tag-triggered rele
 3. Approve the protected `release` Environment for platform signing and asset upload.
 4. Wait for Windows, Apple silicon macOS, Intel macOS, and universal macOS packages to be attached to that same Release. Existing assets with different contents are never replaced.
 5. Confirm the merged updater manifest contains `windows-x86_64`, `darwin-aarch64`, and `darwin-x86_64` entries with non-empty signatures. The workflow then publishes the channel manifest (`download/stable/latest.json` for `vX.Y.Z`, `download/rc/latest.json` for `vX.Y.Z-rc.N`) to the website; confirm the public URL serves the new version. See [update-feed-publication.md](update-feed-publication.md).
-6. Smoke-test the attached packages before advertising the Release. The source repository is currently private, so unauthenticated users cannot download its Release assets.
+6. Smoke-test the attached packages before advertising the Release and confirm anonymous users can download them. Private Release assets are not suitable for the public updater feed.
 7. Write bilingual notes with `## English` first and `## 中文` second. English is the primary/default release language; package warnings and shared bilingual labels also put English first. The workflow normalizes these language-section headings without changing their contents or inventing translations. Keep `Packages / 安装包` to at most two short sentences per language covering package types and the required unsigned Windows warning; leave download links to the final table and omit build workflow, SBOM, metadata, and updater-signature explanations.
 8. Confirm the English-first bilingual download table is at the end of the Release notes, immediately above Assets. It must link directly to the five manual-install packages. The workflow refreshes its marked section without replacing handwritten notes.
+
+Release-note presentation checks:
+
+- Write user-facing English and Chinese summaries from the reviewed changes. An automatically generated list of PR titles is supporting reference, not a substitute for bilingual notes; preserve source/compare links and historical maintenance warnings.
+- Put label punctuation outside bold: `**Mouse controls**: choose an action` and `**鼠标操作**：选择操作`. Avoid `**鼠标操作：**选择操作`, whose closing delimiter is not recognized by GitHub Markdown. The existing download-table helper normalizes this unsafe list-label pattern without rewriting code examples.
+- Preview the final body with GitHub's Markdown renderer before publishing or editing a Release. Check that headings and bold text render, the package warning remains concise in both languages, and the download table is last and links only uploaded assets.
+- When correcting historical notes, change presentation only. Do not replace assets, signatures, checksums, tags, release dates, Stable/RC status, maintenance status, or updater feeds.
 
 ## Windows validation
 

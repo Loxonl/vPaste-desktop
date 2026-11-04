@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { installHistoryMockBridge } from "../helpers/historyMockBridge";
 
 async function expectPasteQueueFrame(page: Page) {
     const panel = page.getByTestId("paste-queue").locator("section");
@@ -235,6 +236,7 @@ test.describe("window shells", () => {
     });
 
     test("clipboard distinguishes empty history from an empty search", async ({ page }) => {
+        await page.addInitScript(installHistoryMockBridge);
         await page.addInitScript(() => {
             let callbackId = 0;
             let listenerId = 0;
@@ -319,6 +321,7 @@ test.describe("window shells", () => {
     });
 
     async function verifyResultTransitions(page: Page, reducedMotion: boolean, platform: "MacIntel" | "Win32") {
+        await page.addInitScript(installHistoryMockBridge);
         await page.emulateMedia({ reducedMotion: reducedMotion ? "reduce" : "no-preference" });
         await page.addInitScript((platform: string) => {
             Object.defineProperty(navigator, "platform", { configurable: true, get: () => platform });
@@ -443,21 +446,25 @@ test.describe("window shells", () => {
         const readMotionOffsets = () => page.evaluate(() => {
             const samples = (window as typeof window & { __filterMotionSamples?: Record<string, number> })
                 .__filterMotionSamples || {};
-            return Array.from({ length: 36 }, (_, index) => samples[`motion-${index + 1}`] || 0);
+            return Array.from(document.querySelectorAll<HTMLElement>('[data-results-active="true"] [data-filter-motion-hash]'))
+                .map(card => samples[card.dataset.filterMotionHash || ""] || 0);
         });
         const readCurrentOffsets = () => page.evaluate(() => (
             Array.from(document.querySelectorAll<HTMLElement>('[data-filter-motion-hash]')).map(card => (
                 Math.abs(new DOMMatrixReadOnly(getComputedStyle(card).transform).m41)
             ))
         ));
-        await expect(cards).toHaveCount(36, { timeout: 15_000 });
+        await expect(page.locator('[data-card-hash="filler-1"]')).toBeVisible();
+        const residentCount = await cards.count();
+        expect(residentCount).toBeGreaterThan(3);
+        expect(residentCount).toBeLessThan(36);
         await page.getByRole("button", { name: "搜索" }).click();
         await page.getByRole("textbox", { name: "搜索" }).fill("match");
 
         const results = page.getByTestId("clipboard-results");
         await expect(page.getByRole("status", { name: "" }).filter({ hasText: "加载中" })).toBeVisible();
         await expect(results).toHaveAttribute("aria-hidden", "true");
-        await expect(cards).toHaveCount(36);
+        await expect(cards).toHaveCount(residentCount);
         await expect.poll(() => page.evaluate(() => (
             window as typeof window & { __filteredSearchPending?: boolean }
         ).__filteredSearchPending)).toBe(true);
@@ -477,17 +484,18 @@ test.describe("window shells", () => {
         await page.evaluate(() => (
             window as typeof window & { __releaseFilteredSearch?: () => void }
         ).__releaseFilteredSearch?.());
-        await expect(cards).toHaveCount(36);
+        await expect(page.locator('[data-results-active="true"] [data-card-hash="motion-4"]')).toHaveCount(1);
         await page.waitForTimeout(950);
         const maximumOffsets = await readMotionOffsets();
-        expect(maximumOffsets).toHaveLength(36);
+        expect(maximumOffsets.length).toBeGreaterThan(3);
+        expect(maximumOffsets.length).toBeLessThan(36);
         expect(maximumOffsets.every(offset => reducedMotion ? offset < 0.1 : offset >= 4 && offset <= 17)).toBe(true);
-        expect((await readCurrentOffsets()).every(offset => offset < 0.1)).toBe(true);
+        await expect.poll(async () => (await readCurrentOffsets()).every(offset => offset < 0.1)).toBe(true);
         expect(await page.evaluate(() => (
             window as typeof window & { __filterOverlapDetected?: boolean }
         ).__filterOverlapDetected)).toBe(false);
         await expect(page.getByText("Motion item 1", { exact: true })).toBeVisible();
-        await expect(page.getByText("Motion item 36")).toBeAttached();
+        await expect(page.getByText("Motion item 4", { exact: true })).toBeVisible();
         await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
 
         await page.getByRole("textbox", { name: "搜索" }).fill("");
@@ -497,12 +505,12 @@ test.describe("window shells", () => {
         await startMotionSampling();
         const favoritesTab = page.getByRole("button", { name: "收藏" });
         await favoritesTab.click();
-        await expect(page.getByText("Motion item 36")).toBeAttached();
+        await expect(page.getByText("Motion item 4", { exact: true })).toBeVisible();
         await page.waitForTimeout(950);
         await expect(favoritesTab).toBeFocused();
         const tabMaximumOffsets = await readMotionOffsets();
         expect(tabMaximumOffsets.every(offset => reducedMotion ? offset < 0.1 : offset >= 4 && offset <= 17)).toBe(true);
-        expect((await readCurrentOffsets()).every(offset => offset < 0.1)).toBe(true);
+        await expect.poll(async () => (await readCurrentOffsets()).every(offset => offset < 0.1)).toBe(true);
         expect(await page.evaluate(() => (
             window as typeof window & { __filterOverlapDetected?: boolean }
         ).__filterOverlapDetected)).toBe(false);
@@ -526,7 +534,7 @@ test.describe("window shells", () => {
         await expect(page.locator('[data-results-active="true"] [data-hash="filler-1"]')).toHaveCount(1);
         await expect(page.locator('[data-results-active="true"] [data-hash="motion-1"]')).toBeFocused();
         await page.getByRole("button", { name: "收藏" }).evaluate(button => (button as HTMLElement).click());
-        await expect(page.locator('[data-results-active="true"] [data-hash="motion-36"]')).toHaveCount(1);
+        await expect(page.locator('[data-results-active="true"] [data-hash="motion-4"]')).toHaveCount(1);
         await page.getByRole("button", { name: "全部", exact: true }).evaluate(button => (button as HTMLElement).click());
         await expect(page.locator('[data-results-active="true"] [data-hash="filler-1"]')).toHaveCount(1);
         await activeCards.first().focus();
@@ -538,16 +546,33 @@ test.describe("window shells", () => {
             window as typeof window & { __interactiveOutgoingResult?: boolean }
         ).__interactiveOutgoingResult)).toBe(false);
         await expect(page.locator('[data-results-active="false"]')).toHaveCount(0);
-        await expect(activeCards).toHaveCount(36);
-
+        expect(await activeCards.count()).toBeLessThanOrEqual(12);
+        expect(await activeCards.count()).toBeGreaterThan(0);
         for (let index = 0; index < 6; index += 1) await page.keyboard.press("ArrowRight");
-        await expect(activeCards.nth(7)).toBeFocused();
-        const scrollPosition = await activeCards.nth(7).evaluate(card => {
+        const eighthCard = page.locator('[data-results-active="true"] [data-hash="filler-5"]');
+        await expect(eighthCard).toBeFocused();
+        await expect(eighthCard).toHaveClass(/selected/);
+        const scrollPosition = await eighthCard.evaluate(card => {
             const container = card.closest('[class*="cards-container"]')!;
             return { card: card.getBoundingClientRect().toJSON(), container: container.getBoundingClientRect().toJSON() };
         });
         expect(scrollPosition.card.left).toBeGreaterThanOrEqual(scrollPosition.container.left);
         expect(scrollPosition.card.right).toBeLessThanOrEqual(scrollPosition.container.right);
+
+        // Offscreen records remain navigable without retaining all 36 card nodes.
+        for (let index = 8; index < 36; index += 1) {
+            await page.keyboard.press("ArrowRight");
+            await expect(page.locator(`[data-results-active="true"] [data-hash="filler-${index - 2}"]`)).toBeFocused();
+            expect(await activeCards.count()).toBeLessThanOrEqual(12);
+        }
+        const lastCard = page.locator('[data-results-active="true"] [data-hash="filler-33"]');
+        await expect(lastCard).toHaveClass(/selected/);
+        const lastPosition = await lastCard.evaluate(card => {
+            const container = card.closest('[class*="cards-container"]')!;
+            return { card: card.getBoundingClientRect().toJSON(), container: container.getBoundingClientRect().toJSON() };
+        });
+        expect(lastPosition.card.left).toBeGreaterThanOrEqual(lastPosition.container.left);
+        expect(lastPosition.card.right).toBeLessThanOrEqual(lastPosition.container.right);
     }
 
     for (const platform of ["MacIntel", "Win32"] as const) {

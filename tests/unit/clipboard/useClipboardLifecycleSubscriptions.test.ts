@@ -37,6 +37,8 @@ function handlers() {
         tauri: {
             onBehaviorConfigChanged: vi.fn(),
             onClipboardChanged: vi.fn(),
+            onCaptureRejected: vi.fn(),
+            onResourcesUpdated: vi.fn(),
             onCustomTabsChanged: vi.fn(),
             onItemTagsChanged: vi.fn(),
             onPermissionStatusChanged: vi.fn(),
@@ -44,6 +46,7 @@ function handlers() {
             onTutorialCompleted: vi.fn(),
             onTutorialStarted: vi.fn(),
             onWindowHidden: vi.fn(),
+            onWindowParked: vi.fn(),
             onWindowHide: vi.fn(),
             onWindowShow: vi.fn(),
             onWindowShowComplete: vi.fn(),
@@ -67,7 +70,10 @@ describe("useClipboardLifecycleSubscriptions", () => {
             "window-show-complete",
             "window-hide",
             "window-hidden",
+            "window-parked",
             "listen_new_clipboard",
+            "clipboard-capture-rejected",
+            "clipboard-resources-updated",
             "tutorial-started",
             "tutorial-completed",
             "onboarding-permission-status-changed",
@@ -79,7 +85,9 @@ describe("useClipboardLifecycleSubscriptions", () => {
         expect(callbacks.onMount).toHaveBeenCalledOnce();
 
         act(() => {
+            tauri.callbacks.get("clipboard-capture-rejected")?.({ payload: null });
             tauri.callbacks.get("window-show")?.({ payload: { x: 12, y: 24 } });
+            tauri.callbacks.get("clipboard-resources-updated")?.({ payload: { epoch: 7 } });
             tauri.callbacks.get("clipboard-behavior-config-changed")?.({
                 payload: { link_auto_preview: false },
             });
@@ -96,6 +104,8 @@ describe("useClipboardLifecycleSubscriptions", () => {
         });
 
         expect(callbacks.tauri.onWindowShow).toHaveBeenCalledWith({ x: 12, y: 24 });
+        expect(callbacks.tauri.onResourcesUpdated).toHaveBeenCalledWith({ epoch: 7 });
+        expect(callbacks.tauri.onCaptureRejected).toHaveBeenCalledOnce();
         expect(callbacks.tauri.onBehaviorConfigChanged)
             .toHaveBeenCalledWith({ link_auto_preview: false });
         expect(callbacks.tauri.onCustomTabsChanged)
@@ -106,6 +116,15 @@ describe("useClipboardLifecycleSubscriptions", () => {
         expect(callbacks.tauri.onPreviewNavigation)
             .toHaveBeenCalledWith({ direction: -1, key: "Tab" });
 
+        unmount();
+    });
+
+    it("routes parking separately from the real-hidden cleanup event", () => {
+        const callbacks = handlers();
+        const { unmount } = renderHook(() => useClipboardLifecycleSubscriptions(callbacks));
+        act(() => { tauri.callbacks.get("window-parked")?.({ payload: null }); });
+        expect(callbacks.tauri.onWindowParked).toHaveBeenCalledOnce();
+        expect(callbacks.tauri.onWindowHidden).not.toHaveBeenCalled();
         unmount();
     });
 

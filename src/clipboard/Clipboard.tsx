@@ -13,14 +13,13 @@ import {
     useReducedMotionConfig,
 } from "../ui/motion";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
 import { Item, ItemTag, ItemType } from "./Item.ts";
-import { useLanguage } from "../lang";
+import { getLanguagePack, translateWithPack, useLanguage } from "../lang";
 import { formatShortcutLabel, isMacPlatform } from "../shortcutDisplay";
 import SearchIcon from "@mui/icons-material/Search";
 import ContentPasteSearchOutlinedIcon from "@mui/icons-material/ContentPasteSearchOutlined";
-import TutorialOverlay from "./TutorialOverlay.tsx";
 import appIcon from "../../src-tauri/icons/source/vpaste-app-icon-1024.png";
 import { getResolvedTheme, setThemePreview, type ResolvedTheme } from "../theme";
 import { restartReady, storeUpdateAvailable, updateEntryVisible, useAppUpdateState } from "../update";
@@ -39,7 +38,8 @@ import {
     saveTabOrder,
     type CustomTab,
 } from "./customTabs";
-import { fetchSearchPage } from "./searchPagination";
+import { HistoryViewStore } from "./historyViewStore";
+import type { HistoryRef } from "./historyViewTypes";
 import {
     resolveClipboardEmptyState,
     searchDebounceDelay,
@@ -47,9 +47,10 @@ import {
     type LoadedClipboardRequest,
 } from "./clipboardSearch";
 import ClipboardCard from "./ClipboardCard";
+import { releaseHistoryMediaResources } from "./ClipboardCardPreview";
+import { ClipboardVirtualList, type ClipboardVirtualListHandle } from "./ClipboardVirtualList";
 import { ClipboardResultsSurface } from "./ClipboardResultsSurface";
 import {
-    parseLinkContent,
     isEditableTextItem,
 } from "./itemPresentation";
 import {
@@ -66,16 +67,11 @@ import {
     screenAnchoredPositionFromClick,
     screenFloatingPositionFromAnchor,
 } from "./floatingPosition";
-import {
-    ClipboardContextMenus,
-    DeleteConfirmDialog,
-    UpdateConfirmDialog,
-    TabContextMenu,
-    TagCreateChoicePopover,
-    type ColorCopyOption,
-    type ContextMenuState,
-    type TabContextMenuState,
-    type TagCreateChoiceState,
+import type {
+    ColorCopyOption,
+    ContextMenuState,
+    TabContextMenuState,
+    TagCreateChoiceState,
 } from "./ClipboardOverlays";
 import {
     ClipboardHeaderActions,
@@ -91,6 +87,7 @@ import { useClipboardAltHints } from "./useClipboardAltHints";
 import {
     clampRetainedScrollLeft,
     loadClipboardBehaviorConfig,
+    requestClipboardHide,
     resolveClipboardShowPreferences,
     resolveClipboardShowPlan,
     type ClipboardBehaviorConfig,
@@ -103,6 +100,9 @@ import {
 import {
     buildTutorialFilterTabs,
     buildTutorialPermissions,
+    createDefaultTutorialFilterTabs,
+    initializeTutorialFilterTabs,
+    markTutorialFiltersInitialized,
     tutorialFilterTabId,
     updateTutorialFilterTabs,
     type TutorialFilterId,
@@ -129,7 +129,6 @@ import { createClipboardHoverPreview } from "./clipboardHoverPreview";
 import { parsePasteQueueState } from "./pasteQueueState";
 
 const CLIPBOARD_SHOW_REFRESH_DELAY_MS = 310;
-const HISTORY_PAGE_LIMIT = 36;
 
 type ToastState = {
     id: number;
@@ -139,12 +138,6 @@ type ToastState = {
     onAction?: () => void;
 } | null;
 
-type LinkPreviewUpdate = {
-    url: string;
-    title: string;
-    image_path: string;
-    image_kind?: string;
-};
 
 type TabEditorMode = "add" | "edit";
 type TagEditorKind = "filter" | "record";
@@ -153,6 +146,13 @@ const FILTER_TAG_EDITOR_HEIGHT = 398;
 const RECORD_TAG_EDITOR_HEIGHT = 178;
 const TAG_CREATE_CHOICE_WIDTH = 252;
 const TAG_CREATE_CHOICE_HEIGHT = 142;
+
+const TutorialOverlay = React.lazy(() => import("./TutorialOverlay"));
+const ClipboardContextMenus = React.lazy(() => import("./ClipboardOverlays").then(module => ({ default: module.ClipboardContextMenus })));
+const DeleteConfirmDialog = React.lazy(() => import("./ClipboardOverlays").then(module => ({ default: module.DeleteConfirmDialog })));
+const UpdateConfirmDialog = React.lazy(() => import("./ClipboardOverlays").then(module => ({ default: module.UpdateConfirmDialog })));
+const TabContextMenu = React.lazy(() => import("./ClipboardOverlays").then(module => ({ default: module.TabContextMenu })));
+const TagCreateChoicePopover = React.lazy(() => import("./ClipboardOverlays").then(module => ({ default: module.TagCreateChoicePopover })));
 
 function persistCustomTabs(tabs: CustomTab[]) {
     saveCustomTabs(tabs);
@@ -164,7 +164,10 @@ class ClipboardPage {
     list: Item[];
     consumed: number;
 
-    constructor(list: Item[], consumed: number) {
+    constructor(list: Item[], consumed: number,
+        readonly logicalCount = list.length,
+        readonly indices: ReadonlyMap<string, number> = new Map(list.map((item, index) => [item.getHash(), index])),
+    ) {
         this.list = list;
         this.consumed = consumed;
     }
@@ -176,7 +179,19 @@ export default function Clipboard() {
     const fadeMotion = useMotionPreset("fade");
     const listItemMotion = useMotionPreset("listItem");
     const stateIndicatorMotion = useMotionPreset("stateIndicator");
-    const [selected, setSelected] = useState<String>("");
+    const [selected, setSelectedState] = useState<String>("");
+    const selectedLogicalIndexRef = useRef(0);
+    const [pendingSelectionScroll, setPendingSelectionScroll] = useState<{
+        hash: string; index: number; generation: number; behavior: ScrollBehavior;
+    } | null>(null);
+    const historyStoreRef = useRef<HistoryViewStore | null>(null);
+    if (!historyStoreRef.current) historyStoreRef.current = new HistoryViewStore();
+    const historyStore = historyStoreRef.current;
+    const setSelected = (hash: String) => {
+        const index = historyStore.indexOf(String(hash));
+        if (index >= 0) selectedLogicalIndexRef.current = index;
+        setSelectedState(hash);
+    };
     const [searchWord, setSearchWord] = useState<String>("");
     const [searchOpen, setSearchOpen] = useState<boolean>(false);
     const [isSearchComposing, setIsSearchComposing] = useState(false);
@@ -199,11 +214,14 @@ export default function Clipboard() {
     const [deleteConfirmTab, setDeleteConfirmTab] = useState<CustomTab | null>(null);
     const [deleteConfirmRecordTag, setDeleteConfirmRecordTag] = useState<ItemTag | null>(null);
     const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
+    const updateDialogOpenedRef = useRef(false);
+    updateDialogOpenedRef.current ||= updateConfirmOpen;
     const [itemTags, setItemTags] = useState<ItemTag[]>([]);
     const [hasMoreHistory, setHasMoreHistory] = useState(true);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [simulatedHoverHash, setSimulatedHoverHash] = useState("");
     const [tutorialActive, setTutorialActive] = useState(false);
+    const [tutorialPreviewTabs, setTutorialPreviewTabs] = useState<CustomTab[] | null>(null);
     const [tutorialRunId, setTutorialRunId] = useState(0);
     const [tutorialPermissionStatus, setTutorialPermissionStatus] = useState<TutorialPermissionStatus | null>(null);
     const [tutorialPlatform, setTutorialPlatform] = useState<TutorialPlatform>(() => isMacPlatform() ? "mac" : "windows");
@@ -230,16 +248,19 @@ export default function Clipboard() {
             .catch(e => error(`Failed to detect developer mode: ${e}`));
     }, []);
 
-    const [animationState, setAnimationState] = useState<'hidden' | 'entering' | 'entered' | 'exiting'>('entered');
+    const [animationState, setAnimationState] = useState<'hidden' | 'parked' | 'entering' | 'entered' | 'exiting'>('entered');
     const containerRef = useRef<HTMLDivElement>(null);
+    useLayoutEffect(() => {
+        if (containerRef.current) containerRef.current.inert = animationState === "parked";
+    }, [animationState]);
     const cardsContainerRef = useRef<HTMLDivElement>(null);
+    const virtualListRef = useRef<ClipboardVirtualListHandle>(null);
+    const hideRequestRef = useRef(0);
     const retainedScrollLeftRef = useRef(0);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const addTabButtonRef = useRef<HTMLButtonElement>(null);
     const toastTimerRef = useRef<number | null>(null);
     const scrollRefreshTimerRef = useRef<number | null>(null);
-    const imagePrewarmTimerRef = useRef<number | null>(null);
-    const imagePrewarmIdleRef = useRef<number | null>(null);
     const loadMoreCheckFrameRef = useRef<number | null>(null);
     const searchDebounceTimerRef = useRef<number | null>(null);
     const searchRequestSeqRef = useRef(0);
@@ -255,26 +276,31 @@ export default function Clipboard() {
     const historyRefreshingRef = useRef(false);
     const restoreFocusedResultRef = useRef(false);
     const pageListRef = useRef<Item[]>([]);
+    const navigationTargetRef = useRef<number | null>(null);
+    const navigationRunningRef = useRef(false);
+    const navigationOwnerRef = useRef(0);
+    const loadMoreOwnerRef = useRef(0);
     const clipboardBehaviorConfigRef = useRef<ClipboardBehaviorConfig | null>(null);
     const retainLastPositionRef = useRef<boolean | null>(null);
     const pasteAsTextShortcutRef = useRef(DEFAULT_PASTE_AS_TEXT_SHORTCUT);
     const quickInputEnabledRef = useRef(true);
     const pasteInFlightRef = useRef(false);
+    const mainWindowActiveRef = useRef(true);
+    const resourceEpochRef = useRef<number | null>(null);
+    const pendingResourceEpochRef = useRef<number | null>(null);
+    const flushResourceRefreshRef = useRef<() => void>(() => undefined);
     const showGateRef = useRef<ReturnType<typeof createClipboardShowGate> | null>(null);
     if (!showGateRef.current) {
         showGateRef.current = createClipboardShowGate(reason => {
             error(`Failed to synchronize clipboard before activation: ${reason}`);
             showToast(t("clipboard.actionFailed", { error: String(reason) }), "error");
-        });
+        }, () => flushResourceRefreshRef.current());
     }
     const tabQuickSelectEnabledRef = useRef(true);
-    const linkAutoPreviewRef = useRef(true);
-    const linkPreviewRefreshingRef = useRef(false);
-    const imageClipboardCachePrewarmRef = useRef<Set<string>>(new Set());
     const hasMoreHistoryRef = useRef(true);
     const isLoadingMoreRef = useRef(false);
     const customTabsStorageReadyRef = useRef(false);
-    const pendingRecordTagAssignTargetRef = useRef<Item | null>(null);
+    const pendingRecordTagAssignTargetRef = useRef<{ hash: string; tags: ItemTag[] } | null>(null);
     const previewRequestSeqRef = useRef(0);
     const hoverPreviewRef = useRef<ReturnType<typeof createClipboardHoverPreview> | null>(null);
     const hoverAllowedRef = useRef<() => boolean>(() => false);
@@ -377,27 +403,43 @@ export default function Clipboard() {
         if (cardsContainerRef.current) cardsContainerRef.current.scrollLeft = 0;
     };
 
-    const activateItemShortcut = (index: number) => {
-        const item = pageListRef.current[index];
-        if (!item) return;
-        selectedRef.current = item.getHash() as string;
-        setSelected(item.getHash() as string);
+    const activateItemShortcut = async (index: number) => {
+        const item = await historyStore.ensureRef(index);
+        if (!item || !mainWindowActiveRef.current) return;
+        selectedLogicalIndexRef.current = index;
+        selectedRef.current = item.hash;
+        setSelected(item.hash);
         hideAltHints();
-        if (queueSelectionMode) {
-            activateClipboardCardRef.current(item.getHash() as string, false);
-        } else {
-            void clickClipboardItem(item.getHash(), false, true, String(index + 1));
-        }
+        if (queueSelectionMode) activateClipboardCardRef.current(item.hash, false);
+        else void clickClipboardItem(item.hash, false, true, String(index + 1));
     };
 
     const selectFirstLoadedItem = (scroll: boolean = false) => {
-        const firstHash = pageListRef.current[0]?.getHash() as string | undefined;
-        if (!firstHash) return;
-        selectedRef.current = firstHash;
-        setSelected(firstHash);
-        if (scroll && cardsContainerRef.current) {
-            cardsContainerRef.current.scrollLeft = 0;
+        if (scroll) {
+            retainedScrollLeftRef.current = 0;
+            if (cardsContainerRef.current) {
+                cardsContainerRef.current.scrollLeft = 0;
+                cardsContainerRef.current.scrollTop = 0;
+            }
         }
+        const generation = searchRequestSeqRef.current;
+        const selectFirst = (item: HistoryRef | undefined) => {
+            if (!item || !mainWindowActiveRef.current || generation !== searchRequestSeqRef.current) return;
+            selectedLogicalIndexRef.current = 0;
+            selectedRef.current = item.hash;
+            setSelected(item.hash);
+        };
+        const first = historyStore.getRef(0);
+        if (first) selectFirst(first);
+        else void historyStore.ensureRef(0).then(selectFirst)
+            .catch(reason => error(`Failed to select first history item: ${reason}`));
+    };
+
+    const pasteFirstHistoryItem = async (plainText: boolean) => {
+        const first = await historyStore.ensureRef(0);
+        if (!first || !mainWindowActiveRef.current) return;
+        if (queueSelectionMode) activateClipboardCardRef.current(first.hash, plainText);
+        else void clickClipboardItem(first.hash, plainText);
     };
 
     const restoreRetainedScrollPosition = () => {
@@ -434,15 +476,23 @@ export default function Clipboard() {
     }, [activeTab, itemTags]);
 
     useEffect(() => {
-        const localTabs = loadCustomTabs();
         void loadItemTags();
-        void invoke<unknown>('get_custom_tabs')
-            .then(value => {
+        void Promise.all([
+            invoke<unknown>('get_custom_tabs'),
+            loadClipboardBehaviorConfig(),
+        ])
+            .then(([value, config]) => {
+                const localTabs = loadCustomTabs();
                 const storedTabs = normalizeCustomTabs(value);
+                const initialTabs = initializeTutorialFilterTabs(
+                    storedTabs.length > 0 ? storedTabs : localTabs,
+                    config.onboarding_completed === false,
+                    key => translateWithPack(getLanguagePack(config.multilingual), key),
+                );
                 customTabsStorageReadyRef.current = true;
-                if (storedTabs.length > 0) {
-                    saveCustomTabs(storedTabs);
-                    setCustomTabs(storedTabs);
+                if (storedTabs.length > 0 || initialTabs !== localTabs) {
+                    saveCustomTabs(initialTabs);
+                    setCustomTabs(initialTabs);
                 } else if (localTabs.length > 0) {
                     persistCustomTabs(localTabs);
                 }
@@ -482,6 +532,19 @@ export default function Clipboard() {
         pageListRef.current = clipboardPage.list;
     }, [clipboardPage]);
 
+    useEffect(() => {
+        const unsubscribe = historyStore.subscribe(() => {
+            // A refresh publishes its items and result key together after readiness.
+            if (historyRefreshingRef.current) return;
+            const items = historyStore.residentItems();
+            pageListRef.current = items;
+            setPage(new ClipboardPage(items, 0, historyStore.knownCount,
+                new Map(items.map(item => [item.getHash(), historyStore.indexOf(item.getHash())]))));
+            setHasMoreHistory(historyStore.hasMore);
+        });
+        return () => { unsubscribe(); historyStore.close(); releaseHistoryMediaResources(); };
+    }, [historyStore]);
+
     const rememberFocusedResultExit = useCallback(() => {
         restoreFocusedResultRef.current = true;
     }, []);
@@ -517,19 +580,9 @@ export default function Clipboard() {
     }, [isLoadingMore]);
 
     const hideCurrentWindowWithAnimation = async () => {
-        if (tutorialActiveRef.current) return;
-        setAnimationState('exiting');
-        const generation = await invoke<number>('begin_hide_clipboard_window')
-            .catch(e => {
-                error(`Failed to mark clipboard hiding: ${e}`);
-                return 0;
-            });
-        if (generation === 0) {
-            setAnimationState(tutorialActiveRef.current ? 'entered' : 'hidden');
-            return;
-        }
-        await invoke('finish_hide_clipboard_window', { generation });
-        setAnimationState(tutorialActiveRef.current ? 'entered' : 'hidden');
+        if (tutorialActiveRef.current || !mainWindowActiveRef.current) return;
+        const request = ++hideRequestRef.current;
+        await requestClipboardHide(() => request === hideRequestRef.current && mainWindowActiveRef.current, setAnimationState);
     };
 
     const focusSearchInput = () => {
@@ -568,7 +621,7 @@ export default function Clipboard() {
     const openRecordTagCreateEditorForItem = (item: Item) => {
         setContextMenu(null);
         setTabContextMenu(null);
-        pendingRecordTagAssignTargetRef.current = item;
+        pendingRecordTagAssignTargetRef.current = { hash: item.getHash(), tags: item.getTags() };
         openTabEditorWindow("add", "record", undefined, undefined, addTabButtonRef.current);
     };
 
@@ -599,24 +652,27 @@ export default function Clipboard() {
                 activeRecordTagId,
             );
             pageListRef.current = nextList;
-            return new ClipboardPage(nextList, page.consumed);
+            return new ClipboardPage(nextList, page.consumed, page.logicalCount, page.indices);
         });
+        void fetchHistory();
     };
 
     const removeRecordTagFromPageItems = (tagId: number) => {
         setPage(page => {
             const nextList = removeRecordTagFromItems(page.list, tagId);
             pageListRef.current = nextList;
-            return new ClipboardPage(nextList, page.consumed);
+            return new ClipboardPage(nextList, page.consumed, page.logicalCount, page.indices);
         });
+        void fetchHistory();
     };
 
     const updateRecordTagOnPageItems = (updatedTag: ItemTag) => {
         setPage(page => {
             const nextList = updateRecordTagInItems(page.list, updatedTag);
             pageListRef.current = nextList;
-            return new ClipboardPage(nextList, page.consumed);
+            return new ClipboardPage(nextList, page.consumed, page.logicalCount, page.indices);
         });
+        void fetchHistory();
     };
 
     const assignPendingRecordTagToItem = async (tag: ItemTag) => {
@@ -624,8 +680,9 @@ export default function Clipboard() {
         pendingRecordTagAssignTargetRef.current = null;
         if (!target) return;
         try {
-            await invoke('assign_item_tag', { hash: target.getHash(), tagId: tag.id });
-            updateItemTagsInPage(target, assignItemTag(target.getTags(), tag));
+            await invoke('assign_item_tag', { hash: target.hash, tagId: tag.id });
+            const current = await historyStore.actionItem(target.hash);
+            if (current) updateItemTagsInPage(current, assignItemTag(target.tags, tag));
             showToast(t("tags.createdAndAssigned", { name: tag.name }));
         } catch (e) {
             showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
@@ -697,7 +754,8 @@ export default function Clipboard() {
                 "error",
             );
         },
-        onBeforeStart: () => {
+        onBeforeStart: previewDefaults => {
+            setTutorialPreviewTabs(previewDefaults ? createDefaultTutorialFilterTabs(t) : null);
             setAnimationState("entered");
             setContextMenu(null);
             setTabContextMenu(null);
@@ -715,6 +773,7 @@ export default function Clipboard() {
         setActive: active => {
             tutorialActiveRef.current = active;
             setTutorialActive(active);
+            if (!active) setTutorialPreviewTabs(null);
         },
         setMainShortcut,
         setPermissionStatus: setTutorialPermissionStatus,
@@ -722,6 +781,11 @@ export default function Clipboard() {
     });
 
     const handleTutorialFilterToggle = (id: TutorialFilterId, enabled: boolean) => {
+        if (tutorialPreviewTabs !== null) {
+            setTutorialPreviewTabs(tabs => tabs === null ? null : updateTutorialFilterTabs(tabs, id, enabled, t));
+            return;
+        }
+        markTutorialFiltersInitialized();
         const tabId = tutorialFilterTabId(id);
         setCustomTabs(tabs => updateTutorialFilterTabs(tabs, id, enabled, t));
 
@@ -757,9 +821,14 @@ export default function Clipboard() {
     const openTabEditorWindow = (mode: TabEditorMode, kind: TagEditorKind, tab?: CustomTab, recordTag?: ItemTag, anchor?: HTMLElement | null) => {
         const popupHeight = kind === "record" ? RECORD_TAG_EDITOR_HEIGHT : FILTER_TAG_EDITOR_HEIGHT;
         const position = screenFloatingPositionFromAnchor(anchor, TAB_EDITOR_WIDTH, popupHeight);
+        const anchorRect = anchor?.getBoundingClientRect();
         const payload = JSON.stringify({ mode, kind, tab, recordTag, tabs: customTabs, languageCode });
         localStorage.setItem("vpaste.pendingTabEditorPayload", payload);
-        void invoke('open_tab_editor_window', { x: position.x, y: position.y, width: TAB_EDITOR_WIDTH, height: popupHeight, payload })
+        void invoke('open_tab_editor_window', {
+            x: position.x, y: position.y, width: TAB_EDITOR_WIDTH, height: popupHeight, payload,
+            offsetX: anchorRect ? anchorRect.right + CONTEXT_MENU_GAP : undefined,
+            offsetY: anchorRect ? anchorRect.bottom - popupHeight : undefined,
+        })
             .catch(e => {
                 error(`Failed to open tab editor window: ${e}`);
                 showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
@@ -777,6 +846,8 @@ export default function Clipboard() {
             width: TAB_EDITOR_WIDTH,
             height: popupHeight,
             payload,
+            offsetX: clientX + CONTEXT_MENU_GAP,
+            offsetY: clientY - popupHeight,
         }).catch(e => {
             error(`Failed to open tab editor window: ${e}`);
             showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
@@ -830,127 +901,54 @@ export default function Clipboard() {
 
     const scrollCardIntoView = (index: number, behavior: ScrollBehavior = 'auto') => {
         stopWheelScroll();
-        const container = cardsContainerRef.current;
-        const cards = container?.querySelectorAll<HTMLElement>(`[data-results-active="true"] .${styles["clipboard-card"]}`);
-        const card = cards?.item(index);
-        if (!container || !card) return;
-
-        // Use layout coordinates so the filter animation does not shift the scroll target.
-        let cardLeft = 0;
-        for (let element: HTMLElement | null = card; element && element !== container; element = element.offsetParent as HTMLElement | null) {
-            cardLeft += element.offsetLeft;
-        }
-        const cardRight = cardLeft + card.offsetWidth;
-        const visibleLeft = container.scrollLeft;
-        const visibleRight = visibleLeft + container.clientWidth;
-        const edgePadding = 24;
-        let nextScrollLeft = visibleLeft;
-
-        if (cardLeft - edgePadding < visibleLeft) {
-            nextScrollLeft = Math.max(0, cardLeft - edgePadding);
-        } else if (cardRight + edgePadding > visibleRight) {
-            nextScrollLeft = cardRight + edgePadding - container.clientWidth;
-        }
-
-        if (nextScrollLeft !== visibleLeft) {
-            container.scrollTo({ left: nextScrollLeft, behavior });
-            maybeLoadMoreHistory();
-        }
+        if (virtualListRef.current?.scrollToIndex(index, behavior)) maybeLoadMoreHistory();
     };
 
-    const selectCardAt = (index: number, behavior: ScrollBehavior = 'auto'): Item | null => {
-        const list = pageListRef.current;
-        if (list.length === 0) {
-            setSelected("");
-            selectedRef.current = "";
-            return null;
+    useLayoutEffect(() => {
+        if (!pendingSelectionScroll) return;
+        const { generation, hash, index, behavior } = pendingSelectionScroll;
+        if (generation === searchRequestSeqRef.current && mainWindowActiveRef.current && hash === selectedRef.current) {
+            // The logical track must be committed before it can scroll to a new page.
+            if (index >= clipboardPage.logicalCount) return;
+            scrollCardIntoView(index, behavior);
         }
-        const nextIndex = Math.max(0, Math.min(index, list.length - 1));
-        const item = list[nextIndex];
-        const nextHash = item.getHash() as string;
-        selectedRef.current = nextHash;
-        setSelected(nextHash);
-        scrollCardIntoView(nextIndex, behavior);
+        setPendingSelectionScroll(current => current === pendingSelectionScroll ? null : current);
+    }, [pendingSelectionScroll, clipboardPage.logicalCount]);
+
+    const selectCardAt = async (index: number, behavior: ScrollBehavior = 'auto', isCurrent: () => boolean = () => true): Promise<Item | null> => {
+        const generation = searchRequestSeqRef.current;
+        const current = () => generation === searchRequestSeqRef.current && mainWindowActiveRef.current && isCurrent();
+        const resolved = await historyStore.navigationRef(index);
+        if (!resolved || !current()) return null;
+        const { index: target, ref } = resolved;
+        // Only the measured viewport may evict resident cards; navigation reads one item.
+        const item = await historyStore.actionItem(ref.hash);
+        if (!item || !current()) return null;
+        selectedLogicalIndexRef.current = target;
+        selectedRef.current = ref.hash;
+        setSelected(ref.hash);
+        setPendingSelectionScroll({ generation, hash: ref.hash, index: target, behavior });
         return item;
     };
 
-    const isPreviewableDomainLink = (url: string) => {
-        try {
-            const parsed = new URL(url.trim());
-            if (parsed.protocol !== "https:") return false;
-            const host = parsed.hostname;
-            if (!host.includes(".")) return false;
-            if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return false;
-            return /^[a-z0-9.-]+$/i.test(host);
-        } catch {
-            return false;
-        }
+    const withSelectedItem = (action: (item: Item) => unknown) => {
+        const hash = selectedRef.current;
+        const generation = searchRequestSeqRef.current;
+        if (!hash) return;
+        void historyStore.actionItem(hash).then(item => {
+            if (item && generation === searchRequestSeqRef.current && mainWindowActiveRef.current && hash === selectedRef.current) action(item);
+        }).catch(reason => error(`Failed to load selected history item: ${reason}`));
     };
 
-    const scheduleLinkPreviewRefresh = (items: Item[]) => {
-        if (!linkAutoPreviewRef.current || linkPreviewRefreshingRef.current) return;
-        const urls = items
-            .filter(item => item.getType() === ItemType.Link)
-            .slice(0, 10)
-            .map(item => parseLinkContent(item.getContent()).url)
-            .filter(isPreviewableDomainLink);
-
-        if (urls.length === 0) return;
-
-        linkPreviewRefreshingRef.current = true;
-        void invoke<LinkPreviewUpdate[]>("refresh_link_previews", { urls })
-            .then(updates => {
-                if (updates.length > 0) {
-                    window.setTimeout(() => {
-                        void fetchHistoryWith(searchWordRef.current, activeTabRef.current, { background: true });
-                    }, 220);
-                }
-            })
-            .catch(e => error(`Failed to refresh link previews: ${e}`))
-            .finally(() => {
-                linkPreviewRefreshingRef.current = false;
-            });
-    };
-
-    const scheduleImageClipboardCachePrewarm = (items: Item[]) => {
-        const paths = items
-            .filter(item => item.getType() === ItemType.Image)
-            .map(item => item.getContent())
-            .filter(path => path && !imageClipboardCachePrewarmRef.current.has(path))
-            .slice(0, 6);
-
-        if (paths.length === 0) return;
-        paths.forEach(path => imageClipboardCachePrewarmRef.current.add(path));
-        if (imagePrewarmTimerRef.current !== null) {
-            window.clearTimeout(imagePrewarmTimerRef.current);
-        }
-        imagePrewarmTimerRef.current = window.setTimeout(() => {
-            imagePrewarmTimerRef.current = null;
-            const prewarm = () => {
-                imagePrewarmIdleRef.current = null;
-                void invoke("prewarm_image_preview_cache", { paths })
-                    .then(() => {
-                        window.setTimeout(() => {
-                            void invoke("prewarm_image_clipboard_cache", { paths: paths.slice(0, 2) })
-                                .catch(e => error(`Failed to prewarm image clipboard cache: ${e}`));
-                        }, 1800);
-                    })
-                    .catch(e => {
-                        paths.forEach(path => imageClipboardCachePrewarmRef.current.delete(path));
-                        error(`Failed to prewarm image preview cache: ${e}`);
-                    });
-            };
-            if (typeof window.requestIdleCallback === "function") {
-                imagePrewarmIdleRef.current = window.requestIdleCallback(prewarm, { timeout: 1800 });
-            } else {
-                imagePrewarmIdleRef.current = window.setTimeout(prewarm, 320);
-            }
-        }, 900);
-    };
-
-    async function fetchHistoryWith(keywords: string, tab: string, options: { selectFirst?: boolean, background?: boolean, isCurrent?: () => boolean } = {}) {
-        if (showGateRef.current!.pending && !options.isCurrent) return false;
+    async function fetchHistoryWith(keywords: string, tab: string, options: { selectFirst?: boolean, background?: boolean, isCurrent?: () => boolean, preserveSelection?: boolean } = {}) {
+        if (!mainWindowActiveRef.current || (showGateRef.current!.pending && !options.isCurrent)) return false;
         const requestSeq = ++searchRequestSeqRef.current;
+        loadMoreOwnerRef.current += 1;
+        isLoadingMoreRef.current = false;
+        setIsLoadingMore(false);
+        navigationOwnerRef.current += 1;
+        navigationRunningRef.current = false;
+        navigationTargetRef.current = null;
         historyRefreshingRef.current = true;
         if (!options.background && keywords.trim()) {
             setIsSearching(true);
@@ -958,16 +956,21 @@ export default function Clipboard() {
         try {
             const tagSearch = parseTagSearch(keywords);
             const label = mergeTagSearchFilter(tabLabelForBackend(tab), tagSearch.tagNames);
-            const page = await fetchSearchPage(
-                tagSearch.keywords,
-                label,
-                0,
-                0,
-                HISTORY_PAGE_LIMIT,
-                () => requestSeq === searchRequestSeqRef.current && (options.isCurrent?.() ?? true),
-            );
-            if (!page || !(options.isCurrent?.() ?? true)) return false;
-            const items = page.items;
+            const previous = lastHistoryFetchRef.current;
+            const sameQuery = previous?.keywords === keywords && previous.tab === tab;
+            const resetPosition = options.selectFirst || !sameQuery;
+            if (resetPosition && cardsContainerRef.current) {
+                cardsContainerRef.current.scrollLeft = 0;
+                cardsContainerRef.current.scrollTop = 0;
+            }
+            const left = resetPosition ? 0 : (cardsContainerRef.current?.scrollLeft ?? retainedScrollLeftRef.current);
+            const width = cardsContainerRef.current?.clientWidth ?? window.innerWidth;
+            const start = Math.max(0, Math.floor(Math.max(0, left - 24) / 236) - 2);
+            releaseHistoryMediaResources();
+            const ready = await historyStore.open({ keywords: tagSearch.keywords, label }, { start, end: start + Math.ceil(width / 236) + 5 });
+            if (!ready || requestSeq !== searchRequestSeqRef.current || !(options.isCurrent?.() ?? true)) return false;
+            const items = historyStore.residentItems();
+            resourceEpochRef.current = historyStore.resourceEpoch;
             const previousRequest = lastHistoryFetchRef.current;
             const filterChanged = previousRequest !== null
                 && (previousRequest.keywords !== keywords || previousRequest.tab !== tab);
@@ -987,24 +990,21 @@ export default function Clipboard() {
                     hashes: items.map(item => item.getHash() as string),
                 }
                 : null);
-            setPage(new ClipboardPage(items, page.consumed));
+            setPage(new ClipboardPage(items, 0, historyStore.knownCount,
+                new Map(items.map(item => [item.getHash(), historyStore.indexOf(item.getHash())]))));
             setLoadedHistoryRequest({ keywords, activeTab: tab });
-            setHasMoreHistory(page.hasMore);
-            const selectedIndex = items.findIndex((item: Item) => item.getHash() === selectedRef.current);
-            if (options.selectFirst || selectedIndex === -1) {
-                const firstHash = items[0]?.getHash() as string | undefined;
-                selectedRef.current = firstHash || "";
-                setSelected(firstHash || "");
-                if (firstHash) {
-                    scrollCardIntoView(0);
-                }
-            } else if (selectedIndex >= 0) {
-                scrollCardIntoView(selectedIndex);
-            }
-            if (!options.background) {
-                scheduleLinkPreviewRefresh(items);
-                scheduleImageClipboardCachePrewarm(items);
-            }
+            setHasMoreHistory(historyStore.hasMore);
+            const selectedIndex = historyStore.indexOf(selectedRef.current);
+            if ((!historyStore.hasMore && historyStore.knownCount === 0) || (!options.preserveSelection && (options.selectFirst || !sameQuery || !selectedRef.current
+                || (!historyStore.hasMore && selectedLogicalIndexRef.current >= historyStore.knownCount)
+                || (selectedIndex < 0 && selectedLogicalIndexRef.current >= start && selectedLogicalIndexRef.current < start + Math.ceil(width / 236) + 5)))) {
+                const first = items[0];
+                const firstHash = first?.getHash() ?? "";
+                selectedLogicalIndexRef.current = first ? historyStore.indexOf(firstHash) : 0;
+                selectedRef.current = firstHash;
+                setSelected(firstHash);
+                if (!sameQuery || options.selectFirst) scrollCardIntoView(0);
+            } else if (selectedIndex >= 0) selectedLogicalIndexRef.current = selectedIndex;
             return true;
         } catch (e) {
             if (requestSeq === searchRequestSeqRef.current) {
@@ -1014,44 +1014,27 @@ export default function Clipboard() {
             if (requestSeq === searchRequestSeqRef.current) {
                 historyRefreshingRef.current = false;
                 setIsSearching(false);
+                flushResourceRefreshRef.current();
             }
         }
     }
 
-    const loadMoreHistory = async () => {
-        const currentList = pageListRef.current;
-        if (isLoadingMoreRef.current || !hasMoreHistoryRef.current || currentList.length === 0) {
-            return;
-        }
+    flushResourceRefreshRef.current = () => {
+        if (!mainWindowActiveRef.current || historyRefreshingRef.current || showGateRef.current!.pending
+            || pendingResourceEpochRef.current === null || pendingResourceEpochRef.current !== resourceEpochRef.current) return;
+        pendingResourceEpochRef.current = null;
+        void fetchHistoryWith(searchWordRef.current, activeTabRef.current, { background: true });
+    };
 
-        const lastItem = currentList[currentList.length - 1];
-        setIsLoadingMore(true);
-        isLoadingMoreRef.current = true;
-        try {
-            const requestSeq = searchRequestSeqRef.current;
-            const tagSearch = parseTagSearch(searchWordRef.current);
-            const label = mergeTagSearchFilter(tabLabelForBackend(activeTabRef.current), tagSearch.tagNames);
-            const page = await fetchSearchPage(
-                tagSearch.keywords,
-                label,
-                lastItem.getId(),
-                lastItem.getTime(),
-                HISTORY_PAGE_LIMIT,
-                () => requestSeq === searchRequestSeqRef.current,
-            );
-            if (!page) return;
-            const nextItems = page.items;
-            const existingHashes = new Set(currentList.map(item => item.getHash()));
-            const merged = currentList.concat(nextItems.filter((item: Item) => !existingHashes.has(item.getHash())));
-            pageListRef.current = merged;
-            setPage(new ClipboardPage(merged, page.consumed));
-            setHasMoreHistory(page.hasMore);
-            scheduleImageClipboardCachePrewarm(nextItems);
-        } catch (e) {
-            error(`Failed to load more history: ${e}`);
-        } finally {
-            setIsLoadingMore(false);
-            isLoadingMoreRef.current = false;
+    const loadMoreHistory = async () => {
+        if (!mainWindowActiveRef.current || isLoadingMoreRef.current || !historyStore.hasMore) return;
+        const requestSeq = searchRequestSeqRef.current;
+        const owner = ++loadMoreOwnerRef.current;
+        setIsLoadingMore(true); isLoadingMoreRef.current = true;
+        try { await historyStore.loadMore(); }
+        catch (reason) { if (requestSeq === searchRequestSeqRef.current) error(`Failed to load more history: ${reason}`); }
+        finally {
+            if (owner === loadMoreOwnerRef.current) { setIsLoadingMore(false); isLoadingMoreRef.current = false; }
         }
     };
 
@@ -1097,7 +1080,6 @@ export default function Clipboard() {
             hideAltHints();
         }
         tabQuickSelectEnabledRef.current = preferences.tabQuickSelectEnabled;
-        linkAutoPreviewRef.current = preferences.linkAutoPreview;
     };
 
     const synchronizeClipboardHistory = async (isCurrent: () => boolean) => {
@@ -1176,6 +1158,10 @@ export default function Clipboard() {
                 applyRuntimeBehaviorPreferences(preferences);
             },
             onWindowShow: payload => {
+                hideRequestRef.current += 1;
+                mainWindowActiveRef.current = true;
+                resourceEpochRef.current = null;
+                pendingResourceEpochRef.current = null;
                 resetCardsPointerState();
                 if (retainLastPositionRef.current === false) {
                     selectFirstLoadedItem(true);
@@ -1204,6 +1190,9 @@ export default function Clipboard() {
                 setAnimationState("entered");
             },
             onWindowHide: () => {
+                mainWindowActiveRef.current = false;
+                resourceEpochRef.current = null;
+                pendingResourceEpochRef.current = null;
                 hoverPreviewRef.current?.cancel();
                 showGateRef.current!.cancel(true);
                 retainedScrollLeftRef.current = cardsContainerRef.current?.scrollLeft ?? 0;
@@ -1213,18 +1202,6 @@ export default function Clipboard() {
                     window.clearTimeout(scrollRefreshTimerRef.current);
                     scrollRefreshTimerRef.current = null;
                 }
-                if (imagePrewarmTimerRef.current !== null) {
-                    window.clearTimeout(imagePrewarmTimerRef.current);
-                    imagePrewarmTimerRef.current = null;
-                }
-                if (imagePrewarmIdleRef.current !== null) {
-                    if (typeof window.cancelIdleCallback === "function") {
-                        window.cancelIdleCallback(imagePrewarmIdleRef.current);
-                    } else {
-                        window.clearTimeout(imagePrewarmIdleRef.current);
-                    }
-                    imagePrewarmIdleRef.current = null;
-                }
                 if (loadMoreCheckFrameRef.current !== null) {
                     window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
                     loadMoreCheckFrameRef.current = null;
@@ -1232,12 +1209,56 @@ export default function Clipboard() {
                 hideAltHints();
                 setAnimationState("exiting");
             },
+            onWindowParked: () => {
+                mainWindowActiveRef.current = false;
+                showGateRef.current!.cancel(true);
+                searchRequestSeqRef.current += 1;
+                retainedScrollLeftRef.current = cardsContainerRef.current?.scrollLeft ?? retainedScrollLeftRef.current;
+                loadMoreOwnerRef.current += 1;
+                isLoadingMoreRef.current = false;
+                setIsLoadingMore(false);
+                navigationOwnerRef.current += 1;
+                navigationRunningRef.current = false;
+                navigationTargetRef.current = null;
+                setContextMenu(null);
+                setFilterMotionRequest(null);
+                hoverPreviewRef.current?.cancel();
+                // Keep only the already bounded viewport; a fresh show still
+                // synchronizes history before deferred paste actions can run.
+                setAnimationState("parked");
+            },
             onWindowHidden: () => {
+                // Native generation checks also cover immediate hides from settings.
+                mainWindowActiveRef.current = false;
+                showGateRef.current!.cancel(true);
+                searchRequestSeqRef.current += 1;
+                loadMoreOwnerRef.current += 1;
+                isLoadingMoreRef.current = false;
+                setIsLoadingMore(false);
+                navigationOwnerRef.current += 1;
+                navigationRunningRef.current = false;
+                navigationTargetRef.current = null;
+                historyStore.close();
+                releaseHistoryMediaResources();
+                pageListRef.current = [];
+                setPage(new ClipboardPage([], 0));
+                setContextMenu(null);
+                setFilterMotionRequest(null);
+                hoverPreviewRef.current?.cancel();
                 setAnimationState("hidden");
             },
             onClipboardChanged: () => {
-                if (showGateRef.current!.pending) return;
+                if (!mainWindowActiveRef.current || showGateRef.current!.pending) return;
                 void fetchHistory();
+            },
+            onCaptureRejected: () => {
+                showToast(t("clipboard.captureTooLarge"), "warning");
+            },
+            onResourcesUpdated: payload => {
+                if (!mainWindowActiveRef.current) return;
+                if (resourceEpochRef.current !== null && payload.epoch !== resourceEpochRef.current) return;
+                pendingResourceEpochRef.current = payload.epoch;
+                flushResourceRefreshRef.current();
             },
             onTutorialStarted: () => {
                 void startTutorial();
@@ -1310,6 +1331,7 @@ export default function Clipboard() {
             },
         },
         onMount: () => {
+            mainWindowActiveRef.current = true;
             void loadClipboardBehaviorConfig().then(config => {
                 if (Object.keys(config).length > 0) {
                     clipboardBehaviorConfigRef.current ??= config;
@@ -1321,15 +1343,16 @@ export default function Clipboard() {
             initializeTutorial();
         },
         onBeforeCleanup: () => {
+            hideRequestRef.current += 1;
+            mainWindowActiveRef.current = false;
+            searchRequestSeqRef.current += 1;
+            pendingResourceEpochRef.current = null;
             showGateRef.current!.cancel(true);
             if (toastTimerRef.current !== null) {
                 window.clearTimeout(toastTimerRef.current);
             }
             if (scrollRefreshTimerRef.current !== null) {
                 window.clearTimeout(scrollRefreshTimerRef.current);
-            }
-            if (imagePrewarmTimerRef.current !== null) {
-                window.clearTimeout(imagePrewarmTimerRef.current);
             }
             if (loadMoreCheckFrameRef.current !== null) {
                 window.cancelAnimationFrame(loadMoreCheckFrameRef.current);
@@ -1447,14 +1470,13 @@ export default function Clipboard() {
                     });
                 }
                 if (showGateRef.current!.defer(() => {
-                    const item = action.type === "quick-item"
-                        ? pageListRef.current[action.index]
-                        : action.type === "submit-search" ? pageListRef.current[0]
-                            : pageListRef.current.find(item => item.getHash() === selectedRef.current) || pageListRef.current[0];
-                    if (!item) return;
-                    if (queueSelectionMode) activateClipboardCardRef.current(item.getHash(), "plainText" in action && action.plainText);
-                    else void clickClipboardItem(item.getHash(), "plainText" in action && action.plainText,
-                        action.type === "quick-item", action.type === "quick-item" ? String(action.index + 1) : "");
+                    if (action.type === "quick-item") { void activateItemShortcut(action.index); return; }
+                    const plain = "plainText" in action && action.plainText;
+                    if (action.type === "submit-search") { void pasteFirstHistoryItem(plain); return; }
+                    const hash = selectedRef.current;
+                    if (!hash) return;
+                    if (queueSelectionMode) activateClipboardCardRef.current(hash, plain);
+                    else void clickClipboardItem(hash, plain);
                 })) return;
             } else if (action.type === "navigate-selection" && showGateRef.current!.queueNavigation(() => {
                 navigateSelectedCard(action.direction);
@@ -1482,17 +1504,9 @@ export default function Clipboard() {
                 case "focus-search":
                     focusSearchInput();
                     return;
-                case "submit-search": {
-                    const firstHash = pageListRef.current[0]?.getHash() as string | undefined;
-                    if (firstHash) {
-                        if (queueSelectionMode) {
-                            activateClipboardCardRef.current(firstHash, action.plainText);
-                        } else {
-                            void clickClipboardItem(firstHash, action.plainText);
-                        }
-                    }
+                case "submit-search":
+                    void pasteFirstHistoryItem(action.plainText);
                     return;
-                }
                 case "dismiss-search":
                     if (action.clear) {
                         setSearchWord("");
@@ -1542,49 +1556,23 @@ export default function Clipboard() {
                     return;
                 case "toggle-preview":
                     setContextMenu(null);
-                    togglePreview(
-                        pageListRef.current.find(
-                            item => item.getHash() === selectedRef.current,
-                        ) || pageListRef.current[0],
-                    );
+                    withSelectedItem(item => togglePreview(item));
                     return;
-                case "delete-selected": {
-                    const item = pageListRef.current.find(candidate => candidate.getHash() === selectedRef.current);
-                    if (item) void deleteClipboardItemRef.current?.(item);
+                case "delete-selected":
+                    withSelectedItem(item => deleteClipboardItemRef.current?.(item));
                     return;
-                }
-                case "edit-selected": {
-                    const item = pageListRef.current.find(candidate => candidate.getHash() === selectedRef.current);
-                    if (item) void openTextEditor(item);
+                case "edit-selected":
+                    withSelectedItem(item => openTextEditor(item));
                     return;
-                }
-                case "paste-selected":
+                case "paste-selected": {
                     setContextMenu(null);
-                    if (action.plainText) {
-                        const selectedItem = pageListRef.current.find(
-                            item => item.getHash() === selectedRef.current,
-                        ) || pageListRef.current[0];
-                        if (selectedItem) {
-                            if (queueSelectionMode) {
-                                activateClipboardCardRef.current(selectedItem.getHash() as string, true);
-                            } else {
-                                void clickClipboardItem(selectedItem.getHash(), true);
-                            }
-                        }
-                        return;
-                    }
-                    {
-                        const selectedHash = selectedRef.current
-                            || (pageListRef.current[0]?.getHash() as string | undefined);
-                        if (selectedHash) {
-                            if (queueSelectionMode) {
-                                activateClipboardCardRef.current(selectedHash, false);
-                            } else {
-                                void clickClipboardItem(selectedHash, false);
-                            }
-                        }
+                    const hash = selectedRef.current;
+                    if (hash) {
+                        if (queueSelectionMode) activateClipboardCardRef.current(hash, action.plainText);
+                        else void clickClipboardItem(hash, action.plainText);
                     }
                     return;
+                }
             }
         };
 
@@ -1621,6 +1609,7 @@ export default function Clipboard() {
         pasteInFlight: pasteInFlightRef,
         closeContextMenu: () => setContextMenu(null),
         getItems: () => pageListRef.current,
+        nativeHistory: () => !tutorialActiveRef.current,
         hideWindow: hideCurrentWindowWithAnimation,
         refreshHistory: fetchHistory,
         selectItem: hash => {
@@ -1657,7 +1646,7 @@ export default function Clipboard() {
             if (selectedRef.current === hash) return;
             selectedRef.current = hash;
             setSelected(hash);
-            refreshPreviewIfVisible(item, true);
+            refreshPreviewIfVisible(item);
             return;
         }
         activateClipboardCardRef.current(hash, plainText);
@@ -1696,19 +1685,15 @@ export default function Clipboard() {
 
     openClipboardContextMenuRef.current = openContextMenu;
 
-    const openSelectedContextMenu = () => {
-        const item = pageListRef.current.find(i => i.getHash() === selectedRef.current)
-            || pageListRef.current[0];
-        if (!item) return;
-
-        const cards = cardsContainerRef.current?.querySelectorAll<HTMLElement>(`[data-results-active="true"] .${styles["clipboard-card"]}`);
-        const index = pageListRef.current.findIndex(i => i.getHash() === item.getHash());
-        const rect = cards?.item(Math.max(0, index))?.getBoundingClientRect();
-        if (rect) {
-            void openContextMenu(item, rect.left + 14, rect.top + 40);
-        } else {
-            void openContextMenu(item, Math.round(window.innerWidth / 2 - 94), 64);
-        }
+    const openSelectedContextMenu = async () => {
+        const generation = searchRequestSeqRef.current;
+        const index = Math.max(0, historyStore.indexOf(selectedRef.current) >= 0 ? historyStore.indexOf(selectedRef.current) : selectedLogicalIndexRef.current);
+        const item = await selectCardAt(index);
+        if (!item || generation !== searchRequestSeqRef.current) return;
+        await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
+        if (!mainWindowActiveRef.current) return;
+        const rect = virtualListRef.current?.getCard(item.getHash())?.getBoundingClientRect();
+        void openContextMenu(item, rect ? rect.left + 14 : Math.round(window.innerWidth / 2 - 94), rect ? rect.top + 40 : 64);
     };
 
     const {
@@ -1742,7 +1727,7 @@ export default function Clipboard() {
             hoverPreviewRef.current?.cancel();
             selectedRef.current = hash;
             setSelected(hash);
-            refreshPreviewIfVisible(item, true);
+            refreshPreviewIfVisible(item);
         }
         if (target.closest("button, a, input, textarea, [contenteditable=true]")) {
             hoverPreviewRef.current?.leave();
@@ -1777,42 +1762,43 @@ export default function Clipboard() {
     }, [activeTab, searchWord, queueSelectionMode, contextMenu, tabContextMenu, tagCreateChoice, isSearchComposing]);
 
     const navigateSelectedCard = (direction: number) => {
-        const list = pageListRef.current;
-        if (list.length === 0) return;
-        const currentIndex = list.findIndex(item => item.getHash() === selectedRef.current);
-        const item = selectCardAt(currentIndex === -1 ? 0 : currentIndex + direction);
-        if (item) {
-            refreshPreviewIfVisible(item);
-        }
+        const target = Math.max(0, (navigationTargetRef.current ?? selectedLogicalIndexRef.current) + direction);
+        navigationTargetRef.current = target;
+        if (navigationRunningRef.current) return;
+        navigationRunningRef.current = true;
+        const owner = ++navigationOwnerRef.current;
+        const generation = searchRequestSeqRef.current;
+        void (async () => {
+            try {
+                while (navigationTargetRef.current !== null && generation === searchRequestSeqRef.current) {
+                    const wanted = navigationTargetRef.current;
+                    const previousHash = selectedRef.current;
+                    const item = await selectCardAt(wanted, 'auto', () => owner === navigationOwnerRef.current && navigationTargetRef.current === wanted);
+                    if (generation !== searchRequestSeqRef.current) return;
+                    if (navigationTargetRef.current !== wanted) continue;
+                    navigationTargetRef.current = null;
+                    if (item && item.getHash() !== previousHash) refreshPreviewIfVisible(item, direction < 0 ? -1 : 1);
+                }
+            } catch (reason) { error(`Failed to navigate history: ${reason}`); }
+            finally { if (owner === navigationOwnerRef.current) { navigationRunningRef.current = false; navigationTargetRef.current = null; } }
+        })();
     };
 
     const removeDeletedItemFromPage = (item: Item) => {
-        const hash = item.getHash() as string;
-        const currentList = pageListRef.current;
-        const deletedIndex = currentList.findIndex(
-            candidate => candidate.getHash() === hash,
-        );
-        const nextList = currentList.filter(
-            candidate => candidate.getHash() !== hash,
-        );
+        const hash = item.getHash();
+        const wasSelected = selectedRef.current === hash;
+        const knownIndex = historyStore.indexOf(hash);
+        const globalIndex = knownIndex >= 0 ? knownIndex : selectedLogicalIndexRef.current;
+        const nextList = pageListRef.current.filter(candidate => candidate.getHash() !== hash);
         pageListRef.current = nextList;
-        setPage(page => new ClipboardPage(nextList, page.consumed));
-        if (selectedRef.current === hash) {
-            const nextIndex = Math.max(
-                0,
-                Math.min(deletedIndex, nextList.length - 1),
-            );
-            const nextHash = nextList[nextIndex]?.getHash() as
-                | string
-                | undefined;
-            selectedRef.current = nextHash || "";
-            setSelected(nextHash || "");
-            if (nextHash) {
-                window.requestAnimationFrame(() => {
-                    scrollCardIntoView(nextIndex);
-                });
-            }
-        }
+        setPage(page => new ClipboardPage(nextList, page.consumed, page.logicalCount, page.indices));
+        // Re-query first: resident offsets and pre-deletion indices are not global successors.
+        const refresh = fetchHistoryWith(searchWordRef.current, activeTabRef.current, { preserveSelection: true });
+        const generation = searchRequestSeqRef.current;
+        void refresh.then(async () => {
+            if (!wasSelected || !mainWindowActiveRef.current || generation !== searchRequestSeqRef.current || selectedRef.current !== hash) return;
+            await selectCardAt(globalIndex, 'auto', () => selectedRef.current === hash);
+        }).catch(reason => error(`Failed to restore selection after deletion: ${reason}`));
     };
 
     const {
@@ -1926,8 +1912,20 @@ export default function Clipboard() {
             .catch(e => error(`Failed to open test room: ${e}`));
     };
 
+    const openMemoryMonitor = () => {
+        if (!import.meta.env.DEV || !developerMode) return;
+        void invoke("open_dev_memory_window", { languageCode, themePreview: getResolvedTheme() })
+            .catch(e => error(`Failed to open memory monitor: ${e}`));
+    };
+
+    const publishMemoryPreview = (language: string, theme: ResolvedTheme) => {
+        if (!import.meta.env.DEV || !developerMode) return;
+        void emitTo("devMemory", "dev-memory-open", { languageCode: language, themePreview: theme })
+            .catch(e => error(`Failed to update memory preview: ${e}`));
+    };
+
     const openTutorialFromDebug = (platform: TutorialPlatform) => {
-        void startTutorial(platform);
+        void startTutorial(platform, true);
     };
 
     const openPermissionCenter = async () => {
@@ -1940,13 +1938,16 @@ export default function Clipboard() {
     };
 
     const toggleDeveloperLanguage = () => {
-        setPreviewLanguageCode(languageCode === "Chinese" ? "English" : "Chinese");
+        const next = languageCode === "Chinese" ? "English" : "Chinese";
+        setPreviewLanguageCode(next);
+        publishMemoryPreview(next, getResolvedTheme());
     };
 
     const toggleDeveloperTheme = () => {
         const nextTheme: ResolvedTheme = getResolvedTheme() === "dark" ? "light" : "dark";
         setThemePreview(nextTheme);
         setDeveloperTheme(nextTheme);
+        publishMemoryPreview(languageCode, nextTheme);
     };
 
     const blockTutorialNavigation = () => {
@@ -1962,7 +1963,7 @@ export default function Clipboard() {
         tutorialPermissionStatus,
         t,
     );
-    const tutorialFilters = buildTutorialFilterTabs(customTabs, t);
+    const tutorialFilters = buildTutorialFilterTabs(tutorialPreviewTabs ?? customTabs, t);
     const tutorialShortcutText = formatShortcutLabel(mainShortcut, tutorialPlatform === "mac");
 
     const contextMenuOptions = contextMenu
@@ -1998,6 +1999,7 @@ export default function Clipboard() {
     return (
         <div
             className={classes(styles, `clipboard-container ${animationState}`)}
+            aria-hidden={animationState === "parked" ? true : undefined}
             ref={containerRef}
             tabIndex={-1}
             onContextMenu={event => event.preventDefault()}
@@ -2075,7 +2077,7 @@ export default function Clipboard() {
                 )}
                 <ClipboardTabBar
                     activeTab={activeTab}
-                    dynamicTabs={dynamicTabs}
+                    dynamicTabs={tutorialPreviewTabs === null ? dynamicTabs : orderedDynamicTabs(tutorialPreviewTabs, [], [])}
                     draggingTabId={draggingTabId}
                     tutorialActive={tutorialActive}
                     altHintsVisible={altHintsVisible}
@@ -2144,6 +2146,7 @@ export default function Clipboard() {
                     onToggleTheme={toggleDeveloperTheme}
                     onOpenUiLab={openUiLab}
                     onOpenTestRoom={openTestRoom}
+                    onOpenMemoryMonitor={openMemoryMonitor}
                     onOpenSettings={tutorialActive ? blockTutorialNavigation : openConfigWindow}
                     updateReadyVersion={updateEntryVisible(updateState) ? updateState.availableVersion || "" : null}
                     updateInstalling={updateState.status === "installing"}
@@ -2162,6 +2165,8 @@ export default function Clipboard() {
             <div
                 className={classes(styles, `cards-container${queueSelectionMode ? " queue-selection-mode" : ""}`)}
                 ref={cardsContainerRef}
+                data-history-count={clipboardPage.logicalCount}
+                data-history-memory={import.meta.env.DEV ? JSON.stringify(historyStore.diagnostics()) : undefined}
                 aria-busy={filteringResults}
                 onScroll={() => {
                     hoverPreviewRef.current?.cancel();
@@ -2193,6 +2198,7 @@ export default function Clipboard() {
                 onDoubleClickCapture={handleCardsDoubleClick}
             >
                 {tutorialActive ? (
+                    <React.Suspense fallback={<div className={styles["tutorial-loading"]} role="status" aria-label={t("common.loading")}><CircularProgress size={24} /></div>}>
                     <TutorialOverlay
                         key={tutorialRunId}
                         t={t}
@@ -2206,6 +2212,7 @@ export default function Clipboard() {
                         onShortcutDemoAvailabilityChange={setTutorialShortcutDemoAvailability}
                         onComplete={completeTutorial}
                     />
+                    </React.Suspense>
                 ) : (
                     <div className={styles["cards-results-stack"]}>
                         <AnimatePresence mode="wait" initial={false}>
@@ -2231,10 +2238,29 @@ export default function Clipboard() {
                                     </div>
                                 ) : (
                                     <>
-                                        <AnimatePresence mode="popLayout" initial={false}>
-                                            {clipboardPage.list.map((item, index) => (
+                                        <ClipboardVirtualList
+                                            ref={virtualListRef}
+                                            items={clipboardPage.list}
+                                            source={{
+                                                count: clipboardPage.logicalCount,
+                                                indexOf: item => clipboardPage.indices.get(item.getHash()) ?? -1,
+                                                enteringHashes: historyStore.enteringHashes,
+                                                retain: hash => historyStore.retainForInteraction(hash),
+                                                ensureRange: (start, end) => {
+                                                    void historyStore.ensureRange(start, end).catch(reason => {
+                                                        if (mainWindowActiveRef.current) error(`Failed to read viewport: ${reason}`);
+                                                    });
+                                                },
+                                            }}
+                                            containerRef={cardsContainerRef}
+                                            active={animationState !== 'hidden'}
+                                            renderCard={(item, index, ref, retain, animateEntry, left) => (
                                                 <ClipboardCard
+                                                    ref={ref}
                                                     key={item.getHash() as string}
+                                                    animateEntry={animateEntry}
+                                                    virtualLeft={left}
+                                                    onRetainForInteraction={retain}
                                                     item={item}
                                                     selected={queueSelectionMode
                                                         ? queueSelectedHashes.includes(item.getHash() as string)
@@ -2255,8 +2281,8 @@ export default function Clipboard() {
                                                     onActivate={activateClipboardCard}
                                                     onDragUnavailable={() => showToast(t("clipboard.dragTextPreparing"), "warning")}
                                                 />
-                                            ))}
-                                        </AnimatePresence>
+                                            )}
+                                        />
                                         <AnimatePresence mode="wait" initial={false}>
                                             {isLoadingMore && (
                                                 <m.div
@@ -2338,6 +2364,7 @@ export default function Clipboard() {
                     </m.div>
                 )}
             </AnimatePresence>
+            <React.Suspense fallback={null}>
             <AnimatePresence mode="wait" initial={false}>
                 {tagCreateChoice && (
                     <TagCreateChoicePopover
@@ -2396,7 +2423,7 @@ export default function Clipboard() {
                     onConfirm={() => deleteCustomTab(deleteConfirmTab)}
                 />
             )}
-            <UpdateConfirmDialog
+            {updateDialogOpenedRef.current && <UpdateConfirmDialog
                 open={updateConfirmOpen && restartReady(updateState)}
                 title={t("clipboard.updateConfirmTitle")}
                 description={t("clipboard.updateConfirmDesc", { version: updateState.availableVersion || "" })}
@@ -2407,7 +2434,7 @@ export default function Clipboard() {
                     setUpdateConfirmOpen(false);
                     void restartForUpdate();
                 }}
-            />
+            />}
             {deleteConfirmRecordTag && (
                 <DeleteConfirmDialog
                     title={t("tabs.deleteConfirmTitle")}
@@ -2418,6 +2445,7 @@ export default function Clipboard() {
                     onConfirm={() => void deleteRecordTag(deleteConfirmRecordTag)}
                 />
             )}
+            </React.Suspense>
         </div>
     );
 }

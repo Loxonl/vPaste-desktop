@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { ItemType } from "../../../src/clipboard/Item";
 import {
     TUTORIAL_FILTER_DEFINITIONS,
     buildTutorialFilterTabs,
     buildTutorialPermissions,
+    initializeTutorialFilterTabs,
     tutorialFilterTabId,
     updateTutorialFilterTabs,
 } from "../../../src/clipboard/clipboardTutorial";
@@ -11,6 +12,8 @@ import {
 const t = (key: string) => `translated:${key}`;
 
 describe("clipboard tutorial model", () => {
+    beforeEach(() => localStorage.clear());
+
     it("keeps the persisted tutorial filter identifiers stable", () => {
         expect(TUTORIAL_FILTER_DEFINITIONS.map(filter => [
             filter.id,
@@ -19,9 +22,43 @@ describe("clipboard tutorial model", () => {
             ["text", "tutorial-filter-text"],
             ["image", "tutorial-filter-image"],
             ["link", "tutorial-filter-link"],
-            ["color", "tutorial-filter-color"],
             ["file", "tutorial-filter-file"],
+            ["color", "tutorial-filter-color"],
         ]);
+    });
+
+    it("initializes the four common first-run filters in display order", () => {
+        const tabs = initializeTutorialFilterTabs([], true, t);
+
+        expect(tabs.map(tab => [tab.id, tab.filter.itemType])).toEqual([
+            ["tutorial-filter-text", ItemType.Text],
+            ["tutorial-filter-image", ItemType.Image],
+            ["tutorial-filter-link", ItemType.Link],
+            ["tutorial-filter-file", ItemType.File],
+        ]);
+        expect(buildTutorialFilterTabs(tabs, t).map(tab => tab.enabled))
+            .toEqual([true, true, true, true, false]);
+    });
+
+    it("does not recreate filters after the user turns all of them off", () => {
+        initializeTutorialFilterTabs([], true, t);
+        const empty: ReturnType<typeof initializeTutorialFilterTabs> = [];
+
+        expect(initializeTutorialFilterTabs(empty, true, t)).toBe(empty);
+    });
+
+    it("preserves an existing user's empty selection", () => {
+        const empty: ReturnType<typeof initializeTutorialFilterTabs> = [];
+
+        expect(initializeTutorialFilterTabs(empty, false, t)).toBe(empty);
+    });
+
+    it("preserves existing filters and does not reseed them after deletion", () => {
+        const existing = updateTutorialFilterTabs([], "color", true, t);
+        existing[0].name = "My colors";
+
+        expect(initializeTutorialFilterTabs(existing, true, t)).toBe(existing);
+        expect(initializeTutorialFilterTabs([], true, t)).toEqual([]);
     });
 
     it("adds a translated tutorial filter once with the existing filter shape", () => {
@@ -62,8 +99,8 @@ describe("clipboard tutorial model", () => {
             { id: "text", name: "📝 translated:type.text", enabled: false },
             { id: "image", name: "🖼️ translated:type.image", enabled: false },
             { id: "link", name: "🔗 translated:type.link", enabled: true },
-            { id: "color", name: "🎨 translated:type.color", enabled: false },
             { id: "file", name: "📁 translated:type.file", enabled: false },
+            { id: "color", name: "🎨 translated:type.color", enabled: false },
         ]);
         expect(buildTutorialPermissions({
             background: { done: true, needs_settings: false },

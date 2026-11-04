@@ -12,6 +12,7 @@ import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
 import { richResourceUrls, type RichImageResource } from "./historyResourceTypes";
 import { useRichPreviewCanvas } from "./useRichPreviewCanvas";
 import { clipboardTabNavigationDirection } from "./clipboardKeyboard";
+import { createFocusFollowsCursor } from "./focusFollowsCursor";
 import { useLanguage } from "../lang";
 import { notifyAuxiliaryWindowReady } from "../auxiliaryWindowReady";
 import { m, motionDurationsMs, motionTokens, useMotionPreset, useReducedMotionConfig } from "../ui/motion";
@@ -547,6 +548,13 @@ export default function Preview() {
             }
         };
         window.addEventListener("keydown", handleKeyDown);
+        const followCursorFocus = createFocusFollowsCursor({
+            request: () => invoke("focus_window_under_cursor"),
+            onError: e => error(`Failed to focus preview under cursor: ${e}`),
+        });
+        // Hover previews never take focus; Space and pinned previews follow the cursor.
+        const handleMouseMove = () => { if (!hoverRef.current) followCursorFocus(); };
+        window.addEventListener("mousemove", handleMouseMove);
         return () => {
             sequenceRef.current += 1;
             pendingLayerRef.current = null;
@@ -555,6 +563,7 @@ export default function Preview() {
             unlistenClear.then(fn => fn()).catch(e => error(`Failed to unlisten preview clear: ${e}`));
             unlistenPromoted.then(fn => fn()).catch(e => error(`Failed to unlisten preview promotion: ${e}`));
             window.removeEventListener("keydown", handleKeyDown);
+            window.removeEventListener("mousemove", handleMouseMove);
         };
     }, [commitLayer]);
 

@@ -26,6 +26,28 @@ function sourceBetween(start: string, end: string): string {
 }
 
 describe("preview window outer shell", () => {
+    it("lets keyboard focus follow the cursor instead of always moving to a Space preview", () => {
+        const commit = sourceBetween("fn commit_preview_window", "#[tauri::command]");
+        expect(commit).toContain("preview_focus::commit_focus_target(prepared.mode.takes_focus(), cursor_in_preview)");
+        expect(commit).toContain("set_focusable(focus_target == Some(preview_focus::FocusTarget::Preview))");
+        expect(commit).not.toContain("set_focusable(prepared.mode.takes_focus())");
+        expect(commit).not.toContain("if prepared.mode.takes_focus()");
+        expect(mainSource).not.toContain("fn focus_window_under_cursor");
+    });
+
+    it("returns focus to the clipboard whenever the cursor enters it, without WebView pointer events", () => {
+        const watch = sourceBetween("fn ensure_focus_watch", "fn activate_from_background");
+        expect(watch).toContain("watch.pending(cursor_focus_region(&app))");
+        expect(watch).toContain("preview_focus::eligibility(target, focus_watch_state(&app))");
+        expect(watch).toMatch(/activate_from_background\(\s*&clipboard_window/);
+        const show = sourceBetween("CLIPBOARD_VISIBLE.store(true, Ordering::SeqCst);", "let x = layout.x;");
+        expect(show).toContain("ensure_focus_watch(window.app_handle())");
+        const state = sourceBetween("fn focus_watch_state", "fn focus_watch_needed");
+        expect(state).toContain("!other_vpaste_window_focused(app)");
+        expect(state).toContain("!PREVIEW_HOVER.load(Ordering::SeqCst)");
+        expect(mainSource).toContain("AttachThreadInput(current_thread, foreground_thread, 1)");
+    });
+
     it("keeps one cleared hidden preview resident without an idle destruction timer", () => {
         const closing = sourceBetween("fn hide_preview_window", "fn show_main_panel_for_app");
         expect(closing).toContain("retain_preview_window(&app)");

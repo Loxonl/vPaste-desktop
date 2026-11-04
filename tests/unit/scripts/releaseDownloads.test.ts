@@ -44,6 +44,29 @@ describe("release download table", () => {
     }
   });
 
+  it("moves punctuation outside bold labels that run directly into the following text", () => {
+    const body = "## 中文\n- **更灵活的鼠标操作：**支持单击\n- **预览：**Space 切换\n1. **更新:**支持重试\n\n## English\n- **Mouse controls:** choose an action";
+    const result = renderReleaseNotes({ body, assets }, repo, tag);
+    expect(result).toContain("- **更灵活的鼠标操作**：支持单击");
+    expect(result).toContain("- **预览**：Space 切换");
+    expect(result).toContain("1. **更新**:支持重试");
+    expect(result).toContain("- **Mouse controls:** choose an action");
+    expect(renderReleaseNotes({ body: result, assets }, repo, tag)).toBe(result);
+  });
+
+  it("does not rewrite fenced or inline examples of Markdown labels", () => {
+    const body = [
+      "## English", "Existing text", "", "## 中文",
+      "```markdown", "- **示例：**正文", "```",
+      "~~~markdown", "1. **示例:**正文", "~~~",
+      "    - **缩进代码：**正文",
+      "- **转义冒号\\:**正文", "- **转义全角\\：**正文",
+      "- `**示例：**正文`", "- \\**示例：**正文", "- **正确标题**：正文",
+    ].join("\r\n");
+    const result = renderReleaseNotes({ body, assets }, repo, tag);
+    expect(result.startsWith(body)).toBe(true);
+  });
+
   it("keeps sections separated when the last language has no trailing newline", () => {
     const result = renderReleaseNotes({ body: "## 中文\n修复问题\n\n## English\nFixed an issue", assets }, repo, tag);
     expect(result).toContain("## English\nFixed an issue\n\n## 中文\n修复问题\n\n<!-- vpaste-downloads:start -->");

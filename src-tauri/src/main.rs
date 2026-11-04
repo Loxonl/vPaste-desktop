@@ -153,6 +153,14 @@ static PREVIEW_HOVER: AtomicBool = AtomicBool::new(false);
 static PREVIEW_HOVER_REQUEST: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_WINDOW_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
+static PREVIEW_FOCUS_HANDOFF_UNTIL: AtomicU64 = AtomicU64::new(0);
+// Long enough for the 35 ms + 120 ms preview blur checks to see a deliberate
+// clipboard <-> preview focus move, including asynchronous macOS activation.
+const PREVIEW_FOCUS_HANDOFF_MS: u64 = 400;
+static FOCUS_WATCH_RUNNING: AtomicBool = AtomicBool::new(false);
+// Cursor sampling while the clipboard is shown. Each tick reads the cursor and
+// window bounds; focus state is read only after the cursor enters a window.
+const FOCUS_WATCH_INTERVAL_MS: u64 = 50;
 static PREVIEW_REQUESTS: PreviewRequests = PreviewRequests::new();
 static PREVIEW_PENDING: Mutex<Option<PreparedPreview>> = Mutex::new(None);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
@@ -2352,6 +2360,7 @@ fn show_clipboard_window(window: &tauri::WebviewWindow) {
         CLIPBOARD_VISIBLE.store(true, Ordering::SeqCst);
         CLIPBOARD_HIDING.store(false, Ordering::SeqCst);
         background_resources::set_visible(window.app_handle(), true);
+        ensure_focus_watch(window.app_handle());
     }
 
     let x = layout.x;
@@ -3493,8 +3502,182 @@ fn preview_blur_state(app: &tauri::AppHandle) -> preview_focus::State {
             "preview blur guard clipboard",
         ),
         memory_monitor_active: memory_monitor_window_active(app),
+        focus_handoff: now_millis() < PREVIEW_FOCUS_HANDOFF_UNTIL.load(Ordering::SeqCst),
     }
 }
+
+fn begin_preview_focus_handoff() {
+    PREVIEW_FOCUS_HANDOFF_UNTIL.store(
+        now_millis().saturating_add(PREVIEW_FOCUS_HANDOFF_MS),
+        Ordering::SeqCst,
+    );
+}
+
+fn focus_preview_window(window: &tauri::WebviewWindow, context: &str) -> Result<(), String> {
+    begin_preview_focus_handoff();
+    focus_clipboard_window(window, context);
+    window.set_focus().map_err(|err| err.to_string())?;
+    AsRef::<tauri::Webview>::as_ref(window)
+        .set_focus()
+        .map_err(|err| err.to_string())
+}
+
+fn move_focus_to_clipboard(app: &tauri::AppHandle, context: &str) {
+    if let Some(clipboard_window) = app.get_webview_window("clipboard") {
+        if !is_native_window_foreground(&clipboard_window, context) {
+            begin_preview_focus_handoff();
+            focus_clipboard_window(&clipboard_window, context);
+        }
+    }
+}
+
+/// Window under the cursor, preview first because it floats above the clipboard.
+fn cursor_focus_region(app: &tauri::AppHandle) -> Option<preview_focus::FocusTarget> {
+    use preview_focus::FocusTarget;
+    if preview_window_visible(app)
+        && app
+            .get_webview_window("clipboardPreview")
+            .is_some_and(|window| cursor_inside_window(&window))
+    {
+        return Some(FocusTarget::Preview);
+    }
+    if CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+        && app
+            .get_webview_window("clipboard")
+            .is_some_and(|window| cursor_inside_window(&window))
+    {
+        return Some(FocusTarget::Clipboard);
+    }
+    None
+}
+
+/// Another vPaste window (tag editor, text editor, settings, emoji picker...) is
+/// in use; moving the cursor across the clipboard must not pull focus from it.
+fn other_vpaste_window_focused(app: &tauri::AppHandle) -> bool {
+    app.webview_windows().iter().any(|(label, window)| {
+        label != "clipboard"
+            && label != "clipboardPreview"
+            && window.is_visible().unwrap_or(false)
+            && window.is_focused().unwrap_or(false)
+    })
+}
+
+fn focus_watch_state(app: &tauri::AppHandle) -> preview_focus::WatchState {
+    let clipboard_foreground = app_window_is_foreground(app, "clipboard", "focus watch");
+    let preview_foreground = app_window_is_foreground(app, "clipboardPreview", "focus watch");
+    preview_focus::WatchState {
+        clipboard_available: CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+            && !CLIPBOARD_HIDING.load(Ordering::SeqCst)
+            && !other_vpaste_window_focused(app),
+        clipboard_foreground,
+        preview_follows: preview_window_visible(app) && !PREVIEW_HOVER.load(Ordering::SeqCst),
+        preview_foreground,
+        vpaste_foreground: clipboard_foreground || preview_foreground,
+    }
+}
+
+fn focus_watch_needed() -> bool {
+    CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+}
+
+/// Lets keyboard focus follow the cursor: entering the clipboard always takes
+/// focus back (from the preview, another app or nowhere); entering a Space or
+/// pinned preview moves focus to it while vPaste is foreground. Polls the cursor
+/// natively because a WebView in an unfocused window does not reliably receive
+/// pointer-move events (notably WKWebView in a non-key window on macOS).
+fn ensure_focus_watch(app: &tauri::AppHandle) {
+    use preview_focus::{Eligibility, FocusTarget, FocusWatch};
+    if FOCUS_WATCH_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let mut watch = FocusWatch::new(cursor_focus_region(&app));
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(FOCUS_WATCH_INTERVAL_MS));
+            if !focus_watch_needed() {
+                FOCUS_WATCH_RUNNING.store(false, Ordering::SeqCst);
+                // A show that raced with this exit found the flag still set; keep running for it.
+                if focus_watch_needed() && !FOCUS_WATCH_RUNNING.swap(true, Ordering::SeqCst) {
+                    watch = FocusWatch::new(cursor_focus_region(&app));
+                    continue;
+                }
+                return;
+            }
+            let Some(target) = watch.pending(cursor_focus_region(&app)) else {
+                continue;
+            };
+            let eligibility = preview_focus::eligibility(target, focus_watch_state(&app));
+            watch.resolve(eligibility);
+            if eligibility != Eligibility::Ready {
+                continue;
+            }
+            match target {
+                FocusTarget::Clipboard => {
+                    if let Some(clipboard_window) = app.get_webview_window("clipboard") {
+                        begin_preview_focus_handoff();
+                        activate_from_background(
+                            &clipboard_window,
+                            "clipboard focus follows cursor",
+                        );
+                        focus_clipboard_window(&clipboard_window, "clipboard focus follows cursor");
+                    }
+                }
+                FocusTarget::Preview => {
+                    if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
+                        if let Err(err) =
+                            focus_preview_window(&preview_window, "preview focus follows cursor")
+                        {
+                            error!("Failed to focus preview under cursor: {err}");
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Windows refuses SetForegroundWindow from a background process; attaching to
+/// the foreground thread's input lets the clipboard take focus back from another app.
+#[cfg(target_os = "windows")]
+fn activate_from_background(window: &tauri::WebviewWindow, context: &str) {
+    use std::ffi::c_void;
+
+    type Hwnd = *mut c_void;
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
+        fn GetCurrentThreadId() -> u32;
+        fn GetForegroundWindow() -> Hwnd;
+        fn GetWindowThreadProcessId(hwnd: Hwnd, process_id: *mut u32) -> u32;
+    }
+
+    let window_clone = window.clone();
+    let context = context.to_string();
+    let _ = window.run_on_main_thread(move || unsafe {
+        let foreground = GetForegroundWindow();
+        let mut process_id = 0_u32;
+        let foreground_thread = if foreground.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(foreground, &mut process_id)
+        };
+        let current_thread = GetCurrentThreadId();
+        let attached = foreground_thread != 0
+            && process_id != std::process::id()
+            && foreground_thread != current_thread
+            && AttachThreadInput(current_thread, foreground_thread, 1) != 0;
+        activate_native_window(&window_clone, &context);
+        if attached {
+            let _ = AttachThreadInput(current_thread, foreground_thread, 0);
+        }
+    });
+}
+
+/// macOS activation (`activateIgnoringOtherApps`) already works from the background.
+#[cfg(not(target_os = "windows"))]
+fn activate_from_background(_window: &tauri::WebviewWindow, _context: &str) {}
 
 fn handle_preview_focus_lost(app: tauri::AppHandle) {
     use preview_focus::{Action, Phase};
@@ -3913,6 +4096,16 @@ fn commit_preview_window(
     ) {
         return Ok(false);
     }
+    let cursor_in_preview = cursor_physical_position().is_some_and(|cursor| {
+        let rect = prepared.rect;
+        preview_focus::rect_contains_point(
+            (rect.x, rect.y, rect.width, rect.height),
+            prepared.scale_factor,
+            (cursor.x, cursor.y),
+        )
+    });
+    let focus_target =
+        preview_focus::commit_focus_target(prepared.mode.takes_focus(), cursor_in_preview);
     let from = current_preview_rect(&window, prepared.scale_factor)?;
     if visible
         && !reduced_motion
@@ -3926,7 +4119,7 @@ fn commit_preview_window(
     }
     if !visible {
         window
-            .set_focusable(prepared.mode.takes_focus())
+            .set_focusable(focus_target == Some(preview_focus::FocusTarget::Preview))
             .map_err(|err| err.to_string())?;
         window.show().map_err(|err| err.to_string())?;
         window.set_focusable(true).map_err(|err| err.to_string())?;
@@ -3934,12 +4127,14 @@ fn commit_preview_window(
         #[cfg(target_os = "macos")]
         set_macos_window_level(&window, 102);
     }
-    if prepared.mode.takes_focus() {
-        focus_clipboard_window(&window, "preview show");
-        window.set_focus().map_err(|err| err.to_string())?;
-        AsRef::<tauri::Webview>::as_ref(&window)
-            .set_focus()
-            .map_err(|err| err.to_string())?;
+    match focus_target {
+        Some(preview_focus::FocusTarget::Preview) => {
+            focus_preview_window(&window, "preview show under cursor")?
+        }
+        Some(preview_focus::FocusTarget::Clipboard) => {
+            move_focus_to_clipboard(&app, "preview show keeps clipboard focus")
+        }
+        None => {}
     }
     info!(
         "preview timing: request={} first_show={} window_ready_ms={} prepare_ms={} render_wait_ms={} commit_ms={} total_ms={}",

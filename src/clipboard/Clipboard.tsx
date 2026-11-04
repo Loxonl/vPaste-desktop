@@ -16,7 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
 import { Item, ItemTag, ItemType } from "./Item.ts";
-import { useLanguage } from "../lang";
+import { getLanguagePack, translateWithPack, useLanguage } from "../lang";
 import { formatShortcutLabel, isMacPlatform } from "../shortcutDisplay";
 import SearchIcon from "@mui/icons-material/Search";
 import ContentPasteSearchOutlinedIcon from "@mui/icons-material/ContentPasteSearchOutlined";
@@ -100,6 +100,9 @@ import {
 import {
     buildTutorialFilterTabs,
     buildTutorialPermissions,
+    createDefaultTutorialFilterTabs,
+    initializeTutorialFilterTabs,
+    markTutorialFiltersInitialized,
     tutorialFilterTabId,
     updateTutorialFilterTabs,
     type TutorialFilterId,
@@ -218,6 +221,7 @@ export default function Clipboard() {
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [simulatedHoverHash, setSimulatedHoverHash] = useState("");
     const [tutorialActive, setTutorialActive] = useState(false);
+    const [tutorialPreviewTabs, setTutorialPreviewTabs] = useState<CustomTab[] | null>(null);
     const [tutorialRunId, setTutorialRunId] = useState(0);
     const [tutorialPermissionStatus, setTutorialPermissionStatus] = useState<TutorialPermissionStatus | null>(null);
     const [tutorialPlatform, setTutorialPlatform] = useState<TutorialPlatform>(() => isMacPlatform() ? "mac" : "windows");
@@ -472,15 +476,23 @@ export default function Clipboard() {
     }, [activeTab, itemTags]);
 
     useEffect(() => {
-        const localTabs = loadCustomTabs();
         void loadItemTags();
-        void invoke<unknown>('get_custom_tabs')
-            .then(value => {
+        void Promise.all([
+            invoke<unknown>('get_custom_tabs'),
+            loadClipboardBehaviorConfig(),
+        ])
+            .then(([value, config]) => {
+                const localTabs = loadCustomTabs();
                 const storedTabs = normalizeCustomTabs(value);
+                const initialTabs = initializeTutorialFilterTabs(
+                    storedTabs.length > 0 ? storedTabs : localTabs,
+                    config.onboarding_completed === false,
+                    key => translateWithPack(getLanguagePack(config.multilingual), key),
+                );
                 customTabsStorageReadyRef.current = true;
-                if (storedTabs.length > 0) {
-                    saveCustomTabs(storedTabs);
-                    setCustomTabs(storedTabs);
+                if (storedTabs.length > 0 || initialTabs !== localTabs) {
+                    saveCustomTabs(initialTabs);
+                    setCustomTabs(initialTabs);
                 } else if (localTabs.length > 0) {
                     persistCustomTabs(localTabs);
                 }
@@ -742,7 +754,8 @@ export default function Clipboard() {
                 "error",
             );
         },
-        onBeforeStart: () => {
+        onBeforeStart: previewDefaults => {
+            setTutorialPreviewTabs(previewDefaults ? createDefaultTutorialFilterTabs(t) : null);
             setAnimationState("entered");
             setContextMenu(null);
             setTabContextMenu(null);
@@ -760,6 +773,7 @@ export default function Clipboard() {
         setActive: active => {
             tutorialActiveRef.current = active;
             setTutorialActive(active);
+            if (!active) setTutorialPreviewTabs(null);
         },
         setMainShortcut,
         setPermissionStatus: setTutorialPermissionStatus,
@@ -767,6 +781,11 @@ export default function Clipboard() {
     });
 
     const handleTutorialFilterToggle = (id: TutorialFilterId, enabled: boolean) => {
+        if (tutorialPreviewTabs !== null) {
+            setTutorialPreviewTabs(tabs => tabs === null ? null : updateTutorialFilterTabs(tabs, id, enabled, t));
+            return;
+        }
+        markTutorialFiltersInitialized();
         const tabId = tutorialFilterTabId(id);
         setCustomTabs(tabs => updateTutorialFilterTabs(tabs, id, enabled, t));
 
@@ -1906,7 +1925,7 @@ export default function Clipboard() {
     };
 
     const openTutorialFromDebug = (platform: TutorialPlatform) => {
-        void startTutorial(platform);
+        void startTutorial(platform, true);
     };
 
     const openPermissionCenter = async () => {
@@ -1944,7 +1963,7 @@ export default function Clipboard() {
         tutorialPermissionStatus,
         t,
     );
-    const tutorialFilters = buildTutorialFilterTabs(customTabs, t);
+    const tutorialFilters = buildTutorialFilterTabs(tutorialPreviewTabs ?? customTabs, t);
     const tutorialShortcutText = formatShortcutLabel(mainShortcut, tutorialPlatform === "mac");
 
     const contextMenuOptions = contextMenu
@@ -2058,7 +2077,7 @@ export default function Clipboard() {
                 )}
                 <ClipboardTabBar
                     activeTab={activeTab}
-                    dynamicTabs={dynamicTabs}
+                    dynamicTabs={tutorialPreviewTabs === null ? dynamicTabs : orderedDynamicTabs(tutorialPreviewTabs, [], [])}
                     draggingTabId={draggingTabId}
                     tutorialActive={tutorialActive}
                     altHintsVisible={altHintsVisible}

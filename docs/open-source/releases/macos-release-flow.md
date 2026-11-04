@@ -40,6 +40,8 @@ For both `aarch64` and `x86_64`:
 
 For `universal`: a signed and notarized `.dmg` only.
 
-The shared Release also contains `SHA256SUMS.txt`, `THIRD_PARTY_LICENSES.json`, `SBOM.cdx.json`, `LICENSE`, and GitHub-generated source archives. The workflow merges and validates the Windows and macOS manifest fragments locally, then attaches packages to the already published Release. It then publishes the channel's website `latest.json` (Stable or RC, from the tag); see [update-feed-publication.md](update-feed-publication.md). Keep GitHub's immutable Release setting disabled while attaching assets after publication.
+Detached `.sig` files are build outputs archived in the shared release-metadata ZIP, not separate public download entries. The shared Release also contains `SHA256SUMS.txt`, `vPaste_<version>_release-metadata.zip` (licenses, SBOM, dependency inventory, updater signatures and manifest snapshot), and GitHub-generated source archives. See the [Windows Packaging Runbook](windows-packaging-runbook.md#draft-release-and-publication) for the complete cross-platform asset list.
+
+The workflow merges and validates the Windows and macOS manifest fragments locally, then attaches packages to the already published Release. After anonymous package verification, it publishes the channel's website `latest.json` (Stable or RC, from the tag); see [update-feed-publication.md](update-feed-publication.md). Keep GitHub's immutable Release setting disabled while attaching assets after publication.
 
 Do not publish a package that requires users to remove quarantine or bypass Gatekeeper. Those commands are only useful when testing a package built locally from trusted source.

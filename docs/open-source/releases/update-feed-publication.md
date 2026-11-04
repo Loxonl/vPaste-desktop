@@ -11,9 +11,10 @@ and how the desktop client prepares and installs updates.
 | `vX.Y.Z-rc.N` | RC (testing) | `download/rc/latest.json` | `https://vpaste.app/download/rc/latest.json` |
 
 The channel comes from the tag, and the client built from that tag checks the
-same channel (`VPASTE_UPDATE_CHANNEL`). Publishing a Release always updates
-that channel's manifest; there is no separate publication switch. Users have no
-channel setting.
+same channel (`VPASTE_UPDATE_CHANNEL`). A successful published-release workflow
+updates that channel's manifest after building, uploading and verifying the
+packages; there is no separate promotion switch. The Release page existing does
+not mean its downloads or update feed are ready yet. Users have no channel setting.
 
 `VPASTE_PUBLIC_UPDATE_FEED=1` is a compile-time env set by `tag-release.yml`
 for published Releases so the built client checks the public feed. Private
@@ -72,7 +73,7 @@ the website manifest stays unchanged.
 4. Release assets must be anonymously downloadable; otherwise the anonymous
    download check fails and nothing is published.
 
-Because publishing a Release now updates its channel immediately, run the
+Because the successful published-release workflow updates its channel automatically, run the
 manual validation in [release-checklist.md](release-checklist.md) on RC builds
 before publishing a Stable Release.
 

@@ -153,6 +153,10 @@ static PREVIEW_HOVER: AtomicBool = AtomicBool::new(false);
 static PREVIEW_HOVER_REQUEST: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_WINDOW_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_IGNORE_BLUR_UNTIL: AtomicU64 = AtomicU64::new(0);
+static PREVIEW_FOCUS_HANDOFF_UNTIL: AtomicU64 = AtomicU64::new(0);
+// Long enough for the 35 ms + 120 ms preview blur checks to see a deliberate
+// clipboard <-> preview focus move, including asynchronous macOS activation.
+const PREVIEW_FOCUS_HANDOFF_MS: u64 = 400;
 static PREVIEW_REQUESTS: PreviewRequests = PreviewRequests::new();
 static PREVIEW_PENDING: Mutex<Option<PreparedPreview>> = Mutex::new(None);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
@@ -3493,7 +3497,64 @@ fn preview_blur_state(app: &tauri::AppHandle) -> preview_focus::State {
             "preview blur guard clipboard",
         ),
         memory_monitor_active: memory_monitor_window_active(app),
+        focus_handoff: now_millis() < PREVIEW_FOCUS_HANDOFF_UNTIL.load(Ordering::SeqCst),
     }
+}
+
+fn begin_preview_focus_handoff() {
+    PREVIEW_FOCUS_HANDOFF_UNTIL.store(
+        now_millis().saturating_add(PREVIEW_FOCUS_HANDOFF_MS),
+        Ordering::SeqCst,
+    );
+}
+
+fn focus_preview_window(window: &tauri::WebviewWindow, context: &str) -> Result<(), String> {
+    begin_preview_focus_handoff();
+    focus_clipboard_window(window, context);
+    window.set_focus().map_err(|err| err.to_string())?;
+    AsRef::<tauri::Webview>::as_ref(window)
+        .set_focus()
+        .map_err(|err| err.to_string())
+}
+
+fn move_focus_to_clipboard(app: &tauri::AppHandle, context: &str) {
+    if let Some(clipboard_window) = app.get_webview_window("clipboard") {
+        if !is_native_window_foreground(&clipboard_window, context) {
+            begin_preview_focus_handoff();
+            focus_clipboard_window(&clipboard_window, context);
+        }
+    }
+}
+
+/// Called by the clipboard or preview WebView when the pointer moves inside it
+/// while it does not have focus. Focus follows the cursor between the two.
+#[tauri::command]
+fn focus_window_under_cursor(window: tauri::WebviewWindow) -> Result<bool, String> {
+    use preview_focus::{FocusTarget, FollowState};
+    let app = window.app_handle();
+    let requester = match window.label() {
+        "clipboard" => FocusTarget::Clipboard,
+        "clipboardPreview" => FocusTarget::Preview,
+        _ => return Ok(false),
+    };
+    let state = FollowState {
+        preview_visible: preview_window_visible(app),
+        preview_hover: PREVIEW_HOVER.load(Ordering::SeqCst),
+        app_foreground: app_window_is_foreground(app, "clipboard", "focus follow app guard")
+            || app_window_is_foreground(app, "clipboardPreview", "focus follow app guard"),
+        cursor_in_requester: cursor_inside_window(&window),
+        requester_foreground: is_native_window_foreground(&window, "focus follow self guard"),
+    };
+    match preview_focus::follow_cursor(requester, state) {
+        Some(FocusTarget::Preview) => {
+            focus_preview_window(&window, "preview focus follows cursor")?
+        }
+        Some(FocusTarget::Clipboard) => {
+            move_focus_to_clipboard(app, "clipboard focus follows cursor")
+        }
+        None => return Ok(false),
+    }
+    Ok(true)
 }
 
 fn handle_preview_focus_lost(app: tauri::AppHandle) {
@@ -3913,6 +3974,16 @@ fn commit_preview_window(
     ) {
         return Ok(false);
     }
+    let cursor_in_preview = cursor_physical_position().is_some_and(|cursor| {
+        let rect = prepared.rect;
+        preview_focus::rect_contains_point(
+            (rect.x, rect.y, rect.width, rect.height),
+            prepared.scale_factor,
+            (cursor.x, cursor.y),
+        )
+    });
+    let focus_target =
+        preview_focus::commit_focus_target(prepared.mode.takes_focus(), cursor_in_preview);
     let from = current_preview_rect(&window, prepared.scale_factor)?;
     if visible
         && !reduced_motion
@@ -3926,7 +3997,7 @@ fn commit_preview_window(
     }
     if !visible {
         window
-            .set_focusable(prepared.mode.takes_focus())
+            .set_focusable(focus_target == Some(preview_focus::FocusTarget::Preview))
             .map_err(|err| err.to_string())?;
         window.show().map_err(|err| err.to_string())?;
         window.set_focusable(true).map_err(|err| err.to_string())?;
@@ -3934,12 +4005,14 @@ fn commit_preview_window(
         #[cfg(target_os = "macos")]
         set_macos_window_level(&window, 102);
     }
-    if prepared.mode.takes_focus() {
-        focus_clipboard_window(&window, "preview show");
-        window.set_focus().map_err(|err| err.to_string())?;
-        AsRef::<tauri::Webview>::as_ref(&window)
-            .set_focus()
-            .map_err(|err| err.to_string())?;
+    match focus_target {
+        Some(preview_focus::FocusTarget::Preview) => {
+            focus_preview_window(&window, "preview show under cursor")?
+        }
+        Some(preview_focus::FocusTarget::Clipboard) => {
+            move_focus_to_clipboard(&app, "preview show keeps clipboard focus")
+        }
+        None => {}
     }
     info!(
         "preview timing: request={} first_show={} window_ready_ms={} prepare_ms={} render_wait_ms={} commit_ms={} total_ms={}",
@@ -13194,6 +13267,7 @@ fn main() {
             is_preview_window_visible,
             set_preview_pinned,
             hide_preview_window,
+            focus_window_under_cursor,
             resize_preview_image_window,
             prewarm_image_clipboard_cache,
             prewarm_image_preview_cache,

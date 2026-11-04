@@ -26,6 +26,18 @@ function sourceBetween(start: string, end: string): string {
 }
 
 describe("preview window outer shell", () => {
+    it("lets keyboard focus follow the cursor instead of always moving to a Space preview", () => {
+        const commit = sourceBetween("fn commit_preview_window", "#[tauri::command]");
+        expect(commit).toContain("preview_focus::commit_focus_target(prepared.mode.takes_focus(), cursor_in_preview)");
+        expect(commit).toContain("set_focusable(focus_target == Some(preview_focus::FocusTarget::Preview))");
+        expect(commit).not.toContain("set_focusable(prepared.mode.takes_focus())");
+        expect(commit).not.toContain("if prepared.mode.takes_focus()");
+        const follow = sourceBetween("fn focus_window_under_cursor", "fn handle_preview_focus_lost");
+        expect(follow).toContain("preview_focus::follow_cursor(requester, state)");
+        expect(follow).toContain("cursor_inside_window(&window)");
+        expect(mainSource).toMatch(/hide_preview_window,\s*focus_window_under_cursor,/);
+    });
+
     it("keeps one cleared hidden preview resident without an idle destruction timer", () => {
         const closing = sourceBetween("fn hide_preview_window", "fn show_main_panel_for_app");
         expect(closing).toContain("retain_preview_window(&app)");

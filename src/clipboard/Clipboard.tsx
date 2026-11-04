@@ -78,6 +78,7 @@ import {
     ClipboardTabBar,
 } from "./ClipboardHeader";
 import { clipboardKeyDownAction } from "./clipboardKeyboard";
+import { createFocusFollowsCursor } from "./focusFollowsCursor";
 import { buildClipboardContextMenuOptions } from "./clipboardContextMenu";
 import {
     useClipboardLifecycleSubscriptions,
@@ -217,6 +218,11 @@ export default function Clipboard() {
     const [hasMoreHistory, setHasMoreHistory] = useState(true);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [simulatedHoverHash, setSimulatedHoverHash] = useState("");
+    // Keyboard focus follows the cursor between this window and a Space preview.
+    const [followCursorFocus] = useState(() => createFocusFollowsCursor({
+        request: () => invoke("focus_window_under_cursor"),
+        onError: e => error(`Failed to focus clipboard under cursor: ${e}`),
+    }));
     const [tutorialActive, setTutorialActive] = useState(false);
     const [tutorialRunId, setTutorialRunId] = useState(0);
     const [tutorialPermissionStatus, setTutorialPermissionStatus] = useState<TutorialPermissionStatus | null>(null);
@@ -1279,7 +1285,10 @@ export default function Clipboard() {
             },
         },
         browser: {
-            onMouseMove: () => setSimulatedHoverHash(""),
+            onMouseMove: () => {
+                setSimulatedHoverHash("");
+                followCursorFocus();
+            },
             onFocus: () => {
                 consumePendingItemTagsChanged();
                 if (isMacPlatform()) {

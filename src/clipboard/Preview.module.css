@@ -135,6 +135,8 @@ body,
 }
 
 .preview-link-frame {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   width: 100%;
@@ -145,6 +147,8 @@ body,
 }
 
 .preview-link-loading {
+  box-sizing: border-box;
+  width: 100%;
   flex: 1;
   min-height: 0;
   border-radius: var(--ui-radius-window);

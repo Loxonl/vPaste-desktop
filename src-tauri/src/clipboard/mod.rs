@@ -17,8 +17,6 @@ use twox_hash::XxHash64;
 
 use crate::clipboard::db::db;
 use crate::clipboard::item::{convert_type, Item, ItemTag, ItemType, Page};
-#[cfg(test)]
-use crate::preview_http::is_public_preview_ip;
 use crate::preview_http::PreviewHttpClient;
 pub(crate) use crate::preview_http::{is_previewable_domain_link, preview_http_client};
 use crate::{app_runtime_dir, history_storage_dir, history_store, search::engine};
@@ -4005,7 +4003,7 @@ mod tests {
     use rusqlite::params;
 
     #[test]
-    fn link_preview_rejects_internal_destinations() {
+    fn link_preview_rejects_explicit_local_or_ip_urls() {
         for url in [
             "https://printer.local/status",
             "https://service.localhost/run",
@@ -4016,36 +4014,6 @@ mod tests {
             assert!(!is_previewable_domain_link(url), "accepted {url}");
         }
         assert!(is_previewable_domain_link("https://example.com/page"));
-    }
-
-    #[test]
-    fn link_preview_resolver_only_allows_public_ips() {
-        for address in [
-            "127.0.0.1",
-            "10.0.0.1",
-            "172.16.0.1",
-            "192.168.1.1",
-            "169.254.1.1",
-            "100.100.100.100",
-            "192.0.0.1",
-            "198.18.0.1",
-            "0.0.0.0",
-            "224.0.0.1",
-            "::1",
-            "fc00::1",
-            "fe80::1",
-            "::ffff:127.0.0.1",
-            "2001::1",
-            "2002:c0a8:101::1",
-            "2001:db8::1",
-        ] {
-            let ip = address.parse().unwrap();
-            assert!(!is_public_preview_ip(ip), "accepted {address}");
-        }
-        for address in ["8.8.8.8", "2606:4700:4700::1111"] {
-            let ip = address.parse().unwrap();
-            assert!(is_public_preview_ip(ip), "rejected {address}");
-        }
     }
 
     fn dominant_color_for_test_image(image: image::RgbaImage) -> Option<String> {

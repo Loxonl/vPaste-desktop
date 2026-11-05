@@ -1,23 +1,34 @@
 # Link preview networking
 
-Card metadata, preview images/site icons, and Space webpage documents use the shared `preview_http` transport.
+Card metadata and preview images/site icons use the shared `preview_http` transport. Expanded webpage previews load the original URL in a separate native browser view instead of fetching and rewriting an HTML snapshot.
 
 ## Routing and trust boundary
 
 - Use the dependency's Windows/macOS system HTTP/HTTPS proxy matcher, including standard proxy environment variables and bypass rules. There are no hardcoded local ports or process-name checks.
 - Each URL and redirect is validated before a request. Only the existing HTTPS domain destinations are accepted; literal IPs, localhost/local/internal suffixes and unsupported schemes remain blocked.
-- A direct request uses the existing public-address-only DNS resolver. Its actual connection uses those validated addresses; Fake-IP ranges are not treated as public addresses.
+- Direct requests use the HTTP client's default DNS resolver and the system network configuration. vPaste does not filter resolved destination IPs; TUN/Fake-IP, private and loopback DNS answers are left to the network stack.
 - An applicable user-configured proxy is a trusted network egress. The destination hostname is sent through its HTTPS CONNECT tunnel without applying local destination DNS/Fake-IP filtering. The proxy endpoint can legitimately be local or private and has a separate client/resolver.
-- Proxy-side destination DNS is outside vPaste's visibility. This path does not offer an independently enforced final-IP guarantee equivalent to direct requests.
-- Proxy failure does not retry via direct. An explicit bypass rule, in contrast, deliberately selects the strict direct route.
-- System matching currently covers static HTTP/HTTPS settings, not PAC/WPAD script evaluation. Pure TUN/Fake-IP without an applicable proxy stays fail-closed and produces a specific message.
+- Destination checks apply to URL hosts, not DNS answers, on both routes. A permitted domain can resolve to a private or loopback address, so neither route independently guarantees a public final destination IP. This is an intentional compatibility/trust tradeoff.
+- Proxy failure does not retry via direct. An explicit bypass rule, in contrast, deliberately selects the direct route.
+- System matching currently covers static HTTP/HTTPS settings, not PAC/WPAD script evaluation. Pure TUN/Fake-IP without an applicable proxy is no longer rejected by an application-level DNS filter; successful access still depends on the user's system routing and DNS setup.
 - Stock matcher behavior applies to malformed or unrecognized proxy configuration; it is not a configuration validator.
 
 ## Preserved behavior
 
-Clients are scoped to the existing fetch, with a shared cookie jar only for card fetches. The fixed HTTPS proxy client is reused across redirects and image/icon requests. Every redirect re-evaluates bypass routing and validates the destination, keeping the former redirect-count convention and one eight-second deadline across the request chain. TLS certificate and hostname validation stay enabled. Space documents retain the existing sandbox and subresource CSP.
+Clients are scoped to the existing card fetch, with a shared cookie jar. The fixed HTTPS proxy client is reused across redirects and image/icon requests. Every redirect re-evaluates bypass routing and validates the destination, keeping the former redirect-count convention and one eight-second deadline across the request chain. TLS certificate and hostname validation stay enabled.
 
 Already cached card metadata is not forcibly refreshed when the network changes. Fallback icon order and clipboard history identity, timestamps, favorites and tags are preserved.
+
+## Native webpage previews
+
+- Windows uses WebView2; macOS uses WKWebView. Webpage images, CSS, JavaScript, cookies and subresource requests are handled by the native engine and its supported system network configuration. This does not import Chrome/Edge/Safari login sessions or guarantee support for every proxy environment variable or site authentication flow.
+- A single owned browser window occupies the existing preview shell's measured content area. It follows native shell movement/size changes without changing the main panel's geometry or animation. The webpage itself is native content, not a React-animated HTML layer; non-link previews keep their existing rendering and transitions.
+- Entry and top-level navigation retain the existing HTTPS-domain URL rules. Ordinary webpage subresources follow browser security rules. Native certificate validation remains enabled; no ignore-certificate or disable-web-security flags are used. Automatic downloads, new windows and device permission requests are denied.
+- The browser view has no remote Tauri capability. App-protocol/local navigation is rejected. A private per-view, input-only navigation signal forwards a fixed set of genuine preview keyboard actions; it never invokes app commands or returns history, files or configuration. Website inputs retain ordinary text/Space/arrow behavior; Escape still closes.
+- Only the committed preview request owns the browser. Stale resize/navigation completions and outgoing-layer cleanup cannot replace or clear a newer session. Repeated same-content requests preserve the current page; pinning does not reload it.
+- Showing/navigating the browser restores both native-window and WebView keyboard focus to the original foreground owner (clipboard or preview). Merely being the foreground native window is not sufficient. This handoff is skipped for ordinary resizes, obsolete requests, or when another app has taken the foreground; it does not depend on the pointer leaving and re-entering the panel.
+- Closing or switching to a non-link preview hides the browser and navigates it to `about:blank`, ending the page session while retaining a warm empty view. The browser and shell form one focus/close family. The actual navigating URL is reflected in the trusted shell's address display.
+- `scripts/test-native-webpage-preview.mjs` is a local-only Windows smoke check for an explicitly isolated profiling process with a loopback WebView2 debugging endpoint. By default it exercises a controlled HTTPS fixture via browser request interception, not a live site's TLS/proxy service: external image decoding, CSS/JavaScript execution, denied app IPC, editable inputs, pinning, text switching, Escape and blank-view retention. Optional `VPASTE_NATIVE_PREVIEW_LIVE=1` also verifies rendered content from a real HTTPS page; that check depends on the site's current content and network availability. It does not read the user's history or change system proxy/DNS settings.
 
 ## Card preview recovery and persistence
 
@@ -34,4 +45,4 @@ Already cached card metadata is not forcibly refreshed when the network changes.
 
 The native boundary returns stable `link_preview_*` codes. The UI translates known codes, falls back to a generic network message for unknown errors, and offers the existing `open_url_in_browser` action. Logs record the destination hostname, stage, route, category, optional HTTP status and a bounded, sanitized transport cause chain. Full URLs, credentials, query parameters and response content are not logged.
 
-Tests include a subprocess-local proxy fixture (no user proxy setting changes), authenticated localhost CONNECT, bypass/direct routing, private/Fake-IP filtering, redirect destination validation, proxy failures, localized error UI and the successful document sandbox. Optional live smoke mode on `preview_proxy_tests::system_proxy_probe` is activated only with `VPASTE_TEST_PREVIEW_PROXY_PROBE=live-system`.
+Tests include a subprocess-local proxy fixture (no user proxy setting changes), authenticated localhost CONNECT, bypass/direct routing, default DNS resolver wiring, literal-IP/local URL and redirect validation, proxy failures, native browser ownership/bounds/keyboard policy, and localized native-view creation errors. Optional live card-transport smoke mode on `preview_proxy_tests::system_proxy_probe` is activated only with `VPASTE_TEST_PREVIEW_PROXY_PROBE=live-system`.

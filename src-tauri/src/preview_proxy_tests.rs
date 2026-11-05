@@ -4,6 +4,12 @@ use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+fn fetch_transport_document(url: &str) -> Result<String, String> {
+    let url = reqwest::Url::parse(url).map_err(|_| "link_preview_blocked")?;
+    let client = crate::clipboard::preview_http_client("vPaste-preview-test", 6, false)?;
+    client.text(client.get(url, &[])?)
+}
+
 #[test]
 fn system_proxy_probe() {
     let Ok(mode) = std::env::var("VPASTE_TEST_PREVIEW_PROXY_PROBE") else {
@@ -11,24 +17,20 @@ fn system_proxy_probe() {
     };
     if mode == "live-system" {
         for url in ["https://github.com/", "https://vpaste.app/"] {
-            let document =
-                tauri::async_runtime::block_on(crate::fetch_link_preview_document(url.to_string()))
-                    .unwrap_or_else(|code| panic!("live preview failed: {code}"));
-            assert!(!document.html.trim().is_empty());
+            let document = fetch_transport_document(url)
+                .unwrap_or_else(|code| panic!("live preview failed: {code}"));
+            assert!(!document.trim().is_empty());
             println!(
                 "live preview succeeded: host={} bytes={}",
-                reqwest::Url::parse(&document.url)
-                    .unwrap()
-                    .host_str()
-                    .unwrap(),
-                document.html.len()
+                reqwest::Url::parse(url).unwrap().host_str().unwrap(),
+                document.len()
             );
         }
         return;
     }
-    let result = tauri::async_runtime::block_on(crate::fetch_link_preview_document(
-        "https://preview-fixture.example/article?token=private-test-value".to_string(),
-    ));
+    let result = fetch_transport_document(
+        "https://preview-fixture.example/article?token=private-test-value",
+    );
     assert!(
         result.is_err(),
         "fixture proxy must not return an HTML document"

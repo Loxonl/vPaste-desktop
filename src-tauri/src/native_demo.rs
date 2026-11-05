@@ -1,20 +1,14 @@
 //! Debug-only native window opened from the DEV toolbar.
 //!
-//! It evaluates a native (non-WebView) surface created directly from Rust:
-//! AppKit through objc2 on macOS and Win32 through the `windows` crate on
-//! Windows. Both show the same controls, call back into the shared Rust logic
-//! below and are reachable only from Debug builds started with `--dev-mode`.
-//! The platform modules expose `show` (main thread only) and `is_key_window`.
+//! It evaluates a native (non-WebView) UI written in each platform's own
+//! language: Swift/AppKit on macOS and C++/Win32 on Windows
+//! (src-tauri/native-demo/). Rust stays the process owner, calls the window
+//! through a C interface on the main thread and supplies the shared logic
+//! below through callbacks. Reachable only from Debug builds with `--dev-mode`.
 
-#[cfg(target_os = "macos")]
-mod macos;
-#[cfg(target_os = "windows")]
-mod windows;
+mod ffi;
 
-#[cfg(target_os = "macos")]
-pub(crate) use macos::{is_key_window, show};
-#[cfg(target_os = "windows")]
-pub(crate) use windows::{is_key_window, show};
+pub(crate) use ffi::{is_key_window, show};
 
 /// Text shown after the user submits the input field.
 pub(crate) fn describe_text(text: &str) -> String {

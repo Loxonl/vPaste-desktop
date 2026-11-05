@@ -5,6 +5,7 @@ import AppleIcon from "@mui/icons-material/Apple";
 import AppsOutlinedIcon from "@mui/icons-material/AppsOutlined";
 import DashboardCustomizeOutlinedIcon from "@mui/icons-material/DashboardCustomizeOutlined";
 import DarkModeRoundedIcon from "@mui/icons-material/DarkModeRounded";
+import DesktopMacOutlinedIcon from "@mui/icons-material/DesktopMacOutlined";
 import LightModeRoundedIcon from "@mui/icons-material/LightModeRounded";
 import MemoryOutlinedIcon from "@mui/icons-material/MemoryOutlined";
 import PlaylistAddCheckRoundedIcon from "@mui/icons-material/PlaylistAddCheckRounded";
@@ -206,6 +207,7 @@ type ClipboardHeaderActionsProps = {
     onOpenUiLab: () => void;
     onOpenTestRoom: () => void;
     onOpenMemoryMonitor?: () => void;
+    onOpenNativeWindow?: () => void;
     onOpenSettings: () => void;
     onRestartToUpdate?: () => void;
 };
@@ -231,6 +233,7 @@ export function ClipboardHeaderActions({
     onOpenUiLab,
     onOpenTestRoom,
     onOpenMemoryMonitor,
+    onOpenNativeWindow,
     onOpenSettings,
     onRestartToUpdate,
 }: ClipboardHeaderActionsProps) {
@@ -320,6 +323,15 @@ export function ClipboardHeaderActions({
                     >
                         <MemoryOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
                     </ToolbarIconButton>
+                    {onOpenNativeWindow && (
+                        <ToolbarIconButton
+                            className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}
+                            label={t("tutorial.debug.nativeWindow")}
+                            onClick={onOpenNativeWindow}
+                        >
+                            <DesktopMacOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
+                        </ToolbarIconButton>
+                    )}
                     <ToolbarIconButton
                         className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}
                         label={t("tutorial.debug.uiLab")}

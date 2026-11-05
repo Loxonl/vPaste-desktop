@@ -20,6 +20,8 @@ strip = true
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# Compiles the Debug-only C++ native demo window on Windows (build.rs).
+cc = "1.2.62"
 resvg = { version = "0.47.0", default-features = false }
 
 [dependencies]

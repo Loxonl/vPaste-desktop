@@ -80,7 +80,7 @@ describe("preview window outer shell", () => {
         const mainHide = sourceBetween("fn finish_hide_window_locked", "fn finish_hide_window(");
         expect(mainHide).toContain("retain_preview_window");
         expect(mainHide).toContain("!PREVIEW_PINNED.load");
-        const closeEvent = sourceBetween('if window.label() == "clipboardPreview" {', 'if window.label() == "tabEditor" {');
+        const closeEvent = sourceBetween('if matches!(window.label(), "clipboardPreview" | browser_preview::LABEL) {', 'if window.label() == "tabEditor" {');
         expect(closeEvent).toContain("retain_preview_window");
         expect(closeEvent).not.toContain("auxiliary_windows::destroy_native");
     });
@@ -115,7 +115,8 @@ describe("preview window outer shell", () => {
         expect(creation).toContain(".shadow(false)");
         expect(creation).not.toContain("apply_windows_rounded_window_region");
         expect(showing).not.toContain("apply_windows_rounded_window_region");
-        expect(preCloseWindowEvents).not.toContain('window.label() == "clipboardPreview"');
+        expect(preCloseWindowEvents).not.toContain("apply_windows_rounded_window_region");
+        expect(preCloseWindowEvents).toContain("browser_preview::follow_parent(window.app_handle())");
         expect(shellRule).toContain("border-radius: var(--ui-radius-window)");
         expect(uiTokens).toContain("--ui-radius-window: 12px");
         expect(shellRule).toContain("overflow: hidden");

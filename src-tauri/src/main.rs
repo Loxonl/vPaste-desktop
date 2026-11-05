@@ -86,6 +86,7 @@ mod resource_budget_tests;
 use preview_behavior::PreviewMode;
 mod preview_motion;
 use preview_motion::{PreviewRect, PreviewRequests};
+mod browser_preview;
 mod paste_queue_activation;
 #[cfg(any(target_os = "windows", test))]
 mod portable_autostart;
@@ -441,12 +442,6 @@ struct PreparedPreview {
     started: Instant,
     window_ready_ms: u128,
     prepare_ms: u128,
-}
-
-#[derive(Serialize)]
-struct LinkPreviewDocument {
-    url: String,
-    html: String,
 }
 
 fn now_millis() -> u64 {
@@ -2971,10 +2966,14 @@ fn build_preview_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewW
             set_macos_window_level(window, 102); // Above NSPopUpMenuWindowLevel
             configure_macos_overlay_window(window);
         }
+        browser_preview::prewarm(window.app_handle());
     })
 }
 
 fn preview_window_active(app: &tauri::AppHandle) -> bool {
+    if browser_preview::foreground(app, "webpage preview active") {
+        return true;
+    }
     if PREVIEW_PINNED.load(Ordering::SeqCst)
         || now_millis() < PREVIEW_IGNORE_BLUR_UNTIL.load(Ordering::SeqCst)
     {
@@ -2996,6 +2995,9 @@ fn preview_window_visible(app: &tauri::AppHandle) -> bool {
 }
 
 fn app_window_is_foreground(app: &tauri::AppHandle, label: &str, context: &str) -> bool {
+    if label == "clipboardPreview" && browser_preview::foreground(app, context) {
+        return true;
+    }
     app.get_webview_window(label)
         .map(|window| is_native_window_foreground(&window, context))
         .unwrap_or(false)
@@ -3515,6 +3517,9 @@ fn begin_preview_focus_handoff() {
 
 fn focus_preview_window(window: &tauri::WebviewWindow, context: &str) -> Result<(), String> {
     begin_preview_focus_handoff();
+    if browser_preview::focus_under_cursor(window.app_handle())? {
+        return Ok(());
+    }
     focus_clipboard_window(window, context);
     window.set_focus().map_err(|err| err.to_string())?;
     AsRef::<tauri::Webview>::as_ref(window)
@@ -3557,6 +3562,7 @@ fn other_vpaste_window_focused(app: &tauri::AppHandle) -> bool {
     app.webview_windows().iter().any(|(label, window)| {
         label != "clipboard"
             && label != "clipboardPreview"
+            && label != browser_preview::LABEL
             && window.is_visible().unwrap_or(false)
             && window.is_focused().unwrap_or(false)
     })
@@ -3901,6 +3907,7 @@ fn cancel_preview_content() {
 
 fn clear_preview_content(window: &tauri::WebviewWindow) {
     cancel_preview_content();
+    browser_preview::clear(window.app_handle());
     let _ = window.emit("preview-clear", ());
 }
 
@@ -4104,6 +4111,11 @@ fn commit_preview_window(
             (cursor.x, cursor.y),
         )
     });
+    browser_preview::prepare(
+        &app,
+        request_id,
+        (prepared.payload.item_type == "Link").then_some(prepared.payload.content.as_str()),
+    );
     let focus_target =
         preview_focus::commit_focus_target(prepared.mode.takes_focus(), cursor_in_preview);
     let from = current_preview_rect(&window, prepared.scale_factor)?;
@@ -4365,46 +4377,6 @@ fn resize_preview_image_window(
     set_window_size_for_scale(&window, size.width, size.height, bounds.scale_factor)?;
     let position = preview_position_avoiding_clipboard(&app, bounds, size);
     set_window_position_for_scale(&window, position.x, position.y, bounds.scale_factor)
-}
-
-#[tauri::command]
-async fn fetch_link_preview_document(url: String) -> Result<LinkPreviewDocument, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let parsed = reqwest::Url::parse(url.trim()).map_err(|_| "link_preview_blocked".to_string())?;
-        if !clipboard::is_previewable_domain_link(parsed.as_str()) {
-            return Err("link_preview_blocked".to_string());
-        }
-        let client = clipboard::preview_http_client(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 vPaste/1.0",
-            6,
-            false,
-        )?;
-        let response = client.get(parsed.clone(), &[])?;
-        let final_url = response.url().clone();
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if !content_type.is_empty() && !content_type.contains("text/html") {
-            return Err("link_preview_not_html".to_string());
-        }
-        let mut html = client.text(response)?;
-        let base = format!(r#"<base href="{}">"#, final_url);
-        if html.to_ascii_lowercase().contains("<head") {
-            html = html.replacen("<head>", &format!("<head>{}", base), 1);
-            html = html.replacen("<HEAD>", &format!("<HEAD>{}", base), 1);
-        } else {
-            html = format!("<head>{}</head>{}", base, html);
-        }
-        Ok(LinkPreviewDocument {
-            url: final_url.to_string(),
-            html,
-        })
-    })
-    .await
-    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
@@ -12937,6 +12909,13 @@ fn main() {
                 .build(),
         )
         .on_window_event(|window, event| {
+            if window.label() == "clipboardPreview"
+                && matches!(event, tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_))
+            {
+                if let Err(error) = browser_preview::follow_parent(window.app_handle()) {
+                    log::warn!("Failed to follow preview content bounds: {error}");
+                }
+            }
             if window.label() == "config" && matches!(event,
                 tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }) {
                 let _ = window.emit("panel-size-display-changed", ());
@@ -12964,6 +12943,7 @@ fn main() {
                     }
                 }
                 if window.label() != "clipboard" && window.label() != "clipboardPreview"
+                    && window.label() != browser_preview::LABEL
                     && ui_text_scale::current() > 1.0 && window.is_visible().unwrap_or(false)
                 {
                     if let Some(webview_window) = window.app_handle().get_webview_window(window.label()) {
@@ -12997,7 +12977,7 @@ fn main() {
                     api.prevent_close();
                     let _ = auxiliary_windows::destroy_native(window);
                 }
-                if window.label() == "clipboardPreview" {
+                if matches!(window.label(), "clipboardPreview" | browser_preview::LABEL) {
                     api.prevent_close();
                     let _ = retain_preview_window(window.app_handle());
                     if let Some(clipboard_window) =
@@ -13043,7 +13023,7 @@ fn main() {
                 }
             }
             if let tauri::WindowEvent::Focused(false) = event {
-                if window.label() == "clipboardPreview" {
+                if matches!(window.label(), "clipboardPreview" | browser_preview::LABEL) {
                     handle_preview_focus_lost(window.app_handle().clone());
                 }
             }
@@ -13392,7 +13372,8 @@ fn main() {
             resize_preview_image_window,
             prewarm_image_clipboard_cache,
             prewarm_image_preview_cache,
-            fetch_link_preview_document,
+            browser_preview::sync_preview_browser,
+            browser_preview::hide_preview_browser,
             show_main_panel,
             hide_tray_menu,
             resize_tray_menu,

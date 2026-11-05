@@ -332,31 +332,14 @@ appends an English-first bilingual direct-download table at the end of the Relea
 above Assets, after verifying that all five manual-install packages are
 uploaded. Re-running the helper replaces only its marked table and preserves
 handwritten content, normalizing the language sections to English before Chinese.
-Use this order when writing each release; English is the primary/default language:
-
-```markdown
-# vPaste <version>
-
-## English
-
-- User-facing changes in English
-
-## 中文
-
-- 对应的中文更新说明
-
-## Packages / 安装包
-
-Windows: installer / Portable ZIP; macOS: Apple silicon / Intel / Universal DMG.
-Windows packages are unsigned and may show **Unknown publisher** or SmartScreen warnings.
-
-Windows：安装版／便携版；macOS：Apple 芯片／Intel／通用版。
-Windows 安装包暂未签名，可能显示「未知发布者」或 SmartScreen 提示。
-```
-
-Keep this package section to at most two short sentences per language. The final
-download table provides links; do not repeat build workflow, SBOM, metadata, or
-updater-signature details in the Release notes.
+Use the shared [Release Notes Format and Template](release-notes-template.md)
+for both platform maintainers. English comes before Chinese; changes use
+emoji-prefixed categories, bold feature names, and one-sentence descriptions.
+Do not repeat the product/version in the body or add a Packages section. Keep
+the unsigned Windows warning under Notes in both languages, and do not carry
+forward obsolete compatibility reminders unless relevant to this release.
+The final download block is only a table, with no heading, explanatory text,
+checksum links, or metadata links; those files remain in Assets.
 
 Use punctuation outside bold labels, for example `**Windows fixes**: details`
 and `**Windows 修复**：说明`. Do not write `**中文标题：**正文`: the punctuation

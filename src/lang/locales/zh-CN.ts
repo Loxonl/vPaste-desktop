@@ -525,6 +525,7 @@ const zhCN: LanguagePack = {
         "tutorial.debug.mac": "测试 macOS 向导",
         "tutorial.debug.uiLab": "在浏览器中打开组件样板间",
         "tutorial.debug.testRoom": "打开测试间",
+        "tutorial.debug.nativeWindow": "打开原生窗口实验",
         "tutorial.debug.language": "切换引导语言",
         "tutorial.debug.theme.light": "浅色主题预览",
         "tutorial.debug.theme.dark": "深色主题预览",

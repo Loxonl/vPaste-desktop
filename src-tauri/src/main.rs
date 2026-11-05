@@ -71,6 +71,8 @@ mod maintenance;
 mod media_resources;
 #[cfg(debug_assertions)]
 mod memory_profile;
+#[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]
+mod native_demo;
 #[cfg(target_os = "macos")]
 mod native_drag_preview;
 #[cfg(target_os = "macos")]
@@ -282,6 +284,34 @@ async fn set_dev_memory_monitoring(
     {
         let _ = (app, enabled);
         Err("Memory monitor is unavailable in release builds".into())
+    }
+}
+
+#[tauri::command]
+fn open_native_demo_window(app: tauri::AppHandle) -> Result<(), String> {
+    if !get_developer_mode() {
+        return Err("Native window demo requires Debug + --dev-mode".into());
+    }
+    #[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]
+    {
+        app.run_on_main_thread(native_demo::show)
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(all(debug_assertions, any(target_os = "macos", target_os = "windows"))))]
+    {
+        let _ = app;
+        Err("Native window demo is only available in macOS and Windows Debug builds".into())
+    }
+}
+
+fn native_demo_window_active() -> bool {
+    #[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]
+    {
+        native_demo::is_key_window()
+    }
+    #[cfg(not(all(debug_assertions, any(target_os = "macos", target_os = "windows"))))]
+    {
+        false
     }
 }
 
@@ -13069,6 +13099,7 @@ fn main() {
                         if tab_editor_window_active(&app)
                             || text_editor_window_active(&app)
                             || memory_monitor_window_active(&app)
+                            || native_demo_window_active()
                         {
                             return;
                         }
@@ -13287,6 +13318,7 @@ fn main() {
             memory_profile::memory_profile_parking_state,
             open_dev_memory_window,
             close_dev_memory_window,
+            open_native_demo_window,
             get_dev_memory_report,
             set_dev_memory_monitoring,
             auxiliary_window_ready,

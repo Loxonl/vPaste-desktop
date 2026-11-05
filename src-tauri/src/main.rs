@@ -106,6 +106,8 @@ mod ui_text_scale;
 mod windows_main_shortcut;
 #[cfg(target_os = "windows")]
 mod windows_paste_focus;
+#[cfg(target_os = "windows")]
+mod windows_window_icon;
 
 #[cfg(test)]
 #[ctor]
@@ -2748,6 +2750,14 @@ fn minimize_current_window(window: tauri::WebviewWindow) -> Result<(), String> {
     window.minimize().map_err(|err| err.to_string())
 }
 
+#[cfg(target_os = "windows")]
+fn apply_vpaste_window_icon(window: &tauri::WebviewWindow) {
+    if let Err(err) = windows_window_icon::apply(&window.as_ref().window()) {
+        error!("Failed to schedule Windows window icon: {err}");
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 fn apply_vpaste_window_icon(window: &tauri::WebviewWindow) {
     match build_vpaste_window_icon() {
         Ok(icon) => {
@@ -2788,6 +2798,140 @@ fn build_vpaste_window_icon() -> Result<TauriImage<'static>, image::ImageError> 
 #[cfg(all(test, target_os = "windows"))]
 mod window_icon_tests {
     use super::build_vpaste_window_icon;
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::Graphics::Gdi::{DeleteObject, GetBitmapBits, GetObjectW, BITMAP, HBITMAP};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetIconInfo, SendMessageW, HICON, ICONINFO, ICON_BIG, ICON_SMALL, WM_GETICON,
+    };
+
+    struct IconBitmaps(ICONINFO);
+
+    impl Drop for IconBitmaps {
+        fn drop(&mut self) {
+            // SAFETY: GetIconInfo returns bitmap copies owned by this guard.
+            unsafe {
+                let _ = DeleteObject(self.0.hbmMask);
+                let _ = DeleteObject(self.0.hbmColor);
+            }
+        }
+    }
+
+    fn read_bitmap(handle: HBITMAP) -> (BITMAP, Vec<u8>) {
+        // SAFETY: the bitmap copy remains owned by the caller's IconBitmaps guard.
+        unsafe {
+            let mut bitmap = BITMAP::default();
+            assert_ne!(
+                GetObjectW(
+                    handle,
+                    std::mem::size_of::<BITMAP>() as i32,
+                    Some((&mut bitmap as *mut BITMAP).cast()),
+                ),
+                0
+            );
+            let mut bytes = vec![0_u8; (bitmap.bmWidthBytes * bitmap.bmHeight) as usize];
+            assert_eq!(
+                GetBitmapBits(handle, bytes.len() as i32, bytes.as_mut_ptr().cast()),
+                bytes.len() as i32
+            );
+            (bitmap, bytes)
+        }
+    }
+
+    fn window_icon(window: &tauri::Window, kind: u32) -> HICON {
+        let hwnd = HWND(window.hwnd().expect("get the fixture HWND").0 as isize);
+        // SAFETY: only query an icon from a live hidden fixture.
+        unsafe { HICON(SendMessageW(hwnd, WM_GETICON, WPARAM(kind as usize), LPARAM(0)).0) }
+    }
+
+    fn assert_native_icon_matches_image(handle: HICON, image: &tauri::image::Image<'_>) {
+        assert!(!handle.is_invalid());
+        let mut info = IconBitmaps(ICONINFO::default());
+        // SAFETY: the icon is owned by the process-lifetime cache throughout inspection.
+        unsafe { GetIconInfo(handle, &mut info.0).expect("read native icon bitmaps") };
+        let (bitmap, mask) = read_bitmap(info.0.hbmMask);
+        assert_eq!(
+            (bitmap.bmWidth, bitmap.bmHeight, bitmap.bmBitsPixel),
+            (32, 32, 1)
+        );
+        let stride = bitmap.bmWidthBytes as usize;
+        let mismatches = image
+            .rgba()
+            .chunks_exact(4)
+            .enumerate()
+            .filter(|(pixel, rgba)| {
+                let x = pixel % image.width() as usize;
+                let y = pixel / image.width() as usize;
+                let transparent = mask[y * stride + x / 8] & (0x80 >> (x % 8)) != 0;
+                transparent != (rgba[3] == 0)
+            })
+            .count();
+        assert_eq!(
+            mismatches, 0,
+            "native AND mask must match RGBA transparency"
+        );
+
+        let (bitmap, bgra) = read_bitmap(info.0.hbmColor);
+        assert_eq!(
+            (bitmap.bmWidth, bitmap.bmHeight, bitmap.bmBitsPixel),
+            (32, 32, 32)
+        );
+        for (native, rgba) in bgra.chunks_exact(4).zip(image.rgba().chunks_exact(4)) {
+            assert_eq!(
+                native,
+                &[rgba[2], rgba[1], rgba[0], rgba[3]],
+                "preserve logo colors and alpha"
+            );
+        }
+    }
+
+    #[test]
+    fn native_small_icon_mask_matches_image_alpha() {
+        let image = build_vpaste_window_icon().expect("build the window icon");
+        let mut app = tauri::Builder::<tauri::Wry>::new()
+            .any_thread()
+            .build(tauri::generate_context!())
+            .expect("build an isolated icon-test runtime");
+        let hidden_window = |label| {
+            // Hidden fixtures only; never show or focus a user's window.
+            tauri::WindowBuilder::new(&app, label)
+                .visible(false)
+                .focused(false)
+                .skip_taskbar(true)
+                .build()
+                .expect("build a hidden window")
+        };
+        let first = hidden_window("window-icon-test-first");
+        let second = hidden_window("window-icon-test-second");
+        let big_icon_before = window_icon(&first, ICON_BIG);
+        for window in [&first, &second] {
+            super::windows_window_icon::apply(window).expect("set the window icon");
+        }
+        // Drain the updates once, not a polling loop.
+        #[allow(deprecated)]
+        app.run_iteration(|_, _| {});
+
+        let handle = window_icon(&second, ICON_SMALL);
+        assert_native_icon_matches_image(handle, &image);
+        assert_eq!(
+            window_icon(&first, ICON_SMALL),
+            handle,
+            "reuse the shared HICON"
+        );
+        assert_eq!(
+            window_icon(&first, ICON_BIG),
+            big_icon_before,
+            "leave the taskbar icon unchanged"
+        );
+        assert!(!first.is_visible().expect("read fixture visibility"));
+        assert!(!second.is_visible().expect("read fixture visibility"));
+
+        first.destroy().expect("destroy the first hidden window");
+        #[allow(deprecated)]
+        app.run_iteration(|_, _| {});
+        assert_eq!(window_icon(&second, ICON_SMALL), handle);
+        assert_native_icon_matches_image(handle, &image);
+        second.destroy().expect("destroy the second hidden window");
+    }
 
     #[test]
     fn small_windows_icon_has_fully_transparent_corners() {
@@ -2800,6 +2944,19 @@ mod window_icon_tests {
         for (x, y) in [(0, 0), (max_x, 0), (0, max_y), (max_x, max_y)] {
             let alpha = bytes[((y * icon.width() + x) * 4 + 3) as usize];
             assert_eq!(alpha, 0, "corner ({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn small_windows_icon_keeps_the_two_pixel_transparent_inset() {
+        let icon = build_vpaste_window_icon().expect("build the window icon");
+        for y in 0..icon.height() {
+            for x in 0..icon.width() {
+                if x < 2 || y < 2 || x >= icon.width() - 2 || y >= icon.height() - 2 {
+                    let alpha = icon.rgba()[((y * icon.width() + x) * 4 + 3) as usize];
+                    assert_eq!(alpha, 0, "inset ({x}, {y})");
+                }
+            }
         }
     }
 }

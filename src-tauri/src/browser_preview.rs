@@ -272,15 +272,19 @@ pub(crate) fn foreground(app: &tauri::AppHandle, context: &str) -> bool {
     })
 }
 
+fn focus_window_content(window: &tauri::WebviewWindow) -> Result<(), String> {
+    window.set_focus().map_err(|_| "link_preview_network")?;
+    AsRef::<tauri::Webview>::as_ref(window)
+        .set_focus()
+        .map_err(|_| "link_preview_network".into())
+}
+
 pub(crate) fn focus_under_cursor(app: &tauri::AppHandle) -> Result<bool, String> {
     if let Some(window) = app.get_webview_window(LABEL).filter(|window| {
         window.is_visible().unwrap_or(false) && crate::cursor_inside_window(window)
     }) {
         crate::activate_native_window(&window, "focus webpage preview");
-        window.set_focus().map_err(|_| "link_preview_network")?;
-        AsRef::<tauri::Webview>::as_ref(&window)
-            .set_focus()
-            .map_err(|_| "link_preview_network")?;
+        focus_window_content(&window)?;
         return Ok(true);
     }
     Ok(false)
@@ -348,6 +352,13 @@ pub(crate) async fn sync_preview_browser(
                 session.bounds = Some(bounds);
                 !session.navigated
             };
+            let should_focus = crate::app_window_is_foreground(
+                &handle,
+                "clipboardPreview",
+                "webpage initial focus",
+            );
+            let clipboard_had_focus =
+                crate::app_window_is_foreground(&handle, "clipboard", "webpage initial focus");
             let browser = build(&handle)?;
             follow_parent(&handle)?;
             if navigate {
@@ -362,12 +373,11 @@ pub(crate) async fn sync_preview_browser(
                     return Ok(false);
                 }
             }
-            let should_focus = crate::is_native_window_foreground(&parent, "webpage initial focus")
-                || foreground(&handle, "webpage existing focus");
             if SESSION.lock().unwrap_or_else(|e| e.into_inner()).owner != Some(request_id) {
                 return Ok(false);
             }
-            if !browser.is_visible().unwrap_or(false) {
+            let showing = !browser.is_visible().unwrap_or(false);
+            if showing {
                 browser
                     .set_focusable(should_focus)
                     .map_err(|_| "link_preview_network")?;
@@ -376,8 +386,29 @@ pub(crate) async fn sync_preview_browser(
                     .set_focusable(true)
                     .map_err(|_| "link_preview_network")?;
             }
-            if navigate && should_focus {
-                browser.set_focus().map_err(|_| "link_preview_network")?;
+            let still_owns_page =
+                SESSION.lock().unwrap_or_else(|e| e.into_inner()).owner == Some(request_id);
+            if (navigate || showing)
+                && still_owns_page
+                && (crate::app_window_is_foreground(
+                    &handle,
+                    "clipboardPreview",
+                    "webpage focus handoff",
+                ) || crate::app_window_is_foreground(
+                    &handle,
+                    "clipboard",
+                    "webpage focus handoff",
+                ))
+            {
+                // A foreground native window does not imply its WebView has
+                // keyboard focus. Restore the original owner after showing.
+                if should_focus {
+                    focus_window_content(&browser)?;
+                } else if clipboard_had_focus {
+                    if let Some(clipboard) = handle.get_webview_window("clipboard") {
+                        focus_window_content(&clipboard)?;
+                    }
+                }
             }
             Ok(true)
         })();

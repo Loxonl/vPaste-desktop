@@ -53,6 +53,17 @@ try {
     await show();
     const web = await until(() => pages().find(page => page.url().startsWith(origin)), "native webpage navigation");
     activeWeb = web;
+    // Check the natural first-show handoff before any test focus call can
+    // conceal a native-window/WebView focus mismatch.
+    await until(async () => {
+        if (await invoke("plugin:window|is_focused", { label: "clipboard" })) {
+            return clipboard.evaluate(() => document.hasFocus());
+        }
+        if (await invoke("plugin:window|is_focused", { label: "previewBrowser" })) {
+            return web.evaluate(() => document.hasFocus());
+        }
+        return false;
+    }, "first show restores keyboard focus without moving the pointer");
     await invoke("plugin:window|set_focus", { label: "previewBrowser" });
     assert.equal(await invoke("plugin:window|is_focused", { label: "previewBrowser" }), true, "native webpage did not obtain focus for keyboard testing");
     await invoke("set_preview_pinned", { pinned: true });
@@ -99,6 +110,15 @@ try {
     }
     await invoke("plugin:window|set_focus", { label: "previewBrowser" });
     await web.locator("body").focus();
+    await web.keyboard.press("Space");
+    await until(() => web.url() === "about:blank", "page cleared after Space");
+    assert.equal(await invoke("plugin:window|is_visible", { label: "previewBrowser" }), false);
+    assert.equal(await invoke("plugin:window|is_visible", { label: "clipboardPreview" }), false);
+    await show();
+    await web.waitForURL(`${origin}/page`);
+    await web.locator("#script").filter({ hasText: "JavaScript loaded" }).waitFor();
+    await invoke("plugin:window|set_focus", { label: "previewBrowser" });
+    await web.locator("body").focus();
     await web.keyboard.press("Escape");
     await until(() => web.url() === "about:blank", "page cleared after Escape");
     await web.waitForFunction(() => document.querySelector("#picture") === null);
@@ -107,7 +127,7 @@ try {
     success = true;
     console.log(JSON.stringify({ passed: true, imageDecoded: true, websiteJavaScript: true, websiteCss: true,
         remoteAppAccess: permission, inputSpace: true, pinRetainsPage: true, textSwitchClearsPage: true,
-        escapeCloses: true, blankViewRetained: true, nativeBoundsInsideShell: true,
+        naturalWebViewFocus: true, spaceCloses: true, escapeCloses: true, blankViewRetained: true, nativeBoundsInsideShell: true,
         liveHttps: process.env.VPASTE_NATIVE_PREVIEW_LIVE === "1", artifacts }));
 } catch (error) {
     if (activeWeb && !activeWeb.isClosed()) {

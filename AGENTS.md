@@ -14,6 +14,10 @@
 - List user-visible behavior changes and removed mechanisms explicitly in the pull request description.
 - Do not mix unrelated cleanup, refactoring, or formatting into the same pull request.
 
+## Release notes
+
+- When preparing or editing a Release, follow the shared [Release Notes Format and Template](docs/open-source/releases/release-notes-template.md) and [release checklist](docs/open-source/releases/release-checklist.md). Use the same format for Windows, macOS, Stable, and RC releases; do not reconstruct it from previous chat history or generated PR titles.
+
 ## UI Governance (React/MUI/Motion)
 
 These rules apply to every React UI change, including auxiliary Tauri windows. The detailed reference is [docs/open-source/frontend-ui-guidelines.md](docs/open-source/frontend-ui-guidelines.md).

@@ -11,21 +11,60 @@ const assets = [
 assets.push({ name: "SHA256SUMS.txt", state: "uploaded" });
 
 describe("release download table", () => {
-  it("appends direct links after the complete existing release notes", () => {
+  it("appends only the manual-download table after the complete existing release notes", () => {
     const body = "## English\nFixed an issue\n\n## 中文\n修复问题";
     const result = renderReleaseNotes({ body, assets }, repo, tag);
     expect(result.startsWith(`${body}\n\n<!-- vpaste-downloads:start -->`)).toBe(true);
     expect(result).toContain(`https://github.com/${repo}/releases/download/${tag}/vPaste_1.6.1-rc.2_windows_x64_setup.exe`);
     expect(result).toContain("Apple Silicon");
     expect(result).toContain("Universal");
-    expect(result).toContain("SHA256SUMS.txt");
-    expect(result).toContain("release-metadata.zip");
+    expect(result).not.toContain("SHA256SUMS.txt");
+    expect(result).not.toContain("release-metadata.zip");
     expect(result.trimEnd().endsWith("<!-- vpaste-downloads:end -->")).toBe(true);
     expect(result).not.toContain(".app.tar.gz](");
-    expect(result).toContain("## Downloads / 下载");
-    expect(result).toContain("| Platform / 系统 | Package / 版本 | Download / 下载 |");
+    expect(result).not.toContain("## Downloads / 下载");
+    expect(result).toContain("| Platform / 系统 | Package / 类型 | Download / 下载 |");
     expect(result).toContain("Installer / 安装版");
-    expect(result.indexOf("Choose a package above")).toBeLessThan(result.indexOf("普通安装请选择"));
+    const block = result.split("<!-- vpaste-downloads:start -->")[1].split("<!-- vpaste-downloads:end -->")[0].trim();
+    expect(block.split("\n")).toHaveLength(7);
+    expect(block.split("\n").every(line => line.startsWith("| ") && line.endsWith(" |"))).toBe(true);
+  });
+
+  it("preserves categorized bilingual notes, plain feature labels, warnings, and source links", () => {
+    const body = [
+      "## English", "", "### ✨ New features", "", "- **Mouse controls**: Add a hover preview option", "",
+      "### ⚙️ Improvements", "", "- **Memory usage**: Load auxiliary windows on demand", "",
+      "### 🐛 Fixes", "", "- **Windows installer**: Remove a blocking shutdown wait", "",
+      "### ⚠️ Notes", "", "- **Windows signature**: Packages are unsigned and may show Unknown publisher or SmartScreen warnings", "",
+      "## 中文", "", "### ✨ 新功能", "", "- **鼠标操作**：新增悬停预览开关", "",
+      "### ⚙️ 优化", "", "- **内存占用**：辅助窗口按需加载", "",
+      "### 🐛 修复", "", "- **Windows 安装器**：移除阻塞的进程关闭等待", "",
+      "### ⚠️ 注意事项", "", "- **Windows 签名**：安装包暂未签名，可能显示未知发布者或 SmartScreen 提示", "",
+      "[Source / 源码](https://github.com/Loxonl/vPaste-desktop/commit/abc123)",
+    ].join("\n");
+    const result = renderReleaseNotes({ body, assets }, repo, tag);
+    expect(result.startsWith(`${body}\n\n<!-- vpaste-downloads:start -->`)).toBe(true);
+    expect(result).not.toMatch(/^# vPaste|^## Packages|^## Downloads/m);
+    expect(result).not.toMatch(/History formats|Older backups|历史格式|旧备份/);
+    expect(renderReleaseNotes({ body: result, assets }, repo, tag)).toBe(result);
+  });
+
+  it("replaces legacy download boilerplate only inside the managed block", () => {
+    const body = [
+      "## English", "Keep this warning", "", "## 中文", "保留这条提醒", "",
+      "<!-- vpaste-downloads:start -->", "## Downloads / 下载", "",
+      "[SHA-256 checksums](https://example.com/SHA256SUMS.txt)", "",
+      "Choose a package above for manual installation", "普通安装请选择上表文件",
+      "<!-- vpaste-downloads:end -->", "", "Source: abc123",
+    ].join("\n");
+    const result = renderReleaseNotes({ body, assets }, repo, tag);
+    expect(result).toContain("Keep this warning");
+    expect(result).toContain("保留这条提醒");
+    expect(result.indexOf("Source: abc123")).toBeLessThan(result.indexOf("<!-- vpaste-downloads:start -->"));
+    expect(result).not.toContain("## Downloads / 下载");
+    expect(result).not.toContain("SHA256SUMS.txt");
+    expect(result).not.toContain("Choose a package above");
+    expect(result).not.toContain("普通安装请选择");
   });
 
   it("puts English before Chinese while preserving the title, subsections, and shared notes", () => {
@@ -91,10 +130,15 @@ describe("release download table", () => {
     expect(() => renderReleaseNotes({ body: "Notes", assets: assets.map((asset, i) => i ? asset : { ...asset, state: "new" }) }, repo, tag)).toThrow(/missing/i);
   });
 
-  it("supports older releases without linking a nonexistent metadata archive", () => {
+  it("still requires uploaded checksums even though the table does not link them", () => {
+    expect(() => renderReleaseNotes({ body: "Notes", assets: assets.filter(asset => asset.name !== "SHA256SUMS.txt") }, repo, tag)).toThrow(/SHA256SUMS/);
+    expect(() => renderReleaseNotes({ body: "Notes", assets: assets.map(asset => asset.name === "SHA256SUMS.txt" ? { ...asset, state: "new" } : asset) }, repo, tag)).toThrow(/SHA256SUMS/);
+  });
+
+  it("supports older releases without a metadata archive and keeps auxiliary links out of the table", () => {
     const result = renderReleaseNotes({ body: "Old notes", assets: assets.filter(asset => !asset.name.endsWith("release-metadata.zip")) }, repo, tag);
     expect(result).not.toContain("release-metadata.zip");
-    expect(result).toContain("SHA256SUMS.txt");
+    expect(result).not.toContain("SHA256SUMS.txt");
   });
 
   it("omits the Universal package on older releases but requires it for new releases", () => {

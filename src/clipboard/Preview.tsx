@@ -2,7 +2,6 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
-import Button from "@mui/material/Button";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
 import { ToolbarIconButton } from "../ui/ToolbarIconButton";
@@ -16,6 +15,7 @@ import { useLanguage } from "../lang";
 import { notifyAuxiliaryWindowReady } from "../auxiliaryWindowReady";
 import { m, motionDurationsMs, motionTokens, useMotionPreset, useReducedMotionConfig } from "../ui/motion";
 import styles from "./Preview.module.css";
+import { NativeLinkPreview } from "./NativeLinkPreview";
 
 const FileTypePresentation = lazy(() => import("./FileTypePresentation")
     .then(module => ({ default: module.FileTypePresentation })));
@@ -42,17 +42,6 @@ type PreviewPayload = {
 };
 
 type PreviewNavigationDirection = -1 | 0 | 1;
-
-const LINK_PREVIEW_ERROR_MESSAGES = new Map<string, string>([
-    ["link_preview_proxy_unavailable", "preview.linkProxyUnavailable"],
-    ["link_preview_fake_ip", "preview.linkFakeIp"],
-    ["link_preview_timeout", "preview.linkTimeout"],
-    ["link_preview_blocked", "preview.linkBlocked"],
-    ["link_preview_network", "preview.linkNetworkError"],
-    ["link_preview_not_html", "preview.linkNotHtml"],
-    ["link_preview_redirect_limit", "preview.linkRedirectLimit"],
-    ["link_preview_http_status", "preview.linkHttpError"],
-]);
 
 function parseFilePaths(content: string): string[] {
     try {
@@ -99,49 +88,18 @@ function payloadRichHtml(payload: PreviewPayload): string {
     return payload.rich_html || payload.richHtml || "";
 }
 
-function disableDocumentNavigation(html: string): string {
-    if (!html.trim()) return "";
-    const parsed = new DOMParser().parseFromString(html, "text/html");
-    const policy = parsed.createElement("meta");
-    policy.setAttribute("http-equiv", "Content-Security-Policy");
-    policy.setAttribute(
-        "content",
-        "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'; base-uri 'none'",
-    );
-    parsed.head.prepend(policy);
-    parsed.querySelectorAll("meta[http-equiv]").forEach(node => {
-        if (node.getAttribute("http-equiv")?.trim().toLowerCase() === "refresh") {
-            node.remove();
-        }
-    });
-    parsed.querySelectorAll("base").forEach(node => node.remove());
-    parsed.querySelectorAll("a, area").forEach(node => {
-        ["href", "xlink:href", "target", "download", "ping"].forEach(name => {
-            node.removeAttribute(name);
-        });
-        node.setAttribute("aria-disabled", "true");
-    });
-    parsed.querySelectorAll("[formaction]").forEach(node => {
-        node.removeAttribute("formaction");
-    });
-    parsed.querySelectorAll("form").forEach(node => {
-        node.replaceWith(...Array.from(node.childNodes));
-    });
-    parsed.querySelectorAll("iframe, frame, object, embed").forEach(node => node.remove());
-    return `<!doctype html>${parsed.documentElement.outerHTML}`;
-}
-
 type PreviewBodyProps = {
     payload: PreviewPayload;
     t: (key: string, params?: Record<string, string | number>) => string;
     onReady?: () => void;
+    active?: boolean;
 };
 
 export function PreviewBody(props: PreviewBodyProps) {
     return <Suspense fallback={null}><PreviewContent {...props} /></Suspense>;
 }
 
-function PreviewContent({ payload, t, onReady }: PreviewBodyProps) {
+function PreviewContent({ payload, t, onReady, active = true }: PreviewBodyProps) {
     const [fileInfo, setFileInfo] = useState<FilePreviewInfo | null>(null);
     const [fileError, setFileError] = useState("");
     const [fileText, setFileText] = useState("");
@@ -152,17 +110,11 @@ function PreviewContent({ payload, t, onReady }: PreviewBodyProps) {
     const readySentRef = useRef(false);
     const [imageSrc, setImageSrc] = useState("");
     const [filePreviewSrc, setFilePreviewSrc] = useState("");
-    const [linkDocument, setLinkDocument] = useState<{ url: string; html: string } | null>(null);
-    const [linkError, setLinkError] = useState("");
     const type = payloadType(payload);
     const linkUrl = type === ItemType.Link ? normalizeLinkUrl(payload.content.split("|||")[0]) : "";
     const richHtml = useMemo(() => sanitizeRichHtml(payloadRichHtml(payload), 720, false,
         richResourceUrls(payload.rich_resources ?? payload.richResources ?? [])), [payload]);
     const richPreviewRef = useRichPreviewCanvas(richHtml);
-    const linkPreviewHtml = useMemo(
-        () => linkDocument ? disableDocumentNavigation(linkDocument.html) : "",
-        [linkDocument],
-    );
     const text = useMemo(() => {
         if (type === ItemType.Link) return linkUrl;
         return payloadTextContent(payload) || payload.content;
@@ -249,25 +201,6 @@ function PreviewContent({ payload, t, onReady }: PreviewBodyProps) {
 
     useEffect(() => {
         let cancelled = false;
-        setLinkDocument(null);
-        setLinkError("");
-        if (type !== ItemType.Link || !linkUrl) return;
-        invoke<{ url: string; html: string }>("fetch_link_preview_document", { url: linkUrl })
-            .then(document => {
-                if (!cancelled) setLinkDocument(document);
-            })
-            .catch(e => {
-                const message = LINK_PREVIEW_ERROR_MESSAGES.get(typeof e === "string" ? e : "") || "preview.linkNetworkError";
-                if (!cancelled) setLinkError(message);
-                error(`Link preview failed: ${message}`);
-            });
-        return () => {
-            cancelled = true;
-        };
-    }, [linkUrl, type]);
-
-    useEffect(() => {
-        let cancelled = false;
         setFilePreviewSrc("");
         if (!fileInfo?.preview_path) return;
         invoke<{ assetPath: string }>("resolve_history_media", { path: fileInfo.preview_path, intent: "preview" })
@@ -308,28 +241,7 @@ function PreviewContent({ payload, t, onReady }: PreviewBodyProps) {
     if (type === ItemType.Link) {
         return (
             <div className={styles["preview-link-stage"]}>
-                <div className={styles["preview-link-bar"]} title={linkUrl}>
-                    <span>{linkUrl}</span>
-                </div>
-                {linkDocument ? (
-                    <iframe
-                        className={styles["preview-link-frame"]}
-                        srcDoc={linkPreviewHtml}
-                        title={linkDocument.url}
-                        referrerPolicy="no-referrer"
-                        sandbox=""
-                    />
-                ) : (
-                    <div className={styles["preview-link-loading"]}>
-                        <span role={linkError ? "alert" : undefined}>{t(linkError || "preview.generating")}</span>
-                        {linkError && (
-                            <Button size="small" onClick={() => {
-                                void invoke("open_url_in_browser", { url: linkUrl })
-                                    .catch(() => error("Failed to open original preview link"));
-                            }}>{t("preview.openOriginalLink")}</Button>
-                        )}
-                    </div>
-                )}
+                <NativeLinkPreview url={linkUrl} requestId={payload.request_id ?? 0} active={active} t={t} />
             </div>
         );
     }
@@ -461,7 +373,7 @@ export default function Preview() {
                 return;
             }
             const next = reuse
-                ? { ...currentLayerRef.current!, phase: "current" as const }
+                ? { ...currentLayerRef.current!, payload: layer.payload, phase: "current" as const }
                 : { ...layer, phase: "current" as const };
             currentLayerRef.current = next;
             hoverRef.current = layer.payload.hover === true;
@@ -509,7 +421,10 @@ export default function Preview() {
             setLayers([]);
         });
         const unlistenPromoted = listen("preview-promoted", () => { hoverRef.current = false; });
-        const cancelReady = notifyAuxiliaryWindowReady([unlisten, unlistenClear, unlistenPromoted]);
+        const unlistenBrowserKey = listen<{ key: string; ctrlKey: boolean; shiftKey: boolean }>("preview-browser-key", event => {
+            window.dispatchEvent(new KeyboardEvent("keydown", event.payload));
+        });
+        const cancelReady = notifyAuxiliaryWindowReady([unlisten, unlistenClear, unlistenPromoted, unlistenBrowserKey]);
         // Replay a first request that arrived while this lazy route was still loading.
         const mountSequence = sequenceRef.current;
         void Promise.all([unlisten, unlistenClear]).then(() => invoke<PreviewPayload | null>("pending_preview_item"))
@@ -554,6 +469,7 @@ export default function Preview() {
             unlisten.then(fn => fn()).catch(e => error(`Failed to unlisten preview: ${e}`));
             unlistenClear.then(fn => fn()).catch(e => error(`Failed to unlisten preview clear: ${e}`));
             unlistenPromoted.then(fn => fn()).catch(e => error(`Failed to unlisten preview promotion: ${e}`));
+            unlistenBrowserKey.then(fn => fn()).catch(() => error("Failed to unlisten webpage preview keys"));
             window.removeEventListener("keydown", handleKeyDown);
         };
     }, [commitLayer]);
@@ -604,7 +520,7 @@ export default function Preview() {
                             }
                         }}
                     >
-                        <PreviewBody payload={layer.payload} t={t} onReady={() => { void commitLayer(layer); }} />
+                        <PreviewBody payload={layer.payload} t={t} active={layer.phase === "current"} onReady={() => { void commitLayer(layer); }} />
                     </m.div>
                 ))}
             </div>

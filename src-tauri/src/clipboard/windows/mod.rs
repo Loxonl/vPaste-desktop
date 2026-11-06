@@ -6,6 +6,7 @@ mod diagnostics;
 pub mod image_convert;
 #[cfg(target_os = "windows")]
 pub(crate) mod listen;
+pub(crate) mod source_icons;
 
 // OpenClipboard(NULL) is not a cross-thread lock inside our process. Serialize
 // native access so the listener cannot read a partially restored payload or

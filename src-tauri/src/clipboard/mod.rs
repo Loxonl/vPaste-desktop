@@ -449,10 +449,19 @@ fn resolve_app_icon_path(app_source: &str, stored_icon_path: String) -> String {
             .unwrap_or_else(|| prefer_jumbo_app_icon(stored_icon_path));
     }
     let stored_icon_path = prefer_jumbo_app_icon(stored_icon_path);
-    if !stored_icon_path.is_empty() && Path::new(&stored_icon_path).is_file() {
-        return stored_icon_path;
+    let icon = if !stored_icon_path.is_empty() && Path::new(&stored_icon_path).is_file() {
+        stored_icon_path
+    } else {
+        bundled_app_source_icon_path(app_source).unwrap_or(stored_icon_path)
+    };
+    #[cfg(target_os = "windows")]
+    {
+        windows::source_icons::for_history(app_source, icon)
     }
-    bundled_app_source_icon_path(app_source).unwrap_or(stored_icon_path)
+    #[cfg(not(target_os = "windows"))]
+    {
+        icon
+    }
 }
 
 fn app_icon_dominant_color(icon_path: &str) -> Option<String> {
@@ -595,6 +604,21 @@ fn missing_app_icon_path_is_not_exposed() {
     let root = tempfile::tempdir().unwrap();
     let missing = root.path().join("missing-macos.png");
 
+    #[cfg(target_os = "windows")]
+    {
+        let _guard = crate::TEST_APP_DATA_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        let resolved = resolve_app_icon_path("Missing App", missing.to_string_lossy().to_string());
+        assert_eq!(
+            Path::new(&resolved).file_name().unwrap(),
+            "neutral-source-v1.png"
+        );
+        assert!(Path::new(&resolved).is_file());
+    }
+    #[cfg(not(target_os = "windows"))]
     assert_eq!(
         resolve_app_icon_path("Missing App", missing.to_string_lossy().to_string()),
         ""

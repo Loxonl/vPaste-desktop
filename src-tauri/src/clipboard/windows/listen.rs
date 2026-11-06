@@ -17,8 +17,8 @@ use crate::clipboard;
 use crate::clipboard::windows::image_convert;
 use crate::config;
 use crate::{
-    app_runtime_dir, CLIPBOARD_HISTORY_PAUSED, CLIPBOARD_IGNORE_CHANGES_UNTIL,
-    CLIPBOARD_IGNORE_NEXT_CHANGE, CLIPBOARD_INTERNAL_MARKER,
+    CLIPBOARD_HISTORY_PAUSED, CLIPBOARD_IGNORE_CHANGES_UNTIL, CLIPBOARD_IGNORE_NEXT_CHANGE,
+    CLIPBOARD_INTERNAL_MARKER,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -1539,7 +1539,6 @@ fn clipboard_app_source() -> Option<AppSource> {
     #[link(name = "user32")]
     extern "system" {
         fn GetClipboardOwner() -> Hwnd;
-        fn GetForegroundWindow() -> Hwnd;
         fn GetWindowThreadProcessId(hwnd: Hwnd, process_id: *mut u32) -> u32;
     }
 
@@ -1555,12 +1554,9 @@ fn clipboard_app_source() -> Option<AppSource> {
         fn CloseHandle(handle: Handle) -> i32;
     }
 
-    let clipboard_owner = unsafe { GetClipboardOwner() };
-    let hwnd = if clipboard_owner.is_null() {
-        unsafe { GetForegroundWindow() }
-    } else {
-        clipboard_owner
-    };
+    // A background sync can write without owning a window. The foreground app
+    // is not evidence of who wrote that data and must not be recorded as its source.
+    let hwnd = unsafe { GetClipboardOwner() };
     if hwnd.is_null() {
         return None;
     }
@@ -1634,7 +1630,7 @@ fn resolve_app_source_icon(source: &mut AppSource) {
             return;
         }
     }
-    source.icon_path = extract_process_icon_png(&source.exe_path).unwrap_or_default();
+    source.icon_path = super::source_icons::for_executable(&source.exe_path, &source.name);
     if let Ok(mut cache) = APP_SOURCE_CACHE
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -1663,9 +1659,12 @@ fn clean_app_source(name: &str) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn extract_process_icon_png(exe_path: &Path) -> Option<String> {
+pub(super) fn extract_process_icon_png_at(
+    exe_path: &Path,
+    cache_dir: &Path,
+    generic: bool,
+) -> Option<String> {
     use image::{imageops, ImageBuffer, Rgba};
-    use sha2::{Digest, Sha256};
     use std::ffi::{c_void, OsStr};
     use std::fs;
     use std::mem::{size_of, zeroed};
@@ -1772,6 +1771,8 @@ fn extract_process_icon_png(exe_path: &Path) -> Option<String> {
     const BI_RGB: u32 = 0;
     const DIB_RGB_COLORS: u32 = 0;
     const SHGFI_SYSICONINDEX: u32 = 0x000004000;
+    const SHGFI_USEFILEATTRIBUTES: u32 = 0x000000010;
+    const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
     const SHIL_EXTRALARGE: i32 = 0x2;
     const SHIL_JUMBO: i32 = 0x4;
     const ILD_TRANSPARENT: u32 = 0x00000001;
@@ -1824,23 +1825,9 @@ fn extract_process_icon_png(exe_path: &Path) -> Option<String> {
         ) -> i32;
     }
 
-    let exe_string = exe_path.to_string_lossy();
-    let mut hasher = Sha256::new();
-    hasher.update(exe_string.as_bytes());
-    hasher.update(b":hq-icon-v2:");
-    if let Ok(metadata) = fs::metadata(exe_path) {
-        if let Ok(modified) = metadata.modified() {
-            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
-                hasher.update(duration.as_millis().to_string().as_bytes());
-            }
-        }
-        hasher.update(metadata.len().to_string().as_bytes());
-    }
-    let hash = format!("{:x}", hasher.finalize());
-    let cache_dir = PathBuf::from(app_runtime_dir(&["app_icons"]));
-    let _ = fs::create_dir_all(&cache_dir);
+    let _ = fs::create_dir_all(cache_dir);
 
-    if is_vpaste_exe(exe_path) {
+    if !generic && is_vpaste_exe(exe_path) {
         let icon_path = cache_dir.join("vpaste-source-icon-v5.png");
         if !icon_path.exists() {
             fs::write(
@@ -1852,7 +1839,14 @@ fn extract_process_icon_png(exe_path: &Path) -> Option<String> {
         return Some(icon_path.to_string_lossy().to_string());
     }
 
-    let icon_path = cache_dir.join(format!("{hash}-jumbo.png"));
+    let icon_path = if generic {
+        cache_dir.join("system-generic-executable-v1-jumbo.png")
+    } else {
+        cache_dir.join(format!(
+            "{}-jumbo.png",
+            super::source_icons::process_icon_cache_key(exe_path)
+        ))
+    };
     if icon_path.exists() {
         return Some(icon_path.to_string_lossy().to_string());
     }
@@ -1985,10 +1979,10 @@ fn extract_process_icon_png(exe_path: &Path) -> Option<String> {
         let mut file_info: ShFileInfoW = zeroed();
         let file_result = SHGetFileInfoW(
             wide_path.as_ptr(),
-            0,
+            if generic { FILE_ATTRIBUTE_NORMAL } else { 0 },
             &mut file_info as *mut ShFileInfoW,
             size_of::<ShFileInfoW>() as u32,
-            SHGFI_SYSICONINDEX,
+            SHGFI_SYSICONINDEX | if generic { SHGFI_USEFILEATTRIBUTES } else { 0 },
         );
         if file_result == 0 {
             None
@@ -2036,6 +2030,9 @@ fn extract_process_icon_png(exe_path: &Path) -> Option<String> {
     };
     if shell_icon.is_some() {
         return shell_icon;
+    }
+    if generic {
+        return None;
     }
 
     let mut small_icon: Hicon = null_mut();
@@ -2110,6 +2107,128 @@ fn is_vpaste_exe(exe_path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn source_icon_legacy_cache_fixture(exe: &Path, root: &Path) -> String {
+        use sha2::{Digest, Sha256};
+        let metadata = fs::metadata(exe).unwrap();
+        let mut hash = Sha256::new();
+        hash.update(exe.to_string_lossy().as_bytes());
+        hash.update(b":hq-icon-v2:");
+        hash.update(
+            metadata
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+                .to_string()
+                .as_bytes(),
+        );
+        hash.update(metadata.len().to_string().as_bytes());
+        let directory = root.join("app_icons");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!("{:x}-jumbo.png", hash.finalize()));
+        let mut generic = image::RgbaImage::from_pixel(32, 32, image::Rgba([120, 140, 180, 255]));
+        generic.put_pixel(0, 0, image::Rgba([120, 140, 180, 175]));
+        generic.save(&path).unwrap();
+        generic.get_pixel_mut(0, 0).0[0] -= 1;
+        generic
+            .save(directory.join("system-generic-executable-v1-jumbo.png"))
+            .unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn source_icon_uses_the_installed_product_for_a_doubao_service() {
+        let _guard = crate::TEST_APP_DATA_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        let product = root.path().join("DoubaoIME");
+        let service = product.join("versions/v1.0.0.23/ImeService.exe");
+        fs::create_dir_all(service.parent().unwrap()).unwrap();
+        // A valid local PE with no app icon, copied only as an inert fixture; never executed.
+        let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        fs::copy(system.join("System32/kernel32.dll"), &service).unwrap();
+        let logo = image::RgbaImage::from_pixel(32, 32, image::Rgba([210, 30, 70, 255]));
+        logo.save_with_format(product.join("doubao_logo.ico"), image::ImageFormat::Ico)
+            .unwrap();
+        let old_icon = source_icon_legacy_cache_fixture(&service, root.path());
+        let mut source = AppSource {
+            name: "ImeService".into(),
+            exe_path: service,
+            ..Default::default()
+        };
+        resolve_app_source_icon(&mut source);
+        assert_eq!(
+            source.name, "ImeService",
+            "keep source-filter identity unchanged"
+        );
+        assert!(
+            image::open(&source.icon_path).unwrap().to_rgba8() == logo,
+            "a service without its own icon should use its verified product's logo"
+        );
+        let restored = clipboard::resolve_app_icon_path("ImeService", old_icon);
+        assert!(
+            image::open(restored).unwrap().to_rgba8() == logo,
+            "existing history must upgrade without copying the content again"
+        );
+    }
+
+    #[test]
+    fn source_icon_does_not_brand_an_unrelated_ime_service() {
+        let _guard = crate::TEST_APP_DATA_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        let service = root.path().join("OtherInputMethod/ImeService.exe");
+        fs::create_dir_all(service.parent().unwrap()).unwrap();
+        let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        fs::copy(system.join("System32/kernel32.dll"), &service).unwrap();
+        source_icon_legacy_cache_fixture(&service, root.path());
+        let mut source = AppSource {
+            name: "ImeService".into(),
+            exe_path: service,
+            ..Default::default()
+        };
+        resolve_app_source_icon(&mut source);
+        assert_eq!(
+            Path::new(&source.icon_path).file_name().unwrap(),
+            "neutral-source-v1.png",
+            "an unidentified product should use the neutral icon, not Windows' generic app icon"
+        );
+        assert_eq!(source.name, "ImeService");
+    }
+
+    #[test]
+    fn source_icon_preserves_a_real_program_icon() {
+        let _guard = crate::TEST_APP_DATA_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        let exe = root.path().join("OtherApp.exe");
+        fs::write(&exe, b"inert source-icon fixture").unwrap();
+        let path = source_icon_legacy_cache_fixture(&exe, root.path());
+        let genuine = image::RgbaImage::from_pixel(32, 32, image::Rgba([40, 180, 75, 255]));
+        genuine.save(&path).unwrap();
+        let mut source = AppSource {
+            name: "OtherApp".into(),
+            exe_path: exe,
+            ..Default::default()
+        };
+        resolve_app_source_icon(&mut source);
+        assert_eq!(source.icon_path, path);
+        assert_eq!(
+            clipboard::resolve_app_icon_path("OtherApp", path.clone()),
+            path
+        );
+    }
 
     #[test]
     fn bitmap_capture_prepares_cold_thumbnails_and_continues_with_text() {

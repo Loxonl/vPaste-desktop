@@ -34,6 +34,7 @@ pub(crate) struct HistoryRef {
     pub(crate) tags: Vec<ItemTag>,
     pub(crate) app_source: String,
     pub(crate) app_icon_path: String,
+    pub(crate) source_metadata: crate::clipboard::source_metadata::SourceMetadata,
     pub(crate) title_color: String,
 }
 
@@ -43,6 +44,7 @@ impl HistoryRef {
             + self.hash.capacity()
             + self.app_source.capacity()
             + self.app_icon_path.capacity()
+            + self.source_metadata.bundle_id.capacity()
             + self.title_color.capacity()
             + self.tags.capacity() * std::mem::size_of::<ItemTag>()
             + self

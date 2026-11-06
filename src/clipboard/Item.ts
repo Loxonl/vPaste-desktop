@@ -14,6 +14,11 @@ export type ItemTag = {
     name: string;
 };
 
+export type SourceMetadata = {
+    isRemote: boolean;
+    bundleId: string;
+};
+
 export class Item {
     private readonly id: number;
     private readonly hash: string;
@@ -29,7 +34,7 @@ export class Item {
     private readonly label: number;
     private readonly tags: ItemTag[];
 
-    constructor(id: number, hash: string, type: ItemType, content: string, time: number, titleColor?: string, previewContent: string = "", textContent: string = "", label: number = 0, appSource: string = "", appIconPath: string = "", richHtml: string = "", tags: ItemTag[] = [], private readonly richRender?: RichRenderPayload, private readonly historyRecord = false) {
+    constructor(id: number, hash: string, type: ItemType, content: string, time: number, titleColor?: string, previewContent: string = "", textContent: string = "", label: number = 0, appSource: string = "", appIconPath: string = "", richHtml: string = "", tags: ItemTag[] = [], private readonly richRender?: RichRenderPayload, private readonly historyRecord = false, private readonly sourceMetadata?: SourceMetadata) {
         this.id = id;
         this.hash = hash;
         this.type = type;
@@ -95,6 +100,14 @@ export class Item {
         return this.appSource;
     }
 
+    isRemoteSource() {
+        return this.sourceMetadata?.isRemote === true;
+    }
+
+    getSourceBundleId() {
+        return this.sourceMetadata?.bundleId ?? "";
+    }
+
     getAppIconPath() {
         return this.appIconPath;
     }
@@ -128,6 +141,7 @@ export class Item {
             tags,
             this.richRender,
             this.historyRecord,
+            this.sourceMetadata,
         );
     }
 }

@@ -432,6 +432,7 @@ mod tests {
             text_content: String::new(),
             rich_html: String::new(),
             app_source: String::new(),
+            source_metadata: Default::default(),
             app_icon_path: String::new(),
             title_color: String::new(),
             time: 1,

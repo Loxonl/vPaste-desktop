@@ -78,6 +78,8 @@ const zhCN: LanguagePack = {
         "clipboard.dragging": "正在拖动",
         "clipboard.dragTextPreparing": "完整文本尚未就绪，请稍后重试拖动",
         "clipboard.source": "来源：{source}",
+        "clipboard.remoteSource": "隔空接力 · 来自另一台设备",
+        "clipboard.remoteSourceApp": "来源：{source} · 来自另一台设备",
         "clipboard.unknownApp": "未知程序",
         "clipboard.emptyHistory": "剪贴板里还没有内容",
         "clipboard.emptyHistory.desc": "复制文本、图片或文件后，历史记录会显示在这里。",

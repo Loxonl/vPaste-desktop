@@ -78,6 +78,8 @@ const enUS: LanguagePack = {
         "clipboard.dragging": "Dragging",
         "clipboard.dragTextPreparing": "The full text is not ready. Please try dragging again shortly.",
         "clipboard.source": "Source: {source}",
+        "clipboard.remoteSource": "Universal Clipboard · From another device",
+        "clipboard.remoteSourceApp": "Source: {source} · From another device",
         "clipboard.unknownApp": "Unknown app",
         "clipboard.emptyHistory": "Your clipboard is empty",
         "clipboard.emptyHistory.desc": "Copied text, images, and files will appear here.",

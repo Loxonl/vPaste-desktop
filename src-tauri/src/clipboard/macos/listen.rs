@@ -1,3 +1,4 @@
+use crate::clipboard::source_metadata::SourceMetadata;
 use crate::{
     app_runtime_dir, clipboard, config, CLIPBOARD_HISTORY_PAUSED, CLIPBOARD_IGNORE_NEXT_CHANGE,
 };
@@ -33,6 +34,8 @@ const HTML_PASTEBOARD_TYPES: &[&str] = &[
 ];
 const RTF_PASTEBOARD_TYPES: &[&str] =
     &["public.rtf", "Apple RTF pasteboard type", "NSRTFPboardType"];
+const SOURCE_PASTEBOARD_TYPE: &str = "org.nspasteboard.source";
+const SOURCE_METADATA_LIMIT: usize = 1024;
 const REMOTE_CLIPBOARD_TYPE: &str = "com.apple.is-remote-clipboard";
 const SENSITIVE_PASTEBOARD_TYPES: &[&str] = &[
     "org.nspasteboard.ConcealedType",
@@ -45,6 +48,13 @@ static APP_SOURCE_CACHE: OnceLock<Mutex<HashMap<String, AppSource>>> = OnceLock:
 struct AppSource {
     name: String,
     icon_path: String,
+    metadata: SourceMetadata,
+}
+
+impl AppSource {
+    fn capture_request(&self, queue_only: bool) -> clipboard::CaptureRequest {
+        clipboard::CaptureContext::from(queue_only).with_source(self.metadata.clone())
+    }
 }
 
 fn is_clipboard_history_paused() -> bool {
@@ -229,7 +239,7 @@ fn parse(_system_clipboard: &mut Clipboard, queue_only: bool) -> Result<Option<S
             text,
             &app_source.name,
             &app_source.icon_path,
-            queue_only,
+            app_source.capture_request(queue_only),
         ));
     }
 
@@ -254,11 +264,166 @@ fn should_capture_raster_image_before_file(
 }
 
 fn clipboard_app_source() -> AppSource {
-    if pasteboard_contains_type(REMOTE_CLIPBOARD_TYPE) {
-        info!("skip source app capture for remote synced clipboard item");
-        return AppSource::default();
+    let declared = unsafe {
+        let pasteboard: id = msg_send![class!(NSPasteboard), generalPasteboard];
+        declared_app_source(pasteboard)
+    };
+    clipboard_app_source_for(
+        pasteboard_contains_type(REMOTE_CLIPBOARD_TYPE),
+        declared.as_deref(),
+    )
+}
+
+fn clipboard_app_source_for(remote: bool, declared: Option<&str>) -> AppSource {
+    let mut source = match declared {
+        Some("") => AppSource::default(),
+        Some(bundle_id) => source_for_bundle_id(bundle_id),
+        None if remote => AppSource::default(),
+        None => foreground_app_source().unwrap_or_default(),
+    };
+    source.metadata.is_remote = remote;
+    source
+}
+
+// A present but empty/invalid declaration means unknown; it must never fall back
+// to the receiving Mac's frontmost application. Metadata cannot reject content.
+fn declared_app_source(pasteboard: id) -> Option<String> {
+    unsafe {
+        if pasteboard == nil {
+            return None;
+        }
+        let ns_type = NSString::alloc(nil).init_str(SOURCE_PASTEBOARD_TYPE);
+        let result = (|| {
+            if nsstring_array_contains(msg_send![pasteboard, types], SOURCE_PASTEBOARD_TYPE) {
+                return Some(source_declaration_value(pasteboard, ns_type));
+            }
+            let items: id = msg_send![pasteboard, pasteboardItems];
+            if items != nil {
+                let count: usize = msg_send![items, count];
+                for index in 0..count {
+                    let item: id = msg_send![items, objectAtIndex:index];
+                    if item != nil
+                        && nsstring_array_contains(msg_send![item, types], SOURCE_PASTEBOARD_TYPE)
+                    {
+                        return Some(source_declaration_value(item, ns_type));
+                    }
+                }
+            }
+            None
+        })();
+        let _: () = msg_send![ns_type, release];
+        result
     }
-    foreground_app_source().unwrap_or_default()
+}
+
+fn source_declaration_value(object: id, ns_type: id) -> String {
+    unsafe {
+        let data: id = msg_send![object, dataForType:ns_type];
+        if data == nil {
+            return String::new();
+        }
+        let len: usize = msg_send![data, length];
+        if len == 0 || len > SOURCE_METADATA_LIMIT {
+            return String::new();
+        }
+        let bytes: *const u8 = msg_send![data, bytes];
+        if bytes.is_null() {
+            return String::new();
+        }
+        parse_source_declaration(slice::from_raw_parts(bytes, len))
+    }
+}
+
+fn parse_source_declaration(bytes: &[u8]) -> String {
+    if bytes.len() > SOURCE_METADATA_LIMIT {
+        return String::new();
+    }
+    let value = std::str::from_utf8(bytes)
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches('\0');
+    if !value.contains('.')
+        || value.split('.').any(str::is_empty)
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.')
+    {
+        return String::new();
+    }
+    value.to_string()
+}
+
+fn source_for_bundle_id(bundle_id: &str) -> AppSource {
+    if let Some(source) = cached_app_source(bundle_id) {
+        return source;
+    }
+    let mut source = AppSource {
+        name: bundle_id.to_string(),
+        metadata: SourceMetadata {
+            bundle_id: bundle_id.to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    unsafe {
+        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        if workspace == nil {
+            return source;
+        }
+        let ns_id = NSString::alloc(nil).init_str(bundle_id);
+        let url: id = msg_send![workspace, URLForApplicationWithBundleIdentifier:ns_id];
+        let _: () = msg_send![ns_id, release];
+        if url == nil {
+            return source;
+        }
+        let path: id = msg_send![url, path];
+        if path == nil {
+            return source;
+        }
+        let bundle: id = msg_send![class!(NSBundle), bundleWithURL:url];
+        if bundle != nil {
+            for key in ["CFBundleDisplayName", "CFBundleName"] {
+                let ns_key = NSString::alloc(nil).init_str(key);
+                let name: id = msg_send![bundle, objectForInfoDictionaryKey:ns_key];
+                let _: () = msg_send![ns_key, release];
+                if let Some(name) = nsstring_to_string(name)
+                    .map(|name| clean_app_source(&name))
+                    .filter(|name| !name.is_empty())
+                {
+                    source.name = name;
+                    break;
+                }
+            }
+        }
+        let icon: id = msg_send![workspace, iconForFile:path];
+        source.icon_path = save_app_icon_png(icon, bundle_id).unwrap_or_default();
+    }
+    cache_app_source(bundle_id.to_string(), source.clone());
+    source
+}
+
+fn cached_app_source(key: &str) -> Option<AppSource> {
+    APP_SOURCE_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .and_then(|cache| {
+            cache
+                .get(key)
+                .filter(|source| {
+                    source.icon_path.is_empty() || PathBuf::from(&source.icon_path).is_file()
+                })
+                .cloned()
+        })
+}
+
+fn cache_app_source(key: String, source: AppSource) {
+    if let Ok(mut cache) = APP_SOURCE_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        cache.insert(key, source);
+    }
 }
 
 fn insert_file_if_present(app_source: &AppSource, queue_only: bool) -> Option<String> {
@@ -267,7 +432,12 @@ fn insert_file_if_present(app_source: &AppSource, queue_only: bool) -> Option<St
     };
 
     info!("New file clipboard content detected");
-    clipboard::capture_file_from_app(&files, &app_source.name, &app_source.icon_path, queue_only)
+    clipboard::capture_file_from_app(
+        &files,
+        &app_source.name,
+        &app_source.icon_path,
+        app_source.capture_request(queue_only),
+    )
 }
 
 fn read_text_content() -> Result<Option<String>, String> {
@@ -354,7 +524,7 @@ fn insert_rich_text_if_present(
             None,
             &app_source.name,
             &app_source.icon_path,
-            queue_only,
+            app_source.capture_request(queue_only),
         ));
     }
 
@@ -386,7 +556,7 @@ fn insert_image_if_present(
         "",
         &app_source.name,
         &app_source.icon_path,
-        queue_only,
+        app_source.capture_request(queue_only),
     ))
 }
 
@@ -472,33 +642,18 @@ fn foreground_app_source() -> Option<AppSource> {
             name.clone()
         };
 
-        if let Some(cached) = APP_SOURCE_CACHE
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .ok()
-            .and_then(|cache| {
-                cache
-                    .get(&cache_key)
-                    .filter(|source| {
-                        source.icon_path.is_empty() || PathBuf::from(&source.icon_path).is_file()
-                    })
-                    .cloned()
-            })
-        {
+        if let Some(cached) = cached_app_source(&cache_key) {
             return Some(cached);
         }
-
         let source = AppSource {
             icon_path: save_running_app_icon_png(app, &cache_key).unwrap_or_default(),
             name,
+            metadata: SourceMetadata {
+                is_remote: false,
+                bundle_id: bundle_identifier,
+            },
         };
-
-        if let Ok(mut cache) = APP_SOURCE_CACHE
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-        {
-            cache.insert(cache_key, source.clone());
-        }
+        cache_app_source(cache_key, source.clone());
 
         Some(source)
     }
@@ -516,6 +671,13 @@ fn running_app_bundle_path(app: id) -> Option<String> {
 }
 
 fn save_running_app_icon_png(app: id, cache_key: &str) -> Option<String> {
+    unsafe {
+        let icon: id = msg_send![app, icon];
+        save_app_icon_png(icon, cache_key)
+    }
+}
+
+fn save_app_icon_png(icon: id, cache_key: &str) -> Option<String> {
     let hash = stable_hash(cache_key);
     let cache_dir = PathBuf::from(app_runtime_dir(&["app_icons"]));
     if fs::create_dir_all(&cache_dir).is_err() {
@@ -528,7 +690,6 @@ fn save_running_app_icon_png(app: id, cache_key: &str) -> Option<String> {
     }
 
     let png = unsafe {
-        let icon: id = msg_send![app, icon];
         if icon == nil {
             return None;
         }
@@ -879,6 +1040,83 @@ fn rich_preview_text(html: Option<&[u8]>, rtf: Option<&[u8]>) -> Option<String> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn universal_clipboard_resolves_an_explicit_remote_source_app() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let previous = crate::GLOBAL_APP_DATA_DIR
+            .lock()
+            .unwrap()
+            .replace(root.path().to_string_lossy().into_owned());
+        objc::rc::autoreleasepool(|| {
+            let source = super::clipboard_app_source_for(true, Some("com.apple.finder"));
+            assert!(
+                !source.name.is_empty(),
+                "the remote source declaration was discarded"
+            );
+            assert!(
+                !source.icon_path.is_empty(),
+                "the installed source app has no icon"
+            );
+            assert!(source.metadata.is_remote);
+            assert_eq!(source.metadata.bundle_id, "com.apple.finder");
+            assert!(std::path::Path::new(&source.icon_path).starts_with(root.path()));
+            // The cached application identity must not leak the remote flag.
+            let local = super::clipboard_app_source_for(false, Some("com.apple.finder"));
+            assert!(!local.metadata.is_remote);
+        });
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() = previous;
+    }
+
+    #[test]
+    fn universal_clipboard_unknown_source_never_uses_the_receivers_foreground_app() {
+        for declared in [None, Some("")] {
+            let source = super::clipboard_app_source_for(true, declared);
+            assert!(source.metadata.is_remote);
+            assert!(source.name.is_empty());
+            assert!(source.icon_path.is_empty());
+            assert!(source.metadata.bundle_id.is_empty());
+        }
+        let unknown_local = super::clipboard_app_source_for(false, Some(""));
+        assert!(unknown_local.name.is_empty());
+        assert!(!unknown_local.metadata.is_remote);
+    }
+
+    #[test]
+    fn universal_clipboard_reads_declared_source_from_a_native_pasteboard() {
+        objc::rc::autoreleasepool(|| unsafe {
+            use cocoa::base::{id, nil};
+            use cocoa::foundation::NSString;
+            use objc::{class, msg_send, sel, sel_impl};
+            let board: id = msg_send![class!(NSPasteboard), pasteboardWithUniqueName];
+            assert_ne!(board, nil);
+            assert_eq!(super::declared_app_source(board), None);
+            let ns_type = NSString::alloc(nil).init_str(super::SOURCE_PASTEBOARD_TYPE);
+            let types: id = msg_send![class!(NSArray), arrayWithObject:ns_type];
+            for bytes in [
+                b"com.apple.finder".as_slice(),
+                b"",
+                b"/Applications/Unsafe.app",
+                &[0xff],
+                &vec![b'x'; 2048],
+            ] {
+                let _: isize = msg_send![board, declareTypes:types owner:nil];
+                let data: id =
+                    msg_send![class!(NSData), dataWithBytes:bytes.as_ptr() length:bytes.len()];
+                let ok: bool = msg_send![board, setData:data forType:ns_type];
+                assert!(ok);
+                let expected = if bytes == b"com.apple.finder" {
+                    "com.apple.finder"
+                } else {
+                    ""
+                };
+                assert_eq!(super::declared_app_source(board).as_deref(), Some(expected));
+            }
+            let _: () = msg_send![ns_type, release];
+            let _: () = msg_send![board, releaseGlobally];
+        });
+    }
+
     use super::{
         pasteboard_file_value_to_path, push_file_path, rich_preview_text,
         should_capture_raster_image_before_file,

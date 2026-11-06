@@ -150,6 +150,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     )?;
     if has_tables {
         validate_schema(conn)?;
+        crate::image_ocr::init_schema(conn)?;
         if version == 0 {
             conn.pragma_update(None, "user_version", HISTORY_SCHEMA_VERSION)?;
         }
@@ -242,6 +243,7 @@ create unique index if not exists hash on clipboard(hash);
     ";
     let transaction = conn.unchecked_transaction()?;
     transaction.execute_batch(sql)?;
+    crate::image_ocr::init_schema(&transaction)?;
     transaction.pragma_update(None, "user_version", HISTORY_SCHEMA_VERSION)?;
     transaction.commit()
 }

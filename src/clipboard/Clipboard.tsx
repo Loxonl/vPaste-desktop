@@ -1414,6 +1414,15 @@ export default function Clipboard() {
     }, []);
 
     useEffect(() => {
+        const unlisten = listen<string>("image-ocr-updated", () => {
+            if (searchWordRef.current.trim()) {
+                void fetchHistoryWith(searchWordRef.current, activeTabRef.current);
+            }
+        });
+        return () => { void unlisten.then(dispose => dispose()); };
+    }, []);
+
+    useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             suspendPointerSelection();
             hoverPreviewRef.current?.cancel();
@@ -1842,6 +1851,13 @@ export default function Clipboard() {
             onCreateRecordTag: openRecordTagCreateEditorForItem,
             onDelete: deleteClipboardItem,
             onEditText: openTextEditor,
+            onViewImageText: async item => {
+                setContextMenu(null);
+                hoverPreviewRef.current?.cancel();
+                previewRequestSeqRef.current += 1;
+                try { await invoke("show_image_text_window", { hash: item.getHash() }); }
+                catch { showToast(t("ocr.failed"), "error"); }
+            },
             onExportImage: exportImageItem,
             onOpenContainingFolder: openContainingFolder,
             onPastePlainText: pastePlainTextItem,

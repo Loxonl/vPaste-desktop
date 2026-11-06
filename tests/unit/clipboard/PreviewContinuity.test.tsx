@@ -33,6 +33,48 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("continuous preview session", () => {
+    it("commits the shared image-text window while OCR is loading and releases it on clear", async () => {
+        let finishOcr!: (result: { status: string; text: string; error: null }) => void;
+        const ocr = new Promise(resolve => { finishOcr = resolve; });
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "commit_preview_window") return true;
+            if (command === "recognize_image_text") return ocr;
+            return undefined;
+        });
+        render(<MotionTestProvider><Preview /></MotionTestProvider>);
+        emit("preview-item", { request_id: 1, item_type: "ImageText", content: "image" });
+        await screen.findByRole("dialog", { name: "ocr.title" }, { timeout: 4000 });
+        await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("commit_preview_window", expect.objectContaining({ requestId: 1 })));
+        expect(screen.getByText("ocr.recognizing")).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "preview.pin" })).not.toBeInTheDocument();
+        for (const key of [" ", "ArrowLeft", "ArrowRight", "Tab"]) fireEvent.keyDown(window, { key });
+        fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
+        expect(tauri.emitTo).not.toHaveBeenCalledWith("clipboard", "preview-navigate-selection", expect.anything());
+        expect(tauri.invoke).not.toHaveBeenCalledWith("hide_preview_window");
+        fireEvent.keyDown(window, { key: "Escape" });
+        expect(tauri.invoke).toHaveBeenCalledWith("hide_preview_window");
+        emit("preview-clear");
+        await act(async () => { finishOcr({ status: "complete", text: "stale result", error: null }); });
+        expect(screen.queryByText("stale result")).not.toBeInTheDocument();
+        emit("preview-item", text(2, "Ordinary preview"));
+        await waitFor(() => expect(screen.getByText("Ordinary preview").closest("[data-preview-phase]"))
+            .toHaveAttribute("data-preview-phase", "current"));
+        expect(screen.getByRole("button", { name: "preview.pin" })).toBeInTheDocument();
+    });
+
+    it("leaves text navigation and copy keys to the OCR field and closes through its primary action", async () => {
+        tauri.invoke.mockImplementation(async (command: string) => command === "commit_preview_window" ? true
+            : command === "recognize_image_text" ? { status: "complete", text: "中文 recognized text", error: null } : undefined);
+        render(<MotionTestProvider><Preview /></MotionTestProvider>);
+        emit("preview-item", { request_id: 1, item_type: "ImageText", content: "image" });
+        const field = await screen.findByRole("textbox", { name: "ocr.title" });
+        for (const key of ["ArrowLeft", "ArrowRight", "Tab", " "]) fireEvent.keyDown(field, { key });
+        expect(tauri.emitTo).not.toHaveBeenCalledWith("clipboard", "preview-navigate-selection", expect.anything());
+        expect(screen.getAllByRole("button")).toHaveLength(2);
+        await userEvent.click(screen.getByRole("button", { name: "common.close" }));
+        expect(tauri.invoke).toHaveBeenCalledWith("hide_preview_window");
+    });
+
     it.each(["never", "always"] as const)("clears pin and content before reusing the page (reduced motion: %s)", async reducedMotion => {
         const user = userEvent.setup();
         render(<MotionTestProvider reducedMotion={reducedMotion}><Preview /></MotionTestProvider>);

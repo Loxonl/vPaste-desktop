@@ -250,6 +250,17 @@ export default function GeneralSettings({ bridge, config, languages, t, onSave, 
                         )}
                     />
                     <SettingsRow
+                        labelId="settings-image-ocr-label"
+                        label={t("settings.imageOcr")}
+                        control={(
+                            <Switch
+                                checked={config.image_ocr_enabled}
+                                onChange={event => saveSetting({ ...config, image_ocr_enabled: event.target.checked }, "image text recognition")}
+                                inputProps={{ "aria-labelledby": "settings-image-ocr-label" }}
+                            />
+                        )}
+                    />
+                    <SettingsRow
                         labelId="settings-retain-search-label"
                         descriptionId="settings-retain-search-description"
                         label={t("settings.retainSearch")}

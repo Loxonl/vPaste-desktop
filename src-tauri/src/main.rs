@@ -64,6 +64,7 @@ mod config;
 mod dev_memory;
 mod history_store;
 mod history_views;
+mod image_ocr;
 mod image_preview;
 #[cfg(all(target_os = "macos", feature = "mac-app-store"))]
 mod mac_app_store;
@@ -4015,15 +4016,64 @@ fn preview_window_size(
     }
 }
 
+fn centered_preview_position(
+    bounds: ScreenBounds,
+    size: PreviewWindowSize,
+) -> LogicalPosition<f64> {
+    LogicalPosition {
+        x: bounds.x + (bounds.width - size.width) / 2.0,
+        y: bounds.y + (bounds.height - size.height) / 2.0,
+    }
+}
+
+#[cfg(test)]
+mod image_text_preview_tests {
+    use super::*;
+
+    #[test]
+    fn image_text_uses_text_preview_dimensions_and_centers_within_the_screen() {
+        for bounds in [
+            ScreenBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+                scale_factor: 1.0,
+            },
+            ScreenBounds {
+                x: -1280.0,
+                y: -200.0,
+                width: 1280.0,
+                height: 720.0,
+                scale_factor: 1.5,
+            },
+            ScreenBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 480.0,
+                height: 320.0,
+                scale_factor: 2.0,
+            },
+        ] {
+            let size = preview_window_size("ImageText", "image-hash", "", "", "", bounds);
+            let position = centered_preview_position(bounds, size);
+            assert!(size.width <= bounds.width * 0.8);
+            assert!(size.height <= bounds.height * 0.8);
+            assert_eq!(position.x + size.width / 2.0, bounds.x + bounds.width / 2.0);
+            assert_eq!(
+                position.y + size.height / 2.0,
+                bounds.y + bounds.height / 2.0
+            );
+        }
+    }
+}
+
 fn preview_position_avoiding_clipboard(
     app: &tauri::AppHandle,
     bounds: ScreenBounds,
     size: PreviewWindowSize,
 ) -> LogicalPosition<f64> {
-    let fallback = LogicalPosition {
-        x: bounds.x + (bounds.width - size.width) / 2.0,
-        y: bounds.y + (bounds.height - size.height) / 2.0,
-    };
+    let fallback = centered_preview_position(bounds, size);
 
     let Some(clipboard_window) = app.get_webview_window("clipboard") else {
         return fallback;
@@ -4303,8 +4353,11 @@ fn commit_preview_window(
         request_id,
         (prepared.payload.item_type == "Link").then_some(prepared.payload.content.as_str()),
     );
-    let focus_target =
-        preview_focus::commit_focus_target(prepared.mode.takes_focus(), cursor_in_preview);
+    let focus_target = preview_focus::commit_focus_target(
+        prepared.mode.takes_focus(),
+        cursor_in_preview,
+        prepared.payload.item_type == "ImageText",
+    );
     let from = current_preview_rect(&window, prepared.scale_factor)?;
     if visible
         && !reduced_motion
@@ -4400,7 +4453,9 @@ async fn show_preview_window(
         PREVIEW_HOVER.store(mode == PreviewMode::Hover, Ordering::SeqCst);
         if mode == PreviewMode::Manual {
             PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
-            PREVIEW_PINNED.store(false, Ordering::SeqCst);
+            // A reading surface stays open until Close/Escape and must not be
+            // replaced by selection-following or a hover preview.
+            PREVIEW_PINNED.store(item_type == "ImageText", Ordering::SeqCst);
         }
         request_id
     };
@@ -4412,7 +4467,12 @@ async fn show_preview_window(
     }
     let prepare_started = Instant::now();
     let bounds = clipboard_screen_bounds(&app, &window);
-    let preview_bounds = preview_bounds_avoiding_clipboard(&app, bounds);
+    let image_text = item_type == "ImageText";
+    let preview_bounds = if image_text {
+        bounds
+    } else {
+        preview_bounds_avoiding_clipboard(&app, bounds)
+    };
     // File materialization and thumbnail reads must not block the native event loop.
     let (payload, size) = tauri::async_runtime::spawn_blocking(move || {
         let (
@@ -4519,7 +4579,11 @@ async fn show_preview_window(
             now_millis().saturating_add(if mode == PreviewMode::Hover { 0 } else { 1800 }),
             Ordering::SeqCst,
         );
-        let position = preview_position_avoiding_clipboard(&app, bounds, size);
+        let position = if image_text {
+            centered_preview_position(bounds, size)
+        } else {
+            preview_position_avoiding_clipboard(&app, bounds, size)
+        };
         {
             let mut pending = PREVIEW_PENDING
                 .lock()
@@ -9006,6 +9070,7 @@ fn cleanup_legacy_autostart_entries() {}
 #[tauri::command]
 fn save_config(app: tauri::AppHandle, config: String) -> Result<SettingsSaveInfo, String> {
     let _cleanup = auto_cleanup::pause();
+    let _ocr_storage = image_ocr::storage_guard();
     let mut config_struct: Config =
         serde_json::from_str(&config).map_err(|err| format!("配置格式无效，无法保存：{}", err))?;
     #[cfg(not(target_os = "windows"))]
@@ -9100,10 +9165,14 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<SettingsSaveInfo
     clipboard::db::try_init().map_err(|err| err.to_string())?;
     let target_dir = history_storage_dir();
     if previous_history_dir != target_dir || !search::engine::is_ready() {
+        if previous_history_dir != target_dir {
+            image_ocr::resume_requested_jobs();
+        }
         if let Err(err) = rebuild_current_search_index() {
             error!("Failed to rebuild search index after changing history storage: {err}");
         }
     }
+    image_ocr::wake();
     auto_cleanup::request();
     Ok(SettingsSaveInfo {
         message: if registration_info.conflict || paste_queue_registration_info.conflict {
@@ -10102,6 +10171,26 @@ async fn set_history_viewport(
 #[tauri::command]
 fn close_history_view(view_id: String) {
     history_views::close(&view_id);
+}
+
+#[tauri::command]
+async fn show_image_text_window(app: tauri::AppHandle, hash: String) -> Result<(), String> {
+    show_preview_window(
+        app,
+        "ImageText".to_string(),
+        hash,
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+        Some(PreviewMode::Manual),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -11957,7 +12046,8 @@ fn record_text_history(content: String) {
     else {
         return;
     };
-    clipboard::insert_text(content);
+    let icon = clipboard::vpaste_source_icon_path().unwrap_or_default();
+    let _ = clipboard::insert_text_from_app(content, "vPaste", &icon);
 }
 
 fn recordable_text_history_content(content: String, paused: bool) -> Option<String> {
@@ -11966,7 +12056,62 @@ fn recordable_text_history_content(content: String, paused: bool) -> Option<Stri
 
 #[cfg(test)]
 mod record_text_history_tests {
-    use super::recordable_text_history_content;
+    use super::{clipboard, config, record_text_history, recordable_text_history_content};
+
+    fn seed() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        config::save(config::Config::default());
+        clipboard::db::init();
+        root
+    }
+
+    fn assert_vpaste_source(hash: &String) {
+        let (source, icon): (String, String) = clipboard::db::db()
+            .query_row(
+                "select app_source, app_icon_path from clipboard where hash = ?1",
+                [hash],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(source, "vPaste");
+        assert!(!icon.is_empty());
+        assert!(std::path::Path::new(&icon).is_file());
+        assert_eq!(Some(icon), clipboard::vpaste_source_icon_path());
+    }
+
+    #[test]
+    fn app_generated_full_and_selected_text_have_vpaste_source_and_icon() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let _root = seed();
+        for content in ["图片中的全部文字\n第二行", "选中的文字 🖼️"] {
+            record_text_history(content.to_string());
+            let hash = clipboard::calculate_xxhash64(content.as_bytes());
+            assert_vpaste_source(&hash);
+        }
+    }
+
+    #[test]
+    fn app_generated_recopy_updates_source_and_preserves_favorite_and_tags() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let _root = seed();
+        let content = "previously copied in browser";
+        let hash =
+            clipboard::insert_text_from_app(content.to_string(), "Chrome", "old-icon.png").unwrap();
+        clipboard::set_favorite(&hash, true).unwrap();
+        let tag = clipboard::create_tag("Keep").unwrap();
+        clipboard::assign_tag(&hash, tag.id).unwrap();
+
+        record_text_history(content.to_string());
+
+        assert_vpaste_source(&hash);
+        assert_eq!(clipboard::count_by_hash(&hash), 1);
+        let item = clipboard::try_get_by_hash(&hash).unwrap();
+        assert_eq!(item.label, 1);
+        assert_eq!(item.tags.len(), 1);
+        assert_eq!(item.tags[0].id, tag.id);
+    }
 
     #[test]
     fn explicit_copy_only_records_while_history_is_active() {
@@ -12957,6 +13102,9 @@ fn memory_profile_active() -> bool {
 }
 
 fn main() {
+    if image_ocr::worker::run_if_requested() {
+        return;
+    }
     #[cfg(debug_assertions)]
     match memory_profile::configure() {
         Ok(true) => return,
@@ -13431,6 +13579,7 @@ fn main() {
                 }
 
                 info!("Starting clipboard listener");
+                image_ocr::start(handle.clone());
                 listen::start(clipboard_window);
                 info!("Clipboard listener started");
                 if config.onboarding_completed && show_panel_on_startup {
@@ -13470,6 +13619,9 @@ fn main() {
             copy,
             copy_history_item,
             copy_history_record,
+            image_ocr::get_image_ocr,
+            image_ocr::recognize_image_text,
+            show_image_text_window,
             history_item_action_info,
             native_drag_history_file,
             record_text_history,
@@ -13618,6 +13770,9 @@ fn main() {
         .build(context)
         .expect("build vpaste failed")
         .run(|app, event| {
+            if matches!(&event, tauri::RunEvent::Exit) {
+                image_ocr::stop();
+            }
             #[cfg(not(target_os = "macos"))]
             let _ = (app, event);
 

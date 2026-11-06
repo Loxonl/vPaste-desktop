@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG, parseSettingsConfig } from "../../../src/config/settingsTypes";
 
 describe("parseSettingsConfig", () => {
+    it("enables OCR for old settings while preserving an explicit opt-out", () => {
+        expect(DEFAULT_CONFIG.image_ocr_enabled).toBe(true);
+        expect(parseSettingsConfig("{}").image_ocr_enabled).toBe(true);
+        expect(parseSettingsConfig('{"image_ocr_enabled":false}').image_ocr_enabled).toBe(false);
+    });
     it("uses automatic sizing for missing preferences and preserves existing manual sizes", () => {
         for (const clipboard_panel_size of [undefined, null, "extra_large", 0.8]) {
             expect(parseSettingsConfig(JSON.stringify({ clipboard_panel_size })).clipboard_panel_size).toBeNull();

@@ -947,6 +947,11 @@ fn search_index_session(keywords: &str) -> Result<engine::SearchSession, String>
 }
 
 pub(crate) fn stored_item_search_content(stored: &StoredItem) -> String {
+    let image_text = if stored.item_type == ItemType::Image.to_string() {
+        crate::image_ocr::cached_text(&stored.hash)
+    } else {
+        String::new()
+    };
     let content = if stored.item_type == ItemType::TextFile.to_string() {
         history_store::read_file(&stored.content)
             .ok()
@@ -960,6 +965,7 @@ pub(crate) fn stored_item_search_content(stored: &StoredItem) -> String {
         stored.preview_content.as_str(),
         stored.source.as_str(),
         stored.app_source.as_str(),
+        image_text.as_str(),
     ]
     .join("\n")
 }
@@ -2582,12 +2588,18 @@ fn captured_item_search_content(
     source: &str,
     app_source: &str,
 ) -> String {
+    let image_text = if item.item_type == ItemType::Image {
+        crate::image_ocr::cached_text(&item.hash)
+    } else {
+        String::new()
+    };
     [
         search_content,
         item.content.as_str(),
         item.preview_content.as_str(),
         source,
         app_source,
+        image_text.as_str(),
     ]
     .join("\n")
 }
@@ -3078,15 +3090,18 @@ fn insert_image_with_text_and_app_impl(
         tags: Vec::new(),
     };
     let hash = item.hash.clone();
-    store_captured_item(
+    let saved = store_captured_item(
         &item,
         text_content,
         text_content,
         app_source,
         app_icon_path,
         context,
-    )
-    .then_some(hash)
+    );
+    if saved {
+        crate::image_ocr::captured(&hash);
+    }
+    saved.then_some(hash)
 }
 
 #[allow(dead_code)]

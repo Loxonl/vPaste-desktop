@@ -312,3 +312,101 @@ fn text_items_and_unknown_hashes_cannot_be_submitted_for_image_recognition() {
     assert!(enqueue(&mut connection, "text", true, false).is_err());
     assert!(enqueue(&mut connection, "missing", true, false).is_err());
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_ocr_refreshes_legacy_results_lazily_and_reuses_corrected_results() {
+    let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+    let _root = seed();
+    image("legacy");
+    image("untouched");
+    let mut connection = clipboard::db::db();
+    connection.execute(
+        "INSERT INTO image_ocr(hash,clipboard_id,status,text,manual,requested_at,request_id)
+         SELECT hash,id,'complete','old fast-model output',0,1,1 FROM clipboard WHERE hash='legacy'",
+        [],
+    ).unwrap();
+    assert_eq!(
+        record(&connection, "legacy").unwrap().status,
+        "unrecognized"
+    );
+    let requested = enqueue(&mut connection, "legacy", true, false).unwrap();
+    assert_eq!(requested.status, "pending");
+    assert!(requested.text.is_empty());
+    let corrected = take_job(&mut connection, false).unwrap().unwrap();
+    drop(connection);
+    assert!(finish(&corrected, Ok("图片文字识别 Invoice 2048".into())).unwrap());
+    let mut connection = clipboard::db::db();
+    assert_eq!(
+        enqueue(&mut connection, "legacy", true, false)
+            .unwrap()
+            .status,
+        "complete"
+    );
+    assert!(take_job(&mut connection, true).unwrap().is_none());
+    assert_eq!(
+        record(&connection, "untouched").unwrap().status,
+        "unrecognized"
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT count(*) FROM image_ocr", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn macos_ocr_cache_version_migration_preserves_existing_rows_and_is_idempotent() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection.execute_batch(
+        "CREATE TABLE clipboard(id INTEGER PRIMARY KEY,hash TEXT);
+         CREATE TABLE image_ocr(hash TEXT PRIMARY KEY NOT NULL,clipboard_id INTEGER NOT NULL,
+         status TEXT NOT NULL,text TEXT NOT NULL DEFAULT '',error TEXT,
+         manual INTEGER NOT NULL DEFAULT 0,requested_at INTEGER NOT NULL,request_id INTEGER NOT NULL) STRICT;
+         INSERT INTO image_ocr VALUES('legacy',1,'complete','original cache',NULL,0,1,1);",
+    ).unwrap();
+    init_schema(&connection).unwrap();
+    init_schema(&connection).unwrap();
+    let row = connection
+        .query_row(
+            "SELECT text,engine_version,status FROM image_ocr WHERE hash='legacy'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(row, ("original cache".into(), 0, "complete".into()));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_ocr_resumes_pending_legacy_jobs_with_the_new_engine_version() {
+    let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+    let _root = seed();
+    image("pending");
+    let mut connection = clipboard::db::db();
+    connection
+        .execute(
+            "INSERT INTO image_ocr(hash,clipboard_id,status,text,manual,requested_at,request_id)
+         SELECT hash,id,'pending','legacy text',0,1,1 FROM clipboard WHERE hash='pending'",
+            [],
+        )
+        .unwrap();
+    let pending = take_job(&mut connection, true).unwrap().unwrap();
+    let running = record(&connection, "pending").unwrap();
+    assert_eq!(running.status, "running");
+    assert!(running.text.is_empty());
+    drop(connection);
+    assert!(finish(&pending, Ok("重新识别完成".into())).unwrap());
+    assert_eq!(
+        record(&clipboard::db::db(), "pending").unwrap().text,
+        "重新识别完成"
+    );
+}

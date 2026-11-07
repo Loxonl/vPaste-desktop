@@ -143,6 +143,28 @@ npm run dev:debug
 
 `dev:debug` runs the desktop app on Windows or macOS with development-only tutorial and test tools. On macOS, quit an existing vPaste instance first. `npm run dev` runs only the frontend and does not provide native clipboard integration.
 
+On macOS DEV, choose the main interface for that process:
+
+```sh
+npm run dev:debug -- --main-ui=native
+npm run dev:debug -- --main-ui=webview
+```
+
+Use the `--` separator shown above so npm forwards the option directly. The
+launcher also accepts npm's `npm_config_main_ui` option when npm consumes
+`--main-ui=native` before the separator. Explicit script arguments take priority.
+Startup prints the selected interface and forwarded app arguments. Changing the
+choice requires stopping the current `dev:debug` command and starting it again;
+frontend reloads or Rust rebuilds retain the current runner's startup arguments.
+
+Omitting `--main-ui` keeps the existing WebView interface. Native mode opens the
+experimental Swift/AppKit panel for startup, shortcuts and app/tray wake actions,
+without creating the main WebView or prewarming a preview WebView. Clipboard
+capture stays in Rust. Existing settings, preview, editor and OCR pages use
+WebViews only when explicitly opened. This does not persist a backend preference
+or enable the experiment in release/Windows builds. See the
+[native-panel notes](docs/open-source/testing/native-main-panel.md) for limits.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for checks, the [architecture guide](docs/open-source/architecture.md) for a source overview, and the [documentation index](docs/README.md) for platform and packaging details.
 
 ## Contributing

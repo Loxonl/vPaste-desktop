@@ -45,7 +45,8 @@ async fn run(app: tauri::AppHandle) -> Result<Value, String> {
             let source = settings.clone();
             crate::auxiliary_windows::on_main_thread(app.clone(), move || {
                 if preview {
-                    let panel = super::apply_preview(&handle, &source, size)?;
+                    let panel = super::apply_preview(&handle, &source, size)?
+                        .ok_or("The WebView layout probe requires --main-ui=webview")?;
                     crate::CLIPBOARD_VISIBLE.store(true, std::sync::atomic::Ordering::SeqCst);
                     crate::background_resources::set_visible(&handle, true);
                     let _ = panel.emit("window-show", Option::<Value>::None);

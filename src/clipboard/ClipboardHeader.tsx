@@ -15,6 +15,7 @@ import StarBorderOutlinedIcon from "@mui/icons-material/StarBorderOutlined";
 import SyncRoundedIcon from "@mui/icons-material/SyncRounded";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
+import ViewCarouselOutlinedIcon from "@mui/icons-material/ViewCarouselOutlined";
 import WindowOutlinedIcon from "@mui/icons-material/WindowOutlined";
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
@@ -208,6 +209,7 @@ type ClipboardHeaderActionsProps = {
     onOpenTestRoom: () => void;
     onOpenMemoryMonitor?: () => void;
     onOpenNativeWindow?: () => void;
+    onOpenNativePanel?: () => void;
     onOpenSettings: () => void;
     onRestartToUpdate?: () => void;
 };
@@ -234,6 +236,7 @@ export function ClipboardHeaderActions({
     onOpenTestRoom,
     onOpenMemoryMonitor,
     onOpenNativeWindow,
+    onOpenNativePanel,
     onOpenSettings,
     onRestartToUpdate,
 }: ClipboardHeaderActionsProps) {
@@ -323,6 +326,18 @@ export function ClipboardHeaderActions({
                     >
                         <MemoryOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
                     </ToolbarIconButton>
+                    {isMac && onOpenNativePanel && (
+                        <ButtonBase
+                            className={classes(styles, "settings-button developer-toolbar-button")}
+                            title={t("tutorial.debug.nativePanel")}
+                            aria-label={t("tutorial.debug.nativePanel")}
+                            data-keyboard-passthrough="true"
+                            onClick={onOpenNativePanel}
+                        >
+                            <ViewCarouselOutlinedIcon className={classes(styles, "settings-icon")} fontSize="inherit" />
+                            <span>{t("tutorial.debug.nativePanelLabel")}</span>
+                        </ButtonBase>
+                    )}
                     {onOpenNativeWindow && (
                         <ToolbarIconButton
                             className={classes(styles, "settings-button developer-toolbar-button developer-toolbar-icon-button")}

@@ -20,7 +20,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter};
 
 const READ_ATTEMPTS: usize = 3;
 const INITIAL_RETRY_DELAY_MS: u64 = 25;
@@ -69,7 +69,7 @@ fn is_ignored_app_source(app_source: &str) -> bool {
             .any(|source| source == app_source)
 }
 
-pub fn start(window: WebviewWindow) {
+pub fn start(app: AppHandle) {
     thread::spawn(move || {
         let mut system_clipboard = match autoreleasepool(Clipboard::new) {
             Ok(c) => c,
@@ -86,10 +86,10 @@ pub fn start(window: WebviewWindow) {
             // Cocoa returns autoreleased pasteboard, workspace, image, and data objects.
             // Drain them before this long-lived listener thread goes back to sleep.
             let captured = autoreleasepool(|| {
-                poll_clipboard_once(&window, &mut system_clipboard, &mut last_change_count)
+                poll_clipboard_once(&app, &mut system_clipboard, &mut last_change_count)
             });
             if let Some((hash, queue_only)) = captured {
-                emit_clipboard_event(&window, queue_only);
+                emit_clipboard_event(&app, queue_only);
                 if queue_only {
                     last_queue_state_emit = Some(Instant::now());
                 }
@@ -99,7 +99,7 @@ pub fn start(window: WebviewWindow) {
                     last.elapsed() >= Duration::from_millis(CLIPBOARD_POLL_INTERVAL_MS)
                 })
             {
-                crate::paste_queue::emit_state(window.app_handle());
+                crate::paste_queue::emit_state(&app);
                 last_queue_state_emit = Some(Instant::now());
             }
 
@@ -114,7 +114,7 @@ pub fn start(window: WebviewWindow) {
 }
 
 fn poll_clipboard_once(
-    window: &WebviewWindow,
+    app: &AppHandle,
     system_clipboard: &mut Clipboard,
     last_change_count: &mut isize,
 ) -> Option<(String, bool)> {
@@ -137,7 +137,7 @@ fn poll_clipboard_once(
 
     let start = Instant::now();
     let queue_only = crate::paste_queue::is_active();
-    if let Some(hash) = parse_with_retry(window, system_clipboard, queue_only) {
+    if let Some(hash) = parse_with_retry(app, system_clipboard, queue_only) {
         info!("clipboard parsed in {}ms", start.elapsed().as_millis());
         Some((hash, queue_only))
     } else {
@@ -147,7 +147,7 @@ fn poll_clipboard_once(
 }
 
 fn parse_with_retry(
-    window: &WebviewWindow,
+    app: &AppHandle,
     system_clipboard: &mut Clipboard,
     queue_only: bool,
 ) -> Option<String> {
@@ -157,10 +157,10 @@ fn parse_with_retry(
             Err(err) => {
                 if crate::clipboard_budget::is_limit_error(&err) {
                     error!("clipboard capture rejected: {err}");
-                    let _ = window.emit("clipboard-capture-rejected", ());
+                    let _ = app.emit("clipboard-capture-rejected", ());
                     if queue_only {
                         crate::paste_queue::set_error(None, err);
-                        crate::paste_queue::emit_state(window.app_handle());
+                        crate::paste_queue::emit_state(app);
                     }
                     return None;
                 }
@@ -560,11 +560,11 @@ fn insert_image_if_present(
     ))
 }
 
-fn emit_clipboard_event(window: &WebviewWindow, queue_only: bool) {
+fn emit_clipboard_event(app: &AppHandle, queue_only: bool) {
     if queue_only {
-        crate::paste_queue::emit_state(window.app_handle());
+        crate::paste_queue::emit_state(app);
     }
-    if let Err(e) = window.emit("listen_new_clipboard", ()) {
+    if let Err(e) = app.emit("listen_new_clipboard", ()) {
         error!("Failed to emit event: {}", e);
     }
 }

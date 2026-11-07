@@ -9,6 +9,9 @@
 #ifndef VPASTE_NATIVE_DEMO_BRIDGE_H
 #define VPASTE_NATIVE_DEMO_BRIDGE_H
 
+#ifdef __APPLE__
+#include "../native-panel/NativePanelBridge.h"
+#endif
 #include <stdbool.h>
 #include <stdint.h>
 

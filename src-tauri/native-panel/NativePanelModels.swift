@@ -1,0 +1,170 @@
+import AppKit
+
+struct PanelFrame: Decodable {
+  let x: Double
+  let y: Double
+  let width: Double
+  let height: Double
+  var rect: NSRect { NSRect(x: x, y: y, width: width, height: height) }
+}
+struct PanelConfiguration: Decodable {
+  let session: UInt64
+  let sizePreview: Bool
+  let language: String
+  let theme: String
+  let scale: Double
+  let mousePasteMode: String
+  let dockedFrame: PanelFrame?
+  let panelHeight: Double
+  let horizontalBleed: Double
+  let showDuration: Double
+  let hideDuration: Double
+  let showCurve: [Double]
+  let hideCurve: [Double]
+  var chinese: Bool { language == "Chinese" || language.hasPrefix("zh") }
+}
+struct PanelToken: Decodable {
+  let viewId: String
+  let revision: UInt64
+}
+struct PanelTag: Decodable {
+  let id: Int64
+  let name: String
+}
+struct PanelRef: Decodable {
+  let hash: String
+  let itemType: String
+  let time: UInt64
+  let label: UInt64
+  let appSource: String
+  let titleColor: String
+}
+struct PanelPage: Decodable {
+  let token: PanelToken
+  let pageIndex: Int
+  let startIndex: Int
+  let items: [PanelRef]
+  let knownCount: Int
+  let hasMore: Bool
+}
+struct PanelRun: Decodable {
+  let text: String
+  let bold: Bool
+  let italic: Bool
+  let underline: Bool
+  let mono: Bool
+  let color: String
+  let background: String
+  let size: Double
+  let image: String
+}
+struct PanelBlock: Decodable {
+  let runs: [PanelRun]
+  let rows: [[[PanelRun]]]
+}
+struct PanelCard: Decodable {
+  let hash: String
+  let itemType: String
+  let text: String
+  let source: String
+  let sourceIcon: String
+  let remote: Bool
+  let time: UInt64
+  let color: String
+  let favorite: Bool
+  let tags: [PanelTag]
+  let assetPath: String
+  let animationPath: String
+  let dimensions: String
+  let mediaWidth: Int
+  let mediaHeight: Int
+  let displayTitle: String
+  let displaySubtitle: String
+  let displaySymbol: String
+  let fileFormat: String
+  let isGif: Bool
+  let rich: [PanelBlock]
+}
+struct PanelCards: Decodable { let cards: [PanelCard] }
+
+func panelDecode<T: Decodable>(_ type: T.Type, _ value: Any) throws -> T {
+  try JSONDecoder().decode(type, from: JSONSerialization.data(withJSONObject: value))
+}
+func panelColor(_ raw: String) -> NSColor? {
+  let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  if value.hasPrefix("#") {
+    var hex = String(value.dropFirst())
+    if hex.count == 3 { hex = hex.map { "\($0)\($0)" }.joined() }
+    guard hex.count == 6, let rgb = UInt32(hex, radix: 16) else { return nil }
+    return NSColor(
+      srgbRed: CGFloat((rgb >> 16) & 255) / 255, green: CGFloat((rgb >> 8) & 255) / 255,
+      blue: CGFloat(rgb & 255) / 255, alpha: 1)
+  }
+  if value.hasPrefix("rgb") {
+    let numbers = value.components(separatedBy: CharacterSet(charactersIn: "0123456789.").inverted)
+      .compactMap(Double.init)
+    if numbers.count >= 3 {
+      return NSColor(
+        srgbRed: numbers[0] / 255, green: numbers[1] / 255,
+        blue: numbers[2] / 255, alpha: numbers.count > 3 ? numbers[3] : 1)
+    }
+  }
+  return [
+    "red": NSColor.systemRed, "blue": .systemBlue, "green": .systemGreen,
+    "black": .black, "white": .white, "gray": .gray, "orange": .systemOrange,
+    "yellow": .systemYellow, "purple": .systemPurple,
+  ][value]
+}
+
+@MainActor
+final class PanelBridge {
+  private let callbacks: VPastePanelCallbacks
+  let session: UInt64
+  private var next: UInt64 = 0
+  private var pending: [UInt64: (Result<Any, Error>) -> Void] = [:]
+  private(set) var closed = false
+  var changed: (() -> Void)?
+  init(_ callbacks: VPastePanelCallbacks, session: UInt64) {
+    self.callbacks = callbacks
+    self.session = session
+  }
+  func send(
+    _ op: String, _ args: [String: Any] = [:], completion: ((Result<Any, Error>) -> Void)? = nil
+  ) {
+    guard !closed else { return }
+    next &+= 1
+    var request = args
+    request["id"] = next
+    request["session"] = session
+    request["op"] = op
+    guard let data = try? JSONSerialization.data(withJSONObject: request) else { return }
+    if let completion { pending[next] = completion }
+    data.withUnsafeBytes { bytes in
+      callbacks.request(bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count)
+    }
+  }
+  func receive(_ value: [String: Any]) {
+    guard !closed, (value["session"] as? NSNumber)?.uint64Value == session else { return }
+    if value["event"] as? String == "changed" {
+      changed?()
+      return
+    }
+    guard let id = (value["id"] as? NSNumber)?.uint64Value,
+      let completion = pending.removeValue(forKey: id)
+    else { return }
+    if let error = value["error"] as? String {
+      completion(
+        .failure(NSError(domain: "vPaste", code: 1, userInfo: [NSLocalizedDescriptionKey: error])))
+    } else {
+      completion(.success(value["data"] ?? NSNull()))
+    }
+  }
+  func setKey(_ key: Bool) { callbacks.set_key(key) }
+  func close() {
+    guard !closed else { return }
+    send("close")
+    closed = true
+    pending.removeAll()
+    changed = nil
+  }
+}

@@ -1934,6 +1934,15 @@ export default function Clipboard() {
             .catch(e => error(`Failed to open memory monitor: ${e}`));
     };
 
+    const openNativePanel = () => {
+        if (!import.meta.env.DEV || !developerMode || !isMacPlatform()) return;
+        void invoke("open_native_main_panel", { languageCode, theme: getResolvedTheme() })
+            .catch(e => {
+                error(`Failed to open native main panel: ${e}`);
+                showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
+            });
+    };
+
     const openNativeWindow = () => {
         if (!import.meta.env.DEV || !developerMode) return;
         void invoke("open_native_demo_window")
@@ -2170,6 +2179,7 @@ export default function Clipboard() {
                     onOpenTestRoom={openTestRoom}
                     onOpenMemoryMonitor={openMemoryMonitor}
                     onOpenNativeWindow={openNativeWindow}
+                    onOpenNativePanel={openNativePanel}
                     onOpenSettings={tutorialActive ? blockTutorialNavigation : openConfigWindow}
                     updateReadyVersion={updateEntryVisible(updateState) ? updateState.availableVersion || "" : null}
                     updateInstalling={updateState.status === "installing"}

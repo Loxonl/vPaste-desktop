@@ -1,0 +1,631 @@
+//! macOS DEV AppKit panel. The optional --main-ui=native route uses it without
+//! creating a main WebView. Owns one bounded history view, separately from Main.
+mod rich_text;
+
+use crate::{
+    clipboard::{self, item::ItemType},
+    history_views::{self, HistoryQuery, ViewOwner},
+    media_resources::{self, MediaIntent},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Mutex, OnceLock,
+};
+use tauri::{AppHandle, Emitter, Listener, Manager};
+
+#[repr(C)]
+struct Callbacks {
+    abi_version: u32,
+    request: unsafe extern "C" fn(*const u8, usize),
+    set_key: extern "C" fn(bool),
+}
+extern "C" {
+    fn vpaste_native_panel_show(callbacks: *const Callbacks, config: *const u8, length: usize);
+    fn vpaste_native_panel_receive(response: *const u8, length: usize);
+    fn vpaste_native_panel_close(animated: bool);
+    fn vpaste_native_panel_activate(toggle: bool) -> bool;
+}
+static CALLBACKS: Callbacks = Callbacks {
+    abi_version: 1,
+    request,
+    set_key,
+};
+static APP: OnceLock<AppHandle> = OnceLock::new();
+static SESSION: AtomicU64 = AtomicU64::new(0);
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+static KEY: AtomicBool = AtomicBool::new(false);
+static LISTENERS: Mutex<Vec<tauri::EventId>> = Mutex::new(Vec::new());
+static ACTION: AtomicBool = AtomicBool::new(false);
+static WORK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+static CLOSED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+extern "C" fn set_key(key: bool) {
+    KEY.store(key, Ordering::Release);
+}
+pub(crate) fn is_key_window() -> bool {
+    KEY.load(Ordering::Acquire)
+}
+fn current(session: u64) -> bool {
+    ACTIVE.load(Ordering::Acquire) && SESSION.load(Ordering::Acquire) == session
+}
+fn dispose() {
+    ACTIVE.store(false, Ordering::Release);
+    KEY.store(false, Ordering::Release);
+    SESSION.fetch_add(1, Ordering::AcqRel);
+    history_views::close_native();
+    CLOSED.notify_waiters();
+    if let Some(app) = APP.get() {
+        for id in LISTENERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+        {
+            app.unlisten(id);
+        }
+    }
+    if std::env::args().any(|arg| arg == "--native-panel-check") {
+        eprintln!(
+            "[native-panel] disposed nativeViews={} listeners={}",
+            history_views::native_view_count(),
+            LISTENERS.lock().unwrap_or_else(|e| e.into_inner()).len()
+        );
+    }
+}
+
+// Called only inside show's AppKit-thread closure. Cocoa coordinates avoid
+// monitor-origin / DPI conversion and retain the main panel's horizontal bleed.
+fn main_docked_frame(app: &AppHandle) -> Option<Value> {
+    use cocoa::{base::id, foundation::NSRect};
+    use objc::{msg_send, sel, sel_impl};
+
+    if !crate::CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+        || crate::CLIPBOARD_HIDING.load(Ordering::SeqCst)
+    {
+        return None;
+    }
+    let window = app.get_webview_window("clipboard")?;
+    let native = window.ns_window().ok()? as id;
+    // SAFETY: main thread; Tauri owns the live NSWindow for this scope.
+    let frame: NSRect = unsafe { msg_send![native, frame] };
+    Some(json!({"x":frame.origin.x,"y":frame.origin.y,
+        "width":frame.size.width,"height":frame.size.height}))
+}
+
+pub(crate) fn show(app: AppHandle, language: String, theme: String) -> Result<(), String> {
+    present(app, language, theme, false)
+}
+
+pub(crate) fn show_default(app: AppHandle) -> Result<(), String> {
+    let config = crate::config::get();
+    present(app, config.multilingual, config.theme_mode, false)
+}
+
+pub(crate) fn toggle(app: AppHandle) -> Result<(), String> {
+    let config = crate::config::get();
+    present(app, config.multilingual, config.theme_mode, true)
+}
+
+pub(crate) fn close_preview(app: &AppHandle) -> Result<(), String> {
+    app.run_on_main_thread(|| {
+        // SAFETY: AppKit thread; a size preview closes without stealing focus.
+        unsafe { vpaste_native_panel_close(false) };
+    })
+    .map_err(|error| error.to_string())
+}
+
+fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Result<(), String> {
+    if !crate::get_developer_mode() {
+        return Err("Native panel requires --dev-mode".into());
+    }
+    APP.get_or_init(|| app.clone());
+    app.clone()
+        .run_on_main_thread(move || {
+            let preview = crate::panel_size::is_previewing();
+            // SAFETY: AppKit owns the controller. A normal wake focuses the
+            // current surface; a shortcut toggles it. Size changes recreate it.
+            if !preview && unsafe { vpaste_native_panel_activate(toggle) } {
+                return;
+            }
+            dispose();
+            crate::record_foreground_app_before_clipboard();
+            let session = SESSION.fetch_add(1, Ordering::AcqRel) + 1;
+            ACTIVE.store(true, Ordering::Release);
+            for name in [
+                "listen_new_clipboard",
+                "clipboard-item-edited",
+                "item-tags-changed",
+                "clipboard-resources-updated",
+            ] {
+                let id = app.listen(name, move |_| deliver(session, json!({"event":"changed"})));
+                LISTENERS.lock().unwrap_or_else(|e| e.into_inner()).push(id);
+            }
+            let config = crate::config::get();
+            let monitor = crate::target_main_monitor(&app);
+            crate::panel_size::use_configured_size(monitor.as_ref());
+            if let Some(monitor) = monitor.as_ref() {
+                media_resources::set_capture_scale_factor(monitor.scale_factor());
+            }
+            let scale = crate::panel_size::scale();
+            let bytes = serde_json::to_vec(&json!({
+                "session": session,
+                "sizePreview": preview,
+                "language": language,
+                "theme": theme,
+                "scale": scale,
+                "mousePasteMode": config.mouse_paste_mode,
+                "dockedFrame": main_docked_frame(&app),
+                "panelHeight": crate::CLIPBOARD_WINDOW_HEIGHT * scale,
+                "horizontalBleed": crate::CLIPBOARD_HORIZONTAL_BLEED,
+                "showDuration": crate::panel_animation::model::SHOW_DURATION_MS,
+                "hideDuration": crate::panel_animation::model::HIDE_DURATION_MS,
+                "showCurve": crate::panel_animation::model::Animation::Show.easing(),
+                "hideCurve": crate::panel_animation::model::Animation::Hide.easing(),
+            }))
+            .unwrap_or_default();
+            // SAFETY: AppKit thread; both borrowed buffers are copied by Swift.
+            unsafe { vpaste_native_panel_show(&CALLBACKS, bytes.as_ptr(), bytes.len()) };
+            if std::env::args().any(|arg| arg == "--native-panel-check") {
+                let mut labels = app.webview_windows().into_keys().collect::<Vec<_>>();
+                labels.sort();
+                eprintln!(
+                    "[native-panel] nativeDefault={} webviews={labels:?}",
+                    crate::main_panel_mode::native()
+                );
+            }
+        })
+        .map_err(|e| e.to_string())
+}
+
+fn deliver(session: u64, mut value: Value) {
+    let Some(app) = APP.get() else {
+        return;
+    };
+    value["session"] = json!(session);
+    let Ok(bytes) = serde_json::to_vec(&value) else {
+        return;
+    };
+    let _ = app.run_on_main_thread(move || {
+        if current(session) {
+            // SAFETY: main thread, Swift copies this borrowed slice before return.
+            unsafe { vpaste_native_panel_receive(bytes.as_ptr(), bytes.len()) };
+        }
+    });
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Request {
+    id: u64,
+    session: u64,
+    op: String,
+    #[serde(default)]
+    keywords: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    view_id: String,
+    #[serde(default)]
+    revision: u64,
+    #[serde(default)]
+    page: usize,
+    #[serde(default)]
+    start: usize,
+    #[serde(default)]
+    end: usize,
+    #[serde(default)]
+    hashes: Vec<String>,
+    #[serde(default)]
+    hash: String,
+    #[serde(default)]
+    plain: bool,
+    #[serde(default)]
+    favorite: bool,
+    #[serde(default = "card_width")]
+    width: u32,
+}
+fn card_width() -> u32 {
+    480
+}
+
+unsafe extern "C" fn request(bytes: *const u8, length: usize) {
+    if bytes.is_null() || length == 0 || length > 64 * 1024 {
+        return;
+    }
+    // SAFETY: caller owns this byte slice until this callback returns.
+    let Ok(req) =
+        serde_json::from_slice::<Request>(unsafe { std::slice::from_raw_parts(bytes, length) })
+    else {
+        return;
+    };
+    if !crate::get_developer_mode() || !current(req.session) {
+        return;
+    }
+    if req.op == "close" {
+        dispose();
+        return;
+    }
+    let open = if req.op == "open" {
+        history_views::reserve_native_open()
+    } else {
+        0
+    };
+    let Some(app) = APP.get().cloned() else {
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        let Ok(_permit) = WORK.acquire().await else {
+            return;
+        };
+        if !current(req.session) {
+            return;
+        }
+        let result = dispatch(&app, &req, open).await;
+        match result {
+            Ok(data) => deliver(req.session, json!({"id":req.id,"op":req.op,"data":data})),
+            Err(error) => deliver(req.session, json!({"id":req.id,"op":req.op,"error":error})),
+        }
+    });
+}
+
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())?
+}
+async fn begin_close(app: &AppHandle) -> Result<(), String> {
+    crate::auxiliary_windows::on_main_thread(app.clone(), || {
+        // SAFETY: dispatched to AppKit. Completion disposes the native query.
+        unsafe { vpaste_native_panel_close(true) };
+        Ok(())
+    })
+    .await
+}
+
+async fn close_for_action(app: &AppHandle) -> Result<(), String> {
+    let session = SESSION.load(Ordering::Acquire);
+    // Register before scheduling the close; reduced motion can finish in that
+    // same main-thread turn. Auxiliary windows open after the panel is gone.
+    let closed = CLOSED.notified();
+    tokio::pin!(closed);
+    closed.as_mut().enable();
+    begin_close(app).await?;
+    if current(session) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), closed)
+            .await
+            .map_err(|_| "Native panel did not finish closing".to_string())?;
+    }
+    Ok(())
+}
+
+async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, String> {
+    let hash = r.hash.clone();
+    match r.op.as_str() {
+        "open" => {
+            let query = HistoryQuery {
+                keywords: r.keywords.clone(),
+                label: r.label.clone(),
+            };
+            let page = blocking(move || {
+                history_views::open_for_owner(query, 0, open, ViewOwner::NativeExperiment)
+            })
+            .await?;
+            if !current(r.session) {
+                history_views::close(&page.token.view_id);
+                return Err("panel closed".into());
+            }
+            serde_json::to_value(page).map_err(|e| e.to_string())
+        }
+        "page" => {
+            let (id, revision, page) = (r.view_id.clone(), r.revision, r.page);
+            let page = blocking(move || history_views::read_page(&id, revision, page)).await?;
+            serde_json::to_value(page).map_err(|e| e.to_string())
+        }
+        "cards" => {
+            history_views::validate_native(&r.view_id, r.revision)?;
+            if r.hashes.len() > 24 {
+                return Err("too many cards".into());
+            }
+            let mut cards = Vec::new();
+            for hash in &r.hashes {
+                if !current(r.session) {
+                    break;
+                }
+                history_views::validate_native(&r.view_id, r.revision)?;
+                let hash = hash.clone();
+                let width = r.width;
+                if let Ok(card) = blocking(move || display_card(&hash, width)).await {
+                    cards.push(card);
+                }
+            }
+            Ok(json!({"cards":cards}))
+        }
+        "viewport" => {
+            let (id, revision, start, end) = (r.view_id.clone(), r.revision, r.start, r.end);
+            blocking(move || history_views::set_viewport(&id, revision, start, end)).await?;
+            Ok(Value::Null)
+        }
+        "copy" | "paste" => {
+            if ACTION.swap(true, Ordering::AcqRel) {
+                return Err("Another clipboard action is running".into());
+            }
+            struct Reset;
+            impl Drop for Reset {
+                fn drop(&mut self) {
+                    ACTION.store(false, Ordering::Release);
+                }
+            }
+            let _reset = Reset;
+            let info = crate::history_item_action_info(hash.clone()).await?;
+            if !info.missing_paths.is_empty() {
+                return Err(format!("Source file missing: {}", info.missing_paths[0]));
+            }
+            crate::copy_history_record(app.clone(), hash.clone(), r.plain).await?;
+            if r.op == "paste" {
+                let allowed = crate::check_paste_accessibility_permission().granted;
+                // As in the original main panel, focus restoration/paste runs
+                // alongside the hide animation instead of adding its duration.
+                begin_close(app).await?;
+                let handle = app.clone();
+                crate::auxiliary_windows::on_main_thread(handle.clone(), move || {
+                    if let Some(window) = handle.get_webview_window("clipboard") {
+                        crate::hide_clipboard_window(&window);
+                    }
+                    Ok(())
+                })
+                .await?;
+                if allowed {
+                    let result = blocking(move || crate::paste(&hash, None, None)).await;
+                    if result.is_err() {
+                        let _ = crate::show_paste_fallback_notice(app.clone()).await;
+                    }
+                    result?;
+                } else {
+                    crate::restore_foreground_app();
+                    let _ = crate::show_paste_fallback_notice(app.clone()).await;
+                }
+            }
+            Ok(json!({"copied":true}))
+        }
+        "favorite" => {
+            let favorite = r.favorite;
+            blocking(move || crate::set_item_favorite(hash, favorite)).await?;
+            app.emit("listen_new_clipboard", ())
+                .map_err(|e| e.to_string())?;
+            Ok(Value::Null)
+        }
+        "delete" => {
+            let worker_app = app.clone();
+            blocking(move || crate::delete_clipboard_item(worker_app, hash)).await?;
+            app.emit("listen_new_clipboard", ())
+                .map_err(|e| e.to_string())?;
+            Ok(Value::Null)
+        }
+        "settings" => {
+            let source = app.get_webview_window("clipboard");
+            close_for_action(app).await?;
+            crate::open_config_window_from_source(app.clone(), source, None).await?;
+            Ok(Value::Null)
+        }
+        "preview" => {
+            let h = hash.clone();
+            let item = blocking(move || clipboard::history_action_item(&h)).await?;
+            close_for_action(app).await?;
+            crate::show_preview_window(
+                app.clone(),
+                item.item_type.to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                None,
+                None,
+                None,
+                None,
+                Some(hash),
+                None,
+            )
+            .await?;
+            Ok(Value::Null)
+        }
+        "edit" => {
+            close_for_action(app).await?;
+            crate::open_text_editor_window(app.clone(), hash).await?;
+            Ok(Value::Null)
+        }
+        "ocr" => {
+            close_for_action(app).await?;
+            crate::show_image_text_window(app.clone(), hash).await?;
+            Ok(Value::Null)
+        }
+        "drag" => {
+            let value = blocking(move || {
+                let item = clipboard::history_action_item(&hash)?;
+                let paths = if matches!(item.item_type, ItemType::File | ItemType::Image) {
+                    crate::history_drag_paths(&hash)?
+                } else {
+                    Vec::new()
+                };
+                let text = if item.item_type == ItemType::TextFile {
+                    clipboard::plain_text_content(&hash)?
+                } else {
+                    item.text_content.clone()
+                };
+                let html = clipboard::history_card_payload(&hash, true)?.item.rich_html;
+                Ok(json!({"paths":paths,"text":text,"html":html}))
+            })
+            .await?;
+            Ok(value)
+        }
+        _ => Err("Unknown native panel action".into()),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Card {
+    hash: String,
+    item_type: String,
+    text: String,
+    source: String,
+    source_icon: String,
+    remote: bool,
+    time: u64,
+    color: String,
+    favorite: bool,
+    tags: Vec<clipboard::item::ItemTag>,
+    asset_path: String,
+    animation_path: String,
+    dimensions: String,
+    media_width: u32,
+    media_height: u32,
+    display_title: String,
+    display_subtitle: String,
+    display_symbol: String,
+    file_format: String,
+    is_gif: bool,
+    rich: Vec<rich_text::Block>,
+}
+fn bounded(s: &str) -> String {
+    s.chars().take(16_384).collect()
+}
+fn display_card(hash: &str, width: u32) -> Result<Card, String> {
+    let payload = clipboard::history_card_payload(hash, false)?;
+    let item = payload.item;
+    let mut asset_path = String::new();
+    let mut animation_path = String::new();
+    let mut dimensions = String::new();
+    let mut is_gif = false;
+    let mut media_width = 0;
+    let mut media_height = 0;
+    let file_info = if item.item_type == ItemType::File {
+        crate::build_file_preview_info(item.content.clone()).ok()
+    } else {
+        None
+    };
+    let link: Vec<_> = if item.item_type == ItemType::Link {
+        item.content.split("|||").collect()
+    } else {
+        Vec::new()
+    };
+    let path = match item.item_type {
+        ItemType::Image => Some(item.preview_content.clone()),
+        ItemType::File => file_info
+            .as_ref()
+            .filter(|v| v.kind == "single-preview")
+            .map(|v| v.preview_path.clone()),
+        ItemType::Link => link
+            .get(1)
+            .filter(|path| std::path::Path::new(**path).is_absolute())
+            .map(|path| path.to_string()),
+        _ => None,
+    };
+    if let Some(path) = path.filter(|s| !s.is_empty()) {
+        // This worker uses the same Rust disk thumbnails as the main WebView.
+        let media = tauri::async_runtime::block_on(media_resources::resolve_for_card_width(
+            path.clone(),
+            MediaIntent::Card,
+            false,
+            width,
+        ));
+        if let Ok(media) = media {
+            dimensions = format!("{} × {}", media.metadata.width, media.metadata.height);
+            media_width = media.metadata.width;
+            media_height = media.metadata.height;
+            asset_path = media.asset_path;
+            is_gif = media.metadata.is_gif;
+            if media.metadata.is_gif && !media.metadata.animation_limited {
+                animation_path = path;
+            }
+        }
+    }
+    let text = match item.item_type {
+        ItemType::TextFile => clipboard::plain_text_preview(hash)
+            .map(|p| p.text)
+            .unwrap_or_default(),
+        ItemType::File => crate::parse_file_clipboard_content(&item.content)
+            .unwrap_or_default()
+            .join("\n"),
+        ItemType::Link => item.content.replace("|||", "\n"),
+        _ => {
+            if item.text_content.is_empty() {
+                item.content.clone()
+            } else {
+                item.text_content.clone()
+            }
+        }
+    };
+    let (display_title, display_subtitle, display_symbol, file_format) =
+        if let Some(info) = &file_info {
+            let name = info
+                .paths
+                .first()
+                .and_then(|path| std::path::Path::new(path).file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| info.display_path.clone());
+            (
+                name,
+                info.display_path.clone(),
+                if info.paths.len() > 1 {
+                    "doc.on.doc"
+                } else if info.contains_directories {
+                    "folder.fill"
+                } else {
+                    "doc.fill"
+                }
+                .to_string(),
+                info.extension
+                    .chars()
+                    .take(8)
+                    .collect::<String>()
+                    .to_uppercase(),
+            )
+        } else if item.item_type == ItemType::Link {
+            let url = link.first().copied().unwrap_or_default();
+            let title = link
+                .get(2)
+                .filter(|title| !title.is_empty())
+                .map(|title| title.to_string())
+                .unwrap_or_else(|| {
+                    tauri::Url::parse(url)
+                        .ok()
+                        .and_then(|url| url.host_str().map(str::to_string))
+                        .unwrap_or_else(|| url.to_string())
+                });
+            (title, url.to_string(), "link".to_string(), String::new())
+        } else {
+            (String::new(), String::new(), String::new(), String::new())
+        };
+    let rich = payload
+        .rich_render
+        .as_ref()
+        .map(rich_text::convert)
+        .unwrap_or_default();
+    Ok(Card {
+        hash: item.hash,
+        item_type: item.item_type.to_string(),
+        text: bounded(&text),
+        source: item.app_source,
+        source_icon: item.app_icon_path,
+        remote: item.source_metadata.is_remote,
+        time: item.time,
+        color: item.title_color,
+        favorite: item.label & 1 != 0,
+        tags: item.tags,
+        asset_path,
+        animation_path,
+        dimensions,
+        media_width,
+        media_height,
+        display_title: bounded(&display_title),
+        display_subtitle: bounded(&display_subtitle),
+        display_symbol,
+        file_format,
+        is_gif,
+        rich,
+    })
+}

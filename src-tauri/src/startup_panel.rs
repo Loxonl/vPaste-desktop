@@ -51,7 +51,10 @@ fn show_if_ready(app: &AppHandle, ready: bool, requested: bool) -> Result<(), St
         let mut panel = PANEL.lock().unwrap();
         panel.ready |= ready;
         panel.requested |= requested;
-        (panel.take_show(), panel.take_preview_warmup())
+        (
+            panel.take_show(),
+            !crate::main_panel_mode::native() && panel.take_preview_warmup(),
+        )
     };
     let result = if show {
         crate::show_main_panel_for_app(app)
@@ -65,7 +68,8 @@ fn show_if_ready(app: &AppHandle, ready: bool, requested: bool) -> Result<(), St
 }
 
 pub fn request_show(app: &AppHandle) -> Result<(), String> {
-    show_if_ready(app, false, true)
+    // Native AppKit creation does not need a frontend readiness acknowledgement.
+    show_if_ready(app, crate::main_panel_mode::native(), true)
 }
 
 #[tauri::command]

@@ -68,6 +68,7 @@ mod image_ocr;
 mod image_preview;
 #[cfg(all(target_os = "macos", feature = "mac-app-store"))]
 mod mac_app_store;
+mod main_panel_mode;
 mod maintenance;
 mod media_resources;
 #[cfg(debug_assertions)]
@@ -78,6 +79,8 @@ mod native_demo;
 mod native_drag_preview;
 #[cfg(target_os = "macos")]
 mod native_drag_snapshot;
+#[cfg(all(debug_assertions, target_os = "macos"))]
+mod native_panel;
 #[cfg(any(test, debug_assertions))]
 mod office_test_fixtures;
 mod panel_animation;
@@ -308,10 +311,39 @@ fn open_native_demo_window(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn open_native_main_panel(
+    app: tauri::AppHandle,
+    language_code: String,
+    theme: String,
+) -> Result<(), String> {
+    if !get_developer_mode() {
+        return Err("Native main panel requires a Debug build with --dev-mode".into());
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    {
+        native_panel::show(app, language_code, theme)
+    }
+    #[cfg(not(all(debug_assertions, target_os = "macos")))]
+    {
+        let _ = (app, language_code, theme);
+        Err("Native main panel is only available on macOS DEV".into())
+    }
+}
+
 fn native_demo_window_active() -> bool {
     #[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]
     {
-        native_demo::is_key_window()
+        native_demo::is_key_window() || {
+            #[cfg(target_os = "macos")]
+            {
+                native_panel::is_key_window()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                false
+            }
+        }
     }
     #[cfg(not(all(debug_assertions, any(target_os = "macos", target_os = "windows"))))]
     {
@@ -1050,12 +1082,32 @@ fn center_window_on_source_monitor(
     } else {
         None
     };
-    let Some(monitor) = select_auxiliary_monitor(
-        use_last_clipboard_monitor,
-        last_clipboard_monitor,
-        source_monitor,
-        target_clipboard_monitor(source_window),
-    ) else {
+    center_window_on_monitor(
+        window,
+        select_auxiliary_monitor(
+            use_last_clipboard_monitor,
+            last_clipboard_monitor,
+            source_monitor,
+            target_clipboard_monitor(source_window),
+        ),
+    )
+}
+
+fn target_main_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
+    cursor_physical_position()
+        .and_then(|position| {
+            app.monitor_from_point(position.x as f64, position.y as f64)
+                .ok()
+                .flatten()
+        })
+        .or_else(|| app.primary_monitor().ok().flatten())
+}
+
+fn center_window_on_monitor(
+    window: &tauri::WebviewWindow,
+    monitor: Option<tauri::Monitor>,
+) -> Result<(), String> {
+    let Some(monitor) = monitor else {
         return window.center().map_err(|err| err.to_string());
     };
     let current_scale_factor = window.scale_factor().map_err(|err| err.to_string())?;
@@ -2619,6 +2671,14 @@ async fn open_config_window(
     source_window: tauri::WebviewWindow,
     target: Option<String>,
 ) -> Result<(), String> {
+    open_config_window_from_source(app, Some(source_window), target).await
+}
+
+async fn open_config_window_from_source(
+    app: tauri::AppHandle,
+    source_window: Option<tauri::WebviewWindow>,
+    target: Option<String>,
+) -> Result<(), String> {
     info!("Opening config window");
     let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::Config).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
@@ -2627,7 +2687,11 @@ async fn open_config_window(
         let _ = window.set_always_on_top(false);
         let _ = window.set_title("vPaste设置");
         apply_vpaste_window_icon(&window);
-        center_window_on_source_monitor(&window, &source_window)?;
+        if let Some(source) = source_window.as_ref() {
+            center_window_on_source_monitor(&window, source)?;
+        } else {
+            center_window_on_monitor(&window, target_main_monitor(&app))?;
+        }
         if let Some(clipboard_window) = app.get_webview_window("clipboard") {
             let _ = finish_hide_window(&clipboard_window);
         }
@@ -2694,13 +2758,19 @@ fn close_test_room_window(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 async fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String> {
-    let clipboard_window = app
-        .get_webview_window("clipboard")
-        .ok_or_else(|| "clipboard window not found".to_string())?;
+    let clipboard_window = app.get_webview_window("clipboard");
     let notice_window =
         auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::PasteFallbackNotice).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
-        let bounds = screen_bounds(&clipboard_window);
+        let bounds = clipboard_window
+            .as_ref()
+            .map(screen_bounds)
+            .unwrap_or_else(|| {
+                target_main_monitor(&app)
+                    .as_ref()
+                    .map(screen_bounds_from_monitor)
+                    .unwrap_or_else(default_screen_bounds)
+            });
         let text_scale = ui_text_scale::current();
         let size =
             ui_text_scale::logical_size(PASTE_FALLBACK_NOTICE_WIDTH, PASTE_FALLBACK_NOTICE_HEIGHT);
@@ -2972,6 +3042,9 @@ fn mark_onboarding_completed(app: &tauri::AppHandle) {
 }
 
 fn begin_onboarding_impl(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if main_panel_mode::native() {
+        return Err("The main-panel tutorial requires --main-ui=webview".into());
+    }
     let window = app
         .get_webview_window("clipboard")
         .ok_or_else(|| "clipboard window not found".to_string())?;
@@ -3008,6 +3081,11 @@ fn restore_parent_after_permission_guide(app: &tauri::AppHandle) {
             let _ = AsRef::<tauri::Webview>::as_ref(&window).set_focus();
             return;
         }
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if main_panel_mode::native() {
+        let _ = native_panel::show_default(app.clone());
+        return;
     }
     if let Some(window) = app.get_webview_window("clipboard") {
         show_clipboard_window(&window);
@@ -4789,6 +4867,10 @@ fn maybe_hide_macos_dock_icon() {
 #[tauri::command]
 fn hide_preview_window(app: tauri::AppHandle) -> Result<(), String> {
     retain_preview_window(&app)?;
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if main_panel_mode::native() {
+        return native_panel::show_default(app);
+    }
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
         focus_clipboard_window(&clipboard_window, "preview closed");
     }
@@ -4796,6 +4878,10 @@ fn hide_preview_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn show_main_panel_for_app(app: &tauri::AppHandle) -> Result<(), String> {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if main_panel_mode::native() {
+        return native_panel::show_default(app.clone());
+    }
     let window = app
         .get_webview_window("clipboard")
         .ok_or_else(|| "clipboard window not found".to_string())?;
@@ -6016,6 +6102,10 @@ fn hide_text_editor_window(app: tauri::AppHandle) -> Result<(), String> {
     }
     *TEXT_EDITOR_TARGET.lock().unwrap() = None;
     TEXT_EDITOR_FOCUSED.store(false, Ordering::SeqCst);
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if main_panel_mode::native() {
+        return native_panel::show_default(app);
+    }
     if let Some(window) = app.get_webview_window("clipboard") {
         if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
             show_clipboard_window(&window);
@@ -6502,6 +6592,13 @@ fn toggle_clipboard_window(app: &tauri::AppHandle) {
             let _ = editor.set_focus();
             return;
         }
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if main_panel_mode::native() {
+        if let Err(error) = native_panel::toggle(app.clone()) {
+            error!("Failed to toggle native main panel: {error}");
+        }
+        return;
     }
     if let Some(window) = app.get_webview_window("clipboard") {
         if CLIPBOARD_VISIBLE.load(Ordering::SeqCst) && !CLIPBOARD_HIDING.load(Ordering::SeqCst) {
@@ -12836,6 +12933,9 @@ fn refresh_clipboard_window_frame(window: &tauri::Window) -> tauri::Result<()> {
 }
 
 fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    if main_panel_mode::native() {
+        return Err(io::Error::other("The main WebView is disabled by --main-ui=native").into());
+    }
     let monitor = handle.primary_monitor().ok().flatten();
     panel_size::use_configured_size(monitor.as_ref());
     let (screen_x, screen_y, screen_width, screen_height) = if let Some(monitor) = monitor {
@@ -13109,6 +13209,10 @@ fn main() {
     if image_ocr::worker::run_if_requested() {
         return;
     }
+    if let Err(error) = main_panel_mode::configure() {
+        eprintln!("{error}");
+        std::process::exit(2);
+    }
     #[cfg(debug_assertions)]
     match memory_profile::configure() {
         Ok(true) => return,
@@ -13195,8 +13299,10 @@ fn main() {
             if let Some(window) = app.get_webview_window("onboardingPermission") {
                 let _ = auxiliary_windows::destroy(&window);
             }
+            if let Err(error) = show_main_panel_for_app(app) {
+                error!("Failed to show main panel on second instance launch: {error}");
+            }
             if let Some(window) = app.get_webview_window("clipboard") {
-                show_clipboard_window(&window);
                 focus_clipboard_window(&window, "second instance launch");
             }
         }))
@@ -13547,7 +13653,13 @@ fn main() {
             if let Err(err) = search::engine::resume_pending_updates() {
                 error!("Failed to resume clipboard search index updates: {err}");
             }
-            let _ = build_clipboard_window(app.handle())?;
+            if !main_panel_mode::native() {
+                let _ = build_clipboard_window(app.handle())?;
+            }
+            #[cfg(target_os = "macos")]
+            if main_panel_mode::native() {
+                hide_macos_dock_icon();
+            }
             initialize_paste_queue_worker(app.handle());
             get_app_data_dir();
             let handle = app.handle().clone();
@@ -13572,11 +13684,12 @@ fn main() {
             #[cfg(target_os = "windows")]
             windows_main_shortcut::log_status();
             std::thread::spawn(move || {
+                #[cfg(target_os = "windows")]
                 let clipboard_window = handle
                     .get_webview_window("clipboard")
                     .unwrap_or_else(|| build_clipboard_window(&handle).unwrap());
 
-                if !config.onboarding_completed {
+                if !config.onboarding_completed && !main_panel_mode::native() {
                     if let Err(err) = show_onboarding_window(&handle) {
                         error!("Failed to show onboarding window: {}", err);
                     }
@@ -13584,9 +13697,14 @@ fn main() {
 
                 info!("Starting clipboard listener");
                 image_ocr::start(handle.clone());
+                #[cfg(target_os = "macos")]
+                listen::start(handle.clone());
+                #[cfg(target_os = "windows")]
                 listen::start(clipboard_window);
                 info!("Clipboard listener started");
-                if config.onboarding_completed && show_panel_on_startup {
+                if (config.onboarding_completed || main_panel_mode::native())
+                    && show_panel_on_startup
+                {
                     if let Err(err) = startup_panel::request_show(&handle) {
                         error!("Failed to show main panel after startup: {}", err);
                     }
@@ -13609,6 +13727,7 @@ fn main() {
             open_dev_memory_window,
             close_dev_memory_window,
             open_native_demo_window,
+            open_native_main_panel,
             get_dev_memory_report,
             set_dev_memory_monitoring,
             auxiliary_window_ready,
@@ -13774,6 +13893,14 @@ fn main() {
         .build(context)
         .expect("build vpaste failed")
         .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
+                // With no main WebView, the last auxiliary window can be Tauri's
+                // last window. Closing it must not stop the clipboard service.
+                // Explicit Quit/restart requests carry a code and still proceed.
+                if main_panel_mode::keeps_background_alive(*code) {
+                    api.prevent_exit();
+                }
+            }
             if matches!(&event, tauri::RunEvent::Exit) {
                 image_ocr::stop();
             }

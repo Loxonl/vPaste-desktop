@@ -414,6 +414,7 @@ fn basic_item(
         text_content: String::new(),
         rich_html: String::new(),
         app_source: app_source.to_string(),
+        source_metadata: Default::default(),
         app_icon_path: String::new(),
         hash,
         content,

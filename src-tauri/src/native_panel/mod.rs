@@ -1,5 +1,6 @@
 //! macOS DEV AppKit panel. The optional --main-ui=native route uses it without
 //! creating a main WebView. Owns one bounded history view, separately from Main.
+pub(crate) mod preview;
 mod rich_text;
 
 use crate::{
@@ -43,6 +44,11 @@ static CLOSED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 extern "C" fn set_key(key: bool) {
     KEY.store(key, Ordering::Release);
+    if key && preview::active() {
+        if let Some(app) = APP.get() {
+            crate::ensure_focus_watch(app);
+        }
+    }
 }
 pub(crate) fn is_key_window() -> bool {
     KEY.load(Ordering::Acquire)
@@ -53,6 +59,7 @@ fn current(session: u64) -> bool {
 fn dispose() {
     ACTIVE.store(false, Ordering::Release);
     KEY.store(false, Ordering::Release);
+    preview::dispose(APP.get());
     SESSION.fetch_add(1, Ordering::AcqRel);
     history_views::close_native();
     CLOSED.notify_waiters();
@@ -148,6 +155,11 @@ fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Res
                 media_resources::set_capture_scale_factor(monitor.scale_factor());
             }
             let scale = crate::panel_size::scale();
+            let bounds = monitor
+                .as_ref()
+                .map(crate::screen_bounds_from_monitor)
+                .unwrap_or_else(crate::default_screen_bounds);
+            preview::prepare(bounds, crate::CLIPBOARD_WINDOW_HEIGHT * scale, !preview);
             let bytes = serde_json::to_vec(&json!({
                 "session": session,
                 "sizePreview": preview,
@@ -155,6 +167,8 @@ fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Res
                 "theme": theme,
                 "scale": scale,
                 "mousePasteMode": config.mouse_paste_mode,
+                "hoverPreviewEnabled": config.hover_preview_enabled,
+                "tabQuickSelectEnabled": config.tab_quick_select_enabled,
                 "dockedFrame": main_docked_frame(&app),
                 "panelHeight": crate::CLIPBOARD_WINDOW_HEIGHT * scale,
                 "horizontalBleed": crate::CLIPBOARD_HORIZONTAL_BLEED,
@@ -224,6 +238,18 @@ struct Request {
     favorite: bool,
     #[serde(default = "card_width")]
     width: u32,
+    #[serde(default)]
+    item_type: String,
+    #[serde(default)]
+    mode: crate::PreviewMode,
+    #[serde(default)]
+    hover_request: Option<u64>,
+    #[serde(default)]
+    navigation_direction: i8,
+    #[serde(default)]
+    frame: Option<[f64; 4]>,
+    #[serde(skip)]
+    preview_request: Option<u64>,
 }
 fn card_width() -> u32 {
     480
@@ -234,7 +260,7 @@ unsafe extern "C" fn request(bytes: *const u8, length: usize) {
         return;
     }
     // SAFETY: caller owns this byte slice until this callback returns.
-    let Ok(req) =
+    let Ok(mut req) =
         serde_json::from_slice::<Request>(unsafe { std::slice::from_raw_parts(bytes, length) })
     else {
         return;
@@ -245,6 +271,52 @@ unsafe extern "C" fn request(bytes: *const u8, length: usize) {
     if req.op == "close" {
         dispose();
         return;
+    }
+    let Some(app) = APP.get().cloned() else {
+        return;
+    };
+    match req.op.as_str() {
+        "surface" => {
+            if let Some(frame) = req.frame {
+                preview::publish(frame);
+            }
+            return;
+        }
+        "blur" => {
+            crate::handle_main_panel_focus_lost(app);
+            return;
+        }
+        "hover-dismiss" => {
+            let _ = preview::dismiss_hover(&app, req.hover_request);
+            return;
+        }
+        "preview-close" => {
+            let _ = crate::retain_preview_window(&app);
+            return;
+        }
+        "preview-toggle" => {
+            let _ = preview::dismiss_hover(&app, None);
+            if crate::is_preview_window_visible(app.clone()) {
+                let _ = crate::retain_preview_window(&app);
+                deliver(req.session, json!({"id":req.id,"data":null}));
+                return;
+            }
+            req.op = "preview".into();
+        }
+        _ => {}
+    }
+    if req.op == "preview" {
+        if (req.mode == crate::PreviewMode::Hover && !crate::config::get().hover_preview_enabled)
+            || !req.mode.allows(
+                crate::is_preview_window_visible(app.clone()),
+                crate::PREVIEW_HOVER.load(Ordering::SeqCst),
+                crate::PREVIEW_PINNED.load(Ordering::SeqCst),
+            )
+        {
+            deliver(req.session, json!({"id":req.id,"data":null}));
+            return;
+        }
+        req.preview_request = Some(preview::reserve(req.mode));
     }
     let open = if req.op == "open" {
         history_views::reserve_native_open()
@@ -262,6 +334,9 @@ unsafe extern "C" fn request(bytes: *const u8, length: usize) {
             return;
         }
         let result = dispatch(&app, &req, open).await;
+        if result.is_err() && req.preview_request.is_some_and(preview::current) {
+            let _ = preview::close_owned(&app);
+        }
         match result {
             Ok(data) => deliver(req.session, json!({"id":req.id,"op":req.op,"data":data})),
             Err(error) => deliver(req.session, json!({"id":req.id,"op":req.op,"error":error})),
@@ -411,23 +486,38 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
             Ok(Value::Null)
         }
         "preview" => {
-            let h = hash.clone();
-            let item = blocking(move || clipboard::history_action_item(&h)).await?;
-            close_for_action(app).await?;
-            crate::show_preview_window(
+            let request = r.preview_request.ok_or("Native preview request expired")?;
+            if !preview::current(request) {
+                return Ok(Value::Null);
+            }
+            if r.item_type == "Image" {
+                let image_hash = hash.clone();
+                let path = blocking(move || {
+                    clipboard::history_action_item(&image_hash).map(|item| item.content)
+                })
+                .await?;
+                if crate::history_image_metadata(path).await?.preview_limited {
+                    return Err("This image exceeds the preview resource limit".into());
+                }
+                if !preview::current(request) {
+                    return Ok(Value::Null);
+                }
+            }
+            crate::prepare_preview_window(
                 app.clone(),
-                item.item_type.to_string(),
+                r.item_type.clone(),
                 String::new(),
                 String::new(),
                 String::new(),
                 String::new(),
                 String::new(),
-                None,
-                None,
-                None,
+                Some(r.mode),
+                r.hover_request,
+                Some(r.navigation_direction),
                 None,
                 Some(hash),
                 None,
+                Some(request),
             )
             .await?;
             Ok(Value::Null)

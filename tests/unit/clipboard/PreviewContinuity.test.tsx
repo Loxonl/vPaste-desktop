@@ -49,7 +49,7 @@ describe("continuous preview session", () => {
         expect(screen.queryByRole("button", { name: "preview.pin" })).not.toBeInTheDocument();
         for (const key of [" ", "ArrowLeft", "ArrowRight", "Tab"]) fireEvent.keyDown(window, { key });
         fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
-        expect(tauri.emitTo).not.toHaveBeenCalledWith("clipboard", "preview-navigate-selection", expect.anything());
+        expect(tauri.invoke).not.toHaveBeenCalledWith("preview_navigate_selection", expect.anything());
         expect(tauri.invoke).not.toHaveBeenCalledWith("hide_preview_window");
         fireEvent.keyDown(window, { key: "Escape" });
         expect(tauri.invoke).toHaveBeenCalledWith("hide_preview_window");
@@ -69,7 +69,7 @@ describe("continuous preview session", () => {
         emit("preview-item", { request_id: 1, item_type: "ImageText", content: "image" });
         const field = await screen.findByRole("textbox", { name: "ocr.title" });
         for (const key of ["ArrowLeft", "ArrowRight", "Tab", " "]) fireEvent.keyDown(field, { key });
-        expect(tauri.emitTo).not.toHaveBeenCalledWith("clipboard", "preview-navigate-selection", expect.anything());
+        expect(tauri.invoke).not.toHaveBeenCalledWith("preview_navigate_selection", expect.anything());
         expect(screen.getAllByRole("button")).toHaveLength(2);
         await userEvent.click(screen.getByRole("button", { name: "common.close" }));
         expect(tauri.invoke).toHaveBeenCalledWith("hide_preview_window");
@@ -90,6 +90,28 @@ describe("continuous preview session", () => {
         await waitFor(() => expect(screen.getByText("Reopened content").closest("[data-preview-phase]"))
             .toHaveAttribute("data-preview-phase", "current"));
         expect(screen.queryByText("Closed content")).not.toBeInTheDocument();
+    });
+
+    it("routes preview navigation through the active main-panel backend", async () => {
+        render(<MotionTestProvider><Preview /></MotionTestProvider>);
+        emit("preview-item", text(1, "Backend navigation"));
+        await screen.findByText("Backend navigation");
+        fireEvent.keyDown(window, { key: "ArrowRight" });
+        expect(tauri.invoke).toHaveBeenCalledWith("preview_navigate_selection", { direction: 1, key: "ArrowRight" });
+        fireEvent.keyDown(window, { key: "Tab", ctrlKey: true, shiftKey: true });
+        expect(tauri.invoke).toHaveBeenCalledWith("preview_navigate_selection", { direction: -1, key: "Tab", ctrlKey: true });
+        expect(tauri.emitTo).not.toHaveBeenCalledWith("clipboard", "preview-navigate-selection", expect.anything());
+    });
+
+    it("routes hover retention through the active main-panel backend", async () => {
+        const { container } = render(<MotionTestProvider><Preview /></MotionTestProvider>);
+        emit("preview-item", { ...text(1, "Hover retention"), hover: true });
+        await waitFor(() => expect(screen.getByText("Hover retention").closest("[data-preview-phase]"))
+            .toHaveAttribute("data-preview-phase", "current"));
+        fireEvent.mouseEnter(container.firstElementChild!);
+        expect(tauri.invoke).toHaveBeenCalledWith("preview_pointer_changed", { inside: true });
+        fireEvent.mouseLeave(container.firstElementChild!);
+        expect(tauri.invoke).toHaveBeenCalledWith("preview_pointer_changed", { inside: false });
     });
 
     it("does not close on repeated Space but closes on the next physical press", () => {

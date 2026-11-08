@@ -14,6 +14,8 @@ struct PanelConfiguration: Decodable {
   let theme: String
   let scale: Double
   let mousePasteMode: String
+  let hoverPreviewEnabled: Bool
+  let tabQuickSelectEnabled: Bool
   let dockedFrame: PanelFrame?
   let panelHeight: Double
   let horizontalBleed: Double
@@ -124,6 +126,7 @@ final class PanelBridge {
   private var pending: [UInt64: (Result<Any, Error>) -> Void] = [:]
   private(set) var closed = false
   var changed: (() -> Void)?
+  var event: ((String, [String: Any]) -> Void)?
   init(_ callbacks: VPastePanelCallbacks, session: UInt64) {
     self.callbacks = callbacks
     self.session = session
@@ -145,8 +148,8 @@ final class PanelBridge {
   }
   func receive(_ value: [String: Any]) {
     guard !closed, (value["session"] as? NSNumber)?.uint64Value == session else { return }
-    if value["event"] as? String == "changed" {
-      changed?()
+    if let name = value["event"] as? String {
+      if name == "changed" { changed?() } else { event?(name, value) }
       return
     }
     guard let id = (value["id"] as? NSNumber)?.uint64Value,
@@ -166,5 +169,6 @@ final class PanelBridge {
     closed = true
     pending.removeAll()
     changed = nil
+    event = nil
   }
 }

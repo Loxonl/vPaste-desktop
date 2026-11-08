@@ -79,11 +79,16 @@ struct PanelFilterChoice {
   let title: String
   let emoji: String
   let symbol: String
-  func width(scale: CGFloat) -> CGFloat {
-    let width = (title as NSString).size(withAttributes: [
-      .font: NSFont.systemFont(ofSize: 14.5 * scale, weight: .semibold)
+  var isFixed: Bool { emoji.isEmpty }
+  var label: String { isFixed ? title : "\(emoji) \(title)" }
+  func width(scale: CGFloat, selected: Bool = false) -> CGFloat {
+    let text = (label as NSString).size(withAttributes: [
+      .font: PanelToolbarTypography.tabFont(scale: scale, selected: selected)
     ]).width
-    return min(128 * scale, max(58 * scale, width + 42 * scale))
+    // Fixed tabs include the 17px icon, 5px gap and asymmetric 10/23px padding.
+    // Type tabs render the same single emoji-prefixed label as the WebView.
+    let extra: CGFloat = (isFixed ? 55 : 20) * scale
+    return min(128 * scale, max((isFixed ? 78 : 58) * scale, text + extra))
   }
 }
 
@@ -114,7 +119,7 @@ final class PanelToolbarState: ObservableObject {
       ("Color", "颜色", "🎨", ""), ("File", "文件", "📁", ""),
     ].map { PanelFilterChoice(title: chinese ? $0.1 : $0.0, emoji: $0.2, symbol: $0.3) }
     search.isHidden = true
-    search.font = .systemFont(ofSize: 13 * scale)
+    search.font = PanelToolbarTypography.font(size: 13 * scale, cssWeight: 450)
     search.controlSize = .small
     search.focusRingType = .exterior
   }
@@ -123,9 +128,6 @@ final class PanelToolbarState: ObservableObject {
     guard !closed, choices.indices.contains(index) else { return }
     if selected != index { selected = index }
     onFilter?(index)
-  }
-  func neighbor(of index: Int, step: Int) -> Int {
-    (index + step + choices.count) % choices.count
   }
   func beginSearch() {
     guard !closed else { return }
@@ -148,9 +150,19 @@ final class PanelToolbarState: ObservableObject {
   }
 }
 
+// Toolbar buttons use pointer actions and explicit window shortcuts. Keep both
+// hosting surfaces out of AppKit's key-view loop; the embedded NSSearchField
+// remains independently focusable for text input.
 @available(macOS 12.0, *)
 @MainActor
-final class PanelSwiftUIToolbarHost: NSHostingView<PanelToolbarView>, PanelToolbarContent {
+class PanelToolbarHostingView<Content: View>: NSHostingView<Content> {
+  override var acceptsFirstResponder: Bool { false }
+  override var canBecomeKeyView: Bool { false }
+}
+
+@available(macOS 12.0, *)
+@MainActor
+final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, PanelToolbarContent {
   private let state: PanelToolbarState
   private var focusRequest = 0
   init(scale: CGFloat, chinese: Bool, search: NSSearchField) {
@@ -215,7 +227,7 @@ struct PanelToolbarView: View {
       let developerX = settingsX - button / 2 - gap - developerWidth / 2
       let fieldWidth = min(276 * s, max(100 * s,
         geometry.size.width - 2 * pad - 140 * s - 3 * button - 4 * gap - 68 * s))
-      let left = pad + button + 10 * s + (state.searchOpen ? fieldWidth + 12 * s : 0)
+      let left = pad + button + 15 * s + (state.searchOpen ? fieldWidth + 12 * s : 0)
       let tabsWidth = max(50 * s, developerX - developerWidth / 2 - left - 10 * s)
       ZStack(alignment: .topLeading) {
         LinearGradient(
@@ -239,8 +251,13 @@ struct PanelToolbarView: View {
           .frame(width: tabsWidth, height: geometry.size.height)
           .position(x: left + tabsWidth / 2, y: geometry.size.height / 2)
         HStack(spacing: 3 * s) {
-          Text("DEV · SwiftUI").font(.system(size: 9 * s, weight: .heavy))
-            .foregroundColor(accent).frame(width: 65 * s, alignment: .leading)
+          HStack(spacing: 0) {
+            Text("DEV").tracking(0.72 * s)
+            Text(" · SwiftUI")
+          }
+          .font(Font(PanelToolbarTypography.font(size: 9 * s, cssWeight: 800)))
+          .lineLimit(1).accessibilityElement(children: .combine)
+          .foregroundColor(accent).frame(width: 66 * s, alignment: .leading)
           icon("arrow.clockwise", state.local("Refresh", "刷新")) { state.onRefresh?() }
           icon("info.circle", state.local("Memory and history details", "内存与历史记录统计"),
             active: state.infoVisible) { state.onDiagnostics?() }
@@ -265,6 +282,15 @@ struct PanelToolbarView: View {
 
 @available(macOS 12.0, *)
 @MainActor
+private struct PanelButtonCursor: NSViewRepresentable {
+  @Environment(\.isEnabled) private var isEnabled
+  func makeNSView(context: Context) -> PanelCursorRegion { PanelCursorRegion(cursor: .pointingHand) }
+  func updateNSView(_ view: PanelCursorRegion, context: Context) { view.isEnabled = isEnabled }
+  static func dismantleNSView(_ view: PanelCursorRegion, coordinator: ()) { view.isEnabled = false }
+}
+
+@available(macOS 12.0, *)
+@MainActor
 private struct PanelSwiftUIIcon: View {
   let symbol: String
   let label: String
@@ -272,15 +298,22 @@ private struct PanelSwiftUIIcon: View {
   let dark: Bool
   let active: Bool
   let action: () -> Void
-  @FocusState private var focused: Bool
+  private var symbolSize: CGFloat {
+    // SF Symbols have no SVG viewBox padding. Match the visible glyph size of
+    // the WebView's 16px MUI search/settings icons inside the same 28pt button.
+    switch symbol {
+    case "magnifyingglass": return 12
+    case "gearshape": return 13.5
+    default: return 16
+    }
+  }
   var body: some View {
     Button(action: action) {
-      Image(systemName: symbol).font(.system(size: 16 * scale))
+      Image(systemName: symbol).font(.system(size: symbolSize * scale))
         .frame(width: 28 * scale, height: 28 * scale)
     }
     .buttonStyle(PanelIconStyle(scale: scale, dark: dark, active: active))
-    .focused($focused)
-    .overlay(Circle().stroke(focused ? Color(NSColor.keyboardFocusIndicatorColor) : .clear, lineWidth: 2 * scale))
+    .focusable(false)
     .help(label).accessibilityLabel(Text(label))
   }
 }
@@ -302,6 +335,7 @@ private struct PanelIconStyle: ButtonStyle {
       .overlay(Circle().stroke(Color(PanelStyle.rgb(dark ? 0xdde2eb : 0x2a3230, 0.08)), lineWidth: scale).padding(scale))
       .shadow(color: .black.opacity(dark ? 0.24 : 0.09), radius: 3 * scale, x: 0, y: scale)
       .opacity(configuration.isPressed ? 0.72 : 1)
+      .background(PanelButtonCursor().accessibilityHidden(true))
       .onHover { hovering = $0 }
   }
 }
@@ -323,7 +357,7 @@ private struct PanelFilterViewport: NSViewRepresentable {
   let width: CGFloat
   let height: CGFloat
   final class Coordinator {
-    var host: NSHostingView<PanelFilterStrip>?
+    var host: PanelToolbarHostingView<PanelFilterStrip>?
     var selection: Int?
   }
   func makeCoordinator() -> Coordinator { Coordinator() }
@@ -331,13 +365,15 @@ private struct PanelFilterViewport: NSViewRepresentable {
     let scroll = PanelScroll()
     scroll.drawsBackground = false
     scroll.setAccessibilityLabel(state.local("History filters", "历史记录筛选"))
-    let host = NSHostingView(rootView: PanelFilterStrip(state: state))
+    let host = PanelToolbarHostingView(rootView: PanelFilterStrip(state: state))
     context.coordinator.host = host
     scroll.documentView = host
     return scroll
   }
   func updateNSView(_ scroll: PanelScroll, context: Context) {
-    let widths = state.choices.map { $0.width(scale: state.scale) }
+    let widths = state.choices.enumerated().map {
+      $0.element.width(scale: state.scale, selected: $0.offset == state.selected)
+    }
     let gap = 8 * state.scale
     let extent = widths.reduce(0, +) + gap * CGFloat(max(0, widths.count - 1))
     let size = NSSize(width: max(width, extent), height: height)
@@ -363,7 +399,6 @@ private struct PanelFilterViewport: NSViewRepresentable {
 private struct PanelFilterStrip: View {
   @ObservedObject var state: PanelToolbarState
   @Environment(\.colorScheme) private var scheme
-  @FocusState private var focused: Int?
   var body: some View {
     HStack(spacing: 8 * state.scale) {
       ForEach(state.choices.indices, id: \.self) { index in
@@ -372,36 +407,30 @@ private struct PanelFilterStrip: View {
         let accent = Color(PanelStyle.rgb(scheme == .dark ? 0x8ab7ff : 0x2466d8))
         Button { state.choose(index) } label: {
           HStack(spacing: 5 * state.scale) {
-            if !choice.emoji.isEmpty {
-              Text(choice.emoji).font(.system(size: 17 * state.scale)).frame(width: 18 * state.scale)
-            } else if choice.symbol == "star" {
-              Text("☆").font(.system(size: 22 * state.scale)).frame(width: 18 * state.scale)
-            } else {
-              Image(systemName: choice.symbol).font(.system(size: 17 * state.scale)).frame(width: 18 * state.scale)
+            if choice.isFixed {
+              // MUI's 24-unit SVG uses 16 units for the grid, 20 for the star.
+              // Keep the 17pt layout box while matching its visible artwork.
+              let extent: CGFloat = choice.symbol == "star" ? 20 : 16
+              Image(systemName: choice.symbol).font(.system(size: 17 * extent / 24 * state.scale))
+                .frame(width: 17 * state.scale, height: 17 * state.scale)
             }
-            Text(choice.title).font(.system(size: 14.5 * state.scale, weight: selected ? .bold : .semibold))
+            Text(choice.label)
+              .font(Font(PanelToolbarTypography.tabFont(scale: state.scale, selected: selected)))
+              .lineLimit(1).frame(height: PanelToolbarTypography.lineHeight * state.scale)
           }
-          .frame(width: choice.width(scale: state.scale), height: PanelStyle.headerHeight * state.scale)
+          .padding(.leading, 10 * state.scale)
+          .padding(.trailing, (choice.isFixed ? 23 : 10) * state.scale)
+          .frame(width: choice.width(scale: state.scale, selected: selected), height: PanelStyle.headerHeight * state.scale)
         }
         .buttonStyle(PanelFilterStyle(scale: state.scale, selected: selected, dark: scheme == .dark))
-        .focused($focused, equals: index)
+        .focusable(false)
         .overlay(alignment: .bottom) {
           if selected {
-            Capsule().fill(accent).frame(width: choice.width(scale: state.scale) - 20 * state.scale, height: 3 * state.scale)
+            Capsule().fill(accent).frame(width: choice.width(scale: state.scale, selected: selected) - 20 * state.scale, height: 3 * state.scale)
           }
         }
-        .overlay(RoundedRectangle(cornerRadius: 6 * state.scale)
-          .stroke(focused == index ? Color(NSColor.keyboardFocusIndicatorColor) : .clear, lineWidth: 2 * state.scale)
-          .padding(2 * state.scale))
         .accessibilityLabel(Text(choice.title))
         .accessibilityValue(Text(selected ? state.local("Selected", "已选择") : ""))
-        .onMoveCommand { direction in
-          let step: Int
-          switch direction { case .left: step = -1; case .right: step = 1; default: return }
-          let next = state.neighbor(of: index, step: step)
-          state.choose(next)
-          focused = next
-        }
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
@@ -420,6 +449,7 @@ private struct PanelFilterStyle: ButtonStyle {
         selected ? 1 : (dark ? 0.68 : 0.62))))
       .background(Color.white.opacity(hovering ? (dark ? 0.07 : 0.30) : 0))
       .opacity(configuration.isPressed ? 0.72 : 1)
+      .background(PanelButtonCursor().accessibilityHidden(true))
       .onHover { hovering = $0 }
   }
 }

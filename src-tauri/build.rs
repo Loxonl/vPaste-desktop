@@ -53,6 +53,7 @@ fn build_swift_native_demo() {
         "native-panel/NativePanelBackdrop.swift",
         "native-panel/NativePanelMedia.swift",
         "native-panel/NativePanelCards.swift",
+        "native-panel/NativePanelPreview.swift",
         "native-panel/NativePanelController.swift",
     ];
     println!("cargo:rerun-if-changed=native-panel/NativePanelBridge.h");

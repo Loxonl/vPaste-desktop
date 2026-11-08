@@ -4547,18 +4547,23 @@ fn commit_preview_window(
             .map_err(|err| err.to_string())?;
         window.show().map_err(|err| err.to_string())?;
         window.set_focusable(true).map_err(|err| err.to_string())?;
+        // On macOS this API queues a floating-level write after our native
+        // level, putting the preview below the main panel (101).
+        #[cfg(not(target_os = "macos"))]
         let _ = window.set_always_on_top(true);
-        #[cfg(target_os = "macos")]
-        set_macos_window_level(&window, 102);
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    // Restore the native level for first show and visible-window reuse alike.
+    #[cfg(target_os = "macos")]
     {
+        let level = 102;
+        #[cfg(debug_assertions)]
         let level = if native_panel::preview::active() {
             104
         } else {
-            102
+            level
         };
         set_macos_window_level(&window, level);
+        #[cfg(debug_assertions)]
         if let Some(browser) = app.get_webview_window(browser_preview::LABEL) {
             set_macos_window_level(&browser, level);
         }

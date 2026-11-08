@@ -132,16 +132,19 @@ describe("auxiliary window controls", () => {
         });
         const { container } = render(<Preview />);
         act(() => listeners.get("preview-item")?.({ payload: { itemType: "Text", content: "Hover content", hover: true } }));
+        await waitFor(() => expect(screen.getByText("Hover content").closest("[data-preview-phase]"))
+            .toHaveAttribute("data-preview-phase", "current"));
         const shell = container.querySelector('[class*="preview-shell"]')!;
         fireEvent.mouseEnter(shell);
-        expect(tauri.emitTo).toHaveBeenLastCalledWith("clipboard", "preview-hover", true);
+        expect(tauri.invoke).toHaveBeenLastCalledWith("preview_pointer_changed", { inside: true });
         fireEvent.mouseLeave(shell);
-        expect(tauri.emitTo).toHaveBeenLastCalledWith("clipboard", "preview-hover", false);
-        tauri.emitTo.mockClear();
+        expect(tauri.invoke).toHaveBeenLastCalledWith("preview_pointer_changed", { inside: false });
+        tauri.invoke.mockClear();
         act(() => listeners.get("preview-promoted")?.({ payload: null }));
         fireEvent.mouseEnter(shell);
         fireEvent.mouseLeave(shell);
-        expect(tauri.emitTo).not.toHaveBeenCalled();
+        expect(tauri.invoke.mock.calls.filter(([command]) => command === "preview_pointer_changed"))
+            .toEqual([]);
     });
 
     it("uses the requested direction when preview content moves backward and forward", async () => {
@@ -162,9 +165,8 @@ describe("auxiliary window controls", () => {
             .toHaveAttribute("data-preview-direction", "neutral");
 
         fireEvent.keyDown(window, { key: "ArrowLeft" });
-        expect(tauri.emitTo).toHaveBeenLastCalledWith(
-            "clipboard",
-            "preview-navigate-selection",
+        expect(tauri.invoke).toHaveBeenLastCalledWith(
+            "preview_navigate_selection",
             { direction: -1, key: "ArrowLeft" },
         );
         act(() => {
@@ -180,6 +182,10 @@ describe("auxiliary window controls", () => {
             .toHaveAttribute("data-motion-preset", "preview");
 
         fireEvent.keyDown(window, { key: "ArrowRight" });
+        expect(tauri.invoke).toHaveBeenLastCalledWith(
+            "preview_navigate_selection",
+            { direction: 1, key: "ArrowRight" },
+        );
         act(() => {
             listeners.get("preview-item")?.({
                 payload: { itemType: "Text", content: "Next preview" },
@@ -193,16 +199,17 @@ describe("auxiliary window controls", () => {
     it("forwards category shortcuts from preview while keeping ordinary Tab navigation", () => {
         render(<Preview />);
         fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
-        expect(tauri.emitTo).toHaveBeenLastCalledWith("clipboard", "preview-navigate-selection", { direction: 1, key: "Tab", ctrlKey: true });
+        expect(tauri.invoke).toHaveBeenLastCalledWith("preview_navigate_selection", { direction: 1, key: "Tab", ctrlKey: true });
         fireEvent.keyDown(window, { key: "Tab", ctrlKey: true, shiftKey: true });
-        expect(tauri.emitTo).toHaveBeenLastCalledWith("clipboard", "preview-navigate-selection", { direction: -1, key: "Tab", ctrlKey: true });
+        expect(tauri.invoke).toHaveBeenLastCalledWith("preview_navigate_selection", { direction: -1, key: "Tab", ctrlKey: true });
         fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
-        expect(tauri.emitTo).toHaveBeenLastCalledWith("clipboard", "preview-navigate-selection", { direction: -1, key: "Tab" });
-        tauri.emitTo.mockClear();
+        expect(tauri.invoke).toHaveBeenLastCalledWith("preview_navigate_selection", { direction: -1, key: "Tab" });
+        tauri.invoke.mockClear();
         for (const modifiers of [{ metaKey: true }, { altKey: true }, { ctrlKey: true, metaKey: true }, { ctrlKey: true, isComposing: true }]) {
             fireEvent.keyDown(window, { key: "Tab", ...modifiers });
         }
-        expect(tauri.emitTo).not.toHaveBeenCalled();
+        expect(tauri.invoke.mock.calls.filter(([command]) => command === "preview_navigate_selection"))
+            .toEqual([]);
     });
 
     it("keeps the Emoji picker anchored to the editor trigger rectangle", async () => {

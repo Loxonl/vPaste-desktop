@@ -6,6 +6,9 @@ use objc::{class, msg_send, sel, sel_impl};
 use super::super::OcrError;
 use super::MAX_TEXT_BYTES;
 
+// VNRequestTextRecognitionLevelAccurate = 0; Fast = 1 in the Vision SDK.
+const ACCURATE_RECOGNITION_LEVEL: usize = 0;
+
 #[link(name = "Vision", kind = "framework")]
 extern "C" {}
 
@@ -28,13 +31,19 @@ unsafe fn recognize_data(bytes: &[u8]) -> Result<String, OcrError> {
     let data = NSData::dataWithBytes_length_(nil, bytes.as_ptr().cast(), bytes.len() as u64);
     let request: id = msg_send![class!(VNRecognizeTextRequest), new];
     let request: id = msg_send![request, autorelease];
-    let _: () = msg_send![request, setRecognitionLevel: 1usize]; // accurate
+    let _: () = msg_send![request, setRecognitionLevel: ACCURATE_RECOGNITION_LEVEL];
     let _: () = msg_send![request, setUsesLanguageCorrection: YES];
+    // Available on macOS 13 / Vision revision 3; retain the macOS 11 path.
+    let detects_language: BOOL =
+        msg_send![request, respondsToSelector: sel!(setAutomaticallyDetectsLanguage:)];
+    if detects_language == YES {
+        let _: () = msg_send![request, setAutomaticallyDetectsLanguage: YES];
+    }
     let revision: usize = msg_send![request, revision];
     let mut error: id = nil;
     // This class method supports the project's macOS 11 minimum. Filter the
     // preferred CJK/English languages against the installed Vision revision.
-    let supported: id = msg_send![class!(VNRecognizeTextRequest), supportedRecognitionLanguagesForTextRecognitionLevel: 1usize revision: revision error: &mut error];
+    let supported: id = msg_send![class!(VNRecognizeTextRequest), supportedRecognitionLanguagesForTextRecognitionLevel: ACCURATE_RECOGNITION_LEVEL revision: revision error: &mut error];
     if supported == nil {
         return Err(OcrError::LanguageUnavailable);
     }
@@ -88,4 +97,22 @@ unsafe fn recognize_data(bytes: &[u8]) -> Result<String, OcrError> {
         text.push_str(&line);
     }
     Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_ocr_reads_simplified_traditional_and_english_pixels() {
+        // Self-authored, high-contrast fixture rendered with the system font.
+        let image = image::load_from_memory(include_bytes!("fixtures/chinese-and-english.png"))
+            .unwrap()
+            .into_rgba8();
+        let text = recognize(image).unwrap();
+        assert!(text.contains("图片文字识别测试"), "{text}");
+        assert!(text.contains("繁體中文測試"), "{text}");
+        let compact: String = text.split_whitespace().collect();
+        assert!(compact.contains("Invoice2048"), "{text}");
+    }
 }

@@ -4453,10 +4453,14 @@ fn commit_preview_window(
             .map_err(|err| err.to_string())?;
         window.show().map_err(|err| err.to_string())?;
         window.set_focusable(true).map_err(|err| err.to_string())?;
+        // On macOS this API queues a floating-level write after our native
+        // level, putting the preview below the main panel (101).
+        #[cfg(not(target_os = "macos"))]
         let _ = window.set_always_on_top(true);
-        #[cfg(target_os = "macos")]
-        set_macos_window_level(&window, 102);
     }
+    // Restore the native level for first show and visible-window reuse alike.
+    #[cfg(target_os = "macos")]
+    set_macos_window_level(&window, 102);
     match focus_target {
         Some(preview_focus::FocusTarget::Preview) => {
             focus_preview_window(&window, "preview show under cursor")?

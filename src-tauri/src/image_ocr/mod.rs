@@ -20,6 +20,10 @@ static THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 static STOPPED: AtomicBool = AtomicBool::new(false);
 static STORAGE: Mutex<()> = Mutex::new(());
 
+// macOS previously used Vision's fast model, which does not support Chinese.
+// Refresh those derived results only when requested; never backfill old images.
+const ENGINE_VERSION: i64 = if cfg!(target_os = "macos") { 1 } else { 0 };
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum OcrError {
@@ -62,21 +66,40 @@ pub(crate) fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
             error TEXT,
             manual INTEGER NOT NULL DEFAULT 0,
             requested_at INTEGER NOT NULL,
-            request_id INTEGER NOT NULL
+            request_id INTEGER NOT NULL,
+            engine_version INTEGER NOT NULL DEFAULT 0
         ) STRICT;
         CREATE TRIGGER IF NOT EXISTS delete_image_ocr AFTER DELETE ON clipboard
         BEGIN DELETE FROM image_ocr WHERE hash = OLD.hash; END;
         CREATE INDEX IF NOT EXISTS image_ocr_pending ON image_ocr(status, manual, requested_at);",
-    )
+    )?;
+    let versioned: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('image_ocr') WHERE name='engine_version')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !versioned {
+        connection.execute_batch(
+            "ALTER TABLE image_ocr ADD COLUMN engine_version INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+    Ok(())
 }
 
 fn record(connection: &Connection, hash: &str) -> Result<OcrRecord, String> {
     connection
         .query_row(
-            "SELECT o.status, o.text, o.error FROM clipboard c LEFT JOIN image_ocr o
+            "SELECT o.status, o.text, o.error, COALESCE(o.engine_version,0) FROM clipboard c LEFT JOIN image_ocr o
          ON o.hash = c.hash AND o.clipboard_id = c.id WHERE c.hash = ?1 AND c.item_type = 'Image'",
             [hash],
             |row| {
+                if row.get::<_, i64>(3)? != ENGINE_VERSION {
+                    return Ok(OcrRecord {
+                        status: "unrecognized".into(),
+                        text: String::new(),
+                        error: None,
+                    });
+                }
                 let error: Option<String> = row.get(2)?;
                 Ok(OcrRecord {
                     status: row
@@ -113,11 +136,12 @@ fn enqueue(
         || (force && !matches!(current.status.as_str(), "pending" | "running"))
     {
         transaction.execute(
-            "INSERT INTO image_ocr(hash,clipboard_id,status,manual,requested_at,request_id)
-             VALUES(?1,?2,'pending',?3,?4,?5) ON CONFLICT(hash) DO UPDATE SET
+            "INSERT INTO image_ocr(hash,clipboard_id,status,manual,requested_at,request_id,engine_version)
+             VALUES(?1,?2,'pending',?3,?4,?5,?6) ON CONFLICT(hash) DO UPDATE SET
              clipboard_id=excluded.clipboard_id,status='pending',error=NULL,
-             manual=excluded.manual,requested_at=excluded.requested_at,request_id=excluded.request_id",
-            params![hash,id,manual,chrono::Utc::now().timestamp_millis(),rand::random::<i64>()],
+             text=CASE WHEN image_ocr.engine_version<>excluded.engine_version THEN '' ELSE image_ocr.text END,
+             engine_version=excluded.engine_version,manual=excluded.manual,requested_at=excluded.requested_at,request_id=excluded.request_id",
+            params![hash,id,manual,chrono::Utc::now().timestamp_millis(),rand::random::<i64>(),ENGINE_VERSION],
         ).map_err(|error| error.to_string())?;
     } else if manual && current.status == "pending" {
         transaction
@@ -226,8 +250,10 @@ fn take_job(connection: &mut Connection, automatic: bool) -> Result<Option<Job>,
     if let Some(job) = &job {
         transaction
             .execute(
-                "UPDATE image_ocr SET status='running' WHERE hash=?1 AND request_id=?2",
-                params![job.hash, job.request_id],
+                "UPDATE image_ocr SET status='running',
+                 text=CASE WHEN engine_version<>?3 THEN '' ELSE text END,engine_version=?3
+                 WHERE hash=?1 AND request_id=?2",
+                params![job.hash, job.request_id, ENGINE_VERSION],
             )
             .map_err(|error| error.to_string())?;
     }

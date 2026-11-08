@@ -222,6 +222,31 @@ describe("clipboard header", () => {
         expect(screen.getByRole("group", { name: "tutorial.debug.tools" })).toBeVisible();
     });
 
+    it("opens the separate native panel only from the macOS DEV toolbar", async () => {
+        const user = userEvent.setup();
+        const onOpenNativePanel = vi.fn();
+        const props = {
+            isMac: true, showDeveloperToolbar: true, tutorialActive: false,
+            tutorialPlatform: "mac" as const, permissionIncomplete: false,
+            languageCode: "Chinese", developerTheme: "light" as const, t,
+            pasteQueueActive: false, onOpenNativePanel,
+            onOpenPasteQueue: vi.fn(), onOpenPermissionCenter: vi.fn(),
+            onOpenTutorial: vi.fn(), onToggleLanguage: vi.fn(), onToggleTheme: vi.fn(),
+            onOpenUiLab: vi.fn(), onOpenTestRoom: vi.fn(), onOpenSettings: vi.fn(),
+        };
+        const { rerender } = render(<ClipboardHeaderActions {...props} />);
+        const button = screen.getByRole("button", { name: "tutorial.debug.nativePanel" });
+        expect(button).toHaveTextContent("tutorial.debug.nativePanelLabel");
+        expect(button).toHaveAttribute("data-keyboard-passthrough", "true");
+        await user.click(button);
+        expect(onOpenNativePanel).toHaveBeenCalledOnce();
+        rerender(<ClipboardHeaderActions {...props} isMac={false} />);
+        expect(screen.queryByRole("button", { name: "tutorial.debug.nativePanel" })).not.toBeInTheDocument();
+        rerender(<ClipboardHeaderActions {...props} showDeveloperToolbar={false} />);
+        expect(screen.queryByRole("button", { name: "tutorial.debug.nativePanel" })).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "common.settings" })).toBeVisible();
+    });
+
     function renderUpdateActions(props: {
         updateReadyVersion?: string | null;
         updateInstalling?: boolean;

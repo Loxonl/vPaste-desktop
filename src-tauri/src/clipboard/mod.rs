@@ -28,6 +28,8 @@ pub(crate) mod item;
 #[cfg(target_os = "macos")]
 pub mod macos;
 mod search_page;
+pub(crate) mod source_metadata;
+use source_metadata::SourceMetadata;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
@@ -153,6 +155,7 @@ pub(crate) struct StoredItem {
     pub(crate) source: String,
     pub(crate) app_source: String,
     pub(crate) app_icon_path: String,
+    pub(crate) source_metadata: SourceMetadata,
     pub(crate) title_color: String,
     pub(crate) time: u64,
     pub(crate) search_index: u8,
@@ -171,6 +174,7 @@ pub(crate) fn read_stored_item(row: &Row) -> Result<StoredItem, Error> {
         source: row.get::<_, Option<String>>("source")?.unwrap_or_default(),
         app_source: row.get("app_source").unwrap_or_default(),
         app_icon_path: row.get("app_icon_path").unwrap_or_default(),
+        source_metadata: SourceMetadata::from_row(row),
         title_color: row.get("title_color")?,
         time: row.get("time")?,
         search_index: row.get("search_index")?,
@@ -252,6 +256,7 @@ fn materialize_item_with_rich(stored: StoredItem, tags: Vec<ItemTag>, rich_html:
         },
         rich_html,
         app_source: stored.app_source,
+        source_metadata: stored.source_metadata,
         app_icon_path,
         title_color,
         item_type,
@@ -759,6 +764,7 @@ pub(crate) fn history_ref_page(
                     label: stored.label,
                     tags,
                     app_source: stored.app_source,
+                    source_metadata: stored.source_metadata,
                     app_icon_path,
                     title_color,
                 });
@@ -2500,8 +2506,11 @@ fn insert_history_item(
             "update clipboard
                 set time = ?1,
                     search_index = 0,
-                    app_source = case when ?2 <> '' then ?2 else app_source end,
-                    app_icon_path = case when ?3 <> '' then ?3 else app_icon_path end,
+                    app_source = case when ?9 = 1 or source_is_remote = 1 or ?2 <> '' then ?2 else app_source end,
+                    app_icon_path = case when ?9 = 1 or source_is_remote = 1 or ?3 <> '' then ?3 else app_icon_path end,
+                    title_color = case when ?9 = 1 or source_is_remote = 1 then '' else title_color end,
+                    source_bundle_id = case when ?9 = 1 or source_is_remote = 1 or ?10 <> '' or ?2 <> '' then ?10 else source_bundle_id end,
+                    source_is_remote = ?9,
                     source = case when ?5 = 'Image' then ?4 when ?4 <> '' then ?4 else source end,
                     content = case when ?5 = 'Link' then content else ?7 end,
                     preview_content = case when ?5 = 'Link' then preview_content else ?8 end
@@ -2515,6 +2524,8 @@ fn insert_history_item(
                 item.hash,
                 stored_content,
                 stored_preview_content,
+                item.source_metadata.is_remote,
+                item.source_metadata.bundle_id,
             ],
         );
         return match state {
@@ -2542,8 +2553,8 @@ fn insert_history_item(
     let start = Instant::now();
 
     let insert_sql = "
-                        insert into clipboard(hash,content,preview_content,time,title_color,item_type,icon,source,app_source,app_icon_path,search_index)
-                                      values(:hash,:content,:preview_content,:time,:title_color,:item_type,:icon,:source,:app_source,:app_icon_path,:search_index)
+                        insert into clipboard(hash,content,preview_content,time,title_color,item_type,icon,source,app_source,app_icon_path,search_index,source_is_remote,source_bundle_id)
+                                      values(:hash,:content,:preview_content,:time,:title_color,:item_type,:icon,:source,:app_source,:app_icon_path,:search_index,:source_is_remote,:source_bundle_id)
                             ";
     let conn = db();
     let stored_content = item.content.clone();
@@ -2563,6 +2574,11 @@ fn insert_history_item(
             (":app_source", &app_source.to_string()),
             (":app_icon_path", &app_icon_path.to_string()),
             (":search_index", &"0".to_string()),
+            (
+                ":source_is_remote",
+                &u8::from(item.source_metadata.is_remote).to_string(),
+            ),
+            (":source_bundle_id", &item.source_metadata.bundle_id),
         ])
     };
     if let Err(err) = state {
@@ -2608,6 +2624,32 @@ fn captured_item_search_content(
 pub struct CaptureContext {
     pub(crate) time: u64,
     pub(crate) queue_epoch: Option<u64>,
+}
+
+pub struct CaptureRequest {
+    context: CaptureContext,
+    source_metadata: SourceMetadata,
+}
+
+impl CaptureContext {
+    pub(crate) fn with_source(self, source_metadata: SourceMetadata) -> CaptureRequest {
+        CaptureRequest {
+            context: self,
+            source_metadata,
+        }
+    }
+}
+
+impl From<CaptureContext> for CaptureRequest {
+    fn from(context: CaptureContext) -> Self {
+        context.with_source(SourceMetadata::default())
+    }
+}
+
+impl From<bool> for CaptureRequest {
+    fn from(queue_only: bool) -> Self {
+        CaptureContext::from(queue_only).into()
+    }
 }
 
 impl From<bool> for CaptureContext {
@@ -2787,7 +2829,7 @@ pub fn capture_text_from_app(
     content: String,
     app_source: &str,
     app_icon_path: &str,
-    context: impl Into<CaptureContext>,
+    context: impl Into<CaptureRequest>,
 ) -> Option<String> {
     insert_text_from_app_impl(content, app_source, app_icon_path, context.into())
 }
@@ -2799,7 +2841,7 @@ pub fn capture_rich_text_from_app(
     png: Option<Vec<u8>>,
     app_source: &str,
     app_icon_path: &str,
-    context: impl Into<CaptureContext>,
+    context: impl Into<CaptureRequest>,
 ) -> Option<String> {
     insert_rich_text_from_app_impl(
         plain_text,
@@ -2819,7 +2861,7 @@ fn insert_rich_text_from_app_impl(
     png: Option<Vec<u8>>,
     app_source: &str,
     app_icon_path: &str,
-    context: CaptureContext,
+    request: CaptureRequest,
 ) -> Option<String> {
     let _cleanup = crate::auto_cleanup::pause();
     let payload_bytes = plain_text
@@ -2841,7 +2883,7 @@ fn insert_rich_text_from_app_impl(
             normalized_color.to_string(),
             app_source,
             app_icon_path,
-            context,
+            request,
         );
     }
 
@@ -2856,7 +2898,7 @@ fn insert_rich_text_from_app_impl(
         html.as_deref(),
         rtf.as_deref(),
         png.as_deref(),
-        context.queue_epoch.is_some(),
+        request.context.queue_epoch.is_some(),
     );
     let meta = RichClipboardMeta {
         version: 1,
@@ -2897,10 +2939,11 @@ fn insert_rich_text_from_app_impl(
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: app_icon_path.to_string(),
+        source_metadata: request.source_metadata.clone(),
         hash,
         title_color: String::new(),
         item_type,
-        time: context.time,
+        time: request.context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
@@ -2912,7 +2955,7 @@ fn insert_rich_text_from_app_impl(
         &source,
         app_source,
         app_icon_path,
-        context,
+        request.context,
     )
     .then_some(hash)
 }
@@ -2953,6 +2996,7 @@ pub(crate) fn insert_test_room_rich_text(
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: String::new(),
+        source_metadata: SourceMetadata::default(),
         hash,
         title_color: String::new(),
         item_type,
@@ -2968,7 +3012,7 @@ fn insert_text_from_app_impl(
     content: String,
     app_source: &str,
     app_icon_path: &str,
-    context: CaptureContext,
+    request: CaptureRequest,
 ) -> Option<String> {
     let _cleanup = crate::auto_cleanup::pause();
     if is_semantically_blank_text(&content) {
@@ -2999,16 +3043,25 @@ fn insert_text_from_app_impl(
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: app_icon_path.to_string(),
+        source_metadata: request.source_metadata.clone(),
         hash,
         title_color: String::from(""),
         item_type,
-        time: context.time,
+        time: request.context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
     };
     let hash = item.hash.clone();
-    store_captured_item(&item, &content, "", app_source, app_icon_path, context).then_some(hash)
+    store_captured_item(
+        &item,
+        &content,
+        "",
+        app_source,
+        app_icon_path,
+        request.context,
+    )
+    .then_some(hash)
 }
 
 #[allow(dead_code)]
@@ -3042,7 +3095,7 @@ pub fn capture_image_with_text_and_app(
     text_content: &str,
     app_source: &str,
     app_icon_path: &str,
-    context: impl Into<CaptureContext>,
+    context: impl Into<CaptureRequest>,
 ) -> Option<String> {
     insert_image_with_text_and_app_impl(
         content,
@@ -3058,7 +3111,7 @@ fn insert_image_with_text_and_app_impl(
     text_content: &str,
     app_source: &str,
     app_icon_path: &str,
-    context: CaptureContext,
+    request: CaptureRequest,
 ) -> Option<String> {
     let _cleanup = crate::auto_cleanup::pause();
     if content.len() > crate::clipboard_budget::IMAGE_SOURCE_BYTES {
@@ -3081,10 +3134,11 @@ fn insert_image_with_text_and_app_impl(
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: app_icon_path.to_string(),
+        source_metadata: request.source_metadata.clone(),
         hash,
         title_color: String::from(""),
         item_type: ItemType::Image,
-        time: context.time,
+        time: request.context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
@@ -3096,7 +3150,7 @@ fn insert_image_with_text_and_app_impl(
         text_content,
         app_source,
         app_icon_path,
-        context,
+        request.context,
     );
     if saved {
         crate::image_ocr::captured(&hash);
@@ -3122,7 +3176,7 @@ pub fn capture_file_from_app(
     content: &Vec<String>,
     app_source: &str,
     app_icon_path: &str,
-    context: impl Into<CaptureContext>,
+    context: impl Into<CaptureRequest>,
 ) -> Option<String> {
     insert_file_from_app_impl(content, app_source, app_icon_path, context.into())
 }
@@ -3131,7 +3185,7 @@ fn insert_file_from_app_impl(
     content: &Vec<String>,
     app_source: &str,
     app_icon_path: &str,
-    context: CaptureContext,
+    request: CaptureRequest,
 ) -> Option<String> {
     let _cleanup = crate::auto_cleanup::pause();
     if let [path] = content.as_slice() {
@@ -3156,15 +3210,24 @@ fn insert_file_from_app_impl(
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: app_icon_path.to_string(),
+        source_metadata: request.source_metadata.clone(),
         title_color: "".to_string(),
         item_type: ItemType::File,
-        time: context.time,
+        time: request.context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
     };
     let hash = item.hash.clone();
-    store_captured_item(&item, &content, "", app_source, app_icon_path, context).then_some(hash)
+    store_captured_item(
+        &item,
+        &content,
+        "",
+        app_source,
+        app_icon_path,
+        request.context,
+    )
+    .then_some(hash)
 }
 fn native_path_string(path: &Path) -> String {
     let value = path.to_string_lossy().into_owned();
@@ -4748,6 +4811,7 @@ mod tests {
             preview_content: "text".to_string(),
             source: "text".to_string(),
             app_source: "Test App".to_string(),
+            source_metadata: SourceMetadata::default(),
             app_icon_path: icon_path.to_string_lossy().to_string(),
             title_color: String::new(),
             time: 1,
@@ -5445,6 +5509,7 @@ mod tests {
             text_content: String::new(),
             rich_html: String::new(),
             app_source: String::new(),
+            source_metadata: SourceMetadata::default(),
             app_icon_path: String::new(),
             hash: "disk-backed-long-text".to_string(),
             title_color: String::new(),

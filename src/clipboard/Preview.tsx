@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { emitTo, listen } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
@@ -444,7 +444,7 @@ export default function Preview() {
             const tabDirection = clipboardTabNavigationDirection(event);
             if (tabDirection !== null) {
                 event.preventDefault();
-                void emitTo("clipboard", "preview-navigate-selection", { direction: tabDirection, key: "Tab", ctrlKey: true })
+                void invoke("preview_navigate_selection", { direction: tabDirection, key: "Tab", ctrlKey: true })
                     .catch(e => error(`Failed to switch preview category: ${e}`));
                 return;
             }
@@ -453,7 +453,7 @@ export default function Preview() {
                 event.preventDefault();
                 const direction = event.key === "ArrowLeft" || (event.key === "Tab" && event.shiftKey) ? -1 : 1;
                 pendingNavigationDirectionRef.current = direction;
-                void emitTo("clipboard", "preview-navigate-selection", { direction, key: event.key })
+                void invoke("preview_navigate_selection", { direction, key: event.key })
                     .catch(e => {
                         if (pendingNavigationDirectionRef.current === direction) {
                             pendingNavigationDirectionRef.current = 0;
@@ -493,8 +493,8 @@ export default function Preview() {
 
     return (
         <div className={styles["preview-shell"]}
-            onMouseEnter={() => { if (hoverRef.current) void emitTo("clipboard", "preview-hover", true).catch(e => error(`Failed to retain hover preview: ${e}`)); }}
-            onMouseLeave={() => { if (hoverRef.current) void emitTo("clipboard", "preview-hover", false).catch(e => error(`Failed to leave hover preview: ${e}`)); }}
+            onMouseEnter={() => { if (hoverRef.current) void invoke("preview_pointer_changed", { inside: true }).catch(e => error(`Failed to retain hover preview: ${e}`)); }}
+            onMouseLeave={() => { if (hoverRef.current) void invoke("preview_pointer_changed", { inside: false }).catch(e => error(`Failed to leave hover preview: ${e}`)); }}
         >
             {!imageText && <ToolbarIconButton
                 size="medium"

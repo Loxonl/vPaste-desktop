@@ -107,8 +107,14 @@ final class PanelCardItem: NSCollectionViewItem {
 }
 
 @MainActor
+private final class PanelCardContent: NSView {
+  override var isFlipped: Bool { true }
+}
+
+@MainActor
 final class PanelCardView: NSView, NSDraggingSource {
   override var isFlipped: Bool { true }
+  private let content = PanelCardContent()
   private let title = NSTextField(labelWithString: "")
   private let age = NSTextField(labelWithString: "")
   private let icon = NSImageView()
@@ -138,6 +144,8 @@ final class PanelCardView: NSView, NSDraggingSource {
   private var query = ""
   private(set) var card: PanelCard?
   var select: (() -> Void)?
+  var hoverEntered: (() -> Void)?
+  var hoverLeft: (() -> Void)?
   var activate: (() -> Void)?
   var menuAction: ((String) -> Void)?
   var prepareDrag: ((@escaping ([String: Any]) -> Void) -> Void)?
@@ -162,6 +170,12 @@ final class PanelCardView: NSView, NSDraggingSource {
     selectionOutline.fillColor = NSColor.clear.cgColor
     selectionOutline.isHidden = true
     layer?.addSublayer(selectionOutline)
+    // Match WebView overflow:hidden for all content, while the outer layer
+    // retains the selection outline and shadow beyond the rounded card bounds.
+    content.wantsLayer = true
+    content.layer?.masksToBounds = true
+    content.layer?.cornerRadius = PanelStyle.cardRadius
+    addSubview(content)
     title.textColor = .white
     title.font = .boldSystemFont(ofSize: 16)
     age.textColor = .white
@@ -188,7 +202,7 @@ final class PanelCardView: NSView, NSDraggingSource {
     for view in [
       title, age, iconCrop, textScroll, image, dimensions, formatTag, favoriteMark, kindIcon,
       fileFormat, detailTitle, detailSubtitle,
-    ] { addSubview(view) }
+    ] { content.addSubview(view) }
     for field in [formatTag, favoriteMark, dimensions, fileFormat] {
       field.alignment = .center
       field.wantsLayer = true
@@ -209,6 +223,18 @@ final class PanelCardView: NSView, NSDraggingSource {
   override func hitTest(_ point: NSPoint) -> NSView? {
     bounds.contains(convert(point, from: superview)) ? self : nil
   }
+  override func resetCursorRects() {
+    super.resetCursorRects()
+    guard card != nil else { return }
+    let cursor: NSCursor = dragging && NSEvent.pressedMouseButtons & 1 != 0 ? .closedHand : .openHand
+    addCursorRect(visibleRect, cursor: cursor)
+  }
+  private func restoreDragCursor() {
+    window?.invalidateCursorRects(for: self)
+    guard let window, window.isKeyWindow,
+      visibleRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) else { return }
+    (card == nil ? NSCursor.arrow : .openHand).set()
+  }
   private var bodyRect: NSRect {
     NSRect(
       x: 8 * scale, y: 56 * scale, width: bounds.width - 16 * scale,
@@ -223,6 +249,8 @@ final class PanelCardView: NSView, NSDraggingSource {
   override func layout() {
     super.layout()
     let radius = PanelStyle.cardRadius * scale
+    content.frame = bounds
+    content.layer?.cornerRadius = radius
     layer?.cornerRadius = radius
     layer?.shadowColor = NSColor.black.cgColor
     layer?.shadowOpacity = PanelStyle.dark(self) ? 0.18 : 0.06
@@ -255,12 +283,6 @@ final class PanelCardView: NSView, NSDraggingSource {
           + 14 * scale, max(0, available - titleWidth - 5 * scale)), height: 16 * scale)
     iconCrop.frame = NSRect(
       x: bounds.width - 56 * scale, y: 0, width: 56 * scale, height: 48 * scale)
-    let mask = CAShapeLayer()
-    mask.path = CGPath(
-      roundedRect: NSRect(
-        x: -iconCrop.frame.minX, y: 0, width: bounds.width, height: bounds.height),
-      cornerWidth: radius, cornerHeight: radius, transform: nil)
-    iconCrop.layer?.mask = mask
     icon.frame = NSRect(x: -5 * scale, y: -12 * scale, width: 72 * scale, height: 72 * scale)
     favoriteMark.frame = NSRect(
       x: bounds.width - (hasIcon ? 76 : 28) * scale, y: 16 * scale, width: 18 * scale,
@@ -323,7 +345,8 @@ final class PanelCardView: NSView, NSDraggingSource {
     // Preserve the experiment's existing card alpha as well as the page glass.
     let background = NSColor(
       calibratedWhite: PanelStyle.dark(self) ? 0.13 : 1, alpha: PanelStyle.dark(self) ? 0.95 : 0.88)
-    let rounded = NSBezierPath(roundedRect: bounds, xRadius: 14 * scale, yRadius: 14 * scale)
+    let radius = PanelStyle.cardRadius * scale
+    let rounded = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
     NSGraphicsContext.saveGraphicsState()
     rounded.addClip()
     background.setFill()
@@ -385,11 +408,12 @@ final class PanelCardView: NSView, NSDraggingSource {
     let previous = self.card?.hash
     if previous != card?.hash { releaseContent() }
     self.card = card
+    if previous != card?.hash { window?.invalidateCursorRects(for: self) }
     self.scale = scale
     self.chinese = chinese
     self.media = media
     self.query = query
-    layer?.cornerRadius = 14 * scale
+    layer?.cornerRadius = PanelStyle.cardRadius * scale
     title.font = .systemFont(ofSize: 13 * scale, weight: .bold)
     age.font = .systemFont(ofSize: 11 * scale, weight: .medium)
     formatTag.font = .systemFont(ofSize: 10 * scale, weight: .semibold)
@@ -514,7 +538,7 @@ final class PanelCardView: NSView, NSDraggingSource {
       badge.layer?.cornerRadius = 9 * scale
       badge.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.9).cgColor
       badge.toolTip = card.tags.map(\.name).joined(separator: ", ")
-      addSubview(badge)
+      content.addSubview(badge)
       tagBadges.append(badge)
     }
     toolTip = card.source.isEmpty ? nil : card.source
@@ -659,10 +683,14 @@ final class PanelCardView: NSView, NSDraggingSource {
     }
   }
   func releaseContent() {
+    hoverLeft?()
+    hoverEntered = nil
+    hoverLeft = nil
     gif.stop()
     hoverTimer?.invalidate()
     hoverTimer = nil
     card = nil
+    window?.invalidateCursorRects(for: self)
     image.image = nil
     icon.image = nil
     text.string = ""
@@ -685,8 +713,12 @@ final class PanelCardView: NSView, NSDraggingSource {
     addTrackingArea(tracking!)
     super.updateTrackingAreas()
   }
-  override func mouseMoved(with event: NSEvent) { select?() }
+  override func mouseMoved(with event: NSEvent) {
+    select?()
+    hoverEntered?()
+  }
   override func mouseEntered(with event: NSEvent) {
+    hoverEntered?()
     hoverTimer?.invalidate()
     hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.06, repeats: true) { [weak self] _ in
       MainActor.assumeIsolated {
@@ -706,6 +738,7 @@ final class PanelCardView: NSView, NSDraggingSource {
     }
   }
   override func mouseExited(with event: NSEvent) {
+    hoverLeft?()
     hoverTimer?.invalidate()
     hoverTimer = nil
     textScroll.contentView.scroll(to: .zero)
@@ -716,7 +749,10 @@ final class PanelCardView: NSView, NSDraggingSource {
     select?()
   }
   override func mouseUp(with event: NSEvent) {
-    guard !dragging, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+    let inside = bounds.contains(convert(event.locationInWindow, from: nil))
+    window?.invalidateCursorRects(for: self)
+    if inside, card != nil { NSCursor.openHand.set() }
+    guard !dragging, inside else { return }
     if singleClick || event.clickCount >= 2 { activate?() }
   }
   override func rightMouseDown(with event: NSEvent) {
@@ -754,10 +790,13 @@ final class PanelCardView: NSView, NSDraggingSource {
         event.locationInWindow.y - down.locationInWindow.y) > 5
     else { return }
     dragging = true
+    window?.invalidateCursorRects(for: self)
+    NSCursor.closedHand.set()
     prepareDrag? { [weak self] payload in
       guard let self else { return }
       guard self.window != nil, NSEvent.pressedMouseButtons & 1 != 0 else {
         self.dragging = false
+        self.restoreDragCursor()
         self.dragEnded?()
         return
       }
@@ -790,6 +829,7 @@ final class PanelCardView: NSView, NSDraggingSource {
   ) {
     dragging = false
     down = nil
+    restoreDragCursor()
     dragEnded?()
   }
 }

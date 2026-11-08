@@ -1,4 +1,48 @@
 import AppKit
+import CoreText
+
+// Match Clipboard.module.css typography in logical points, before panel zoom.
+// Apply the CSS variable-font weight directly: AppKit's named weights quantize
+// intermediate values (for example, 740 can otherwise become the heavy face).
+enum PanelToolbarTypography {
+  static let tabSize: CGFloat = 14.5
+  static let lineHeight: CGFloat = 18
+
+  static func font(size: CGFloat, cssWeight: Double) -> NSFont {
+    let weight: NSFont.Weight = cssWeight >= 700 ? .bold : cssWeight >= 550 ? .semibold : .regular
+    let base = NSFont.systemFont(ofSize: size, weight: weight)
+    let descriptor = CTFontDescriptorCreateWithAttributes([
+      kCTFontVariationAttribute: [NSNumber(value: 0x77676874): cssWeight]
+    ] as CFDictionary)
+    return CTFontCreateCopyWithAttributes(base as CTFont, size, nil, descriptor) as NSFont
+  }
+
+  static func tabFont(scale: CGFloat, selected: Bool) -> NSFont {
+    font(size: tabSize * scale, cssWeight: selected ? 740 : 590)
+  }
+}
+
+// Let AppKit own cursor entry/exit and teardown rather than keeping a global
+// push/pop stack in SwiftUI onHover callbacks. This view never takes the click.
+@MainActor
+class PanelCursorRegion: NSView {
+  let cursor: NSCursor
+  var isEnabled = true {
+    didSet { if oldValue != isEnabled { window?.invalidateCursorRects(for: self) } }
+  }
+  init(cursor: NSCursor) {
+    self.cursor = cursor
+    super.init(frame: .zero)
+    setAccessibilityElement(false)
+  }
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+  override var acceptsFirstResponder: Bool { false }
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+  override func resetCursorRects() {
+    super.resetCursorRects()
+    if isEnabled { addCursorRect(visibleRect, cursor: cursor) }
+  }
+}
 
 // Native counterparts of Clipboard.module.css / src/ui/tokens.css. The page's
 // PanelBackdrop tints Clear Liquid Glass; the toolbar uses a denser fill.

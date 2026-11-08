@@ -56,8 +56,8 @@ that tutorial state. The existing tutorial itself still requires WebView mode.
 `src-tauri/native-panel/` implements an AppKit `NSPanel`, `NSCollectionView` and
 TextKit cards in Swift. It creates no WebView. The panel activates only after the
 explicit DEV action or the process-local native-mode selection. It appears above
-the current main window in side-by-side mode, closes on Escape or loss of key
-focus, and can be opened repeatedly. It uses the current panel scale,
+the current main window in side-by-side mode, closes on Escape or external
+focus loss under the shared main/preview rules, and can be opened repeatedly. It uses the current panel scale,
 show/hide timing curves, theme and mouse-paste preference. macOS Reduce Motion
 skips the content slide. The host frame matches the current main window rather
 than the screen's Dock-excluding visible frame. It remains fixed throughout both
@@ -68,9 +68,10 @@ The glass/content child uses the same explicit Core Animation position transitio
 as the current main panel. Opening starts below the clipped host before it becomes
 visible. Closing during an opening uses the current presentation position, and
 transition generations discard superseded completion callbacks. Repeated close
-requests do not restart a hide. Opening Settings, preview, the editor or OCR waits
-asynchronously for close completion; paste starts the hide concurrently with the
-existing focus/paste path so it does not acquire an extra animation delay.
+requests do not restart a hide. Opening Settings, the editor or OCR waits
+asynchronously for close completion; ordinary item preview keeps the native main
+panel alive. Paste starts the hide concurrently with the existing focus/paste
+path so it does not acquire an extra animation delay.
 
 On macOS 26+, when built with a macOS 26+ SDK, the background is one native
 `NSGlassEffectView` using the clear Liquid Glass style. Controls are embedded
@@ -111,7 +112,8 @@ original MIME data remains in Rust and is requested only for explicit actions.
 
 Copy/paste reuse the original Rust paths, including accessibility fallback and
 focus restoration. Preview, edit and OCR reuse the existing auxiliary windows;
-the experimental panel closes before those windows appear. Favorite/delete
+edit and OCR close the experimental panel before appearing. Ordinary preview
+shares focus/selection with the still-visible native panel. Favorite/delete
 changes affect the shared history and notify the existing main reader. Delete
 requires confirmation in the native UI.
 
@@ -136,9 +138,11 @@ Rich preview canvas defaults remain independent of the application theme, while
 copied colors and the original data/actions remain preserved.
 
 Search starts as a circular button and expands into a field on click or Cmd+F.
-The icon/category tabs have a bottom selection indicator, hover/focus states and
-keyboard navigation. Tabs scroll horizontally if space is limited; the expanded
-search width also adapts. Refresh, native diagnostics, Settings and Close have
+The icon/category tabs retain their bottom selection indicator and pointer hover
+states. Toolbar buttons do not participate in Tab/Shift+Tab focus or show focus
+rings; they use mouse actions and explicit shortcuts. The native search editor
+remains focusable, and list keyboard navigation remains available. Tabs scroll
+horizontally if space is limited; the expanded search width also adapts. Refresh, native diagnostics, Settings and Close have
 named circular controls. Settings opens the existing settings window. Link,
 file and color cards have type-specific presentation rather than raw text paths.
 The native file preview uses bounded vector/symbol presentation for common types;
@@ -169,7 +173,7 @@ not enter the SwiftUI model.
 | Keep main commands usable across focus changes | Route Cmd+F/Cmd+R from toolbar/window focus; leave text-copy, cursor movement and composition Escape with the search editor |
 | Preserve list virtualization, window motion and glass | Keep `NSCollectionView`, `PanelScroll`, the fixed `NSPanel`, existing Core Animation transitions and backdrop |
 | Release the hosted view on close | Clear callbacks, invalidate delayed search-focus requests, detach the hosting view and clear the search delegate |
-| Keep existing platform and deployment support | Compile only in macOS Debug; macOS 11 retains `PanelLegacyToolbar` because SwiftUI focus APIs require macOS 12 |
+| Keep existing platform and deployment support | Compile only in macOS Debug; macOS 11 retains `PanelLegacyToolbar`; the SwiftUI renderer uses macOS 12+ APIs |
 
 Manual AppKit drawing of toolbar controls is replaced only on the SwiftUI path.
 The old implementation remains in `NativePanelAppKitToolbar.swift` for macOS 11.
@@ -320,6 +324,131 @@ for the reported issue, separate from the inconclusive targeted-input attempt.
   `nativeViews=0 listeners=0`. No SwiftUI state-publication or constraint errors
   appeared in the checked runtime logs.
 - `NativePanelToolbarTests.swift` adds coverage for renderer selection, category
-  mapping/wraparound, nonempty search retention, callback cleanup and keyboard
+  mapping/close guards, nonempty search retention, callback cleanup and keyboard
   routing across toolbar/editor focus. Coverage was typechecked, not executed.
   No process-memory reduction is claimed from this integration.
+
+### Rounded-card content follow-up
+
+Native card content now clips through one flipped inner view with the same
+14-point radius as the WebView card, scaled by the active panel size. This
+replaces the source-icon-only shape mask and clips images, source icons, labels
+and tags together. The outer card remains unclipped so its existing selection
+outline and shadow retain their appearance. Card dimensions, alpha and actions
+are unchanged.
+
+The macOS Debug build and production/Swift XCTest typechecking passed. Focused
+coverage checks the rounded content boundary at 80%, 90% and 100% sizes while
+preserving the outer outline/shadow; these cases were not executed. Actual
+isolated native-window inspection with opaque synthetic source icons confirmed
+rounded image-card corners and the complete selection outline. Regression suites
+were not run.
+
+### Toolbar focus follow-up
+
+Toolbar action/category buttons no longer accept keyboard focus on either the
+SwiftUI path or the macOS 11 AppKit fallback. SwiftUI buttons explicitly disable
+focus, both hosting surfaces stay out of the AppKit key-view loop, and custom
+focus outlines plus per-button arrow-key traversal are removed. Category
+selection underlines, pointer hover, accessibility button labels, mouse actions,
+window shortcuts and native search editing remain available.
+
+The macOS Debug build and Swift/XCTest typechecking passed. In the actual
+isolated native window, ten forward Tabs and ten Shift+Tabs kept focus on the
+history collection without focusing toolbar buttons. Mouse category selection,
+refresh, Cmd+F, search text entry and clearing search also worked. The final
+window was inspected with no toolbar focus rectangle. Focused responder coverage
+was added and typechecked; regression suites were not executed. The AppKit
+fallback was reviewed/compiled but not run on a macOS 11 host.
+
+### Toolbar typography follow-up
+
+The native toolbar now mirrors `Clipboard.module.css` typography: 14.5-point
+category labels in an 18-point line box, CSS weights 590/740 for ordinary/selected
+labels, 13-point / 450 search text and 9-point / 800 developer text. CoreText
+variable-font weights avoid AppKit's named-weight quantization. The DEV prefix
+uses the WebView badge's 0.08em tracking while the full native renderer label
+remains visible in the existing developer capsule.
+
+Type labels render their emoji and text together at the same font size, instead
+of enlarging the emoji independently. Fixed/type tab widths use the same minimums,
+maximum, icon/gap and horizontal padding as WebView and include the selected font's
+actual width. SF Symbol artwork is sized to match MUI's visible SVG artwork within
+the same icon/control boxes. These measurements scale with the existing panel
+size; window geometry, toolbar height, card appearance and the no-Tab-focus policy
+remain unchanged. The macOS 11 toolbar uses the shared font and width metrics.
+
+The macOS Debug build and Swift/XCTest typechecking passed. The actual WebView
+and native Chinese toolbars were compared using the same isolated synthetic
+history, display and scale; category text, emoji and complete DEV label were
+inspected. CoreText font lookup/variation measurements confirmed the local system
+font and exact 590/740 weight axes. Focused size/weight/width coverage includes
+English and Chinese labels at 80%, 90% and 100%; coverage was typechecked, not run.
+Regression suites were not executed. The macOS 11 fallback was compiled/reviewed,
+not run on a macOS 11 host.
+
+
+### Native main/preview continuity follow-up
+
+Acceptance criteria and implementation:
+
+| Criterion | Implementation |
+| --- | --- |
+| Space opens/toggles preview without hiding or recreating the main panel | Remove the ordinary-preview `close_for_action` call; use the existing preview preparation/commit pipeline and focus the live native controller on return |
+| Moving focus between main and preview preserves both; external focus loss follows WebView rules | Share the existing blur decisions and cursor focus watcher with the native surface; observe both native key-window and application activation notifications; preserve pinned readers |
+| Hover obeys the current setting and interaction policy | Pass `hover_preview_enabled` into Swift; use cancellable 500 ms open / 250 ms leave delays, retain while the pointer is in preview, and cancel on input/filter/search/close; the backend rechecks the setting and mode policy |
+| Preview stays outside the main panel on the target display | Publish the actual screen-relative native frame, use the area above it with the existing 16-point gap, and fit the preview to that area on small screens |
+| Selection updates preserve direction, motion and rapid-navigation correctness | Route preview keyboard/pointer events through Rust to the active main backend, reuse existing window geometry interpolation and React Motion transitions/Reduce Motion, and discard stale native requests before rendering |
+| Closing releases native-only work | Cancel timers, remove application observers and bridge callbacks, invalidate requests, and close unpinned previews when their native owner closes |
+
+The removed mechanisms are ordinary preview's close-before-open path, unconditional
+native dismissal when focus moves to preview, and direct preview-to-`clipboard`
+event delivery that assumed a WebView main window existed. Settings/editor/OCR
+close-before-open behavior stays in place. The existing WebView command signature
+and event payloads remain compatible; the new transport commands fall back to the
+same WebView events on Windows, Release and ordinary WebView mode. No new preview
+renderer or independent animation system is introduced.
+
+Local verification used a separate app bundle and the existing marked synthetic
+history profile, without a clipboard watcher. Space opened a real preview with
+`visible=true mainKey=true`; repeated Space toggled only preview. Rapid Right-key
+navigation reached text, image and GIF previews without recreating the main
+controller. Runtime geometry changed from 760 × 560 to 792 × 492 and 420 × 374,
+with `animated=true` for size changes and every preview above the main frame at
+screen Y=778. Initial native startup still reported `nativeDefault=true webviews=[]`.
+
+Rust all-target compilation, Debug build, Release check, TypeScript checking,
+UI style governance and production/Swift XCTest typechecking passed. Coverage
+was added before implementation for preview transport, hover delays/configuration,
+stale-work cancellation, app-focus observer cleanup and scaled/negative-screen
+geometry. Per the requested workflow, regression suites were not executed.
+The checked host used normal motion. Reduced Motion and multi-display branches
+were reviewed/compiled, not manually exercised. The automation does not expose a
+pointer-move operation, so hover entry/transfer and the complete external-click
+sequence are not claimed as completed manual checks; their event paths and cleanup
+are implemented and covered for future execution. Windows received source review
+of the existing-event fallback and was not run on this macOS host.
+
+
+### Native pointer affordance follow-up
+
+Acceptance criteria: actionable SwiftUI and AppKit toolbar buttons use the
+pointing-hand cursor inside their bounds only; draggable cards use the open hand
+and switch to the closed hand after the existing drag threshold; release/exit and
+window cleanup restore the appropriate cursor. Search remains a text-input
+surface, toolbar gaps remain ordinary pointer areas, and native drag copy/forbidden
+feedback remains owned by AppKit. Cursor registration must not intercept button
+clicks, add Tab focus or alter window motion/geometry.
+
+SwiftUI button styles install non-intercepting AppKit cursor regions; the macOS
+11 button subclasses use the same pointing-hand affordance through native cursor
+rectangles. Cards register open-hand rectangles, show the closed hand only after
+the existing 5-point threshold, and restore on release/cancel/end. No cursor
+push/pop stack or additional hover timer is introduced. Native drag operation
+masks, button actions, keyboard focus and search editing remain unchanged.
+
+The macOS Debug build and production/Swift XCTest typechecking passed. Focused
+coverage checks enabled/disabled cursor regions without intercepting clicks, and
+that crossing the drag threshold changes the hand while release restores it and
+does not also activate paste. The coverage was compiled, not executed; regression
+suites were not run. System cursor appearance was not manually inspected.

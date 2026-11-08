@@ -3,6 +3,7 @@ import QuartzCore
 
 final class NativeHistoryPanel: NSPanel {
   var keyHandler: ((NSEvent) -> Bool)?
+  var pointerHandler: (() -> Void)?
   var sizePreview = false
   init(dockedFrame: NSRect) {
     super.init(contentRect: dockedFrame, styleMask: [.borderless], backing: .buffered, defer: false)
@@ -20,6 +21,12 @@ final class NativeHistoryPanel: NSPanel {
   }
   override var canBecomeKey: Bool { !sizePreview }
   override var canBecomeMain: Bool { !sizePreview }
+  override func sendEvent(_ event: NSEvent) {
+    if [.leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel].contains(event.type) {
+      pointerHandler?()
+    }
+    super.sendEvent(event)
+  }
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
     let editor = firstResponder as? NSTextView
     let composing = editor?.hasMarkedText() == true
@@ -30,7 +37,9 @@ final class NativeHistoryPanel: NSPanel {
     // movement or Escape from an active input-method composition.
     let toolbarCommand = !composing && command && (character == "f" || character == "r")
     let dismissCommand = event.keyCode == 53 && editor == nil
-    if (firstResponder is PanelList || toolbarCommand || dismissCommand),
+    let categoryCommand = !composing && event.keyCode == 48 && event.modifierFlags.contains(.control)
+      && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.option)
+    if (firstResponder is PanelList || toolbarCommand || dismissCommand || categoryCommand),
       keyHandler?(event) == true { return true }
     return super.performKeyEquivalent(with: event)
   }
@@ -99,6 +108,23 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private let scroll = PanelScroll()
   private let media = PanelMedia()
   private var filter = ""
+  private var filterIndex = 0
+  private var pendingPreviewSelection: (index: Int, direction: Int)?
+  private lazy var previews = PanelPreviewDriver(hoverEnabled: config.hoverPreviewEnabled) {
+    [weak self] operation, args in
+    guard let self, !self.closed else { return }
+    if operation == "hover-dismiss" || operation == "preview-close" {
+      self.bridge.send(operation, args)
+      return
+    }
+    guard !self.hiding, self.window.attachedSheet == nil, !self.dragging else { return }
+    if args["mode"] as? String == "hover", !self.window.isKeyWindow { return }
+    self.bridge.send(operation, args) { [weak self] result in
+      if case .failure(let error) = result, args["mode"] as? String != "hover" {
+        self?.showMessage(error.localizedDescription)
+      }
+    }
+  }
   private var token: PanelToken?
   private var pages: [Int: [PanelRef]] = [:]
   private var cards: [String: PanelCard] = [:]
@@ -116,6 +142,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private var heldHash: String?
   private var debounce: DispatchWorkItem?
   private var boundsObserver: NSObjectProtocol?
+  private var applicationFocus: PanelApplicationFocus?
   private var transition = 0
   private var starting = true
   private var hiding = false
@@ -155,6 +182,12 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     window.delegate = self
     window.keyHandler = { [weak self] event in self?.key(event) ?? false }
+    window.pointerHandler = { [weak self] in self?.previews.cancelHover() }
+    applicationFocus = PanelApplicationFocus { [weak self] active in
+      guard let self, !self.closed, !self.config.sizePreview else { return }
+      self.bridge.setKey(active && self.window.isKeyWindow)
+      if !active { self.scheduleFocusLoss() }
+    }
     switch config.theme {
     case "dark": window.appearance = NSAppearance(named: .darkAqua)
     case "light": window.appearance = NSAppearance(named: .aqua)
@@ -233,10 +266,29 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       guard let self, !self.closed, !self.dragging, !self.busyAction else { return }
       self.scheduleReload()
     }
+    bridge.event = { [weak self] name, value in
+      guard let self, !self.closed else { return }
+      if name == "preview-hover", let inside = value["inside"] as? Bool {
+        self.previews.pointerInPreview(inside)
+      } else if name == "preview-navigation" {
+        let direction = (value["direction"] as? Int) == -1 ? -1 : 1
+        self.previews.cancelHover()
+        if value["ctrlKey"] as? Bool == true {
+          self.changeFilter((self.filterIndex + direction + 7) % 7)
+        } else if value["key"] as? String != "Tab" || self.config.tabQuickSelectEnabled {
+          self.select(max(0, min(self.count - 1, self.selected + direction)), scroll: true)
+        }
+      }
+    }
     media.changed = { [weak self] in self?.status() }
   }
   func present() {
     root.layoutSubtreeIfNeeded()
+    if let screen = window.screen {
+      let frame = window.frame
+      bridge.send("surface", ["frame": [frame.minX - screen.frame.minX,
+        screen.frame.maxY - frame.maxY, frame.width, frame.height]])
+    }
     // Prepare before ordering the host front, so the first composited frame is
     // already below the clipped surface, just like the existing main panel.
     PanelSlide.prepare(
@@ -326,6 +378,10 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     debounce = nil
     if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
     boundsObserver = nil
+    applicationFocus?.close()
+    applicationFocus = nil
+    previews.close()
+    pendingPreviewSelection = nil
     toolbar.releaseContent()
     search.delegate = nil
     for view in renderedViews.allObjects { view.releaseContent() }
@@ -342,6 +398,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     list.delegate = nil
     window.delegate = nil
     window.keyHandler = nil
+    window.pointerHandler = nil
     if ProcessInfo.processInfo.arguments.contains("--native-panel-check") {
       NSLog(
         "[native-panel] closed cards=%d pages=%d decodedBytes=%d", cards.count, pages.count,
@@ -349,19 +406,26 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     if panelController === self { panelController = nil }
   }
-  func windowDidBecomeKey(_ notification: Notification) { bridge.setKey(true) }
+  func windowDidBecomeKey(_ notification: Notification) { bridge.setKey(NSApp.isActive) }
   func windowDidResignKey(_ notification: Notification) {
     bridge.setKey(false)
+    scheduleFocusLoss()
+  }
+  private func scheduleFocusLoss() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-      guard let self, !self.closed, !self.starting, !self.window.isKeyWindow,
+      guard let self, !self.closed, (!self.starting || !NSApp.isActive),
+        (!self.window.isKeyWindow || !NSApp.isActive),
         self.window.attachedSheet == nil, !self.dragging
       else { return }
-      self.dismiss()
+      self.bridge.send("blur")
     }
   }
   private func changeFilter(_ index: Int) {
     let types = ["", "", "Text", "Image", "Link", "Color", "File"]
     guard types.indices.contains(index) else { return }
+    previews.clear()
+    pendingPreviewSelection = nil
+    filterIndex = index
     if index == 1 {
       filter = "__favorite"
     } else if index == 0 {
@@ -392,6 +456,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   func controlTextDidEndEditing(_ obj: Notification) { toolbar.endEmptySearch() }
   func controlTextDidChange(_ obj: Notification) {
     if (search.currentEditor() as? NSTextView)?.hasMarkedText() == true { return }
+    previews.clear()
+    pendingPreviewSelection = nil
     scheduleReload()
   }
   func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
@@ -418,6 +484,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   private func reload() {
     guard !closed else { return }
+    previews.cancelHover()
+    pendingPreviewSelection = nil
     generation &+= 1
     let epoch = generation
     token = nil
@@ -470,6 +538,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     } else {
       emptyState.hide()
     }
+    refreshSelectedPreview()
     status()
   }
   private func syncListSize() {
@@ -511,6 +580,16 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       chinese: chinese, query: search.stringValue, selected: index == selected)
     view.singleClick = config.mousePasteMode == "single"
     view.select = { [weak self] in self?.select(index, scroll: false) }
+    let previewItem = entry.map { PanelPreviewItem(hash: $0.hash, itemType: $0.itemType) }
+    view.hoverEntered = { [weak self] in
+      guard let self, let previewItem, !self.dragging, !self.busyAction,
+        self.window.attachedSheet == nil else { return }
+      self.select(index, scroll: false)
+      self.previews.enter(previewItem)
+    }
+    view.hoverLeft = { [weak self] in
+      if let previewItem { self?.previews.leave(previewItem) }
+    }
     view.activate = { [weak self] in self?.action("paste", at: index) }
     view.menuAction = { [weak self] op in self?.action(op, at: index) }
     view.prepareDrag = { [weak self] completion in
@@ -674,9 +753,20 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         " · Enter paste · ⌘C copy · Space preview · Esc close",
         " · Enter 粘贴 · ⌘C 复制 · 空格预览 · Esc 关闭")
   }
+  private func refreshSelectedPreview() {
+    guard let pending = pendingPreviewSelection, pending.index == selected,
+      let entry = ref(selected) else { return }
+    pendingPreviewSelection = nil
+    previews.selection(PanelPreviewItem(hash: entry.hash, itemType: entry.itemType), direction: pending.direction)
+  }
   private func select(_ index: Int, scroll shouldScroll: Bool) {
     guard index >= 0, index < count else { return }
+    let previous = selected
     selected = index
+    if index != previous {
+      pendingPreviewSelection = (index, shouldScroll ? (index > previous ? 1 : -1) : 0)
+      refreshSelectedPreview()
+    }
     for path in list.indexPathsForVisibleItems() {
       (list.item(at: path) as? PanelCardItem)?.cardView.selected = path.item == index
     }
@@ -696,6 +786,11 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     scheduleViewport()
   }
   private func key(_ event: NSEvent) -> Bool {
+    if event.keyCode == 48 && event.modifierFlags.contains(.control)
+      && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.option) {
+      changeFilter((filterIndex + (event.modifierFlags.contains(.shift) ? -1 : 1) + 7) % 7)
+      return true
+    }
     if event.modifierFlags.contains(.command) {
       if event.charactersIgnoringModifiers?.lowercased() == "f" {
         toolbar.beginSearch()
@@ -723,8 +818,13 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     case 36, 76:
       action("paste", at: selected)
       return true
+    case 48 where config.tabQuickSelectEnabled:
+      select(max(0, min(count - 1, selected + (event.modifierFlags.contains(.shift) ? -1 : 1))), scroll: true)
+      return true
     case 49:
-      action("preview", at: selected)
+      if !event.isARepeat, let entry = ref(selected) {
+        previews.toggle(PanelPreviewItem(hash: entry.hash, itemType: entry.itemType))
+      }
       return true
     case 51, 117:
       action("delete", at: selected)
@@ -733,7 +833,12 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
   }
   private func action(_ operation: String, at index: Int) {
-    guard !busyAction, let hash = ref(index)?.hash else { return }
+    guard !busyAction, let entry = ref(index) else { return }
+    let hash = entry.hash
+    if operation == "preview" {
+      previews.open(PanelPreviewItem(hash: hash, itemType: entry.itemType))
+      return
+    }
     if operation == "delete" {
       let alert = NSAlert()
       alert.messageText = local("Delete this history item?", "删除这条历史记录？")

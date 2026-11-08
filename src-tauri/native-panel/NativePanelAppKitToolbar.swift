@@ -2,7 +2,19 @@
 import AppKit
 
 @MainActor
-final class PanelIconButton: NSButton {
+class PanelPointerButton: NSButton {
+  override var isEnabled: Bool {
+    didSet { if oldValue != isEnabled { window?.invalidateCursorRects(for: self) } }
+  }
+  override func resetCursorRects() {
+    super.resetCursorRects()
+    if isEnabled { addCursorRect(visibleRect, cursor: .pointingHand) }
+  }
+}
+
+@MainActor
+final class PanelIconButton: PanelPointerButton {
+  override var acceptsFirstResponder: Bool { false }
   var scale: CGFloat = 1
   var active = false {
     didSet {
@@ -69,16 +81,12 @@ final class PanelIconButton: NSButton {
     shape.lineWidth = scale
     shape.stroke()
     super.draw(dirtyRect)
-    if window?.firstResponder === self {
-      NSColor.keyboardFocusIndicatorColor.setStroke()
-      shape.lineWidth = 2 * scale
-      shape.stroke()
-    }
   }
 }
 
 @MainActor
-final class PanelTabButton: NSButton {
+final class PanelTabButton: PanelPointerButton {
+  override var acceptsFirstResponder: Bool { false }
   var scale: CGFloat = 1
   var emoji = ""
   var symbol = ""
@@ -88,7 +96,6 @@ final class PanelTabButton: NSButton {
       needsDisplay = true
     }
   }
-  var move: ((Int) -> Void)?
   private var hovering = false
   private var tracking: NSTrackingArea?
   override init(frame: NSRect) {
@@ -100,10 +107,8 @@ final class PanelTabButton: NSButton {
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
   var preferredWidth: CGFloat {
-    let text = (title as NSString).size(withAttributes: [
-      .font: NSFont.systemFont(ofSize: 14.5 * scale, weight: .semibold)
-    ]).width
-    return min(128 * scale, max(58 * scale, text + 42 * scale))
+    PanelFilterChoice(title: title, emoji: emoji, symbol: symbol)
+      .width(scale: scale, selected: selected)
   }
   override func updateTrackingAreas() {
     if let tracking { removeTrackingArea(tracking) }
@@ -121,15 +126,6 @@ final class PanelTabButton: NSButton {
     hovering = false
     needsDisplay = true
   }
-  override func keyDown(with event: NSEvent) {
-    if event.keyCode == 123 {
-      move?(-1)
-    } else if event.keyCode == 124 {
-      move?(1)
-    } else {
-      super.keyDown(with: event)
-    }
-  }
   override func draw(_ dirtyRect: NSRect) {
     if hovering {
       (PanelStyle.dark(self)
@@ -137,17 +133,15 @@ final class PanelTabButton: NSButton {
       bounds.fill()
     }
     let color = selected ? PanelStyle.accent(self) : PanelStyle.secondary(self)
-    let font = NSFont.systemFont(ofSize: 14.5 * scale, weight: selected ? .bold : .semibold)
-    let titleSize = (title as NSString).size(withAttributes: [.font: font])
-    let total = titleSize.width + 23 * scale
-    let left = max(10 * scale, (bounds.width - total) / 2)
+    let font = PanelToolbarTypography.tabFont(scale: scale, selected: selected)
+    let label = emoji.isEmpty ? title : "\(emoji) \(title)"
+    let titleSize = (label as NSString).size(withAttributes: [.font: font])
+    let total = titleSize.width + (emoji.isEmpty ? 22 * scale : 0)
+    let padding = (emoji.isEmpty ? 33 : 20) * scale
+    let left = 10 * scale + max(0, (bounds.width - padding - total) / 2)
     let iconRect = NSRect(
-      x: left, y: (bounds.height - 18 * scale) / 2, width: 18 * scale, height: 18 * scale)
-    if !emoji.isEmpty {
-      (emoji as NSString).draw(
-        in: iconRect.insetBy(dx: -scale, dy: -scale),
-        withAttributes: [.font: NSFont.systemFont(ofSize: 17 * scale)])
-    } else if symbol == "grid" {
+      x: left, y: (bounds.height - 17 * scale) / 2, width: 17 * scale, height: 17 * scale)
+    if emoji.isEmpty && symbol == "grid" {
       color.setFill()
       for row in 0..<3 {
         for col in 0..<3 {
@@ -157,13 +151,13 @@ final class PanelTabButton: NSButton {
           ).fill()
         }
       }
-    } else {
+    } else if emoji.isEmpty {
       ("☆" as NSString).draw(
         in: iconRect.insetBy(dx: -2 * scale, dy: -2 * scale),
-        withAttributes: [.font: NSFont.systemFont(ofSize: 22 * scale), .foregroundColor: color])
+        withAttributes: [.font: NSFont.systemFont(ofSize: 17 * scale), .foregroundColor: color])
     }
-    (title as NSString).draw(
-      at: NSPoint(x: left + 23 * scale, y: (bounds.height - titleSize.height) / 2),
+    (label as NSString).draw(
+      at: NSPoint(x: left + (emoji.isEmpty ? 22 * scale : 0), y: (bounds.height - titleSize.height) / 2),
       withAttributes: [.font: font, .foregroundColor: color])
     if selected {
       color.setFill()
@@ -173,14 +167,6 @@ final class PanelTabButton: NSButton {
           width: bounds.width - 20 * scale, height: 3 * scale),
         xRadius: 2 * scale, yRadius: 2 * scale
       ).fill()
-    }
-    if window?.firstResponder === self {
-      NSColor.keyboardFocusIndicatorColor.setStroke()
-      let ring = NSBezierPath(
-        roundedRect: bounds.insetBy(dx: 2 * scale, dy: 3 * scale), xRadius: 6 * scale,
-        yRadius: 6 * scale)
-      ring.lineWidth = 2 * scale
-      ring.stroke()
     }
   }
 }
@@ -243,7 +229,7 @@ final class PanelLegacyToolbar: NSView {
     searchButton = icon("magnifyingglass", local("Search", "搜索"), #selector(toggleSearch))
     addSubview(search)
     search.isHidden = true
-    search.font = .systemFont(ofSize: 13 * scale)
+    search.font = PanelToolbarTypography.font(size: 13 * scale, cssWeight: 450)
     search.controlSize = .small
     search.focusRingType = .exterior
     tabScroll.documentView = tabStrip
@@ -269,17 +255,11 @@ final class PanelLegacyToolbar: NSView {
       button.target = self
       button.action = #selector(selectFilter(_:))
       button.setAccessibilityLabel(button.title)
-      button.move = { [weak self] step in
-        guard let self else { return }
-        let next = (index + step + self.tabs.count) % self.tabs.count
-        self.tabs[next].performClick(nil)
-        self.window?.makeFirstResponder(self.tabs[next])
-      }
       tabs.append(button)
       tabStrip.addSubview(button)
     }
     addSubview(developer)
-    badge.font = .systemFont(ofSize: 9 * scale, weight: .heavy)
+    badge.font = PanelToolbarTypography.font(size: 9 * scale, cssWeight: 800)
     badge.textColor = PanelStyle.accent(self)
     developer.addSubview(badge)
     refreshButton = icon(
@@ -332,7 +312,7 @@ final class PanelLegacyToolbar: NSView {
     badge.frame = NSRect(x: 9 * scale, y: 8 * scale, width: 65 * scale, height: 16 * scale)
     refreshButton.frame = NSRect(x: 77 * scale, y: 2 * scale, width: button, height: button)
     infoButton.frame = NSRect(x: 108 * scale, y: 2 * scale, width: button, height: button)
-    let left = searchButton.frame.maxX + 10 * scale + expanded
+    let left = searchButton.frame.maxX + 15 * scale + expanded
     tabScroll.frame = NSRect(
       x: left, y: 0, width: max(50 * scale, developer.frame.minX - left - 10 * scale),
       height: bounds.height)
@@ -362,6 +342,8 @@ final class PanelLegacyToolbar: NSView {
   }
   func setSelection(_ index: Int) {
     for (i, tab) in tabs.enumerated() { tab.selected = i == index }
+    needsLayout = true
+    layoutSubtreeIfNeeded()
     if index < tabs.count { tabs[index].scrollToVisible(tabs[index].bounds) }
   }
   func setInfoVisible(_ visible: Bool) { infoButton?.active = visible }

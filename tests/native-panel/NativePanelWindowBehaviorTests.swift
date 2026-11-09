@@ -136,6 +136,73 @@ final class NativePanelWindowBehaviorTests: XCTestCase {
     XCTAssertFalse(panel.isMovable)
   }
 
+  func testPreviewCanKeepKeyboardFocusWhileNativePanelRetainsMainAppearance() {
+    _ = NSApplication.shared
+    let panel = NativeHistoryPanel(dockedFrame: NSRect(x: 0, y: 0, width: 800, height: 302))
+    let preview = NSWindow(contentRect: NSRect(x: 100, y: 320, width: 400, height: 300),
+      styleMask: [.titled], backing: .buffered, defer: false)
+    preview.isReleasedWhenClosed = false
+    defer { preview.close(); panel.close() }
+    panel.makeKeyAndOrderFront(nil)
+    panel.makeMain()
+    preview.makeKeyAndOrderFront(nil)
+    preview.makeMain()
+    XCTAssertTrue(preview.isKeyWindow)
+    XCTAssertFalse(panel.isMainWindow)
+    let panelFrame = panel.frame
+    let panelAlpha = panel.alphaValue
+
+    panel.retainMainAppearanceForPreview()
+
+    XCTAssertTrue(panel.isMainWindow, "The glass must retain the main-window appearance")
+    XCTAssertTrue(preview.isKeyWindow, "The preview must still receive typing and shortcuts")
+    XCTAssertTrue(NSApp.keyWindow === preview)
+    XCTAssertEqual(panel.alphaValue, panelAlpha)
+    XCTAssertEqual(panel.frame, panelFrame)
+    XCTAssertFalse(panel.isMovable)
+
+    preview.makeMain()
+    panel.orderOut(nil)
+    panel.retainMainAppearanceForPreview()
+    XCTAssertTrue(preview.isMainWindow, "A hidden native panel must not retake the main role")
+    panel.sizePreview = true
+    panel.orderFrontRegardless()
+    panel.retainMainAppearanceForPreview()
+    XCTAssertTrue(preview.isMainWindow, "Settings size previews must remain noninteractive")
+  }
+
+  func testLiquidGlassKeepsActiveAppearanceAfterResigningKeyAndMain() throws {
+    #if VPASTE_LIQUID_GLASS_SDK
+      guard #available(macOS 26.0, *) else { return }
+      _ = NSApplication.shared
+      let panel = NativeHistoryPanel(dockedFrame: NSRect(x: 0, y: 0, width: 800, height: 302))
+      panel.contentView = PanelBackdrop(scale: 1)
+      defer { panel.close() }
+      let selector = NSSelectorFromString("_hasMainAppearance")
+      let method = try XCTUnwrap(class_getInstanceMethod(NSWindow.self, selector))
+      typealias Appearance = @convention(c) (AnyObject, Selector) -> Bool
+      let appearance = unsafeBitCast(method_getImplementation(method), to: Appearance.self)
+      panel.makeKeyAndOrderFront(nil)
+      panel.makeMain()
+      let frame = panel.frame
+      let alpha = panel.alphaValue
+
+      // Paste and outside clicks can transfer focus before the 200 ms exit ends.
+      panel.resignKey()
+      panel.resignMain()
+      XCTAssertFalse(panel.isKeyWindow)
+      XCTAssertFalse(panel.isMainWindow)
+      XCTAssertTrue(appearance(panel, selector), "Glass must remain active during the closing slide")
+      XCTAssertEqual(panel.frame, frame)
+      XCTAssertEqual(panel.alphaValue, alpha)
+
+      panel.sizePreview = true
+      XCTAssertFalse(appearance(panel, selector), "Settings size previews must keep their existing appearance")
+      panel.orderOut(nil)
+      XCTAssertFalse(panel.isVisible)
+    #endif
+  }
+
   func testReducedMotionUpdatesContentWithoutMovingTheHost() {
     let root = NSView(frame: NSRect(x: 0, y: 0, width: 1944, height: 302))
     let surface = NSView(frame: root.bounds)

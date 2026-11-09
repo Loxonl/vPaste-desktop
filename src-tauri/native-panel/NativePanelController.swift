@@ -1,10 +1,11 @@
 import AppKit
+import ObjectiveC
 import QuartzCore
 
 final class NativeHistoryPanel: NSPanel {
   var keyHandler: ((NSEvent) -> Bool)?
   var pointerHandler: (() -> Void)?
-  var sizePreview = false
+  var sizePreview = false { didSet { updateGlassAppearance() } }
   init(dockedFrame: NSRect) {
     super.init(contentRect: dockedFrame, styleMask: [.borderless], backing: .buffered, defer: false)
     isMovable = false
@@ -12,6 +13,7 @@ final class NativeHistoryPanel: NSPanel {
     isReleasedWhenClosed = false
     animationBehavior = .none
     setFrame(dockedFrame, display: false)
+    updateGlassAppearance()
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
   // The main panel deliberately extends below the Dock and past both screen
@@ -21,6 +23,38 @@ final class NativeHistoryPanel: NSPanel {
   }
   override var canBecomeKey: Bool { !sizePreview }
   override var canBecomeMain: Bool { !sizePreview }
+  func retainMainAppearanceForPreview() {
+    guard !sizePreview, isVisible, !isMainWindow else { return }
+    // A utility preview owns keyboard input; this panel remains the main surface.
+    // makeMain changes the main role without ordering the panel or taking key focus.
+    makeMain()
+  }
+  private func updateGlassAppearance() {
+    #if VPASTE_LIQUID_GLASS_SDK
+      guard #available(macOS 26.0, *) else { return }
+      // Liquid Glass has no public equivalent of NSVisualEffectView.state.
+      // Keep only this DEV panel's appearance active through focus loss and the
+      // closing slide. This does not change actual key/main status or activation.
+      let selector = NSSelectorFromString("_setForceMainAppearance:")
+      guard responds(to: selector),
+        let method = class_getInstanceMethod(type(of: self), selector),
+        method_getNumberOfArguments(method) == 3 else { return }
+      let resultType = method_copyReturnType(method)
+      defer { free(resultType) }
+      guard let valueType = method_copyArgumentType(method, 2) else { return }
+      defer { free(valueType) }
+      guard String(cString: resultType) == "v",
+        ["B", "c"].contains(String(cString: valueType)) else { return }
+      typealias SetAppearance = @convention(c) (AnyObject, Selector, ObjCBool) -> Void
+      let setAppearance = unsafeBitCast(method_getImplementation(method), to: SetAppearance.self)
+      setAppearance(self, selector, ObjCBool(!sizePreview))
+      if ProcessInfo.processInfo.arguments.contains("--native-panel-check") {
+        NSLog("[native-panel] keep-glass-appearance=%d sizePreview=%d", !sizePreview, sizePreview)
+      }
+      // Do not reset this in windowWillClose: that notification precedes orderOut
+      // and would let an inactive final frame reach the compositor.
+    #endif
+  }
   override func sendEvent(_ event: NSEvent) {
     if [.leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel].contains(event.type) {
       pointerHandler?()
@@ -143,6 +177,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private var debounce: DispatchWorkItem?
   private var boundsObserver: NSObjectProtocol?
   private var applicationFocus: PanelApplicationFocus?
+  private var mainRoleObserver: NSObjectProtocol?
+  private let previewWindows = NSHashTable<NSWindow>.weakObjects()
   private var transition = 0
   private var starting = true
   private var hiding = false
@@ -187,6 +223,15 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       guard let self, !self.closed, !self.config.sizePreview else { return }
       self.bridge.setKey(active && self.window.isKeyWindow)
       if !active { self.scheduleFocusLoss() }
+    }
+    mainRoleObserver = NotificationCenter.default.addObserver(
+      forName: NSWindow.didBecomeMainNotification, object: nil, queue: .main
+    ) { [weak self] notification in
+      MainActor.assumeIsolated {
+        guard let self, let preview = notification.object as? NSWindow,
+          self.previewWindows.contains(preview) else { return }
+        self.retainMainAppearanceForPreview(windowNumber: preview.windowNumber)
+      }
     }
     switch config.theme {
     case "dark": window.appearance = NSAppearance(named: .darkAqua)
@@ -268,7 +313,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     bridge.event = { [weak self] name, value in
       guard let self, !self.closed else { return }
-      if name == "preview-hover", let inside = value["inside"] as? Bool {
+      if name == "preview-focused", let number = value["windowNumber"] as? Int {
+        self.retainMainAppearanceForPreview(windowNumber: number)
+      } else if name == "preview-hover", let inside = value["inside"] as? Bool {
         self.previews.pointerInPreview(inside)
       } else if name == "preview-navigation" {
         let direction = (value["direction"] as? Int) == -1 ? -1 : 1
@@ -380,6 +427,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     boundsObserver = nil
     applicationFocus?.close()
     applicationFocus = nil
+    if let mainRoleObserver { NotificationCenter.default.removeObserver(mainRoleObserver) }
+    mainRoleObserver = nil
+    previewWindows.removeAllObjects()
     previews.close()
     pendingPreviewSelection = nil
     toolbar.releaseContent()
@@ -410,6 +460,20 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   func windowDidResignKey(_ notification: Notification) {
     bridge.setKey(false)
     scheduleFocusLoss()
+  }
+  private func retainMainAppearanceForPreview(windowNumber number: Int) {
+    // AppKit may finish assigning the main role after its key notification.
+    // Defer until that event unwinds, and ignore superseded focus handoffs.
+    DispatchQueue.main.async { [weak self] in
+      guard let self, !self.closed, !self.hiding, NSApp.isActive,
+        let preview = NSApp.keyWindow, preview.windowNumber == number else { return }
+      self.previewWindows.add(preview)
+      self.window.retainMainAppearanceForPreview()
+      if ProcessInfo.processInfo.arguments.contains("--native-panel-check") {
+        NSLog("[native-panel] preview-focus main=%d key=%d alpha=%.2f",
+          self.window.isMainWindow, self.window.isKeyWindow, self.window.alphaValue)
+      }
+    }
   }
   private func scheduleFocusLoss() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in

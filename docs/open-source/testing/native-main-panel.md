@@ -452,3 +452,91 @@ coverage checks enabled/disabled cursor regions without intercepting clicks, and
 that crossing the drag threshold changes the hand while release restores it and
 does not also activate paste. The coverage was compiled, not executed; regression
 suites were not run. System cursor appearance was not manually inspected.
+
+
+### Keep Liquid Glass stable during preview focus handoff
+
+Acceptance criteria: entering an item or webpage preview must preserve the native
+panel's active glass appearance while the preview retains keyboard focus; glass
+style, content tint, alpha, frame, and animation stay unchanged. Hidden/closing
+panels, Settings size previews, other app windows, WebView main mode, Windows and
+Release must retain their existing focus behavior. AppKit's main-window role and
+key-window role must remain separate rather than forcing keyboard focus back.
+
+The focus watcher intentionally transfers keyboard focus to an ordinary or pinned
+preview. Tao 0.37.1 implements both `canBecomeKeyWindow` and `canBecomeMainWindow`
+using the same focusable flag, so that standard preview window can also replace
+the native panel as AppKit's main window. The panel then has neither active role.
+The fixed content tint was not being changed: Liquid Glass was adopting AppKit's
+inactive-window appearance. Unlike the frosted fallback's explicit `.active`
+state, the selected SDK's `NSGlassEffectView` exposes no active-state property.
+
+AppKit documents separate main and key roles in its
+[Window Programming Guide](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/WinPanel/Concepts/ChangingMainKeyWindow.html).
+The fix sends the actual item/webpage preview window number through the existing
+macOS DEV bridge when it gains focus. Swift waits until the native focus event
+unwinds, confirms that exact window still owns keyboard focus, and calls the
+public `makeMain()` on the visible native panel without making it key or ordering
+it front. Main-role notifications cover repeated clicks on an already-key
+preview. Known preview windows are weakly referenced; the observer is removed on
+panel close. Inactive apps, hidden/closing panels and Settings size previews are
+excluded. This preview handoff uses the public main-window API without alpha
+compensation; the additional appearance guard for app deactivation is described
+in the dismissal section below.
+
+The macOS Debug build, Release check and production/Swift XCTest typechecking
+passed. A focused interactive AppKit case covers main-role retention with preview
+keyboard focus, unchanged alpha/geometry, and hidden/size-preview exclusions.
+Coverage was compiled only; no local regression tests were executed. Repeated
+pointer-transfer visual acceptance was not completed by automation.
+
+
+### Keep Liquid Glass stable through dismissal
+
+Acceptance criteria:
+
+1. Liquid Glass must retain its active appearance while the native panel slides
+   out after Escape, shortcut toggle, paste, or an outside click. Keep the existing
+   glass style, page/toolbar tint, alpha, geometry, 150/200 ms curves and reduced
+   motion behavior.
+2. Preview windows and other apps must keep keyboard focus and app activation.
+   Retaining appearance during dismissal must not reclaim key/main status,
+   activate the app, or delay paste until the slide finishes.
+3. Scope any appearance override to macOS 26+ DEV native history panels. Keep
+   Settings size previews, older-system frosted glass, WebView mode, Windows and
+   Release on their existing paths. Detect unavailable or changed interfaces and
+   fall back safely.
+
+The previous main-role retention fixes transfers within the app, but cannot cover
+app deactivation. Native paste explicitly restores the destination app alongside
+the hide animation; outside-click dismissal also starts after deactivation. In
+those paths Liquid Glass can switch to its inactive appearance while the 200 ms
+position animation is still visible. No focus handler changes the configured
+alpha or the fixed content tint.
+
+The macOS 26.5.1 AppKit Objective-C runtime exposes
+`-[NSWindow _setForceMainAppearance:]` with type encoding `v20@0:8B16`.
+The selected SDK's `NSGlassEffectView` exposes no public active-state property.
+The override below is private API, restricted to the existing DEV native
+experiment and guarded by runtime selector/signature checks. It holds appearance
+without changing actual key/main status, and stays set through window close so
+cleanup cannot expose an inactive final frame. Settings size previews disable it.
+
+Focused AppKit coverage is added before the implementation: relinquish both real
+focus roles while the panel remains visible, require its main appearance to stay
+active, preserve alpha/frame, then disable the override for a size preview. It is
+not executed locally, as requested.
+
+Validation: the macOS Debug build, Release check, Rust formatting and diff checks
+passed. Production Swift plus the focused XCTest sources typechecked with both
+the Liquid Glass SDK flag and the fallback branch. No local regression suites
+were executed. An isolated synthetic-history launch exercised the real
+Rust/Swift native-main path: logs confirmed `keep-glass-appearance=1`,
+`NSGlassEffectView`, `nativeDefault=true webviews=[]`, the existing 150/200 ms
+show/hide transitions, an unchanged `{{-12, 0}, {1944, 302}}` host, and close-time
+`cards=0 pages=0 decodedBytes=0`, `nativeViews=0 listeners=0`. The window closed
+successfully. The automation did not capture the 200 ms exit frame by frame;
+absence of a visible last-frame flash still needs visual confirmation.
+
+Submission checks: `npm run check:styles` and `git diff --check` passed. These
+static checks do not execute regression tests.

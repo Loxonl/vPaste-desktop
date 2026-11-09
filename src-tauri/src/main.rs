@@ -13750,6 +13750,20 @@ fn main() {
                 }
             }
             if let tauri::WindowEvent::Focused(focused) = event {
+                #[cfg(all(debug_assertions, target_os = "macos"))]
+                if *focused && matches!(window.label(), "clipboardPreview" | browser_preview::LABEL) {
+                    // A focusable Tao window also becomes AppKit's main window.
+                    // Keep the native panel's glass active without reclaiming key focus.
+                    if let Ok(native) = window.ns_window() {
+                        use cocoa::base::id;
+                        use objc::{msg_send, sel, sel_impl};
+                        // SAFETY: AppKit window event; Tauri owns this live NSWindow.
+                        let number: isize = unsafe { msg_send![native as id, windowNumber] };
+                        native_panel::preview::route(serde_json::json!({
+                            "event":"preview-focused", "windowNumber":number
+                        }));
+                    }
+                }
                 #[cfg(debug_assertions)]
                 if *focused && window.label() != "devMemory" {
                     if let Some(monitor) = window.app_handle().get_webview_window("devMemory") {

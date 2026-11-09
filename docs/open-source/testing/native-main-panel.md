@@ -540,3 +540,260 @@ absence of a visible last-frame flash still needs visual confirmation.
 
 Submission checks: `npm run check:styles` and `git diff --check` passed. These
 static checks do not execute regression tests.
+
+
+### Native pointer affordance follow-up: SwiftUI toolbar pass-through
+
+Acceptance criteria: hovering any SwiftUI toolbar control (search, refresh, info,
+settings, close and the filter tabs) shows the pointing-hand cursor inside that
+control's bounds, while clicks still reach the SwiftUI button and toolbar gaps
+keep the ordinary arrow. The macOS 11 AppKit fallback, keyboard focus, search
+editing and window geometry must remain unchanged.
+
+`PanelCursorRegion` returns nil from `hitTest` so SwiftUI button actions keep
+receiving clicks. AppKit resolves cursor rectangles and `cursorUpdate` events
+through hit testing, so that same nil result prevented the previously registered
+cursor rects from ever being used. The region now installs an `.inVisibleRect`
+`NSTrackingArea` with `.mouseEnteredAndExited` and `.cursorUpdate`, sets its
+cursor from `mouseEntered(with:)`/`cursorUpdate(with:)`, and restores the arrow
+from `mouseExited(with:)`. A real-window check inside `NSHostingView` confirmed
+that `mouseEntered`/`mouseExited` are delivered for this pass-through view while
+`cursorUpdate` is not. The cursor rect registration is retained for
+completeness. No cursor push/pop stack or additional hover timer is introduced,
+and disabled regions ignore entry/update events. The legacy
+`PanelPointerButton` cursor rect path is untouched.
+
+Validation: production Swift and the focused XCTest sources typechecked against
+the macOS 11 deployment target. A standalone AppKit check confirmed the tracking
+options, the unchanged nil `hitTest`, and enabled/disabled entry behavior. A
+real SwiftUI window with the production `PanelCursorRegion` reported the
+pointing hand over the button and the arrow after leaving it. The running
+panel's own cursor appearance still needs a manual hover check.
+
+
+### Animated filter-selection indicator
+
+Acceptance criteria: switching filter tabs moves a single accent underline from
+the previously selected tab to the newly selected one, matching the WebView's
+shared Motion `layoutId` indicator. The underline keeps the 10-point inset,
+3-point height and tab-width geometry, stays under the selected tab after the
+strip scrolls, and switches instantly when Reduce Motion is enabled. Tab widths,
+labels, hover states, selection callbacks and the macOS 11 AppKit fallback remain
+unchanged.
+
+`PanelFilterStrip` no longer draws a per-tab underline. One `Capsule` is
+positioned from `PanelFilterIndicatorLayout` over the strip and animates its
+horizontal offset and width with the WebView layout spring (mass 0.9, stiffness
+320, damping 34); Reduce Motion disables that animation. The geometry helper is
+covered by a focused XCTest that checks the first and second tab rectangles, the
+3-point height and an out-of-range selection at 80%, 90% and 100% panel scale.
+
+Validation: production Swift plus the focused XCTest sources typechecked, the
+geometry check was compiled and executed against the production helper (PASS at
+all three scales), and `cargo check` rebuilt the Swift sources. The animated
+transition itself still needs a manual run; it was not visually captured.
+
+
+### Filter-result card motion
+
+Acceptance criteria: switching a filter tab replays the WebView's result-card
+motion for the newly loaded page. Cards fade in over 180 ms with the enter curve
+and slide from 16 points right with Motion's gentle spring (mass 1, stiffness
+220, damping 28); the slide is staggered by `(index % 12) * 18 ms`. Identical
+result sets, Reduce Motion, refreshes, search reloads and the "load more"
+placeholder must not animate. Card reuse, scrolling, drag, selection and paste
+behavior stay unchanged.
+
+`changeFilter` captures the previously loaded first-page hashes before `reload()`
+and arms the motion only when Reduce Motion is off. `accept` compares the new
+first-page hashes and, when they differ, starts a new sequence with that page's
+hashes. `configure` asks the card view to play the motion once per sequence and
+hash; `PanelCardView.playFilterEntry` adds a `CASpringAnimation` for
+`transform.translation.x` and a 180 ms `CABasicAnimation` for opacity, and
+`releaseContent` clears them so reused or retired views never keep a transform.
+
+Validation: production Swift and the focused XCTest sources typechecked. A
+runtime AppKit check constructed the production card view and confirmed the
+spring values, the 18 ms stagger, the 180 ms fade, duplicate suppression,
+replacement on a new sequence and animation cleanup on release (PASS). The
+visual transition still needs a manual run.
+
+
+### CJK tab weights follow the WebView fallback
+
+Acceptance criteria: unselected filter tabs use the WebView's 590 weight and only
+the selected tab renders bold (740). Latin weights, tab widths, point sizes and
+the AppKit fallback must not change.
+
+SF Pro honours the CoreText `wght` variation, but CJK glyphs fall back to
+PingFang, which ignores that axis and selects its face from the base
+`NSFont.Weight`. Mapping 590 to `.semibold` therefore rendered unselected Chinese
+tabs in PingFang Semibold even though the Latin glyphs used weight 590. The base
+mapping is now `.regular` below 550, `.medium` from 550 to 699 and `.bold` at 700
+and above; the variation axis still supplies the exact Latin weight. The base
+selection is exposed as `PanelToolbarTypography.baseWeight(for:)` and covered by
+XCTest.
+
+Validation: production Swift plus the focused XCTest sources typechecked; the
+Latin advance widths still match WebKit exactly (590 → 63.43 pt, 740 → 66.07 pt)
+and CJK advances stay constant. A WebKit screenshot of the real WebView tab bar
+confirmed unselected Chinese labels are lighter than the selected one, and a
+rendered native toolbar with the new mapping matches that relationship. The
+`cargo check`, card-motion and cursor runtime checks still passed.
+
+
+### Card surface opacity over Liquid Glass
+
+Acceptance criteria: paste cards must keep their text readable when the desktop
+behind the panel is colorful. Card geometry, header gradient, selection outline,
+shadow, hover/drag behavior and the toolbar/glass appearance must not change.
+
+The native card previously used white at 0.88 (light) and near-black at 0.95
+(dark); the 12% light bleed let the variable Desktop behind the glass reduce
+contrast. `PanelStyle.cardSurface(_:)` now returns 0.98 light and 0.99 dark. This
+deliberately exceeds the WebView's 0.74 CSS surface because that surface sits on
+a flat page rather than Liquid Glass.
+
+Validation: production Swift plus the focused XCTest sources typechecked; a new
+XCTest asserts the surface alpha floor. The production card rendered over a
+saturated red/blue/yellow backdrop keeps only a faint tint with readable text.
+`cargo check`, geometry, motion and cursor checks passed. The real panel's glass
+was not visually captured in this run.
+
+
+### No pale fringe on selected card corners
+
+Acceptance criteria: the selected-card outline keeps its existing 2-point offset,
+but the card's rounded top corners must not show a light line where the header's
+antialiased edge meets the outline gap. Card colors, radius, header gradient,
+outline geometry and body opacity must not change.
+
+The card previously filled the whole rounded surface first and drew the header
+gradient over it. Both fills shared the same antialiased rounded clip, so the
+gradient's partial edge pixels let the light card surface show through and
+produced a pale fringe around the header's curved corners. The surface is now
+painted only below the header (with a one-point overlap), and the opaque header
+is drawn last, so the header edge blends with whatever is behind the card.
+
+Validation: production Swift and the focused XCTest sources typechecked;
+`cargo check` passed. A pixel diff of the production card rendered before and
+after the change shows the corner edge pixels losing the extra light component
+(for example R/G/B 186/169/132 becomes 182/127/82 over a red backdrop), while
+the straight header edge and body colors are unchanged. The real panel's glass
+was not visually captured in this run.
+
+
+### Drag thumbnail shows the whole card
+
+Acceptance criteria: starting a card drag shows a 60%-scaled snapshot of the
+entire card (header, text or media, card surface) instead of the card's media
+image or source icon. The thumbnail must not include the selection outline or
+drag feedback, must be offset 18 points down-right of the pointer (scaled with
+the panel), and must not add extra thumbnails for multi-file drags. Pasteboard
+payloads, the 5-point drag threshold, cursor feedback and drop operations must
+not change.
+
+The WebView clones the whole `.clipboard-card` into a 132x138 preview (a 0.6
+scale of the 220x230 card) and sets the drag hotspot to (18, 18).
+`PanelCardView.dragPreviewImage()` renders the card's own view into a 60%-sized
+`NSImage` with the selection outline temporarily hidden, and `mouseDragged`
+places that image at the pointer plus (18, 18) in the card's flipped coordinate
+space for the first dragging item. Remaining file items use a 1x1 transparent
+image so a multi-file drag still shows one card thumbnail.
+
+Validation: production Swift and the focused XCTest sources typechecked; a new
+XCTest asserts the 132x138 preview size for a 220x230 card. The production card
+rendered through `dragPreviewImage()` shows the complete header and body at 60%
+with no selection outline. `cargo check` passed; the real drag session still
+needs a manual run.
+
+
+### Drag exports the item content, not only its preview
+
+Acceptance criteria: dragging a Text, Color or Link card writes the actual
+content to the pasteboard, matching the WebView's `text/plain` (`textContent ||
+content`), `text/html` and link URL behavior. File and Image cards keep dragging
+their real file paths. The card preview thumbnail, drag threshold, cursor and
+drop behavior must not change.
+
+The native `drag` action returned `item.text_content`, which is empty for plain
+Text, Color and Link records; the actual value lives in `content`. The drag
+session therefore advertised only the thumbnail image. `drag_plain_text` now
+mirrors the WebView fallback, splits the `url|||title` Link content into the URL,
+and Link drags also expose `public.url` plus an escaped `<a href>` HTML fragment.
+The Swift drag item sets `NSPasteboard.PasteboardType.URL` when the payload has a
+URL. TextFile still uses `plain_text_content`, and File/Image still use file URLs.
+
+Validation: `cargo fmt --check` and `cargo check` passed. Three focused Rust
+tests executed and passed (content fallback, item-type mapping, link escaping);
+production Swift plus the focused XCTest sources typechecked. A real drag into
+another app still needs a manual check.
+
+
+### Deleting a history item is immediate
+
+Acceptance criteria: the native panel's Delete action (context menu and
+Delete/Forward Delete keys) removes the history record without a confirmation
+sheet, matching the WebView's `delete_clipboard_item` flow. Custom tab and record
+tag deletion keep their existing confirmations, and reload/empty-state behavior
+after deletion must not change.
+
+The controller opened an `NSAlert` sheet before every history-item delete. The
+sheet is removed; `action(_:at:)` now calls `perform("delete", hash:)` directly.
+The WebView only confirms tab and record-tag deletion, which remain separate
+flows and are not part of the native item action path.
+
+Validation: production Swift plus the focused XCTest sources typechecked and
+`cargo check` passed. The immediate delete still needs a manual run in the
+panel.
+
+
+### Deleting a card updates the list in place
+
+Acceptance criteria: deleting a card removes only that collection item and lets
+the following cards move forward; the panel must not clear the grid, show the
+loading state or re-run the whole query. Selection moves to the next card (or the
+previous one at the end), and the deleted card's preview/payload is released.
+Pagination must keep working when the visible page is refilled.
+
+The delete success path previously called `reload()`, which cleared every page,
+showed "Loading history…" and issued a fresh `open` request. It now calls
+`PanelPageSplice.remove`, which removes the ref from the loaded contiguous page
+window and re-chunks the remaining refs at the 36-item boundaries; the controller
+then decrements the count (and terminal count), updates the layout item count and
+calls `deleteItems(at:)` for the single index. In-flight page responses from the
+old offsets are discarded with a page epoch. Visible items are reconfigured so
+their captured indices stay correct.
+
+The last loaded page is refetched after the splice without clearing the view: if
+the result set still has more items, the refetched coverage is restored and the
+new tail item is inserted with `insertItems(at:)`; if the page became terminal,
+the normal page acceptance path reconciles the "load more" row. Real page
+timing/2-display behavior is unchanged.
+
+Validation: production Swift and the focused XCTest sources typechecked; a new
+`PanelPageSplice` XCTest covers first-page and second-page deletion, the
+35-item tail, covered range and a mismatched hash. A standalone run of the
+production splice logic passed, and `cargo check` passed. The animated in-place
+delete still needs a manual run in the panel.
+
+
+### Delete follow-up: server page cache and self-notifications
+
+Acceptance criteria: after an in-place delete, refetching the tail page must
+return the shifted result set, not the pre-delete page, and the panel's own
+delete notification must not schedule a reload. External clipboard changes must
+still reload the panel as before.
+
+The Rust history view caches 36-item pages, anchors and the terminal count. A
+delete changes every later offset, so the native `delete` action now calls
+`history_views::invalidate_native_cache()` after the database delete and before
+responding; the next page read rebuilds pages from the current rows. This also
+prevents the deleted hash from being reintroduced, which previously left a card
+with no payload stuck on "Loading…". The action's `listen_new_clipboard` emit is
+suppressed for the panel's own listener (the WebView and other listeners still
+receive it), so the local batch update is not followed by a debounced reload.
+
+Validation: `cargo fmt --check` and `cargo check` passed; the in-place delete's
+Swift/XCTest typechecking from the previous section still passes. A manual delete
+in the running panel is still the final check.

@@ -39,6 +39,90 @@ final class NativePanelWindowBehaviorTests: XCTestCase {
     XCTAssertEqual(activated, 0, "A drag must not also trigger the paste click")
   }
 
+  func testFilterEntryMotionUsesWebViewSpringAndStagger() throws {
+    try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+    let view = PanelCardView(frame: NSRect(x: 0, y: 0, width: 220, height: 230))
+    view.configure(nil, placeholder: "Loading…", media: PanelMedia(), scale: 1,
+      chinese: false, query: "", selected: false)
+    defer { view.releaseContent() }
+    let start = CACurrentMediaTime()
+    view.playFilterEntry(sequence: 1, hash: "entry", index: 13)
+    let slide = try XCTUnwrap(
+      view.layer?.animation(forKey: "filterEntry.slide") as? CASpringAnimation)
+    let fade = try XCTUnwrap(
+      view.layer?.animation(forKey: "filterEntry.fade") as? CABasicAnimation)
+    XCTAssertEqual(slide.fromValue as? CGFloat, 16)
+    XCTAssertEqual(slide.toValue as? CGFloat, 0)
+    XCTAssertEqual(slide.mass, 1)
+    XCTAssertEqual(slide.stiffness, 220)
+    XCTAssertEqual(slide.damping, 28)
+    XCTAssertEqual(slide.beginTime - start, 0.018, accuracy: 0.002)
+    XCTAssertEqual(fade.duration, 0.18, accuracy: 0.001)
+    XCTAssertEqual(fade.fromValue as? CGFloat, 0)
+    XCTAssertEqual(fade.toValue as? CGFloat, 1)
+
+    let begin = slide.beginTime
+    view.playFilterEntry(sequence: 1, hash: "entry", index: 13)
+    XCTAssertEqual(
+      (view.layer?.animation(forKey: "filterEntry.slide") as? CASpringAnimation)?.beginTime,
+      begin, "The same card must not restart its entry")
+  }
+
+  func testDragPreviewIsTheWholeCardScaledToSixtyPercent() throws {
+    _ = NSApplication.shared
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+      styleMask: [.titled], backing: .buffered, defer: false)
+    let view = PanelCardView(frame: NSRect(x: 60, y: 30, width: 220, height: 230))
+    window.contentView = view
+    view.configure(nil, placeholder: "Loading…", media: PanelMedia(), scale: 1,
+      chinese: false, query: "", selected: true)
+    view.layoutSubtreeIfNeeded()
+    let preview = try XCTUnwrap(view.dragPreviewImage())
+    XCTAssertEqual(preview.size.width, 132, accuracy: 0.01)
+    XCTAssertEqual(preview.size.height, 138, accuracy: 0.01)
+    window.orderOut(nil)
+  }
+
+  func testPageSpliceRemovesOneItemAndShiftsLaterPages() throws {
+    func refs(_ range: Range<Int>) -> [PanelRef] {
+      range.map {
+        PanelRef(
+          hash: "h\($0)", itemType: "Text", time: 0, label: 0, appSource: "",
+          titleColor: "")
+      }
+    }
+    let pages = [0: refs(0..<36), 1: refs(36..<72)]
+    let firstPage = try XCTUnwrap(
+      PanelPageSplice.remove(hash: "h2", at: 2, pages: pages))
+    XCTAssertEqual(firstPage.pages[0]?[2].hash, "h3")
+    XCTAssertEqual(firstPage.pages[0]?[35].hash, "h36")
+    XCTAssertEqual(firstPage.pages[1]?[0].hash, "h37")
+    XCTAssertEqual(firstPage.pages[1]?[34].hash, "h71")
+    XCTAssertEqual(firstPage.pages[1]?.count, 35)
+    XCTAssertEqual(firstPage.endPage, 1)
+    XCTAssertEqual(firstPage.coveredEnd, 71)
+    XCTAssertTrue(firstPage.runEndWasFull)
+
+    let secondPage = try XCTUnwrap(
+      PanelPageSplice.remove(hash: "h40", at: 40, pages: pages))
+    XCTAssertEqual(secondPage.pages[0]?[35].hash, "h35")
+    XCTAssertEqual(secondPage.pages[1]?[4].hash, "h41")
+    XCTAssertEqual(secondPage.pages[1]?[34].hash, "h71")
+    XCTAssertEqual(secondPage.coveredEnd, 71)
+
+    let shortPage = try XCTUnwrap(
+      PanelPageSplice.remove(hash: "h0", at: 0, pages: [0: refs(0..<20)]))
+    XCTAssertEqual(shortPage.pages[0]?.count, 19)
+    XCTAssertEqual(shortPage.coveredEnd, 19)
+    XCTAssertFalse(shortPage.runEndWasFull)
+    XCTAssertNil(PanelPageSplice.remove(hash: "missing", at: 2, pages: pages))
+  }
+
+  func testCardSurfaceKeepsTextReadableOverVariableGlass() {
+    XCTAssertGreaterThanOrEqual(PanelStyle.cardSurface(false).alphaComponent, 0.98)
+    XCTAssertGreaterThanOrEqual(PanelStyle.cardSurface(true).alphaComponent, 0.99)
+  }
+
   func testVerticalWheelWithHorizontalNoiseBrowsesTheRow() {
     XCTAssertEqual(
       PanelScroll.targetOffset(current: 100, maximum: 500, deltaX: -0.4, deltaY: -20, precise: true),

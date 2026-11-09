@@ -161,6 +161,7 @@ final class PanelCardView: NSView, NSDraggingSource {
     }
   }
   private var media: PanelMedia?
+  private var filterEntryToken: (sequence: Int, hash: String)?
 
   override init(frame: NSRect) {
     super.init(frame: frame)
@@ -342,16 +343,20 @@ final class PanelCardView: NSView, NSDraggingSource {
   }
   override func draw(_ dirtyRect: NSRect) {
     super.draw(dirtyRect)
-    // Preserve the experiment's existing card alpha as well as the page glass.
-    let background = NSColor(
-      calibratedWhite: PanelStyle.dark(self) ? 0.13 : 1, alpha: PanelStyle.dark(self) ? 0.95 : 0.88)
     let radius = PanelStyle.cardRadius * scale
     let rounded = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
     NSGraphicsContext.saveGraphicsState()
     rounded.addClip()
-    background.setFill()
-    bounds.fill()
+    // Paint the card surface below the header first, then the opaque header on
+    // top. Keeping the light surface out from under the header's rounded top
+    // edge prevents it bleeding through the antialiased curve as a pale fringe;
+    // the one-point overlap below the header avoids a seam at the join.
     let header = NSRect(x: 0, y: 0, width: bounds.width, height: 48 * scale)
+    let surfaceTop = max(0, header.height - scale)
+    PanelStyle.cardSurface(PanelStyle.dark(self)).setFill()
+    NSRect(
+      x: 0, y: surfaceTop, width: bounds.width, height: max(0, bounds.height - surfaceTop)
+    ).fill()
     if let end = headerGradientEnd {
       NSGradient(starting: tint, ending: end)?.draw(in: header, angle: -45)
     } else {
@@ -682,7 +687,43 @@ final class PanelCardView: NSView, NSDraggingSource {
       self?.image.image = value
     }
   }
+  // WebView filter results fade in over 180 ms while sliding 16pt with Motion's
+  // gentle spring; cards are staggered in groups of 12 by 18 ms.
+  func playFilterEntry(sequence: Int, hash: String, index: Int) {
+    guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+      filterEntryToken?.sequence != sequence || filterEntryToken?.hash != hash
+    else { return }
+    filterEntryToken = (sequence, hash)
+    layer?.removeAnimation(forKey: "filterEntry.slide")
+    layer?.removeAnimation(forKey: "filterEntry.fade")
+    guard let layer else { return }
+    let delay = Double(index % 12) * 0.018
+    let slide = CASpringAnimation(keyPath: "transform.translation.x")
+    slide.fromValue = 16 * scale
+    slide.toValue = 0
+    slide.mass = 1
+    slide.stiffness = 220
+    slide.damping = 28
+    slide.initialVelocity = 0
+    slide.duration = slide.settlingDuration
+    slide.beginTime = CACurrentMediaTime() + delay
+    slide.fillMode = .backwards
+    layer.add(slide, forKey: "filterEntry.slide")
+    let fade = CABasicAnimation(keyPath: "opacity")
+    fade.fromValue = 0
+    fade.toValue = 1
+    fade.duration = 0.18
+    fade.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
+    fade.fillMode = .backwards
+    layer.add(fade, forKey: "filterEntry.fade")
+  }
+  private func resetFilterEntryAnimation() {
+    layer?.removeAnimation(forKey: "filterEntry.slide")
+    layer?.removeAnimation(forKey: "filterEntry.fade")
+    filterEntryToken = nil
+  }
   func releaseContent() {
+    resetFilterEntryAnimation()
     hoverLeft?()
     hoverEntered = nil
     hoverLeft = nil
@@ -783,6 +824,20 @@ final class PanelCardView: NSView, NSDraggingSource {
   @objc private func menuSelected(_ item: NSMenuItem) {
     if let action = item.representedObject as? String { menuAction?(action) }
   }
+  // The WebView drag image is the whole card cloned and scaled to 60%
+  // (132x138 for a 220x230 card), without its selection outline.
+  func dragPreviewImage() -> NSImage? {
+    guard bounds.width > 0, bounds.height > 0,
+      let rep = bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
+    let outlineHidden = selectionOutline.isHidden
+    selectionOutline.isHidden = true
+    cacheDisplay(in: bounds, to: rep)
+    selectionOutline.isHidden = outlineHidden
+    let image = NSImage(
+      size: NSSize(width: bounds.width * 0.6, height: bounds.height * 0.6))
+    image.addRepresentation(rep)
+    return image
+  }
   override func mouseDragged(with event: NSEvent) {
     guard !dragging, let down,
       hypot(
@@ -807,16 +862,29 @@ final class PanelCardView: NSView, NSDraggingSource {
       if items.isEmpty {
         let item = NSPasteboardItem()
         item.setString(payload["text"] as? String ?? "", forType: .string)
+        if let url = payload["url"] as? String, !url.isEmpty {
+          item.setString(url, forType: .URL)
+        }
         if let html = payload["html"] as? String, !html.isEmpty {
           item.setString(html, forType: .html)
         }
         items.append(NSDraggingItem(pasteboardWriter: item))
       }
-      for item in items {
-        item.setDraggingFrame(
-          NSRect(x: 12, y: 12, width: 80, height: 64),
-          contents: self.image.image ?? self.icon.image
-            ?? NSImage(size: NSSize(width: 80, height: 64)))
+      let preview = self.dragPreviewImage()
+      let origin = self.convert(down.locationInWindow, from: nil)
+      for (index, item) in items.enumerated() {
+        if index == 0, let preview {
+          item.setDraggingFrame(
+            NSRect(
+              x: origin.x + 18 * self.scale, y: origin.y + 18 * self.scale,
+              width: preview.size.width, height: preview.size.height),
+            contents: preview)
+        } else {
+          // One card thumbnail represents the whole drag, as in the WebView.
+          item.setDraggingFrame(
+            NSRect(x: 0, y: 0, width: 1, height: 1),
+            contents: NSImage(size: NSSize(width: 1, height: 1)))
+        }
       }
       self.beginDraggingSession(with: items, event: down, source: self)
     }

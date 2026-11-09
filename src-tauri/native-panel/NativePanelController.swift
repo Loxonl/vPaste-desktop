@@ -143,6 +143,11 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private let media = PanelMedia()
   private var filter = ""
   private var filterIndex = 0
+  private var filterEntryPending = false
+  private var filterEntryPreviousHashes: [String] = []
+  private var filterEntrySequence = 0
+  private var filterEntryHashes: Set<String> = []
+  private var filterEntryAnimated: Set<String> = []
   private var pendingPreviewSelection: (index: Int, direction: Int)?
   private lazy var previews = PanelPreviewDriver(hoverEnabled: config.hoverPreviewEnabled) {
     [weak self] operation, args in
@@ -171,6 +176,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private var terminalCount: Int?
   private var selected = 0
   private var generation = 0
+  private var pageEpoch = 0
   private var closed = false
   private var dragging = false
   private var heldHash: String?
@@ -500,8 +506,13 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       ])
       filter = "__filter:" + String(decoding: data, as: UTF8.self)
     }
+    let previousHashes = (0..<min(count, 36)).compactMap { ref($0)?.hash }
     toolbar.setSelection(index)
     reload()
+    // WebView animates the new result cards when the filter actually changes
+    // them; compare against the first page captured before this reload.
+    filterEntryPreviousHashes = previousHashes
+    filterEntryPending = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     window.makeFirstResponder(list)
   }
   private func setInfoVisible(_ visible: Bool) {
@@ -548,6 +559,10 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   private func reload() {
     guard !closed else { return }
+    filterEntryPending = false
+    filterEntryPreviousHashes = []
+    filterEntryHashes.removeAll()
+    filterEntryAnimated.removeAll()
     previews.cancelHover()
     pendingPreviewSelection = nil
     generation &+= 1
@@ -579,10 +594,22 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         self.token = page.token
         self.accept(page)
         self.scheduleViewport()
-      } catch { self.showMessage(error.localizedDescription) }
+      } catch {
+        self.filterEntryPending = false
+        self.showMessage(error.localizedDescription)
+      }
     }
   }
   private func accept(_ page: PanelPage) {
+    if filterEntryPending, page.pageIndex == 0 {
+      filterEntryPending = false
+      let hashes = page.items.map(\.hash)
+      if hashes != filterEntryPreviousHashes {
+        filterEntrySequence &+= 1
+        filterEntryHashes = Set(hashes)
+        filterEntryAnimated.removeAll()
+      }
+    }
     pages[page.pageIndex] = page.items
     count = max(count, page.startIndex + page.items.count)
     if !page.hasMore { terminalCount = page.knownCount }
@@ -604,6 +631,101 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     refreshSelectedPreview()
     status()
+  }
+  // Remove one record from the loaded pages instead of reloading the view.
+  // Later cards shift forward, matching the WebView's local page update.
+  private func removeHistoryItem(hash: String, at index: Int) {
+    guard !closed, index >= 0, index < count,
+      let splice = PanelPageSplice.remove(hash: hash, at: index, pages: pages)
+    else {
+      reload()
+      return
+    }
+    pages = splice.pages
+    // Page payloads requested before this deletion describe the old offsets.
+    pageEpoch &+= 1
+    pendingPages.removeAll()
+    count = max(0, count - 1)
+    if let terminalCount { self.terminalCount = max(0, terminalCount - 1) }
+    cards.removeValue(forKey: hash)
+    missingCards.remove(hash)
+    previews.clear()
+    pendingPreviewSelection = nil
+    if heldHash == hash {
+      heldHash = nil
+      dragging = false
+    }
+    if selected > index {
+      selected -= 1
+    } else if selected == index {
+      selected = max(0, min(index, count - 1))
+    }
+    layout.itemCount = count + (hasMore ? 1 : 0)
+    list.deleteItems(at: [IndexPath(item: index, section: 0)])
+    if count == 0 {
+      emptyState.show(
+        title: local("No matching history", "没有匹配的历史记录"),
+        detail: local("Try another search or filter", "试试其他关键词或筛选条件"))
+    } else {
+      emptyState.hide()
+    }
+    status()
+    let needsTail = hasMore || (splice.runEndWasFull && splice.coveredEnd < count)
+    DispatchQueue.main.async { [weak self] in
+      guard let self, !self.closed else { return }
+      for path in self.list.indexPathsForVisibleItems() {
+        if let item = self.list.item(at: path) as? PanelCardItem {
+          self.configure(item, index: path.item)
+        }
+      }
+      self.syncListSize()
+      self.scheduleViewport()
+      if needsTail { self.refreshPage(splice.endPage) }
+    }
+  }
+  // Refill the final loaded page after a local deletion without touching the
+  // rest of the visible list.
+  private func refreshPage(_ index: Int) {
+    guard !closed, let token, index >= 0, !pendingPages.contains(index) else { return }
+    let epoch = generation
+    let requestEpoch = pageEpoch
+    pendingPages.insert(index)
+    bridge.send(
+      "page", ["viewId": token.viewId, "revision": token.revision, "page": index]
+    ) { [weak self] result in
+      guard let self, self.generation == epoch, self.pageEpoch == requestEpoch,
+        !self.closed
+      else { return }
+      self.pendingPages.remove(index)
+      do {
+        let page = try panelDecode(PanelPage.self, result.get())
+        guard page.pageIndex == index else { return }
+        let previous = self.count
+        if !page.hasMore {
+          // The refetched page now reaches the end of the result set; use the
+          // normal acceptance path so the "load more" row is reconciled.
+          self.accept(page)
+          return
+        }
+        self.pages[index] = page.items
+        let coverage = page.startIndex + page.items.count
+        if coverage > previous {
+          self.count = coverage
+          self.layout.itemCount = self.count + 1
+          self.list.insertItems(
+            at: Set((previous..<coverage).map { IndexPath(item: $0, section: 0) }))
+          self.emptyState.hide()
+        }
+        for path in self.list.indexPathsForVisibleItems() {
+          if let item = self.list.item(at: path) as? PanelCardItem {
+            self.configure(item, index: path.item)
+          }
+        }
+        self.syncListSize()
+        self.scheduleViewport()
+        self.status()
+      } catch { self.showMessage(error.localizedDescription) }
+    }
   }
   private func syncListSize() {
     let viewport = scroll.contentView.bounds.size
@@ -642,6 +764,10 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     view.configure(
       card, placeholder: local("Loading…", "加载中…"), media: media, scale: config.scale,
       chinese: chinese, query: search.stringValue, selected: index == selected)
+    if let hash = entry?.hash, filterEntryHashes.contains(hash), !filterEntryAnimated.contains(hash) {
+      filterEntryAnimated.insert(hash)
+      view.playFilterEntry(sequence: filterEntrySequence, hash: hash, index: index)
+    }
     view.singleClick = config.mousePasteMode == "single"
     view.select = { [weak self] in self?.select(index, scroll: false) }
     let previewItem = entry.map { PanelPreviewItem(hash: $0.hash, itemType: $0.itemType) }
@@ -712,6 +838,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     if layout.viewportSize != scroll.contentView.bounds.size { syncListSize() }
     let desired = range()
     let epoch = generation
+    let requestEpoch = pageEpoch
     let first = desired.lowerBound / 36
     let last = max(desired.lowerBound, desired.upperBound - 1) / 36
     var needed = Set(first...last)
@@ -721,7 +848,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       pendingPages.insert(page)
       bridge.send("page", ["viewId": token.viewId, "revision": token.revision, "page": page]) {
         [weak self] result in
-        guard let self, self.generation == epoch, !self.closed else { return }
+        guard let self, self.generation == epoch, self.pageEpoch == requestEpoch,
+          !self.closed
+        else { return }
         self.pendingPages.remove(page)
         do {
           self.accept(try panelDecode(PanelPage.self, result.get()))
@@ -903,23 +1032,11 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       previews.open(PanelPreviewItem(hash: hash, itemType: entry.itemType))
       return
     }
-    if operation == "delete" {
-      let alert = NSAlert()
-      alert.messageText = local("Delete this history item?", "删除这条历史记录？")
-      alert.informativeText = local(
-        "This also removes it from the existing main interface.", "这也会从原主界面的历史记录中删除此项。")
-      alert.addButton(withTitle: local("Delete", "删除"))
-      alert.addButton(withTitle: local("Cancel", "取消"))
-      alert.beginSheetModal(for: window) { [weak self] result in
-        MainActor.assumeIsolated {
-          if result == .alertFirstButtonReturn { self?.perform("delete", hash: hash) }
-        }
-      }
-    } else {
-      perform(operation, hash: hash)
-    }
+    // Match the WebView: deleting a history record is immediate. Only custom
+    // tab and record-tag deletion ask for confirmation there.
+    perform(operation, hash: hash, index: index)
   }
-  private func perform(_ operation: String, hash: String) {
+  private func perform(_ operation: String, hash: String, index: Int? = nil) {
     busyAction = true
     var args: [String: Any] = ["hash": hash]
     args["plain"] = operation == "plain"
@@ -930,7 +1047,13 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       switch result {
       case .failure(let error): self.showMessage(error.localizedDescription)
       case .success:
-        if operation == "favorite" || operation == "delete" {
+        if operation == "delete" {
+          if let index {
+            self.removeHistoryItem(hash: hash, at: index)
+          } else {
+            self.reload()
+          }
+        } else if operation == "favorite" {
           self.reload()
         } else {
           self.showMessage(self.local("Copied to clipboard", "已复制到剪贴板"))

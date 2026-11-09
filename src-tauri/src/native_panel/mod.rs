@@ -39,6 +39,9 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static KEY: AtomicBool = AtomicBool::new(false);
 static LISTENERS: Mutex<Vec<tauri::EventId>> = Mutex::new(Vec::new());
 static ACTION: AtomicBool = AtomicBool::new(false);
+// The panel's own delete already updates its list locally; ignore the
+// "changed" notification that the same action emits.
+static SUPPRESS_CHANGED: AtomicBool = AtomicBool::new(false);
 static WORK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 static CLOSED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
@@ -145,7 +148,14 @@ fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Res
                 "item-tags-changed",
                 "clipboard-resources-updated",
             ] {
-                let id = app.listen(name, move |_| deliver(session, json!({"event":"changed"})));
+                let id = app.listen(name, move |_| {
+                    if name == "listen_new_clipboard"
+                        && SUPPRESS_CHANGED.swap(false, Ordering::AcqRel)
+                    {
+                        return;
+                    }
+                    deliver(session, json!({"event":"changed"}));
+                });
                 LISTENERS.lock().unwrap_or_else(|e| e.into_inner()).push(id);
             }
             let config = crate::config::get();
@@ -474,7 +484,13 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
         }
         "delete" => {
             let worker_app = app.clone();
-            blocking(move || crate::delete_clipboard_item(worker_app, hash)).await?;
+            blocking(move || {
+                crate::delete_clipboard_item(worker_app, hash)?;
+                history_views::invalidate_native_cache();
+                Ok(())
+            })
+            .await?;
+            SUPPRESS_CHANGED.store(true, Ordering::Release);
             app.emit("listen_new_clipboard", ())
                 .map_err(|e| e.to_string())?;
             Ok(Value::Null)
@@ -540,19 +556,64 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
                 } else {
                     Vec::new()
                 };
-                let text = if item.item_type == ItemType::TextFile {
+                let text_file_content = if item.item_type == ItemType::TextFile {
                     clipboard::plain_text_content(&hash)?
                 } else {
-                    item.text_content.clone()
+                    String::new()
                 };
-                let html = clipboard::history_card_payload(&hash, true)?.item.rich_html;
-                Ok(json!({"paths":paths,"text":text,"html":html}))
+                let text = drag_plain_text(
+                    &item.item_type,
+                    &item.text_content,
+                    &item.content,
+                    &text_file_content,
+                );
+                let url = if item.item_type == ItemType::Link {
+                    text.clone()
+                } else {
+                    String::new()
+                };
+                let mut html = clipboard::history_card_payload(&hash, true)?.item.rich_html;
+                if item.item_type == ItemType::Link && !url.is_empty() {
+                    let escaped = drag_link_html(&url);
+                    html = format!("<a href=\"{escaped}\">{escaped}</a>");
+                }
+                Ok(json!({"paths":paths,"text":text,"html":html,"url":url}))
             })
             .await?;
             Ok(value)
         }
         _ => Err("Unknown native panel action".into()),
     }
+}
+
+// Match the WebView's itemPlainText: text_content is empty for plain Text and
+// Link records, so fall back to the stored content.
+fn drag_plain_text(
+    item_type: &ItemType,
+    text_content: &str,
+    content: &str,
+    text_file_content: &str,
+) -> String {
+    match item_type {
+        ItemType::TextFile => text_file_content.to_string(),
+        ItemType::Link => content.split("|||").next().unwrap_or("").trim().to_string(),
+        ItemType::File | ItemType::Image => String::new(),
+        _ => {
+            if text_content.is_empty() {
+                content.to_string()
+            } else {
+                text_content.to_string()
+            }
+        }
+    }
+}
+
+fn drag_link_html(url: &str) -> String {
+    url.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 #[derive(Serialize)]
@@ -718,4 +779,44 @@ fn display_card(hash: &str, width: u32) -> Result<Card, String> {
         is_gif,
         rich,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drag_text_falls_back_to_content() {
+        assert_eq!(drag_plain_text(&ItemType::Text, "", "hello", ""), "hello");
+        assert_eq!(
+            drag_plain_text(&ItemType::Text, "rich text", "content", ""),
+            "rich text"
+        );
+        assert_eq!(
+            drag_plain_text(&ItemType::Color, "", "#ff0000", ""),
+            "#ff0000"
+        );
+    }
+
+    #[test]
+    fn drag_text_matches_the_item_type() {
+        assert_eq!(
+            drag_plain_text(&ItemType::Link, "", "https://example.com|||Title", ""),
+            "https://example.com"
+        );
+        assert_eq!(
+            drag_plain_text(&ItemType::TextFile, "", "/tmp/a.txt", "body"),
+            "body"
+        );
+        assert_eq!(drag_plain_text(&ItemType::File, "", "[]", ""), "");
+        assert_eq!(drag_plain_text(&ItemType::Image, "", "/tmp/a.png", ""), "");
+    }
+
+    #[test]
+    fn drag_link_html_escapes_attribute_characters() {
+        assert_eq!(
+            drag_link_html("https://example.com/?a=1&b=\"2\"<"),
+            "https://example.com/?a=1&amp;b=&quot;2&quot;&lt;"
+        );
+    }
 }

@@ -49,6 +49,45 @@ struct PanelPage: Decodable {
   let knownCount: Int
   let hasMore: Bool
 }
+// Local deletion over the loaded page window. Refs after the removed one move
+// forward and pages are re-chunked at the 36-item boundaries, so the collection
+// view only needs to delete one item.
+enum PanelPageSplice {
+  static let pageSize = 36
+  struct Result {
+    let pages: [Int: [PanelRef]]
+    let endPage: Int
+    // First logical index not covered by the shifted loaded window.
+    let coveredEnd: Int
+    let runEndWasFull: Bool
+  }
+  static func remove(
+    hash: String, at index: Int, pages: [Int: [PanelRef]]
+  ) -> Result? {
+    let page = index / pageSize
+    let slot = index % pageSize
+    guard index >= 0, let loaded = pages[page], slot < loaded.count,
+      loaded[slot].hash == hash
+    else { return nil }
+    var flat = loaded
+    var endPage = page
+    while let next = pages[endPage + 1] {
+      flat.append(contentsOf: next)
+      endPage += 1
+    }
+    let runEndWasFull = (pages[endPage]?.count ?? 0) >= pageSize
+    guard slot < flat.count, flat[slot].hash == hash else { return nil }
+    flat.remove(at: slot)
+    var shifted = pages
+    for current in page...endPage {
+      let start = (current - page) * pageSize
+      shifted[current] = Array(flat.dropFirst(start).prefix(pageSize))
+    }
+    return Result(
+      pages: shifted, endPage: endPage, coveredEnd: page * pageSize + flat.count,
+      runEndWasFull: runEndWasFull)
+  }
+}
 struct PanelRun: Decodable {
   let text: String
   let bold: Bool

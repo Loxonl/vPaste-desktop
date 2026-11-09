@@ -25,6 +25,36 @@ final class NativePanelToolbarTests: XCTestCase {
     XCTAssertFalse(button.registered.contains { $0.1 === NSCursor.pointingHand })
   }
 
+  func testPassThroughCursorRegionDeliversPointerThroughHoverTracking() throws {
+    // hitTest must stay nil so SwiftUI receives clicks. AppKit then skips this
+    // view for cursor rects and cursorUpdate, so the tracking area's entered
+    // message is the path that still shows the pointing hand.
+    let cursor = RecordingCursor(
+      image: NSImage(size: NSSize(width: 1, height: 1)), hotSpot: .zero)
+    let region = PanelCursorRegion(cursor: cursor)
+    region.frame = NSRect(x: 0, y: 0, width: 28, height: 28)
+    region.updateTrackingAreas()
+    let tracking = try XCTUnwrap(region.trackingAreas.first { $0.options.contains(.mouseEnteredAndExited) })
+    XCTAssertTrue(tracking.options.contains(.cursorUpdate))
+    XCTAssertNil(region.hitTest(NSPoint(x: 14, y: 14)), "The SwiftUI button must receive the click")
+
+    let event = try XCTUnwrap(NSEvent.mouseEvent(
+      with: .mouseMoved, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+      context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
+    region.mouseEntered(with: event)
+    XCTAssertEqual(cursor.setCount, 1)
+    region.cursorUpdate(with: event)
+    XCTAssertEqual(cursor.setCount, 2)
+    region.isEnabled = false
+    region.mouseEntered(with: event)
+    region.cursorUpdate(with: event)
+    XCTAssertEqual(cursor.setCount, 2, "Disabled regions must not change the pointer")
+  }
+
+  private final class RecordingCursor: NSCursor {
+    private(set) var setCount = 0
+    override func set() { setCount += 1 }
+  }
   private final class RecordingCursorRegion: PanelCursorRegion {
     var registered: [(NSRect, NSCursor)] = []
     override func addCursorRect(_ rect: NSRect, cursor: NSCursor) { registered.append((rect, cursor)) }
@@ -59,6 +89,38 @@ final class NativePanelToolbarTests: XCTestCase {
       let label = ("🖼️ 图片" as NSString).size(withAttributes: [.font: font]).width
       XCTAssertEqual(image.width(scale: scale), max(58 * scale, label + 20 * scale), accuracy: 0.01)
     }
+  }
+
+  func testSelectionIndicatorTracksTheSelectedTab() throws {
+    let choices = [
+      PanelFilterChoice(title: "All", emoji: "", symbol: "square.grid.3x3.fill"),
+      PanelFilterChoice(title: "Favorites", emoji: "", symbol: "star"),
+      PanelFilterChoice(title: "文本", emoji: "📝", symbol: ""),
+    ]
+    for scale: CGFloat in [0.8, 0.9, 1] {
+      let first = try XCTUnwrap(
+        PanelFilterIndicatorLayout.rect(choices: choices, selected: 0, scale: scale))
+      XCTAssertEqual(first.minX, 10 * scale, accuracy: 0.01)
+      XCTAssertEqual(
+        first.width, choices[0].width(scale: scale, selected: true) - 20 * scale, accuracy: 0.01)
+      XCTAssertEqual(first.height, 3 * scale, accuracy: 0.01)
+
+      let second = try XCTUnwrap(
+        PanelFilterIndicatorLayout.rect(choices: choices, selected: 1, scale: scale))
+      XCTAssertEqual(second.minX, choices[0].width(scale: scale) + 18 * scale, accuracy: 0.01)
+      XCTAssertEqual(
+        second.width, choices[1].width(scale: scale, selected: true) - 20 * scale, accuracy: 0.01)
+
+      XCTAssertNil(PanelFilterIndicatorLayout.rect(choices: choices, selected: 3, scale: scale))
+    }
+  }
+
+  func testCJKFallbackUsesTheWebViewBaseWeight() {
+    // PingFang ignores the CT variation axis, so the base weight decides the
+    // CJK face: 590 must not fall back to PingFang Semibold.
+    XCTAssertEqual(PanelToolbarTypography.baseWeight(for: 450), .regular)
+    XCTAssertEqual(PanelToolbarTypography.baseWeight(for: 590), .medium)
+    XCTAssertEqual(PanelToolbarTypography.baseWeight(for: 740), .bold)
   }
 
   func testToolbarFontsKeepWebViewPointSizesAndVariableWeights() throws {

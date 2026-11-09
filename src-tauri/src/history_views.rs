@@ -392,6 +392,25 @@ pub(crate) fn reserve_native_open() -> u64 {
         + 1
 }
 
+// A native-panel delete changes the offsets of every later page. Drop the
+// cached pages/anchors so the next read observes the shifted result set.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn invalidate_native_cache() {
+    let views = VIEWS.lock().unwrap_or_else(|e| e.into_inner());
+    for view in views
+        .values()
+        .filter(|view| view.owner == ViewOwner::NativeExperiment)
+    {
+        let mut cache = view.cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.pages.clear();
+        cache.order.clear();
+        cache.anchors = BTreeMap::from([(0, (0, 0))]);
+        cache.known_count = 0;
+        cache.terminal = None;
+        cache.bytes = 0;
+    }
+}
+
 #[cfg(all(debug_assertions, target_os = "macos"))]
 pub(crate) fn close_native() {
     reserve_native_open(); // invalidate opens still running on the worker

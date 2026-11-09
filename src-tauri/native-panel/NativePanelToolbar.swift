@@ -92,6 +92,21 @@ struct PanelFilterChoice {
   }
 }
 
+// Shared selection underline for the SwiftUI filter strip. Mirrors the
+// WebView indicator's 10px inset and 3px height inside the tab bounds.
+enum PanelFilterIndicatorLayout {
+  static func rect(choices: [PanelFilterChoice], selected: Int, scale: CGFloat) -> CGRect? {
+    guard choices.indices.contains(selected) else { return nil }
+    let gap = 8 * scale
+    var x: CGFloat = 0
+    for index in 0..<selected {
+      x += choices[index].width(scale: scale) + gap
+    }
+    let width = choices[selected].width(scale: scale, selected: true) - 20 * scale
+    return CGRect(x: x + 10 * scale, y: 0, width: max(0, width), height: 3 * scale)
+  }
+}
+
 @available(macOS 12.0, *)
 @MainActor
 final class PanelToolbarState: ObservableObject {
@@ -399,41 +414,59 @@ private struct PanelFilterViewport: NSViewRepresentable {
 private struct PanelFilterStrip: View {
   @ObservedObject var state: PanelToolbarState
   @Environment(\.colorScheme) private var scheme
+  private var gap: CGFloat { 8 * state.scale }
   var body: some View {
-    HStack(spacing: 8 * state.scale) {
-      ForEach(state.choices.indices, id: \.self) { index in
-        let choice = state.choices[index]
-        let selected = state.selected == index
-        let accent = Color(PanelStyle.rgb(scheme == .dark ? 0x8ab7ff : 0x2466d8))
-        Button { state.choose(index) } label: {
-          HStack(spacing: 5 * state.scale) {
-            if choice.isFixed {
-              // MUI's 24-unit SVG uses 16 units for the grid, 20 for the star.
-              // Keep the 17pt layout box while matching its visible artwork.
-              let extent: CGFloat = choice.symbol == "star" ? 20 : 16
-              Image(systemName: choice.symbol).font(.system(size: 17 * extent / 24 * state.scale))
-                .frame(width: 17 * state.scale, height: 17 * state.scale)
+    ZStack(alignment: .bottomLeading) {
+      HStack(spacing: gap) {
+        ForEach(state.choices.indices, id: \.self) { index in
+          let choice = state.choices[index]
+          let selected = state.selected == index
+          Button { state.choose(index) } label: {
+            HStack(spacing: 5 * state.scale) {
+              if choice.isFixed {
+                // MUI's 24-unit SVG uses 16 units for the grid, 20 for the star.
+                // Keep the 17pt layout box while matching its visible artwork.
+                let extent: CGFloat = choice.symbol == "star" ? 20 : 16
+                Image(systemName: choice.symbol).font(.system(size: 17 * extent / 24 * state.scale))
+                  .frame(width: 17 * state.scale, height: 17 * state.scale)
+              }
+              Text(choice.label)
+                .font(Font(PanelToolbarTypography.tabFont(scale: state.scale, selected: selected)))
+                .lineLimit(1).frame(height: PanelToolbarTypography.lineHeight * state.scale)
             }
-            Text(choice.label)
-              .font(Font(PanelToolbarTypography.tabFont(scale: state.scale, selected: selected)))
-              .lineLimit(1).frame(height: PanelToolbarTypography.lineHeight * state.scale)
+            .padding(.leading, 10 * state.scale)
+            .padding(.trailing, (choice.isFixed ? 23 : 10) * state.scale)
+            .frame(width: choice.width(scale: state.scale, selected: selected), height: PanelStyle.headerHeight * state.scale)
           }
-          .padding(.leading, 10 * state.scale)
-          .padding(.trailing, (choice.isFixed ? 23 : 10) * state.scale)
-          .frame(width: choice.width(scale: state.scale, selected: selected), height: PanelStyle.headerHeight * state.scale)
+          .buttonStyle(PanelFilterStyle(scale: state.scale, selected: selected, dark: scheme == .dark))
+          .focusable(false)
+          .accessibilityLabel(Text(choice.title))
+          .accessibilityValue(Text(selected ? state.local("Selected", "已选择") : ""))
         }
-        .buttonStyle(PanelFilterStyle(scale: state.scale, selected: selected, dark: scheme == .dark))
-        .focusable(false)
-        .overlay(alignment: .bottom) {
-          if selected {
-            Capsule().fill(accent).frame(width: choice.width(scale: state.scale, selected: selected) - 20 * state.scale, height: 3 * state.scale)
-          }
-        }
-        .accessibilityLabel(Text(choice.title))
-        .accessibilityValue(Text(selected ? state.local("Selected", "已选择") : ""))
       }
+      selectionIndicator
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+  }
+  // Mirrors ClipboardTabBar's shared layoutId indicator: one accent underline
+  // glides between tabs instead of each tab drawing its own.
+  @ViewBuilder private var selectionIndicator: some View {
+    if let rect = indicatorRect {
+      Capsule()
+        .fill(Color(PanelStyle.rgb(scheme == .dark ? 0x8ab7ff : 0x2466d8)))
+        .frame(width: rect.width, height: rect.height)
+        .offset(x: rect.minX)
+        .animation(selectionAnimation, value: state.selected)
+        .accessibilityHidden(true)
+    }
+  }
+  private var indicatorRect: CGRect? {
+    PanelFilterIndicatorLayout.rect(choices: state.choices, selected: state.selected, scale: state.scale)
+  }
+  // Same layout spring as src/ui/motion/tokens.ts motionSprings.layout.
+  private var selectionAnimation: Animation? {
+    NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+      ? nil : .interpolatingSpring(mass: 0.9, stiffness: 320, damping: 34)
   }
 }
 

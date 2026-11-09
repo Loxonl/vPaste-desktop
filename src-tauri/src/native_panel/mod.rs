@@ -171,7 +171,7 @@ fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Res
                 "tabQuickSelectEnabled": config.tab_quick_select_enabled,
                 "dockedFrame": main_docked_frame(&app),
                 "panelHeight": crate::CLIPBOARD_WINDOW_HEIGHT * scale,
-                "horizontalBleed": crate::CLIPBOARD_HORIZONTAL_BLEED,
+                "horizontalBleed": 0.0,
                 "showDuration": crate::panel_animation::model::SHOW_DURATION_MS,
                 "hideDuration": crate::panel_animation::model::HIDE_DURATION_MS,
                 "showCurve": crate::panel_animation::model::Animation::Show.easing(),

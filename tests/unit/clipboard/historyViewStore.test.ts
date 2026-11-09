@@ -31,6 +31,26 @@ function backend(total = 5000) {
 }
 
 describe("bounded history data", () => {
+    it("universal clipboard preserves remote provenance through viewport hydration and tag changes", async () => {
+        const native = backend(1);
+        const metadata = { isRemote: true, bundleId: "com.example.remote" };
+        const call: HistoryInvoker = async <T,>(command: string, args?: Record<string, unknown>) => {
+            const result = await native.call<T>(command, args);
+            if (command === "read_history_card_payloads") {
+                const payload = result as import("../../../src/clipboard/historyViewTypes").CardResponse;
+                payload.cards.forEach(card => { card.item.sourceMetadata = metadata; });
+            }
+            return result;
+        };
+        const store = new HistoryViewStore(call);
+        await store.open({ keywords: "", label: "__all" }, { start: 0, end: 1 });
+        const item = store.residentItems()[0];
+        expect(item.isRemoteSource()).toBe(true);
+        expect(item.getSourceBundleId()).toBe("com.example.remote");
+        expect(item.withTags([{ id: 1, name: "Keep" }]).isRemoteSource()).toBe(true);
+        store.close();
+    });
+
     it("publishes navigation metadata growth without replacing the resident viewport", async () => {
         const native = backend(200);
         const store = new HistoryViewStore(native.call);

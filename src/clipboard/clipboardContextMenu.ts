@@ -12,6 +12,7 @@ export type ClipboardContextMenuActions = {
     onCreateRecordTag: (item: Item) => MenuAction;
     onDelete: (item: Item) => MenuAction;
     onEditText: (item: Item) => MenuAction;
+    onViewImageText: (item: Item) => MenuAction;
     onExportImage: (item: Item) => MenuAction;
     onOpenContainingFolder: (item: Item) => MenuAction;
     onPastePlainText: (item: Item) => MenuAction;
@@ -50,6 +51,9 @@ export function buildClipboardContextMenuOptions({
 
     if (isEditableTextItem(item)) {
         options.splice(1, 0, { label: t("menu.editText"), action: () => actions.onEditText(item) });
+    }
+    if (item.getType() === ItemType.Image) {
+        options.splice(1, 0, { label: t("ocr.title"), action: () => actions.onViewImageText(item) });
     }
 
     options.push(currentItemTags.length === 0

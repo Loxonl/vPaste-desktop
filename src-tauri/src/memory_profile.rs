@@ -18,6 +18,10 @@ pub fn directory() -> Option<&'static Path> {
 }
 
 pub fn driver_script() -> &'static str {
+    #[cfg(target_os = "macos")]
+    if std::env::args().any(|arg| arg == "--native-panel-check") {
+        return "window.__vpasteMemoryProfileDiagnostics=true;";
+    }
     if std::env::args().any(|arg| arg == "--memory-profile-parking-check") {
         include_str!("../../scripts/profile-main-window-parking.js")
     } else if std::env::args().any(|arg| arg == "--memory-profile-resource-check") {
@@ -475,12 +479,18 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
     crate::ensure_history_storage_dirs()?;
     crate::clipboard::db::try_init().map_err(|error| error.to_string())?;
     crate::rebuild_current_search_index()?;
+    if crate::main_panel_mode::native() {
+        return crate::startup_panel::request_show(app);
+    }
     let window = crate::build_clipboard_window(app).map_err(|error| error.to_string())?;
+    // Interactive comparison uses the same isolated fixture, without watchers.
+    let interactive =
+        cfg!(target_os = "macos") && std::env::args().any(|arg| arg == "--native-panel-check");
     window
-        .set_focusable(false)
+        .set_focusable(interactive)
         .map_err(|error| error.to_string())?;
     window
-        .set_ignore_cursor_events(true)
+        .set_ignore_cursor_events(!interactive)
         .map_err(|error| error.to_string())?;
     crate::startup_panel::request_show(app)?;
     if std::env::args().any(|arg| arg == "--memory-profile-inspector") {

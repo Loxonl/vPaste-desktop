@@ -28,6 +28,8 @@ pub(crate) mod item;
 #[cfg(target_os = "macos")]
 pub mod macos;
 mod search_page;
+pub(crate) mod source_metadata;
+use source_metadata::SourceMetadata;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
@@ -153,6 +155,7 @@ pub(crate) struct StoredItem {
     pub(crate) source: String,
     pub(crate) app_source: String,
     pub(crate) app_icon_path: String,
+    pub(crate) source_metadata: SourceMetadata,
     pub(crate) title_color: String,
     pub(crate) time: u64,
     pub(crate) search_index: u8,
@@ -171,6 +174,7 @@ pub(crate) fn read_stored_item(row: &Row) -> Result<StoredItem, Error> {
         source: row.get::<_, Option<String>>("source")?.unwrap_or_default(),
         app_source: row.get("app_source").unwrap_or_default(),
         app_icon_path: row.get("app_icon_path").unwrap_or_default(),
+        source_metadata: SourceMetadata::from_row(row),
         title_color: row.get("title_color")?,
         time: row.get("time")?,
         search_index: row.get("search_index")?,
@@ -252,6 +256,7 @@ fn materialize_item_with_rich(stored: StoredItem, tags: Vec<ItemTag>, rich_html:
         },
         rich_html,
         app_source: stored.app_source,
+        source_metadata: stored.source_metadata,
         app_icon_path,
         title_color,
         item_type,
@@ -449,10 +454,19 @@ fn resolve_app_icon_path(app_source: &str, stored_icon_path: String) -> String {
             .unwrap_or_else(|| prefer_jumbo_app_icon(stored_icon_path));
     }
     let stored_icon_path = prefer_jumbo_app_icon(stored_icon_path);
-    if !stored_icon_path.is_empty() && Path::new(&stored_icon_path).is_file() {
-        return stored_icon_path;
+    let icon = if !stored_icon_path.is_empty() && Path::new(&stored_icon_path).is_file() {
+        stored_icon_path
+    } else {
+        bundled_app_source_icon_path(app_source).unwrap_or(stored_icon_path)
+    };
+    #[cfg(target_os = "windows")]
+    {
+        windows::source_icons::for_history(app_source, icon)
     }
-    bundled_app_source_icon_path(app_source).unwrap_or(stored_icon_path)
+    #[cfg(not(target_os = "windows"))]
+    {
+        icon
+    }
 }
 
 fn app_icon_dominant_color(icon_path: &str) -> Option<String> {
@@ -595,6 +609,21 @@ fn missing_app_icon_path_is_not_exposed() {
     let root = tempfile::tempdir().unwrap();
     let missing = root.path().join("missing-macos.png");
 
+    #[cfg(target_os = "windows")]
+    {
+        let _guard = crate::TEST_APP_DATA_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        let resolved = resolve_app_icon_path("Missing App", missing.to_string_lossy().to_string());
+        assert_eq!(
+            Path::new(&resolved).file_name().unwrap(),
+            "neutral-source-v1.png"
+        );
+        assert!(Path::new(&resolved).is_file());
+    }
+    #[cfg(not(target_os = "windows"))]
     assert_eq!(
         resolve_app_icon_path("Missing App", missing.to_string_lossy().to_string()),
         ""
@@ -735,6 +764,7 @@ pub(crate) fn history_ref_page(
                     label: stored.label,
                     tags,
                     app_source: stored.app_source,
+                    source_metadata: stored.source_metadata,
                     app_icon_path,
                     title_color,
                 });
@@ -923,6 +953,11 @@ fn search_index_session(keywords: &str) -> Result<engine::SearchSession, String>
 }
 
 pub(crate) fn stored_item_search_content(stored: &StoredItem) -> String {
+    let image_text = if stored.item_type == ItemType::Image.to_string() {
+        crate::image_ocr::cached_text(&stored.hash)
+    } else {
+        String::new()
+    };
     let content = if stored.item_type == ItemType::TextFile.to_string() {
         history_store::read_file(&stored.content)
             .ok()
@@ -936,6 +971,7 @@ pub(crate) fn stored_item_search_content(stored: &StoredItem) -> String {
         stored.preview_content.as_str(),
         stored.source.as_str(),
         stored.app_source.as_str(),
+        image_text.as_str(),
     ]
     .join("\n")
 }
@@ -2470,8 +2506,11 @@ fn insert_history_item(
             "update clipboard
                 set time = ?1,
                     search_index = 0,
-                    app_source = case when ?2 <> '' then ?2 else app_source end,
-                    app_icon_path = case when ?3 <> '' then ?3 else app_icon_path end,
+                    app_source = case when ?9 = 1 or source_is_remote = 1 or ?2 <> '' then ?2 else app_source end,
+                    app_icon_path = case when ?9 = 1 or source_is_remote = 1 or ?3 <> '' then ?3 else app_icon_path end,
+                    title_color = case when ?9 = 1 or source_is_remote = 1 then '' else title_color end,
+                    source_bundle_id = case when ?9 = 1 or source_is_remote = 1 or ?10 <> '' or ?2 <> '' then ?10 else source_bundle_id end,
+                    source_is_remote = ?9,
                     source = case when ?5 = 'Image' then ?4 when ?4 <> '' then ?4 else source end,
                     content = case when ?5 = 'Link' then content else ?7 end,
                     preview_content = case when ?5 = 'Link' then preview_content else ?8 end
@@ -2485,6 +2524,8 @@ fn insert_history_item(
                 item.hash,
                 stored_content,
                 stored_preview_content,
+                item.source_metadata.is_remote,
+                item.source_metadata.bundle_id,
             ],
         );
         return match state {
@@ -2512,8 +2553,8 @@ fn insert_history_item(
     let start = Instant::now();
 
     let insert_sql = "
-                        insert into clipboard(hash,content,preview_content,time,title_color,item_type,icon,source,app_source,app_icon_path,search_index)
-                                      values(:hash,:content,:preview_content,:time,:title_color,:item_type,:icon,:source,:app_source,:app_icon_path,:search_index)
+                        insert into clipboard(hash,content,preview_content,time,title_color,item_type,icon,source,app_source,app_icon_path,search_index,source_is_remote,source_bundle_id)
+                                      values(:hash,:content,:preview_content,:time,:title_color,:item_type,:icon,:source,:app_source,:app_icon_path,:search_index,:source_is_remote,:source_bundle_id)
                             ";
     let conn = db();
     let stored_content = item.content.clone();
@@ -2533,6 +2574,11 @@ fn insert_history_item(
             (":app_source", &app_source.to_string()),
             (":app_icon_path", &app_icon_path.to_string()),
             (":search_index", &"0".to_string()),
+            (
+                ":source_is_remote",
+                &u8::from(item.source_metadata.is_remote).to_string(),
+            ),
+            (":source_bundle_id", &item.source_metadata.bundle_id),
         ])
     };
     if let Err(err) = state {
@@ -2558,12 +2604,18 @@ fn captured_item_search_content(
     source: &str,
     app_source: &str,
 ) -> String {
+    let image_text = if item.item_type == ItemType::Image {
+        crate::image_ocr::cached_text(&item.hash)
+    } else {
+        String::new()
+    };
     [
         search_content,
         item.content.as_str(),
         item.preview_content.as_str(),
         source,
         app_source,
+        image_text.as_str(),
     ]
     .join("\n")
 }
@@ -2572,6 +2624,32 @@ fn captured_item_search_content(
 pub struct CaptureContext {
     pub(crate) time: u64,
     pub(crate) queue_epoch: Option<u64>,
+}
+
+pub struct CaptureRequest {
+    context: CaptureContext,
+    source_metadata: SourceMetadata,
+}
+
+impl CaptureContext {
+    pub(crate) fn with_source(self, source_metadata: SourceMetadata) -> CaptureRequest {
+        CaptureRequest {
+            context: self,
+            source_metadata,
+        }
+    }
+}
+
+impl From<CaptureContext> for CaptureRequest {
+    fn from(context: CaptureContext) -> Self {
+        context.with_source(SourceMetadata::default())
+    }
+}
+
+impl From<bool> for CaptureRequest {
+    fn from(queue_only: bool) -> Self {
+        CaptureContext::from(queue_only).into()
+    }
 }
 
 impl From<bool> for CaptureContext {
@@ -2751,7 +2829,7 @@ pub fn capture_text_from_app(
     content: String,
     app_source: &str,
     app_icon_path: &str,
-    context: impl Into<CaptureContext>,
+    context: impl Into<CaptureRequest>,
 ) -> Option<String> {
     insert_text_from_app_impl(content, app_source, app_icon_path, context.into())
 }
@@ -2763,7 +2841,7 @@ pub fn capture_rich_text_from_app(
     png: Option<Vec<u8>>,
     app_source: &str,
     app_icon_path: &str,
-    context: impl Into<CaptureContext>,
+    context: impl Into<CaptureRequest>,
 ) -> Option<String> {
     insert_rich_text_from_app_impl(
         plain_text,
@@ -2783,7 +2861,7 @@ fn insert_rich_text_from_app_impl(
     png: Option<Vec<u8>>,
     app_source: &str,
     app_icon_path: &str,
-    context: CaptureContext,
+    request: CaptureRequest,
 ) -> Option<String> {
     let _cleanup = crate::auto_cleanup::pause();
     let payload_bytes = plain_text
@@ -2805,7 +2883,7 @@ fn insert_rich_text_from_app_impl(
             normalized_color.to_string(),
             app_source,
             app_icon_path,
-            context,
+            request,
         );
     }
 
@@ -2820,7 +2898,7 @@ fn insert_rich_text_from_app_impl(
         html.as_deref(),
         rtf.as_deref(),
         png.as_deref(),
-        context.queue_epoch.is_some(),
+        request.context.queue_epoch.is_some(),
     );
     let meta = RichClipboardMeta {
         version: 1,
@@ -2861,10 +2939,11 @@ fn insert_rich_text_from_app_impl(
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: app_icon_path.to_string(),
+        source_metadata: request.source_metadata.clone(),
         hash,
         title_color: String::new(),
         item_type,
-        time: context.time,
+        time: request.context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
@@ -2876,7 +2955,7 @@ fn insert_rich_text_from_app_impl(
         &source,
         app_source,
         app_icon_path,
-        context,
+        request.context,
     )
     .then_some(hash)
 }
@@ -2917,6 +2996,7 @@ pub(crate) fn insert_test_room_rich_text(
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: String::new(),
+        source_metadata: SourceMetadata::default(),
         hash,
         title_color: String::new(),
         item_type,
@@ -2932,7 +3012,7 @@ fn insert_text_from_app_impl(
     content: String,
     app_source: &str,
     app_icon_path: &str,
-    context: CaptureContext,
+    request: CaptureRequest,
 ) -> Option<String> {
     let _cleanup = crate::auto_cleanup::pause();
     if is_semantically_blank_text(&content) {
@@ -2963,16 +3043,25 @@ fn insert_text_from_app_impl(
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: app_icon_path.to_string(),
+        source_metadata: request.source_metadata.clone(),
         hash,
         title_color: String::from(""),
         item_type,
-        time: context.time,
+        time: request.context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
     };
     let hash = item.hash.clone();
-    store_captured_item(&item, &content, "", app_source, app_icon_path, context).then_some(hash)
+    store_captured_item(
+        &item,
+        &content,
+        "",
+        app_source,
+        app_icon_path,
+        request.context,
+    )
+    .then_some(hash)
 }
 
 #[allow(dead_code)]
@@ -3006,7 +3095,7 @@ pub fn capture_image_with_text_and_app(
     text_content: &str,
     app_source: &str,
     app_icon_path: &str,
-    context: impl Into<CaptureContext>,
+    context: impl Into<CaptureRequest>,
 ) -> Option<String> {
     insert_image_with_text_and_app_impl(
         content,
@@ -3022,7 +3111,7 @@ fn insert_image_with_text_and_app_impl(
     text_content: &str,
     app_source: &str,
     app_icon_path: &str,
-    context: CaptureContext,
+    request: CaptureRequest,
 ) -> Option<String> {
     let _cleanup = crate::auto_cleanup::pause();
     if content.len() > crate::clipboard_budget::IMAGE_SOURCE_BYTES {
@@ -3045,24 +3134,28 @@ fn insert_image_with_text_and_app_impl(
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: app_icon_path.to_string(),
+        source_metadata: request.source_metadata.clone(),
         hash,
         title_color: String::from(""),
         item_type: ItemType::Image,
-        time: context.time,
+        time: request.context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
     };
     let hash = item.hash.clone();
-    store_captured_item(
+    let saved = store_captured_item(
         &item,
         text_content,
         text_content,
         app_source,
         app_icon_path,
-        context,
-    )
-    .then_some(hash)
+        request.context,
+    );
+    if saved {
+        crate::image_ocr::captured(&hash);
+    }
+    saved.then_some(hash)
 }
 
 #[allow(dead_code)]
@@ -3083,7 +3176,7 @@ pub fn capture_file_from_app(
     content: &Vec<String>,
     app_source: &str,
     app_icon_path: &str,
-    context: impl Into<CaptureContext>,
+    context: impl Into<CaptureRequest>,
 ) -> Option<String> {
     insert_file_from_app_impl(content, app_source, app_icon_path, context.into())
 }
@@ -3092,7 +3185,7 @@ fn insert_file_from_app_impl(
     content: &Vec<String>,
     app_source: &str,
     app_icon_path: &str,
-    context: CaptureContext,
+    request: CaptureRequest,
 ) -> Option<String> {
     let _cleanup = crate::auto_cleanup::pause();
     if let [path] = content.as_slice() {
@@ -3117,15 +3210,24 @@ fn insert_file_from_app_impl(
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: app_icon_path.to_string(),
+        source_metadata: request.source_metadata.clone(),
         title_color: "".to_string(),
         item_type: ItemType::File,
-        time: context.time,
+        time: request.context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
     };
     let hash = item.hash.clone();
-    store_captured_item(&item, &content, "", app_source, app_icon_path, context).then_some(hash)
+    store_captured_item(
+        &item,
+        &content,
+        "",
+        app_source,
+        app_icon_path,
+        request.context,
+    )
+    .then_some(hash)
 }
 fn native_path_string(path: &Path) -> String {
     let value = path.to_string_lossy().into_owned();
@@ -4709,6 +4811,7 @@ mod tests {
             preview_content: "text".to_string(),
             source: "text".to_string(),
             app_source: "Test App".to_string(),
+            source_metadata: SourceMetadata::default(),
             app_icon_path: icon_path.to_string_lossy().to_string(),
             title_color: String::new(),
             time: 1,
@@ -5406,6 +5509,7 @@ mod tests {
             text_content: String::new(),
             rich_html: String::new(),
             app_source: String::new(),
+            source_metadata: SourceMetadata::default(),
             app_icon_path: String::new(),
             hash: "disk-backed-long-text".to_string(),
             title_color: String::new(),

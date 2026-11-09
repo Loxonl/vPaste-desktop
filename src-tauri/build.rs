@@ -46,6 +46,22 @@ fn build_native_demo() {
 
 fn build_swift_native_demo() {
     const SOURCE: &str = "native-demo/macos/NativeDemoWindow.swift";
+    const PANEL_SOURCES: &[&str] = &[
+        "native-panel/NativePanelModels.swift",
+        "native-panel/NativePanelStyle.swift",
+        "native-panel/NativePanelAppKitToolbar.swift",
+        "native-panel/NativePanelToolbar.swift",
+        "native-panel/NativePanelBackdrop.swift",
+        "native-panel/NativePanelMedia.swift",
+        "native-panel/NativePanelCards.swift",
+        "native-panel/NativePanelPreview.swift",
+        "native-panel/NativePanelController.swift",
+    ];
+    println!("cargo:rerun-if-changed=native-panel/NativePanelBridge.h");
+    for source in PANEL_SOURCES {
+        println!("cargo:rerun-if-changed={source}");
+    }
+
     println!("cargo:rerun-if-changed={SOURCE}");
 
     let arch = match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
@@ -57,8 +73,26 @@ fn build_swift_native_demo() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     let library = out_dir.join("libVPasteNativeDemo.a");
 
-    let status = Command::new("xcrun")
-        .args(["swiftc", "-emit-library", "-static", "-parse-as-library"])
+    println!("cargo:rerun-if-env-changed=SDKROOT");
+    println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
+    let liquid_glass_sdk = Command::new("xcrun")
+        .arg("--show-sdk-path")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| {
+            PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+                .join("System/Library/Frameworks/AppKit.framework/Headers/NSGlassEffectView.h")
+                .is_file()
+        });
+    let mut swift = Command::new("xcrun");
+    if liquid_glass_sdk {
+        swift.args(["swiftc", "-D", "VPASTE_LIQUID_GLASS_SDK"]);
+    } else {
+        swift.arg("swiftc");
+    }
+    let status = swift
+        .args(["-emit-library", "-static", "-parse-as-library"])
         .args(["-swift-version", "5", "-module-name", "VPasteNativeDemo"])
         .args([
             "-target",
@@ -71,6 +105,7 @@ fn build_swift_native_demo() {
         .arg("-o")
         .arg(&library)
         .arg(SOURCE)
+        .args(PANEL_SOURCES)
         .status()
         .expect("run `xcrun swiftc` (install Xcode or the Command Line Tools)");
     assert!(status.success(), "Swift native demo failed to compile");

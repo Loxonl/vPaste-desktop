@@ -61,13 +61,15 @@ pub(crate) enum FocusTarget {
 /// Which window should hold keyboard focus after a preview is committed.
 /// A Space preview gives focus to the preview only when the cursor is already
 /// inside it; otherwise the clipboard keeps focus. Hover previews never move focus.
+/// Interactive text readers take focus immediately so selection and copy work.
 pub(crate) fn commit_focus_target(
     takes_focus: bool,
     cursor_in_preview: bool,
+    interactive_text: bool,
 ) -> Option<FocusTarget> {
     if !takes_focus {
         None
-    } else if cursor_in_preview {
+    } else if interactive_text || cursor_in_preview {
         Some(FocusTarget::Preview)
     } else {
         Some(FocusTarget::Clipboard)
@@ -277,13 +279,29 @@ mod tests {
     #[test]
     fn space_preview_leaves_focus_on_the_clipboard_unless_the_cursor_is_inside_it() {
         assert_eq!(
-            commit_focus_target(true, false),
+            commit_focus_target(true, false, false),
             Some(FocusTarget::Clipboard)
         );
-        assert_eq!(commit_focus_target(true, true), Some(FocusTarget::Preview));
+        assert_eq!(
+            commit_focus_target(true, true, false),
+            Some(FocusTarget::Preview)
+        );
         // Hover previews never move focus, wherever the cursor is.
-        assert_eq!(commit_focus_target(false, false), None);
-        assert_eq!(commit_focus_target(false, true), None);
+        assert_eq!(commit_focus_target(false, false, false), None);
+        assert_eq!(commit_focus_target(false, true, false), None);
+    }
+
+    #[test]
+    fn interactive_text_takes_focus_without_waiting_for_cursor_entry() {
+        assert_eq!(
+            commit_focus_target(true, false, true),
+            Some(FocusTarget::Preview)
+        );
+        assert_eq!(
+            commit_focus_target(true, true, true),
+            Some(FocusTarget::Preview)
+        );
+        assert_eq!(commit_focus_target(false, false, true), None);
     }
 
     #[test]

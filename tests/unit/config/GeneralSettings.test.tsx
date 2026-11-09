@@ -54,6 +54,15 @@ const bridge: SettingsBridge = {
 };
 
 describe("General settings accessibility", () => {
+    it("renders one labeled OCR switch without explanatory text and saves its value", async () => {
+        const onSave = vi.fn(async () => null);
+        render(<AppThemeProvider><MotionTestProvider><GeneralSettings bridge={bridge} config={DEFAULT_CONFIG} languages={[]} t={key => key} onSave={onSave} /></MotionTestProvider></AppThemeProvider>);
+        const control = screen.getByRole("checkbox", { name: "settings.imageOcr" });
+        expect(control).toBeChecked();
+        expect(control).not.toHaveAttribute("aria-describedby");
+        await userEvent.click(control);
+        expect(onSave).toHaveBeenCalledWith({ ...DEFAULT_CONFIG, image_ocr_enabled: false });
+    });
     it("loads the native automatic panel size without entering an error state", async () => {
         render(<AppThemeProvider><MotionTestProvider><GeneralSettings bridge={bridge} config={DEFAULT_CONFIG} languages={[]} onSave={vi.fn(async () => null)} t={key => key} /></MotionTestProvider></AppThemeProvider>);
 

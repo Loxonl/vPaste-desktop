@@ -48,7 +48,7 @@ describe("preview window outer shell", () => {
 
     it("lets keyboard focus follow the cursor instead of always moving to a Space preview", () => {
         const commit = sourceBetween("fn commit_preview_window", "#[tauri::command]");
-        expect(commit).toContain("preview_focus::commit_focus_target(prepared.mode.takes_focus(), cursor_in_preview)");
+        expect(commit).toMatch(/preview_focus::commit_focus_target\(\s*prepared\.mode\.takes_focus\(\),\s*cursor_in_preview,\s*prepared\.payload\.item_type == "ImageText",?\s*\)/);
         expect(commit).toContain("set_focusable(focus_target == Some(preview_focus::FocusTarget::Preview))");
         expect(commit).not.toContain("set_focusable(prepared.mode.takes_focus())");
         expect(commit).not.toContain("if prepared.mode.takes_focus()");

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Item, type ItemTag, type ItemType } from "./Item";
+import { Item, type ItemTag, type ItemType, type SourceMetadata } from "./Item";
 
 export type SearchItemPayload = {
     id: number;
@@ -15,6 +15,7 @@ export type SearchItemPayload = {
     appIconPath: string;
     richHtml: string;
     tags?: ItemTag[];
+    sourceMetadata?: SourceMetadata;
 };
 
 type SearchPagePayload = {
@@ -61,6 +62,9 @@ export function itemFromPayload(item: SearchItemPayload): Item {
         item.appIconPath,
         item.richHtml,
         Array.isArray(item.tags) ? item.tags : [],
+        undefined,
+        false,
+        item.sourceMetadata,
     );
 }
 

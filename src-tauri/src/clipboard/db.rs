@@ -150,6 +150,8 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     )?;
     if has_tables {
         validate_schema(conn)?;
+        crate::image_ocr::init_schema(conn)?;
+        super::source_metadata::init_schema(conn)?;
         if version == 0 {
             conn.pragma_update(None, "user_version", HISTORY_SCHEMA_VERSION)?;
         }
@@ -171,6 +173,8 @@ create table if not exists clipboard
     source          text,
     app_source      text default '' not null,
     app_icon_path   text default '' not null,
+    source_is_remote integer default 0 not null,
+    source_bundle_id text default '' not null,
     title_color     text,
     icon            text,
     label           integer default 0 not null
@@ -231,6 +235,8 @@ create table if not exists paste_queue
     source          text    default '' not null,
     app_source      text    default '' not null,
     app_icon_path   text    default '' not null,
+    source_is_remote integer default 0 not null,
+    source_bundle_id text default '' not null,
     title_color     text    default '' not null,
     label           integer default 0 not null
 )
@@ -242,6 +248,7 @@ create unique index if not exists hash on clipboard(hash);
     ";
     let transaction = conn.unchecked_transaction()?;
     transaction.execute_batch(sql)?;
+    crate::image_ocr::init_schema(&transaction)?;
     transaction.pragma_update(None, "user_version", HISTORY_SCHEMA_VERSION)?;
     transaction.commit()
 }

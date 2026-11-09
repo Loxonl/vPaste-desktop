@@ -1414,6 +1414,15 @@ export default function Clipboard() {
     }, []);
 
     useEffect(() => {
+        const unlisten = listen<string>("image-ocr-updated", () => {
+            if (searchWordRef.current.trim()) {
+                void fetchHistoryWith(searchWordRef.current, activeTabRef.current);
+            }
+        });
+        return () => { void unlisten.then(dispose => dispose()); };
+    }, []);
+
+    useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             suspendPointerSelection();
             hoverPreviewRef.current?.cancel();
@@ -1842,6 +1851,13 @@ export default function Clipboard() {
             onCreateRecordTag: openRecordTagCreateEditorForItem,
             onDelete: deleteClipboardItem,
             onEditText: openTextEditor,
+            onViewImageText: async item => {
+                setContextMenu(null);
+                hoverPreviewRef.current?.cancel();
+                previewRequestSeqRef.current += 1;
+                try { await invoke("show_image_text_window", { hash: item.getHash() }); }
+                catch { showToast(t("ocr.failed"), "error"); }
+            },
             onExportImage: exportImageItem,
             onOpenContainingFolder: openContainingFolder,
             onPastePlainText: pastePlainTextItem,
@@ -1916,6 +1932,15 @@ export default function Clipboard() {
         if (!import.meta.env.DEV || !developerMode) return;
         void invoke("open_dev_memory_window", { languageCode, themePreview: getResolvedTheme() })
             .catch(e => error(`Failed to open memory monitor: ${e}`));
+    };
+
+    const openNativePanel = () => {
+        if (!import.meta.env.DEV || !developerMode || !isMacPlatform()) return;
+        void invoke("open_native_main_panel", { languageCode, theme: getResolvedTheme() })
+            .catch(e => {
+                error(`Failed to open native main panel: ${e}`);
+                showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
+            });
     };
 
     const openNativeWindow = () => {
@@ -2154,6 +2179,7 @@ export default function Clipboard() {
                     onOpenTestRoom={openTestRoom}
                     onOpenMemoryMonitor={openMemoryMonitor}
                     onOpenNativeWindow={openNativeWindow}
+                    onOpenNativePanel={openNativePanel}
                     onOpenSettings={tutorialActive ? blockTutorialNavigation : openConfigWindow}
                     updateReadyVersion={updateEntryVisible(updateState) ? updateState.availableVersion || "" : null}
                     updateInstalling={updateState.status === "installing"}

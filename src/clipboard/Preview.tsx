@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { emitTo, listen } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
@@ -19,6 +19,7 @@ import { NativeLinkPreview } from "./NativeLinkPreview";
 
 const FileTypePresentation = lazy(() => import("./FileTypePresentation")
     .then(module => ({ default: module.FileTypePresentation })));
+const ImageTextView = lazy(() => import("./ImageTextView"));
 
 type PreviewPayload = {
     request_id?: number;
@@ -214,6 +215,11 @@ function PreviewContent({ payload, t, onReady, active = true }: PreviewBodyProps
             cancelled = true;
         };
     }, [fileInfo?.preview_path]);
+
+    if (payload.item_type === "ImageText") {
+        return <ImageTextView hash={payload.content} t={t} active={active}
+            onClose={() => { void invoke("hide_preview_window").catch(e => error(`Failed to close image text: ${e}`)); }} />;
+    }
 
     if (type === ItemType.Image) {
         if (imageError) return <div className={styles["preview-empty"]}>{t("preview.unsupported")}</div>;
@@ -433,10 +439,12 @@ export default function Preview() {
             }).catch(e => error(`Failed to restore pending preview: ${e}`));
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.isComposing || event.keyCode === 229) return;
+            const imageText = (pendingLayerRef.current ?? currentLayerRef.current)?.payload.item_type === "ImageText";
+            if (imageText && event.key !== "Escape") return;
             const tabDirection = clipboardTabNavigationDirection(event);
             if (tabDirection !== null) {
                 event.preventDefault();
-                void emitTo("clipboard", "preview-navigate-selection", { direction: tabDirection, key: "Tab", ctrlKey: true })
+                void invoke("preview_navigate_selection", { direction: tabDirection, key: "Tab", ctrlKey: true })
                     .catch(e => error(`Failed to switch preview category: ${e}`));
                 return;
             }
@@ -445,7 +453,7 @@ export default function Preview() {
                 event.preventDefault();
                 const direction = event.key === "ArrowLeft" || (event.key === "Tab" && event.shiftKey) ? -1 : 1;
                 pendingNavigationDirectionRef.current = direction;
-                void emitTo("clipboard", "preview-navigate-selection", { direction, key: event.key })
+                void invoke("preview_navigate_selection", { direction, key: event.key })
                     .catch(e => {
                         if (pendingNavigationDirectionRef.current === direction) {
                             pendingNavigationDirectionRef.current = 0;
@@ -480,13 +488,15 @@ export default function Preview() {
         setPinned(next);
         void invoke("set_preview_pinned", { pinned: next }).catch(e => error(`Failed to set preview pinned: ${e}`));
     };
+    const imageText = (layers.find(layer => layer.phase === "current")
+        ?? layers.find(layer => layer.phase === "pending"))?.payload.item_type === "ImageText";
 
     return (
         <div className={styles["preview-shell"]}
-            onMouseEnter={() => { if (hoverRef.current) void emitTo("clipboard", "preview-hover", true).catch(e => error(`Failed to retain hover preview: ${e}`)); }}
-            onMouseLeave={() => { if (hoverRef.current) void emitTo("clipboard", "preview-hover", false).catch(e => error(`Failed to leave hover preview: ${e}`)); }}
+            onMouseEnter={() => { if (hoverRef.current) void invoke("preview_pointer_changed", { inside: true }).catch(e => error(`Failed to retain hover preview: ${e}`)); }}
+            onMouseLeave={() => { if (hoverRef.current) void invoke("preview_pointer_changed", { inside: false }).catch(e => error(`Failed to leave hover preview: ${e}`)); }}
         >
-            <ToolbarIconButton
+            {!imageText && <ToolbarIconButton
                 size="medium"
                 className={[styles["preview-pin"], pinned ? styles.pinned : ""].join(" ")}
                 label={pinned ? t("preview.unpin") : t("preview.pin")}
@@ -494,7 +504,7 @@ export default function Preview() {
                 onClick={togglePinned}
             >
                 {pinned ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
-            </ToolbarIconButton>
+            </ToolbarIconButton>}
             <div className={styles["preview-content"]}>
                 {layers.length === 0 && <div className={styles["preview-empty"]}>{t("preview.waiting")}</div>}
                 {layers.map(layer => (

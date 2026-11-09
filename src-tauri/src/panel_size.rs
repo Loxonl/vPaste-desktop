@@ -222,7 +222,13 @@ fn apply_preview(
     app: &tauri::AppHandle,
     source: &tauri::WebviewWindow,
     size: PanelSize,
-) -> Result<tauri::WebviewWindow, String> {
+) -> Result<Option<tauri::WebviewWindow>, String> {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if crate::main_panel_mode::native() {
+        PERCENT.store(size.percent(), Ordering::SeqCst);
+        crate::native_panel::show_default(app.clone())?;
+        return Ok(None);
+    }
     let window = app
         .get_webview_window("clipboard")
         .ok_or("Main panel is unavailable")?;
@@ -245,7 +251,7 @@ fn apply_preview(
     crate::ui_text_scale::remember(&window, layout.content_scale);
     PERCENT.store(size.percent(), Ordering::SeqCst);
     show_without_activation(&window, source)?;
-    Ok(window)
+    Ok(Some(window))
 }
 
 fn finish(
@@ -271,6 +277,12 @@ fn finish(
 
     // Remove the preview before writing configuration. Neither cancellation nor
     // a failed save may leave a non-interactive main panel on screen.
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if crate::main_panel_mode::native() {
+        crate::native_panel::close_preview(app)?;
+        crate::CLIPBOARD_VISIBLE.store(false, Ordering::SeqCst);
+        crate::background_resources::set_visible(app, false);
+    }
     let hidden = if let Some(window) = app.get_webview_window("clipboard") {
         let hidden = crate::finish_hide_window_locked(&window, false);
         restore_normal_order(&window);
@@ -372,8 +384,10 @@ pub async fn begin_clipboard_size_preview(
             Ok(window) => {
                 crate::CLIPBOARD_VISIBLE.store(true, Ordering::SeqCst);
                 crate::background_resources::set_visible(&app, true);
-                let _ = window.emit("window-show", Option::<serde_json::Value>::None);
-                let _ = window.emit("window-show-complete", ());
+                if let Some(window) = window {
+                    let _ = window.emit("window-show", Option::<serde_json::Value>::None);
+                    let _ = window.emit("window-show-complete", ());
+                }
                 Ok(id)
             }
             Err(err) => {

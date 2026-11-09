@@ -208,7 +208,6 @@ const CLIPBOARD_HIDE_ANIMATION_MS: u64 = panel_animation::model::HIDE_DURATION_M
 const CLIPBOARD_ANIMATION_FRAME_MS: u64 = 8;
 // Trial: keep the bounded main view warm while the native window is parked.
 const CLIPBOARD_PARK_WHEN_COLLAPSED: bool = true;
-const CLIPBOARD_HORIZONTAL_BLEED: f64 = 12.0;
 const PASTE_FALLBACK_NOTICE_WIDTH: f64 = 560.0;
 const PASTE_FALLBACK_NOTICE_HEIGHT: f64 = 76.0;
 const PASTE_QUEUE_WINDOW_WIDTH: f64 = 360.0;
@@ -827,10 +826,10 @@ fn clipboard_window_layout(bounds: ScreenBounds, panel_scale: f64) -> ClipboardW
     #[cfg(not(target_os = "windows"))]
     let height = CLIPBOARD_WINDOW_HEIGHT * panel_scale;
     ClipboardWindowLayout {
-        x: bounds.x - CLIPBOARD_HORIZONTAL_BLEED,
+        x: bounds.x,
         target_y: bounds.y + bounds.height - height,
         hidden_y: bounds.y + bounds.height,
-        width: bounds.width + CLIPBOARD_HORIZONTAL_BLEED * 2.0,
+        width: bounds.width,
         height,
         scale_factor: bounds.scale_factor,
         content_scale,
@@ -841,6 +840,18 @@ fn clipboard_window_physical_size(layout: ClipboardWindowLayout) -> (u32, u32) {
     (
         (layout.width * layout.scale_factor).round() as u32,
         (layout.height * layout.scale_factor).round() as u32,
+    )
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn outer_origin_for_client_target(
+    target: (i32, i32),
+    client_origin: (i32, i32),
+    outer_origin: (i32, i32),
+) -> (i32, i32) {
+    (
+        target.0 - (client_origin.0 - outer_origin.0),
+        target.1 - (client_origin.1 - outer_origin.1),
     )
 }
 
@@ -1209,12 +1220,61 @@ mod clipboard_monitor_selection_tests {
 
         let layout = clipboard_window_layout(bounds, 1.0);
 
-        assert_eq!(layout.x, -12.0);
-        assert_eq!(layout.width, 2072.0);
+        assert_eq!(layout.x, 0.0);
+        assert_eq!(layout.width, 2048.0);
         assert_eq!(layout.target_y, 978.0);
         assert_eq!(layout.hidden_y, 1280.0);
         assert_eq!(layout.scale_factor, 1.25);
-        assert_eq!(clipboard_window_physical_size(layout), (2590, 378));
+        assert_eq!(clipboard_window_physical_size(layout), (2560, 378));
+    }
+
+    #[test]
+    fn clipboard_layout_never_bleeds_into_adjacent_monitors() {
+        let mut mismatches = Vec::new();
+        for (x, y, width, height, scale_factor) in [
+            (1600, 216, 3840, 2160, 2.0),
+            (0, 0, 1600, 2560, 2.25),
+            (-1600, -256, 1600, 2560, 2.25),
+            (-3024, 0, 3024, 1964, 2.0),
+            (0, -1080, 1920, 1080, 1.0),
+        ] {
+            let bounds = ScreenBounds {
+                x: f64::from(x) / scale_factor,
+                y: f64::from(y) / scale_factor,
+                width: f64::from(width) / scale_factor,
+                height: f64::from(height) / scale_factor,
+                scale_factor,
+            };
+            for panel_scale in [0.8, 0.9, 1.0] {
+                let layout = clipboard_window_layout(bounds, panel_scale);
+                let actual_x = (layout.x * scale_factor).round() as i32;
+                let (actual_width, actual_height) = clipboard_window_physical_size(layout);
+                if actual_x != x || actual_width != width as u32 {
+                    mismatches.push((x, width, scale_factor, panel_scale, actual_x, actual_width));
+                }
+                let bottom = (layout.target_y * scale_factor).round() as i32 + actual_height as i32;
+                assert!((bottom - (y + height)).abs() <= 1);
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "visible panel crosses its monitor: {mismatches:?}"
+        );
+    }
+
+    #[test]
+    fn clipboard_client_edges_ignore_native_shadow_frame_offsets() {
+        for (target, client, outer, expected) in [
+            ((1600, 1772), (1612, 1774), (1600, 1772), (1588, 1770)),
+            ((0, 1880), (-14, 1882), (-27, 1880), (-13, 1878)),
+            ((-1600, 0), (-1587, 2), (-1600, 0), (-1613, -2)),
+            ((0, -1080), (0, -1080), (0, -1080), (0, -1080)),
+        ] {
+            let actual = super::outer_origin_for_client_target(target, client, outer);
+            assert_eq!(actual, expected);
+            assert_eq!(actual.0 + client.0 - outer.0, target.0);
+            assert_eq!(actual.1 + client.1 - outer.1, target.1);
+        }
     }
 
     #[test]
@@ -1594,8 +1654,26 @@ fn current_window_logical_y(
     window: &tauri::WebviewWindow,
     target_scale_factor: f64,
 ) -> Option<f64> {
+    #[cfg(target_os = "windows")]
+    let position = window.inner_position().ok()?;
+    #[cfg(not(target_os = "windows"))]
     let position = window.outer_position().ok()?;
     Some(position.y as f64 / target_scale_factor)
+}
+
+#[cfg(target_os = "windows")]
+fn clipboard_window_outer_position(
+    window: &tauri::WebviewWindow,
+    target: tauri::PhysicalPosition<i32>,
+) -> Result<tauri::PhysicalPosition<i32>, String> {
+    let client = window.inner_position().map_err(|err| err.to_string())?;
+    let outer = window.outer_position().map_err(|err| err.to_string())?;
+    let (x, y) = outer_origin_for_client_target(
+        (target.x, target.y),
+        (client.x, client.y),
+        (outer.x, outer.y),
+    );
+    Ok(tauri::PhysicalPosition { x, y })
 }
 
 #[cfg(target_os = "windows")]
@@ -1605,11 +1683,19 @@ fn set_window_position_for_scale(
     y: f64,
     scale_factor: f64,
 ) -> Result<(), String> {
+    let target = tauri::PhysicalPosition {
+        x: (x * scale_factor).round() as i32,
+        y: (y * scale_factor).round() as i32,
+    };
+    // Only the main panel uses client-area coordinates; auxiliary windows keep
+    // their existing outer-frame positioning contract.
+    let target = if window.label() == "clipboard" {
+        clipboard_window_outer_position(window, target)?
+    } else {
+        target
+    };
     window
-        .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-            x: (x * scale_factor).round() as i32,
-            y: (y * scale_factor).round() as i32,
-        }))
+        .set_position(tauri::Position::Physical(target))
         .map_err(|err| err.to_string())
 }
 
@@ -1662,27 +1748,38 @@ fn reapply_clipboard_size_after_scale_change(window: &tauri::WebviewWindow, scal
         .as_ref()
         .map(screen_bounds_from_monitor)
         .unwrap_or_else(|| screen_bounds(window));
+    // The DPI event can precede the monitor metadata update. Preserve the
+    // physical monitor rectangle while using the window's reported DPI.
+    let ratio = bounds.scale_factor / scale_factor;
+    let bounds = ScreenBounds {
+        x: bounds.x * ratio,
+        y: bounds.y * ratio,
+        width: bounds.width * ratio,
+        height: bounds.height * ratio,
+        scale_factor,
+    };
     let previous_scale = panel_size::scale();
     let panel_scale = panel_size::use_configured_size(monitor.as_ref()).scale();
     if let Err(err) = window.set_zoom(panel_scale) {
         error!("Failed to apply main panel zoom after DPI change: {err}");
     }
-    let monitor_physical_width = bounds.width * bounds.scale_factor;
-    let logical_width = monitor_physical_width / scale_factor + CLIPBOARD_HORIZONTAL_BLEED * 2.0;
     let layout = clipboard_window_layout(bounds, panel_scale);
-    if let Err(err) = set_window_size_for_scale(window, logical_width, layout.height, scale_factor)
-    {
+    if let Err(err) = set_window_size_for_scale(window, layout.width, layout.height, scale_factor) {
         error!("Failed to reapply clipboard size after DPI change: {}", err);
     } else {
         ui_text_scale::remember(window, layout.content_scale);
     }
-    if previous_scale != panel_scale {
+    let y = if previous_scale != panel_scale {
         CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
-        let x = bounds.x * bounds.scale_factor / scale_factor - CLIPBOARD_HORIZONTAL_BLEED;
-        let y = (bounds.y + bounds.height) * bounds.scale_factor / scale_factor - layout.height;
-        if let Err(err) = set_window_position_for_scale(window, x, y, scale_factor) {
-            error!("Failed to dock resized main panel after DPI change: {err}");
-        }
+        layout.target_y
+    } else {
+        // Keep an in-flight vertical animation at its current client origin.
+        current_window_logical_y(window, scale_factor).unwrap_or(layout.target_y)
+    };
+    if let Err(err) = set_window_position_for_scale(window, layout.x, y, scale_factor) {
+        error!("Failed to dock resized main panel after DPI change: {err}");
+    }
+    if previous_scale != panel_scale {
         let _ = window.emit("window-show-complete", ());
     }
 }
@@ -1827,14 +1924,9 @@ fn park_clipboard_window(window: &tauri::WebviewWindow) -> Result<(), String> {
             .fold(f64::NEG_INFINITY, f64::max)
             + CLIPBOARD_WINDOW_HEIGHT * panel_size::scale();
         #[cfg(target_os = "macos")]
-        set_macos_clipboard_window_position(window, bounds.x - CLIPBOARD_HORIZONTAL_BLEED, y)?;
+        set_macos_clipboard_window_position(window, bounds.x, y)?;
         #[cfg(not(target_os = "macos"))]
-        set_window_position_for_scale(
-            window,
-            bounds.x - CLIPBOARD_HORIZONTAL_BLEED,
-            y,
-            bounds.scale_factor,
-        )?;
+        set_window_position_for_scale(window, bounds.x, y, bounds.scale_factor)?;
     }
     Ok(())
 }
@@ -1918,7 +2010,7 @@ fn finish_animated_hide_window(
     #[cfg(not(target_os = "macos"))]
     let animation_result = {
         let bounds = screen_bounds(window);
-        let x = bounds.x - CLIPBOARD_HORIZONTAL_BLEED;
+        let x = bounds.x;
         let target_y = bounds.y + bounds.height;
         let start_y = current_window_logical_y(window, bounds.scale_factor)
             .unwrap_or(clipboard_window_layout(bounds, panel_size::scale()).target_y);
@@ -13202,14 +13294,8 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
         .visible_on_all_workspaces(true)
         .accept_first_mouse(true)
         .disable_drag_drop_handler()
-        .inner_size(
-            screen_width + CLIPBOARD_HORIZONTAL_BLEED * 2.0,
-            window_height,
-        )
-        .position(
-            screen_x - CLIPBOARD_HORIZONTAL_BLEED,
-            screen_y + screen_height - window_height,
-        );
+        .inner_size(screen_width, window_height)
+        .position(screen_x, screen_y + screen_height - window_height);
 
     #[cfg(debug_assertions)]
     let clipboard_window = if memory_profile_active() {

@@ -48,15 +48,8 @@ static REQUEST: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn prepare(bounds: ScreenBounds, height: f64, interactive: bool) {
     INTERACTIVE.store(interactive, Ordering::Release);
-    *SURFACE.lock().unwrap_or_else(|e| e.into_inner()) = Surface::from_local(
-        bounds,
-        [
-            -crate::CLIPBOARD_HORIZONTAL_BLEED,
-            bounds.height - height,
-            bounds.width + crate::CLIPBOARD_HORIZONTAL_BLEED * 2.0,
-            height,
-        ],
-    );
+    *SURFACE.lock().unwrap_or_else(|e| e.into_inner()) =
+        Surface::from_local(bounds, [0.0, bounds.height - height, bounds.width, height]);
 }
 pub(super) fn publish(frame: [f64; 4]) {
     let mut value = SURFACE.lock().unwrap_or_else(|e| e.into_inner());

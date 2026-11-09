@@ -27,12 +27,19 @@ pub(crate) fn set_position(
                     return Ok(false);
                 }
                 let hwnd = window_clone.hwnd().map_err(|error| error.to_string())?;
+                let position = crate::clipboard_window_outer_position(
+                    &window_clone,
+                    tauri::PhysicalPosition {
+                        x: (x * scale).round() as i32,
+                        y: (y * scale).round() as i32,
+                    },
+                )?;
                 unsafe {
                     SetWindowPos(
                         HWND(hwnd.0 as isize),
                         HWND(0),
-                        (x * scale).round() as i32,
-                        (y * scale).round() as i32,
+                        position.x,
+                        position.y,
                         0,
                         0,
                         SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER,

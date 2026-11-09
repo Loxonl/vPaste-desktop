@@ -4271,6 +4271,16 @@ fn preview_window_size(
     }
 }
 
+fn image_text_preview_source(hash: &str) -> String {
+    clipboard::db::db()
+        .query_row(
+            "SELECT content FROM clipboard WHERE hash = ?1 AND item_type = 'Image'",
+            [hash],
+            |row| row.get(0),
+        )
+        .unwrap_or_default()
+}
+
 fn centered_preview_position(
     bounds: ScreenBounds,
     size: PreviewWindowSize,
@@ -4284,6 +4294,25 @@ fn centered_preview_position(
 #[cfg(test)]
 mod image_text_preview_tests {
     use super::*;
+
+    #[test]
+    fn comparison_uses_the_original_image_path_and_keeps_missing_images_safe() {
+        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(root.path().to_string_lossy().into_owned());
+        config::save(config::Config::default());
+        clipboard::db::init();
+        clipboard::db::db()
+            .execute_batch(
+                "INSERT INTO clipboard(hash,time,content,preview_content,item_type)
+                 VALUES('image',1,'original.png','thumbnail.png','Image'),
+                       ('text',2,'not an image','text-preview','Text');",
+            )
+            .unwrap();
+        assert_eq!(image_text_preview_source("image"), "original.png");
+        assert!(image_text_preview_source("text").is_empty());
+        assert!(image_text_preview_source("deleted").is_empty());
+    }
 
     #[test]
     fn image_text_uses_text_preview_dimensions_and_centers_within_the_screen() {
@@ -4870,6 +4899,11 @@ async fn prepare_preview_window(
                 app_source,
                 text_truncated.unwrap_or(false),
             )
+        };
+        let preview_content = if item_type == "ImageText" {
+            image_text_preview_source(&content)
+        } else {
+            preview_content
         };
         let source_image_path = if content.is_empty() {
             &preview_content

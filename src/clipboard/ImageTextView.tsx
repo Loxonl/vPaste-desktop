@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 import { Button, TextField } from "@mui/material";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emitTo } from "@tauri-apps/api/event";
+import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
+import CloseIcon from "@mui/icons-material/Close";
 import { OperationStatus } from "../ui/OperationStatus";
 import type { TFunction } from "../config/settingsTypes";
 import styles from "./ImageTextView.module.css";
@@ -12,8 +14,9 @@ type OcrRecord = {
     error: "language_unavailable" | "unsupported" | "resource_limit" | "timeout" | "failed" | null;
 };
 
-export default function ImageTextView({ hash, t, onClose, active = true }: {
+export default function ImageTextView({ hash, imagePath, t, onClose, active = true }: {
     hash: string;
+    imagePath: string;
     t: TFunction;
     onClose: () => void;
     active?: boolean;
@@ -24,7 +27,27 @@ export default function ImageTextView({ hash, t, onClose, active = true }: {
     const [loadError, setLoadError] = useState<string | null>(null);
     const [copying, setCopying] = useState(false);
     const [copyFailed, setCopyFailed] = useState(false);
+    const [text, setText] = useState("");
+    const edited = useRef(false);
+    const [imageSrc, setImageSrc] = useState("");
+    const [imageError, setImageError] = useState(false);
     const generation = useRef(0);
+
+    useEffect(() => {
+        if (!active) return;
+        let cancelled = false;
+        setImageSrc("");
+        setImageError(false);
+        if (!imagePath) return;
+        void invoke<{ assetPath: string }>("resolve_history_media", { path: imagePath, intent: "preview" })
+            .then(resource => {
+                if (cancelled) return;
+                if (resource.assetPath) setImageSrc(convertFileSrc(resource.assetPath));
+                else setImageError(true);
+            })
+            .catch(() => { if (!cancelled) setImageError(true); });
+        return () => { cancelled = true; };
+    }, [imagePath, active]);
 
     useEffect(() => {
         if (!active) return;
@@ -35,6 +58,8 @@ export default function ImageTextView({ hash, t, onClose, active = true }: {
         setLoadError(null);
         setCopying(false);
         setCopyFailed(false);
+        setText("");
+        edited.current = false;
         const load = async (first: boolean) => {
             try {
                 const result = await (first
@@ -42,6 +67,7 @@ export default function ImageTextView({ hash, t, onClose, active = true }: {
                     : invoke<OcrRecord>("get_image_ocr", { hash }));
                 if (current !== generation.current) return;
                 setRecord(result);
+                if (!edited.current) setText(result.text);
                 setLoading(false);
                 if (result.status === "pending" || result.status === "running") {
                     timer = setTimeout(() => { void load(false); }, 500);
@@ -64,13 +90,13 @@ export default function ImageTextView({ hash, t, onClose, active = true }: {
         await emitTo("clipboard", "listen_new_clipboard", "");
     };
     const copyAll = async () => {
-        if (!record?.text || copying) return;
+        if (!text || copying) return;
         closeButton.current?.focus();
         const current = generation.current;
         setCopying(true);
         setCopyFailed(false);
         try {
-            await copyText(record.text);
+            await copyText(text);
         } catch {
             if (current === generation.current) setCopyFailed(true);
         } finally {
@@ -97,27 +123,43 @@ export default function ImageTextView({ hash, t, onClose, active = true }: {
 
     return (
         <section className={styles.root} role="dialog" aria-label={t("ocr.title")} data-keyboard-passthrough="dialog">
-            <div className={styles.body}>
-                {record?.text && (
-                    <TextField
-                        autoFocus
-                        fullWidth
-                        multiline
-                        label={t("ocr.title")}
-                        InputLabelProps={{ shrink: true }}
-                        className={styles.field}
-                        value={record.text}
-                        onCopy={copySelection}
-                        InputProps={{ readOnly: true, inputComponent: "textarea", className: styles.input }}
-                        inputProps={{ spellCheck: false, className: styles.text }}
-                    />
+            <div className={styles.imagePane}>
+                {imageSrc && !imageError ? (
+                    <img className={styles.image} src={imageSrc} alt={t("type.image")} draggable={false} onError={() => setImageError(true)} />
+                ) : (
+                    <OperationStatus message={t(imageError ? "ocr.imageMissing" : "type.image")} busy={Boolean(imagePath) && !imageError} />
                 )}
-                {message && <OperationStatus message={t(message)} busy={busy} tone={loadError || record?.error ? "error" : "neutral"} />}
-                {copyFailed && <OperationStatus message={t("ocr.copyFailed")} tone="error" />}
             </div>
-            <div className={styles.actions}>
-                <Button variant="outlined" disabled={!record?.text || copying} onClick={() => { void copyAll(); }}>{t("ocr.copy")}</Button>
-                <Button ref={closeButton} variant="contained" onClick={onClose}>{t("common.close")}</Button>
+            <div className={styles.textPane}>
+                <div className={styles.body}>
+                    {record && (
+                        <TextField
+                            autoFocus
+                            fullWidth
+                            multiline
+                            label={t("ocr.title")}
+                            InputLabelProps={{ shrink: true }}
+                            className={styles.field}
+                            value={text}
+                            onChange={event => { edited.current = true; setText(event.target.value); }}
+                            onCopy={copySelection}
+                            InputProps={{ inputComponent: "textarea", className: styles.input }}
+                            inputProps={{ spellCheck: false, className: styles.text }}
+                        />
+                    )}
+                    {message && <OperationStatus message={t(message)} busy={busy} tone={loadError || record?.error ? "error" : "neutral"} />}
+                    {copyFailed && <OperationStatus message={t("ocr.copyFailed")} tone="error" />}
+                </div>
+                <div className={styles.actions}>
+                    <Button className={styles.action} variant="text" color="inherit" disabled={!text || copying} onClick={() => { void copyAll(); }}>
+                        <ContentCopyOutlinedIcon fontSize="small" />
+                        {t("ocr.copy")}
+                    </Button>
+                    <Button ref={closeButton} className={styles.action} variant="text" color="inherit" onClick={onClose}>
+                        <CloseIcon fontSize="small" />
+                        {t("common.close")}
+                    </Button>
+                </div>
             </div>
         </section>
     );

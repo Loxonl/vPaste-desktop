@@ -217,7 +217,7 @@ function PreviewContent({ payload, t, onReady, active = true }: PreviewBodyProps
     }, [fileInfo?.preview_path]);
 
     if (payload.item_type === "ImageText") {
-        return <ImageTextView hash={payload.content} t={t} active={active}
+        return <ImageTextView hash={payload.content} imagePath={payloadPreviewContent(payload)} t={t} active={active}
             onClose={() => { void invoke("hide_preview_window").catch(e => error(`Failed to close image text: ${e}`)); }} />;
     }
 
@@ -383,8 +383,9 @@ export default function Preview() {
                 : { ...layer, phase: "current" as const };
             currentLayerRef.current = next;
             hoverRef.current = layer.payload.hover === true;
-            pinnedRef.current = false;
-            setPinned(false);
+            const initiallyPinned = layer.payload.item_type === "ImageText";
+            pinnedRef.current = initiallyPinned;
+            setPinned(initiallyPinned);
             setLayers(current => reuse ? [next] : current.map(entry => ({
                 ...entry,
                 phase: entry.id === layer.id ? "current" : "exiting",
@@ -488,15 +489,13 @@ export default function Preview() {
         setPinned(next);
         void invoke("set_preview_pinned", { pinned: next }).catch(e => error(`Failed to set preview pinned: ${e}`));
     };
-    const imageText = (layers.find(layer => layer.phase === "current")
-        ?? layers.find(layer => layer.phase === "pending"))?.payload.item_type === "ImageText";
 
     return (
         <div className={styles["preview-shell"]}
             onMouseEnter={() => { if (hoverRef.current) void invoke("preview_pointer_changed", { inside: true }).catch(e => error(`Failed to retain hover preview: ${e}`)); }}
             onMouseLeave={() => { if (hoverRef.current) void invoke("preview_pointer_changed", { inside: false }).catch(e => error(`Failed to leave hover preview: ${e}`)); }}
         >
-            {!imageText && <ToolbarIconButton
+            <ToolbarIconButton
                 size="medium"
                 className={[styles["preview-pin"], pinned ? styles.pinned : ""].join(" ")}
                 label={pinned ? t("preview.unpin") : t("preview.pin")}
@@ -504,7 +503,7 @@ export default function Preview() {
                 onClick={togglePinned}
             >
                 {pinned ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
-            </ToolbarIconButton>}
+            </ToolbarIconButton>
             <div className={styles["preview-content"]}>
                 {layers.length === 0 && <div className={styles["preview-empty"]}>{t("preview.waiting")}</div>}
                 {layers.map(layer => (

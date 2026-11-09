@@ -32,7 +32,8 @@ const NATIVE_DEMO_HEADER: &str = "native-demo/NativeDemoBridge.h";
 /// Windows (C++ Win32) and links it into the binary. Only Debug builds use it,
 /// so release, App Store and installer builds never invoke these toolchains.
 fn build_native_demo() {
-    if env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_none() {
+    // Use Cargo's profile rather than an unavailable target-cfg environment variable.
+    if env::var("PROFILE").as_deref() != Ok("debug") {
         return;
     }
     println!("cargo:rerun-if-changed={NATIVE_DEMO_HEADER}");

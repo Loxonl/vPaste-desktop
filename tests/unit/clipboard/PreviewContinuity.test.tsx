@@ -46,7 +46,12 @@ describe("continuous preview session", () => {
         await screen.findByRole("dialog", { name: "ocr.title" }, { timeout: 4000 });
         await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("commit_preview_window", expect.objectContaining({ requestId: 1 })));
         expect(screen.getByText("ocr.recognizing")).toBeInTheDocument();
-        expect(screen.queryByRole("button", { name: "preview.pin" })).not.toBeInTheDocument();
+        const pin = await screen.findByRole("button", { name: "preview.unpin" });
+        expect(pin).toHaveAttribute("aria-pressed", "true");
+        await userEvent.click(pin);
+        expect(tauri.invoke).toHaveBeenCalledWith("set_preview_pinned", { pinned: false });
+        await userEvent.click(screen.getByRole("button", { name: "preview.pin" }));
+        expect(tauri.invoke).toHaveBeenCalledWith("set_preview_pinned", { pinned: true });
         for (const key of [" ", "ArrowLeft", "ArrowRight", "Tab"]) fireEvent.keyDown(window, { key });
         fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
         expect(tauri.invoke).not.toHaveBeenCalledWith("preview_navigate_selection", expect.anything());
@@ -70,7 +75,7 @@ describe("continuous preview session", () => {
         const field = await screen.findByRole("textbox", { name: "ocr.title" });
         for (const key of ["ArrowLeft", "ArrowRight", "Tab", " "]) fireEvent.keyDown(field, { key });
         expect(tauri.invoke).not.toHaveBeenCalledWith("preview_navigate_selection", expect.anything());
-        expect(screen.getAllByRole("button")).toHaveLength(2);
+        expect(screen.getAllByRole("button")).toHaveLength(3);
         await userEvent.click(screen.getByRole("button", { name: "common.close" }));
         expect(tauri.invoke).toHaveBeenCalledWith("hide_preview_window");
     });

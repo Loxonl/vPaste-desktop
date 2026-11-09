@@ -5,8 +5,13 @@ test.beforeEach(async ({ page }) => { await page.addInitScript(installHistoryMoc
 
 for (const reduced of [false, true]) {
     test(`image OCR reuses the external preview and records explicit copies, reduced motion=${reduced}`, async ({ page }, testInfo) => {
+        const editedText = "校正：发票编号 invoice 2048\n项目费用 800 元\n".repeat(40);
         await page.setViewportSize({ width: reduced ? 480 : 760, height: reduced ? 360 : 560 });
         await page.emulateMedia({ reducedMotion: reduced ? "reduce" : "no-preference" });
+        await page.route("**/__ocr-compare-image.svg", route => route.fulfill({
+            contentType: "image/svg+xml",
+            body: '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="650" viewBox="0 0 900 650"><rect width="900" height="650" fill="white"/><g fill="#222" font-size="38" font-family="sans-serif"><text x="64" y="210">发票编号 Invoice 2048</text><text x="64" y="290">项目费用 800 元</text><text x="64" y="370">图片文字对照</text></g></svg>',
+        }));
         await page.addInitScript(({ reduced }) => {
             let nextId = 0;
             const callbacks = new Map<number, (event: unknown) => void>();
@@ -35,8 +40,9 @@ for (const reduced of [false, true]) {
                             text: ready ? "发票编号 invoice 2048\n项目费用 800 元\n".repeat(40) : "",
                             error: null,
                         };
+                        if (command === "resolve_history_media") return { assetPath: `${location.origin}/__ocr-compare-image.svg` };
                         if (command === "copy") await new Promise(resolve => setTimeout(resolve, 100));
-                        if (command === "pending_preview_item" && preview) return { request_id: 1, item_type: "ImageText", content: "image" };
+                        if (command === "pending_preview_item" && preview) return { request_id: 1, item_type: "ImageText", content: "image", preview_content: "original-image.png" };
                         if (command === "commit_preview_window") return true;
                         if (command === "hide_preview_window") emit("preview-clear");
                         if (["list_language_packs", "list_item_tags", "get_custom_tabs"].includes(command)) return [];
@@ -69,27 +75,46 @@ for (const reduced of [false, true]) {
         await expect(dialog.getByText(reduced ? "Recognizing text…" : "正在识别文字…")).toBeVisible();
         await expect(dialog.getByRole("button", { name: copy })).toBeDisabled();
         await expect.poll(() => page.evaluate(() => (window as any).__ocrProbe.calls.some((call: any) => call.command === "commit_preview_window"))).toBe(true);
+        const image = dialog.getByRole("img", { name: reduced ? "Image" : "图片" });
+        await expect(image).toBeVisible();
+        await expect(image).toHaveJSProperty("naturalWidth", 900);
+        const unpin = reduced ? "Unpin preview" : "取消固定";
+        const pin = reduced ? "Pin preview" : "固定预览";
+        await expect(page.getByRole("button", { name: unpin })).toHaveAttribute("aria-pressed", "true");
+        await page.getByRole("button", { name: unpin }).click();
+        await expect(page.getByRole("button", { name: pin })).toHaveAttribute("aria-pressed", "false");
+        await page.getByRole("button", { name: pin }).click();
         await page.evaluate(() => (window as any).__ocrProbe.complete());
         const text = dialog.getByRole("textbox", { name: title });
         await expect(text).toHaveValue(/invoice 2048/);
-        await expect(text).toHaveAttribute("readonly");
+        await expect(text).toBeEditable();
         await expect(dialog.getByRole("heading")).toHaveCount(0);
         await expect(dialog.getByRole("button")).toHaveCount(2);
         await expect(dialog.getByRole("button", { name: copy })).toBeInViewport();
         await expect(dialog.getByRole("button", { name: close })).toBeInViewport();
-        await expect(dialog.getByRole("button", { name: close })).toHaveClass(/MuiButton-containedPrimary/);
+        for (const button of [dialog.getByRole("button", { name: copy }), dialog.getByRole("button", { name: close })]) {
+            await expect(button).toHaveClass(/MuiButton-textInherit/);
+            await expect(button.locator("svg")).toHaveCount(1);
+        }
         const fieldBox = (await text.boundingBox())!;
-        expect(fieldBox.height).toBeGreaterThan((reduced ? 360 : 560) * 0.5);
+        expect(fieldBox.height).toBeGreaterThan((reduced ? 360 : 560) * 0.4);
+        const imageBox = (await image.boundingBox())!;
+        expect(imageBox.x + imageBox.width).toBeLessThan(fieldBox.x);
+        expect(imageBox.width / imageBox.height).toBeCloseTo(900 / 650, 1);
         expect(await text.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
         const copyBox = (await dialog.getByRole("button", { name: copy }).boundingBox())!;
         const closeBox = (await dialog.getByRole("button", { name: close }).boundingBox())!;
         expect(copyBox.x).toBeGreaterThan((reduced ? 480 : 760) / 2);
-        expect(closeBox.x - copyBox.x - copyBox.width).toBeCloseTo(8, 0);
+        expect(copyBox.y).toBeGreaterThan(fieldBox.y + fieldBox.height);
+        expect(closeBox.x).toBeGreaterThan(copyBox.x);
         await page.screenshot({ path: testInfo.outputPath("image-text-window.png"), animations: "disabled" });
         await text.focus();
         await page.keyboard.press("Space");
         await page.keyboard.press("Enter");
         expect(await page.evaluate(() => (window as any).__ocrProbe.calls.filter((call: any) => ["paste", "copy", "show_history_preview", "show_preview_window"].includes(call.command)))).toEqual([]);
+        await text.fill(editedText);
+        await expect(text).toHaveValue(editedText);
+        await page.screenshot({ path: testInfo.outputPath("image-text-comparison.png"), animations: "disabled" });
         await dialog.getByRole("button", { name: copy }).click();
         await expect.poll(() => page.evaluate(() => (window as any).__ocrProbe.calls.filter((call: any) => call.command === "record_text_history").length)).toBe(1);
         await expect(dialog.getByRole("button", { name: close })).toBeFocused();
@@ -108,13 +133,13 @@ for (const reduced of [false, true]) {
         });
         expect(selected).toEqual({ text: "invoice 2048", browserPayload: "", defaultPrevented: true });
         await expect.poll(() => page.evaluate(() => (window as any).__ocrProbe.calls.filter((call: any) => call.command === "record_text_history").map((call: any) => call.args.content))).toEqual([
-            "发票编号 invoice 2048\n项目费用 800 元\n".repeat(40), selected.text,
+            editedText, selected.text,
         ]);
         expect(await page.evaluate(() => (window as any).__ocrProbe.calls
             .filter((call: any) => ["copy", "record_text_history"].includes(call.command))
             .map((call: any) => ({ command: call.command, text: call.args.item ?? call.args.content })))).toEqual([
-                { command: "copy", text: "发票编号 invoice 2048\n项目费用 800 元\n".repeat(40) },
-                { command: "record_text_history", text: "发票编号 invoice 2048\n项目费用 800 元\n".repeat(40) },
+                { command: "copy", text: editedText },
+                { command: "record_text_history", text: editedText },
                 { command: "copy", text: selected.text },
                 { command: "record_text_history", text: selected.text },
             ]);

@@ -151,6 +151,7 @@ bool g_english = false;
 bool g_singleClickPaste = true;
 bool g_updatingLanguage = false;
 bool g_updatingTagFilter = false;
+bool g_updatingHistorySelection = false;
 bool g_queueSelectionMode = false;
 bool g_queueViewActive = false;
 bool g_queueReturnVisible = false;
@@ -601,15 +602,16 @@ void ApplyResponse(const std::string &bytes) {
         if (response.HasKey(L"error")) {
             g_panel.status.Text(response.GetNamedString(L"error"));
             if (operation == L"query") {
+                g_updatingHistorySelection = true;
                 g_panel.history.Items().Clear();
                 g_hashes.clear();
                 g_selectedHash.clear();
-                g_queueSelectedHashes.clear();
                 g_favorites.clear();
                 g_panel.rows.clear();
                 g_panel.cardRequested.clear();
                 g_hasMore = false;
                 g_panel.more.IsEnabled(false);
+                g_updatingHistorySelection = false;
                 UpdateQueueSelectionControls();
                 ApplyRowTheme();
             } else if (operation == L"queryMore") {
@@ -674,6 +676,25 @@ void ApplyResponse(const std::string &bytes) {
                 g_panel.status.Text(Text(L"收藏状态已更新", L"Favorite updated"));
                 RequestHistory();
             } else if (operation == L"delete") {
+                const auto deletedHash = std::wstring(data.GetNamedString(L"hash", L""));
+                if (g_queueSelectionMode && !deletedHash.empty()) {
+                    g_updatingHistorySelection = true;
+                    const auto found = std::find(g_hashes.begin(), g_hashes.end(), deletedHash);
+                    if (found != g_hashes.end()) {
+                        const auto item = g_panel.history.Items().GetAt(static_cast<std::uint32_t>(
+                            std::distance(g_hashes.begin(), found)));
+                        std::uint32_t selectedIndex = 0;
+                        if (g_panel.history.SelectedItems().IndexOf(item, selectedIndex)) {
+                            g_panel.history.SelectedItems().RemoveAt(selectedIndex);
+                        }
+                    }
+                    g_queueSelectedHashes.erase(std::remove(
+                        g_queueSelectedHashes.begin(), g_queueSelectedHashes.end(), deletedHash),
+                        g_queueSelectedHashes.end());
+                    g_updatingHistorySelection = false;
+                    UpdateQueueSelectionControls();
+                    ApplyRowTheme();
+                }
                 g_panel.status.Text(Text(L"记录已删除", L"Record deleted"));
                 RequestHistory();
             } else if (operation == L"assignTag" || operation == L"removeTag") {
@@ -686,12 +707,12 @@ void ApplyResponse(const std::string &bytes) {
         }
 
         std::wstring selectionToRestore;
+        g_updatingHistorySelection = true;
         if (operation == L"query") {
             if (!g_queueSelectionMode) selectionToRestore = g_selectedHash;
             g_panel.history.Items().Clear();
             g_hashes.clear();
             g_selectedHash.clear();
-            g_queueSelectedHashes.clear();
             g_favorites.clear();
             g_panel.rows.clear();
             g_panel.cardRequested.clear();
@@ -881,28 +902,46 @@ void ApplyResponse(const std::string &bytes) {
                 surface, header, type, mediaImage, typeText, previewText, sourceText, tagsText,
                 dimensionsText, favoriteText, std::move(tagIds)});
             g_panel.history.Items().Append(surface);
+            if (operation == L"queryMore" && g_queueSelectionMode &&
+                std::find(g_queueSelectedHashes.begin(), g_queueSelectedHashes.end(), rowHash) !=
+                    g_queueSelectedHashes.end()) {
+                g_panel.history.SelectedItems().Append(surface);
+            }
         }
         const auto suffix = g_hasMore ? L"+" : L"";
         const auto countText = std::to_wstring(g_hashes.size()) + suffix;
-        g_panel.status.Text(countText + L" " + Text(L"条剪贴项", L"clipboard items"));
+        g_panel.status.Text(g_queueSelectionMode
+            ? std::to_wstring(g_queueSelectedHashes.size()) + L" " + Text(L"条已选择", L"selected")
+            : countText + L" " + Text(L"条剪贴项", L"clipboard items"));
         g_panel.more.IsEnabled(g_hasMore);
         if (operation == L"query") {
-            if (!selectionToRestore.empty()) {
-                const auto found = std::find(g_hashes.begin(), g_hashes.end(), selectionToRestore);
-                if (found != g_hashes.end()) {
-                    g_panel.history.SelectedIndex(static_cast<int>(
-                        std::distance(g_hashes.begin(), found)));
+            if (g_queueSelectionMode) {
+                for (std::size_t index = 0; index < g_hashes.size(); ++index) {
+                    if (std::find(g_queueSelectedHashes.begin(), g_queueSelectedHashes.end(),
+                                  g_hashes[index]) != g_queueSelectedHashes.end()) {
+                        g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(
+                            static_cast<std::uint32_t>(index)));
+                    }
                 }
+            } else if (!g_hashes.empty()) {
+                const auto found = std::find(g_hashes.begin(), g_hashes.end(), selectionToRestore);
+                const auto selectedIndex = found != g_hashes.end()
+                    ? static_cast<int>(std::distance(g_hashes.begin(), found)) : 0;
+                g_selectedHash = g_hashes[static_cast<std::size_t>(selectedIndex)];
+                g_panel.history.SelectedIndex(selectedIndex);
             }
-            UpdateQueueSelectionControls();
         }
+        g_updatingHistorySelection = false;
+        UpdateQueueSelectionControls();
         ApplyRowTheme();
         UpdateFavoriteButton();
     } catch (const winrt::hresult_error &error) {
+        g_updatingHistorySelection = false;
         if (g_panel.status) {
             g_panel.status.Text(error.message());
         }
     } catch (...) {
+        g_updatingHistorySelection = false;
         if (g_panel.status) {
             g_panel.status.Text(Text(L"无法显示剪贴板历史", L"Could not display clipboard history"));
         }
@@ -1266,8 +1305,11 @@ HRESULT CreatePanel() noexcept {
             }
         });
         g_panel.history.SelectionChanged([](auto const &, auto const &) {
+            if (g_updatingHistorySelection) return;
             if (g_queueSelectionMode) {
-                g_queueSelectedHashes.clear();
+                // The logical selection spans filters/pages; SelectedItems is
+                // only the currently rendered projection, not the whole set.
+                std::vector<std::wstring> visibleSelectedHashes;
                 const auto selectedItems = g_panel.history.SelectedItems();
                 for (std::uint32_t selectedIndex = 0; selectedIndex < selectedItems.Size(); ++selectedIndex) {
                     const auto surface = selectedItems.GetAt(selectedIndex).as<winrt::Microsoft::UI::Xaml::Controls::Border>();
@@ -1275,8 +1317,19 @@ HRESULT CreatePanel() noexcept {
                         [&surface](const HistoryRowVisual &row) { return row.surface == surface; });
                     if (found != g_panel.rows.end()) {
                         const auto index = static_cast<std::size_t>(std::distance(g_panel.rows.begin(), found));
-                        if (index < g_hashes.size()) g_queueSelectedHashes.push_back(g_hashes[index]);
+                        if (index < g_hashes.size()) visibleSelectedHashes.push_back(g_hashes[index]);
                     }
+                }
+                g_queueSelectedHashes.erase(std::remove_if(
+                    g_queueSelectedHashes.begin(), g_queueSelectedHashes.end(),
+                    [&visibleSelectedHashes](const std::wstring &hash) {
+                        return std::find(g_hashes.begin(), g_hashes.end(), hash) != g_hashes.end() &&
+                            std::find(visibleSelectedHashes.begin(), visibleSelectedHashes.end(), hash) ==
+                                visibleSelectedHashes.end();
+                    }), g_queueSelectedHashes.end());
+                for (const auto &hash : visibleSelectedHashes) {
+                    if (std::find(g_queueSelectedHashes.begin(), g_queueSelectedHashes.end(), hash) ==
+                        g_queueSelectedHashes.end()) g_queueSelectedHashes.push_back(hash);
                 }
                 if (g_panel.queueAdd) {
                     g_panel.queueAdd.IsEnabled(!g_queueSelectedHashes.empty());
@@ -1698,7 +1751,105 @@ extern "C" __declspec(dllexport) int32_t vpaste_winui_test_history_and_queue(
             SetQueueViewActive(false);
             SetQueueViewActive(true);
             SetQueueViewActive(false);
-            completion->set_value({S_OK, 7});
+            currentStage = 7;
+            SetTagManagerActive(true);
+            g_panel.tagManager->SetTags(winrt::Windows::Data::Json::JsonArray::Parse(
+                LR"([{"id":1,"name":"工作"},{"id":2,"name":"Notes"}])"));
+            auto tagRoot = g_panel.tagManager->Root()
+                .as<winrt::Microsoft::UI::Xaml::Controls::Grid>();
+            auto tagList = tagRoot.Children().GetAt(2)
+                .as<winrt::Microsoft::UI::Xaml::Controls::ScrollViewer>();
+            auto tagRows = tagList.Content()
+                .as<winrt::Microsoft::UI::Xaml::Controls::StackPanel>();
+            winrt::check_hresult(tagRows.Children().Size() == 2 ? S_OK : E_FAIL);
+            const auto tagNameAt = [&](std::uint32_t index) {
+                return tagRows.Children().GetAt(index)
+                    .as<winrt::Microsoft::UI::Xaml::Controls::Border>().Child()
+                    .as<winrt::Microsoft::UI::Xaml::Controls::Grid>().Children().GetAt(0)
+                    .as<winrt::Microsoft::UI::Xaml::Controls::TextBlock>().Text();
+            };
+            winrt::check_hresult(tagNameAt(0) == L"工作" ? S_OK : E_FAIL);
+            currentStage = 8;
+            g_panel.tagManager->SetTags(winrt::Windows::Data::Json::JsonArray::Parse(
+                LR"([{"id":1,"name":"工作"},{"id":2,"name":"Notes"},{"id":3,"name":"Personal"}])"));
+            winrt::check_hresult(tagRows.Children().Size() == 3 ? S_OK : E_FAIL);
+            g_panel.tagManager->SetTags(winrt::Windows::Data::Json::JsonArray::Parse(
+                LR"([{"id":1,"name":"Projects"},{"id":3,"name":"Personal"}])"));
+            winrt::check_hresult(tagRows.Children().Size() == 2 ? S_OK : E_FAIL);
+            winrt::check_hresult(tagNameAt(0) == L"Projects" ? S_OK : E_FAIL);
+            currentStage = 9;
+            g_panel.tagManager->SetLanguage(true);
+            g_panel.tagManager->SetTheme(winrt::Microsoft::UI::Xaml::ElementTheme::Dark);
+            g_panel.tagManager->SetError(L"Synthetic tag save failure");
+            winrt::check_hresult(tagRows.Children().Size() == 2 ? S_OK : E_FAIL);
+            SetTagManagerActive(false);
+            SetTagManagerActive(true);
+            g_panel.tagManager->SetTags(winrt::Windows::Data::Json::JsonArray::Parse(L"[]"));
+            winrt::check_hresult(tagRows.Children().Size() == 1 &&
+                tagRows.Children().GetAt(0)
+                    .as<winrt::Microsoft::UI::Xaml::Controls::TextBlock>().Text() == L"还没有标签"
+                ? S_OK : E_FAIL);
+            SetTagManagerActive(false);
+            currentStage = 10;
+            g_panel.history.SelectedIndex(-1);
+            ApplyResponse(R"({"id":300,"op":"query","data":{"items":[{"hash":"test-a"},{"hash":"test-b"}]}})");
+            winrt::check_hresult(g_selectedHash == L"test-a" && g_panel.copy.IsEnabled() ? S_OK : E_FAIL);
+            g_panel.history.SelectedIndex(1);
+            ApplyResponse(R"({"id":301,"op":"query","data":{"items":[{"hash":"test-c"},{"hash":"test-a"},{"hash":"test-b"}]}})");
+            winrt::check_hresult(g_selectedHash == L"test-b" && g_panel.history.SelectedIndex() == 2 ? S_OK : E_FAIL);
+            ApplyResponse(R"({"id":302,"op":"query","data":{"items":[{"hash":"test-a"}]}})");
+            winrt::check_hresult(g_selectedHash == L"test-a" ? S_OK : E_FAIL);
+            ApplyResponse(R"({"id":303,"op":"query","data":{"items":[]}})");
+            winrt::check_hresult(g_selectedHash.empty() && !g_panel.copy.IsEnabled() ? S_OK : E_FAIL);
+            currentStage = 11;
+            ApplyResponse(R"({"id":304,"op":"query","data":{"items":[{"hash":"test-a"},{"hash":"test-b"}]}})");
+            ToggleQueueSelectionMode();
+            g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(0));
+            ApplyResponse(R"({"id":305,"op":"query","data":{"items":[{"hash":"test-c"},{"hash":"test-a"},{"hash":"test-b"}]}})");
+            winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"test-a"} &&
+                g_panel.history.SelectedItems().Size() == 1 && g_panel.queueAdd.IsEnabled() ? S_OK : E_FAIL);
+            g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(2));
+            currentStage = 12;
+            ApplyResponse(R"({"id":306,"op":"query","data":{"items":[{"hash":"test-a"}]}})");
+            winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"test-a", L"test-b"} &&
+                g_panel.history.SelectedItems().Size() == 1 ? S_OK : E_FAIL);
+            ApplyResponse(R"({"id":307,"op":"queryMore","data":{"items":[{"hash":"test-b"}]}})");
+            winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"test-a", L"test-b"} &&
+                g_panel.history.SelectedItems().Size() == 2 ? S_OK : E_FAIL);
+            ApplyResponse(R"({"id":308,"op":"query","data":{"items":[{"hash":"test-a"}]}})");
+            g_panel.history.SelectedItems().Clear();
+            winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"test-b"} &&
+                g_panel.queueAdd.IsEnabled() ? S_OK : E_FAIL);
+            ApplyResponse(R"({"id":309,"op":"query","error":"Synthetic refresh failure"})");
+            winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"test-b"} &&
+                g_panel.queueAdd.IsEnabled() && g_panel.status.Text() == L"Synthetic refresh failure"
+                ? S_OK : E_FAIL);
+            ApplyResponse(R"({"id":310,"op":"query","data":{"items":[{"hash":"test-b"}]}})");
+            winrt::check_hresult(g_panel.history.SelectedItems().Size() == 1 ? S_OK : E_FAIL);
+            ApplyResponse(R"({"id":311,"op":"query","data":{"items":[]}})");
+            winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"test-b"} &&
+                g_panel.queueAdd.IsEnabled() ? S_OK : E_FAIL);
+            currentStage = 13;
+            ApplyResponse(R"({"id":312,"op":"query","data":{"items":[{"hash":"test-b"}]}})");
+            ApplyResponse(R"({"id":313,"op":"delete","error":"Synthetic delete failure"})");
+            winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"test-b"} &&
+                g_panel.history.SelectedItems().Size() == 1 ? S_OK : E_FAIL);
+            ApplyResponse(R"({"id":314,"op":"delete","data":{"hash":"test-b","deleted":true}})");
+            winrt::check_hresult(g_queueSelectedHashes.empty() &&
+                g_panel.history.SelectedItems().Size() == 0 && !g_panel.queueAdd.IsEnabled()
+                ? S_OK : E_FAIL);
+            currentStage = 14;
+            ApplyResponse(R"({"id":315,"op":"query","data":{"items":[{"hash":"test-a"},{"hash":"test-b"}]}})");
+            g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(0));
+            g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(1));
+            ApplyResponse(R"({"id":316,"op":"query","data":{"items":[{"hash":"test-a"}]}})");
+            ApplyResponse(R"({"id":317,"op":"delete","data":{"hash":"test-b","deleted":true}})");
+            winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"test-a"} &&
+                g_panel.history.SelectedItems().Size() == 1 && g_panel.queueAdd.IsEnabled()
+                ? S_OK : E_FAIL);
+            ToggleQueueSelectionMode();
+            winrt::check_hresult(g_queueSelectedHashes.empty() && !g_panel.queueAdd.IsEnabled() ? S_OK : E_FAIL);
+            completion->set_value({S_OK, 15});
         } catch (...) {
             completion->set_value({winrt::to_hresult(), currentStage});
         }

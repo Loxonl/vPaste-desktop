@@ -302,7 +302,6 @@ struct TagManager::Impl : std::enable_shared_from_this<TagManager::Impl> {
             } else {
                 TextBlock name = MakeText(winrt::hstring{tag.name}, 14, true);
                 name.MaxWidth(300);
-                details.Children().Append(name);
                 StackPanel actions;
                 actions.Orientation(Orientation::Horizontal);
                 actions.Spacing(6);

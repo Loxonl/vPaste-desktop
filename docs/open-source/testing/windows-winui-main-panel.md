@@ -49,6 +49,9 @@ If `--main-ui` is omitted, the existing WebView mode remains the default.
   combined with search and content filters; **Load more / 加载更多** reads the
   next bounded page. Text includes text-file records, matching the existing
   main-panel filter behavior.
+- The first returned card is selected when no previous selection remains in the
+  returned page; ordinary refresh preserves a selected hash that is still in
+  that page. This does not move keyboard focus out of search or paste anything.
 - Select an entry and choose **Copy / 复制** to write that saved item back to the
   system clipboard. **Paste / 粘贴** uses the existing Rust clipboard-copy,
   foreground restoration, permission check, and paste path. Enter pastes the
@@ -66,6 +69,10 @@ If `--main-ui` is omitted, the existing WebView mode remains the default.
   items to the native paste queue. The queue supports paste, remove, move up/down,
   reverse, undo, and clear with confirmation. The queue shares the native panel
   and does not create the Tauri Paste Queue WebView.
+- Queue selections preserve their order through background refreshes, filter
+  changes, and loading more history. The count includes selected items outside
+  the current filter/page. Canceling selection clears them; confirmed history
+  deletion removes only the deleted selection, while deletion failure keeps it.
 - The panel follows the configured `system/light/dark` theme and English/Chinese
   language for the controls in this slice. Changing either preference while the
   panel is open should update it without restarting the app. Cards use explicit
@@ -88,7 +95,9 @@ applications are not evidence that vPaste created one.
 The local-only native regression test initializes the actual Windows App SDK
 and DLL bridge, shows the native shell, and exercises history refresh, single/
 multi-selection transitions, non-empty queue updates, nullable undo state,
-language/theme/error redraws, repeated view switching, and shutdown using
+non-empty/empty tag-result redraws, language/theme/error redraws, selection
+restoration across refresh/filter/pagination and deletion success/failure,
+repeated view switching, and shutdown using
 synthetic records. It does not query user history. Run it from
 `src-tauri` on an interactive Windows desktop with the runtime installed:
 
@@ -114,12 +123,26 @@ history behavior manually as described above.
   `undoHash`. Keep the existing Rust state format unchanged.
 - Release all XAML owners, including the queue and tag views, on their owning
   STA before closing the XAML manager and COM apartment.
+- A XAML control may have only one visual parent. In particular, do not append
+  a tag's name to both its details panel and its row. Test non-empty tag data,
+  not just an empty manager.
+- Keep logical queue selection separate from the visible SelectedItems
+  projection. Suppress selection-change handling while rebuilding/restoring
+  that projection, and remove a selected hash only on explicit deselection,
+  cancellation, successful addition, or confirmed deletion. Failed operations
+  must not silently discard the user's choices.
 
 After native changes, manually verify these real-app paths in addition to the
 synthetic test: copy text in another app and see it appear in history; select
 existing records and add them to the queue; copy again while the queue is active
 and see its count increase. The queue remains temporary: closing it clears it,
 and opening it does not import all history automatically.
+
+Also check tag create/rename/delete with a non-empty list; select queue items,
+copy again externally, change filters, and load more history without losing
+those choices. Delete an already-selected history item and verify only that
+item is removed from the selection. Synthetic tag tests cover result rendering,
+not real button-to-database CRUD or keyboard end-to-end behavior.
 
 ## Interpreting memory readings
 

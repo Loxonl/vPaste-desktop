@@ -662,8 +662,9 @@ async fn update_item_tag(
 }
 
 async fn delete_history_item(app: AppHandle, hash: String) -> Result<serde_json::Value, String> {
+    let delete_hash = hash.clone();
     let affected = tauri::async_runtime::spawn_blocking(move || {
-        crate::clipboard::delete_by_hash(&hash).map_err(|error| error.to_string())
+        crate::clipboard::delete_by_hash(&delete_hash).map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| error.to_string())??;
@@ -671,7 +672,7 @@ async fn delete_history_item(app: AppHandle, hash: String) -> Result<serde_json:
         return Err("Clipboard item was not found".to_string());
     }
     crate::paste_queue::emit_state(&app);
-    Ok(json!({ "deleted": true }))
+    Ok(json!({ "deleted": true, "hash": hash }))
 }
 
 async fn query_card(hash: String) -> Result<serde_json::Value, String> {

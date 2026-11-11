@@ -55,6 +55,7 @@ pub(crate) struct HistoryRef {
     pub(crate) app_icon_path: String,
     pub(crate) source_metadata: crate::clipboard::source_metadata::SourceMetadata,
     pub(crate) title_color: String,
+    pub(crate) preview_text: String,
 }
 
 impl HistoryRef {
@@ -65,6 +66,7 @@ impl HistoryRef {
             + self.app_icon_path.capacity()
             + self.source_metadata.bundle_id.capacity()
             + self.title_color.capacity()
+            + self.preview_text.capacity()
             + self.tags.capacity() * std::mem::size_of::<ItemTag>()
             + self
                 .tags

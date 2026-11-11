@@ -89,6 +89,12 @@ mod paste_queue;
 mod preview_behavior;
 #[cfg(test)]
 mod resource_budget_tests;
+#[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+mod winui_panel;
+#[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+mod winui_queue;
+#[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+mod winui_tags;
 use preview_behavior::PreviewMode;
 mod preview_motion;
 use preview_motion::{PreviewRect, PreviewRequests};
@@ -5255,6 +5261,10 @@ fn show_main_panel_for_app(app: &tauri::AppHandle) -> Result<(), String> {
     if main_panel_mode::native() {
         return native_panel::show_default(app.clone());
     }
+    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    if main_panel_mode::winui() {
+        return winui_panel::show(app.clone());
+    }
     let window = app
         .get_webview_window("clipboard")
         .ok_or_else(|| "clipboard window not found".to_string())?;
@@ -7039,6 +7049,13 @@ fn toggle_clipboard_window(app: &tauri::AppHandle) {
     if main_panel_mode::native() {
         if let Err(error) = native_panel::toggle(app.clone()) {
             error!("Failed to toggle native main panel: {error}");
+        }
+        return;
+    }
+    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    if main_panel_mode::winui() {
+        if let Err(error) = winui_panel::toggle(app.clone()) {
+            error!("Failed to toggle WinUI main panel: {error}");
         }
         return;
     }
@@ -11573,9 +11590,33 @@ fn should_refresh_paste_queue_click_target(
     origin == PasteQueueRequestOrigin::QueueWindow && !clipboard_visible
 }
 
-fn prepare_paste_queue_click_target(app: &tauri::AppHandle, origin: PasteQueueRequestOrigin) {
+fn prepare_paste_queue_click_target(
+    app: &tauri::AppHandle,
+    origin: PasteQueueRequestOrigin,
+) -> Result<(), String> {
+    if winui_queue_ui_enabled() {
+        #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+        {
+            // Capture an external app if it is currently foreground; the helper
+            // ignores vPaste itself, preserving the previously captured target.
+            record_foreground_app_before_clipboard();
+            if CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+                winui_panel::hide_for_queue_paste()?;
+                let started = Instant::now();
+                while CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+                    && started.elapsed() < std::time::Duration::from_millis(400)
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(8));
+                }
+            }
+        }
+        restore_foreground_app_before_paste();
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        return Ok(());
+    }
+
     if !should_prepare_paste_queue_click_target(origin, main_surface_visible()) {
-        return;
+        return Ok(());
     }
 
     if main_surface_visible() {
@@ -11593,6 +11634,7 @@ fn prepare_paste_queue_click_target(app: &tauri::AppHandle, origin: PasteQueueRe
     }
     restore_foreground_app_before_paste();
     std::thread::sleep(std::time::Duration::from_millis(40));
+    Ok(())
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -11627,12 +11669,14 @@ fn process_paste_queue_request_inner(app: &tauri::AppHandle, request: PasteQueue
             return;
         }
     };
+    let restore_native_queue_view =
+        winui_queue_ui_enabled() && CLIPBOARD_VISIBLE.load(Ordering::SeqCst);
 
     paste_queue::clear_error();
     paste_queue::set_busy(true);
     paste_queue::emit_state(app);
     let result = restore_paste_queue_item(app.clone(), &hash).and_then(|_| {
-        prepare_paste_queue_click_target(app, request.origin);
+        prepare_paste_queue_click_target(app, request.origin)?;
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         PASTE_QUEUE_INTERNAL_PASTE.store(true, Ordering::SeqCst);
         let result = simulate_paste_shortcut();
@@ -11661,6 +11705,15 @@ fn process_paste_queue_request_inner(app: &tauri::AppHandle, request: PasteQueue
     }
     paste_queue::set_busy(false);
     paste_queue::emit_state(app);
+    if restore_native_queue_view
+        && paste_queue::is_active()
+        && request.activation_epoch == paste_queue::activation_epoch()
+    {
+        #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+        if let Err(error) = winui_panel::show_queue_no_activate() {
+            log::warn!("failed to restore native queue view after paste: {error}");
+        }
+    }
 }
 
 fn process_paste_queue_request(app: &tauri::AppHandle, request: PasteQueueRequest) {
@@ -12341,6 +12394,15 @@ fn schedule_paste_queue_cleanup(cleanup: paste_queue::DeferredCleanup) {
     }));
 }
 
+fn winui_queue_ui_enabled() -> bool {
+    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    {
+        main_panel_mode::winui()
+    }
+    #[cfg(not(all(debug_assertions, target_os = "windows", feature = "winui-debug")))]
+    false
+}
+
 fn deactivate_paste_queue_window(app: &tauri::AppHandle) -> Result<(), String> {
     let mut requests = PASTE_QUEUE_ACTIVATION.lock().unwrap();
     let request = requests.request(false);
@@ -12353,10 +12415,22 @@ fn deactivate_paste_queue_window_inner(app: &tauri::AppHandle) -> Result<(), Str
     PASTE_QUEUE_POINTER_GENERATION.fetch_add(1, Ordering::SeqCst);
     PASTE_QUEUE_MENU_GENERATION.fetch_add(1, Ordering::SeqCst);
     PASTE_QUEUE_MENU_OPEN.store(false, Ordering::SeqCst);
-    paste_queue::destroy_window(app);
+    let hide_result = if winui_queue_ui_enabled() {
+        #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+        {
+            winui_panel::set_queue_view(false)
+        }
+        #[cfg(not(all(debug_assertions, target_os = "windows", feature = "winui-debug")))]
+        {
+            Ok(())
+        }
+    } else {
+        paste_queue::destroy_window(app);
+        Ok(())
+    };
     let cleanup = paste_queue::deactivate_with_deferred_cleanup()?;
     schedule_paste_queue_cleanup(cleanup);
-    Ok(())
+    hide_result
 }
 
 async fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(), String> {
@@ -12422,6 +12496,23 @@ async fn apply_paste_queue_activation_inner(
             return Err("需要辅助功能权限才能启用粘贴队列".to_string());
         }
         ensure_paste_queue_interceptor(app)?;
+        if winui_queue_ui_enabled() {
+            if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+                record_foreground_app_before_clipboard();
+            }
+            paste_queue::set_active(true);
+            paste_queue::clear_error();
+            #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+            winui_panel::set_queue_view(true)?;
+            let mut requests = PASTE_QUEUE_ACTIVATION.lock().unwrap();
+            if !requests.current(request) {
+                let _ = deactivate_paste_queue_window_inner(app);
+                return Ok(());
+            }
+            requests.finish(request);
+            paste_queue::emit_state(app);
+            return Ok(());
+        }
         let window =
             auxiliary_windows::ensure(app, auxiliary_windows::WindowKind::PasteQueue).await?;
         let app = app.clone();
@@ -13708,6 +13799,7 @@ fn main() {
     }
     let installer_exit_requested = maintenance::installer_exit_requested();
     let show_panel_on_startup = cfg!(target_os = "macos")
+        || main_panel_mode::winui()
         || startup_panel::is_update_restart(std::env::args_os(), env!("CARGO_PKG_VERSION"));
 
     if !memory_profile_active() {
@@ -14014,6 +14106,11 @@ fn main() {
                 panel_animation::probe::start(app.handle().clone());
                 return Ok(());
             }
+            #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+            if main_panel_mode::winui() {
+                winui_panel::initialize(app.handle().clone()).map_err(io::Error::other)?;
+                info!("WinUI 3 experiment initialized; no main WebView will be created");
+            }
             app_updater::start_background_checks(app.handle().clone());
             install_vpaste_tray(app.handle())?;
 
@@ -14084,7 +14181,7 @@ fn main() {
             if let Err(err) = search::engine::resume_pending_updates() {
                 error!("Failed to resume clipboard search index updates: {err}");
             }
-            if !main_panel_mode::native() {
+            if !main_panel_mode::native() && !main_panel_mode::winui() {
                 let _ = build_clipboard_window(app.handle())?;
             }
             #[cfg(target_os = "macos")]
@@ -14115,12 +14212,10 @@ fn main() {
             #[cfg(target_os = "windows")]
             windows_main_shortcut::log_status();
             std::thread::spawn(move || {
-                #[cfg(target_os = "windows")]
-                let clipboard_window = handle
-                    .get_webview_window("clipboard")
-                    .unwrap_or_else(|| build_clipboard_window(&handle).unwrap());
-
-                if !config.onboarding_completed && !main_panel_mode::native() {
+                if !config.onboarding_completed
+                    && !main_panel_mode::native()
+                    && !main_panel_mode::winui()
+                {
                     if let Err(err) = show_onboarding_window(&handle) {
                         error!("Failed to show onboarding window: {}", err);
                     }
@@ -14131,9 +14226,11 @@ fn main() {
                 #[cfg(target_os = "macos")]
                 listen::start(handle.clone());
                 #[cfg(target_os = "windows")]
-                listen::start(clipboard_window);
+                listen::start(handle.clone());
                 info!("Clipboard listener started");
-                if (config.onboarding_completed || main_panel_mode::native())
+                if (config.onboarding_completed
+                    || main_panel_mode::native()
+                    || main_panel_mode::winui())
                     && show_panel_on_startup
                 {
                     if let Err(err) = startup_panel::request_show(&handle) {
@@ -14339,6 +14436,10 @@ fn main() {
             }
             if matches!(&event, tauri::RunEvent::Exit) {
                 image_ocr::stop();
+                #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+                if main_panel_mode::winui() {
+                    winui_panel::shutdown();
+                }
             }
             #[cfg(not(target_os = "macos"))]
             let _ = (app, event);

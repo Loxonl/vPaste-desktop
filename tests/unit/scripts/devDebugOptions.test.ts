@@ -16,6 +16,13 @@ describe("developer main interface selection", () => {
         expect(parseDevDebugOptions(["--main-ui", "native"], "darwin").mainUi).toBe("native");
         expect(parseDevDebugOptions(["--main-ui=webview"], "darwin").mainUi).toBe("webview");
     });
+    it("forwards WinUI mode only on Windows", () => {
+        expect(parseDevDebugOptions(["--main-ui=winui"], "win32")).toEqual({
+            mainUi: "winui", appArgs: ["--dev-mode", "--main-ui=winui"],
+        });
+        expect(parseDevDebugOptions(["--main-ui", "winui"], "win32").mainUi).toBe("winui");
+        expect(() => parseDevDebugOptions(["--main-ui=winui"], "darwin")).toThrow("Windows DEV");
+    });
     it("forwards native mode when npm consumes an option before the script separator", () => {
         expect(parseDevDebugOptions([], "darwin", { npm_config_main_ui: "native" }))
             .toEqual({ mainUi: "native", appArgs: ["--dev-mode", "--main-ui=native"] });
@@ -36,6 +43,7 @@ describe("developer main interface selection", () => {
     });
     it("rejects unavailable native mode and malformed options before launching anything", () => {
         expect(() => parseDevDebugOptions(["--main-ui=native"], "win32")).toThrow("macOS DEV");
+        expect(() => parseDevDebugOptions([], "darwin", { npm_config_main_ui: "winui" })).toThrow("Windows DEV");
         for (const args of [["--main-ui"], ["--main-ui="], ["--main-ui=other"],
             ["--main-ui=native", "--main-ui=webview"], ["--native"]]) {
             expect(() => parseDevDebugOptions(args, "darwin")).toThrow();

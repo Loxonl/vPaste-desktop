@@ -147,6 +147,128 @@ fn build_win32_native_demo() {
     }
 }
 
+fn build_winui_debug_panel() {
+    if env::var("PROFILE").as_deref() != Ok("debug")
+        || env::var_os("CARGO_FEATURE_WINUI_DEBUG").is_none()
+    {
+        return;
+    }
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        panic!("the winui-debug feature is only supported for Windows Debug builds");
+    }
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("x86_64") {
+        panic!("the WinUI 3 experiment currently supports Windows x64 only");
+    }
+
+    const PROJECT: &str = "native-demo/windows/winui/WinUiPanel.vcxproj";
+    const SOURCE: &str = "native-demo/windows/winui/WinUiPanel.cpp";
+    const QUEUE_SOURCE: &str = "native-demo/windows/winui/WinUiQueueView.cpp";
+    const QUEUE_HEADER: &str = "native-demo/windows/winui/WinUiQueueView.h";
+    const TAG_MANAGER_SOURCE: &str = "native-demo/windows/winui/WinUiTagManager.cpp";
+    const TAG_MANAGER_HEADER: &str = "native-demo/windows/winui/WinUiTagManager.h";
+    println!("cargo:rerun-if-changed={PROJECT}");
+    println!("cargo:rerun-if-changed={SOURCE}");
+    println!("cargo:rerun-if-changed={QUEUE_SOURCE}");
+    println!("cargo:rerun-if-changed={QUEUE_HEADER}");
+    println!("cargo:rerun-if-changed={TAG_MANAGER_SOURCE}");
+    println!("cargo:rerun-if-changed={TAG_MANAGER_HEADER}");
+    println!("cargo:rerun-if-env-changed=USERPROFILE");
+    println!("cargo:rerun-if-env-changed=NUGET_PACKAGES");
+
+    let project_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"));
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR")).join("winui-debug");
+    let intermediate_dir = out_dir.join("obj");
+    fs::create_dir_all(&intermediate_dir).expect("create WinUI build output directory");
+
+    let msbuild = find_msbuild();
+    let status = Command::new(&msbuild)
+        .current_dir(&project_dir)
+        .args([PROJECT, "/restore", "/nologo", "/m", "/verbosity:minimal"])
+        .arg("/p:Configuration=Debug")
+        .arg("/p:Platform=x64")
+        .arg(format!("/p:OutDir={}\\", out_dir.display()))
+        .arg(format!("/p:IntDir={}\\", intermediate_dir.display()))
+        .arg(format!(
+            "/p:GeneratedFilesDir={}\\generated\\",
+            out_dir.display()
+        ))
+        .arg(format!(
+            "/p:BaseIntermediateOutputPath={}\\nuget\\",
+            out_dir.display()
+        ))
+        .arg(format!(
+            "/p:MSBuildProjectExtensionsPath={}\\nuget\\",
+            out_dir.display()
+        ))
+        .status()
+        .unwrap_or_else(|error| panic!("failed to run {}: {error}", msbuild.display()));
+    assert!(status.success(), "WinUI 3 Debug panel failed to build");
+
+    let profile_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"))
+        .ancestors()
+        .nth(3)
+        .expect("Cargo profile directory")
+        .to_path_buf();
+    let bootstrap_dll = nuget_packages_dir()
+        .join("microsoft.windowsappsdk.foundation")
+        .join("2.6.5")
+        .join("runtimes/win-x64/native/Microsoft.WindowsAppRuntime.Bootstrap.dll");
+    if !bootstrap_dll.is_file() {
+        panic!(
+            "Windows App SDK bootstrap runtime was not restored at {}",
+            bootstrap_dll.display()
+        );
+    }
+    let panel_dll = out_dir.join("VPasteWinUiPanel.dll");
+    if !panel_dll.is_file() {
+        panic!(
+            "WinUI panel DLL was not produced at {}",
+            panel_dll.display()
+        );
+    }
+    fs::copy(&panel_dll, profile_dir.join("VPasteWinUiPanel.dll"))
+        .unwrap_or_else(|error| panic!("copy {} to Debug output: {error}", panel_dll.display()));
+    fs::copy(
+        &bootstrap_dll,
+        profile_dir.join("Microsoft.WindowsAppRuntime.Bootstrap.dll"),
+    )
+    .unwrap_or_else(|error| panic!("copy {} to Debug output: {error}", bootstrap_dll.display()));
+}
+
+fn find_msbuild() -> PathBuf {
+    if let Some(program_files) = env::var_os("ProgramFiles(x86)") {
+        let vswhere =
+            PathBuf::from(program_files).join("Microsoft Visual Studio/Installer/vswhere.exe");
+        if vswhere.is_file() {
+            if let Ok(output) = Command::new(vswhere)
+                .args(["-latest", "-products", "*", "-property", "installationPath"])
+                .output()
+            {
+                if output.status.success() {
+                    if let Some(path) = String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .map(str::trim)
+                        .find(|path| !path.is_empty())
+                    {
+                        let msbuild = PathBuf::from(path).join("MSBuild/Current/Bin/MSBuild.exe");
+                        if msbuild.is_file() {
+                            return msbuild;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    PathBuf::from("msbuild.exe")
+}
+
+fn nuget_packages_dir() -> PathBuf {
+    if let Some(packages) = env::var_os("NUGET_PACKAGES") {
+        return PathBuf::from(packages);
+    }
+    PathBuf::from(env::var_os("USERPROFILE").expect("USERPROFILE")).join(".nuget/packages")
+}
+
 /// Extracts `paths.runtimeLibraryPaths` from `swiftc -print-target-info`.
 fn swift_runtime_library_paths(json: &str) -> Vec<String> {
     let Some(start) = json.find("\"runtimeLibraryPaths\"") else {
@@ -179,5 +301,6 @@ fn main() {
     }
     generate_tray_icon_mask();
     build_native_demo();
+    build_winui_debug_panel();
     tauri_build::build()
 }

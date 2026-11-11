@@ -9,7 +9,7 @@ use clipboard_win::formats::{CF_DIB, CF_DIBV5};
 use clipboard_win::get;
 use clipboard_win::is_format_avail;
 use log::{error, info};
-use tauri::{Emitter, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter};
 
 use super::capture_monitor::{self, CaptureMonitor};
 use super::diagnostics::{self, ReadTrace};
@@ -315,7 +315,7 @@ fn is_ignored_app_source(app_source: &str) -> bool {
             .any(|source| source == app_source)
 }
 
-pub fn start(window: WebviewWindow) {
+pub fn start(app: AppHandle) {
     thread::spawn(move || {
         if diagnostics::enabled() {
             info!("clipboard_diag detailed Windows capture diagnostics enabled; payload content is not logged");
@@ -329,7 +329,7 @@ pub fn start(window: WebviewWindow) {
         };
         let (sender, receiver) = mpsc::sync_channel::<BufferedSnapshot>(MAX_BUFFERED_CAPTURES);
         let buffered_bytes = Arc::new(Mutex::new(0));
-        let worker_window = window.clone();
+        let worker_app = app.clone();
         thread::spawn(move || {
             let mut pending = None;
             while let Some(mut buffered) = next_buffered_snapshot(&receiver, &mut pending) {
@@ -367,7 +367,7 @@ pub fn start(window: WebviewWindow) {
                 if let Err(err) = &result {
                     error!("failed to process clipboard snapshot: {err}");
                     if crate::clipboard_budget::is_limit_error(err) {
-                        let _ = worker_window.emit("clipboard-capture-rejected", ());
+                        let _ = worker_app.emit("clipboard-capture-rejected", ());
                     }
                 }
                 if epoch.is_some_and(|epoch| {
@@ -377,11 +377,11 @@ pub fn start(window: WebviewWindow) {
                     if let Err(err) = &result {
                         crate::paste_queue::set_error(None, err.clone());
                     }
-                    crate::paste_queue::emit_state(worker_window.app_handle());
+                    crate::paste_queue::emit_state(&worker_app);
                 }
                 if let Ok(Some(hash)) = result {
                     info!("captured clipboard hash: {hash}");
-                    if let Err(err) = worker_window.emit("listen_new_clipboard", "") {
+                    if let Err(err) = worker_app.emit("listen_new_clipboard", "") {
                         error!("failed to emit clipboard refresh event: {err}");
                     }
                 }
@@ -430,14 +430,14 @@ pub fn start(window: WebviewWindow) {
                 );
                 error!("failed to capture clipboard snapshot: {err}");
                 if crate::clipboard_budget::is_limit_error(&err) {
-                    let _ = window.emit("clipboard-capture-rejected", ());
+                    let _ = app.emit("clipboard-capture-rejected", ());
                 }
                 if context.queue_epoch.is_some_and(|epoch| {
                     crate::paste_queue::is_active()
                         && crate::paste_queue::activation_epoch() == epoch
                 }) {
                     crate::paste_queue::set_error(None, err);
-                    let app = window.app_handle().clone();
+                    let app = app.clone();
                     tauri::async_runtime::spawn_blocking(move || {
                         crate::paste_queue::emit_state(&app)
                     });

@@ -44,6 +44,8 @@ if (os.platform() === "win32") {
     "-File",
     path.join(scriptDir, "run-dev-app.ps1"),
     "-DeveloperMode",
+    "-MainUi",
+    options.mainUi,
   ]);
 } else if (os.platform() === "darwin") {
   const runningApp = spawnSync("pgrep", ["-x", "vPaste"], { encoding: "utf8" });

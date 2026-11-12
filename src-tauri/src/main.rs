@@ -6323,6 +6323,16 @@ fn set_item_favorite(hash: String, favorite: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_tab_order() -> Result<Vec<String>, String> {
+    clipboard::db::read_tab_order(&clipboard::db::db()).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn save_tab_order(order: Vec<String>) -> Result<(), String> {
+    clipboard::db::write_tab_order(&clipboard::db::db(), &order).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 fn list_item_tags() -> Result<Vec<clipboard::item::ItemTag>, String> {
     clipboard::list_tags()
 }
@@ -14166,6 +14176,8 @@ fn main() {
             check_paste_accessibility_permission,
             open_accessibility_settings,
             set_item_favorite,
+            get_tab_order,
+            save_tab_order,
             list_item_tags,
             create_item_tag,
             rename_item_tag,

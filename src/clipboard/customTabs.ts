@@ -108,6 +108,12 @@ export function saveTabOrder(order: string[]) {
     localStorage.setItem(TAB_ORDER_STORAGE_KEY, JSON.stringify(order));
 }
 
+// The tab order now lives in the history database (get_tab_order /
+// save_tab_order). A WebView order saved before that is copied over once.
+export function tabOrderToMigrate(stored: string[], local: string[]): string[] | null {
+    return stored.length === 0 && local.length > 0 ? local : null;
+}
+
 export function customTabFilterPayload(tab: CustomTab): string {
     const filter = tab.filter;
     const payload: Record<string, string | number | boolean | string[]> = {

@@ -152,6 +152,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         validate_schema(conn)?;
         crate::image_ocr::init_schema(conn)?;
         super::source_metadata::init_schema(conn)?;
+        init_tab_order(conn)?;
         if version == 0 {
             conn.pragma_update(None, "user_version", HISTORY_SCHEMA_VERSION)?;
         }
@@ -249,7 +250,40 @@ create unique index if not exists hash on clipboard(hash);
     let transaction = conn.unchecked_transaction()?;
     transaction.execute_batch(sql)?;
     crate::image_ocr::init_schema(&transaction)?;
+    init_tab_order(&transaction)?;
     transaction.pragma_update(None, "user_version", HISTORY_SCHEMA_VERSION)?;
+    transaction.commit()
+}
+
+// Order of the dynamic toolbar tabs (filter tabs and record tags) by tab id.
+// Additive UI state, independent of the supported history payload format.
+fn init_tab_order(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS tab_order (
+            tab_id   TEXT    NOT NULL PRIMARY KEY,
+            position INTEGER NOT NULL
+        ) STRICT;",
+    )
+}
+
+pub fn read_tab_order(conn: &Connection) -> Result<Vec<String>> {
+    conn.prepare("SELECT tab_id FROM tab_order ORDER BY position")?
+        .query_map([], |row| row.get(0))?
+        .collect()
+}
+
+// Replaces the whole order; blank and repeated ids are dropped.
+pub fn write_tab_order(conn: &Connection, order: &[String]) -> Result<()> {
+    let transaction = conn.unchecked_transaction()?;
+    transaction.execute("DELETE FROM tab_order", [])?;
+    for (position, tab_id) in order.iter().map(|id| id.trim()).enumerate() {
+        if !tab_id.is_empty() {
+            transaction.execute(
+                "INSERT OR IGNORE INTO tab_order(tab_id, position) VALUES(?1, ?2)",
+                rusqlite::params![tab_id, position as i64],
+            )?;
+        }
+    }
     transaction.commit()
 }
 
@@ -343,6 +377,39 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap()
+    }
+
+    #[test]
+    fn tab_order_is_added_to_existing_history_and_replaced_as_a_whole() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        // A database created before tab order existed gains the table in place.
+        connection.execute_batch("DROP TABLE tab_order").unwrap();
+        connection
+            .execute(
+                "INSERT INTO clipboard(hash,time,content) VALUES('kept',1,'body')",
+                [],
+            )
+            .unwrap();
+        init_schema(&connection).unwrap();
+        assert!(super::read_tab_order(&connection).unwrap().is_empty());
+
+        let order =
+            ["record:2", "tab-1", "record:2", " ", "tutorial-filter-text"].map(String::from);
+        super::write_tab_order(&connection, &order).unwrap();
+        assert_eq!(
+            super::read_tab_order(&connection).unwrap(),
+            ["record:2", "tab-1", "tutorial-filter-text"]
+        );
+        super::write_tab_order(&connection, &["tab-1".to_string()]).unwrap();
+        assert_eq!(super::read_tab_order(&connection).unwrap(), ["tab-1"]);
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM clipboard", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 
     #[test]

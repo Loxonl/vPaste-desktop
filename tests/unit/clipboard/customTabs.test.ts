@@ -14,6 +14,7 @@ import {
     saveCustomTabs,
     saveTabOrder,
     type CustomTab,
+    tabOrderToMigrate,
 } from "../../../src/clipboard/customTabs";
 
 const customTabs: CustomTab[] = [
@@ -142,5 +143,13 @@ describe("custom tab model", () => {
         expect(recordTagIdFromTab("record:12")).toBe(12);
         expect(recordTagIdFromTab("record:0")).toBeNull();
         expect(recordTagIdFromTab("filter-images")).toBeNull();
+    });
+});
+
+describe("tabOrderToMigrate", () => {
+    it("copies the saved WebView order only into an empty database", () => {
+        expect(tabOrderToMigrate([], ["record:2", "tab-1"])).toEqual(["record:2", "tab-1"]);
+        expect(tabOrderToMigrate(["tab-1"], ["record:2", "tab-1"])).toBeNull();
+        expect(tabOrderToMigrate([], [])).toBeNull();
     });
 });

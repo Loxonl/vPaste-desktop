@@ -976,7 +976,10 @@ mod tests {
             export_image_source(&ItemType::File, r#"["/tmp/a.png","/tmp/b.png"]"#, ""),
             ""
         );
-        assert_eq!(export_image_source(&ItemType::File, r#"["/tmp/a.txt"]"#, ""), "");
+        assert_eq!(
+            export_image_source(&ItemType::File, r#"["/tmp/a.txt"]"#, ""),
+            ""
+        );
         assert_eq!(export_image_source(&ItemType::File, "not json", ""), "");
         assert_eq!(export_image_source(&ItemType::Text, "/tmp/a.png", ""), "");
     }

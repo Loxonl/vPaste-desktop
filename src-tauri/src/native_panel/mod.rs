@@ -246,6 +246,16 @@ struct Request {
     plain: bool,
     #[serde(default)]
     favorite: bool,
+    #[serde(default)]
+    tag_id: i64,
+    #[serde(default)]
+    tag_ids: Vec<i64>,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    target: String,
+    #[serde(default)]
+    text: String,
     #[serde(default = "card_width")]
     width: u32,
     #[serde(default)]
@@ -495,6 +505,105 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
                 .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
+        "tags" => {
+            let tags = blocking(clipboard::list_tags).await?;
+            serde_json::to_value(tags).map_err(|e| e.to_string())
+        }
+        "color-options" => {
+            let options = blocking(move || {
+                let item = clipboard::history_action_item(&hash)?;
+                Ok(clipboard::color::color_variants(&item.content))
+            })
+            .await?;
+            serde_json::to_value(options).map_err(|e| e.to_string())
+        }
+        "tag-assign" => {
+            let tag_id = r.tag_id;
+            blocking(move || clipboard::assign_tag(&hash, tag_id)).await?;
+            app.emit("listen_new_clipboard", ())
+                .map_err(|e| e.to_string())?;
+            Ok(Value::Null)
+        }
+        "tag-remove" => {
+            let tag_ids = r.tag_ids.clone();
+            blocking(move || {
+                tag_ids
+                    .iter()
+                    .try_for_each(|tag_id| clipboard::remove_tag(&hash, *tag_id))
+            })
+            .await?;
+            app.emit("listen_new_clipboard", ())
+                .map_err(|e| e.to_string())?;
+            Ok(Value::Null)
+        }
+        "tag-create" => {
+            let name = r.name.trim().to_string();
+            if name.is_empty() {
+                return Err("Tag name is empty".into());
+            }
+            let tag = blocking(move || {
+                let tag = clipboard::create_tag(&name)?;
+                clipboard::assign_tag(&hash, tag.id)?;
+                Ok(tag)
+            })
+            .await?;
+            app.emit("listen_new_clipboard", ())
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(tag).map_err(|e| e.to_string())
+        }
+        "export-image" => {
+            let target = r.target.clone();
+            if target.is_empty() {
+                return Err("Export target is empty".into());
+            }
+            let source = blocking(move || {
+                let item = clipboard::history_action_item(&hash)?;
+                Ok(export_image_source(
+                    &item.item_type,
+                    &item.content,
+                    &item.preview_content,
+                ))
+            })
+            .await?;
+            if source.is_empty() {
+                return Err("Image cache is missing".into());
+            }
+            let revealed = target.clone();
+            blocking(move || crate::export_image_item(source, target)).await?;
+            crate::reveal_file_in_folder(revealed)?;
+            begin_close(app).await?;
+            Ok(Value::Null)
+        }
+        "open-folder" => {
+            blocking(move || {
+                let item = clipboard::history_action_item(&hash)?;
+                crate::open_containing_folder(item.content)
+            })
+            .await?;
+            Ok(Value::Null)
+        }
+        "copy-folder" => {
+            let path = blocking(move || {
+                let item = clipboard::history_action_item(&hash)?;
+                crate::containing_folder_path(item.content)
+            })
+            .await?;
+            let worker_app = app.clone();
+            blocking(move || copy_generated_text(&worker_app, path)).await?;
+            app.emit("listen_new_clipboard", ())
+                .map_err(|e| e.to_string())?;
+            Ok(Value::Null)
+        }
+        "copy-text" => {
+            if r.text.is_empty() {
+                return Err("Nothing to copy".into());
+            }
+            let (worker_app, text) = (app.clone(), r.text.clone());
+            blocking(move || copy_generated_text(&worker_app, text)).await?;
+            app.emit("listen_new_clipboard", ())
+                .map_err(|e| e.to_string())?;
+            Ok(Value::Null)
+        }
         "settings" => {
             let source = app.get_webview_window("clipboard");
             close_for_action(app).await?;
@@ -640,6 +749,7 @@ struct Card {
     file_format: String,
     is_gif: bool,
     rich: Vec<rich_text::Block>,
+    export_image: bool,
 }
 fn bounded(s: &str) -> String {
     s.chars().take(16_384).collect()
@@ -778,7 +888,43 @@ fn display_card(hash: &str, width: u32) -> Result<Card, String> {
         file_format,
         is_gif,
         rich,
+        export_image: !export_image_source(&item.item_type, &item.content, &item.preview_content)
+            .is_empty(),
     })
+}
+
+// Mirrors the WebView imageExportSourcePath: an Image exports its cached
+// preview; a File exports only when it holds exactly one image path.
+fn export_image_source(item_type: &ItemType, content: &str, preview_content: &str) -> String {
+    match item_type {
+        ItemType::Image => preview_content.to_string(),
+        ItemType::File => match crate::parse_file_clipboard_content(content) {
+            Ok(paths) if paths.len() == 1 && is_image_path(&paths[0]) => paths[0].clone(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    }
+}
+
+// Same extensions as the WebView isImagePath.
+fn is_image_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tif" | "tiff" | "svg"
+            )
+        })
+}
+
+// Copy text produced by a menu action and record it as vPaste history, as the
+// WebView does for converted colors and containing-folder paths.
+fn copy_generated_text(app: &AppHandle, text: String) -> Result<(), String> {
+    crate::copy(app.clone(), text.clone(), "Text".into(), None)?;
+    crate::record_text_history(text);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -810,6 +956,29 @@ mod tests {
         );
         assert_eq!(drag_plain_text(&ItemType::File, "", "[]", ""), "");
         assert_eq!(drag_plain_text(&ItemType::Image, "", "/tmp/a.png", ""), "");
+    }
+
+    #[test]
+    fn export_image_source_matches_the_webview() {
+        assert_eq!(
+            export_image_source(&ItemType::Image, "ignored", "/cache/a.png"),
+            "/cache/a.png"
+        );
+        assert_eq!(
+            export_image_source(&ItemType::File, r#"["/tmp/a.JPEG"]"#, ""),
+            "/tmp/a.JPEG"
+        );
+        assert_eq!(
+            export_image_source(&ItemType::File, r#"["/tmp/a.svg"]"#, ""),
+            "/tmp/a.svg"
+        );
+        assert_eq!(
+            export_image_source(&ItemType::File, r#"["/tmp/a.png","/tmp/b.png"]"#, ""),
+            ""
+        );
+        assert_eq!(export_image_source(&ItemType::File, r#"["/tmp/a.txt"]"#, ""), "");
+        assert_eq!(export_image_source(&ItemType::File, "not json", ""), "");
+        assert_eq!(export_image_source(&ItemType::Text, "/tmp/a.png", ""), "");
     }
 
     #[test]

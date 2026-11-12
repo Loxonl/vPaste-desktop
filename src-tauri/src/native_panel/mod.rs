@@ -1,6 +1,7 @@
 //! macOS DEV AppKit panel. The optional --main-ui=native route uses it without
 //! creating a main WebView. Owns one bounded history view, separately from Main.
 pub(crate) mod preview;
+pub(crate) mod queue_selection;
 mod rich_text;
 
 use crate::{
@@ -71,6 +72,9 @@ fn dispose() {
     history_views::close_native();
     CLOSED.notify_waiters();
     if let Some(app) = APP.get() {
+        if let Some(queue) = app.get_webview_window("pasteQueue") {
+            crate::set_macos_window_level(&queue, 102);
+        }
         for id in LISTENERS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -152,11 +156,26 @@ fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Res
                 "item-tags-changed",
                 "tab-order-changed",
                 "clipboard-resources-updated",
+                "paste-queue-state-changed",
+                "native-paste-queue-selection-changed",
             ] {
                 let id = app.listen(name, move |event| {
                     if name == "listen_new_clipboard"
                         && SUPPRESS_CHANGED.swap(false, Ordering::AcqRel)
                     {
+                        return;
+                    }
+                    if name == "native-paste-queue-selection-changed" {
+                        if let Ok(mut payload) =
+                            serde_json::from_str::<serde_json::Map<String, Value>>(event.payload())
+                        {
+                            payload.insert("event".into(), json!("paste-queue-state"));
+                            deliver(session, Value::Object(payload));
+                        }
+                        return;
+                    }
+                    if name == "paste-queue-state-changed" {
+                        deliver(session, paste_queue_toolbar_event());
                         return;
                     }
                     if name == "tab-order-changed" {
@@ -183,8 +202,16 @@ fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Res
                 .map(crate::screen_bounds_from_monitor)
                 .unwrap_or_else(crate::default_screen_bounds);
             preview::prepare(bounds, crate::CLIPBOARD_WINDOW_HEIGHT * scale, !preview);
+            if crate::paste_queue::is_active() {
+                if let Some(queue) = app.get_webview_window("pasteQueue") {
+                    if let Err(error) = crate::show_paste_queue_window(&app, &queue) {
+                        log::error!("Failed to position paste queue above native panel: {error}");
+                    }
+                }
+            }
             let bytes = serde_json::to_vec(&json!({
                 "session": session,
+                "pasteQueue": queue_selection::snapshot(),
                 "sizePreview": preview,
                 "language": language,
                 "theme": theme,
@@ -213,6 +240,14 @@ fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Res
             }
         })
         .map_err(|e| e.to_string())
+}
+
+fn paste_queue_toolbar_event() -> Value {
+    // Queue events are signals; read live metadata so a delayed full-state
+    // payload cannot restore a queue session that has already closed.
+    let mut payload = queue_selection::snapshot();
+    payload["event"] = json!("paste-queue-state");
+    payload
 }
 
 // The tab editor saved filter tabs (the record-tag editor reports through the
@@ -370,6 +405,8 @@ struct Request {
     #[serde(default)]
     hash: String,
     #[serde(default)]
+    activation_epoch: u64,
+    #[serde(default)]
     plain: bool,
     #[serde(default)]
     favorite: bool,
@@ -431,6 +468,15 @@ unsafe extern "C" fn request(bytes: *const u8, length: usize) {
         return;
     };
     match req.op.as_str() {
+        "paste-queue-select" => {
+            let result = queue_selection::toggle(&req.hash, req.activation_epoch);
+            let response = match result {
+                Ok(data) => json!({"id":req.id,"data":data}),
+                Err(error) => json!({"id":req.id,"error":error}),
+            };
+            deliver(req.session, response);
+            return;
+        }
         "surface" => {
             if let Some(frame) = req.frame {
                 preview::publish(frame);
@@ -579,6 +625,14 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
             Ok(Value::Null)
         }
         "copy" | "paste" => {
+            // A queue shortcut may beat its UI notification. Select before any
+            // clipboard side effect; explicit plain-text menu paste is retained.
+            if queue_selection::intercepts_paste(&r.op, r.plain, crate::paste_queue::is_active()) {
+                let status =
+                    queue_selection::toggle(&hash, crate::paste_queue::activation_epoch())?;
+                let _ = app.emit("native-paste-queue-selection-changed", &status);
+                return Ok(status);
+            }
             if ACTION.swap(true, Ordering::AcqRel) {
                 return Err("Another clipboard action is running".into());
             }
@@ -820,6 +874,40 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
             blocking(move || copy_generated_text(&worker_app, text)).await?;
             app.emit("listen_new_clipboard", ())
                 .map_err(|e| e.to_string())?;
+            Ok(Value::Null)
+        }
+        "paste-queue-status" => Ok(queue_selection::snapshot()),
+        "paste-queue-add" => {
+            let submission = queue_selection::begin(r.activation_epoch)?;
+            let (hashes, epoch) = (submission.hashes.clone(), r.activation_epoch);
+            let result = blocking(move || {
+                crate::paste_queue::run_user_operation(|| {
+                    if crate::paste_queue::activation_epoch() != epoch {
+                        return Err("Paste queue selection expired".into());
+                    }
+                    crate::paste_queue::add_items(&hashes)
+                })
+            })
+            .await;
+            // Complete in Rust even when the submitting native controller closed.
+            let mut status = queue_selection::complete(&submission, result.is_ok());
+            match result {
+                Ok(()) => crate::paste_queue::emit_state(app),
+                Err(error) if status["activationEpoch"].as_u64() == Some(r.activation_epoch) => {
+                    status["error"] = json!(error);
+                }
+                Err(_) => {}
+            }
+            // A newly opened controller must receive failure/finished state too.
+            let _ = app.emit("native-paste-queue-selection-changed", &status);
+            Ok(status)
+        }
+        "paste-queue-toggle" => {
+            let request = crate::PASTE_QUEUE_ACTIVATION
+                .lock()
+                .unwrap()
+                .toggle(crate::paste_queue::is_active());
+            crate::apply_paste_queue_activation(app, request).await?;
             Ok(Value::Null)
         }
         "settings" => {
@@ -1323,6 +1411,18 @@ fn copy_generated_text(app: &AppHandle, text: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queue_toolbar_event_forwards_only_live_metadata_not_queue_content() {
+        let event = paste_queue_toolbar_event();
+        assert_eq!(event["event"], "paste-queue-state");
+        assert!(event["active"].is_boolean());
+        assert!(event["activationEpoch"].is_u64());
+        assert!(event["selectedHashes"].is_array());
+        assert_eq!(event.as_object().unwrap().len(), 7);
+        assert!(event.get("items").is_none());
+        assert!(event.get("cards").is_none());
+    }
 
     #[test]
     fn drag_text_falls_back_to_content() {

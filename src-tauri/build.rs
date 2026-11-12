@@ -51,6 +51,7 @@ fn build_swift_native_demo() {
         "native-panel/NativePanelStyle.swift",
         "native-panel/NativePanelAppKitToolbar.swift",
         "native-panel/NativePanelToolbar.swift",
+        "native-panel/NativePanelPasteQueue.swift",
         "native-panel/NativePanelTabDrag.swift",
         "native-panel/NativePanelBackdrop.swift",
         "native-panel/NativePanelMedia.swift",

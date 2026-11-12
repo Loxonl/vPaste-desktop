@@ -201,6 +201,7 @@ final class PanelLegacyToolbar: NSView {
   var onTabDragging: ((Bool) -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
+  var onPasteQueue: (() -> Void)?
   var onSettings: (() -> Void)?
   var onDiagnostics: (() -> Void)?
   private let tabScroll = PanelScroll()
@@ -212,10 +213,12 @@ final class PanelLegacyToolbar: NSView {
   private var searchButton: PanelIconButton!
   private var refreshButton: PanelIconButton!
   private var infoButton: PanelIconButton!
+  private var queueButton: PanelIconButton!
   private var settingsButton: PanelIconButton!
   private var closeButton: PanelIconButton!
   private weak var search: NSSearchField?
   private var scale: CGFloat = 1
+  private var chinese = false
   private var searchOpen = false
   private var built = false
   override init(frame: NSRect) { super.init(frame: frame) }
@@ -225,6 +228,7 @@ final class PanelLegacyToolbar: NSView {
     guard !built else { return }
     built = true
     self.scale = scale
+    self.chinese = chinese
     self.search = search
     func local(_ en: String, _ zh: String) -> String { chinese ? zh : en }
     func icon(_ symbol: String, _ label: String, _ action: Selector, in host: NSView? = nil)
@@ -283,6 +287,7 @@ final class PanelLegacyToolbar: NSView {
     infoButton = icon(
       "info.circle", local("Memory and history details", "内存与历史记录统计"), #selector(info),
       in: developer)
+    queueButton = icon("list.bullet", local("Open paste queue", "开启粘贴队列"), #selector(toggleQueue))
     settingsButton = icon("gearshape", local("Settings", "设置"), #selector(settings))
     closeButton = icon("xmark", local("Close native panel", "关闭原生主界面"), #selector(closePanel))
     setSelection(0)
@@ -322,6 +327,7 @@ final class PanelLegacyToolbar: NSView {
     onTabDragging = nil
     onRefresh = nil
     onClose = nil
+    onPasteQueue = nil
     onSettings = nil
     onDiagnostics = nil
   }
@@ -356,7 +362,7 @@ final class PanelLegacyToolbar: NSView {
     searchButton.frame = NSRect(x: pad, y: center, width: button, height: button)
     let fieldWidth = min(
       276 * scale,
-      max(100 * scale, bounds.width - 2 * pad - 140 * scale - 3 * button - 4 * gap - 68 * scale))
+      max(100 * scale, bounds.width - 2 * pad - 140 * scale - 4 * button - 5 * gap - 68 * scale))
     let expanded: CGFloat = searchOpen ? fieldWidth + 12 * scale : 0
     search?.frame = NSRect(
       x: pad + button + 7 * scale, y: (bounds.height - 32 * scale) / 2, width: fieldWidth,
@@ -365,8 +371,9 @@ final class PanelLegacyToolbar: NSView {
     closeButton.frame = NSRect(
       x: bounds.width - pad - button, y: center, width: button, height: button)
     settingsButton.frame = closeButton.frame.offsetBy(dx: -button - gap, dy: 0)
+    queueButton.frame = settingsButton.frame.offsetBy(dx: -button - gap, dy: 0)
     developer.frame = NSRect(
-      x: settingsButton.frame.minX - gap - devWidth, y: (bounds.height - 32 * scale) / 2,
+      x: queueButton.frame.minX - gap - devWidth, y: (bounds.height - 32 * scale) / 2,
       width: devWidth, height: 32 * scale)
     badge.frame = NSRect(x: 9 * scale, y: 8 * scale, width: 65 * scale, height: 16 * scale)
     refreshButton.frame = NSRect(x: 77 * scale, y: 2 * scale, width: button, height: button)
@@ -409,6 +416,14 @@ final class PanelLegacyToolbar: NSView {
     if index < tabs.count { tabs[index].scrollToVisible(tabs[index].bounds) }
   }
   func setInfoVisible(_ visible: Bool) { infoButton?.active = visible }
+  func setQueueActive(_ active: Bool) {
+    queueButton?.active = active
+    let label = active
+      ? (chinese ? "关闭粘贴队列" : "Close paste queue")
+      : (chinese ? "开启粘贴队列" : "Open paste queue")
+    queueButton?.toolTip = label
+    queueButton?.setAccessibilityLabel(label)
+  }
   @objc private func toggleSearch() {
     if searchOpen {
       window?.makeFirstResponder(nil)
@@ -424,6 +439,7 @@ final class PanelLegacyToolbar: NSView {
   @objc private func requestAddTab() { onAddTab?() }
   @objc private func refresh() { onRefresh?() }
   @objc private func info() { onDiagnostics?() }
+  @objc private func toggleQueue() { onPasteQueue?() }
   @objc private func settings() { onSettings?() }
   @objc private func closePanel() { onClose?() }
 }

@@ -10,6 +10,7 @@ protocol PanelToolbarContent: AnyObject {
   var onTabDragging: ((Bool) -> Void)? { get set }
   var onRefresh: (() -> Void)? { get set }
   var onClose: (() -> Void)? { get set }
+  var onPasteQueue: (() -> Void)? { get set }
   var onSettings: (() -> Void)? { get set }
   var onDiagnostics: (() -> Void)? { get set }
   func beginSearch()
@@ -17,6 +18,7 @@ protocol PanelToolbarContent: AnyObject {
   func setSelection(_ index: Int)
   func setTabs(_ tabs: [PanelTab])
   func setInfoVisible(_ visible: Bool)
+  func setQueueActive(_ active: Bool)
   func releaseContent()
 }
 
@@ -31,6 +33,7 @@ final class PanelToolbar: NSView {
   var onTabDragging: ((Bool) -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
+  var onPasteQueue: (() -> Void)?
   var onSettings: (() -> Void)?
   var onDiagnostics: (() -> Void)?
   private var content: (NSView & PanelToolbarContent)?
@@ -55,6 +58,7 @@ final class PanelToolbar: NSView {
     view.onTabDragging = { [weak self] in self?.onTabDragging?($0) }
     view.onRefresh = { [weak self] in self?.onRefresh?() }
     view.onClose = { [weak self] in self?.onClose?() }
+    view.onPasteQueue = { [weak self] in self?.onPasteQueue?() }
     view.onSettings = { [weak self] in self?.onSettings?() }
     view.onDiagnostics = { [weak self] in self?.onDiagnostics?() }
     view.frame = bounds
@@ -67,6 +71,7 @@ final class PanelToolbar: NSView {
   func setSelection(_ index: Int) { content?.setSelection(index) }
   func setTabs(_ tabs: [PanelTab]) { content?.setTabs(tabs) }
   func setInfoVisible(_ visible: Bool) { content?.setInfoVisible(visible) }
+  func setQueueActive(_ active: Bool) { content?.setQueueActive(active) }
   func releaseContent() {
     content?.releaseContent()
     content?.removeFromSuperview()
@@ -78,6 +83,7 @@ final class PanelToolbar: NSView {
     onTabDragging = nil
     onRefresh = nil
     onClose = nil
+    onPasteQueue = nil
     onSettings = nil
     onDiagnostics = nil
   }
@@ -147,6 +153,7 @@ final class PanelToolbarState: ObservableObject {
   @Published var draggingTabID = ""
   var releaseTabDrag: (() -> Void)?
   @Published var infoVisible = false
+  @Published var queueActive = false
   @Published private(set) var searchOpen = false
   let scale: CGFloat
   let chinese: Bool
@@ -161,6 +168,7 @@ final class PanelToolbarState: ObservableObject {
   var onTabDragging: ((Bool) -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
+  var onPasteQueue: (() -> Void)?
   var onSettings: (() -> Void)?
   var onDiagnostics: (() -> Void)?
 
@@ -215,6 +223,7 @@ final class PanelToolbarState: ObservableObject {
     onTabDragging = nil
     onRefresh = nil
     onClose = nil
+    onPasteQueue = nil
     onSettings = nil
     onDiagnostics = nil
     searchOpen = false
@@ -254,6 +263,7 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
   var onTabDragging: ((Bool) -> Void)? { get { state.onTabDragging } set { state.onTabDragging = newValue } }
   var onRefresh: (() -> Void)? { get { state.onRefresh } set { state.onRefresh = newValue } }
   var onClose: (() -> Void)? { get { state.onClose } set { state.onClose = newValue } }
+  var onPasteQueue: (() -> Void)? { get { state.onPasteQueue } set { state.onPasteQueue = newValue } }
   var onSettings: (() -> Void)? { get { state.onSettings } set { state.onSettings = newValue } }
   var onDiagnostics: (() -> Void)? { get { state.onDiagnostics } set { state.onDiagnostics = newValue } }
   func beginSearch() {
@@ -279,6 +289,7 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
     if state.choices.indices.contains(index), state.selected != index { state.selected = index }
   }
   func setInfoVisible(_ visible: Bool) { state.infoVisible = visible }
+  func setQueueActive(_ active: Bool) { state.queueActive = active }
   func setTabs(_ tabs: [PanelTab]) { state.setTabs(tabs) }
   func releaseContent() {
     focusRequest &+= 1
@@ -304,9 +315,10 @@ struct PanelToolbarView: View {
       let developerWidth = 140 * s
       let closeX = geometry.size.width - pad - button / 2
       let settingsX = closeX - button - gap
-      let developerX = settingsX - button / 2 - gap - developerWidth / 2
+      let queueX = settingsX - button - gap
+      let developerX = queueX - button / 2 - gap - developerWidth / 2
       let fieldWidth = min(276 * s, max(100 * s,
-        geometry.size.width - 2 * pad - 140 * s - 3 * button - 4 * gap - 68 * s))
+        geometry.size.width - 2 * pad - 140 * s - 4 * button - 5 * gap - 68 * s))
       let left = pad + button + 15 * s + (state.searchOpen ? fieldWidth + 12 * s : 0)
       let tabsWidth = max(50 * s, developerX - developerWidth / 2 - left - 10 * s)
       ZStack(alignment: .topLeading) {
@@ -346,6 +358,10 @@ struct PanelToolbarView: View {
         .background(Capsule().fill(Color(PanelStyle.rgb(dark ? 0x21262d : 0xffffff, dark ? 0.64 : 0.44))))
         .overlay(Capsule().stroke(Color(PanelStyle.rgb(dark ? 0xdde2eb : 0x2a3230, 0.13)), lineWidth: s))
         .position(x: developerX, y: geometry.size.height / 2)
+        icon("list.bullet", state.queueActive
+          ? state.local("Close paste queue", "关闭粘贴队列")
+          : state.local("Open paste queue", "开启粘贴队列"), active: state.queueActive) { state.onPasteQueue?() }
+          .position(x: queueX, y: geometry.size.height / 2)
         icon("gearshape", state.local("Settings", "设置")) { state.onSettings?() }
           .position(x: settingsX, y: geometry.size.height / 2)
         icon("xmark", state.local("Close native panel", "关闭原生主界面")) { state.onClose?() }

@@ -96,6 +96,26 @@ pub fn is_active() -> bool {
     ACTIVE.load(Ordering::SeqCst)
 }
 
+#[cfg(all(debug_assertions, target_os = "macos"))]
+#[derive(Default)]
+pub(crate) struct ToolbarStatus {
+    pub(crate) active: bool,
+    pub(crate) revision: u64,
+    pub(crate) activation_epoch: u64,
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn toolbar_status() -> ToolbarStatus {
+    // Read the version first so a concurrent activation cannot pair an old
+    // active value with its newer version and overwrite a newer toolbar event.
+    let revision = REVISION.load(Ordering::SeqCst);
+    ToolbarStatus {
+        active: is_active(),
+        revision,
+        activation_epoch: activation_epoch(),
+    }
+}
+
 pub fn set_active(active: bool) {
     if !active {
         match deactivate_with_deferred_cleanup() {
@@ -124,6 +144,8 @@ pub(crate) fn deactivate_with_deferred_cleanup() -> Result<DeferredCleanup, Stri
     ACTIVATION_EPOCH.fetch_add(1, Ordering::SeqCst);
     BUSY.store(false, Ordering::SeqCst);
     bump_revision();
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    crate::native_panel::queue_selection::deactivate();
 
     let _operation = lock_operation();
     let result = detach_all_records();

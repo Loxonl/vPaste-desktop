@@ -970,3 +970,135 @@ inspection confirmed the resulting order and retained 500 history rows and one
 tag association. The isolated app and private frontend were stopped. No local
 regression suite was run; Windows/macOS 11 runtime checks, sustained edge-hover
 scrolling and explicit Escape cancellation were not exercised interactively.
+
+
+### Native toolbar paste queue entry
+
+Acceptance criteria and implementation mapping:
+
+- Add a pointer-only queue toggle beside Settings in both SwiftUI and the macOS
+  11 AppKit toolbar. Reuse Rust activation and the existing pasteQueue WebView;
+  do not create a clipboard WebView or duplicate queue items in Swift.
+- Apply the initial active/revision snapshot and live queue events without
+  allowing an older snapshot to overwrite newer state. Toggling, the configured
+  queue shortcut and closing the queue window all update the same indicator.
+  Closing the native panel releases its queue listener and callbacks.
+- Use the native panel's monitor when opening the queue, order it above the
+  native panel, and retain the existing WebView positioning and levels otherwise.
+  Restore the ordinary queue level when the native main panel closes.
+- Queue-window paste hides either main surface before restoring the external
+  target and running the existing paste action. Foreground tracking recognizes
+  native visibility too. Missing Accessibility permission opens the existing
+  permission guide even when no clipboard WebView exists.
+- Native history multiselection is described below. Automatic capture, queue
+  editing, keyboard interception and the queue's existing WebView controls
+  continue to use the existing Rust implementation.
+
+Focused coverage is written before implementation for stale status snapshots,
+minimal event payloads, toolbar forwarding/teardown, AppKit state and geometry.
+Local regression suites are not executed at the user's request.
+
+Verification: macOS Debug build, production Swift and focused XCTest typechecking
+with and without the Liquid Glass SDK flag, Rust test-source compilation without
+execution, and style governance passed. A scoped run used a separate copy of
+500 synthetic history records with an empty queue. The native toolbar displayed
+the queue button beside Settings. This temporary app had no Accessibility grant:
+clicking the button opened the existing permission guide, and Not now returned
+to the native panel with the queue indicator off. Logs showed no clipboard
+WebView, and native views/listeners were released on dismissal. Read-only checks
+retained all 500 records and an empty queue. The isolated app and frontend were
+stopped. No system permissions were changed and no copy/paste action was run.
+The authorized queue path, configured shortcut, real paste target restoration,
+multiple-monitor placement and macOS 11 visuals were not exercised at runtime.
+Local regression suites were not run.
+
+
+### Native history selection for the paste queue
+
+Acceptance criteria and behavior mapping:
+
+- While the queue is active, a card click or Enter toggles its hash in an
+  ordered pending selection instead of copying, pasting or closing the panel.
+  The ordinary single/double-click paste path resumes when the queue closes.
+  Keyboard navigation and explicit Space preview remain available.
+- Show the existing-style outer outline and a bottom-right check on every
+  selected card, including images and files. Reused/offscreen cards, searches
+  and tab changes keep selection by hash rather than collection index.
+- Show a bottom overlay with the selected count and Add N items. Submit once in
+  click order using the existing Rust queue transaction. Success clears pending
+  selection and keeps queue mode active; failure retains it and reports the
+  error. Keep pending hashes in Rust memory across native-controller teardown,
+  clear them when the queue closes, and reject stale activation epochs.
+- Queue selection disables hover selection/automatic preview and external card
+  dragging, retains scrolling and explicit preview, and uses a pointing-hand
+  cursor. The ordinary mode retains its existing drag cursor and paste behavior.
+- Initial queue/selection metadata is supplied before the first native frame.
+  Revision checks reject old state; submission completion remains correct when
+  the panel closes or a newer queue session starts. No history/media payloads
+  are retained solely for selection, and no database schema is added.
+
+Focused Swift and Rust coverage is added before implementation. Per the user's
+request, local regression suites will not be executed.
+
+Verification: production Swift and focused XCTest sources typecheck with and
+without the Liquid Glass SDK flag; Rust test sources compile without execution.
+The final macOS Debug build, style governance, Rust formatting and diff checks
+passed. No local regression suites were run.
+
+A temporary interactive preview used the production NativePanelController,
+SwiftUI toolbar, card views and queue action row with 36 synthetic records and a
+mock bridge. The mock prohibited copy, paste and external file dragging. It
+confirmed single-click selection of image/file cards even with the ordinary
+double-click preference, Enter toggling, count/check indicators, selection after
+a filter/list rebuild, retained selection and visible failure feedback, clear
+selection after success while queue mode stays active, and restoration of the
+ordinary mode after closing the queue. Failure feedback is kept separately from
+statistics so subsequent media/viewport updates cannot overwrite it. Logs showed
+no copy, paste or external-drag requests; the preview process was stopped.
+
+This preview validates the production Swift interaction path, not live queue
+transactions or system paste. The temporary Tauri app has no Accessibility grant;
+no permissions or real clipboard contents were changed. Actual paste, queue
+shortcuts, in-flight close/reopen with the Rust backend, macOS 11 visuals and
+Windows runtime behavior were not exercised. Rust coverage for ordered hashes,
+failure/success, stale epochs and late completions is compiled but not executed.
+
+The Rust normal-paste entry also checks current queue activation before copying.
+If a queue shortcut beats its UI notification, the activation still selects the
+hash and returns queue metadata; it cannot paste accidentally. Explicit copy and
+plain-text context-menu paste retain their existing paths.
+
+Queue action-row appearance acceptance: on macOS 26 with the supported SDK,
+use NSGlassEffectView with the regular Liquid Glass style and embed the controls
+in its documented contentView. Give light appearance a subtle white tint (0.18)
+to reduce the grey cast; retain the system dark appearance. Let the system draw
+the glass rim instead of adding a dark border. Older systems/SDKs use an active
+NSVisualEffectView popover material. Keep rounded geometry, controls, selection
+state and window motion. This replaces the traditional menu material, which
+rendered as an overly grey surface in the supplied screenshot. Only existing
+button-inspection coverage is updated for the glass content hierarchy; no local
+regression tests are executed.
+
+Liquid Glass validation: production Swift and focused test sources typechecked
+with and without the Liquid Glass SDK flag; the macOS Debug build passed. A
+read-only screenshot of the production Swift panel in the synthetic preview on
+macOS 26.5.1 showed a light glass surface with blurred image colors and a system
+glass rim. No mouse/keyboard actions or system clipboard operations were used;
+the temporary preview was stopped. Older-system appearance was typechecked but
+not visually exercised. No local regression suites were executed.
+
+Queue action-row sizing acceptance: compute the floating bar from the native
+fitting size of its horizontal content row, including the actual button bezel
+insets. Prompt, count and button title must fit in English and Chinese at the
+three panel scales (0.8, 0.9, 1), and update when count digits change. Preserve the
+centered placement and Liquid Glass effect, with room between text and glass
+edges. Replace manual string-width/button-frame arithmetic with native layout;
+keep queue actions and window geometry intact. Focused clipping coverage is
+added before implementation and compiled without running local regressions.
+
+Sizing verification: Swift sources and focused XCTest coverage typechecked, and
+the Debug app built. A read-only production-panel screenshot in the synthetic
+preview showed the English prompt and full Add 0 items title within the glass
+bounds with clear side insets. No Auto Layout conflicts were logged; the preview
+was stopped. Digit-growth and Chinese/scale coverage is compiled but not run,
+following the no-local-regression instruction.

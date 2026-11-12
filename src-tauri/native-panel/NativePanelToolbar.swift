@@ -5,6 +5,7 @@ import SwiftUI
 protocol PanelToolbarContent: AnyObject {
   var onFilter: ((Int) -> Void)? { get set }
   var onAddTab: (() -> Void)? { get set }
+  var onTabContextMenu: ((String, NSPoint) -> Void)? { get set }
   var onRefresh: (() -> Void)? { get set }
   var onClose: (() -> Void)? { get set }
   var onSettings: (() -> Void)? { get set }
@@ -23,6 +24,7 @@ protocol PanelToolbarContent: AnyObject {
 final class PanelToolbar: NSView {
   var onFilter: ((Int) -> Void)?
   var onAddTab: (() -> Void)?
+  var onTabContextMenu: ((String, NSPoint) -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
   var onSettings: (() -> Void)?
@@ -44,6 +46,7 @@ final class PanelToolbar: NSView {
     }
     view.onFilter = { [weak self] in self?.onFilter?($0) }
     view.onAddTab = { [weak self] in self?.onAddTab?() }
+    view.onTabContextMenu = { [weak self] in self?.onTabContextMenu?($0, $1) }
     view.onRefresh = { [weak self] in self?.onRefresh?() }
     view.onClose = { [weak self] in self?.onClose?() }
     view.onSettings = { [weak self] in self?.onSettings?() }
@@ -64,6 +67,7 @@ final class PanelToolbar: NSView {
     content = nil
     onFilter = nil
     onAddTab = nil
+    onTabContextMenu = nil
     onRefresh = nil
     onClose = nil
     onSettings = nil
@@ -75,6 +79,7 @@ extension PanelLegacyToolbar: PanelToolbarContent {
   func releaseContent() {
     onFilter = nil
     onAddTab = nil
+    onTabContextMenu = nil
     onRefresh = nil
     onClose = nil
     onSettings = nil
@@ -89,6 +94,7 @@ struct PanelFilterChoice {
   // Fixed tabs carry a symbol. Dynamic tabs show their stored name, which
   // already includes any emoji prefix; `record` marks a record tag.
   var record = false
+  var id = ""
   var isFixed: Bool { !symbol.isEmpty }
   var label: String { emoji.isEmpty ? title : "\(emoji) \(title)" }
   func width(scale: CGFloat, selected: Bool = false) -> CGFloat {
@@ -150,6 +156,7 @@ final class PanelToolbarState: ObservableObject {
   private(set) var closed = false
   var onFilter: ((Int) -> Void)?
   var onAddTab: (() -> Void)?
+  var onTabContextMenu: ((String, NSPoint) -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
   var onSettings: (() -> Void)?
@@ -171,8 +178,12 @@ final class PanelToolbarState: ObservableObject {
   func local(_ en: String, _ zh: String) -> String { chinese ? zh : en }
   func setTabs(_ tabs: [PanelTab]) {
     choices = fixedChoices + tabs.map {
-      PanelFilterChoice(title: $0.name, emoji: "", symbol: "", record: $0.record)
+      PanelFilterChoice(title: $0.name, emoji: "", symbol: "", record: $0.record, id: $0.id)
     }
+  }
+  func contextMenu(id: String, at point: NSPoint) {
+    guard !closed, !id.isEmpty, choices.contains(where: { $0.id == id }) else { return }
+    onTabContextMenu?(id, point)
   }
   func choose(_ index: Int) {
     guard !closed, choices.indices.contains(index) else { return }
@@ -193,6 +204,7 @@ final class PanelToolbarState: ObservableObject {
     closed = true
     onFilter = nil
     onAddTab = nil
+    onTabContextMenu = nil
     onRefresh = nil
     onClose = nil
     onSettings = nil
@@ -225,6 +237,9 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
   var onFilter: ((Int) -> Void)? { get { state.onFilter } set { state.onFilter = newValue } }
   var onAddTab: (() -> Void)? { get { state.onAddTab } set { state.onAddTab = newValue } }
+  var onTabContextMenu: ((String, NSPoint) -> Void)? {
+    get { state.onTabContextMenu } set { state.onTabContextMenu = newValue }
+  }
   var onRefresh: (() -> Void)? { get { state.onRefresh } set { state.onRefresh = newValue } }
   var onClose: (() -> Void)? { get { state.onClose } set { state.onClose = newValue } }
   var onSettings: (() -> Void)? { get { state.onSettings } set { state.onSettings = newValue } }
@@ -340,6 +355,34 @@ private struct PanelButtonCursor: NSViewRepresentable {
   func makeNSView(context: Context) -> PanelCursorRegion { PanelCursorRegion(cursor: .pointingHand) }
   func updateNSView(_ view: PanelCursorRegion, context: Context) { view.isEnabled = isEnabled }
   static func dismantleNSView(_ view: PanelCursorRegion, coordinator: ()) { view.isEnabled = false }
+}
+
+// Intercept only context clicks; regular clicks, hover and scrolling still
+// reach the existing SwiftUI button and scroll view.
+@MainActor
+final class PanelTabContextView: NSView {
+  var onContextMenu: ((NSPoint) -> Void)?
+  override var acceptsFirstResponder: Bool { false }
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard onContextMenu != nil, let event = NSApp.currentEvent,
+      event.type == .rightMouseDown || (event.type == .leftMouseDown && event.modifierFlags.contains(.control)),
+      !isHidden, visibleRect.contains(convert(point, from: superview)) else { return nil }
+    return self
+  }
+  override func rightMouseDown(with event: NSEvent) { onContextMenu?(NSEvent.mouseLocation) }
+  override func mouseDown(with event: NSEvent) {
+    if event.modifierFlags.contains(.control) { rightMouseDown(with: event) }
+    else { super.mouseDown(with: event) }
+  }
+}
+
+@available(macOS 12.0, *)
+@MainActor
+private struct PanelTabContextTarget: NSViewRepresentable {
+  let onContextMenu: (NSPoint) -> Void
+  func makeNSView(context: Context) -> PanelTabContextView { PanelTabContextView() }
+  func updateNSView(_ view: PanelTabContextView, context: Context) { view.onContextMenu = onContextMenu }
+  static func dismantleNSView(_ view: PanelTabContextView, coordinator: ()) { view.onContextMenu = nil }
 }
 
 @available(macOS 12.0, *)
@@ -480,6 +523,9 @@ private struct PanelFilterStrip: View {
             }
             .buttonStyle(PanelFilterStyle(scale: state.scale, selected: selected, dark: scheme == .dark))
             .focusable(false)
+            .overlay(PanelTabContextTarget { point in
+              state.contextMenu(id: choice.id, at: point)
+            }.accessibilityHidden(true))
             .accessibilityLabel(Text(choice.title))
             .accessibilityValue(Text(selected ? state.local("Selected", "已选择") : ""))
           }

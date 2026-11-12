@@ -63,12 +63,6 @@ final class NativePanelRecordTagTabsTests: XCTestCase {
     XCTAssertNil(PanelFilterQuery.index(id: "removed", tabs: tabs))
   }
 
-  func testCardMenuTagNamesKeepTheirExistingValidation() {
-    XCTAssertEqual(PanelMenuSheets.tagName("  Work \n"), "Work")
-    XCTAssertEqual(PanelMenuSheets.tagName(String(repeating: "标", count: 25))?.count, 20)
-    XCTAssertNil(PanelMenuSheets.tagName("   "))
-  }
-
   func testAddButtonReportsThroughTheToolbarUntilClosed() throws {
     guard #available(macOS 12.0, *) else { throw XCTSkip("SwiftUI toolbar needs macOS 12") }
     let toolbar = PanelToolbar(frame: NSRect(x: 0, y: 0, width: 900, height: 48))

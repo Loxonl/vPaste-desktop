@@ -39,6 +39,7 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static KEY: AtomicBool = AtomicBool::new(false);
 static LISTENERS: Mutex<Vec<tauri::EventId>> = Mutex::new(Vec::new());
 static ACTION: AtomicBool = AtomicBool::new(false);
+static TAG_EDITOR_TARGET: Mutex<Option<(u64, String)>> = Mutex::new(None);
 // The panel's own delete already updates its list locally; ignore the
 // "changed" notification that the same action emits.
 static SUPPRESS_CHANGED: AtomicBool = AtomicBool::new(false);
@@ -60,6 +61,9 @@ fn current(session: u64) -> bool {
     ACTIVE.load(Ordering::Acquire) && SESSION.load(Ordering::Acquire) == session
 }
 fn dispose() {
+    *TAG_EDITOR_TARGET
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
     ACTIVE.store(false, Ordering::Release);
     KEY.store(false, Ordering::Release);
     preview::dispose(APP.get());
@@ -215,7 +219,10 @@ pub(crate) fn tabs_changed(payload: &Value) {
 }
 
 // Give focus back to the native panel after an auxiliary window closes.
-pub(crate) fn refocus(app: &AppHandle) -> bool {
+pub(crate) fn tab_editor_closed(app: &AppHandle) -> bool {
+    *TAG_EDITOR_TARGET
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
     if !ACTIVE.load(Ordering::Acquire) {
         return false;
     }
@@ -226,10 +233,46 @@ pub(crate) fn refocus(app: &AppHandle) -> bool {
     true
 }
 
+fn take_created_tag_assignment(
+    target: &mut Option<(u64, String)>,
+    session: u64,
+    event: &Value,
+) -> Option<(String, i64)> {
+    if target.as_ref()?.0 != session {
+        return None;
+    }
+    let tag_id = event["tag"]["id"].as_i64().filter(|id| *id > 0)?;
+    if event["activeId"].as_str()? != format!("record:{tag_id}") {
+        return None;
+    }
+    Some((target.take()?.1, tag_id))
+}
+
 fn notify_tabs_changed(session: u64, raw: &str) {
-    let event = tab_change_event(raw);
+    let mut event = tab_change_event(raw);
+    let assignment = {
+        let mut target = TAG_EDITOR_TARGET
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        take_created_tag_assignment(&mut target, session, &event)
+    };
+    if let Some((hash, tag_id)) = assignment {
+        match clipboard::assign_tag(&hash, tag_id) {
+            Ok(()) => {
+                if let Some(app) = APP.get() {
+                    let _ = app.emit("listen_new_clipboard", ());
+                }
+            }
+            Err(error) => {
+                event["assignmentError"] = json!(error);
+            }
+        }
+    }
     // Like the WebView, a newly created tab goes to the end of the order.
-    if let Some(id) = event["activeId"].as_str() {
+    if let Some(id) = event["activeId"]
+        .as_str()
+        .filter(|_| event["mode"] != "edit")
+    {
         let append = || -> Result<(), String> {
             let custom = crate::get_custom_tabs()?;
             let tags = clipboard::list_tags()?;
@@ -254,11 +297,15 @@ fn tab_change_event(raw: &str) -> Value {
     if let Value::String(inner) = &payload {
         payload = serde_json::from_str(inner).unwrap_or(Value::Null);
     }
-    json!({
+    let mut event = json!({
         "event": "tabs-changed",
         "activeId": payload.get("activeId").cloned().unwrap_or(Value::Null),
         "tag": payload.get("tag").cloned().unwrap_or(Value::Null),
-    })
+    });
+    if let Some(mode) = payload.get("mode") {
+        event["mode"] = mode.clone();
+    }
+    event
 }
 
 // Mirrors the WebView screenAnchoredPositionFromClick: right of the anchor by
@@ -326,9 +373,9 @@ struct Request {
     #[serde(default)]
     tag_ids: Vec<i64>,
     #[serde(default)]
-    name: String,
-    #[serde(default)]
     kind: String,
+    #[serde(default)]
+    tab_id: String,
     #[serde(default)]
     point: Option<[f64; 2]>,
     #[serde(default)]
@@ -626,24 +673,17 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
                 .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
-        "tag-create" => {
-            let name = r.name.trim().to_string();
-            if name.is_empty() {
-                return Err("Tag name is empty".into());
-            }
-            let tag = blocking(move || {
-                let tag = clipboard::create_tag(&name)?;
-                clipboard::assign_tag(&hash, tag.id)?;
-                Ok(tag)
-            })
-            .await?;
-            app.emit("listen_new_clipboard", ())
-                .map_err(|e| e.to_string())?;
-            serde_json::to_value(tag).map_err(|e| e.to_string())
-        }
         "tab-editor" => {
             // The WebView tab editor window owns both tag forms and saves them.
             let record = r.kind == "record";
+            let tab_id = r.tab_id.clone();
+            let payload = blocking(move || {
+                let custom = crate::get_custom_tabs()?;
+                let tags = clipboard::list_tags()?;
+                tab_editor_payload(custom, &tags, &tab_id, record)
+            })
+            .await?;
+            let record = payload["kind"] == "record";
             let anchor = r
                 .point
                 .filter(|point| point.iter().all(|value| value.is_finite()))
@@ -667,13 +707,14 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
                 size,
                 (bounds.x, bounds.y, bounds.width, bounds.height),
             );
-            let tabs = blocking(crate::get_custom_tabs).await?;
-            let payload = json!({
-                "mode": "add",
-                "kind": if record { "record" } else { "filter" },
-                "tabs": tabs,
-            });
-            crate::open_tab_editor_window(
+            if !current(r.session) {
+                return Ok(Value::Null);
+            }
+            *TAG_EDITOR_TARGET
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) =
+                (record && payload["mode"] == "add" && !hash.is_empty()).then(|| (r.session, hash));
+            let result = crate::open_tab_editor_window(
                 app.clone(),
                 source,
                 x,
@@ -684,7 +725,31 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
                 None,
                 None,
             )
-            .await?;
+            .await;
+            if result.is_err() {
+                *TAG_EDITOR_TARGET
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = None;
+            }
+            result?;
+            Ok(Value::Null)
+        }
+        "tab-delete" => {
+            let id = r.tab_id.clone();
+            let result = blocking(move || delete_tab(&id)).await;
+            // A storage error may follow a completed deletion; refresh either way.
+            tabs_changed(&json!({}));
+            let (custom, record) = result?;
+            if record {
+                app.emit("item-tags-changed", json!({}))
+                    .map_err(|error| error.to_string())?;
+                app.emit("listen_new_clipboard", ())
+                    .map_err(|error| error.to_string())?;
+            } else if let Some(window) = app.get_webview_window("clipboard") {
+                window
+                    .emit("custom-tabs-changed", json!({"tabs": custom}))
+                    .map_err(|error| error.to_string())?;
+            }
             Ok(Value::Null)
         }
         "export-image" => {
@@ -1039,6 +1104,76 @@ struct PanelTab {
     record: bool,
 }
 
+enum TabTarget<'a> {
+    Filter(&'a Value),
+    Record(&'a clipboard::item::ItemTag),
+}
+
+fn tab_target<'a>(
+    id: &str,
+    custom: &'a Value,
+    tags: &'a [clipboard::item::ItemTag],
+) -> Result<TabTarget<'a>, String> {
+    if id.is_empty() || matches!(id, "all" | "favorite") {
+        return Err("Only dynamic tabs can be edited or deleted".into());
+    }
+    if id.starts_with("record:") {
+        tags.iter()
+            .find(|tag| format!("record:{}", tag.id) == id)
+            .map(TabTarget::Record)
+    } else {
+        custom.as_array().and_then(|tabs| {
+            tabs.iter()
+                .find(|tab| tab["id"].as_str() == Some(id))
+                .map(TabTarget::Filter)
+        })
+    }
+    .ok_or_else(|| "Tab no longer exists".into())
+}
+
+fn tab_editor_payload(
+    custom: Value,
+    tags: &[clipboard::item::ItemTag],
+    id: &str,
+    record: bool,
+) -> Result<Value, String> {
+    let mut payload = if id.is_empty() {
+        json!({"mode": "add", "kind": if record { "record" } else { "filter" }})
+    } else {
+        match tab_target(id, &custom, tags)? {
+            TabTarget::Filter(tab) => json!({"mode": "edit", "kind": "filter", "tab": tab}),
+            TabTarget::Record(tag) => json!({"mode": "edit", "kind": "record", "recordTag": tag}),
+        }
+    };
+    payload["tabs"] = custom;
+    Ok(payload)
+}
+
+fn delete_tab(id: &str) -> Result<(Value, bool), String> {
+    let mut custom = crate::get_custom_tabs()?;
+    let tags = clipboard::list_tags()?;
+    let mut order =
+        clipboard::db::read_tab_order(&clipboard::db::db()).map_err(|error| error.to_string())?;
+    let record = match tab_target(id, &custom, &tags)? {
+        TabTarget::Record(tag) => {
+            crate::delete_item_tag(tag.id)?;
+            true
+        }
+        TabTarget::Filter(_) => {
+            custom
+                .as_array_mut()
+                .unwrap()
+                .retain(|tab| tab["id"].as_str() != Some(id));
+            crate::save_custom_tabs(custom.clone())?;
+            false
+        }
+    };
+    order.retain(|tab| tab != id);
+    clipboard::db::write_tab_order(&clipboard::db::db(), &order)
+        .map_err(|error| error.to_string())?;
+    Ok((custom, record))
+}
+
 // Mirrors the WebView orderedDynamicTabs: ids in the stored order first, then
 // the remaining filter tabs, then the remaining record tags.
 fn dynamic_tabs(
@@ -1312,6 +1447,65 @@ mod tests {
     }
 
     #[test]
+    fn tab_editor_edit_payload_keeps_identity_filters_and_record_tag_data() {
+        let custom = json!([
+            {"id":"tab-1","name":"Recent", "filter":{"itemType":"Image","appSources":["Safari"],"relativeAmount":"2","relativeUnit":"day"}},
+            {"id":"tab-2","name":"Other","filter":{}}
+        ]);
+        let tags = [clipboard::item::ItemTag {
+            id: 9,
+            name: "Home".into(),
+        }];
+        let filter = tab_editor_payload(custom.clone(), &tags, "tab-1", true).unwrap();
+        assert_eq!(filter["mode"], "edit");
+        assert_eq!(filter["kind"], "filter");
+        assert_eq!(filter["tab"], custom[0]);
+        assert_eq!(filter["tabs"], custom);
+        let record = tab_editor_payload(custom.clone(), &tags, "record:9", false).unwrap();
+        assert_eq!(record["kind"], "record");
+        assert_eq!(record["mode"], "edit");
+        assert_eq!(record["recordTag"], json!({"id":9,"name":"Home"}));
+        assert_eq!(record["tabs"], custom);
+        for (kind, name) in [(false, "filter"), (true, "record")] {
+            let added = tab_editor_payload(custom.clone(), &tags, "", kind).unwrap();
+            assert_eq!(added["mode"], "add");
+            assert_eq!(added["kind"], name);
+            assert!(added.get("tab").is_none());
+            assert!(added.get("recordTag").is_none());
+        }
+    }
+
+    #[test]
+    fn tab_target_protects_fixed_tabs_and_rejects_missing_ids_for_edit_and_delete() {
+        let custom = json!([
+            {"id":"all","name":"Invalid fixed tab"},
+            {"id":"tab-2","name":"Other"}
+        ]);
+        let tags = [clipboard::item::ItemTag {
+            id: 9,
+            name: "Home".into(),
+        }];
+        for id in [
+            "",
+            "all",
+            "favorite",
+            "tab-removed",
+            "record:0",
+            "record:8",
+            "record:no",
+        ] {
+            assert!(tab_target(id, &custom, &tags).is_err(), "{id}");
+        }
+        assert!(matches!(
+            tab_target("tab-2", &custom, &tags),
+            Ok(TabTarget::Filter(_))
+        ));
+        assert!(
+            matches!(tab_target("record:9", &custom, &tags), Ok(TabTarget::Record(tag)) if tag.id == 9)
+        );
+    }
+
+    #[test]
     fn tab_editor_opens_beside_the_anchor_and_stays_on_screen() {
         let screen = (0.0, 0.0, 1440.0, 900.0);
         // Right of the anchor by the 6px gap, bottom-aligned with it.
@@ -1332,6 +1526,42 @@ mod tests {
             ),
             (-994.0, 322.0)
         );
+    }
+
+    #[test]
+    fn shared_record_editor_assigns_only_the_created_tag_to_its_original_item_once() {
+        let created = json!({"activeId":"record:7", "tag":{"id":7,"name":"Work"}});
+        let mut target = Some((4, "original-item".to_string()));
+        assert_eq!(take_created_tag_assignment(&mut target, 3, &created), None);
+        assert!(
+            target.is_some(),
+            "A stale panel event must not consume the current target"
+        );
+        assert_eq!(
+            take_created_tag_assignment(&mut target, 4, &json!({"tag":{"id":7,"name":"Renamed"}})),
+            None
+        );
+        assert!(
+            target.is_some(),
+            "Renaming a tag must not assign it to the item"
+        );
+        assert_eq!(
+            take_created_tag_assignment(&mut target, 4, &created),
+            Some(("original-item".to_string(), 7))
+        );
+        assert_eq!(take_created_tag_assignment(&mut target, 4, &created), None);
+        // Toolbar creation and a cancelled editor have no item target.
+        assert_eq!(take_created_tag_assignment(&mut None, 4, &created), None);
+    }
+
+    #[test]
+    fn edited_filter_notification_retains_the_mode_and_selection_without_becoming_a_new_tab() {
+        let payload = json!({"mode":"edit", "activeId":"tab-1", "tabs":[]});
+        let event = tab_change_event(&payload.to_string());
+        assert_eq!(event["mode"], "edit");
+        assert_eq!(event["activeId"], "tab-1");
+        let wrapped = Value::String(payload.to_string());
+        assert_eq!(tab_change_event(&wrapped.to_string()), event);
     }
 
     #[test]

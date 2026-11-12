@@ -86,6 +86,7 @@ final class PanelIconButton: PanelPointerButton {
 
 @MainActor
 final class PanelTabButton: PanelPointerButton {
+  var onContextMenu: ((NSPoint) -> Void)?
   override var acceptsFirstResponder: Bool { false }
   var scale: CGFloat = 1
   var emoji = ""
@@ -106,6 +107,11 @@ final class PanelTabButton: PanelPointerButton {
     setAccessibilityRole(.radioButton)
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+  override func rightMouseDown(with event: NSEvent) { onContextMenu?(NSEvent.mouseLocation) }
+  override func mouseDown(with event: NSEvent) {
+    if event.modifierFlags.contains(.control) { rightMouseDown(with: event) }
+    else { super.mouseDown(with: event) }
+  }
   var preferredWidth: CGFloat {
     PanelFilterChoice(title: title, emoji: emoji, symbol: symbol)
       .width(scale: scale, selected: selected)
@@ -189,6 +195,7 @@ final class PanelDeveloperGroup: NSView {
 final class PanelLegacyToolbar: NSView {
   var onFilter: ((Int) -> Void)?
   var onAddTab: (() -> Void)?
+  var onTabContextMenu: ((String, NSPoint) -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
   var onSettings: (() -> Void)?
@@ -267,7 +274,7 @@ final class PanelLegacyToolbar: NSView {
     closeButton = icon("xmark", local("Close native panel", "关闭原生主界面"), #selector(closePanel))
     setSelection(0)
   }
-  private func addTab(_ title: String, symbol: String = "") {
+  private func addTab(_ title: String, symbol: String = "", id: String = "") {
     let button = PanelTabButton()
     button.title = title
     button.symbol = symbol
@@ -276,6 +283,9 @@ final class PanelLegacyToolbar: NSView {
     button.target = self
     button.action = #selector(selectFilter(_:))
     button.setAccessibilityLabel(title)
+    if !id.isEmpty {
+      button.onContextMenu = { [weak self] point in self?.onTabContextMenu?(id, point) }
+    }
     tabs.append(button)
     tabStrip.addSubview(button)
   }
@@ -285,7 +295,7 @@ final class PanelLegacyToolbar: NSView {
     let selected = tabs.firstIndex { $0.selected }
     for button in tabs.dropFirst(PanelFilterQuery.fixed) { button.removeFromSuperview() }
     tabs.removeSubrange(min(PanelFilterQuery.fixed, tabs.count)...)
-    for tab in dynamic { addTab(tab.name) }
+    for tab in dynamic { addTab(tab.name, id: tab.id) }
     setSelection(selected ?? 0)
   }
   var tabTitles: [String] { tabs.map(\.title) }

@@ -5497,7 +5497,7 @@ fn hide_tab_editor_window(window: tauri::WebviewWindow) -> Result<(), String> {
     }
     auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
     #[cfg(all(debug_assertions, target_os = "macos"))]
-    if native_panel::refocus(&app) {
+    if native_panel::tab_editor_closed(&app) {
         return Ok(());
     }
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
@@ -13804,7 +13804,7 @@ fn main() {
                     api.prevent_close();
                     let _ = auxiliary_windows::destroy_native(window);
                     #[cfg(all(debug_assertions, target_os = "macos"))]
-                    native_panel::refocus(window.app_handle());
+                    native_panel::tab_editor_closed(window.app_handle());
                 }
                 if window.label() == "emojiPicker" {
                     api.prevent_close();

@@ -36,6 +36,7 @@ import {
     recordTagTabId,
     saveCustomTabs,
     saveTabOrder,
+    tabOrderToMigrate,
     type CustomTab,
 } from "./customTabs";
 import { HistoryViewStore } from "./historyViewStore";
@@ -477,6 +478,13 @@ export default function Clipboard() {
 
     useEffect(() => {
         void loadItemTags();
+        const savedOrder = loadTabOrder();
+        void invoke<string[]>('get_tab_order')
+            .then(stored => {
+                const order = tabOrderToMigrate(stored, savedOrder);
+                if (order) storeTabOrder(order);
+            })
+            .catch(e => error(`Failed to load stored tab order: ${e}`));
         void Promise.all([
             invoke<unknown>('get_custom_tabs'),
             loadClipboardBehaviorConfig(),
@@ -625,10 +633,18 @@ export default function Clipboard() {
         openTabEditorWindow("add", "record", undefined, undefined, addTabButtonRef.current);
     };
 
+    // User-made order changes also go to the history database, where the
+    // native panel reads them.
+    const storeTabOrder = (order: string[]) => {
+        saveTabOrder(order);
+        void invoke('save_tab_order', { order })
+            .catch(e => error(`Failed to store tab order: ${e}`));
+    };
+
     const appendTabOrderId = (tabId: string) => {
         setTabOrder(order => {
             const next = [...order.filter(id => id !== tabId), tabId];
-            saveTabOrder(next);
+            storeTabOrder(next);
             return next;
         });
     };
@@ -636,7 +652,7 @@ export default function Clipboard() {
     const removeTabOrderId = (tabId: string) => {
         setTabOrder(order => {
             const next = order.filter(id => id !== tabId);
-            saveTabOrder(next);
+            storeTabOrder(next);
             return next;
         });
     };
@@ -883,7 +899,7 @@ export default function Clipboard() {
             const next = [...currentOrder];
             const [moved] = next.splice(sourceIndex, 1);
             next.splice(targetIndex, 0, moved);
-            saveTabOrder(next);
+            storeTabOrder(next);
             return next;
         });
         setDraggingTabId("");

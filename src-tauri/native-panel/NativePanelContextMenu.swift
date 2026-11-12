@@ -48,6 +48,31 @@ enum PanelContextMenu {
     return chinese ? pair.1 : pair.0
   }
 
+  static func editorAnchor(mouse: NSPoint, primaryHeight: CGFloat) -> [CGFloat] {
+    [mouse.x, primaryHeight - mouse.y]
+  }
+
+  @MainActor
+  static func tabKindMenu(chinese: Bool, handler: PanelTabKindHandler) -> NSMenu {
+    let menu = NSMenu()
+    menu.autoenablesItems = false
+    let choices = chinese
+      ? [("筛选型标签", "按筛选条件自动归类"), ("记录型标签", "手动添加到粘贴项")]
+      : [("Filter Tag", "Auto-grouped by filters"), ("Record Tag", "Manually added to items")]
+    for (index, choice) in choices.enumerated() {
+      let title = NSMutableAttributedString(string: choice.0 + "\n",
+        attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold)])
+      title.append(NSAttributedString(string: choice.1,
+        attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]))
+      let item = NSMenuItem(title: choice.0, action: #selector(PanelTabKindHandler.select(_:)), keyEquivalent: "")
+      item.attributedTitle = title
+      item.target = handler
+      item.tag = index
+      menu.addItem(item)
+    }
+    return menu
+  }
+
   static func isTextLike(_ type: String) -> Bool { ["Text", "TextFile", "Link"].contains(type) }
   static func isEditableText(_ type: String) -> Bool { isTextLike(type) || type == "Color" }
 
@@ -153,6 +178,13 @@ final class PanelMenuHandler: NSObject {
   @objc func select(_ item: NSMenuItem) {
     if let box = item.representedObject as? PanelMenuActionBox { chosen(box.action) }
   }
+}
+
+@MainActor
+final class PanelTabKindHandler: NSObject {
+  private let chosen: (Bool) -> Void
+  init(_ chosen: @escaping (Bool) -> Void) { self.chosen = chosen }
+  @objc func select(_ item: NSMenuItem) { chosen(item.tag == 1) }
 }
 
 // Sheets keep the panel's focus-loss dismissal suspended (attachedSheet).

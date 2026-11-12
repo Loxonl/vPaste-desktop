@@ -797,3 +797,51 @@ receive it), so the local batch update is not followed by a debounced reload.
 Validation: `cargo fmt --check` and `cargo check` passed; the in-place delete's
 Swift/XCTest typechecking from the previous section still passes. A manual delete
 in the running panel is still the final check.
+
+
+### Add tabs from the native toolbar
+
+Acceptance criteria and implementation scope:
+
+- Add a pointing-hand, non-Tab-focusable `+` button after all tabs, inside the
+  horizontal filter viewport. Reserve its full 36-point width plus 1-point margin
+  at each panel scale, including the macOS 11 AppKit fallback.
+- Offer Filter Tag / Record Tag with the same localized descriptions as WebView.
+  Convert the click's AppKit screen position to top-left logical screen coordinates
+  and reuse the existing WebView tab editor and all its form fields.
+- Native-only startup must open the editor without creating a clipboard WebView.
+  Saving refreshes the native tabs and selects the new stable tab id, including
+  when an older refresh is still pending; new tabs retain the database tail order.
+  Cancel/close returns focus to the native panel without adding a tab.
+- Preserve the existing card-menu create-and-assign record-tag operation, search,
+  filter selection, shortcuts, focus appearance, docking and animation. Release
+  the new callbacks when the toolbar closes. Windows and Release keep their
+  existing WebView commands.
+
+The focused cases cover callback release, add-button extent, the two menu
+choices/localizations and screen-coordinate conversion. Additional focused
+coverage preserves card-menu name validation and maps a newly created tab by
+stable identity instead of assuming its index. Local regression suites are not
+executed at the user's request; compilation and scoped interactive verification
+are recorded separately.
+
+The native-only editor uses the editor WebView itself as the shared command's
+fallback source; monitor bounds still come from the published native surface.
+Only the editor is created, never a clipboard WebView. The editor and its emoji
+picker use levels 104/105 while the native panel is active, above the panel's 103.
+Both the editor's normal close command and native close request return focus.
+The card menu's pre-existing `tag-create` operation and name validation remain.
+
+Final verification for the completion pass: Debug build, `cargo check --tests`
+(compile only), Release check, both SDK-flag variants of production Swift plus
+all focused XCTest sources, style governance, formatting and diff checks passed.
+No local regression suites were executed. The user confirmed that both the type
+menu and editor now display above the native panel. The menu uses the existing
+card-context-menu popup path with the native parent window. Full save/cancel and
+older-macOS visual acceptance were not automated in this pass.
+
+New-tab ordering also covers an empty or incomplete stored order: preserve the
+stored prefix, append previously unstored existing tabs, then the newly created
+id. Repeated save notifications do not move an already-stored tab. A newer manual
+filter choice cancels a pending automatic selection, and stale tab-list responses
+cannot replace the latest refresh.

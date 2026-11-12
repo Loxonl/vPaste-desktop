@@ -5322,6 +5322,10 @@ async fn open_tab_editor_window(
                 fit_content_window_to_work_area(&window)?;
             }
         }
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        if native_panel::preview::active() {
+            set_macos_window_level(&window, 104);
+        }
         window.show().map_err(|err| err.to_string())?;
         let _ = activate_native_window(&window, "tab editor open");
         window.set_focus().map_err(|err| err.to_string())?;
@@ -5373,6 +5377,10 @@ async fn open_emoji_picker_window(
     let window =
         auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::EmojiPicker).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        if native_panel::preview::active() {
+            set_macos_window_level(&window, 105);
+        }
         let editor_position = editor.outer_position().map_err(|err| err.to_string())?;
         let scale_factor =
             editor.scale_factor().map_err(|err| err.to_string())? * ui_text_scale::current();
@@ -5488,6 +5496,10 @@ fn hide_tab_editor_window(window: tauri::WebviewWindow) -> Result<(), String> {
         let _ = auxiliary_windows::destroy(&emoji_picker_window);
     }
     auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if native_panel::refocus(&app) {
+        return Ok(());
+    }
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
         focus_clipboard_window(&clipboard_window, "tab editor closed");
     }
@@ -5499,6 +5511,15 @@ fn apply_custom_tabs_from_editor(
     app: tauri::AppHandle,
     payload: serde_json::Value,
 ) -> Result<(), String> {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    {
+        // The editor also saves these itself, but as a separate request; store
+        // them before the native panel re-reads its tabs.
+        if let Some(tabs) = payload.get("tabs") {
+            save_custom_tabs(tabs.clone())?;
+        }
+        native_panel::tabs_changed(&payload);
+    }
     app.emit_to("clipboard", "custom-tabs-changed", payload)
         .map_err(|err| err.to_string())
 }
@@ -13782,6 +13803,8 @@ fn main() {
                 if window.label() == "tabEditor" {
                     api.prevent_close();
                     let _ = auxiliary_windows::destroy_native(window);
+                    #[cfg(all(debug_assertions, target_os = "macos"))]
+                    native_panel::refocus(window.app_handle());
                 }
                 if window.label() == "emojiPicker" {
                     api.prevent_close();

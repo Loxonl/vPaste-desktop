@@ -57,9 +57,62 @@ final class NativePanelRecordTagTabsTests: XCTestCase {
     XCTAssertEqual(toolbar.tabTitles, ["All", "Favorites"])
   }
 
-  func testTagNameIsTrimmedAndLimitedLikeTheWebViewEditor() {
+  func testCreatedTabIsSelectedByIdentityAfterTabsAreRefreshed() {
+    XCTAssertEqual(PanelFilterQuery.index(id: "record:9", tabs: tabs), 3)
+    XCTAssertEqual(PanelFilterQuery.index(id: "record:9", tabs: Array(tabs.reversed())), 2)
+    XCTAssertNil(PanelFilterQuery.index(id: "removed", tabs: tabs))
+  }
+
+  func testCardMenuTagNamesKeepTheirExistingValidation() {
     XCTAssertEqual(PanelMenuSheets.tagName("  Work \n"), "Work")
     XCTAssertEqual(PanelMenuSheets.tagName(String(repeating: "标", count: 25))?.count, 20)
     XCTAssertNil(PanelMenuSheets.tagName("   "))
+  }
+
+  func testAddButtonReportsThroughTheToolbarUntilClosed() throws {
+    guard #available(macOS 12.0, *) else { throw XCTSkip("SwiftUI toolbar needs macOS 12") }
+    let toolbar = PanelToolbar(frame: NSRect(x: 0, y: 0, width: 900, height: 48))
+    toolbar.configure(scale: 1, chinese: false, search: NSSearchField())
+    var requests = 0
+    toolbar.onAddTab = { requests += 1 }
+    let host = try XCTUnwrap(toolbar.subviews.first as? PanelSwiftUIToolbarHost)
+    host.onAddTab?()
+    XCTAssertEqual(requests, 1)
+    toolbar.releaseContent()
+    XCTAssertNil(toolbar.onAddTab)
+    XCTAssertNil(host.onAddTab)
+  }
+
+  func testFilterStripReservesRoomForTheAddButton() {
+    let choices = [PanelFilterChoice(title: "All", emoji: "", symbol: "square.grid.3x3.fill")]
+    for scale: CGFloat in [0.8, 1] {
+      // One 78px tab, then the WebView's 1px margin and 36px add button.
+      XCTAssertEqual(
+        PanelFilterIndicatorLayout.extent(choices: choices, selected: 0, scale: scale),
+        (78 + 1 + 36) * scale, accuracy: 0.01)
+    }
+  }
+
+  func testAddButtonOffersTheWebViewsTwoTagKinds() throws {
+    var chosen: [Bool] = []
+    let handler = PanelTabKindHandler { chosen.append($0) }
+    let menu = PanelContextMenu.tabKindMenu(chinese: true, handler: handler)
+    XCTAssertEqual(menu.items.map { $0.attributedTitle?.string }, [
+      "筛选型标签\n按筛选条件自动归类", "记录型标签\n手动添加到粘贴项",
+    ])
+    let english = PanelContextMenu.tabKindMenu(chinese: false, handler: handler)
+    XCTAssertEqual(english.items.map { $0.attributedTitle?.string }, [
+      "Filter Tag\nAuto-grouped by filters", "Record Tag\nManually added to items",
+    ])
+    handler.select(menu.items[0])
+    handler.select(menu.items[1])
+    XCTAssertEqual(chosen, [false, true])
+  }
+
+  func testEditorAnchorUsesTopLeftScreenCoordinates() {
+    // AppKit's origin is the primary screen's bottom-left; Tauri's is its top-left.
+    XCTAssertEqual(
+      PanelContextMenu.editorAnchor(mouse: NSPoint(x: 300, y: 250), primaryHeight: 900),
+      [300, 650])
   }
 }

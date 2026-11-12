@@ -260,6 +260,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     search.sendsSearchStringImmediately = true
     search.setAccessibilityLabel(search.placeholderString)
     toolbar.onFilter = { [weak self] index in self?.changeFilter(index) }
+    toolbar.onAddTab = { [weak self] in self?.openAddTabMenu() }
     toolbar.onRefresh = { [weak self] in self?.reload() }
     toolbar.onClose = { [weak self] in self?.dismiss() }
     toolbar.onSettings = { [weak self] in self?.bridge.send("settings") }
@@ -319,7 +320,10 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     bridge.event = { [weak self] name, value in
       guard let self, !self.closed else { return }
-      if name == "preview-focused", let number = value["windowNumber"] as? Int {
+      if name == "tabs-changed" {
+        if let id = value["activeId"] as? String { self.pendingTabSelection = id }
+        self.reload()
+      } else if name == "preview-focused", let number = value["windowNumber"] as? Int {
         self.retainMainAppearanceForPreview(windowNumber: number)
       } else if name == "preview-hover", let inside = value["inside"] as? Bool {
         self.previews.pointerInPreview(inside)
@@ -493,6 +497,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   private func changeFilter(_ index: Int) {
     guard let label = PanelFilterQuery.label(index: index, tabs: tabs) else { return }
+    pendingTabSelection = nil
     previews.clear()
     pendingPreviewSelection = nil
     filterIndex = index
@@ -1065,19 +1070,48 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private var tags: [PanelTag] = []
   // The user's filter tabs and record tags, in their stored order.
   private var tabs: [PanelTab] = []
+  private var tabsRequest = 0
+  private var pendingTabSelection: String?
+
+  private func openAddTabMenu() {
+    guard !closed, !hiding, !busyAction, window.attachedSheet == nil else { return }
+    previews.cancelHover()
+    let mouse = NSEvent.mouseLocation
+    let anchor = PanelContextMenu.editorAnchor(mouse: mouse,
+      primaryHeight: NSScreen.screens.first?.frame.maxY ?? 0)
+    let handler = PanelTabKindHandler { [weak self] record in
+      self?.menuRun("tab-editor", ["kind": record ? "record" : "filter", "point": anchor],
+        success: nil, reload: false)
+    }
+    let menu = PanelContextMenu.tabKindMenu(chinese: chinese, handler: handler)
+    // Associate the menu with the elevated panel, as the card context menu does.
+    guard let event = NSEvent.mouseEvent(with: .rightMouseDown,
+      location: window.convertPoint(fromScreen: mouse), modifierFlags: [],
+      timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+      context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { return }
+    withExtendedLifetime(handler) { NSMenu.popUpContextMenu(menu, with: event, for: toolbar) }
+  }
   private func refreshTabs() {
+    tabsRequest &+= 1
+    let request = tabsRequest
     bridge.send("tabs") { [weak self] result in
-      guard let self, !self.closed, case .success(let value) = result,
+      guard let self, !self.closed, self.tabsRequest == request, case .success(let value) = result,
         let tabs = try? panelDecode([PanelTab].self, value) else { return }
-      self.applyTabs(tabs)
+      let selection = self.pendingTabSelection
+      self.pendingTabSelection = nil
+      self.applyTabs(tabs, selecting: selection)
     }
   }
-  private func applyTabs(_ next: [PanelTab]) {
-    guard next != tabs else { return }
+  private func applyTabs(_ next: [PanelTab], selecting id: String? = nil) {
+    guard next != tabs || id != nil else { return }
     let fixed = PanelFilterQuery.fixed
-    let active = filterIndex >= fixed ? tabs[filterIndex - fixed] : nil
+    let active = tabs.indices.contains(filterIndex - fixed) ? tabs[filterIndex - fixed] : nil
     tabs = next
     toolbar.setTabs(next)
+    if let id, let index = PanelFilterQuery.index(id: id, tabs: next) {
+      changeFilter(index)
+      return
+    }
     guard let active else { return }
     if let position = next.firstIndex(where: { $0.id == active.id }) {
       filterIndex = fixed + position

@@ -188,12 +188,14 @@ final class PanelDeveloperGroup: NSView {
 @MainActor
 final class PanelLegacyToolbar: NSView {
   var onFilter: ((Int) -> Void)?
+  var onAddTab: (() -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
   var onSettings: (() -> Void)?
   var onDiagnostics: (() -> Void)?
   private let tabScroll = PanelScroll()
   private let tabStrip = NSView()
+  private let addButton = PanelPointerButton()
   private var tabs: [PanelTabButton] = []
   private let developer = PanelDeveloperGroup()
   private let badge = NSTextField(labelWithString: "DEV · Native")
@@ -242,6 +244,16 @@ final class PanelLegacyToolbar: NSView {
     addSubview(tabScroll)
     addTab(local("All", "全部"), symbol: "grid")
     addTab(local("Favorites", "收藏"), symbol: "star")
+    addButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
+    addButton.imagePosition = .imageOnly
+    addButton.isBordered = false
+    addButton.refusesFirstResponder = true
+    addButton.focusRingType = .none
+    addButton.target = self
+    addButton.action = #selector(requestAddTab)
+    addButton.contentTintColor = PanelStyle.secondary(self)
+    addButton.setAccessibilityLabel(local("Add tab", "添加标签"))
+    tabStrip.addSubview(addButton)
     addSubview(developer)
     badge.font = PanelToolbarTypography.font(size: 9 * scale, cssWeight: 800)
     badge.textColor = PanelStyle.accent(self)
@@ -284,6 +296,7 @@ final class PanelLegacyToolbar: NSView {
   override func viewDidChangeEffectiveAppearance() {
     super.viewDidChangeEffectiveAppearance()
     badge.textColor = PanelStyle.accent(self)
+    addButton.contentTintColor = PanelStyle.secondary(self)
     needsDisplay = true
   }
   override func draw(_ dirtyRect: NSRect) {
@@ -331,8 +344,11 @@ final class PanelLegacyToolbar: NSView {
       tab.frame = NSRect(x: x, y: 0, width: tab.preferredWidth, height: bounds.height)
       x += tab.preferredWidth + 8 * scale
     }
+    let addX = max(0, x - 8 * scale) + scale
+    addButton.frame = NSRect(x: addX, y: (bounds.height - 36 * scale) / 2,
+      width: 36 * scale, height: 36 * scale)
     tabStrip.frame = NSRect(
-      x: 0, y: 0, width: max(tabScroll.bounds.width, x - 8 * scale), height: bounds.height)
+      x: 0, y: 0, width: max(tabScroll.bounds.width, addButton.frame.maxX), height: bounds.height)
   }
   func beginSearch() {
     searchOpen = true
@@ -369,6 +385,7 @@ final class PanelLegacyToolbar: NSView {
     setSelection(sender.tag)
     onFilter?(sender.tag)
   }
+  @objc private func requestAddTab() { onAddTab?() }
   @objc private func refresh() { onRefresh?() }
   @objc private func info() { onDiagnostics?() }
   @objc private func settings() { onSettings?() }

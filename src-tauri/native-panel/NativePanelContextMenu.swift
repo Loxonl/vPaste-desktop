@@ -171,10 +171,27 @@ enum PanelMenuSheets {
     alert.addButton(withTitle: chinese ? "保存" : "Save")
     alert.addButton(withTitle: chinese ? "取消" : "Cancel")
     alert.window.initialFirstResponder = field
-    alert.beginSheetModal(for: window) { response in
-      let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-      if response == .alertFirstButtonReturn, !name.isEmpty { completion(name) }
+    // Same 20-character limit as the WebView tag editor input.
+    let limit = NotificationCenter.default.addObserver(
+      forName: NSControl.textDidChangeNotification, object: field, queue: .main
+    ) { _ in
+      MainActor.assumeIsolated {
+        if field.stringValue.count > tagNameLimit {
+          field.stringValue = String(field.stringValue.prefix(tagNameLimit))
+        }
+      }
     }
+    alert.beginSheetModal(for: window) { response in
+      NotificationCenter.default.removeObserver(limit)
+      if response == .alertFirstButtonReturn, let name = tagName(field.stringValue) {
+        completion(name)
+      }
+    }
+  }
+  static let tagNameLimit = 20
+  static func tagName(_ raw: String) -> String? {
+    let name = String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(tagNameLimit))
+    return name.isEmpty ? nil : name
   }
 
   // Same formats, default name and remembered folder as the WebView export.

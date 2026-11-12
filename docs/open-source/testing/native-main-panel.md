@@ -820,8 +820,8 @@ Acceptance criteria and implementation scope:
 
 The focused cases cover callback release, add-button extent, the two menu
 choices/localizations and screen-coordinate conversion. Additional focused
-coverage preserves card-menu name validation and maps a newly created tab by
-stable identity instead of assuming its index. Local regression suites are not
+coverage maps a newly created tab by stable identity instead of assuming its
+index. Local regression suites are not
 executed at the user's request; compilation and scoped interactive verification
 are recorded separately.
 
@@ -830,7 +830,8 @@ fallback source; monitor bounds still come from the published native surface.
 Only the editor is created, never a clipboard WebView. The editor and its emoji
 picker use levels 104/105 while the native panel is active, above the panel's 103.
 Both the editor's normal close command and native close request return focus.
-The card menu's pre-existing `tag-create` operation and name validation remain.
+The card menu uses the same record-tag editor, with creation-time assignment
+handled in Rust as described below.
 
 Final verification for the completion pass: Debug build, `cargo check --tests`
 (compile only), Release check, both SDK-flag variants of production Swift plus
@@ -845,3 +846,77 @@ stored prefix, append previously unstored existing tabs, then the newly created
 id. Repeated save notifications do not move an already-stored tab. A newer manual
 filter choice cancels a pending automatic selection, and stale tab-list responses
 cannot replace the latest refresh.
+
+
+### Share the record-tag editor between toolbar and card menu
+
+Acceptance criteria:
+
+- Card menu Create Record Tag opens the same existing WebView `tabEditor` in
+  record/add mode as the toolbar, including all current fields and emoji picker.
+  Remove the old AppKit name-only alert and its duplicate name validation.
+- Saving from the card menu also assigns the newly created tag to the original
+  clicked history item, once, even if the current selection has changed. Toolbar
+  creation has no assignment target. Keep existing tags and ordering intact.
+- Cancel/close, a failed open, and panel disposal clear the pending assignment;
+  stale panel sessions and rename notifications cannot consume a new target.
+  Assignment failure is reported in the native panel rather than silently ignored.
+- Preserve editor positioning/layering, focus return, and the existing WebView
+  forms. Windows and Release keep their current paths.
+
+Coverage is added before replacing the path for one-shot assignment to the
+original item, stale sessions, rename notifications, and absent/cancelled targets.
+Local regression suites are not executed at the user's request.
+
+Validation: macOS Debug build, Release check, Rust test-source compilation,
+production Swift/XCTest typechecking with both SDK flags, formatting, style
+architecture and diff checks passed. No local regression suite was executed.
+A scoped manual run used the isolated synthetic-history profile: card-menu
+creation opened `vPaste Tabs` with the existing Add Record Tag, Emoji prefix,
+Name and Save controls. Saving selected the new record-tag tab and displayed the
+original history card with its tag badge. A read-only fixture database check
+confirmed one tag with exactly one item association. The isolated process and
+frontend service were stopped afterward. Automated comparison through the
+separate toolbar entry and older-macOS visual acceptance were not completed.
+
+
+### Native toolbar tab context menu
+
+Acceptance criteria and behavior mapping:
+
+- A context click (right click or Control-click) on a dynamic filter tab or
+  record-tag tab offers only Edit Tab and Delete, matching the WebView. It does
+  not select the tab; All and Favorites do not offer these actions. Both SwiftUI
+  and macOS 11 AppKit toolbar paths forward the stable tab id, not its position.
+- Edit opens the existing WebView tab editor in edit mode with its saved fields,
+  id and current filter-tab list. Existing editor positioning, elevated window
+  levels and close-to-native focus behavior are reused. Creation and card-menu
+  creation-time assignment stay on the existing add path.
+- Delete requires confirmation. Removing a filter tab keeps clipboard records;
+  removing a record tag removes its associations and keeps clipboard records.
+  Only the deleted id is removed from stored order. Native refresh keeps the
+  active tab by identity or falls back to All when that tab was deleted.
+- Closing the toolbar releases context-menu callbacks. Menus are associated
+  with the elevated panel window and cancel pending hover preview work.
+
+Focused Swift coverage and Rust payload/target validation coverage are added
+before implementation. Local regression suites are not executed at the user's
+request. No WebView UI, database schema, Release or Windows behavior is replaced.
+Filter-editor save notifications include their existing add/edit mode so an
+edit is not appended as a newly created tab when stored order is empty or
+incomplete. The editor's fields, save behavior and WebView appearance are kept.
+
+Validation: macOS Debug build, Rust test-source compilation (`cargo check
+--tests`, without execution), production Swift/XCTest typechecking with both
+SDK flags, TypeScript `--noEmit`, style governance, Rust formatting and diff
+checks passed. No local regression suites were executed.
+
+A scoped manual run used a separate copy of the 500-record synthetic history
+profile. It confirmed the SwiftUI right-click menu, Control-click menu, fixed-tab
+protection, prefilled filter and record-tag WebView editors, filter save/refresh,
+record-tag delete confirmation and cancellation, and close-to-panel focus.
+A read-only fixture check afterward confirmed 500 history rows, the existing
+tag and its one association, unchanged filter ids and an unchanged empty stored
+order after the filter edit. The check app and private frontend were stopped.
+Confirmed deletion was not performed interactively; older-macOS AppKit visual
+acceptance and Windows runtime checks were not performed.

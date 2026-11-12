@@ -73,6 +73,24 @@ enum PanelContextMenu {
     return menu
   }
 
+  @MainActor
+  static func tabMenu(chinese: Bool, handler: PanelTabMenuHandler) -> NSMenu {
+    let menu = NSMenu()
+    menu.autoenablesItems = false
+    let titles = chinese ? ["编辑标签", "删除"] : ["Edit Tab", "Delete"]
+    for (index, title) in titles.enumerated() {
+      let item = NSMenuItem(title: title, action: #selector(PanelTabMenuHandler.select(_:)), keyEquivalent: "")
+      item.target = handler
+      item.tag = index
+      if index == 1 {
+        item.attributedTitle = NSAttributedString(string: title,
+          attributes: [.foregroundColor: NSColor.systemRed, .font: NSFont.menuFont(ofSize: 0)])
+      }
+      menu.addItem(item)
+    }
+    return menu
+  }
+
   static func isTextLike(_ type: String) -> Bool { ["Text", "TextFile", "Link"].contains(type) }
   static func isEditableText(_ type: String) -> Bool { isTextLike(type) || type == "Color" }
 
@@ -187,44 +205,19 @@ final class PanelTabKindHandler: NSObject {
   @objc func select(_ item: NSMenuItem) { chosen(item.tag == 1) }
 }
 
+enum PanelTabMenuAction { case edit, delete }
+
+@MainActor
+final class PanelTabMenuHandler: NSObject {
+  private let chosen: (PanelTabMenuAction) -> Void
+  init(_ chosen: @escaping (PanelTabMenuAction) -> Void) { self.chosen = chosen }
+  @objc func select(_ item: NSMenuItem) { chosen(item.tag == 0 ? .edit : .delete) }
+}
+
 // Sheets keep the panel's focus-loss dismissal suspended (attachedSheet).
 @MainActor
 enum PanelMenuSheets {
   static let exportDirectoryKey = "vpaste.imageExportDir.v1"
-
-  static func askTagName(
-    window: NSWindow, chinese: Bool, completion: @escaping (String) -> Void
-  ) {
-    let alert = NSAlert()
-    alert.messageText = PanelContextMenu.label("createRecord", chinese: chinese)
-    let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-    field.placeholderString = chinese ? "标签名称" : "Tag name"
-    alert.accessoryView = field
-    alert.addButton(withTitle: chinese ? "保存" : "Save")
-    alert.addButton(withTitle: chinese ? "取消" : "Cancel")
-    alert.window.initialFirstResponder = field
-    // Same 20-character limit as the WebView tag editor input.
-    let limit = NotificationCenter.default.addObserver(
-      forName: NSControl.textDidChangeNotification, object: field, queue: .main
-    ) { _ in
-      MainActor.assumeIsolated {
-        if field.stringValue.count > tagNameLimit {
-          field.stringValue = String(field.stringValue.prefix(tagNameLimit))
-        }
-      }
-    }
-    alert.beginSheetModal(for: window) { response in
-      NotificationCenter.default.removeObserver(limit)
-      if response == .alertFirstButtonReturn, let name = tagName(field.stringValue) {
-        completion(name)
-      }
-    }
-  }
-  static let tagNameLimit = 20
-  static func tagName(_ raw: String) -> String? {
-    let name = String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(tagNameLimit))
-    return name.isEmpty ? nil : name
-  }
 
   // Same formats, default name and remembered folder as the WebView export.
   static func chooseExportTarget(window: NSWindow, completion: @escaping (URL) -> Void) {

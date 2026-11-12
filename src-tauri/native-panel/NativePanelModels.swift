@@ -29,7 +29,7 @@ struct PanelToken: Decodable {
   let viewId: String
   let revision: UInt64
 }
-struct PanelTag: Decodable {
+struct PanelTag: Decodable, Equatable {
   let id: Int64
   let name: String
 }
@@ -125,6 +125,8 @@ struct PanelCard: Decodable {
   let fileFormat: String
   let isGif: Bool
   let rich: [PanelBlock]
+  // Image, or a File holding exactly one image path (WebView imageExportSourcePath).
+  var exportImage = false
 }
 struct PanelCards: Decodable { let cards: [PanelCard] }
 

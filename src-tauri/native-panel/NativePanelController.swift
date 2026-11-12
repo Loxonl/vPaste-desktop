@@ -781,7 +781,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       if let previewItem { self?.previews.leave(previewItem) }
     }
     view.activate = { [weak self] in self?.action("paste", at: index) }
-    view.menuAction = { [weak self] op in self?.action(op, at: index) }
+    view.requestMenu = { [weak self] point in self?.openContextMenu(at: index, point: point) }
     view.prepareDrag = { [weak self] completion in
       guard let self, let hash = self.ref(index)?.hash else { return }
       self.dragging = true
@@ -1008,6 +1008,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     case 124:
       select(min(count - 1, selected + 1), scroll: true)
       return true
+    case 125:
+      openContextMenu(at: selected, point: nil)
+      return true
     case 36, 76:
       action("paste", at: selected)
       return true
@@ -1039,9 +1042,10 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private func perform(_ operation: String, hash: String, index: Int? = nil) {
     busyAction = true
     var args: [String: Any] = ["hash": hash]
-    args["plain"] = operation == "plain"
+    args["plain"] = operation == "plain" || operation == "paste-plain"
     args["favorite"] = !(cards[hash]?.favorite ?? false)
-    bridge.send(operation == "plain" ? "copy" : operation, args) { [weak self] result in
+    let op = operation == "plain" ? "copy" : operation == "paste-plain" ? "paste" : operation
+    bridge.send(op, args) { [weak self] result in
       guard let self, !self.closed else { return }
       self.busyAction = false
       switch result {
@@ -1058,6 +1062,135 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         } else {
           self.showMessage(self.local("Copied to clipboard", "已复制到剪贴板"))
         }
+      }
+    }
+  }
+
+  // MARK: Card context menu (mirrors the WebView menu; see NativePanelContextMenu)
+
+  private var menuTags: [PanelTag] = []
+  private var menuRequest = 0
+
+  // `point` is in the card view's flipped coordinates; nil opens it from the
+  // keyboard at the WebView's offset (card left + 14, top + 40).
+  private func openContextMenu(at index: Int, point: NSPoint?) {
+    guard !busyAction, window.attachedSheet == nil, let entry = ref(index),
+      cards[entry.hash] != nil else { return }
+    menuRequest &+= 1
+    let request = menuRequest
+    if point == nil { select(index, scroll: true) }
+    previews.cancelHover()
+    loadMenuData(hash: entry.hash, color: entry.itemType == "Color") { [weak self] tags, colors in
+      guard let self, !self.closed, request == self.menuRequest, self.selected == index,
+        self.window.attachedSheet == nil, let card = self.cards[entry.hash],
+        let view = (self.list.item(at: IndexPath(item: index, section: 0)) as? PanelCardItem)?
+          .cardView
+      else { return }
+      let handler = PanelMenuHandler { [weak self] action in
+        self?.performMenu(action, card: card, index: index)
+      }
+      let menu = PanelContextMenu.menu(
+        PanelContextMenu.options(card: card, tags: tags, colors: colors, chinese: self.chinese),
+        handler: handler)
+      let scale = CGFloat(self.config.scale)
+      // popUp(positioning:) pins the menu's top-left like a pop-up button and
+      // scrolls when it does not fit; the docked panel sits at the screen
+      // bottom, so use a context-menu popup, which opens upward fully expanded.
+      let location = view.convert(point ?? NSPoint(x: 14 * scale, y: 40 * scale), to: nil)
+      guard
+        let event = NSEvent.mouseEvent(
+          with: .rightMouseDown, location: location, modifierFlags: [],
+          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: self.window.windowNumber,
+          context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+      else { return }
+      NSMenu.popUpContextMenu(menu, with: event, for: view)
+      withExtendedLifetime(handler) {}
+    }
+  }
+
+  // Like the WebView, a failed tag load falls back to the last list and a
+  // failed color lookup shows the unsupported entry.
+  private func loadMenuData(
+    hash: String, color: Bool, completion: @escaping ([PanelTag], [PanelColorOption]) -> Void
+  ) {
+    bridge.send("tags") { [weak self] result in
+      guard let self, !self.closed else { return }
+      if case .success(let value) = result, let tags = try? panelDecode([PanelTag].self, value) {
+        self.menuTags = tags
+      }
+      let tags = self.menuTags
+      guard color else { return completion(tags, []) }
+      self.bridge.send("color-options", ["hash": hash]) { result in
+        var colors: [PanelColorOption] = []
+        if case .success(let value) = result {
+          colors = (try? panelDecode([PanelColorOption].self, value)) ?? []
+        }
+        completion(tags, colors)
+      }
+    }
+  }
+
+  private func performMenu(_ menuAction: PanelMenuAction, card: PanelCard, index: Int) {
+    let hash = card.hash
+    switch menuAction {
+    case .preview: action("preview", at: index)
+    case .editText: action("edit", at: index)
+    case .viewImageText: action("ocr", at: index)
+    case .toggleFavorite: action("favorite", at: index)
+    case .pastePlainText: action("paste-plain", at: index)
+    case .delete: action("delete", at: index)
+    case .createTag:
+      PanelMenuSheets.askTagName(window: window, chinese: chinese) { [weak self] name in
+        guard let self else { return }
+        self.menuRun("tag-create", ["hash": hash, "name": name],
+          success: self.local("Created and added tag \(name)", "已创建并添加标签 \(name)"))
+      }
+    case .assignTag(let tag):
+      menuRun("tag-assign", ["hash": hash, "tagId": tag.id],
+        success: local("Added tag \(tag.name)", "已添加标签 \(tag.name)"))
+    case .removeTag(let tag):
+      menuRun("tag-remove", ["hash": hash, "tagIds": [tag.id]],
+        success: local("Removed tag \(tag.name)", "已移除标签 \(tag.name)"))
+    case .removeAllTags:
+      menuRun("tag-remove", ["hash": hash, "tagIds": card.tags.map(\.id)],
+        success: local("Removed all record tags", "已移除全部记录标签"))
+    case .exportImage:
+      PanelMenuSheets.chooseExportTarget(window: window) { [weak self] url in
+        self?.menuRun("export-image", ["hash": hash, "target": url.path], success: nil) {
+          PanelMenuSheets.rememberExportDirectory(of: url)
+        }
+      }
+    case .openFolder:
+      menuRun("open-folder", ["hash": hash], success: nil, reload: false)
+    case .copyFolder:
+      menuRun("copy-folder", ["hash": hash],
+        success: local("Containing folder copied", "所在路径已复制"))
+    case .copyColor(let value):
+      menuRun("copy-text", ["text": value], success: local("Copied \(value)", "已复制 \(value)"))
+    }
+  }
+
+  private func menuRun(
+    _ op: String, _ args: [String: Any], success: String?, reload: Bool = true,
+    completed: (() -> Void)? = nil
+  ) {
+    guard !busyAction else { return }
+    busyAction = true
+    bridge.send(op, args) { [weak self] result in
+      guard let self, !self.closed else {
+        if case .success = result { completed?() }
+        return
+      }
+      self.busyAction = false
+      switch result {
+      case .failure(let error):
+        self.showMessage(
+          self.local("Action failed: \(error.localizedDescription)",
+            "操作失败：\(error.localizedDescription)"))
+      case .success:
+        completed?()
+        if reload { self.reload() }
+        if let success { self.showMessage(success) }
       }
     }
   }

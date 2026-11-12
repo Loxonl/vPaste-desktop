@@ -123,7 +123,7 @@ final class PanelCardView: NSView, NSDraggingSource {
   private let text = NSTextView()
   private let textScroll = NSScrollView()
   private let formatTag = NSTextField(labelWithString: "")
-  private let favoriteMark = NSTextField(labelWithString: "★")
+  private let favoriteMark = PanelFavoriteBadge()
   private let iconCrop = NSView()
   private let kindIcon = NSImageView()
   private let fileFormat = NSTextField(labelWithString: "")
@@ -147,7 +147,8 @@ final class PanelCardView: NSView, NSDraggingSource {
   var hoverEntered: (() -> Void)?
   var hoverLeft: (() -> Void)?
   var activate: (() -> Void)?
-  var menuAction: ((String) -> Void)?
+  // Point in this view's (flipped) coordinates where the menu should open.
+  var requestMenu: ((NSPoint) -> Void)?
   var prepareDrag: ((@escaping ([String: Any]) -> Void) -> Void)?
   var dragEnded: (() -> Void)?
   var singleClick = false
@@ -204,7 +205,7 @@ final class PanelCardView: NSView, NSDraggingSource {
       title, age, iconCrop, textScroll, image, dimensions, formatTag, favoriteMark, kindIcon,
       fileFormat, detailTitle, detailSubtitle,
     ] { content.addSubview(view) }
-    for field in [formatTag, favoriteMark, dimensions, fileFormat] {
+    for field in [formatTag, dimensions, fileFormat] {
       field.alignment = .center
       field.wantsLayer = true
       field.layer?.masksToBounds = true
@@ -424,10 +425,7 @@ final class PanelCardView: NSView, NSDraggingSource {
     formatTag.font = .systemFont(ofSize: 10 * scale, weight: .semibold)
     formatTag.layer?.cornerRadius = 8 * scale
     formatTag.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.82).cgColor
-    favoriteMark.font = .systemFont(ofSize: 12 * scale, weight: .bold)
-    favoriteMark.textColor = PanelStyle.rgb(0x7b5400)
-    favoriteMark.layer?.cornerRadius = 9 * scale
-    favoriteMark.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.88).cgColor
+    favoriteMark.scale = scale
     dimensions.font = .systemFont(ofSize: 11 * scale)
     dimensions.textColor =
       PanelStyle.dark(self) ? PanelStyle.rgb(0xdce7f7) : PanelStyle.rgb(0x1e2228, 0.88)
@@ -798,31 +796,8 @@ final class PanelCardView: NSView, NSDraggingSource {
   }
   override func rightMouseDown(with event: NSEvent) {
     select?()
-    guard let card else { return }
-    let menu = NSMenu()
-    let options: [(String, String)] = [
-      (chinese ? "粘贴" : "Paste", "paste"), (chinese ? "复制" : "Copy", "copy"),
-      (chinese ? "复制纯文本" : "Copy plain text", "plain"),
-      (chinese ? "预览" : "Preview", "preview"),
-      (
-        card.favorite ? (chinese ? "取消收藏" : "Remove favorite") : (chinese ? "收藏" : "Favorite"),
-        "favorite"
-      ),
-      (chinese ? "编辑文本" : "Edit text", "edit"), (chinese ? "识别图片文字" : "Recognize text", "ocr"),
-      (chinese ? "删除" : "Delete", "delete"),
-    ]
-    for (name, action) in options {
-      if action == "edit" && !["Text", "TextFile"].contains(card.itemType) { continue }
-      if action == "ocr" && card.itemType != "Image" { continue }
-      let item = NSMenuItem(title: name, action: #selector(menuSelected(_:)), keyEquivalent: "")
-      item.representedObject = action
-      item.target = self
-      menu.addItem(item)
-    }
-    NSMenu.popUpContextMenu(menu, with: event, for: self)
-  }
-  @objc private func menuSelected(_ item: NSMenuItem) {
-    if let action = item.representedObject as? String { menuAction?(action) }
+    guard card != nil else { return }
+    requestMenu?(convert(event.locationInWindow, from: nil))
   }
   // The WebView drag image is the whole card cloned and scaled to 60%
   // (132x138 for a 220x230 card), without its selection outline.

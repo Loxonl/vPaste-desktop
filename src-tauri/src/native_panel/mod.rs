@@ -148,10 +148,14 @@ fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Res
                 "item-tags-changed",
                 "clipboard-resources-updated",
             ] {
-                let id = app.listen(name, move |_| {
+                let id = app.listen(name, move |event| {
                     if name == "listen_new_clipboard"
                         && SUPPRESS_CHANGED.swap(false, Ordering::AcqRel)
                     {
+                        return;
+                    }
+                    if name == "item-tags-changed" {
+                        notify_tabs_changed(session, event.payload());
                         return;
                     }
                     deliver(session, json!({"event":"changed"}));
@@ -200,6 +204,77 @@ fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Res
             }
         })
         .map_err(|e| e.to_string())
+}
+
+// The tab editor saved filter tabs (the record-tag editor reports through the
+// item-tags-changed listener instead).
+pub(crate) fn tabs_changed(payload: &Value) {
+    if ACTIVE.load(Ordering::Acquire) {
+        notify_tabs_changed(SESSION.load(Ordering::Acquire), &payload.to_string());
+    }
+}
+
+// Give focus back to the native panel after an auxiliary window closes.
+pub(crate) fn refocus(app: &AppHandle) -> bool {
+    if !ACTIVE.load(Ordering::Acquire) {
+        return false;
+    }
+    let _ = app.run_on_main_thread(|| {
+        // SAFETY: dispatched to AppKit, which owns the controller.
+        unsafe { vpaste_native_panel_activate(false) };
+    });
+    true
+}
+
+fn notify_tabs_changed(session: u64, raw: &str) {
+    let event = tab_change_event(raw);
+    // Like the WebView, a newly created tab goes to the end of the order.
+    if let Some(id) = event["activeId"].as_str() {
+        let append = || -> Result<(), String> {
+            let custom = crate::get_custom_tabs()?;
+            let tags = clipboard::list_tags()?;
+            let known_ids = dynamic_tabs(&custom, &tags, &[])
+                .into_iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>();
+            clipboard::db::append_tab_order(&clipboard::db::db(), id, &known_ids)
+                .map_err(|error| error.to_string())
+        };
+        if let Err(err) = append() {
+            log::error!("Failed to store the new tab's position: {err}");
+        }
+    }
+    deliver(session, event);
+}
+
+// Editor payload ({activeId, tag?, tabs?}) to the panel event. Tauri may
+// deliver it as a JSON string that itself contains JSON.
+fn tab_change_event(raw: &str) -> Value {
+    let mut payload = serde_json::from_str::<Value>(raw).unwrap_or(Value::Null);
+    if let Value::String(inner) = &payload {
+        payload = serde_json::from_str(inner).unwrap_or(Value::Null);
+    }
+    json!({
+        "event": "tabs-changed",
+        "activeId": payload.get("activeId").cloned().unwrap_or(Value::Null),
+        "tag": payload.get("tag").cloned().unwrap_or(Value::Null),
+    })
+}
+
+// Mirrors the WebView screenAnchoredPositionFromClick: right of the anchor by
+// the 6px menu gap, bottom-aligned with it, kept inside the screen.
+fn tab_editor_origin(
+    anchor: [f64; 2],
+    size: (f64, f64),
+    screen: (f64, f64, f64, f64),
+) -> (f64, f64) {
+    let clamp = |value: f64, extent: f64, start: f64, length: f64| {
+        value.min(start + length - extent).max(start)
+    };
+    (
+        clamp(anchor[0] + 6.0, size.0, screen.0, screen.2),
+        clamp(anchor[1] - size.1, size.1, screen.1, screen.3),
+    )
 }
 
 fn deliver(session: u64, mut value: Value) {
@@ -252,6 +327,10 @@ struct Request {
     tag_ids: Vec<i64>,
     #[serde(default)]
     name: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    point: Option<[f64; 2]>,
     #[serde(default)]
     target: String,
     #[serde(default)]
@@ -561,6 +640,52 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
             app.emit("listen_new_clipboard", ())
                 .map_err(|e| e.to_string())?;
             serde_json::to_value(tag).map_err(|e| e.to_string())
+        }
+        "tab-editor" => {
+            // The WebView tab editor window owns both tag forms and saves them.
+            let record = r.kind == "record";
+            let anchor = r
+                .point
+                .filter(|point| point.iter().all(|value| value.is_finite()))
+                .ok_or("Missing or invalid tab editor anchor")?;
+            let source = match app.get_webview_window("clipboard") {
+                Some(window) => window,
+                // Native-only mode has no clipboard WebView. The shared editor
+                // uses the published native surface for its screen bounds.
+                None => {
+                    crate::auxiliary_windows::ensure(
+                        app,
+                        crate::auxiliary_windows::WindowKind::TabEditor,
+                    )
+                    .await?
+                }
+            };
+            let size = (286.0, if record { 178.0 } else { 398.0 });
+            let bounds = crate::clipboard_screen_bounds(app, &source);
+            let (x, y) = tab_editor_origin(
+                anchor,
+                size,
+                (bounds.x, bounds.y, bounds.width, bounds.height),
+            );
+            let tabs = blocking(crate::get_custom_tabs).await?;
+            let payload = json!({
+                "mode": "add",
+                "kind": if record { "record" } else { "filter" },
+                "tabs": tabs,
+            });
+            crate::open_tab_editor_window(
+                app.clone(),
+                source,
+                x,
+                y,
+                Some(size.0),
+                Some(size.1),
+                payload.to_string(),
+                None,
+                None,
+            )
+            .await?;
+            Ok(Value::Null)
         }
         "export-image" => {
             let target = r.target.clone();
@@ -1183,6 +1308,48 @@ mod tests {
         // The backend reads relative_amount as an integer.
         assert!(
             custom_tab_label(&json!({"relativeAmount": "3"})).contains("\"relative_amount\":3,")
+        );
+    }
+
+    #[test]
+    fn tab_editor_opens_beside_the_anchor_and_stays_on_screen() {
+        let screen = (0.0, 0.0, 1440.0, 900.0);
+        // Right of the anchor by the 6px gap, bottom-aligned with it.
+        assert_eq!(
+            tab_editor_origin([400.0, 700.0], (286.0, 398.0), screen),
+            (406.0, 302.0)
+        );
+        // Clamped at the right and top edges, and on a secondary screen.
+        assert_eq!(
+            tab_editor_origin([1400.0, 100.0], (286.0, 398.0), screen),
+            (1154.0, 0.0)
+        );
+        assert_eq!(
+            tab_editor_origin(
+                [-1000.0, 500.0],
+                (286.0, 178.0),
+                (-1920.0, 0.0, 1920.0, 1080.0)
+            ),
+            (-994.0, 322.0)
+        );
+    }
+
+    #[test]
+    fn tab_change_event_carries_the_new_tab_and_unwraps_string_payloads() {
+        let direct = json!({"activeId": "record:7", "tag": {"id": 7, "name": "Work"}});
+        assert_eq!(
+            tab_change_event(&direct.to_string()),
+            json!({"event": "tabs-changed", "activeId": "record:7", "tag": {"id": 7, "name": "Work"}})
+        );
+        // Tauri can deliver the payload as a JSON string containing JSON.
+        let wrapped = Value::String(json!({"activeId": "tab-9", "tabs": []}).to_string());
+        assert_eq!(
+            tab_change_event(&wrapped.to_string()),
+            json!({"event": "tabs-changed", "activeId": "tab-9", "tag": null})
+        );
+        assert_eq!(
+            tab_change_event("not json"),
+            json!({"event": "tabs-changed", "activeId": null, "tag": null})
         );
     }
 

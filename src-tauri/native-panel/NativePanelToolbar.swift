@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor
 protocol PanelToolbarContent: AnyObject {
   var onFilter: ((Int) -> Void)? { get set }
+  var onAddTab: (() -> Void)? { get set }
   var onRefresh: (() -> Void)? { get set }
   var onClose: (() -> Void)? { get set }
   var onSettings: (() -> Void)? { get set }
@@ -21,6 +22,7 @@ protocol PanelToolbarContent: AnyObject {
 @MainActor
 final class PanelToolbar: NSView {
   var onFilter: ((Int) -> Void)?
+  var onAddTab: (() -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
   var onSettings: (() -> Void)?
@@ -41,6 +43,7 @@ final class PanelToolbar: NSView {
       rendererName = "AppKit fallback"
     }
     view.onFilter = { [weak self] in self?.onFilter?($0) }
+    view.onAddTab = { [weak self] in self?.onAddTab?() }
     view.onRefresh = { [weak self] in self?.onRefresh?() }
     view.onClose = { [weak self] in self?.onClose?() }
     view.onSettings = { [weak self] in self?.onSettings?() }
@@ -60,6 +63,7 @@ final class PanelToolbar: NSView {
     content?.removeFromSuperview()
     content = nil
     onFilter = nil
+    onAddTab = nil
     onRefresh = nil
     onClose = nil
     onSettings = nil
@@ -70,6 +74,7 @@ final class PanelToolbar: NSView {
 extension PanelLegacyToolbar: PanelToolbarContent {
   func releaseContent() {
     onFilter = nil
+    onAddTab = nil
     onRefresh = nil
     onClose = nil
     onSettings = nil
@@ -103,6 +108,9 @@ struct PanelFilterChoice {
 enum PanelFilterQuery {
   static let fixed = 2
   static func count(tabs: [PanelTab]) -> Int { fixed + tabs.count }
+  static func index(id: String, tabs: [PanelTab]) -> Int? {
+    tabs.firstIndex { $0.id == id }.map { fixed + $0 }
+  }
   static func label(index: Int, tabs: [PanelTab]) -> String? {
     guard index >= 0, index < count(tabs: tabs) else { return nil }
     return index == 0 ? "" : index == 1 ? "__favorite" : tabs[index - fixed].label
@@ -112,6 +120,10 @@ enum PanelFilterQuery {
 // Shared selection underline for the SwiftUI filter strip. Mirrors the
 // WebView indicator's 10px inset and 3px height inside the tab bounds.
 enum PanelFilterIndicatorLayout {
+  static func extent(choices: [PanelFilterChoice], selected: Int, scale: CGFloat) -> CGFloat {
+    let widths = choices.enumerated().map { $0.element.width(scale: scale, selected: $0.offset == selected) }
+    return widths.reduce(0, +) + 8 * scale * CGFloat(max(0, widths.count - 1)) + 37 * scale
+  }
   static func rect(choices: [PanelFilterChoice], selected: Int, scale: CGFloat) -> CGRect? {
     guard choices.indices.contains(selected) else { return nil }
     let gap = 8 * scale
@@ -137,6 +149,7 @@ final class PanelToolbarState: ObservableObject {
   private let fixedChoices: [PanelFilterChoice]
   private(set) var closed = false
   var onFilter: ((Int) -> Void)?
+  var onAddTab: (() -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
   var onSettings: (() -> Void)?
@@ -179,6 +192,7 @@ final class PanelToolbarState: ObservableObject {
   func close() {
     closed = true
     onFilter = nil
+    onAddTab = nil
     onRefresh = nil
     onClose = nil
     onSettings = nil
@@ -210,6 +224,7 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
   required init(rootView: PanelToolbarView) { fatalError("Use the configured initializer") }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
   var onFilter: ((Int) -> Void)? { get { state.onFilter } set { state.onFilter = newValue } }
+  var onAddTab: (() -> Void)? { get { state.onAddTab } set { state.onAddTab = newValue } }
   var onRefresh: (() -> Void)? { get { state.onRefresh } set { state.onRefresh = newValue } }
   var onClose: (() -> Void)? { get { state.onClose } set { state.onClose = newValue } }
   var onSettings: (() -> Void)? { get { state.onSettings } set { state.onSettings = newValue } }
@@ -413,7 +428,8 @@ private struct PanelFilterViewport: NSViewRepresentable {
       $0.element.width(scale: state.scale, selected: $0.offset == state.selected)
     }
     let gap = 8 * state.scale
-    let extent = widths.reduce(0, +) + gap * CGFloat(max(0, widths.count - 1))
+    let extent = PanelFilterIndicatorLayout.extent(
+      choices: state.choices, selected: state.selected, scale: state.scale)
     let size = NSSize(width: max(width, extent), height: height)
     if context.coordinator.host?.frame.size != size {
       context.coordinator.host?.setFrameSize(size)
@@ -440,32 +456,41 @@ private struct PanelFilterStrip: View {
   private var gap: CGFloat { 8 * state.scale }
   var body: some View {
     ZStack(alignment: .bottomLeading) {
-      HStack(spacing: gap) {
-        ForEach(state.choices.indices, id: \.self) { index in
-          let choice = state.choices[index]
-          let selected = state.selected == index
-          Button { state.choose(index) } label: {
-            HStack(spacing: 5 * state.scale) {
-              if choice.isFixed {
-                // MUI's 24-unit SVG uses 16 units for the grid, 20 for the star.
-                // Keep the 17pt layout box while matching its visible artwork.
-                let extent: CGFloat = choice.symbol == "star" ? 20 : 16
-                Image(systemName: choice.symbol).font(.system(size: 17 * extent / 24 * state.scale))
-                  .frame(width: 17 * state.scale, height: 17 * state.scale)
+      HStack(spacing: state.scale) {
+        HStack(spacing: gap) {
+          ForEach(state.choices.indices, id: \.self) { index in
+            let choice = state.choices[index]
+            let selected = state.selected == index
+            Button { state.choose(index) } label: {
+              HStack(spacing: 5 * state.scale) {
+                if choice.isFixed {
+                  // MUI's 24-unit SVG uses 16 units for the grid, 20 for the star.
+                  // Keep the 17pt layout box while matching its visible artwork.
+                  let extent: CGFloat = choice.symbol == "star" ? 20 : 16
+                  Image(systemName: choice.symbol).font(.system(size: 17 * extent / 24 * state.scale))
+                    .frame(width: 17 * state.scale, height: 17 * state.scale)
+                }
+                Text(choice.label)
+                  .font(Font(PanelToolbarTypography.tabFont(scale: state.scale, selected: selected)))
+                  .lineLimit(1).frame(height: PanelToolbarTypography.lineHeight * state.scale)
               }
-              Text(choice.label)
-                .font(Font(PanelToolbarTypography.tabFont(scale: state.scale, selected: selected)))
-                .lineLimit(1).frame(height: PanelToolbarTypography.lineHeight * state.scale)
+              .padding(.leading, 10 * state.scale)
+              .padding(.trailing, (choice.isFixed ? 23 : 10) * state.scale)
+              .frame(width: choice.width(scale: state.scale, selected: selected), height: PanelStyle.headerHeight * state.scale)
             }
-            .padding(.leading, 10 * state.scale)
-            .padding(.trailing, (choice.isFixed ? 23 : 10) * state.scale)
-            .frame(width: choice.width(scale: state.scale, selected: selected), height: PanelStyle.headerHeight * state.scale)
+            .buttonStyle(PanelFilterStyle(scale: state.scale, selected: selected, dark: scheme == .dark))
+            .focusable(false)
+            .accessibilityLabel(Text(choice.title))
+            .accessibilityValue(Text(selected ? state.local("Selected", "已选择") : ""))
           }
-          .buttonStyle(PanelFilterStyle(scale: state.scale, selected: selected, dark: scheme == .dark))
-          .focusable(false)
-          .accessibilityLabel(Text(choice.title))
-          .accessibilityValue(Text(selected ? state.local("Selected", "已选择") : ""))
         }
+        Button { state.onAddTab?() } label: {
+          Image(systemName: "plus").font(.system(size: 18 * state.scale))
+            .frame(width: 36 * state.scale, height: 36 * state.scale)
+        }
+        .buttonStyle(PanelFilterStyle(scale: state.scale, selected: false, dark: scheme == .dark))
+        .focusable(false)
+        .accessibilityLabel(Text(state.local("Add tab", "添加标签")))
       }
       selectionIndicator
     }

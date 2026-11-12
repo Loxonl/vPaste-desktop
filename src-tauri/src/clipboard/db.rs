@@ -272,6 +272,20 @@ pub fn read_tab_order(conn: &Connection) -> Result<Vec<String>> {
         .collect()
 }
 
+pub fn append_tab_order(conn: &Connection, tab_id: &str, known_ids: &[String]) -> Result<()> {
+    let mut order = read_tab_order(conn)?;
+    if !order.iter().any(|id| id == tab_id) {
+        for id in known_ids {
+            if id != tab_id && !order.contains(id) {
+                order.push(id.clone());
+            }
+        }
+        order.push(tab_id.to_string());
+        write_tab_order(conn, &order)?;
+    }
+    Ok(())
+}
+
 // Replaces the whole order; blank and repeated ids are dropped.
 pub fn write_tab_order(conn: &Connection, order: &[String]) -> Result<()> {
     let transaction = conn.unchecked_transaction()?;
@@ -403,6 +417,24 @@ mod tests {
         );
         super::write_tab_order(&connection, &["tab-1".to_string()]).unwrap();
         assert_eq!(super::read_tab_order(&connection).unwrap(), ["tab-1"]);
+        // A newly created tab goes to the end once.
+        super::append_tab_order(&connection, "record:5", &[]).unwrap();
+        super::append_tab_order(&connection, "tab-1", &[]).unwrap();
+        assert_eq!(
+            super::read_tab_order(&connection).unwrap(),
+            ["tab-1", "record:5"]
+        );
+        // Native-only startup may not have persisted the existing tabs yet.
+        super::write_tab_order(&connection, &[]).unwrap();
+        let known = ["tab-1", "record:5", "tab-new"].map(String::from);
+        super::append_tab_order(&connection, "tab-new", &known).unwrap();
+        assert_eq!(super::read_tab_order(&connection).unwrap(), known);
+        super::write_tab_order(&connection, &["record:5".into()]).unwrap();
+        super::append_tab_order(&connection, "tab-new", &known).unwrap();
+        assert_eq!(
+            super::read_tab_order(&connection).unwrap(),
+            ["record:5", "tab-1", "tab-new"]
+        );
         assert_eq!(
             connection
                 .query_row("SELECT count(*) FROM clipboard", [], |row| row

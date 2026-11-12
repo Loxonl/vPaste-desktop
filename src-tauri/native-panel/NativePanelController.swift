@@ -262,6 +262,15 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     toolbar.onFilter = { [weak self] index in self?.changeFilter(index) }
     toolbar.onAddTab = { [weak self] in self?.openAddTabMenu() }
     toolbar.onTabContextMenu = { [weak self] in self?.openTabContextMenu(id: $0, at: $1) }
+    toolbar.onTabDragging = { [weak self] active in
+      guard let self, !self.closed else { return }
+      self.dragging = active
+      if active { self.previews.clear() } else { self.refreshTabs() }
+    }
+    toolbar.onTabReorder = { [weak self] source, target, before in
+      self?.menuRun("tab-reorder", ["tabId": source, "targetId": target, "before": before],
+        success: nil, reload: false)
+    }
     toolbar.onRefresh = { [weak self] in self?.reload() }
     toolbar.onClose = { [weak self] in self?.dismiss() }
     toolbar.onSettings = { [weak self] in self?.bridge.send("settings") }
@@ -327,6 +336,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         if let message = value["assignmentError"] as? String {
           self.showMessage(self.local("Could not add the new tag: \(message)", "无法添加新标签：\(message)"))
         }
+      } else if name == "tab-order-changed" {
+        if !self.dragging { self.refreshTabs() }
       } else if name == "preview-focused", let number = value["windowNumber"] as? Int {
         self.retainMainAppearanceForPreview(windowNumber: number)
       } else if name == "preview-hover", let inside = value["inside"] as? Bool {
@@ -980,6 +991,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     scheduleViewport()
   }
   private func key(_ event: NSEvent) -> Bool {
+    guard !dragging else { return false }
     if event.keyCode == 48 && event.modifierFlags.contains(.control)
       && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.option) {
       let total = PanelFilterQuery.count(tabs: tabs)

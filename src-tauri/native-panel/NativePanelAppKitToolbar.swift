@@ -87,6 +87,7 @@ final class PanelIconButton: PanelPointerButton {
 @MainActor
 final class PanelTabButton: PanelPointerButton {
   var onContextMenu: ((NSPoint) -> Void)?
+  var tabID = ""
   override var acceptsFirstResponder: Bool { false }
   var scale: CGFloat = 1
   var emoji = ""
@@ -196,12 +197,14 @@ final class PanelLegacyToolbar: NSView {
   var onFilter: ((Int) -> Void)?
   var onAddTab: (() -> Void)?
   var onTabContextMenu: ((String, NSPoint) -> Void)?
+  var onTabReorder: ((String, String, Bool) -> Void)?
+  var onTabDragging: ((Bool) -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
   var onSettings: (() -> Void)?
   var onDiagnostics: (() -> Void)?
   private let tabScroll = PanelScroll()
-  private let tabStrip = NSView()
+  private let tabStrip = PanelTabDragSurface()
   private let addButton = PanelPointerButton()
   private var tabs: [PanelTabButton] = []
   private let developer = PanelDeveloperGroup()
@@ -241,6 +244,16 @@ final class PanelLegacyToolbar: NSView {
     search.font = PanelToolbarTypography.font(size: 13 * scale, cssWeight: 450)
     search.controlSize = .small
     search.focusRingType = .exterior
+    tabStrip.scale = scale
+    tabStrip.tabFrames = { [weak self] in
+      self?.tabs.filter { !$0.tabID.isEmpty }.map { PanelTabDragFrame(id: $0.tabID, frame: $0.frame) } ?? []
+    }
+    tabStrip.onMove = { [weak self] in self?.onTabReorder?($0, $1, $2) }
+    tabStrip.onDragChanged = { [weak self] id in
+      guard let self else { return }
+      for tab in self.tabs { tab.alphaValue = !tab.tabID.isEmpty && tab.tabID == id ? 0.55 : 1 }
+      self.onTabDragging?(id != nil)
+    }
     tabScroll.documentView = tabStrip
     tabScroll.drawsBackground = false
     tabScroll.hasHorizontalScroller = false
@@ -278,6 +291,7 @@ final class PanelLegacyToolbar: NSView {
     let button = PanelTabButton()
     button.title = title
     button.symbol = symbol
+    button.tabID = id
     button.scale = scale
     button.tag = tabs.count
     button.target = self
@@ -299,6 +313,18 @@ final class PanelLegacyToolbar: NSView {
     setSelection(selected ?? 0)
   }
   var tabTitles: [String] { tabs.map(\.title) }
+  func releaseContent() {
+    tabStrip.releaseContent()
+    onFilter = nil
+    onAddTab = nil
+    onTabContextMenu = nil
+    onTabReorder = nil
+    onTabDragging = nil
+    onRefresh = nil
+    onClose = nil
+    onSettings = nil
+    onDiagnostics = nil
+  }
   func chooseTab(_ index: Int) {
     guard tabs.indices.contains(index) else { return }
     selectFilter(tabs[index])

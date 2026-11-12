@@ -11,7 +11,7 @@ protocol PanelToolbarContent: AnyObject {
   func beginSearch()
   func endEmptySearch()
   func setSelection(_ index: Int)
-  func setTags(_ names: [String])
+  func setTabs(_ tabs: [PanelTab])
   func setInfoVisible(_ visible: Bool)
   func releaseContent()
 }
@@ -53,7 +53,7 @@ final class PanelToolbar: NSView {
   func beginSearch() { content?.beginSearch() }
   func endEmptySearch() { content?.endEmptySearch() }
   func setSelection(_ index: Int) { content?.setSelection(index) }
-  func setTags(_ names: [String]) { content?.setTags(names) }
+  func setTabs(_ tabs: [PanelTab]) { content?.setTabs(tabs) }
   func setInfoVisible(_ visible: Bool) { content?.setInfoVisible(visible) }
   func releaseContent() {
     content?.releaseContent()
@@ -68,8 +68,6 @@ final class PanelToolbar: NSView {
 }
 
 extension PanelLegacyToolbar: PanelToolbarContent {
-  // shortcut: the macOS 11 fallback toolbar shows no record-tag tabs, upgrade if macOS 11 must filter by tag
-  func setTags(_ names: [String]) {}
   func releaseContent() {
     onFilter = nil
     onRefresh = nil
@@ -83,7 +81,9 @@ struct PanelFilterChoice {
   let title: String
   let emoji: String
   let symbol: String
-  // Fixed tabs carry a symbol, type tabs an emoji, record-tag tabs neither.
+  // Fixed tabs carry a symbol. Dynamic tabs show their stored name, which
+  // already includes any emoji prefix; `record` marks a record tag.
+  var record = false
   var isFixed: Bool { !symbol.isEmpty }
   var label: String { emoji.isEmpty ? title : "\(emoji) \(title)" }
   func width(scale: CGFloat, selected: Bool = false) -> CGFloat {
@@ -91,29 +91,21 @@ struct PanelFilterChoice {
       .font: PanelToolbarTypography.tabFont(scale: scale, selected: selected)
     ]).width
     // Fixed tabs include the 17px icon, 5px gap and asymmetric 10/23px padding.
-    // Type tabs render the same single emoji-prefixed label as the WebView.
+    // Dynamic tabs render the same single label as the WebView.
     let extra: CGFloat = (isFixed ? 55 : 20) * scale
     // .tab-item.record has a 74px minimum width in the WebView.
-    let minimum: CGFloat = isFixed ? 78 : emoji.isEmpty ? 74 : 58
+    let minimum: CGFloat = isFixed ? 78 : record ? 74 : 58
     return min(128 * scale, max(minimum * scale, text + extra))
   }
 }
 
-// History query label per tab: the fixed filters, then one tab per record tag
-// (same payload as the WebView record-tag tab).
+// History query label per tab: All, Favorites, then the user's dynamic tabs.
 enum PanelFilterQuery {
-  private static let types = ["", "", "Text", "Image", "Link", "Color", "File"]
-  static func count(tags: [PanelTag]) -> Int { types.count + tags.count }
-  static func label(index: Int, tags: [PanelTag]) -> String? {
-    guard index >= 0, index < count(tags: tags) else { return nil }
-    if index == 0 { return "" }
-    if index == 1 { return "__favorite" }
-    let payload: [String: Any] =
-      index < types.count
-      ? ["mode": "all", "item_type": types[index]]
-      : ["mode": "record-tag", "record_tag_ids": [tags[index - types.count].id]]
-    guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
-    return "__filter:" + String(decoding: data, as: UTF8.self)
+  static let fixed = 2
+  static func count(tabs: [PanelTab]) -> Int { fixed + tabs.count }
+  static func label(index: Int, tabs: [PanelTab]) -> String? {
+    guard index >= 0, index < count(tabs: tabs) else { return nil }
+    return index == 0 ? "" : index == 1 ? "__favorite" : tabs[index - fixed].label
   }
 }
 
@@ -156,8 +148,6 @@ final class PanelToolbarState: ObservableObject {
     self.search = search
     fixedChoices = [
       ("All", "全部", "", "square.grid.3x3.fill"), ("Favorites", "收藏", "", "star"),
-      ("Text", "文本", "📝", ""), ("Image", "图片", "🖼️", ""), ("Link", "链接", "🔗", ""),
-      ("Color", "颜色", "🎨", ""), ("File", "文件", "📁", ""),
     ].map { PanelFilterChoice(title: chinese ? $0.1 : $0.0, emoji: $0.2, symbol: $0.3) }
     choices = fixedChoices
     search.isHidden = true
@@ -166,8 +156,10 @@ final class PanelToolbarState: ObservableObject {
     search.focusRingType = .exterior
   }
   func local(_ en: String, _ zh: String) -> String { chinese ? zh : en }
-  func setTags(_ names: [String]) {
-    choices = fixedChoices + names.map { PanelFilterChoice(title: $0, emoji: "", symbol: "") }
+  func setTabs(_ tabs: [PanelTab]) {
+    choices = fixedChoices + tabs.map {
+      PanelFilterChoice(title: $0.name, emoji: "", symbol: "", record: $0.record)
+    }
   }
   func choose(_ index: Int) {
     guard !closed, choices.indices.contains(index) else { return }
@@ -245,7 +237,7 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
     if state.choices.indices.contains(index), state.selected != index { state.selected = index }
   }
   func setInfoVisible(_ visible: Bool) { state.infoVisible = visible }
-  func setTags(_ names: [String]) { state.setTags(names) }
+  func setTabs(_ tabs: [PanelTab]) { state.setTabs(tabs) }
   func releaseContent() {
     focusRequest &+= 1
     rootView.onSearch = nil

@@ -327,7 +327,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         let direction = (value["direction"] as? Int) == -1 ? -1 : 1
         self.previews.cancelHover()
         if value["ctrlKey"] as? Bool == true {
-          let tabs = PanelFilterQuery.count(tags: self.tags)
+          let tabs = PanelFilterQuery.count(tabs: self.tabs)
           self.changeFilter((self.filterIndex + direction + tabs) % tabs)
         } else if value["key"] as? String != "Tab" || self.config.tabQuickSelectEnabled {
           self.select(max(0, min(self.count - 1, self.selected + direction)), scroll: true)
@@ -492,7 +492,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
   }
   private func changeFilter(_ index: Int) {
-    guard let label = PanelFilterQuery.label(index: index, tags: tags) else { return }
+    guard let label = PanelFilterQuery.label(index: index, tabs: tabs) else { return }
     previews.clear()
     pendingPreviewSelection = nil
     filterIndex = index
@@ -550,7 +550,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   private func reload() {
     guard !closed else { return }
-    refreshTags()
+    refreshTabs()
     filterEntryPending = false
     filterEntryPreviousHashes = []
     filterEntryHashes.removeAll()
@@ -973,8 +973,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private func key(_ event: NSEvent) -> Bool {
     if event.keyCode == 48 && event.modifierFlags.contains(.control)
       && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.option) {
-      let tabs = PanelFilterQuery.count(tags: tags)
-      changeFilter((filterIndex + (event.modifierFlags.contains(.shift) ? -1 : 1) + tabs) % tabs)
+      let total = PanelFilterQuery.count(tabs: tabs)
+      changeFilter((filterIndex + (event.modifierFlags.contains(.shift) ? -1 : 1) + total) % total)
       return true
     }
     if event.modifierFlags.contains(.command) {
@@ -1061,27 +1061,31 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
 
   // MARK: Card context menu (mirrors the WebView menu; see NativePanelContextMenu)
 
-  // Record tags, shown as toolbar tabs after the fixed filters and in the menu.
+  // Record tags offered by the card menu (last loaded list).
   private var tags: [PanelTag] = []
-  private func refreshTags() {
-    bridge.send("tags") { [weak self] result in
+  // The user's filter tabs and record tags, in their stored order.
+  private var tabs: [PanelTab] = []
+  private func refreshTabs() {
+    bridge.send("tabs") { [weak self] result in
       guard let self, !self.closed, case .success(let value) = result,
-        let tags = try? panelDecode([PanelTag].self, value) else { return }
-      self.applyTags(tags)
+        let tabs = try? panelDecode([PanelTab].self, value) else { return }
+      self.applyTabs(tabs)
     }
   }
-  private func applyTags(_ next: [PanelTag]) {
-    guard next != tags else { return }
-    let fixed = PanelFilterQuery.count(tags: [])
-    let activeId = filterIndex >= fixed ? tags[filterIndex - fixed].id : nil
-    tags = next
-    toolbar.setTags(next.map(\.name))
-    guard let activeId else { return }
-    if let position = next.firstIndex(where: { $0.id == activeId }) {
+  private func applyTabs(_ next: [PanelTab]) {
+    guard next != tabs else { return }
+    let fixed = PanelFilterQuery.fixed
+    let active = filterIndex >= fixed ? tabs[filterIndex - fixed] : nil
+    tabs = next
+    toolbar.setTabs(next)
+    guard let active else { return }
+    if let position = next.firstIndex(where: { $0.id == active.id }) {
       filterIndex = fixed + position
       toolbar.setSelection(filterIndex)
+      // An edited filter tab keeps its id but queries differently.
+      if next[position].label != active.label { changeFilter(filterIndex) }
     } else {
-      // Like the WebView, fall back to All when the active tag is gone.
+      // Like the WebView, fall back to All when the active tab is gone.
       changeFilter(0)
     }
   }
@@ -1132,7 +1136,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     bridge.send("tags") { [weak self] result in
       guard let self, !self.closed else { return }
       if case .success(let value) = result, let tags = try? panelDecode([PanelTag].self, value) {
-        self.applyTags(tags)
+        self.tags = tags
       }
       let tags = self.tags
       guard color else { return completion(tags, []) }

@@ -505,6 +505,17 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
                 .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
+        "tabs" => {
+            let tabs = blocking(|| {
+                let custom = crate::get_custom_tabs()?;
+                let tags = clipboard::list_tags()?;
+                let order = clipboard::db::read_tab_order(&clipboard::db::db())
+                    .map_err(|err| err.to_string())?;
+                Ok(dynamic_tabs(&custom, &tags, &order))
+            })
+            .await?;
+            serde_json::to_value(tabs).map_err(|e| e.to_string())
+        }
         "tags" => {
             let tags = blocking(clipboard::list_tags).await?;
             serde_json::to_value(tags).map_err(|e| e.to_string())
@@ -893,6 +904,111 @@ fn display_card(hash: &str, width: u32) -> Result<Card, String> {
     })
 }
 
+// One dynamic toolbar tab after the fixed All and Favorites tabs: a filter tab
+// (custom tabs file) or a record tag, with the history query label it selects.
+#[derive(Serialize, Debug, PartialEq)]
+struct PanelTab {
+    id: String,
+    name: String,
+    label: String,
+    record: bool,
+}
+
+// Mirrors the WebView orderedDynamicTabs: ids in the stored order first, then
+// the remaining filter tabs, then the remaining record tags.
+fn dynamic_tabs(
+    custom: &Value,
+    tags: &[clipboard::item::ItemTag],
+    order: &[String],
+) -> Vec<PanelTab> {
+    let mut tabs: Vec<Option<PanelTab>> = custom
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|tab| {
+            Some(PanelTab {
+                id: tab.get("id")?.as_str()?.to_string(),
+                name: tab.get("name")?.as_str()?.to_string(),
+                label: custom_tab_label(tab.get("filter").unwrap_or(&Value::Null)),
+                record: false,
+            })
+        })
+        .chain(tags.iter().map(|tag| PanelTab {
+            id: format!("record:{}", tag.id),
+            name: tag.name.clone(),
+            label: format!(
+                "__filter:{}",
+                json!({"mode": "record-tag", "record_tag_ids": [tag.id]})
+            ),
+            record: true,
+        }))
+        .map(Some)
+        .collect();
+    let mut ordered = Vec::with_capacity(tabs.len());
+    for id in order {
+        let found = tabs
+            .iter_mut()
+            .find(|tab| tab.as_ref().is_some_and(|tab| &tab.id == id));
+        if let Some(tab) = found.and_then(Option::take) {
+            ordered.push(tab);
+        }
+    }
+    ordered.extend(tabs.into_iter().flatten());
+    ordered
+}
+
+// Mirrors the WebView customTabFilterPayload, including its filter defaults.
+fn custom_tab_label(filter: &Value) -> String {
+    let text = |key: &str| {
+        filter
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    let mut payload = serde_json::Map::new();
+    payload.insert("mode".into(), json!("custom"));
+    if let Some(item_type) = text("itemType") {
+        payload.insert("item_type".into(), json!(item_type));
+    }
+    let sources: Vec<&str> = match filter.get("appSources").and_then(Value::as_array) {
+        Some(sources) => sources
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|source| !source.is_empty())
+            .collect(),
+        None => text("appSource").into_iter().collect(),
+    };
+    if !sources.is_empty() {
+        payload.insert("app_sources".into(), json!(sources));
+    }
+    match text("favorite") {
+        Some("yes") => payload.insert("favorite".into(), json!(true)),
+        Some("no") => payload.insert("favorite".into(), json!(false)),
+        _ => None,
+    };
+    let amount = match filter.get("relativeAmount") {
+        Some(Value::String(amount)) => amount.trim().parse::<f64>().ok(),
+        Some(amount) => amount.as_f64(),
+        None => None,
+    };
+    if let Some(amount) = amount.filter(|amount| amount.is_finite() && *amount > 0.0) {
+        // The backend reads an integer; keep whole numbers integral as JS does.
+        let value = if amount.fract() == 0.0 {
+            json!(amount as u64)
+        } else {
+            json!(amount)
+        };
+        payload.insert("relative_amount".into(), value);
+        payload.insert(
+            "relative_unit".into(),
+            json!(text("relativeUnit").unwrap_or("day")),
+        );
+    }
+    format!("__filter:{}", Value::Object(payload))
+}
+
 // Mirrors the WebView imageExportSourcePath: an Image exports its cached
 // preview; a File exports only when it holds exactly one image path.
 fn export_image_source(item_type: &ItemType, content: &str, preview_content: &str) -> String {
@@ -982,6 +1098,92 @@ mod tests {
         );
         assert_eq!(export_image_source(&ItemType::File, "not json", ""), "");
         assert_eq!(export_image_source(&ItemType::Text, "/tmp/a.png", ""), "");
+    }
+
+    fn tag(id: i64, name: &str) -> clipboard::item::ItemTag {
+        clipboard::item::ItemTag {
+            id,
+            name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn dynamic_tabs_follow_the_stored_order_then_filter_tabs_then_record_tags() {
+        let custom = json!([
+            {"id": "tab-1", "name": "📝 Text", "filter": {"itemType": "Text"}},
+            {"id": "tab-2", "name": "Recent", "filter": {}},
+            {"id": 7, "name": "invalid id"},
+            {"id": "tab-3"}
+        ]);
+        let tags = [tag(5, "Work"), tag(9, "Home")];
+        let order = ["record:9", "missing", "tab-2", "record:9"].map(String::from);
+        let tabs = dynamic_tabs(&custom, &tags, &order);
+        assert_eq!(
+            tabs.iter().map(|tab| tab.id.as_str()).collect::<Vec<_>>(),
+            ["record:9", "tab-2", "tab-1", "record:5"]
+        );
+        assert_eq!(
+            tabs.iter().map(|tab| tab.name.as_str()).collect::<Vec<_>>(),
+            ["Home", "Recent", "📝 Text", "Work"]
+        );
+        assert_eq!(
+            tabs.iter().map(|tab| tab.record).collect::<Vec<_>>(),
+            [true, false, false, true]
+        );
+        let record: Value =
+            serde_json::from_str(tabs[0].label.strip_prefix("__filter:").unwrap()).unwrap();
+        assert_eq!(record, json!({"mode": "record-tag", "record_tag_ids": [9]}));
+    }
+
+    #[test]
+    fn custom_tab_label_matches_the_webview_filter_payload() {
+        let label = |filter: Value| -> Value {
+            serde_json::from_str(custom_tab_label(&filter).strip_prefix("__filter:").unwrap())
+                .unwrap()
+        };
+        assert_eq!(label(json!({})), json!({"mode": "custom"}));
+        assert_eq!(
+            label(json!({
+                "itemType": "Image",
+                "appSource": "ignored",
+                "appSources": [" Safari ", "", 3, "Notes"],
+                "favorite": "yes",
+                "relativeAmount": "3",
+                "relativeUnit": "week"
+            })),
+            json!({
+                "mode": "custom",
+                "item_type": "Image",
+                "app_sources": ["Safari", "Notes"],
+                "favorite": true,
+                "relative_amount": 3,
+                "relative_unit": "week"
+            })
+        );
+        // Legacy single source, "no" favorite, numeric amount, default unit.
+        assert_eq!(
+            label(json!({"appSource": " Xcode ", "favorite": "no", "relativeAmount": 2})),
+            json!({
+                "mode": "custom",
+                "app_sources": ["Xcode"],
+                "favorite": false,
+                "relative_amount": 2,
+                "relative_unit": "day"
+            })
+        );
+        // "any" favorite and an empty or non-positive amount add nothing.
+        assert_eq!(
+            label(json!({"favorite": "any", "relativeAmount": "", "itemType": ""})),
+            json!({"mode": "custom"})
+        );
+        assert_eq!(
+            label(json!({"relativeAmount": "0"})),
+            json!({"mode": "custom"})
+        );
+        // The backend reads relative_amount as an integer.
+        assert!(
+            custom_tab_label(&json!({"relativeAmount": "3"})).contains("\"relative_amount\":3,")
+        );
     }
 
     #[test]

@@ -33,6 +33,14 @@ struct PanelTag: Decodable, Equatable {
   let id: Int64
   let name: String
 }
+// A dynamic toolbar tab after All and Favorites: a filter tab or a record tag,
+// already ordered, with the history query label it selects.
+struct PanelTab: Decodable, Equatable {
+  let id: String
+  let name: String
+  let label: String
+  let record: Bool
+}
 struct PanelRef: Decodable {
   let hash: String
   let itemType: String

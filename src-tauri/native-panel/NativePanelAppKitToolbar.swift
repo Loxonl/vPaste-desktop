@@ -240,24 +240,8 @@ final class PanelLegacyToolbar: NSView {
     tabScroll.verticalScrollElasticity = .none
     tabScroll.setAccessibilityLabel(local("History filters", "历史记录筛选"))
     addSubview(tabScroll)
-    let choices = [
-      ("All", "全部", "", "grid"), ("Favorites", "收藏", "", "star"),
-      ("Text", "文本", "📝", ""), ("Image", "图片", "🖼️", ""), ("Link", "链接", "🔗", ""),
-      ("Color", "颜色", "🎨", ""), ("File", "文件", "📁", ""),
-    ]
-    for (index, choice) in choices.enumerated() {
-      let button = PanelTabButton()
-      button.title = local(choice.0, choice.1)
-      button.emoji = choice.2
-      button.symbol = choice.3
-      button.scale = scale
-      button.tag = index
-      button.target = self
-      button.action = #selector(selectFilter(_:))
-      button.setAccessibilityLabel(button.title)
-      tabs.append(button)
-      tabStrip.addSubview(button)
-    }
+    addTab(local("All", "全部"), symbol: "grid")
+    addTab(local("Favorites", "收藏"), symbol: "star")
     addSubview(developer)
     badge.font = PanelToolbarTypography.font(size: 9 * scale, cssWeight: 800)
     badge.textColor = PanelStyle.accent(self)
@@ -270,6 +254,32 @@ final class PanelLegacyToolbar: NSView {
     settingsButton = icon("gearshape", local("Settings", "设置"), #selector(settings))
     closeButton = icon("xmark", local("Close native panel", "关闭原生主界面"), #selector(closePanel))
     setSelection(0)
+  }
+  private func addTab(_ title: String, symbol: String = "") {
+    let button = PanelTabButton()
+    button.title = title
+    button.symbol = symbol
+    button.scale = scale
+    button.tag = tabs.count
+    button.target = self
+    button.action = #selector(selectFilter(_:))
+    button.setAccessibilityLabel(title)
+    tabs.append(button)
+    tabStrip.addSubview(button)
+  }
+  // Dynamic tabs follow the fixed All and Favorites tabs.
+  func setTabs(_ dynamic: [PanelTab]) {
+    guard built else { return }
+    let selected = tabs.firstIndex { $0.selected }
+    for button in tabs.dropFirst(PanelFilterQuery.fixed) { button.removeFromSuperview() }
+    tabs.removeSubrange(min(PanelFilterQuery.fixed, tabs.count)...)
+    for tab in dynamic { addTab(tab.name) }
+    setSelection(selected ?? 0)
+  }
+  var tabTitles: [String] { tabs.map(\.title) }
+  func chooseTab(_ index: Int) {
+    guard tabs.indices.contains(index) else { return }
+    selectFilter(tabs[index])
   }
   override func viewDidChangeEffectiveAppearance() {
     super.viewDidChangeEffectiveAppearance()

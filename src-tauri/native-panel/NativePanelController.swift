@@ -327,7 +327,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         let direction = (value["direction"] as? Int) == -1 ? -1 : 1
         self.previews.cancelHover()
         if value["ctrlKey"] as? Bool == true {
-          self.changeFilter((self.filterIndex + direction + 7) % 7)
+          let tabs = PanelFilterQuery.count(tags: self.tags)
+          self.changeFilter((self.filterIndex + direction + tabs) % tabs)
         } else if value["key"] as? String != "Tab" || self.config.tabQuickSelectEnabled {
           self.select(max(0, min(self.count - 1, self.selected + direction)), scroll: true)
         }
@@ -491,21 +492,11 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
   }
   private func changeFilter(_ index: Int) {
-    let types = ["", "", "Text", "Image", "Link", "Color", "File"]
-    guard types.indices.contains(index) else { return }
+    guard let label = PanelFilterQuery.label(index: index, tags: tags) else { return }
     previews.clear()
     pendingPreviewSelection = nil
     filterIndex = index
-    if index == 1 {
-      filter = "__favorite"
-    } else if index == 0 {
-      filter = ""
-    } else {
-      let data = try! JSONSerialization.data(withJSONObject: [
-        "mode": "all", "item_type": types[index],
-      ])
-      filter = "__filter:" + String(decoding: data, as: UTF8.self)
-    }
+    filter = label
     let previousHashes = (0..<min(count, 36)).compactMap { ref($0)?.hash }
     toolbar.setSelection(index)
     reload()
@@ -559,6 +550,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   private func reload() {
     guard !closed else { return }
+    refreshTags()
     filterEntryPending = false
     filterEntryPreviousHashes = []
     filterEntryHashes.removeAll()
@@ -981,7 +973,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private func key(_ event: NSEvent) -> Bool {
     if event.keyCode == 48 && event.modifierFlags.contains(.control)
       && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.option) {
-      changeFilter((filterIndex + (event.modifierFlags.contains(.shift) ? -1 : 1) + 7) % 7)
+      let tabs = PanelFilterQuery.count(tags: tags)
+      changeFilter((filterIndex + (event.modifierFlags.contains(.shift) ? -1 : 1) + tabs) % tabs)
       return true
     }
     if event.modifierFlags.contains(.command) {
@@ -1068,7 +1061,30 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
 
   // MARK: Card context menu (mirrors the WebView menu; see NativePanelContextMenu)
 
-  private var menuTags: [PanelTag] = []
+  // Record tags, shown as toolbar tabs after the fixed filters and in the menu.
+  private var tags: [PanelTag] = []
+  private func refreshTags() {
+    bridge.send("tags") { [weak self] result in
+      guard let self, !self.closed, case .success(let value) = result,
+        let tags = try? panelDecode([PanelTag].self, value) else { return }
+      self.applyTags(tags)
+    }
+  }
+  private func applyTags(_ next: [PanelTag]) {
+    guard next != tags else { return }
+    let fixed = PanelFilterQuery.count(tags: [])
+    let activeId = filterIndex >= fixed ? tags[filterIndex - fixed].id : nil
+    tags = next
+    toolbar.setTags(next.map(\.name))
+    guard let activeId else { return }
+    if let position = next.firstIndex(where: { $0.id == activeId }) {
+      filterIndex = fixed + position
+      toolbar.setSelection(filterIndex)
+    } else {
+      // Like the WebView, fall back to All when the active tag is gone.
+      changeFilter(0)
+    }
+  }
   private var menuRequest = 0
 
   // `point` is in the card view's flipped coordinates; nil opens it from the
@@ -1116,9 +1132,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     bridge.send("tags") { [weak self] result in
       guard let self, !self.closed else { return }
       if case .success(let value) = result, let tags = try? panelDecode([PanelTag].self, value) {
-        self.menuTags = tags
+        self.applyTags(tags)
       }
-      let tags = self.menuTags
+      let tags = self.tags
       guard color else { return completion(tags, []) }
       self.bridge.send("color-options", ["hash": hash]) { result in
         var colors: [PanelColorOption] = []

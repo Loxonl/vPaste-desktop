@@ -543,7 +543,10 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
             }
             let tag = blocking(move || {
                 let tag = clipboard::create_tag(&name)?;
-                clipboard::assign_tag(&hash, tag.id)?;
+                // The toolbar "+" creates a tag without a record to assign it to.
+                if !hash.is_empty() {
+                    clipboard::assign_tag(&hash, tag.id)?;
+                }
                 Ok(tag)
             })
             .await?;

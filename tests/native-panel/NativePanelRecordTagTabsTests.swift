@@ -48,6 +48,30 @@ final class NativePanelRecordTagTabsTests: XCTestCase {
     ])
   }
 
+  func testAddTagButtonReportsThroughTheToolbarUntilClosed() throws {
+    guard #available(macOS 12.0, *) else { throw XCTSkip("SwiftUI toolbar needs macOS 12") }
+    let toolbar = PanelToolbar(frame: NSRect(x: 0, y: 0, width: 900, height: 48))
+    toolbar.configure(scale: 1, chinese: false, search: NSSearchField())
+    var requests = 0
+    toolbar.onAddTag = { requests += 1 }
+    let host = try XCTUnwrap(toolbar.subviews.first as? PanelSwiftUIToolbarHost)
+    host.onAddTag?()
+    XCTAssertEqual(requests, 1)
+    toolbar.releaseContent()
+    XCTAssertNil(toolbar.onAddTag)
+    XCTAssertNil(host.onAddTag)
+  }
+
+  func testFilterStripReservesRoomForTheAddButton() {
+    let choices = [PanelFilterChoice(title: "All", emoji: "", symbol: "square.grid.3x3.fill")]
+    for scale: CGFloat in [0.8, 1] {
+      // One 78px tab, then the WebView's 1px margin and 36px add button.
+      XCTAssertEqual(
+        PanelFilterIndicatorLayout.extent(choices: choices, selected: 0, scale: scale),
+        (78 + 1 + 36) * scale, accuracy: 0.01)
+    }
+  }
+
   func testTagNameIsTrimmedAndLimitedLikeTheWebViewEditor() {
     XCTAssertEqual(PanelMenuSheets.tagName("  Work \n"), "Work")
     XCTAssertEqual(PanelMenuSheets.tagName(String(repeating: "标", count: 25))?.count, 20)

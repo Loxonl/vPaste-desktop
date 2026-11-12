@@ -260,6 +260,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     search.sendsSearchStringImmediately = true
     search.setAccessibilityLabel(search.placeholderString)
     toolbar.onFilter = { [weak self] index in self?.changeFilter(index) }
+    toolbar.onAddTag = { [weak self] in self?.createTag(for: nil) }
     toolbar.onRefresh = { [weak self] in self?.reload() }
     toolbar.onClose = { [weak self] in self?.dismiss() }
     toolbar.onSettings = { [weak self] in self?.bridge.send("settings") }
@@ -1146,6 +1147,38 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
   }
 
+  // Toolbar "+" (hash nil) or the card menu. Like the WebView, the new tag's
+  // tab becomes active.
+  private func createTag(for hash: String?) {
+    guard !busyAction, window.attachedSheet == nil else { return }
+    PanelMenuSheets.askTagName(window: window, chinese: chinese) { [weak self] name in
+      guard let self, !self.closed, !self.busyAction else { return }
+      self.busyAction = true
+      var args: [String: Any] = ["name": name]
+      if let hash { args["hash"] = hash }
+      self.bridge.send("tag-create", args) { [weak self] result in
+        guard let self, !self.closed else { return }
+        self.busyAction = false
+        switch result {
+        case .failure(let error):
+          self.showMessage(
+            self.local("Action failed: \(error.localizedDescription)",
+              "操作失败：\(error.localizedDescription)"))
+        case .success(let value):
+          guard let tag = try? panelDecode(PanelTag.self, value) else { return self.reload() }
+          if !self.tags.contains(where: { $0.id == tag.id }) { self.applyTags(self.tags + [tag]) }
+          if let position = self.tags.firstIndex(where: { $0.id == tag.id }) {
+            self.changeFilter(PanelFilterQuery.count(tags: []) + position)
+          }
+          self.showMessage(
+            hash == nil
+              ? self.local("Created \(tag.name)", "已创建 \(tag.name)")
+              : self.local("Created and added tag \(tag.name)", "已创建并添加标签 \(tag.name)"))
+        }
+      }
+    }
+  }
+
   private func performMenu(_ menuAction: PanelMenuAction, card: PanelCard, index: Int) {
     let hash = card.hash
     switch menuAction {
@@ -1155,12 +1188,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     case .toggleFavorite: action("favorite", at: index)
     case .pastePlainText: action("paste-plain", at: index)
     case .delete: action("delete", at: index)
-    case .createTag:
-      PanelMenuSheets.askTagName(window: window, chinese: chinese) { [weak self] name in
-        guard let self else { return }
-        self.menuRun("tag-create", ["hash": hash, "name": name],
-          success: self.local("Created and added tag \(name)", "已创建并添加标签 \(name)"))
-      }
+    case .createTag: createTag(for: hash)
     case .assignTag(let tag):
       menuRun("tag-assign", ["hash": hash, "tagId": tag.id],
         success: local("Added tag \(tag.name)", "已添加标签 \(tag.name)"))

@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor
 protocol PanelToolbarContent: AnyObject {
   var onFilter: ((Int) -> Void)? { get set }
+  var onAddTag: (() -> Void)? { get set }
   var onRefresh: (() -> Void)? { get set }
   var onClose: (() -> Void)? { get set }
   var onSettings: (() -> Void)? { get set }
@@ -21,6 +22,7 @@ protocol PanelToolbarContent: AnyObject {
 @MainActor
 final class PanelToolbar: NSView {
   var onFilter: ((Int) -> Void)?
+  var onAddTag: (() -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
   var onSettings: (() -> Void)?
@@ -41,6 +43,7 @@ final class PanelToolbar: NSView {
       rendererName = "AppKit fallback"
     }
     view.onFilter = { [weak self] in self?.onFilter?($0) }
+    view.onAddTag = { [weak self] in self?.onAddTag?() }
     view.onRefresh = { [weak self] in self?.onRefresh?() }
     view.onClose = { [weak self] in self?.onClose?() }
     view.onSettings = { [weak self] in self?.onSettings?() }
@@ -60,6 +63,7 @@ final class PanelToolbar: NSView {
     content?.removeFromSuperview()
     content = nil
     onFilter = nil
+    onAddTag = nil
     onRefresh = nil
     onClose = nil
     onSettings = nil
@@ -72,6 +76,7 @@ extension PanelLegacyToolbar: PanelToolbarContent {
   func setTags(_ names: [String]) {}
   func releaseContent() {
     onFilter = nil
+    onAddTag = nil
     onRefresh = nil
     onClose = nil
     onSettings = nil
@@ -130,6 +135,16 @@ enum PanelFilterIndicatorLayout {
     let width = choices[selected].width(scale: scale, selected: true) - 20 * scale
     return CGRect(x: x + 10 * scale, y: 0, width: max(0, width), height: 3 * scale)
   }
+  // Add button after the tabs: .tab-add-button is 36px wide with a 1px margin.
+  static let addButtonWidth: CGFloat = 36
+  static let addButtonMargin: CGFloat = 1
+  static func extent(choices: [PanelFilterChoice], selected: Int, scale: CGFloat) -> CGFloat {
+    let widths = choices.enumerated().map {
+      $0.element.width(scale: scale, selected: $0.offset == selected)
+    }
+    return widths.reduce(0, +) + 8 * scale * CGFloat(max(0, widths.count - 1))
+      + (addButtonMargin + addButtonWidth) * scale
+  }
 }
 
 @available(macOS 12.0, *)
@@ -145,6 +160,7 @@ final class PanelToolbarState: ObservableObject {
   private let fixedChoices: [PanelFilterChoice]
   private(set) var closed = false
   var onFilter: ((Int) -> Void)?
+  var onAddTag: (() -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
   var onSettings: (() -> Void)?
@@ -187,6 +203,7 @@ final class PanelToolbarState: ObservableObject {
   func close() {
     closed = true
     onFilter = nil
+    onAddTag = nil
     onRefresh = nil
     onClose = nil
     onSettings = nil
@@ -218,6 +235,7 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
   required init(rootView: PanelToolbarView) { fatalError("Use the configured initializer") }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
   var onFilter: ((Int) -> Void)? { get { state.onFilter } set { state.onFilter = newValue } }
+  var onAddTag: (() -> Void)? { get { state.onAddTag } set { state.onAddTag = newValue } }
   var onRefresh: (() -> Void)? { get { state.onRefresh } set { state.onRefresh = newValue } }
   var onClose: (() -> Void)? { get { state.onClose } set { state.onClose = newValue } }
   var onSettings: (() -> Void)? { get { state.onSettings } set { state.onSettings = newValue } }
@@ -421,7 +439,8 @@ private struct PanelFilterViewport: NSViewRepresentable {
       $0.element.width(scale: state.scale, selected: $0.offset == state.selected)
     }
     let gap = 8 * state.scale
-    let extent = widths.reduce(0, +) + gap * CGFloat(max(0, widths.count - 1))
+    let extent = PanelFilterIndicatorLayout.extent(
+      choices: state.choices, selected: state.selected, scale: state.scale)
     let size = NSSize(width: max(width, extent), height: height)
     if context.coordinator.host?.frame.size != size {
       context.coordinator.host?.setFrameSize(size)
@@ -448,6 +467,7 @@ private struct PanelFilterStrip: View {
   private var gap: CGFloat { 8 * state.scale }
   var body: some View {
     ZStack(alignment: .bottomLeading) {
+      HStack(spacing: PanelFilterIndicatorLayout.addButtonMargin * state.scale) {
       HStack(spacing: gap) {
         ForEach(state.choices.indices, id: \.self) { index in
           let choice = state.choices[index]
@@ -474,6 +494,16 @@ private struct PanelFilterStrip: View {
           .accessibilityLabel(Text(choice.title))
           .accessibilityValue(Text(selected ? state.local("Selected", "已选择") : ""))
         }
+      }
+      Button { state.onAddTag?() } label: {
+        Image(systemName: "plus").font(.system(size: 13 * state.scale))
+          .frame(width: PanelFilterIndicatorLayout.addButtonWidth * state.scale,
+            height: PanelStyle.headerHeight * state.scale)
+      }
+      .buttonStyle(PanelFilterStyle(scale: state.scale, selected: false, dark: scheme == .dark))
+      .focusable(false)
+      .help(state.local("Add Tab", "添加标签"))
+      .accessibilityLabel(Text(state.local("Add Tab", "添加标签")))
       }
       selectionIndicator
     }

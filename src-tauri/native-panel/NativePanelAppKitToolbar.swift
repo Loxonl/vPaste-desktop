@@ -188,6 +188,7 @@ final class PanelDeveloperGroup: NSView {
 @MainActor
 final class PanelLegacyToolbar: NSView {
   var onFilter: ((Int) -> Void)?
+  var onAddTag: (() -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
   var onSettings: (() -> Void)?

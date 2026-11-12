@@ -48,6 +48,49 @@ enum PanelContextMenu {
     return chinese ? pair.1 : pair.0
   }
 
+  static func editorAnchor(mouse: NSPoint, primaryHeight: CGFloat) -> [CGFloat] {
+    [mouse.x, primaryHeight - mouse.y]
+  }
+
+  @MainActor
+  static func tabKindMenu(chinese: Bool, handler: PanelTabKindHandler) -> NSMenu {
+    let menu = NSMenu()
+    menu.autoenablesItems = false
+    let choices = chinese
+      ? [("筛选型标签", "按筛选条件自动归类"), ("记录型标签", "手动添加到粘贴项")]
+      : [("Filter Tag", "Auto-grouped by filters"), ("Record Tag", "Manually added to items")]
+    for (index, choice) in choices.enumerated() {
+      let title = NSMutableAttributedString(string: choice.0 + "\n",
+        attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold)])
+      title.append(NSAttributedString(string: choice.1,
+        attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]))
+      let item = NSMenuItem(title: choice.0, action: #selector(PanelTabKindHandler.select(_:)), keyEquivalent: "")
+      item.attributedTitle = title
+      item.target = handler
+      item.tag = index
+      menu.addItem(item)
+    }
+    return menu
+  }
+
+  @MainActor
+  static func tabMenu(chinese: Bool, handler: PanelTabMenuHandler) -> NSMenu {
+    let menu = NSMenu()
+    menu.autoenablesItems = false
+    let titles = chinese ? ["编辑标签", "删除"] : ["Edit Tab", "Delete"]
+    for (index, title) in titles.enumerated() {
+      let item = NSMenuItem(title: title, action: #selector(PanelTabMenuHandler.select(_:)), keyEquivalent: "")
+      item.target = handler
+      item.tag = index
+      if index == 1 {
+        item.attributedTitle = NSAttributedString(string: title,
+          attributes: [.foregroundColor: NSColor.systemRed, .font: NSFont.menuFont(ofSize: 0)])
+      }
+      menu.addItem(item)
+    }
+    return menu
+  }
+
   static func isTextLike(_ type: String) -> Bool { ["Text", "TextFile", "Link"].contains(type) }
   static func isEditableText(_ type: String) -> Bool { isTextLike(type) || type == "Color" }
 
@@ -155,44 +198,26 @@ final class PanelMenuHandler: NSObject {
   }
 }
 
+@MainActor
+final class PanelTabKindHandler: NSObject {
+  private let chosen: (Bool) -> Void
+  init(_ chosen: @escaping (Bool) -> Void) { self.chosen = chosen }
+  @objc func select(_ item: NSMenuItem) { chosen(item.tag == 1) }
+}
+
+enum PanelTabMenuAction { case edit, delete }
+
+@MainActor
+final class PanelTabMenuHandler: NSObject {
+  private let chosen: (PanelTabMenuAction) -> Void
+  init(_ chosen: @escaping (PanelTabMenuAction) -> Void) { self.chosen = chosen }
+  @objc func select(_ item: NSMenuItem) { chosen(item.tag == 0 ? .edit : .delete) }
+}
+
 // Sheets keep the panel's focus-loss dismissal suspended (attachedSheet).
 @MainActor
 enum PanelMenuSheets {
   static let exportDirectoryKey = "vpaste.imageExportDir.v1"
-
-  static func askTagName(
-    window: NSWindow, chinese: Bool, completion: @escaping (String) -> Void
-  ) {
-    let alert = NSAlert()
-    alert.messageText = PanelContextMenu.label("createRecord", chinese: chinese)
-    let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-    field.placeholderString = chinese ? "标签名称" : "Tag name"
-    alert.accessoryView = field
-    alert.addButton(withTitle: chinese ? "保存" : "Save")
-    alert.addButton(withTitle: chinese ? "取消" : "Cancel")
-    alert.window.initialFirstResponder = field
-    // Same 20-character limit as the WebView tag editor input.
-    let limit = NotificationCenter.default.addObserver(
-      forName: NSControl.textDidChangeNotification, object: field, queue: .main
-    ) { _ in
-      MainActor.assumeIsolated {
-        if field.stringValue.count > tagNameLimit {
-          field.stringValue = String(field.stringValue.prefix(tagNameLimit))
-        }
-      }
-    }
-    alert.beginSheetModal(for: window) { response in
-      NotificationCenter.default.removeObserver(limit)
-      if response == .alertFirstButtonReturn, let name = tagName(field.stringValue) {
-        completion(name)
-      }
-    }
-  }
-  static let tagNameLimit = 20
-  static func tagName(_ raw: String) -> String? {
-    let name = String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(tagNameLimit))
-    return name.isEmpty ? nil : name
-  }
 
   // Same formats, default name and remembered folder as the WebView export.
   static func chooseExportTarget(window: NSWindow, completion: @escaping (URL) -> Void) {

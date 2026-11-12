@@ -260,6 +260,17 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     search.sendsSearchStringImmediately = true
     search.setAccessibilityLabel(search.placeholderString)
     toolbar.onFilter = { [weak self] index in self?.changeFilter(index) }
+    toolbar.onAddTab = { [weak self] in self?.openAddTabMenu() }
+    toolbar.onTabContextMenu = { [weak self] in self?.openTabContextMenu(id: $0, at: $1) }
+    toolbar.onTabDragging = { [weak self] active in
+      guard let self, !self.closed else { return }
+      self.dragging = active
+      if active { self.previews.clear() } else { self.refreshTabs() }
+    }
+    toolbar.onTabReorder = { [weak self] source, target, before in
+      self?.menuRun("tab-reorder", ["tabId": source, "targetId": target, "before": before],
+        success: nil, reload: false)
+    }
     toolbar.onRefresh = { [weak self] in self?.reload() }
     toolbar.onClose = { [weak self] in self?.dismiss() }
     toolbar.onSettings = { [weak self] in self?.bridge.send("settings") }
@@ -319,7 +330,15 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     bridge.event = { [weak self] name, value in
       guard let self, !self.closed else { return }
-      if name == "preview-focused", let number = value["windowNumber"] as? Int {
+      if name == "tabs-changed" {
+        if let id = value["activeId"] as? String { self.pendingTabSelection = id }
+        self.reload()
+        if let message = value["assignmentError"] as? String {
+          self.showMessage(self.local("Could not add the new tag: \(message)", "无法添加新标签：\(message)"))
+        }
+      } else if name == "tab-order-changed" {
+        if !self.dragging { self.refreshTabs() }
+      } else if name == "preview-focused", let number = value["windowNumber"] as? Int {
         self.retainMainAppearanceForPreview(windowNumber: number)
       } else if name == "preview-hover", let inside = value["inside"] as? Bool {
         self.previews.pointerInPreview(inside)
@@ -327,7 +346,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         let direction = (value["direction"] as? Int) == -1 ? -1 : 1
         self.previews.cancelHover()
         if value["ctrlKey"] as? Bool == true {
-          let tabs = PanelFilterQuery.count(tags: self.tags)
+          let tabs = PanelFilterQuery.count(tabs: self.tabs)
           self.changeFilter((self.filterIndex + direction + tabs) % tabs)
         } else if value["key"] as? String != "Tab" || self.config.tabQuickSelectEnabled {
           self.select(max(0, min(self.count - 1, self.selected + direction)), scroll: true)
@@ -492,7 +511,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
   }
   private func changeFilter(_ index: Int) {
-    guard let label = PanelFilterQuery.label(index: index, tags: tags) else { return }
+    guard let label = PanelFilterQuery.label(index: index, tabs: tabs) else { return }
+    pendingTabSelection = nil
     previews.clear()
     pendingPreviewSelection = nil
     filterIndex = index
@@ -550,7 +570,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   private func reload() {
     guard !closed else { return }
-    refreshTags()
+    refreshTabs()
     filterEntryPending = false
     filterEntryPreviousHashes = []
     filterEntryHashes.removeAll()
@@ -971,10 +991,11 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     scheduleViewport()
   }
   private func key(_ event: NSEvent) -> Bool {
+    guard !dragging else { return false }
     if event.keyCode == 48 && event.modifierFlags.contains(.control)
       && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.option) {
-      let tabs = PanelFilterQuery.count(tags: tags)
-      changeFilter((filterIndex + (event.modifierFlags.contains(.shift) ? -1 : 1) + tabs) % tabs)
+      let total = PanelFilterQuery.count(tabs: tabs)
+      changeFilter((filterIndex + (event.modifierFlags.contains(.shift) ? -1 : 1) + total) % total)
       return true
     }
     if event.modifierFlags.contains(.command) {
@@ -1061,27 +1082,107 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
 
   // MARK: Card context menu (mirrors the WebView menu; see NativePanelContextMenu)
 
-  // Record tags, shown as toolbar tabs after the fixed filters and in the menu.
+  // Record tags offered by the card menu (last loaded list).
   private var tags: [PanelTag] = []
-  private func refreshTags() {
-    bridge.send("tags") { [weak self] result in
-      guard let self, !self.closed, case .success(let value) = result,
-        let tags = try? panelDecode([PanelTag].self, value) else { return }
-      self.applyTags(tags)
+  // The user's filter tabs and record tags, in their stored order.
+  private var tabs: [PanelTab] = []
+  private var tabsRequest = 0
+  private var pendingTabSelection: String?
+
+  private func openAddTabMenu() {
+    guard !closed, !hiding, !busyAction, window.attachedSheet == nil else { return }
+    previews.cancelHover()
+    let mouse = NSEvent.mouseLocation
+    let anchor = PanelContextMenu.editorAnchor(mouse: mouse,
+      primaryHeight: NSScreen.screens.first?.frame.maxY ?? 0)
+    let handler = PanelTabKindHandler { [weak self] record in
+      self?.openTabEditor(record: record, anchor: anchor)
+    }
+    let menu = PanelContextMenu.tabKindMenu(chinese: chinese, handler: handler)
+    // Associate the menu with the elevated panel, as the card context menu does.
+    guard let event = NSEvent.mouseEvent(with: .rightMouseDown,
+      location: window.convertPoint(fromScreen: mouse), modifierFlags: [],
+      timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+      context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { return }
+    withExtendedLifetime(handler) { NSMenu.popUpContextMenu(menu, with: event, for: toolbar) }
+  }
+  private func openTabEditor(record: Bool, anchor: [CGFloat], assignTo hash: String = "", tabID: String = "") {
+    menuRun("tab-editor", ["kind": record ? "record" : "filter", "point": anchor, "hash": hash, "tabId": tabID],
+      success: nil, reload: false)
+  }
+
+  private func openTabContextMenu(id: String, at mouse: NSPoint) {
+    guard !closed, !hiding, !busyAction, window.attachedSheet == nil,
+      tabs.contains(where: { $0.id == id }) else { return }
+    previews.cancelHover()
+    let anchor = PanelContextMenu.editorAnchor(mouse: mouse,
+      primaryHeight: NSScreen.screens.first?.frame.maxY ?? 0)
+    let handler = PanelTabMenuHandler { [weak self] action in
+      guard let self, !self.closed, !self.hiding,
+        let tab = self.tabs.first(where: { $0.id == id }) else { return }
+      switch action {
+      case .edit: self.openTabEditor(record: tab.record, anchor: anchor, tabID: id)
+      case .delete: self.confirmDeleteTab(tab)
+      }
+    }
+    let menu = PanelContextMenu.tabMenu(chinese: chinese, handler: handler)
+    guard let event = NSEvent.mouseEvent(with: .rightMouseDown,
+      location: window.convertPoint(fromScreen: mouse), modifierFlags: [],
+      timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+      context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { return }
+    withExtendedLifetime(handler) { NSMenu.popUpContextMenu(menu, with: event, for: toolbar) }
+  }
+
+  private func confirmDeleteTab(_ tab: PanelTab) {
+    guard !busyAction, window.attachedSheet == nil else { return }
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = local("Delete Tab", "删除标签")
+    alert.informativeText = tab.record
+      ? local("Remove tag “\(tab.name)” from all records? History records will be kept.",
+        "从全部记录中删除标签「\(tab.name)」？历史记录保留。")
+      : local("Delete “\(tab.name)”? History records will be kept.",
+        "删除「\(tab.name)」？历史记录会保留。")
+    alert.addButton(withTitle: local("Delete", "删除"))
+    alert.addButton(withTitle: local("Cancel", "取消"))
+    alert.buttons.first?.hasDestructiveAction = true
+    alert.beginSheetModal(for: window) { [weak self] response in
+      guard let self, !self.closed, !self.hiding else { return }
+      if response == .alertFirstButtonReturn {
+        self.menuRun("tab-delete", ["tabId": tab.id], success: nil) { [weak self] in self?.focus() }
+      } else { self.focus() }
     }
   }
-  private func applyTags(_ next: [PanelTag]) {
-    guard next != tags else { return }
-    let fixed = PanelFilterQuery.count(tags: [])
-    let activeId = filterIndex >= fixed ? tags[filterIndex - fixed].id : nil
-    tags = next
-    toolbar.setTags(next.map(\.name))
-    guard let activeId else { return }
-    if let position = next.firstIndex(where: { $0.id == activeId }) {
+
+  private func refreshTabs() {
+    tabsRequest &+= 1
+    let request = tabsRequest
+    bridge.send("tabs") { [weak self] result in
+      guard let self, !self.closed, self.tabsRequest == request, case .success(let value) = result,
+        let tabs = try? panelDecode([PanelTab].self, value) else { return }
+      let selection = self.pendingTabSelection
+      self.pendingTabSelection = nil
+      self.applyTabs(tabs, selecting: selection)
+    }
+  }
+  private func applyTabs(_ next: [PanelTab], selecting id: String? = nil) {
+    guard next != tabs || id != nil else { return }
+    let fixed = PanelFilterQuery.fixed
+    let active = tabs.indices.contains(filterIndex - fixed) ? tabs[filterIndex - fixed] : nil
+    tabs = next
+    toolbar.setTabs(next)
+    if let id, let index = PanelFilterQuery.index(id: id, tabs: next) {
+      changeFilter(index)
+      return
+    }
+    guard let active else { return }
+    if let position = next.firstIndex(where: { $0.id == active.id }) {
       filterIndex = fixed + position
       toolbar.setSelection(filterIndex)
+      // An edited filter tab keeps its id but queries differently.
+      if next[position].label != active.label { changeFilter(filterIndex) }
     } else {
-      // Like the WebView, fall back to All when the active tag is gone.
+      // Like the WebView, fall back to All when the active tab is gone.
       changeFilter(0)
     }
   }
@@ -1132,7 +1233,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     bridge.send("tags") { [weak self] result in
       guard let self, !self.closed else { return }
       if case .success(let value) = result, let tags = try? panelDecode([PanelTag].self, value) {
-        self.applyTags(tags)
+        self.tags = tags
       }
       let tags = self.tags
       guard color else { return completion(tags, []) }
@@ -1156,11 +1257,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     case .pastePlainText: action("paste-plain", at: index)
     case .delete: action("delete", at: index)
     case .createTag:
-      PanelMenuSheets.askTagName(window: window, chinese: chinese) { [weak self] name in
-        guard let self else { return }
-        self.menuRun("tag-create", ["hash": hash, "name": name],
-          success: self.local("Created and added tag \(name)", "已创建并添加标签 \(name)"))
-      }
+      let anchor = PanelContextMenu.editorAnchor(mouse: NSEvent.mouseLocation,
+        primaryHeight: NSScreen.screens.first?.frame.maxY ?? 0)
+      openTabEditor(record: true, anchor: anchor, assignTo: hash)
     case .assignTag(let tag):
       menuRun("tag-assign", ["hash": hash, "tagId": tag.id],
         success: local("Added tag \(tag.name)", "已添加标签 \(tag.name)"))

@@ -797,3 +797,176 @@ receive it), so the local batch update is not followed by a debounced reload.
 Validation: `cargo fmt --check` and `cargo check` passed; the in-place delete's
 Swift/XCTest typechecking from the previous section still passes. A manual delete
 in the running panel is still the final check.
+
+
+### Add tabs from the native toolbar
+
+Acceptance criteria and implementation scope:
+
+- Add a pointing-hand, non-Tab-focusable `+` button after all tabs, inside the
+  horizontal filter viewport. Reserve its full 36-point width plus 1-point margin
+  at each panel scale, including the macOS 11 AppKit fallback.
+- Offer Filter Tag / Record Tag with the same localized descriptions as WebView.
+  Convert the click's AppKit screen position to top-left logical screen coordinates
+  and reuse the existing WebView tab editor and all its form fields.
+- Native-only startup must open the editor without creating a clipboard WebView.
+  Saving refreshes the native tabs and selects the new stable tab id, including
+  when an older refresh is still pending; new tabs retain the database tail order.
+  Cancel/close returns focus to the native panel without adding a tab.
+- Preserve the existing card-menu create-and-assign record-tag operation, search,
+  filter selection, shortcuts, focus appearance, docking and animation. Release
+  the new callbacks when the toolbar closes. Windows and Release keep their
+  existing WebView commands.
+
+The focused cases cover callback release, add-button extent, the two menu
+choices/localizations and screen-coordinate conversion. Additional focused
+coverage maps a newly created tab by stable identity instead of assuming its
+index. Local regression suites are not
+executed at the user's request; compilation and scoped interactive verification
+are recorded separately.
+
+The native-only editor uses the editor WebView itself as the shared command's
+fallback source; monitor bounds still come from the published native surface.
+Only the editor is created, never a clipboard WebView. The editor and its emoji
+picker use levels 104/105 while the native panel is active, above the panel's 103.
+Both the editor's normal close command and native close request return focus.
+The card menu uses the same record-tag editor, with creation-time assignment
+handled in Rust as described below.
+
+Final verification for the completion pass: Debug build, `cargo check --tests`
+(compile only), Release check, both SDK-flag variants of production Swift plus
+all focused XCTest sources, style governance, formatting and diff checks passed.
+No local regression suites were executed. The user confirmed that both the type
+menu and editor now display above the native panel. The menu uses the existing
+card-context-menu popup path with the native parent window. Full save/cancel and
+older-macOS visual acceptance were not automated in this pass.
+
+New-tab ordering also covers an empty or incomplete stored order: preserve the
+stored prefix, append previously unstored existing tabs, then the newly created
+id. Repeated save notifications do not move an already-stored tab. A newer manual
+filter choice cancels a pending automatic selection, and stale tab-list responses
+cannot replace the latest refresh.
+
+
+### Share the record-tag editor between toolbar and card menu
+
+Acceptance criteria:
+
+- Card menu Create Record Tag opens the same existing WebView `tabEditor` in
+  record/add mode as the toolbar, including all current fields and emoji picker.
+  Remove the old AppKit name-only alert and its duplicate name validation.
+- Saving from the card menu also assigns the newly created tag to the original
+  clicked history item, once, even if the current selection has changed. Toolbar
+  creation has no assignment target. Keep existing tags and ordering intact.
+- Cancel/close, a failed open, and panel disposal clear the pending assignment;
+  stale panel sessions and rename notifications cannot consume a new target.
+  Assignment failure is reported in the native panel rather than silently ignored.
+- Preserve editor positioning/layering, focus return, and the existing WebView
+  forms. Windows and Release keep their current paths.
+
+Coverage is added before replacing the path for one-shot assignment to the
+original item, stale sessions, rename notifications, and absent/cancelled targets.
+Local regression suites are not executed at the user's request.
+
+Validation: macOS Debug build, Release check, Rust test-source compilation,
+production Swift/XCTest typechecking with both SDK flags, formatting, style
+architecture and diff checks passed. No local regression suite was executed.
+A scoped manual run used the isolated synthetic-history profile: card-menu
+creation opened `vPaste Tabs` with the existing Add Record Tag, Emoji prefix,
+Name and Save controls. Saving selected the new record-tag tab and displayed the
+original history card with its tag badge. A read-only fixture database check
+confirmed one tag with exactly one item association. The isolated process and
+frontend service were stopped afterward. Automated comparison through the
+separate toolbar entry and older-macOS visual acceptance were not completed.
+
+
+### Native toolbar tab context menu
+
+Acceptance criteria and behavior mapping:
+
+- A context click (right click or Control-click) on a dynamic filter tab or
+  record-tag tab offers only Edit Tab and Delete, matching the WebView. It does
+  not select the tab; All and Favorites do not offer these actions. Both SwiftUI
+  and macOS 11 AppKit toolbar paths forward the stable tab id, not its position.
+- Edit opens the existing WebView tab editor in edit mode with its saved fields,
+  id and current filter-tab list. Existing editor positioning, elevated window
+  levels and close-to-native focus behavior are reused. Creation and card-menu
+  creation-time assignment stay on the existing add path.
+- Delete requires confirmation. Removing a filter tab keeps clipboard records;
+  removing a record tag removes its associations and keeps clipboard records.
+  Only the deleted id is removed from stored order. Native refresh keeps the
+  active tab by identity or falls back to All when that tab was deleted.
+- Closing the toolbar releases context-menu callbacks. Menus are associated
+  with the elevated panel window and cancel pending hover preview work.
+
+Focused Swift coverage and Rust payload/target validation coverage are added
+before implementation. Local regression suites are not executed at the user's
+request. No WebView UI, database schema, Release or Windows behavior is replaced.
+Filter-editor save notifications include their existing add/edit mode so an
+edit is not appended as a newly created tab when stored order is empty or
+incomplete. The editor's fields, save behavior and WebView appearance are kept.
+
+Validation: macOS Debug build, Rust test-source compilation (`cargo check
+--tests`, without execution), production Swift/XCTest typechecking with both
+SDK flags, TypeScript `--noEmit`, style governance, Rust formatting and diff
+checks passed. No local regression suites were executed.
+
+A scoped manual run used a separate copy of the 500-record synthetic history
+profile. It confirmed the SwiftUI right-click menu, Control-click menu, fixed-tab
+protection, prefilled filter and record-tag WebView editors, filter save/refresh,
+record-tag delete confirmation and cancellation, and close-to-panel focus.
+A read-only fixture check afterward confirmed 500 history rows, the existing
+tag and its one association, unchanged filter ids and an unchanged empty stored
+order after the filter edit. The check app and private frontend were stopped.
+Confirmed deletion was not performed interactively; older-macOS AppKit visual
+acceptance and Windows runtime checks were not performed.
+
+
+### Native toolbar drag-to-reorder
+
+Acceptance criteria:
+
+- Filter tabs and record-tag tabs reorder together by stable id. All, Favorites
+  and the add button remain fixed. Normal click and context-click behavior stay.
+- A local AppKit drag session shows a tab preview and insertion marker, supports
+  horizontal edge scrolling, suspends hover preview/focus-loss dismissal, and
+  releases its timer, cursor and callbacks on finish, cancel or teardown.
+- Drop commits once through Rust using the latest known tabs. Cancel or dropping
+  outside the panel commits nothing. Reordering preserves the selected tab and
+  history viewport without fetching history again.
+- The database order is applied at WebView startup and changes notify both
+  surfaces. Preserve unseen ids while tab data loads. Editing a filter tab does
+  not append it again; new tabs still go after the existing tabs.
+
+Coverage is added before implementation for mixed-kind before/after moves,
+invalid targets, newly added tabs, history preservation, geometry/edge scrolling,
+teardown and non-moving edit notifications. Local regression suites are not
+executed at the user's request.
+
+The WebView drop path now asks Rust to move ids rather than replacing order from
+an older UI snapshot; its existing target-index placement is retained. Rust
+validates dynamic ids, fills missing known entries and replaces order
+inside an immediate transaction. A tab-order-changed event refreshes only native
+tabs and updates the WebView cache/state; it does not reopen history. The old
+startup state-normalization effect is removed so unloaded record-tag ids are not
+lost. Add/edit mode now also reaches the WebView receiver, and creation uses
+current tab data instead of mount-time callback data.
+
+The shared AppKit row surface owns the drag preview, insertion marker, local-only
+move payload, edge timer and cleanup. Its recognizer has priority over descendant
+button gestures so a successful drag cannot also activate a tab. Clicks without
+movement and right-click menus retain their existing paths. The existing AppKit
+fallback teardown is moved beside its content to release the drag surface too.
+
+Verification: the final macOS Debug build, Release check, Swift production and
+focused XCTest typechecking with both SDK flags, Rust test-source compilation
+without execution, TypeScript, style governance, Rust formatting and diff checks
+passed. SwiftUI teardown explicitly releases the drag surface once, before
+waiting for representable dismantling, so closing the panel stops edge scrolling
+immediately. A scoped isolated run with 500 synthetic history rows confirmed before/
+after mixed-tag movement, active-tab preservation, ordinary clicking, context
+menus, drag-out cancellation and fixed-tab protection. Read-only database
+inspection confirmed the resulting order and retained 500 history rows and one
+tag association. The isolated app and private frontend were stopped. No local
+regression suite was run; Windows/macOS 11 runtime checks, sustained edge-hover
+scrolling and explicit Escape cancellation were not exercised interactively.

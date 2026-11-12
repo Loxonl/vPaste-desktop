@@ -15,6 +15,7 @@ import {
     saveTabOrder,
     type CustomTab,
     tabOrderToMigrate,
+    appendDynamicTabId,
 } from "../../../src/clipboard/customTabs";
 
 const customTabs: CustomTab[] = [
@@ -104,6 +105,19 @@ describe("custom tab model", () => {
             "filter-links",
             "filter-images",
             "record:7",
+        ]);
+    });
+
+    it("appends a created tab after existing tabs without moving an edited tab", () => {
+        const tags = [{ id: 4, name: "Work" }];
+        const order = ["record:4", "filter-images", "filter-links"];
+        expect(appendDynamicTabId(customTabs, tags, order, "filter-images")).toEqual(order);
+        expect(appendDynamicTabId([], [], ["not-loaded-yet"], "new-filter")).toEqual(["not-loaded-yet", "new-filter"]);
+        expect(appendDynamicTabId([...customTabs, { ...customTabs[0], id: "new-filter" }], tags, [], "new-filter")).toEqual([
+            "filter-images", "filter-links", "record:4", "new-filter",
+        ]);
+        expect(appendDynamicTabId(customTabs, tags, [], "new-filter")).toEqual([
+            "filter-images", "filter-links", "record:4", "new-filter",
         ]);
     });
 

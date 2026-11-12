@@ -349,7 +349,7 @@ export default function TabEditor() {
                 name,
             }];
         }
-        const payload = { activeId, tabs: nextTabs };
+        const payload = { activeId, tabs: nextTabs, mode };
         persistCustomTabs(nextTabs);
         void emitTo("clipboard", "custom-tabs-changed", payload)
             .catch(e => error(`Failed to notify custom tabs changed: ${e}`));

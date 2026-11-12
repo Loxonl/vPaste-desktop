@@ -205,6 +205,8 @@ final class NativePanelToolbarTests: XCTestCase {
     let state = PanelToolbarState(scale: 1, chinese: false, search: NSSearchField())
     var received: [Int] = []
     state.onFilter = { received.append($0) }
+    // All and Favorites are fixed; the remaining tabs come from the user's data.
+    state.setTabs(["a", "b"].map { PanelTab(id: $0, name: $0, label: $0, record: false) })
     state.choose(3)
     XCTAssertEqual(state.selected, 3)
     XCTAssertEqual(received, [3])

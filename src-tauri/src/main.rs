@@ -5322,6 +5322,10 @@ async fn open_tab_editor_window(
                 fit_content_window_to_work_area(&window)?;
             }
         }
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        if native_panel::preview::active() {
+            set_macos_window_level(&window, 104);
+        }
         window.show().map_err(|err| err.to_string())?;
         let _ = activate_native_window(&window, "tab editor open");
         window.set_focus().map_err(|err| err.to_string())?;
@@ -5373,6 +5377,10 @@ async fn open_emoji_picker_window(
     let window =
         auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::EmojiPicker).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        if native_panel::preview::active() {
+            set_macos_window_level(&window, 105);
+        }
         let editor_position = editor.outer_position().map_err(|err| err.to_string())?;
         let scale_factor =
             editor.scale_factor().map_err(|err| err.to_string())? * ui_text_scale::current();
@@ -5488,6 +5496,10 @@ fn hide_tab_editor_window(window: tauri::WebviewWindow) -> Result<(), String> {
         let _ = auxiliary_windows::destroy(&emoji_picker_window);
     }
     auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if native_panel::tab_editor_closed(&app) {
+        return Ok(());
+    }
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
         focus_clipboard_window(&clipboard_window, "tab editor closed");
     }
@@ -5499,6 +5511,15 @@ fn apply_custom_tabs_from_editor(
     app: tauri::AppHandle,
     payload: serde_json::Value,
 ) -> Result<(), String> {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    {
+        // The editor also saves these itself, but as a separate request; store
+        // them before the native panel re-reads its tabs.
+        if let Some(tabs) = payload.get("tabs") {
+            save_custom_tabs(tabs.clone())?;
+        }
+        native_panel::tabs_changed(&payload);
+    }
     app.emit_to("clipboard", "custom-tabs-changed", payload)
         .map_err(|err| err.to_string())
 }
@@ -6328,8 +6349,46 @@ fn get_tab_order() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn save_tab_order(order: Vec<String>) -> Result<(), String> {
-    clipboard::db::write_tab_order(&clipboard::db::db(), &order).map_err(|err| err.to_string())
+fn save_tab_order(app: tauri::AppHandle, order: Vec<String>) -> Result<(), String> {
+    let conn = clipboard::db::db();
+    clipboard::db::write_tab_order(&conn, &order).map_err(|err| err.to_string())?;
+    let order = clipboard::db::read_tab_order(&conn).map_err(|err| err.to_string())?;
+    publish_tab_order(&app, &order)
+}
+
+fn publish_tab_order(app: &tauri::AppHandle, order: &[String]) -> Result<(), String> {
+    app.emit("tab-order-changed", serde_json::json!({"order": order}))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn reorder_tab(
+    app: tauri::AppHandle,
+    source_id: String,
+    target_id: String,
+    before: bool,
+) -> Result<Vec<String>, String> {
+    let custom = get_custom_tabs()?;
+    let mut known = custom
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|tab| tab["id"].as_str().map(String::from))
+        .collect::<Vec<_>>();
+    known.extend(
+        clipboard::list_tags()?
+            .into_iter()
+            .map(|tag| format!("record:{}", tag.id)),
+    );
+    let order = clipboard::db::reorder_tab_order(
+        &clipboard::db::db(),
+        &known,
+        &source_id,
+        &target_id,
+        before,
+    )?;
+    publish_tab_order(&app, &order)?;
+    Ok(order)
 }
 
 #[tauri::command]
@@ -13782,6 +13841,8 @@ fn main() {
                 if window.label() == "tabEditor" {
                     api.prevent_close();
                     let _ = auxiliary_windows::destroy_native(window);
+                    #[cfg(all(debug_assertions, target_os = "macos"))]
+                    native_panel::tab_editor_closed(window.app_handle());
                 }
                 if window.label() == "emojiPicker" {
                     api.prevent_close();
@@ -14178,6 +14239,7 @@ fn main() {
             set_item_favorite,
             get_tab_order,
             save_tab_order,
+            reorder_tab,
             list_item_tags,
             create_item_tag,
             rename_item_tag,

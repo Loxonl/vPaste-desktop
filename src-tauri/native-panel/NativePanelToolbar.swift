@@ -4,6 +4,10 @@ import SwiftUI
 @MainActor
 protocol PanelToolbarContent: AnyObject {
   var onFilter: ((Int) -> Void)? { get set }
+  var onAddTab: (() -> Void)? { get set }
+  var onTabContextMenu: ((String, NSPoint) -> Void)? { get set }
+  var onTabReorder: ((String, String, Bool) -> Void)? { get set }
+  var onTabDragging: ((Bool) -> Void)? { get set }
   var onRefresh: (() -> Void)? { get set }
   var onClose: (() -> Void)? { get set }
   var onSettings: (() -> Void)? { get set }
@@ -11,7 +15,7 @@ protocol PanelToolbarContent: AnyObject {
   func beginSearch()
   func endEmptySearch()
   func setSelection(_ index: Int)
-  func setTags(_ names: [String])
+  func setTabs(_ tabs: [PanelTab])
   func setInfoVisible(_ visible: Bool)
   func releaseContent()
 }
@@ -21,6 +25,10 @@ protocol PanelToolbarContent: AnyObject {
 @MainActor
 final class PanelToolbar: NSView {
   var onFilter: ((Int) -> Void)?
+  var onAddTab: (() -> Void)?
+  var onTabContextMenu: ((String, NSPoint) -> Void)?
+  var onTabReorder: ((String, String, Bool) -> Void)?
+  var onTabDragging: ((Bool) -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
   var onSettings: (() -> Void)?
@@ -41,6 +49,10 @@ final class PanelToolbar: NSView {
       rendererName = "AppKit fallback"
     }
     view.onFilter = { [weak self] in self?.onFilter?($0) }
+    view.onAddTab = { [weak self] in self?.onAddTab?() }
+    view.onTabContextMenu = { [weak self] in self?.onTabContextMenu?($0, $1) }
+    view.onTabReorder = { [weak self] in self?.onTabReorder?($0, $1, $2) }
+    view.onTabDragging = { [weak self] in self?.onTabDragging?($0) }
     view.onRefresh = { [weak self] in self?.onRefresh?() }
     view.onClose = { [weak self] in self?.onClose?() }
     view.onSettings = { [weak self] in self?.onSettings?() }
@@ -53,13 +65,17 @@ final class PanelToolbar: NSView {
   func beginSearch() { content?.beginSearch() }
   func endEmptySearch() { content?.endEmptySearch() }
   func setSelection(_ index: Int) { content?.setSelection(index) }
-  func setTags(_ names: [String]) { content?.setTags(names) }
+  func setTabs(_ tabs: [PanelTab]) { content?.setTabs(tabs) }
   func setInfoVisible(_ visible: Bool) { content?.setInfoVisible(visible) }
   func releaseContent() {
     content?.releaseContent()
     content?.removeFromSuperview()
     content = nil
     onFilter = nil
+    onAddTab = nil
+    onTabContextMenu = nil
+    onTabReorder = nil
+    onTabDragging = nil
     onRefresh = nil
     onClose = nil
     onSettings = nil
@@ -67,23 +83,16 @@ final class PanelToolbar: NSView {
   }
 }
 
-extension PanelLegacyToolbar: PanelToolbarContent {
-  // shortcut: the macOS 11 fallback toolbar shows no record-tag tabs, upgrade if macOS 11 must filter by tag
-  func setTags(_ names: [String]) {}
-  func releaseContent() {
-    onFilter = nil
-    onRefresh = nil
-    onClose = nil
-    onSettings = nil
-    onDiagnostics = nil
-  }
-}
+extension PanelLegacyToolbar: PanelToolbarContent {}
 
 struct PanelFilterChoice {
   let title: String
   let emoji: String
   let symbol: String
-  // Fixed tabs carry a symbol, type tabs an emoji, record-tag tabs neither.
+  // Fixed tabs carry a symbol. Dynamic tabs show their stored name, which
+  // already includes any emoji prefix; `record` marks a record tag.
+  var record = false
+  var id = ""
   var isFixed: Bool { !symbol.isEmpty }
   var label: String { emoji.isEmpty ? title : "\(emoji) \(title)" }
   func width(scale: CGFloat, selected: Bool = false) -> CGFloat {
@@ -91,35 +100,34 @@ struct PanelFilterChoice {
       .font: PanelToolbarTypography.tabFont(scale: scale, selected: selected)
     ]).width
     // Fixed tabs include the 17px icon, 5px gap and asymmetric 10/23px padding.
-    // Type tabs render the same single emoji-prefixed label as the WebView.
+    // Dynamic tabs render the same single label as the WebView.
     let extra: CGFloat = (isFixed ? 55 : 20) * scale
     // .tab-item.record has a 74px minimum width in the WebView.
-    let minimum: CGFloat = isFixed ? 78 : emoji.isEmpty ? 74 : 58
+    let minimum: CGFloat = isFixed ? 78 : record ? 74 : 58
     return min(128 * scale, max(minimum * scale, text + extra))
   }
 }
 
-// History query label per tab: the fixed filters, then one tab per record tag
-// (same payload as the WebView record-tag tab).
+// History query label per tab: All, Favorites, then the user's dynamic tabs.
 enum PanelFilterQuery {
-  private static let types = ["", "", "Text", "Image", "Link", "Color", "File"]
-  static func count(tags: [PanelTag]) -> Int { types.count + tags.count }
-  static func label(index: Int, tags: [PanelTag]) -> String? {
-    guard index >= 0, index < count(tags: tags) else { return nil }
-    if index == 0 { return "" }
-    if index == 1 { return "__favorite" }
-    let payload: [String: Any] =
-      index < types.count
-      ? ["mode": "all", "item_type": types[index]]
-      : ["mode": "record-tag", "record_tag_ids": [tags[index - types.count].id]]
-    guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
-    return "__filter:" + String(decoding: data, as: UTF8.self)
+  static let fixed = 2
+  static func count(tabs: [PanelTab]) -> Int { fixed + tabs.count }
+  static func index(id: String, tabs: [PanelTab]) -> Int? {
+    tabs.firstIndex { $0.id == id }.map { fixed + $0 }
+  }
+  static func label(index: Int, tabs: [PanelTab]) -> String? {
+    guard index >= 0, index < count(tabs: tabs) else { return nil }
+    return index == 0 ? "" : index == 1 ? "__favorite" : tabs[index - fixed].label
   }
 }
 
 // Shared selection underline for the SwiftUI filter strip. Mirrors the
 // WebView indicator's 10px inset and 3px height inside the tab bounds.
 enum PanelFilterIndicatorLayout {
+  static func extent(choices: [PanelFilterChoice], selected: Int, scale: CGFloat) -> CGFloat {
+    let widths = choices.enumerated().map { $0.element.width(scale: scale, selected: $0.offset == selected) }
+    return widths.reduce(0, +) + 8 * scale * CGFloat(max(0, widths.count - 1)) + 37 * scale
+  }
   static func rect(choices: [PanelFilterChoice], selected: Int, scale: CGFloat) -> CGRect? {
     guard choices.indices.contains(selected) else { return nil }
     let gap = 8 * scale
@@ -136,6 +144,8 @@ enum PanelFilterIndicatorLayout {
 @MainActor
 final class PanelToolbarState: ObservableObject {
   @Published var selected = 0
+  @Published var draggingTabID = ""
+  var releaseTabDrag: (() -> Void)?
   @Published var infoVisible = false
   @Published private(set) var searchOpen = false
   let scale: CGFloat
@@ -145,6 +155,10 @@ final class PanelToolbarState: ObservableObject {
   private let fixedChoices: [PanelFilterChoice]
   private(set) var closed = false
   var onFilter: ((Int) -> Void)?
+  var onAddTab: (() -> Void)?
+  var onTabContextMenu: ((String, NSPoint) -> Void)?
+  var onTabReorder: ((String, String, Bool) -> Void)?
+  var onTabDragging: ((Bool) -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
   var onSettings: (() -> Void)?
@@ -156,8 +170,6 @@ final class PanelToolbarState: ObservableObject {
     self.search = search
     fixedChoices = [
       ("All", "全部", "", "square.grid.3x3.fill"), ("Favorites", "收藏", "", "star"),
-      ("Text", "文本", "📝", ""), ("Image", "图片", "🖼️", ""), ("Link", "链接", "🔗", ""),
-      ("Color", "颜色", "🎨", ""), ("File", "文件", "📁", ""),
     ].map { PanelFilterChoice(title: chinese ? $0.1 : $0.0, emoji: $0.2, symbol: $0.3) }
     choices = fixedChoices
     search.isHidden = true
@@ -166,8 +178,14 @@ final class PanelToolbarState: ObservableObject {
     search.focusRingType = .exterior
   }
   func local(_ en: String, _ zh: String) -> String { chinese ? zh : en }
-  func setTags(_ names: [String]) {
-    choices = fixedChoices + names.map { PanelFilterChoice(title: $0, emoji: "", symbol: "") }
+  func setTabs(_ tabs: [PanelTab]) {
+    choices = fixedChoices + tabs.map {
+      PanelFilterChoice(title: $0.name, emoji: "", symbol: "", record: $0.record, id: $0.id)
+    }
+  }
+  func contextMenu(id: String, at point: NSPoint) {
+    guard !closed, !id.isEmpty, choices.contains(where: { $0.id == id }) else { return }
+    onTabContextMenu?(id, point)
   }
   func choose(_ index: Int) {
     guard !closed, choices.indices.contains(index) else { return }
@@ -185,8 +203,16 @@ final class PanelToolbarState: ObservableObject {
     search.isHidden = true
   }
   func close() {
+    guard !closed else { return }
+    releaseTabDrag?()
+    releaseTabDrag = nil
     closed = true
+    draggingTabID = ""
     onFilter = nil
+    onAddTab = nil
+    onTabContextMenu = nil
+    onTabReorder = nil
+    onTabDragging = nil
     onRefresh = nil
     onClose = nil
     onSettings = nil
@@ -218,6 +244,14 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
   required init(rootView: PanelToolbarView) { fatalError("Use the configured initializer") }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
   var onFilter: ((Int) -> Void)? { get { state.onFilter } set { state.onFilter = newValue } }
+  var onAddTab: (() -> Void)? { get { state.onAddTab } set { state.onAddTab = newValue } }
+  var onTabContextMenu: ((String, NSPoint) -> Void)? {
+    get { state.onTabContextMenu } set { state.onTabContextMenu = newValue }
+  }
+  var onTabReorder: ((String, String, Bool) -> Void)? {
+    get { state.onTabReorder } set { state.onTabReorder = newValue }
+  }
+  var onTabDragging: ((Bool) -> Void)? { get { state.onTabDragging } set { state.onTabDragging = newValue } }
   var onRefresh: (() -> Void)? { get { state.onRefresh } set { state.onRefresh = newValue } }
   var onClose: (() -> Void)? { get { state.onClose } set { state.onClose = newValue } }
   var onSettings: (() -> Void)? { get { state.onSettings } set { state.onSettings = newValue } }
@@ -245,7 +279,7 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
     if state.choices.indices.contains(index), state.selected != index { state.selected = index }
   }
   func setInfoVisible(_ visible: Bool) { state.infoVisible = visible }
-  func setTags(_ names: [String]) { state.setTags(names) }
+  func setTabs(_ tabs: [PanelTab]) { state.setTabs(tabs) }
   func releaseContent() {
     focusRequest &+= 1
     rootView.onSearch = nil
@@ -335,6 +369,34 @@ private struct PanelButtonCursor: NSViewRepresentable {
   static func dismantleNSView(_ view: PanelCursorRegion, coordinator: ()) { view.isEnabled = false }
 }
 
+// Intercept only context clicks; regular clicks, hover and scrolling still
+// reach the existing SwiftUI button and scroll view.
+@MainActor
+final class PanelTabContextView: NSView {
+  var onContextMenu: ((NSPoint) -> Void)?
+  override var acceptsFirstResponder: Bool { false }
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard onContextMenu != nil, let event = NSApp.currentEvent,
+      event.type == .rightMouseDown || (event.type == .leftMouseDown && event.modifierFlags.contains(.control)),
+      !isHidden, visibleRect.contains(convert(point, from: superview)) else { return nil }
+    return self
+  }
+  override func rightMouseDown(with event: NSEvent) { onContextMenu?(NSEvent.mouseLocation) }
+  override func mouseDown(with event: NSEvent) {
+    if event.modifierFlags.contains(.control) { rightMouseDown(with: event) }
+    else { super.mouseDown(with: event) }
+  }
+}
+
+@available(macOS 12.0, *)
+@MainActor
+private struct PanelTabContextTarget: NSViewRepresentable {
+  let onContextMenu: (NSPoint) -> Void
+  func makeNSView(context: Context) -> PanelTabContextView { PanelTabContextView() }
+  func updateNSView(_ view: PanelTabContextView, context: Context) { view.onContextMenu = onContextMenu }
+  static func dismantleNSView(_ view: PanelTabContextView, coordinator: ()) { view.onContextMenu = nil }
+}
+
 @available(macOS 12.0, *)
 @MainActor
 private struct PanelSwiftUIIcon: View {
@@ -404,6 +466,7 @@ private struct PanelFilterViewport: NSViewRepresentable {
   let height: CGFloat
   final class Coordinator {
     var host: PanelToolbarHostingView<PanelFilterStrip>?
+    var surface: PanelTabDragSurface?
     var selection: Int?
   }
   func makeCoordinator() -> Coordinator { Coordinator() }
@@ -413,7 +476,31 @@ private struct PanelFilterViewport: NSViewRepresentable {
     scroll.setAccessibilityLabel(state.local("History filters", "历史记录筛选"))
     let host = PanelToolbarHostingView(rootView: PanelFilterStrip(state: state))
     context.coordinator.host = host
-    scroll.documentView = host
+    let surface = PanelTabDragSurface()
+    surface.scale = state.scale
+    surface.addSubview(host)
+    surface.tabFrames = { [weak state] in
+      guard let state, !state.closed else { return [] }
+      var x: CGFloat = 0
+      return state.choices.enumerated().compactMap { index, choice in
+        let width = choice.width(scale: state.scale, selected: state.selected == index)
+        defer { x += width + 8 * state.scale }
+        return choice.isFixed ? nil : PanelTabDragFrame(id: choice.id,
+          frame: NSRect(x: x, y: 0, width: width, height: PanelStyle.headerHeight * state.scale))
+      }
+    }
+    surface.onMove = { [weak state] source, target, before in
+      guard let state, !state.closed else { return }
+      state.onTabReorder?(source, target, before)
+    }
+    surface.onDragChanged = { [weak state] id in
+      guard let state, !state.closed else { return }
+      state.draggingTabID = id ?? ""
+      state.onTabDragging?(id != nil)
+    }
+    state.releaseTabDrag = { [weak surface] in surface?.releaseContent() }
+    context.coordinator.surface = surface
+    scroll.documentView = surface
     return scroll
   }
   func updateNSView(_ scroll: PanelScroll, context: Context) {
@@ -421,10 +508,12 @@ private struct PanelFilterViewport: NSViewRepresentable {
       $0.element.width(scale: state.scale, selected: $0.offset == state.selected)
     }
     let gap = 8 * state.scale
-    let extent = widths.reduce(0, +) + gap * CGFloat(max(0, widths.count - 1))
+    let extent = PanelFilterIndicatorLayout.extent(
+      choices: state.choices, selected: state.selected, scale: state.scale)
     let size = NSSize(width: max(width, extent), height: height)
     if context.coordinator.host?.frame.size != size {
-      context.coordinator.host?.setFrameSize(size)
+      context.coordinator.surface?.setFrameSize(size)
+      context.coordinator.host?.frame = NSRect(origin: .zero, size: size)
     }
     if context.coordinator.selection != state.selected, widths.indices.contains(state.selected) {
       context.coordinator.selection = state.selected
@@ -434,7 +523,9 @@ private struct PanelFilterViewport: NSViewRepresentable {
     }
   }
   static func dismantleNSView(_ scroll: PanelScroll, coordinator: Coordinator) {
+    coordinator.surface?.releaseContent()
     scroll.documentView = nil
+    coordinator.surface = nil
     coordinator.host = nil
     coordinator.selection = nil
   }
@@ -448,32 +539,45 @@ private struct PanelFilterStrip: View {
   private var gap: CGFloat { 8 * state.scale }
   var body: some View {
     ZStack(alignment: .bottomLeading) {
-      HStack(spacing: gap) {
-        ForEach(state.choices.indices, id: \.self) { index in
-          let choice = state.choices[index]
-          let selected = state.selected == index
-          Button { state.choose(index) } label: {
-            HStack(spacing: 5 * state.scale) {
-              if choice.isFixed {
-                // MUI's 24-unit SVG uses 16 units for the grid, 20 for the star.
-                // Keep the 17pt layout box while matching its visible artwork.
-                let extent: CGFloat = choice.symbol == "star" ? 20 : 16
-                Image(systemName: choice.symbol).font(.system(size: 17 * extent / 24 * state.scale))
-                  .frame(width: 17 * state.scale, height: 17 * state.scale)
+      HStack(spacing: state.scale) {
+        HStack(spacing: gap) {
+          ForEach(state.choices.indices, id: \.self) { index in
+            let choice = state.choices[index]
+            let selected = state.selected == index
+            Button { state.choose(index) } label: {
+              HStack(spacing: 5 * state.scale) {
+                if choice.isFixed {
+                  // MUI's 24-unit SVG uses 16 units for the grid, 20 for the star.
+                  // Keep the 17pt layout box while matching its visible artwork.
+                  let extent: CGFloat = choice.symbol == "star" ? 20 : 16
+                  Image(systemName: choice.symbol).font(.system(size: 17 * extent / 24 * state.scale))
+                    .frame(width: 17 * state.scale, height: 17 * state.scale)
+                }
+                Text(choice.label)
+                  .font(Font(PanelToolbarTypography.tabFont(scale: state.scale, selected: selected)))
+                  .lineLimit(1).frame(height: PanelToolbarTypography.lineHeight * state.scale)
               }
-              Text(choice.label)
-                .font(Font(PanelToolbarTypography.tabFont(scale: state.scale, selected: selected)))
-                .lineLimit(1).frame(height: PanelToolbarTypography.lineHeight * state.scale)
+              .padding(.leading, 10 * state.scale)
+              .padding(.trailing, (choice.isFixed ? 23 : 10) * state.scale)
+              .frame(width: choice.width(scale: state.scale, selected: selected), height: PanelStyle.headerHeight * state.scale)
             }
-            .padding(.leading, 10 * state.scale)
-            .padding(.trailing, (choice.isFixed ? 23 : 10) * state.scale)
-            .frame(width: choice.width(scale: state.scale, selected: selected), height: PanelStyle.headerHeight * state.scale)
+            .buttonStyle(PanelFilterStyle(scale: state.scale, selected: selected, dark: scheme == .dark))
+            .opacity(!choice.id.isEmpty && state.draggingTabID == choice.id ? 0.55 : 1)
+            .focusable(false)
+            .overlay(PanelTabContextTarget { point in
+              state.contextMenu(id: choice.id, at: point)
+            }.accessibilityHidden(true))
+            .accessibilityLabel(Text(choice.title))
+            .accessibilityValue(Text(selected ? state.local("Selected", "已选择") : ""))
           }
-          .buttonStyle(PanelFilterStyle(scale: state.scale, selected: selected, dark: scheme == .dark))
-          .focusable(false)
-          .accessibilityLabel(Text(choice.title))
-          .accessibilityValue(Text(selected ? state.local("Selected", "已选择") : ""))
         }
+        Button { state.onAddTab?() } label: {
+          Image(systemName: "plus").font(.system(size: 18 * state.scale))
+            .frame(width: 36 * state.scale, height: 36 * state.scale)
+        }
+        .buttonStyle(PanelFilterStyle(scale: state.scale, selected: false, dark: scheme == .dark))
+        .focusable(false)
+        .accessibilityLabel(Text(state.local("Add tab", "添加标签")))
       }
       selectionIndicator
     }

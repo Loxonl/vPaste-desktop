@@ -31,6 +31,7 @@ import {
     mergeTagSearchFilter,
     normalizeCustomTabs,
     orderedDynamicTabs,
+    appendDynamicTabId,
     parseTagSearch,
     recordTagIdFromTab,
     recordTagTabId,
@@ -205,6 +206,7 @@ export default function Clipboard() {
     const [activeTab, setActiveTab] = useState<string>("all");
     const [customTabs, setCustomTabs] = useState<CustomTab[]>(loadCustomTabs);
     const [tabOrder, setTabOrder] = useState<string[]>(loadTabOrder);
+    const tabOrderEpochRef = useRef(0);
     const [draggingTabId, setDraggingTabId] = useState<string>("");
     const [toast, setToast] = useState<ToastState>(null);
     const [fileRefreshKey, setFileRefreshKey] = useState(0);
@@ -218,6 +220,8 @@ export default function Clipboard() {
     const updateDialogOpenedRef = useRef(false);
     updateDialogOpenedRef.current ||= updateConfirmOpen;
     const [itemTags, setItemTags] = useState<ItemTag[]>([]);
+    const tabDataRef = useRef({ customTabs, itemTags });
+    tabDataRef.current = { customTabs, itemTags };
     const [hasMoreHistory, setHasMoreHistory] = useState(true);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [simulatedHoverHash, setSimulatedHoverHash] = useState("");
@@ -479,10 +483,14 @@ export default function Clipboard() {
     useEffect(() => {
         void loadItemTags();
         const savedOrder = loadTabOrder();
+        const orderEpoch = tabOrderEpochRef.current;
         void invoke<string[]>('get_tab_order')
             .then(stored => {
-                const order = tabOrderToMigrate(stored, savedOrder);
-                if (order) storeTabOrder(order);
+                if (tabOrderEpochRef.current !== orderEpoch) return;
+                const databaseOrder = Array.isArray(stored) ? stored : [];
+                const migrated = tabOrderToMigrate(databaseOrder, savedOrder);
+                if (migrated) storeTabOrder(migrated);
+                applyTabOrder(migrated ?? databaseOrder);
             })
             .catch(e => error(`Failed to load stored tab order: ${e}`));
         void Promise.all([
@@ -525,12 +533,10 @@ export default function Clipboard() {
     }, [activeTab, customTabs, itemTags]);
 
     useEffect(() => {
-        const normalizedOrder = dynamicTabs.map(tab => tab.id);
-        if (!arraysEqual(tabOrder, normalizedOrder)) {
-            setTabOrder(normalizedOrder);
-        }
-        saveTabOrder(normalizedOrder);
-    }, [dynamicTabs, tabOrder]);
+        // Keep ids for tabs whose data has not loaded yet. The render model
+        // already filters stale ids and fills in the remaining tabs.
+        saveTabOrder(tabOrder);
+    }, [tabOrder]);
 
     useEffect(() => {
         selectedRef.current = selected as string;
@@ -635,7 +641,14 @@ export default function Clipboard() {
 
     // User-made order changes also go to the history database, where the
     // native panel reads them.
+    const applyTabOrder = (order: string[]) => {
+        tabOrderEpochRef.current += 1;
+        saveTabOrder(order);
+        setTabOrder(order);
+    };
+
     const storeTabOrder = (order: string[]) => {
+        tabOrderEpochRef.current += 1;
         saveTabOrder(order);
         void invoke('save_tab_order', { order })
             .catch(e => error(`Failed to store tab order: ${e}`));
@@ -643,7 +656,8 @@ export default function Clipboard() {
 
     const appendTabOrderId = (tabId: string) => {
         setTabOrder(order => {
-            const next = [...order.filter(id => id !== tabId), tabId];
+            const { customTabs, itemTags } = tabDataRef.current;
+            const next = appendDynamicTabId(customTabs, itemTags, order, tabId);
             storeTabOrder(next);
             return next;
         });
@@ -890,19 +904,14 @@ export default function Clipboard() {
     };
 
     const handleTabDrop = (targetId: string) => {
-        if (!draggingTabId || draggingTabId === targetId) return;
-        setTabOrder(order => {
-            const currentOrder = orderedDynamicTabs(customTabs, itemTags, order).map(tab => tab.id);
-            const sourceIndex = currentOrder.indexOf(draggingTabId);
-            const targetIndex = currentOrder.indexOf(targetId);
-            if (sourceIndex === -1 || targetIndex === -1) return order;
-            const next = [...currentOrder];
-            const [moved] = next.splice(sourceIndex, 1);
-            next.splice(targetIndex, 0, moved);
-            storeTabOrder(next);
-            return next;
-        });
+        const sourceId = draggingTabId;
         setDraggingTabId("");
+        if (!sourceId || sourceId === targetId) return;
+        const source = dynamicTabs.findIndex(tab => tab.id === sourceId);
+        const target = dynamicTabs.findIndex(tab => tab.id === targetId);
+        if (source === -1 || target === -1) return;
+        void invoke('reorder_tab', { sourceId, targetId, before: source > target })
+            .catch(reason => showToast(t("clipboard.actionFailed", { error: String(reason) }), "error"));
     };
 
     const scheduleFileRefresh = (delay: number = 320) => {
@@ -1285,12 +1294,15 @@ export default function Clipboard() {
             onPermissionStatusChanged: () => {
                 void refreshTutorialPermissionStatus();
             },
+            onTabOrderChanged: payload => {
+                if (Array.isArray(payload.order)) applyTabOrder(payload.order);
+            },
             onCustomTabsChanged: payload => {
                 const tabs = Array.isArray(payload.tabs) ? payload.tabs : loadCustomTabs();
                 persistCustomTabs(tabs);
                 setCustomTabs(tabs);
                 if (payload.activeId) {
-                    appendTabOrderId(payload.activeId);
+                    if (payload.mode !== "edit") appendTabOrderId(payload.activeId);
                     activeTabRef.current = payload.activeId;
                     setActiveTab(payload.activeId);
                 }

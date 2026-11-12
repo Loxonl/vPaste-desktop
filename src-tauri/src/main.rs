@@ -6349,8 +6349,46 @@ fn get_tab_order() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn save_tab_order(order: Vec<String>) -> Result<(), String> {
-    clipboard::db::write_tab_order(&clipboard::db::db(), &order).map_err(|err| err.to_string())
+fn save_tab_order(app: tauri::AppHandle, order: Vec<String>) -> Result<(), String> {
+    let conn = clipboard::db::db();
+    clipboard::db::write_tab_order(&conn, &order).map_err(|err| err.to_string())?;
+    let order = clipboard::db::read_tab_order(&conn).map_err(|err| err.to_string())?;
+    publish_tab_order(&app, &order)
+}
+
+fn publish_tab_order(app: &tauri::AppHandle, order: &[String]) -> Result<(), String> {
+    app.emit("tab-order-changed", serde_json::json!({"order": order}))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn reorder_tab(
+    app: tauri::AppHandle,
+    source_id: String,
+    target_id: String,
+    before: bool,
+) -> Result<Vec<String>, String> {
+    let custom = get_custom_tabs()?;
+    let mut known = custom
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|tab| tab["id"].as_str().map(String::from))
+        .collect::<Vec<_>>();
+    known.extend(
+        clipboard::list_tags()?
+            .into_iter()
+            .map(|tag| format!("record:{}", tag.id)),
+    );
+    let order = clipboard::db::reorder_tab_order(
+        &clipboard::db::db(),
+        &known,
+        &source_id,
+        &target_id,
+        before,
+    )?;
+    publish_tab_order(&app, &order)?;
+    Ok(order)
 }
 
 #[tauri::command]
@@ -14201,6 +14239,7 @@ fn main() {
             set_item_favorite,
             get_tab_order,
             save_tab_order,
+            reorder_tab,
             list_item_tags,
             create_item_tag,
             rename_item_tag,

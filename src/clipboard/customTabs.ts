@@ -142,6 +142,17 @@ export function recordTagIdFromTab(tabId: string): number | null {
     return Number.isInteger(id) && id > 0 ? id : null;
 }
 
+export function appendDynamicTabId(
+    customTabs: CustomTab[],
+    itemTags: ItemTag[],
+    order: string[],
+    id: string,
+): string[] {
+    const known = orderedDynamicTabs(customTabs, itemTags, order).map(tab => tab.id);
+    const current = [...new Set([...order, ...known])];
+    return order.includes(id) ? current : [...current.filter(candidate => candidate !== id), id];
+}
+
 export function orderedDynamicTabs(
     customTabs: CustomTab[],
     itemTags: ItemTag[],

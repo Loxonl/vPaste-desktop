@@ -920,3 +920,53 @@ tag and its one association, unchanged filter ids and an unchanged empty stored
 order after the filter edit. The check app and private frontend were stopped.
 Confirmed deletion was not performed interactively; older-macOS AppKit visual
 acceptance and Windows runtime checks were not performed.
+
+
+### Native toolbar drag-to-reorder
+
+Acceptance criteria:
+
+- Filter tabs and record-tag tabs reorder together by stable id. All, Favorites
+  and the add button remain fixed. Normal click and context-click behavior stay.
+- A local AppKit drag session shows a tab preview and insertion marker, supports
+  horizontal edge scrolling, suspends hover preview/focus-loss dismissal, and
+  releases its timer, cursor and callbacks on finish, cancel or teardown.
+- Drop commits once through Rust using the latest known tabs. Cancel or dropping
+  outside the panel commits nothing. Reordering preserves the selected tab and
+  history viewport without fetching history again.
+- The database order is applied at WebView startup and changes notify both
+  surfaces. Preserve unseen ids while tab data loads. Editing a filter tab does
+  not append it again; new tabs still go after the existing tabs.
+
+Coverage is added before implementation for mixed-kind before/after moves,
+invalid targets, newly added tabs, history preservation, geometry/edge scrolling,
+teardown and non-moving edit notifications. Local regression suites are not
+executed at the user's request.
+
+The WebView drop path now asks Rust to move ids rather than replacing order from
+an older UI snapshot; its existing target-index placement is retained. Rust
+validates dynamic ids, fills missing known entries and replaces order
+inside an immediate transaction. A tab-order-changed event refreshes only native
+tabs and updates the WebView cache/state; it does not reopen history. The old
+startup state-normalization effect is removed so unloaded record-tag ids are not
+lost. Add/edit mode now also reaches the WebView receiver, and creation uses
+current tab data instead of mount-time callback data.
+
+The shared AppKit row surface owns the drag preview, insertion marker, local-only
+move payload, edge timer and cleanup. Its recognizer has priority over descendant
+button gestures so a successful drag cannot also activate a tab. Clicks without
+movement and right-click menus retain their existing paths. The existing AppKit
+fallback teardown is moved beside its content to release the drag surface too.
+
+Verification: the final macOS Debug build, Release check, Swift production and
+focused XCTest typechecking with both SDK flags, Rust test-source compilation
+without execution, TypeScript, style governance, Rust formatting and diff checks
+passed. SwiftUI teardown explicitly releases the drag surface once, before
+waiting for representable dismantling, so closing the panel stops edge scrolling
+immediately. A scoped isolated run with 500 synthetic history rows confirmed before/
+after mixed-tag movement, active-tab preservation, ordinary clicking, context
+menus, drag-out cancellation and fixed-tab protection. Read-only database
+inspection confirmed the resulting order and retained 500 history rows and one
+tag association. The isolated app and private frontend were stopped. No local
+regression suite was run; Windows/macOS 11 runtime checks, sustained edge-hover
+scrolling and explicit Escape cancellation were not exercised interactively.

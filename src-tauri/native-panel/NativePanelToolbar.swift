@@ -6,6 +6,8 @@ protocol PanelToolbarContent: AnyObject {
   var onFilter: ((Int) -> Void)? { get set }
   var onAddTab: (() -> Void)? { get set }
   var onTabContextMenu: ((String, NSPoint) -> Void)? { get set }
+  var onTabReorder: ((String, String, Bool) -> Void)? { get set }
+  var onTabDragging: ((Bool) -> Void)? { get set }
   var onRefresh: (() -> Void)? { get set }
   var onClose: (() -> Void)? { get set }
   var onSettings: (() -> Void)? { get set }
@@ -25,6 +27,8 @@ final class PanelToolbar: NSView {
   var onFilter: ((Int) -> Void)?
   var onAddTab: (() -> Void)?
   var onTabContextMenu: ((String, NSPoint) -> Void)?
+  var onTabReorder: ((String, String, Bool) -> Void)?
+  var onTabDragging: ((Bool) -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
   var onSettings: (() -> Void)?
@@ -47,6 +51,8 @@ final class PanelToolbar: NSView {
     view.onFilter = { [weak self] in self?.onFilter?($0) }
     view.onAddTab = { [weak self] in self?.onAddTab?() }
     view.onTabContextMenu = { [weak self] in self?.onTabContextMenu?($0, $1) }
+    view.onTabReorder = { [weak self] in self?.onTabReorder?($0, $1, $2) }
+    view.onTabDragging = { [weak self] in self?.onTabDragging?($0) }
     view.onRefresh = { [weak self] in self?.onRefresh?() }
     view.onClose = { [weak self] in self?.onClose?() }
     view.onSettings = { [weak self] in self?.onSettings?() }
@@ -68,6 +74,8 @@ final class PanelToolbar: NSView {
     onFilter = nil
     onAddTab = nil
     onTabContextMenu = nil
+    onTabReorder = nil
+    onTabDragging = nil
     onRefresh = nil
     onClose = nil
     onSettings = nil
@@ -75,17 +83,7 @@ final class PanelToolbar: NSView {
   }
 }
 
-extension PanelLegacyToolbar: PanelToolbarContent {
-  func releaseContent() {
-    onFilter = nil
-    onAddTab = nil
-    onTabContextMenu = nil
-    onRefresh = nil
-    onClose = nil
-    onSettings = nil
-    onDiagnostics = nil
-  }
-}
+extension PanelLegacyToolbar: PanelToolbarContent {}
 
 struct PanelFilterChoice {
   let title: String
@@ -146,6 +144,8 @@ enum PanelFilterIndicatorLayout {
 @MainActor
 final class PanelToolbarState: ObservableObject {
   @Published var selected = 0
+  @Published var draggingTabID = ""
+  var releaseTabDrag: (() -> Void)?
   @Published var infoVisible = false
   @Published private(set) var searchOpen = false
   let scale: CGFloat
@@ -157,6 +157,8 @@ final class PanelToolbarState: ObservableObject {
   var onFilter: ((Int) -> Void)?
   var onAddTab: (() -> Void)?
   var onTabContextMenu: ((String, NSPoint) -> Void)?
+  var onTabReorder: ((String, String, Bool) -> Void)?
+  var onTabDragging: ((Bool) -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
   var onSettings: (() -> Void)?
@@ -201,10 +203,16 @@ final class PanelToolbarState: ObservableObject {
     search.isHidden = true
   }
   func close() {
+    guard !closed else { return }
+    releaseTabDrag?()
+    releaseTabDrag = nil
     closed = true
+    draggingTabID = ""
     onFilter = nil
     onAddTab = nil
     onTabContextMenu = nil
+    onTabReorder = nil
+    onTabDragging = nil
     onRefresh = nil
     onClose = nil
     onSettings = nil
@@ -240,6 +248,10 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
   var onTabContextMenu: ((String, NSPoint) -> Void)? {
     get { state.onTabContextMenu } set { state.onTabContextMenu = newValue }
   }
+  var onTabReorder: ((String, String, Bool) -> Void)? {
+    get { state.onTabReorder } set { state.onTabReorder = newValue }
+  }
+  var onTabDragging: ((Bool) -> Void)? { get { state.onTabDragging } set { state.onTabDragging = newValue } }
   var onRefresh: (() -> Void)? { get { state.onRefresh } set { state.onRefresh = newValue } }
   var onClose: (() -> Void)? { get { state.onClose } set { state.onClose = newValue } }
   var onSettings: (() -> Void)? { get { state.onSettings } set { state.onSettings = newValue } }
@@ -454,6 +466,7 @@ private struct PanelFilterViewport: NSViewRepresentable {
   let height: CGFloat
   final class Coordinator {
     var host: PanelToolbarHostingView<PanelFilterStrip>?
+    var surface: PanelTabDragSurface?
     var selection: Int?
   }
   func makeCoordinator() -> Coordinator { Coordinator() }
@@ -463,7 +476,31 @@ private struct PanelFilterViewport: NSViewRepresentable {
     scroll.setAccessibilityLabel(state.local("History filters", "历史记录筛选"))
     let host = PanelToolbarHostingView(rootView: PanelFilterStrip(state: state))
     context.coordinator.host = host
-    scroll.documentView = host
+    let surface = PanelTabDragSurface()
+    surface.scale = state.scale
+    surface.addSubview(host)
+    surface.tabFrames = { [weak state] in
+      guard let state, !state.closed else { return [] }
+      var x: CGFloat = 0
+      return state.choices.enumerated().compactMap { index, choice in
+        let width = choice.width(scale: state.scale, selected: state.selected == index)
+        defer { x += width + 8 * state.scale }
+        return choice.isFixed ? nil : PanelTabDragFrame(id: choice.id,
+          frame: NSRect(x: x, y: 0, width: width, height: PanelStyle.headerHeight * state.scale))
+      }
+    }
+    surface.onMove = { [weak state] source, target, before in
+      guard let state, !state.closed else { return }
+      state.onTabReorder?(source, target, before)
+    }
+    surface.onDragChanged = { [weak state] id in
+      guard let state, !state.closed else { return }
+      state.draggingTabID = id ?? ""
+      state.onTabDragging?(id != nil)
+    }
+    state.releaseTabDrag = { [weak surface] in surface?.releaseContent() }
+    context.coordinator.surface = surface
+    scroll.documentView = surface
     return scroll
   }
   func updateNSView(_ scroll: PanelScroll, context: Context) {
@@ -475,7 +512,8 @@ private struct PanelFilterViewport: NSViewRepresentable {
       choices: state.choices, selected: state.selected, scale: state.scale)
     let size = NSSize(width: max(width, extent), height: height)
     if context.coordinator.host?.frame.size != size {
-      context.coordinator.host?.setFrameSize(size)
+      context.coordinator.surface?.setFrameSize(size)
+      context.coordinator.host?.frame = NSRect(origin: .zero, size: size)
     }
     if context.coordinator.selection != state.selected, widths.indices.contains(state.selected) {
       context.coordinator.selection = state.selected
@@ -485,7 +523,9 @@ private struct PanelFilterViewport: NSViewRepresentable {
     }
   }
   static func dismantleNSView(_ scroll: PanelScroll, coordinator: Coordinator) {
+    coordinator.surface?.releaseContent()
     scroll.documentView = nil
+    coordinator.surface = nil
     coordinator.host = nil
     coordinator.selection = nil
   }
@@ -522,6 +562,7 @@ private struct PanelFilterStrip: View {
               .frame(width: choice.width(scale: state.scale, selected: selected), height: PanelStyle.headerHeight * state.scale)
             }
             .buttonStyle(PanelFilterStyle(scale: state.scale, selected: selected, dark: scheme == .dark))
+            .opacity(!choice.id.isEmpty && state.draggingTabID == choice.id ? 0.55 : 1)
             .focusable(false)
             .overlay(PanelTabContextTarget { point in
               state.contextMenu(id: choice.id, at: point)

@@ -150,12 +150,17 @@ fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Res
                 "listen_new_clipboard",
                 "clipboard-item-edited",
                 "item-tags-changed",
+                "tab-order-changed",
                 "clipboard-resources-updated",
             ] {
                 let id = app.listen(name, move |event| {
                     if name == "listen_new_clipboard"
                         && SUPPRESS_CHANGED.swap(false, Ordering::AcqRel)
                     {
+                        return;
+                    }
+                    if name == "tab-order-changed" {
+                        deliver(session, json!({"event":"tab-order-changed"}));
                         return;
                     }
                     if name == "item-tags-changed" {
@@ -376,6 +381,10 @@ struct Request {
     kind: String,
     #[serde(default)]
     tab_id: String,
+    #[serde(default)]
+    target_id: String,
+    #[serde(default)]
+    before: bool,
     #[serde(default)]
     point: Option<[f64; 2]>,
     #[serde(default)]
@@ -732,6 +741,14 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
                     .unwrap_or_else(|error| error.into_inner()) = None;
             }
             result?;
+            Ok(Value::Null)
+        }
+        "tab-reorder" => {
+            let app = app.clone();
+            let source = r.tab_id.clone();
+            let target = r.target_id.clone();
+            let before = r.before;
+            blocking(move || crate::reorder_tab(app, source, target, before)).await?;
             Ok(Value::Null)
         }
         "tab-delete" => {

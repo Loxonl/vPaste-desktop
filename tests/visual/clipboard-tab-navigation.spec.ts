@@ -14,10 +14,10 @@ const cards = (page: Page) => page.locator('[data-results-active="true"] [data-h
 const activeTab = (page: Page) => page.locator('[class*="header-tabs"] [class*="tab-item"][class*="active"]');
 const categoryNames = (page: Page) => page.locator('[class*="header-tabs"] [class*="tab-item"]').allTextContents();
 
-async function openClipboard(page: Page, mac: boolean, extraTabs = 0) {
+async function openClipboard(page: Page, mac: boolean, extraTabs = 0, storedOrder: string[] = []) {
     await page.setViewportSize({ width: 760, height: 520 });
     await page.emulateMedia({ reducedMotion: mac ? "reduce" : "no-preference" });
-    await page.addInitScript(({ mac, extraTabs }) => {
+    await page.addInitScript(({ mac, extraTabs, storedOrder }) => {
         Object.defineProperty(navigator, "platform", { value: mac ? "MacIntel" : "Win32", configurable: true });
         Object.defineProperty(navigator, "userAgentData", { value: { platform: mac ? "macOS" : "Windows" }, configurable: true });
         const tabs = [
@@ -50,6 +50,7 @@ async function openClipboard(page: Page, mac: boolean, extraTabs = 0) {
                         return JSON.stringify({ list, consumed: list.length, hasMore: false, nextId: 0, nextTime: 0 });
                     }
                     if (command === "get_custom_tabs") return tabs;
+                    if (command === "get_tab_order") return storedOrder;
                     if (command === "list_item_tags") return [{ id: 7, name: "记录标签" }];
                     if (command === "is_preview_window_visible") return previewVisible;
                     if (command === "hide_preview_window") { previewVisible = false; return null; }
@@ -66,7 +67,7 @@ async function openClipboard(page: Page, mac: boolean, extraTabs = 0) {
                 metadata: { currentWindow: { label: "clipboard" }, currentWebview: { label: "clipboard" } },
             },
         });
-    }, { mac, extraTabs });
+    }, { mac, extraTabs, storedOrder });
     await page.goto("/clipboard");
     await expect(cards(page).first()).toBeVisible({ timeout: 15_000 });
     await expect(page.getByRole("button", { name: "记录标签", exact: true })).toBeVisible();
@@ -188,4 +189,15 @@ test("settings display one compact fixed category shortcut on each platform", as
         expect(await value.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
         await page.screenshot({ path: testInfo.outputPath(`category-shortcut-${platform}.png`), animations: "disabled" });
     }
+});
+
+
+test("database order overrides local cache and order notifications preserve selection and history", async ({ page }) => {
+    await openClipboard(page, true, 0, ["text", "record:7", "empty"]);
+    expect(await categoryNames(page)).toEqual(["全部", "收藏", "文字分类", "记录标签", "空分类"]);
+    const searches = await page.evaluate(() => (window as NavigationProbe).__tabNavigation.calls.filter(call => call.command === "search").length);
+    await page.evaluate(() => (window as NavigationProbe).__tabNavigation.emit("tab-order-changed", { order: ["empty", "text", "record:7"] }));
+    await expect.poll(() => categoryNames(page)).toEqual(["全部", "收藏", "空分类", "文字分类", "记录标签"]);
+    await expect(activeTab(page)).toContainText("全部");
+    expect(await page.evaluate(() => (window as NavigationProbe).__tabNavigation.calls.filter(call => call.command === "search").length)).toBe(searches);
 });

@@ -359,6 +359,7 @@ int FilterIndex() {
 
 void UpdateFilterLabels() {
     using namespace winrt::Microsoft::UI::Xaml::Controls;
+    using namespace winrt::Microsoft::UI::Xaml;
     const bool populate = g_panel.filter.Items().Size() == 0;
     std::uint32_t index = 0;
     for (const auto &label : {
@@ -379,7 +380,8 @@ void UpdateFilterLabels() {
         }
         const auto item = g_panel.filter.Items().GetAt(index);
         item.Text(label);
-        item.Visibility(index++ < 2 ? winrt::Microsoft::UI::Xaml::Visibility::Visible : winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
+        item.Visibility(index < 2 ? Visibility::Visible : Visibility::Collapsed);
+        ++index;
     }
     if (populate) g_panel.filter.SelectedItem(g_panel.filter.Items().GetAt(0));
     winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
@@ -396,6 +398,8 @@ void UpdateHistoryState();
 void SetVisible(bool visible, bool freshShow) noexcept;
 void CancelHoverPreview() { if (g_panel.hoverPreview) g_panel.hoverPreview->Cancel(); }
 template<typename T> T FindHistoryChild(winrt::Microsoft::UI::Xaml::DependencyObject const &element);
+void ApplyCardPresenterChrome(winrt::Microsoft::UI::Xaml::DependencyObject const &container,
+                              bool contrast);
 void UpdateSearchWidth() {
     if (g_panel.search && g_panel.root) {
         const bool narrow = g_panel.root.Width() < 900;
@@ -492,12 +496,18 @@ void ApplyRowTheme(bool contrast = vpaste::winui::HighContrastEnabled()) {
     if (g_panel.status) vpaste::winui::ApplyStyle(g_panel.status, L"VPaste.Secondary");
     for (std::size_t index = 0; index < g_panel.rows.size(); ++index) {
         auto &row = g_panel.rows[index];
+        if (g_panel.history) {
+            if (const auto container = g_panel.history.ContainerFromIndex(static_cast<std::uint32_t>(index))) {
+                ApplyCardPresenterChrome(container, contrast);
+            }
+        }
         row.surface.CanDrag(!g_queueSelectionMode);
         const bool isSelected = index < g_hashes.size() && (g_queueSelectionMode
             ? std::find(g_queueSelectedHashes.begin(), g_queueSelectedHashes.end(), g_hashes[index]) !=
                   g_queueSelectedHashes.end()
             : g_hashes[index] == g_selectedHash);
-        vpaste::winui::ApplyStyle(row.surface, isSelected ? L"VPaste.SelectedSurface" : L"VPaste.Surface");
+        vpaste::winui::ApplyStyle(row.surface,
+            isSelected && !contrast ? L"VPaste.SelectedSurface" : L"VPaste.Surface");
         if (contrast) {
             row.header.ClearValue(winrt::Microsoft::UI::Xaml::Controls::Border::BackgroundProperty());
             vpaste::winui::ApplyStyle(row.header, L"VPaste.ContrastCardHeader");
@@ -1233,6 +1243,50 @@ template<typename T> T FindHistoryChild(winrt::Microsoft::UI::Xaml::DependencyOb
         if (auto match = FindHistoryChild<T>(winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper::GetChild(element, i))) return match;
     }
     return nullptr;
+}
+
+void ApplyCardPresenterChrome(winrt::Microsoft::UI::Xaml::DependencyObject const &container,
+                              bool contrast) {
+    using namespace winrt::Microsoft::UI::Xaml::Controls::Primitives;
+    using namespace winrt::Microsoft::UI::Xaml::Media;
+    const auto presenter = FindHistoryChild<ListViewItemPresenter>(container);
+    if (!presenter) return;
+    if (contrast) {
+        presenter.ClearValue(winrt::Microsoft::UI::Xaml::Controls::Control::BackgroundProperty());
+        presenter.ClearValue(winrt::Microsoft::UI::Xaml::Controls::Control::BorderBrushProperty());
+        presenter.ClearValue(ListViewItemPresenter::PointerOverBackgroundProperty());
+        presenter.ClearValue(ListViewItemPresenter::PointerOverBorderBrushProperty());
+        presenter.ClearValue(ListViewItemPresenter::PressedBackgroundProperty());
+        presenter.ClearValue(ListViewItemPresenter::SelectedBackgroundProperty());
+        presenter.ClearValue(ListViewItemPresenter::SelectedBorderBrushProperty());
+        presenter.ClearValue(ListViewItemPresenter::SelectedPointerOverBackgroundProperty());
+        presenter.ClearValue(ListViewItemPresenter::SelectedPointerOverBorderBrushProperty());
+        presenter.ClearValue(ListViewItemPresenter::SelectedPressedBackgroundProperty());
+        presenter.ClearValue(ListViewItemPresenter::SelectedPressedBorderBrushProperty());
+        presenter.ClearValue(ListViewItemPresenter::SelectedDisabledBackgroundProperty());
+        presenter.ClearValue(ListViewItemPresenter::SelectedDisabledBorderBrushProperty());
+        presenter.ClearValue(ListViewItemPresenter::SelectedInnerBorderBrushProperty());
+        presenter.SelectionIndicatorVisualEnabled(contrast);
+        presenter.SelectionCheckMarkVisualEnabled(true);
+        return;
+    }
+    const SolidColorBrush transparent{winrt::Windows::UI::Color{0, 0, 0, 0}};
+    presenter.Background(transparent);
+    presenter.BorderBrush(transparent);
+    presenter.PointerOverBackground(transparent);
+    presenter.PointerOverBorderBrush(transparent);
+    presenter.PressedBackground(transparent);
+    presenter.SelectedBackground(transparent);
+    presenter.SelectedBorderBrush(transparent);
+    presenter.SelectedPointerOverBackground(transparent);
+    presenter.SelectedPointerOverBorderBrush(transparent);
+    presenter.SelectedPressedBackground(transparent);
+    presenter.SelectedPressedBorderBrush(transparent);
+    presenter.SelectedDisabledBackground(transparent);
+    presenter.SelectedDisabledBorderBrush(transparent);
+    presenter.SelectedInnerBorderBrush(transparent);
+    presenter.SelectionIndicatorVisualEnabled(contrast);
+    presenter.SelectionCheckMarkVisualEnabled(true);
 }
 
 void BindHistoryScroll() {
@@ -2356,7 +2410,6 @@ void ApplyResponse(const std::string &bytes) {
             surface.Width(kCardWidth);
             surface.Height(kCardHeight);
             surface.CornerRadius(vpaste::winui::UniformRadius(kCardRadius));
-            surface.BorderThickness(Thickness{1, 1, 1, 1});
             surface.Margin(Thickness{8, 0, 8, 0});
             surface.Child(row);
             surface.PointerEntered([cardMenu](auto const &, auto const &) {
@@ -3348,6 +3401,8 @@ HRESULT CreatePanel() noexcept {
         g_panel.history.VerticalContentAlignment(VerticalAlignment::Top);
         g_panel.history.ContainerContentChanging([](auto const &, auto const &args) {
             if (args.InRecycleQueue()) return;
+            if (const auto container = args.ItemContainer())
+                ApplyCardPresenterChrome(container, vpaste::winui::HighContrastEnabled());
             const auto itemIndex = args.ItemIndex();
             const auto index = static_cast<std::size_t>(itemIndex);
             if (index >= g_hashes.size()) return;
@@ -6558,7 +6613,55 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 std::printf("WinUI queue 6x100 refresh/destroy: %.2f ms including render waits\n",
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
             }
-            completion->set_value({S_OK, 129});
+            currentStage = 130;
+            {
+                using namespace winrt::Windows::Data::Json;
+                for (std::uint32_t index = 0; index < g_panel.filter.Items().Size(); ++index) {
+                    const auto expectedVisibility = index < 2
+                        ? winrt::Microsoft::UI::Xaml::Visibility::Visible
+                        : winrt::Microsoft::UI::Xaml::Visibility::Collapsed;
+                    winrt::check_hresult(g_panel.filter.Items().GetAt(index).Visibility() ==
+                        expectedVisibility ? S_OK : E_FAIL);
+                }
+                RequestHistory();
+                JsonObject response = JsonObject::Parse(
+                    LR"({"op":"query","data":{"items":[{"hash":"presenter-chrome","itemType":"Text"}],"hasMore":false}})");
+                response.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+                ApplyResponse(winrt::to_string(response.Stringify()));
+                co_await NextNativeFrame();
+                g_panel.root.UpdateLayout();
+                const auto container = g_panel.history.ContainerFromIndex(0);
+                const auto presenter = FindHistoryChild<winrt::Microsoft::UI::Xaml::Controls::Primitives::ListViewItemPresenter>(container);
+                winrt::check_hresult(presenter && !presenter.SelectionIndicatorVisualEnabled() &&
+                    presenter.SelectionCheckMarkVisualEnabled() ? S_OK : E_FAIL);
+                const auto isTransparent = [](winrt::Microsoft::UI::Xaml::Media::Brush const &brush) {
+                    const auto solid = brush.try_as<winrt::Microsoft::UI::Xaml::Media::SolidColorBrush>();
+                    return solid && solid.Color().A == 0;
+                };
+                winrt::check_hresult(isTransparent(presenter.Background()) &&
+                    isTransparent(presenter.PointerOverBackground()) &&
+                    isTransparent(presenter.SelectedBackground()) &&
+                    isTransparent(presenter.SelectedPointerOverBackground()) &&
+                    isTransparent(presenter.SelectedPressedBackground()) ? S_OK : E_FAIL);
+                const auto previousSelection = g_selectedHash;
+                g_selectedHash = g_hashes[0];
+                ApplyRowTheme(false);
+                const auto thickness = g_panel.rows[0].surface.BorderThickness();
+                const auto radius = g_panel.rows[0].surface.CornerRadius();
+                winrt::check_hresult(thickness.Left == 2 && thickness.Top == 2 &&
+                    radius.TopLeft == kCardRadius ? S_OK : E_FAIL);
+                currentStage = 131;
+                ApplyRowTheme(true);
+                const auto contrastThickness = g_panel.rows[0].surface.BorderThickness();
+                winrt::check_hresult(presenter.SelectionIndicatorVisualEnabled() &&
+                    presenter.SelectionCheckMarkVisualEnabled() && contrastThickness.Left == 1 &&
+                    !isTransparent(presenter.SelectedBackground()) ? S_OK : E_FAIL);
+                g_selectedHash = previousSelection;
+                ApplyRowTheme(false);
+                winrt::check_hresult(!presenter.SelectionIndicatorVisualEnabled() &&
+                    isTransparent(presenter.SelectedBackground()) ? S_OK : E_FAIL);
+            }
+            completion->set_value({S_OK, 131});
         } catch (...) {
             completion->set_value({winrt::to_hresult(), currentStage});
         }

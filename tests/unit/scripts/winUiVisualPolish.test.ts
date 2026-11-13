@@ -16,6 +16,23 @@ describe("WinUI complete native presentation", () => {
         contains(panel, 'ApplyStyle(g_panel.searchButton, L"VPaste.RoundToolbarButton")');
         contains(panel, "tagChip.Margin(Thickness{10, 44, 10, 0})");
     });
+    it("keeps the shipping primary tabs inline and type filters in their native flyout", () => {
+        const panel = native("WinUiPanel.cpp");
+        const labels = panel.slice(panel.indexOf("void UpdateFilterLabels()"), panel.indexOf("void RebuildDynamicTabs()"));
+        contains(labels, "item.Visibility(index < 2 ? Visibility::Visible : Visibility::Collapsed)");
+        const typeFilters = panel.slice(panel.indexOf("MenuFlyout typeMenu;"), panel.indexOf("g_panel.tagFilterButton.Flyout(tagFilterFlyout);"));
+        contains(typeFilters, "for (std::uint32_t index = 2; index < g_panel.filter.Items().Size(); ++index)");
+        contains(typeFilters, "SelectBuiltinCategory(static_cast<int>(index), false)");
+    });
+    it("uses the rounded card surface instead of duplicate ListView selection chrome", () => {
+        const panel = native("WinUiPanel.cpp");
+        contains(panel, "ApplyCardPresenterChrome(");
+        contains(panel, "ApplyCardPresenterChrome(container, contrast)");
+        contains(panel, "SelectionIndicatorVisualEnabled(contrast)");
+        contains(panel, "SelectionCheckMarkVisualEnabled(true)");
+        const appearance = native("WinUiAppearance.h");
+        contains(appearance, '<Setter Property="BorderThickness" Value="2"/>');
+    });
     it("shares theme-aware Fluent surfaces, type icons and text hierarchy", () => {
         const appearance = native("WinUiAppearance.h");
         contains(appearance, "InstallAppearanceResources(");

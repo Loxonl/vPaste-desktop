@@ -44,6 +44,58 @@ PR #363; it does not repeat the already implemented migration.
 | Settings | Existing React/MUI window, destroyed on close | No migration in this batch |
 | macOS and release | Independent native UI; WinUI remains Debug opt-in | No macOS UI, installer, release or workflow changes |
 
+## Visual and native-control audit — 2026-11-14
+
+The comparison available in this repository is the shipping React 18 WebView,
+not a Vue implementation: `src/clipboard/ClipboardHeader.tsx` and
+`Clipboard.module.css`. No Vue source or the previously uploaded
+Files/PowerToys research Markdown was present in this checkout. This review
+uses the checked-in React implementation and current Microsoft documentation;
+it does not claim to have compared a separate deployed Vue build.
+
+| Surface | Checked-in WebView | WinUI implementation | Finding |
+| --- | --- | --- | --- |
+| History card | 220×230px, 48px header, 54px source icon, 14px radius; selected state is a 2px accent outline with 2px offset | Same DIP geometry and custom XAML card surface inside a native `ListView` | Duplicate `ListViewItemPresenter` chrome was suppressing the card's rounded state. Normal themes now use the card surface for hover/selection; high contrast restores system presenter visuals. |
+| Tabs and filters | `All`, `Favorites`, then saved filters and record tags; selected item uses a 3px underline | Native `SelectorBar` for `All`/`Favorites` and saved tabs; five content-type choices stay in the existing filter flyout | The SelectorBar pill/transition is an intentional Fluent visual difference. Keeping type choices in the flyout preserves the compact shipping tab strip while retaining the native type-filter shortcut. |
+| Menus and confirmation | Shared React overlay/dialog primitives | `MenuFlyout`, `Flyout`, and `ContentDialog` | Native placement, dismissal, focus return and system corner treatment intentionally follow WinUI. |
+| Queue and tag rows | React component/CSS layout | `ScrollViewer`/`StackPanel` rows with native buttons and menus | Custom row composition supports the ordered queue, drag insertion, inline tag editing and focus restoration. Queue is capped at 100; virtualization is not changed without profiling evidence. |
+| Rich content and preview | WebView renders broader HTML/PDF/OCR cases | XAML `Grid`, `Border`, `TextBlock`, `Image`, and `GridView` for supported native content; established renderer remains fallback | No generic WinUI card represents clipboard content, so the card is intentionally composed from native XAML primitives. Unsupported rich routes are not claimed as migrated. |
+| Settings | React + MUI, created on demand | Same existing WebView | Intentionally unchanged and behavior-identical. |
+
+The native control inventory matches WinUI Gallery's intended roles: `SelectorBar`
+for a small set of mutually exclusive views, `ListView` for the virtualized
+history collection, `CommandBar`/`AppBarButton` for toolbar commands,
+`ComboBox`/`TextBox` for selection and text entry, `GridView` for the emoji
+picker, `MenuFlyout` for contextual actions, `ContentDialog` for destructive
+confirmation, and `InfoBar` for non-modal feedback. The clipboard card itself is
+custom XAML because its source-color header and mixed media content are product
+specific; it is not a web control masquerading as WinUI.
+
+References: [Microsoft SelectorBar guidance](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/selector-bar),
+[item containers and templates](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/item-containers-templates),
+[WinUI Gallery ListView sample](https://github.com/microsoft/WinUI-Gallery/blob/main/WinUIGallery/Samples/ListView/ListViewPage.xaml),
+[Files source](https://github.com/files-community/Files), and
+[PowerToys WinUI migration guidance](https://github.com/microsoft/PowerToys/tree/main/.github/skills/wpf-to-winui3-migration).
+
+Local verification (2026-11-14):
+
+- `npm run check:styles`, `cargo fmt --all --check`, and 782 frontend unit tests
+  passed. The six release-asset shell tests could not run cleanly on this host:
+  default `bash` resolves to unavailable WSL, while process-local Git Bash does
+  not include `jq`; the other 782 tests pass when that environment-specific
+  shell fixture is excluded. CI's Linux runner remains the verification path for
+  those six release-script tests.
+- `cargo check --features winui-debug --bin vPaste --quiet` passed and compiled
+  the Windows WinUI native DLL. The focused Rust filter projection test passed.
+- The actual XAML regression now covers the compact primary tab strip, native
+  type-filter entries, normal-theme card surface and high-contrast system
+  selection restoration (stage 131), but was not run because its ignored smoke
+  test requires an interactive desktop. Physical pointer, focus, multi-select
+  and contrast-theme presentation remain manual checks.
+- No Actions were dispatched or changed. The attached historical research file
+  was not available locally; references above are live Microsoft/Files/PowerToys
+  sources, not a claim that the attachment was read.
+
 ## Verification record
 
 Local verification (2026-11-13):

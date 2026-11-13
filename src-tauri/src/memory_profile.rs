@@ -137,6 +137,15 @@ pub fn dev_origin() -> tauri::Url {
         .expect("profile port was validated before startup")
 }
 
+pub fn webview_url(route: &str) -> tauri::WebviewUrl {
+    // Tauri treats devOrigin as remote when custom-protocol is compiled in.
+    // Use the embedded frontend's trusted origin without granting remote IPC.
+    #[cfg(feature = "custom-protocol")]
+    return tauri::WebviewUrl::App(route.into());
+    #[cfg(not(feature = "custom-protocol"))]
+    tauri::WebviewUrl::External(dev_origin().join(route).expect("known profile route"))
+}
+
 pub fn configure() -> Result<bool, String> {
     let args: Vec<_> = std::env::args().collect();
     let Some(index) = args.iter().position(|arg| arg == "--memory-profile-dir") else {
@@ -473,12 +482,29 @@ fn prepare() -> Result<(), String> {
 }
 
 pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
+    // The isolated startup returns before ordinary plugin initialization.
+    // Keep frontend logging available for both renderer measurements.
+    app.plugin(
+        tauri_plugin_log::Builder::new()
+            .targets([tauri_plugin_log::Target::new(
+                tauri_plugin_log::TargetKind::Stdout,
+            )])
+            .level(log::LevelFilter::Info)
+            .level_for("tantivy", log::LevelFilter::Error)
+            .build(),
+    )
+    .map_err(|error| error.to_string())?;
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory)
         .map_err(|error| error.to_string())?;
     crate::ensure_history_storage_dirs()?;
     crate::clipboard::db::try_init().map_err(|error| error.to_string())?;
     crate::rebuild_current_search_index()?;
+    #[cfg(all(target_os = "windows", feature = "winui-debug"))]
+    if crate::main_panel_mode::winui() {
+        crate::winui_panel::initialize(app.clone())?;
+        return crate::startup_panel::request_show(app);
+    }
     if crate::main_panel_mode::native() {
         return crate::startup_panel::request_show(app);
     }
@@ -663,6 +689,22 @@ fn lifetime_peak(_pid: u32) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_webview_uses_the_builds_trusted_frontend_origin() {
+        for route in ["clipboard", "config"] {
+            let url = webview_url(route);
+            #[cfg(feature = "custom-protocol")]
+            assert!(
+                matches!(url, tauri::WebviewUrl::App(path) if path == PathBuf::from(route)),
+                "embedded Debug assets must not load as a remote developer page"
+            );
+            #[cfg(not(feature = "custom-protocol"))]
+            assert!(
+                matches!(url, tauri::WebviewUrl::External(origin) if origin == dev_origin().join(route).unwrap())
+            );
+        }
+    }
 
     #[test]
     fn portable_installation_is_rejected_before_any_profile_or_personal_data_is_initialized() {

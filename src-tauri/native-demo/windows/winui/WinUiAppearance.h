@@ -1,5 +1,7 @@
 #pragma once
 
+#include <windows.h>
+#undef GetCurrentTime
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Microsoft.UI.Xaml.h>
@@ -7,6 +9,7 @@
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Markup.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
+#include <winrt/Windows.UI.ViewManagement.h>
 
 namespace vpaste::winui {
 
@@ -19,6 +22,12 @@ inline constexpr double ManagementMinHeight = 320;
 inline constexpr double CompactActionSize = 32;
 inline constexpr double ManagementRowRadius = 8;
 inline constexpr double DragSourceOpacity = 0.65;
+
+inline bool HighContrastEnabled() {
+    HIGHCONTRASTW settings{sizeof(HIGHCONTRASTW)};
+    winrt::check_bool(SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(settings), &settings, 0));
+    return (settings.dwFlags & HCF_HIGHCONTRASTON) != 0;
+}
 
 // WinRT structs are aggregates, unlike XAML's uniform "8" shorthand.
 inline winrt::Microsoft::UI::Xaml::Thickness UniformThickness(double value) {
@@ -75,6 +84,16 @@ inline void InstallAppearanceResources() {
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Foreground" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
           </Style>
+          <Style x:Key="VPaste.ContrastCardTitle" TargetType="TextBlock" BasedOn="{StaticResource VPaste.CardTitle}">
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}"/>
+          </Style>
+          <Style x:Key="VPaste.ContrastCardTime" TargetType="TextBlock" BasedOn="{StaticResource VPaste.CardTime}">
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}"/>
+            <Setter Property="Opacity" Value="1"/>
+          </Style>
+          <Style x:Key="VPaste.ContrastCardHeader" TargetType="Border">
+            <Setter Property="Background" Value="{ThemeResource ControlFillColorDefaultBrush}"/>
+          </Style>
           <Style x:Key="VPaste.ClipboardItem" TargetType="ListViewItem">
             <Setter Property="FocusVisualPrimaryBrush" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
             <Setter Property="FocusVisualPrimaryThickness" Value="2"/>
@@ -129,6 +148,20 @@ inline void InstallAppearanceResources() {
             <Setter Property="Background" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
             <Setter Property="BorderBrush" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
             <Setter Property="Foreground" Value="{ThemeResource TextOnAccentFillColorPrimaryBrush}"/>
+          </Style>
+          <Style x:Key="VPaste.ActiveToolbarCommand" TargetType="AppBarButton" BasedOn="{StaticResource VPaste.RoundToolbarCommand}">
+            <Setter Property="BorderBrush" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
+            <Setter Property="Foreground" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
+          </Style>
+          <Style x:Key="VPaste.SelectionBar" TargetType="Border" BasedOn="{StaticResource VPaste.Surface}">
+            <Setter Property="Background" Value="{ThemeResource SolidBackgroundFillColorSecondaryBrush}"/>
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Padding" Value="12,8"/>
+          </Style>
+          <Style x:Key="VPaste.ClipboardHeader" TargetType="Grid">
+            <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}"/>
+            <Setter Property="BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
           </Style>
         </ResourceDictionary>)").as<ResourceDictionary>());
 }

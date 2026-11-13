@@ -49,7 +49,7 @@
       <AdditionalDependencies>windowsapp.lib;runtimeobject.lib;ole32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Lib>
     <Link>
-      <AdditionalDependencies>dwmapi.lib;shlwapi.lib;shell32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>dwmapi.lib;shlwapi.lib;shell32.lib;uuid.lib;psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -68,7 +68,12 @@
     <ClCompile Include="WinUiCardContent.cpp" />
     <ClCompile Include="WinUiAppActions.cpp" />
     <ClCompile Include="WinUiHoverPreview.cpp" />
+    <ClCompile Include="WinUiReader.cpp" />
     <ResourceCompile Include="WinUiNameEmoji.rc" />
+    <ResourceCompile Include="WinUiMotion.rc" />
+    <ClInclude Include="WinUiMotion.h" />
+    <ClInclude Include="WinUiBridge.h" />
+    <ClInclude Include="WinUiResourceProbe.h" />
     <ClInclude Include="WinUiQueueView.h" />
     <ClInclude Include="WinUiQueueWindow.h" />
     <ClInclude Include="WinUiTagManager.h" />
@@ -84,6 +89,7 @@
     <ClInclude Include="WinUiCardContent.h" />
     <ClInclude Include="WinUiAppActions.h" />
     <ClInclude Include="WinUiHoverPreview.h" />
+    <ClInclude Include="WinUiReader.h" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="$(NuGetPackageRoot)microsoft.web.webview2\1.0.3719.77\lib\Microsoft.Web.WebView2.Core.winmd">

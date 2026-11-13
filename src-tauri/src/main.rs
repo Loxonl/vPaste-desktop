@@ -3358,6 +3358,10 @@ fn set_onboarding_shortcut_demo_enabled(enabled: bool) {
 }
 
 fn prewarm_preview_window(app: tauri::AppHandle) {
+    // First-page profiling compares only the selected main renderer.
+    if memory_profile_active() {
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         let started = Instant::now();
         match auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::ClipboardPreview).await
@@ -3423,12 +3427,20 @@ fn preview_window_active(app: &tauri::AppHandle) -> bool {
 }
 
 fn preview_window_visible(app: &tauri::AppHandle) -> bool {
+    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    if winui_panel::preview::reader_visible() {
+        return true;
+    }
     app.get_webview_window("clipboardPreview")
         .map(|window| window.is_visible().unwrap_or(false))
         .unwrap_or(false)
 }
 
 fn app_window_is_foreground(app: &tauri::AppHandle, label: &str, context: &str) -> bool {
+    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    if label == "clipboardPreview" && winui_panel::preview::reader_foreground() {
+        return true;
+    }
     #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
     if label == "clipboard" && main_panel_mode::winui() {
         return winui_panel::preview::foreground();
@@ -3528,6 +3540,10 @@ fn cursor_inside_window(window: &tauri::WebviewWindow) -> bool {
 }
 
 fn cursor_inside_app_windows(app: &tauri::AppHandle) -> bool {
+    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    if winui_panel::preview::reader_cursor_inside() {
+        return true;
+    }
     #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
     if winui_panel::preview::cursor_inside() {
         return true;
@@ -4016,6 +4032,10 @@ fn move_focus_to_clipboard(app: &tauri::AppHandle, context: &str) {
 /// Window under the cursor, preview first because it floats above the clipboard.
 fn cursor_focus_region(app: &tauri::AppHandle) -> Option<preview_focus::FocusTarget> {
     use preview_focus::FocusTarget;
+    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    if winui_panel::preview::reader_cursor_inside() {
+        return Some(FocusTarget::Preview);
+    }
     if preview_window_visible(app)
         && app
             .get_webview_window("clipboardPreview")
@@ -4139,6 +4159,12 @@ fn ensure_focus_watch(app: &tauri::AppHandle) {
                     }
                 }
                 FocusTarget::Preview => {
+                    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+                    if winui_panel::preview::reader_visible() {
+                        begin_preview_focus_handoff();
+                        winui_panel::preview::focus_reader();
+                        continue;
+                    }
                     if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
                         if let Err(err) =
                             focus_preview_window(&preview_window, "preview focus follows cursor")
@@ -4751,6 +4777,15 @@ fn commit_preview_window(
     ) {
         return Ok(false);
     }
+    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    let native_reader_handoff = if main_panel_mode::winui() {
+        let Some(foreground) = winui_panel::preview::retire_reader(request_id) else {
+            return Ok(false);
+        };
+        foreground
+    } else {
+        false
+    };
     let cursor_in_preview = cursor_physical_position().is_some_and(|cursor| {
         let rect = prepared.rect;
         preview_focus::rect_contains_point(
@@ -4769,6 +4804,11 @@ fn commit_preview_window(
         cursor_in_preview,
         prepared.payload.item_type == "ImageText",
     );
+    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    let focus_target = focus_target.or_else(|| {
+        (native_reader_handoff && prepared.mode != PreviewMode::Hover)
+            .then_some(preview_focus::FocusTarget::Preview)
+    });
     let from = current_preview_rect(&window, prepared.scale_factor)?;
     let animated = visible
         && !reduced_motion
@@ -7140,6 +7180,11 @@ fn create_file_thumbnail(_path: &str) -> Result<String, String> {
 
 #[tauri::command]
 async fn wait_for_clipboard_capture() -> Result<Option<String>, String> {
+    // The isolated fixture has no live clipboard monitor or pending capture.
+    #[cfg(debug_assertions)]
+    if memory_profile_active() {
+        return Ok(None);
+    }
     #[cfg(target_os = "windows")]
     {
         return tauri::async_runtime::spawn_blocking(clipboard::windows::listen::wait_for_capture)
@@ -13529,7 +13574,7 @@ fn build_config_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Webvie
     let url = App("config".into());
     #[cfg(debug_assertions)]
     let url = if memory_profile_active() {
-        tauri::WebviewUrl::External(memory_profile::dev_origin().join("config").unwrap())
+        memory_profile::webview_url("config")
     } else {
         url
     };
@@ -13641,7 +13686,7 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
     let url = App("clipboard".into());
     #[cfg(debug_assertions)]
     let url = if memory_profile_active() {
-        tauri::WebviewUrl::External(memory_profile::dev_origin().join("clipboard").unwrap())
+        memory_profile::webview_url("clipboard")
     } else {
         url
     };

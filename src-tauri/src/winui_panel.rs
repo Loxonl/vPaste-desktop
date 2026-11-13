@@ -8,18 +8,20 @@ use std::{
     sync::{atomic::AtomicBool, OnceLock},
 };
 
-use serde::Deserialize;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Listener};
 
 mod actions;
 mod app_actions;
 mod behavior;
+mod bridge;
+use bridge::response as response_bytes;
 mod drag;
 mod filters;
 mod layout;
 mod presentation;
 pub(crate) mod preview;
+mod reader;
 mod search;
 mod tab_order;
 // This projection has no AppKit dependency. Keep the macOS importer unchanged.
@@ -60,6 +62,7 @@ struct PanelApi {
     hide_for_queue_paste: PanelCall,
     refresh_tags: PanelCall,
     window_handle: PanelWindowHandle,
+    reader_handle: PanelWindowHandle,
     focus_history: PanelCall,
     shutdown: PanelShutdown,
 }
@@ -166,6 +169,15 @@ fn load_panel_api() -> Result<PanelApi, String> {
         ));
     }
 
+    // SAFETY: the version export has a no-argument C ABI and no UI side effects.
+    let version =
+        unsafe { GetProcAddress(module, b"vpaste_winui_protocol_version\0".as_ptr().cast()) };
+    if version.is_null() {
+        return Err("WinUI bridge version is missing; rebuild the native Debug app".into());
+    }
+    let version: unsafe extern "C" fn() -> u32 = unsafe { std::mem::transmute(version) };
+    bridge::check_version(unsafe { version() })?;
+
     // SAFETY: every symbol below has the matching no-argument C ABI declared
     // in WinUiPanel.cpp and the module remains loaded for the process lifetime.
     unsafe fn symbol(module: *mut c_void, name: &'static [u8]) -> Result<PanelCall, String> {
@@ -262,6 +274,12 @@ fn load_panel_api() -> Result<PanelApi, String> {
     if window_handle.is_null() {
         return Err("WinUI window-handle export is missing".into());
     }
+    // SAFETY: matching export reads only the native reader's atomic HWND.
+    let reader_handle =
+        unsafe { GetProcAddress(module, b"vpaste_winui_reader_handle\0".as_ptr().cast()) };
+    if reader_handle.is_null() {
+        return Err("WinUI reader-handle export is missing".into());
+    }
     // SAFETY: the export takes a borrowed repr(C) PanelLayout and returns HRESULT.
     let set_layout =
         unsafe { GetProcAddress(module, b"vpaste_winui_set_layout\0".as_ptr().cast()) };
@@ -294,6 +312,9 @@ fn load_panel_api() -> Result<PanelApi, String> {
         refresh_tags: unsafe { symbol(module, b"vpaste_winui_refresh_tags\0")? },
         window_handle: unsafe {
             std::mem::transmute::<*mut c_void, PanelWindowHandle>(window_handle)
+        },
+        reader_handle: unsafe {
+            std::mem::transmute::<*mut c_void, PanelWindowHandle>(reader_handle)
         },
         focus_history: unsafe { symbol(module, b"vpaste_winui_focus_history\0")? },
         shutdown: unsafe { shutdown_symbol(module)? },
@@ -584,63 +605,14 @@ fn send_response(id: u64, op: &str, result: Result<serde_json::Value, String>) {
     }
 }
 
-fn response_bytes(id: u64, op: &str, result: Result<serde_json::Value, String>) -> Option<Vec<u8>> {
-    let response = match result {
-        Ok(data) => json!({ "id": id, "op": op, "data": data }),
-        Err(error) => json!({ "id": id, "op": op, "error": error }),
-    };
-    let bytes = serde_json::to_vec(&response).ok()?;
-    // Match the DLL's receive limit. Never silently drop an oversized refresh
-    // and leave its request in the loading state; return a bounded error.
-    if bytes.len() > 4 * 1024 * 1024 {
-        return serde_json::to_vec(&json!({"id":id, "op":op,
-            "error":"Native result is too large; narrow the filter and retry / 返回内容过大，请缩小筛选范围后重试"})).ok();
-    }
-    Some(bytes)
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Request {
-    id: u64,
-    op: String,
-    #[serde(default)]
-    query: String,
-    #[serde(default)]
-    filter: String,
-    #[serde(default)]
-    tag_name: String,
-    #[serde(default)]
-    hash: String,
-    #[serde(default)]
-    favorite: bool,
-    #[serde(default)]
-    tag_id: i64,
-    #[serde(default)]
-    last_id: u64,
-    #[serde(default)]
-    last_time: u64,
-    #[serde(default)]
-    navigation_direction: i8,
-    #[serde(default)]
-    argument: String,
-    #[serde(default)]
-    limit: usize,
-    #[serde(default)]
-    card_scale: f64,
-}
-
 unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
-    if input.is_null() || length == 0 || length > 16 * 1024 {
+    if input.is_null() || length == 0 || length > bridge::MAX_REQUEST_BYTES {
         return;
     }
     // SAFETY: the C++ caller keeps the JSON buffer alive for this callback.
-    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(unsafe {
-        std::slice::from_raw_parts(input, length)
-    }) else {
-        return;
-    };
-    let Ok(request) = serde_json::from_value::<Request>(payload.clone()) else {
+    let Ok((request, payload)) =
+        bridge::request(unsafe { std::slice::from_raw_parts(input, length) })
+    else {
         return;
     };
     let Some(app) = APP.get().cloned() else {
@@ -648,6 +620,9 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
     };
     let id = request.id;
     let op = request.op.clone();
+    if reader::handle(&app, &op, &request.argument) {
+        return;
+    }
     if matches!(op.as_str(), "dragBegin" | "dragEnd") {
         DRAG_ACTIVE.store(op == "dragBegin", std::sync::atomic::Ordering::Release);
         log::info!("[winui-drag] stage={op}");

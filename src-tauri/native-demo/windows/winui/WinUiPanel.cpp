@@ -25,6 +25,7 @@
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Hosting.h>
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Markup.h>
@@ -76,6 +77,10 @@ winrt::Windows::Foundation::IAsyncAction NextNativeFrame() {
 #include "WinUiCardContent.h"
 #include "WinUiAppActions.h"
 #include "WinUiHoverPreview.h"
+#include "WinUiReader.h"
+#include "WinUiMotion.h"
+#include "WinUiBridge.h"
+#include "WinUiResourceProbe.h"
 
 #include <chrono>
 #include <cmath>
@@ -222,19 +227,23 @@ struct Panel {
     winrt::Microsoft::UI::Xaml::Controls::Button resetFilters{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Button retry{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Button cancelSelection{nullptr};
+    winrt::Microsoft::UI::Xaml::Controls::Border selectionBar{nullptr};
+    winrt::Microsoft::UI::Xaml::Controls::TextBlock selectionTitle{nullptr};
+    winrt::Microsoft::UI::Xaml::Controls::TextBlock selectionCount{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::ContentDialog deletionDialog{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::InfoBar feedback{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::AppBarButton copy{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::AppBarButton paste{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::AppBarButton favorite{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::AppBarButton queueSelect{nullptr};
-    winrt::Microsoft::UI::Xaml::Controls::AppBarButton queueAdd{nullptr};
+    winrt::Microsoft::UI::Xaml::Controls::Button queueAdd{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::AppBarButton queueOpen{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::AppBarButton manageTags{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::AppBarButton settings{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Button more{nullptr};
     std::unique_ptr<vpaste::winui::QueueView> queueView;
     std::unique_ptr<vpaste::winui::QueueWindow> queueWindow;
+    std::unique_ptr<vpaste::winui::Reader> reader;
     std::unique_ptr<vpaste::winui::TagManager> tagManager;
     std::unique_ptr<vpaste::winui::CardDragSource> cardDrag;
     std::unique_ptr<vpaste::winui::FilterEditor> filterEditor;
@@ -285,6 +294,7 @@ bool g_updatingLanguage = false;
 bool g_updatingTagFilter = false;
 bool g_updatingHistorySelection = false;
 bool g_queueSelectionMode = false;
+std::wstring g_queueReturnHash;
 bool g_queueViewActive = false;
 bool g_deleteConfirmationOpen = false;
 bool g_applyingLayout = false;
@@ -423,10 +433,12 @@ bool IsDarkTheme() {
             g_panel.root.ActualTheme() == winrt::Microsoft::UI::Xaml::ElementTheme::Dark);
 }
 
-void ApplyWindowTheme() {
+void ApplyWindowTheme(bool contrast = vpaste::winui::HighContrastEnabled()) {
     if (!g_panel.windowCanvas) return;
     const bool dark = IsDarkTheme();
-    g_panel.windowCanvas.Color(g_panel.hasSystemBackdrop
+    g_panel.windowCanvas.Color(contrast
+        ? winrt::Windows::UI::ViewManagement::UISettings().GetColorValue(winrt::Windows::UI::ViewManagement::UIColorType::Background)
+        : g_panel.hasSystemBackdrop
         ? winrt::Windows::UI::Color{0, 0, 0, 0}
         : dark ? Rgb(23, 27, 34) : Rgb(246, 247, 249));
     if (g_panel.window) {
@@ -473,8 +485,8 @@ void UpdateFavoriteButton() {
                  : winrt::Microsoft::UI::Xaml::Controls::Symbol::Favorite});
 }
 
-void ApplyRowTheme() {
-    ApplyWindowTheme();
+void ApplyRowTheme(bool contrast = vpaste::winui::HighContrastEnabled()) {
+    ApplyWindowTheme(contrast);
     if (g_panel.deletionDialog) g_panel.deletionDialog.RequestedTheme(g_panel.root.ActualTheme());
     if (g_panel.history) g_panel.history.Background(nullptr);
     if (g_panel.status) vpaste::winui::ApplyStyle(g_panel.status, L"VPaste.Secondary");
@@ -486,18 +498,34 @@ void ApplyRowTheme() {
                   g_queueSelectedHashes.end()
             : g_hashes[index] == g_selectedHash);
         vpaste::winui::ApplyStyle(row.surface, isSelected ? L"VPaste.SelectedSurface" : L"VPaste.Surface");
-        row.header.Background(row.accent
+        if (contrast) {
+            row.header.ClearValue(winrt::Microsoft::UI::Xaml::Controls::Border::BackgroundProperty());
+            vpaste::winui::ApplyStyle(row.header, L"VPaste.ContrastCardHeader");
+        } else row.header.Background(row.accent
             ? winrt::Microsoft::UI::Xaml::Media::SolidColorBrush{*row.accent} : TypeBrush(row.itemType));
-        vpaste::winui::ApplyStyle(row.type, L"VPaste.CardTitle");
+        vpaste::winui::ApplyStyle(row.type, contrast ? L"VPaste.ContrastCardTitle" : L"VPaste.CardTitle");
         vpaste::winui::ApplyStyle(row.preview, L"VPaste.Body");
-        if (row.itemType == L"Color") row.preview.Foreground(Brush(40, 40, 40));
+        row.preview.ClearValue(winrt::Microsoft::UI::Xaml::Controls::TextBlock::ForegroundProperty());
+        if (!contrast && row.itemType == L"Color") row.preview.Foreground(Brush(40, 40, 40));
+        const auto favoriteGlyph = row.favoriteButton.Content().as<winrt::Microsoft::UI::Xaml::Controls::FontIcon>();
+        if (contrast) {
+            favoriteGlyph.ClearValue(winrt::Microsoft::UI::Xaml::Controls::IconElement::ForegroundProperty());
+            vpaste::winui::ApplyStyle(favoriteGlyph, L"VPaste.Glyph");
+            row.richBadge.ClearValue(winrt::Microsoft::UI::Xaml::Controls::TextBlock::ForegroundProperty());
+            vpaste::winui::ApplyStyle(row.richBadge, L"VPaste.ContrastCardTime");
+        } else {
+            favoriteGlyph.Foreground(Brush(255, 255, 255));
+            row.richBadge.Foreground(Brush(255, 255, 255));
+        }
+        favoriteGlyph.FontSize(12); row.richBadge.FontSize(10);
+        row.richBadge.Opacity(contrast ? 1 : 0.85);
         vpaste::winui::ApplyStyle(row.tags, L"VPaste.CardTag");
         vpaste::winui::ApplyStyle(row.dimensions, L"VPaste.Caption");
         vpaste::winui::ApplyStyle(row.subtitle, L"VPaste.Secondary");
         row.preview.FontWeight(row.itemType == L"File" || row.itemType == L"Link"
             ? winrt::Microsoft::UI::Text::FontWeights::SemiBold()
             : winrt::Microsoft::UI::Text::FontWeights::Normal());
-        vpaste::winui::ApplyStyle(row.time, L"VPaste.CardTime");
+        vpaste::winui::ApplyStyle(row.time, contrast ? L"VPaste.ContrastCardTime" : L"VPaste.CardTime");
         if (row.detailStatus) vpaste::winui::ApplyStyle(row.detailStatus, L"VPaste.Secondary");
         row.actions.Visibility(g_queueSelectionMode
             ? winrt::Microsoft::UI::Xaml::Visibility::Collapsed
@@ -642,6 +670,7 @@ void ApplyBehavior(std::string const &bytes) {
 
 void DismissFeedback() {
     if (g_feedbackTimer && g_feedbackTimer.IsRunning()) g_feedbackTimer.Stop();
+    vpaste::winui::ResetFeedbackOpacity(g_panel.feedback);
     if (g_panel.feedback) g_panel.feedback.IsOpen(false);
 }
 
@@ -653,6 +682,7 @@ void ShowFeedback(const winrt::hstring &message, winrt::Microsoft::UI::Xaml::Con
     g_panel.feedback.Severity(severity);
     g_panel.feedback.IsClosable(severity != InfoBarSeverity::Success);
     g_panel.feedback.IsOpen(true);
+    vpaste::winui::FadeFeedback(g_panel.feedback);
     // This is notification dwell time, not an app-authored animation duration.
     if (severity == InfoBarSeverity::Success && g_feedbackTimer) g_feedbackTimer.Start();
 }
@@ -738,7 +768,7 @@ std::uint64_t SendRequest(const wchar_t *operation, const std::wstring &hash = {
         request.Insert(L"hashes", selectedHashes);
     }
     const auto bytes = winrt::to_string(request.Stringify());
-    if (bytes.size() > 16 * 1024) return 0;
+    if (bytes.size() > vpaste::winui::MaxRequestBytes) return 0;
     g_request(reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size());
     // Escape lets Rust close a preview before deciding whether to hide the dock.
     // Cancelling hover first would make that preview appear already closed.
@@ -1516,7 +1546,7 @@ bool IsEditableTextItem(const winrt::hstring &type) {
 
 void UpdateQueueSelectionControls() {
     if (!g_panel.history || !g_panel.copy || !g_panel.paste || !g_panel.favorite ||
-        !g_panel.queueSelect || !g_panel.queueAdd) return;
+        !g_panel.queueSelect || !g_panel.queueAdd || !g_panel.selectionBar) return;
     g_panel.copy.Visibility(g_queueSelectionMode
         ? winrt::Microsoft::UI::Xaml::Visibility::Collapsed
         : winrt::Microsoft::UI::Xaml::Visibility::Visible);
@@ -1539,19 +1569,48 @@ void UpdateQueueSelectionControls() {
         g_queueSelectionMode ? winrt::Microsoft::UI::Xaml::Controls::Symbol::Cancel
                              : winrt::Microsoft::UI::Xaml::Controls::Symbol::SelectAll});
     g_panel.queueAdd.IsEnabled(g_queueSelectionMode && !g_queueSelectedHashes.empty() && !g_queueSelectionAdding);
+    const bool enteringSelection = g_queueSelectionMode &&
+        g_panel.selectionBar.Visibility() != winrt::Microsoft::UI::Xaml::Visibility::Visible;
+    if (!g_queueSelectionMode) vpaste::winui::ResetFeedbackOpacity(g_panel.selectionBar);
+    g_panel.selectionBar.Visibility(g_queueSelectionMode
+        ? winrt::Microsoft::UI::Xaml::Visibility::Visible
+        : winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
+    g_panel.selectionTitle.Text(Text(L"选择加入队列", L"Select for queue"));
+    winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
+        g_panel.selectionBar, g_panel.selectionTitle.Text());
+    const auto countText = winrt::hstring{std::to_wstring(g_queueSelectedHashes.size())} + L" " + Text(L"条已选择", L"selected");
+    const bool countChanged = g_panel.selectionCount.Text() != countText;
+    g_panel.selectionCount.Text(countText);
+    using namespace winrt::Microsoft::UI::Xaml::Automation;
+    AutomationProperties::SetName(g_panel.selectionCount, countText);
+    AutomationProperties::SetLiveSetting(g_panel.selectionCount, Peers::AutomationLiveSetting::Polite);
+    if (g_queueSelectionMode && IsWindowVisible(g_panel.window)) {
+        if (enteringSelection) vpaste::winui::FadeFeedback(g_panel.selectionBar);
+        if (countChanged) if (const auto peer = Peers::FrameworkElementAutomationPeer::FromElement(g_panel.selectionCount))
+            peer.RaiseAutomationEvent(Peers::AutomationEvents::LiveRegionChanged);
+    }
+    g_panel.queueAdd.Content(winrt::box_value(g_queueSelectionAdding
+        ? Text(L"正在加入…", L"Adding…") : Text(L"加入队列", L"Add to queue")));
     g_panel.cancelSelection.Visibility(g_queueSelectionMode
         ? winrt::Microsoft::UI::Xaml::Visibility::Visible
         : winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
     g_panel.copy.IsEnabled(!g_queueSelectionMode && !g_selectedHash.empty());
     g_panel.paste.IsEnabled(!g_queueSelectionMode && !g_selectedHash.empty());
-    if (g_panel.queueOpen) g_panel.queueOpen.Label(g_queueViewActive
-        ? Text(L"关闭粘贴队列", L"Close paste queue") : Text(L"粘贴队列", L"Paste queue"));
+    if (g_panel.queueOpen) {
+        g_panel.queueOpen.Label(g_queueViewActive
+            ? Text(L"关闭粘贴队列", L"Close paste queue") : Text(L"粘贴队列", L"Paste queue"));
+        vpaste::winui::ApplyStyle(g_panel.queueOpen, g_queueViewActive
+            ? L"VPaste.ActiveToolbarCommand" : L"VPaste.RoundToolbarCommand");
+    }
     UpdateFavoriteButton();
 }
 
 void ToggleQueueSelectionMode(bool updateStatus = true) {
     if (!g_panel.history) return;
-    if (!g_queueSelectionMode) (void)SendRequest(L"previewDismiss");
+    if (!g_queueSelectionMode) {
+        g_queueReturnHash = g_selectedHash;
+        (void)SendRequest(L"previewDismiss");
+    }
     // SelectedItems is mutable only in a multi-selection mode. Clear the old
     // mode first so synchronous SelectionChanged also observes that old mode.
     if (g_panel.history.SelectionMode() ==
@@ -1567,8 +1626,12 @@ void ToggleQueueSelectionMode(bool updateStatus = true) {
         ? winrt::Microsoft::UI::Xaml::Controls::ListViewSelectionMode::Multiple
         : winrt::Microsoft::UI::Xaml::Controls::ListViewSelectionMode::Single);
     if (!g_queueSelectionMode) {
-        g_panel.history.SelectedIndex(-1);
-        g_selectedHash.clear();
+        const auto previous = std::find(g_hashes.begin(), g_hashes.end(), g_queueReturnHash);
+        const bool updating = std::exchange(g_updatingHistorySelection, true);
+        g_panel.history.SelectedIndex(previous == g_hashes.end() ? -1 : static_cast<int>(std::distance(g_hashes.begin(), previous)));
+        g_selectedHash = previous == g_hashes.end() ? std::wstring{} : *previous;
+        g_updatingHistorySelection = updating;
+        g_queueReturnHash.clear();
     }
     if (updateStatus && g_panel.status) {
         if (g_queueSelectionMode) {
@@ -1647,6 +1710,11 @@ void ApplyResponse(const std::string &bytes) {
         const auto response = JsonObject::Parse(winrt::to_hstring(bytes));
         const auto id = static_cast<std::uint64_t>(response.GetNamedNumber(L"id", 0));
         const auto operation = response.GetNamedString(L"op", L"");
+        if (operation == L"nativeReaderBegin" || operation == L"nativeReader" ||
+            operation == L"nativeReaderHide" || operation == L"nativeReaderFocus") {
+            if (g_panel.reader) g_panel.reader->Receive(response);
+            return;
+        }
         if (operation == L"previewHover") {
             if (g_panel.hoverPreview) g_panel.hoverPreview->PreviewPointer(response.GetNamedObject(L"data").GetNamedBoolean(L"inside"));
             return;
@@ -1783,17 +1851,14 @@ void ApplyResponse(const std::string &bytes) {
                 if (selectionAdd && g_queueSelectionMode) {
                     for (const auto &hash : g_queueSubmittedHashes)
                         g_queueSelectedHashes.erase(std::remove(g_queueSelectedHashes.begin(), g_queueSelectedHashes.end(), hash), g_queueSelectedHashes.end());
-                    if (g_queueSelectedHashes.empty()) ToggleQueueSelectionMode(false);
-                    else {
-                        g_updatingHistorySelection = true;
-                        g_panel.history.SelectedItems().Clear();
-                        for (std::size_t index = 0; index < g_hashes.size(); ++index)
-                            if (std::find(g_queueSelectedHashes.begin(), g_queueSelectedHashes.end(), g_hashes[index]) != g_queueSelectedHashes.end())
-                                g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(static_cast<std::uint32_t>(index)));
-                        g_updatingHistorySelection = false;
-                        UpdateQueueSelectionControls(); ApplyRowTheme();
-                        g_panel.status.Text(std::to_wstring(g_queueSelectedHashes.size()) + L" " + Text(L"条已选择", L"selected"));
-                    }
+                    g_updatingHistorySelection = true;
+                    g_panel.history.SelectedItems().Clear();
+                    for (std::size_t index = 0; index < g_hashes.size(); ++index)
+                        if (std::find(g_queueSelectedHashes.begin(), g_queueSelectedHashes.end(), g_hashes[index]) != g_queueSelectedHashes.end())
+                            g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(static_cast<std::uint32_t>(index)));
+                    g_updatingHistorySelection = false;
+                    UpdateQueueSelectionControls(); ApplyRowTheme();
+                    g_panel.status.Text(std::to_wstring(g_queueSelectedHashes.size()) + L" " + Text(L"条已选择", L"selected"));
                 }
             }
             return;
@@ -2135,8 +2200,8 @@ void ApplyResponse(const std::string &bytes) {
             const auto favoriteIcon = vpaste::winui::Glyph(favorite ? L"\uE735" : L"\uE734");
             Button favoriteButton = vpaste::winui::NamedIconButton(favoriteIcon,
                 favorite ? Text(L"取消收藏", L"Remove favorite") : Text(L"收藏", L"Add favorite"));
-            favoriteButton.Width(18);
-            favoriteButton.Height(18);
+            favoriteButton.Width(24);
+            favoriteButton.Height(24);
             favoriteButton.Visibility(favorite ? Visibility::Visible : Visibility::Collapsed);
             favoriteIcon.Foreground(Brush(255, 255, 255));
             favoriteIcon.FontSize(12);
@@ -2628,7 +2693,9 @@ void SetQueueViewActive(bool active) {
         g_panel.queueWindow->SetAppearance(g_english, theme);
         g_panel.queueWindow->Show(g_dockedLayout.panelScale, !g_queueViewActive);
         g_panel.queueView->Activate();
+        const bool entering = !g_queueViewActive;
         g_queueViewActive = true;
+        if (entering && !g_queueSelectionMode) ToggleQueueSelectionMode(false);
         (void)SendRequest(L"queueState");
     } else {
         if (!g_queueViewActive) return;
@@ -2803,6 +2870,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
             if (g_panel.tagManager) g_panel.tagManager->SetTheme(theme);
             if (g_panel.filterEditor) g_panel.filterEditor->SetTheme(theme);
             if (g_panel.recordTagEditor) g_panel.recordTagEditor->SetTheme(theme);
+            if (g_panel.reader) g_panel.reader->SetAppearance(g_english, theme);
         }
         return 0;
     }
@@ -2870,7 +2938,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         g_panel.queueSelect.Label(g_queueSelectionMode
             ? Text(L"取消选择", L"Cancel selection")
             : Text(L"选择加入队列", L"Select for queue"));
-        g_panel.queueAdd.Label(Text(L"加入队列", L"Add to queue"));
+        g_panel.queueAdd.Content(winrt::box_value(Text(L"加入队列", L"Add to queue")));
         g_panel.queueOpen.Label(Text(L"粘贴队列", L"Paste queue"));
         g_panel.manageTags.Label(Text(L"管理标签", L"Manage tags"));
         g_panel.settings.Label(Text(L"设置", L"Settings"));
@@ -2878,6 +2946,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         if (g_panel.queueView) g_panel.queueView->SetLanguage(g_english);
         if (g_panel.queueWindow) g_panel.queueWindow->SetAppearance(g_english, g_panel.root.RequestedTheme());
         if (g_panel.tagManager) g_panel.tagManager->SetLanguage(g_english);
+        if (g_panel.reader) g_panel.reader->SetAppearance(g_english, g_panel.root.RequestedTheme());
         if (g_panel.customTabs) {
             winrt::Windows::Data::Json::JsonArray filters;
             for (const auto &draft : g_customFilters) filters.Append(draft);
@@ -2934,6 +3003,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         return 0;
     case WM_SETTINGCHANGE:
         if (wparam == SPI_SETWORKAREA) (void)SendRequest(L"layout");
+        if (wparam == SPI_SETHIGHCONTRAST && g_panel.root) ApplyRowTheme();
+        return DefWindowProcW(window, message, wparam, lparam);
+    case WM_THEMECHANGED:
+        if (g_panel.root) ApplyRowTheme();
         return DefWindowProcW(window, message, wparam, lparam);
     case WM_EXITSIZEMOVE:
         RequestSelectedPreview(L"previewSelect");
@@ -2957,6 +3030,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
 }
 
 HRESULT CreatePanel() noexcept {
+    const char *phase = "create native window";
     try {
         WNDCLASSEXW windowClass{};
         windowClass.cbSize = sizeof(windowClass);
@@ -2977,12 +3051,15 @@ HRESULT CreatePanel() noexcept {
         if (g_panel.window == nullptr) {
             return HRESULT_FROM_WIN32(GetLastError());
         }
+        phase = "initialize XAML";
         g_panel.xamlManager =
             winrt::Microsoft::UI::Xaml::Hosting::WindowsXamlManager::InitializeForCurrentThread();
         winrt::Microsoft::UI::Xaml::Application::Current()
             .Resources().MergedDictionaries().Append(
                 winrt::Microsoft::UI::Xaml::Controls::XamlControlsResources());
+        phase = "install appearance resources";
         vpaste::winui::InstallAppearanceResources();
+        phase = "initialize XAML island";
         g_panel.xamlSource = winrt::Microsoft::UI::Xaml::Hosting::DesktopWindowXamlSource();
         g_panel.xamlSource.Initialize(
             winrt::Microsoft::UI::GetWindowIdFromWindow(g_panel.window));
@@ -3030,8 +3107,9 @@ HRESULT CreatePanel() noexcept {
                 g_panel.tagManager->SetTheme(g_panel.root.RequestedTheme());
             }
         });
-
+        phase = "create panel controls";
         Grid header;
+        vpaste::winui::ApplyStyle(header, L"VPaste.ClipboardHeader");
         header.Height(kHeaderHeight);
         header.Padding(Thickness{kHeaderInset, 0, kHeaderInset, 0});
         header.ColumnSpacing(8);
@@ -3151,6 +3229,8 @@ HRESULT CreatePanel() noexcept {
         g_panel.addTag = vpaste::winui::NamedIconButton(SymbolIcon{Symbol::Add}, Text(L"添加与管理标签", L"Add and manage tags"));
         g_panel.addTag.VerticalAlignment(VerticalAlignment::Center);
         MenuFlyout addMenu;
+        addMenu.Placement(Controls::Primitives::FlyoutPlacementMode::TopEdgeAlignedLeft);
+        addMenu.ShouldConstrainToRootBounds(false);
         MenuFlyoutItem addFilter;
         addFilter.Text(Text(L"新增筛选标签", L"New filter tab")); addFilter.Icon(SymbolIcon{Symbol::Filter});
         addFilter.Click([](auto const &, auto const &) {
@@ -3209,6 +3289,8 @@ HRESULT CreatePanel() noexcept {
         g_panel.tagFilterButton.Height(28);
         g_panel.tagFilterButton.VerticalAlignment(VerticalAlignment::Center);
         Flyout tagFilterFlyout;
+        tagFilterFlyout.Placement(Controls::Primitives::FlyoutPlacementMode::TopEdgeAlignedLeft);
+        tagFilterFlyout.ShouldConstrainToRootBounds(false);
         StackPanel filterChoices; filterChoices.Spacing(12);
         MenuFlyout typeMenu;
         for (std::uint32_t index = 2; index < g_panel.filter.Items().Size(); ++index) {
@@ -3450,14 +3532,15 @@ HRESULT CreatePanel() noexcept {
         g_panel.queueSelect.Label(Text(L"选择加入队列", L"Select for queue"));
         g_panel.queueSelect.Icon(SymbolIcon{Symbol::SelectAll});
         g_panel.queueSelect.Click([](auto const &, auto const &) { ToggleQueueSelectionMode(); });
-        g_panel.commands.PrimaryCommands().Append(g_panel.queueSelect);
-        g_panel.queueAdd = AppBarButton();
-        g_panel.queueAdd.Label(Text(L"加入队列", L"Add to queue"));
-        g_panel.queueAdd.Icon(SymbolIcon{Symbol::Add});
+        g_panel.commands.SecondaryCommands().Append(g_panel.queueSelect);
+        g_panel.queueAdd = Button();
+        g_panel.queueAdd.Content(winrt::box_value(Text(L"加入队列", L"Add to queue")));
+        g_panel.queueAdd.Style(Application::Current().Resources().Lookup(winrt::box_value(L"AccentButtonStyle")).as<Style>());
+        g_panel.queueAdd.Height(vpaste::winui::CompactActionSize);
+        g_panel.queueAdd.FontSize(13);
         g_panel.queueAdd.IsEnabled(false);
         g_panel.queueAdd.Visibility(winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
         g_panel.queueAdd.Click([](auto const &, auto const &) { AddSelectedItemsToQueue(); });
-        g_panel.commands.PrimaryCommands().Append(g_panel.queueAdd);
         g_panel.cancelSelection = vpaste::winui::NamedIconButton(SymbolIcon{Symbol::Cancel},
             Text(L"取消队列选择", L"Cancel queue selection"));
         g_panel.cancelSelection.Visibility(Visibility::Collapsed);
@@ -3465,6 +3548,26 @@ HRESULT CreatePanel() noexcept {
         g_panel.cancelSelection.Click([](auto const &, auto const &) {
             if (g_queueSelectionMode) ToggleQueueSelectionMode();
         });
+        g_panel.selectionTitle = MakeText(Text(L"选择加入队列", L"Select for queue"), 13);
+        g_panel.selectionCount = MakeText(L"0", 12);
+        Automation::AutomationProperties::SetLiveSetting(g_panel.selectionCount, Automation::Peers::AutomationLiveSetting::Polite);
+        StackPanel selectionActions;
+        selectionActions.Orientation(Orientation::Horizontal);
+        selectionActions.Spacing(12);
+        selectionActions.Children().Append(g_panel.selectionTitle);
+        selectionActions.Children().Append(g_panel.selectionCount);
+        selectionActions.Children().Append(g_panel.queueAdd);
+        selectionActions.Children().Append(g_panel.cancelSelection);
+        g_panel.selectionBar = Border();
+        vpaste::winui::ApplyStyle(g_panel.selectionBar, L"VPaste.SelectionBar");
+        g_panel.selectionBar.Child(selectionActions);
+        g_panel.selectionBar.HorizontalAlignment(HorizontalAlignment::Center);
+        g_panel.selectionBar.VerticalAlignment(VerticalAlignment::Bottom);
+        g_panel.selectionBar.Margin(Thickness{16, 0, 16, 12});
+        g_panel.selectionBar.Visibility(Visibility::Collapsed);
+        Automation::AutomationProperties::SetName(g_panel.selectionBar, Text(L"选择加入队列", L"Select for queue"));
+        Grid::SetRow(g_panel.selectionBar, 1);
+        root.Children().Append(g_panel.selectionBar);
         g_panel.queueOpen = AppBarButton();
         g_panel.queueOpen.Label(Text(L"粘贴队列", L"Paste queue"));
         g_panel.queueOpen.Icon(SymbolIcon{Symbol::List});
@@ -3498,7 +3601,7 @@ HRESULT CreatePanel() noexcept {
         g_panel.settings.Click([](auto const &, auto const &) { (void)SendRequest(L"settings"); });
         g_panel.commands.PrimaryCommands().Append(g_panel.settings);
         g_panel.commands.PrimaryCommands().Append(g_panel.appActions->UpdateButton());
-        for (const auto &action : {g_panel.queueSelect, g_panel.queueAdd, g_panel.queueOpen, g_panel.settings}) {
+        for (const auto &action : {g_panel.queueOpen, g_panel.settings}) {
             vpaste::winui::ApplyStyle(action, L"VPaste.RoundToolbarCommand");
         }
         g_panel.more = Button();
@@ -3521,7 +3624,6 @@ HRESULT CreatePanel() noexcept {
         StackPanel toolbarContext;
         toolbarContext.Orientation(Orientation::Horizontal);
         toolbarContext.VerticalAlignment(VerticalAlignment::Center);
-        toolbarContext.Children().Append(g_panel.cancelSelection);
         toolbarContext.Children().Append(g_panel.status);
         ToolTipService::SetToolTip(toolbarContext, winrt::box_value(Text(
             L"Space 预览 · Enter 粘贴 · Ctrl+C 复制", L"Space to preview · Enter to paste · Ctrl+C to copy")));
@@ -3586,7 +3688,7 @@ HRESULT CreatePanel() noexcept {
         g_panel.tagManager = std::make_unique<vpaste::winui::TagManager>(
             [](const std::wstring &operation, std::int64_t tagId,
                const std::wstring &name) {
-                (void)SendTagManagerRequest(operation, tagId, name);
+                return SendTagManagerRequest(operation, tagId, name);
             },
             [] { SetTagManagerActive(false); });
         g_panel.tagManager->SetLanguage(g_english);
@@ -3610,11 +3712,30 @@ HRESULT CreatePanel() noexcept {
                     : operation == L"recordTagAssign" ? Text(L"标签已添加到剪贴项", L"Tag assigned to item") : Text(L"标签已保存", L"Tag saved"));
             });
 
+        phase = "create native reader";
+        g_panel.reader = std::make_unique<vpaste::winui::Reader>([](auto const &operation, auto generation) {
+            if (operation == L"nativeReaderClose") {
+                // The shared command cancels hover first, then reserves the
+                // explicit close so its focus return cannot be superseded.
+                (void)SendRequest(L"previewClose");
+                return;
+            }
+            if (operation == L"readerNext" || operation == L"readerPrevious" ||
+                operation == L"readerNextCategory" || operation == L"readerPreviousCategory") {
+                NavigatePreview(operation == L"readerPrevious" || operation == L"readerPreviousCategory" ? -1 : 1,
+                    operation == L"readerNextCategory" || operation == L"readerPreviousCategory");
+                return;
+            }
+            (void)SendRequest(operation.c_str(), {}, false, 0, {}, {}, 0, std::to_wstring(generation));
+        }, g_panel.window);
+        g_panel.reader->SetAppearance(g_english, root.RequestedTheme());
+        phase = "attach panel controls";
         g_panel.xamlSource.Content(g_panel.viewport);
         const auto initialScale = GetDpiForWindow(g_panel.window) / 96.0;
         g_dockedLayout = {0, 0, static_cast<int>(std::lround(kWindowWidth * initialScale)),
             static_cast<int>(std::lround(kPanelHeight * initialScale)), initialScale, 1};
         ApplyActiveLayout();
+        phase = "apply panel appearance";
         ConfigureAcrylicBackdrop(true);
         ApplyRowTheme();
         UpdateHistoryState();
@@ -3623,6 +3744,8 @@ HRESULT CreatePanel() noexcept {
         (void)SendRequest(L"appState");
         return S_OK;
     } catch (const winrt::hresult_error &error) {
+        std::fprintf(stderr, "WinUI startup failed during %s: 0x%08X %s\n",
+            phase, static_cast<unsigned>(error.code()), winrt::to_string(error.message()).c_str());
         if (g_panel.window != nullptr) {
             DestroyWindow(g_panel.window);
         }
@@ -3682,6 +3805,7 @@ void RunUiThread() noexcept {
     g_panel.historyScroll = nullptr;
     g_historyView = {};
     g_panel.imageExport.reset();
+    g_panel.reader.reset();
     g_panel.filterEditor.reset();
     g_panel.recordTagEditor.reset();
     g_customFilters.clear();
@@ -3720,6 +3844,9 @@ void RunUiThread() noexcept {
     g_panel.resetFilters = nullptr;
     g_panel.retry = nullptr;
     g_panel.cancelSelection = nullptr;
+    g_panel.selectionBar = nullptr;
+    g_panel.selectionTitle = nullptr;
+    g_panel.selectionCount = nullptr;
     g_panel.deletionDialog = nullptr;
     g_panel.feedback = nullptr;
     g_panel.copy = nullptr;
@@ -3782,6 +3909,10 @@ LRESULT SendPanelMessage(UINT message) noexcept {
 
 } // namespace
 
+extern "C" __declspec(dllexport) std::uint32_t vpaste_winui_protocol_version() noexcept {
+    return vpaste::winui::BridgeVersion;
+}
+
 extern "C" __declspec(dllexport) int32_t vpaste_winui_initialize(
     VisibilityChanged visibilityChanged, PanelRequest request, bool english,
     bool singleClickPaste) noexcept {
@@ -3832,6 +3963,10 @@ extern "C" __declspec(dllexport) std::uintptr_t vpaste_winui_window_handle() noe
     return reinterpret_cast<std::uintptr_t>(g_panel.window);
 }
 
+extern "C" __declspec(dllexport) std::uintptr_t vpaste_winui_reader_handle() noexcept {
+    return vpaste::winui::ReaderWindowHandle();
+}
+
 extern "C" __declspec(dllexport) int32_t vpaste_winui_focus_history() noexcept {
     std::lock_guard lock(g_stateMutex);
     if (!g_panel.window || !IsWindow(g_panel.window)) return S_FALSE;
@@ -3844,7 +3979,7 @@ extern "C" __declspec(dllexport) int32_t vpaste_winui_hide() noexcept {
 
 extern "C" __declspec(dllexport) int32_t vpaste_winui_set_behavior(
     const std::uint8_t *bytes, std::size_t length) noexcept {
-    if (!bytes || length == 0 || length > 16 * 1024) return E_INVALIDARG;
+    if (!bytes || length == 0 || length > vpaste::winui::MaxRequestBytes) return E_INVALIDARG;
     try {
         HWND window = nullptr;
         { std::lock_guard lock(g_stateMutex); window = g_panel.window; }
@@ -3937,7 +4072,7 @@ extern "C" __declspec(dllexport) int32_t vpaste_winui_show_queue_no_activate() n
 
 extern "C" __declspec(dllexport) void vpaste_winui_receive(
     const std::uint8_t *bytes, std::size_t length) noexcept {
-    if (bytes == nullptr || length == 0 || length > 4 * 1024 * 1024) {
+    if (bytes == nullptr || length == 0 || length > vpaste::winui::MaxResponseBytes) {
         return;
     }
     HWND window = nullptr;
@@ -4327,8 +4462,8 @@ winrt::fire_and_forget RunNativePresentationRegression(
             WindowProc(g_panel.window, kSetTheme, 0, 0);
             currentStage = 19;
             winrt::check_hresult(g_panel.commands.IsDynamicOverflowEnabled() &&
-                g_panel.commands.PrimaryCommands().Size() == 6 &&
-                g_panel.commands.SecondaryCommands().Size() == 4 ? S_OK : E_FAIL);
+                g_panel.commands.PrimaryCommands().Size() == 4 &&
+                g_panel.commands.SecondaryCommands().Size() == 5 ? S_OK : E_FAIL);
             const bool originalEnglish = g_english;
             for (const bool english : {false, true}) {
                 WindowProc(g_panel.window, kSetLanguage, english, 0);
@@ -4343,7 +4478,7 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 winrt::check_hresult(g_panel.filter.SelectedItem() == selectedFilter &&
                     g_panel.filter.Items().Size() == 7 ? S_OK : E_FAIL);
                 for (const auto &action : {g_panel.copy, g_panel.paste, g_panel.favorite,
-                         g_panel.queueSelect, g_panel.queueAdd, g_panel.queueOpen, g_panel.manageTags, g_panel.settings,
+                         g_panel.queueSelect, g_panel.queueOpen, g_panel.manageTags, g_panel.settings,
                          g_panel.appActions->ToolsButton(), g_panel.appActions->UpdateButton()}) {
                     winrt::check_hresult(!action.Label().empty() && action.Icon() ? S_OK : E_FAIL);
                 }
@@ -6003,6 +6138,105 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 g_panel.search.Text(originalQuery); g_searchTimer.Stop();
                 g_panel.hoverPreview = std::move(original);
             }
+            currentStage = 112;
+            {
+                using namespace winrt::Microsoft::UI::Xaml;
+                using namespace winrt::Microsoft::UI::Xaml::Controls;
+                using namespace winrt::Windows::Data::Json;
+                SetQueueViewActive(false);
+                if (g_queueSelectionMode) ToggleQueueSelectionMode(false);
+                SetQueueViewActive(true);
+                winrt::check_hresult(g_queueSelectionMode && g_panel.history.SelectionMode() ==
+                    ListViewSelectionMode::Multiple ? S_OK : E_FAIL);
+                RequestHistory();
+                JsonObject response = JsonObject::Parse(LR"({"op":"query","data":{"items":[{"hash":"batch-one","itemType":"Text"},{"hash":"batch-two","itemType":"Text"}],"hasMore":false}})");
+                response.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+                ApplyResponse(winrt::to_string(response.Stringify()));
+                g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(0));
+                AddSelectedItemsToQueue();
+                const auto first = requestAt(previewRequests.size() - 1);
+                currentStage = 113;
+                auto added = JsonObject::Parse(LR"({"op":"queueAdd","data":{"revision":500,"active":true,"busy":false,"items":[{"hash":"batch-one"}]}})");
+                added.Insert(L"id", first.GetNamedValue(L"id"));
+                ApplyResponse(winrt::to_string(added.Stringify()));
+                winrt::check_hresult(g_queueSelectionMode && g_queueSelectedHashes.empty() &&
+                    g_panel.history.SelectedItems().Size() == 0 && !g_panel.queueAdd.IsEnabled() ? S_OK : E_FAIL);
+                g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(1));
+                winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"batch-two"} &&
+                    g_panel.queueAdd.IsEnabled() ? S_OK : E_FAIL);
+                SetQueueViewActive(false);
+                winrt::check_hresult(!g_queueSelectionMode ? S_OK : E_FAIL);
+
+                currentStage = 114;
+                std::uint64_t attempts = 0;
+                bool throwRequest = false;
+                vpaste::winui::TagManager rejected([&](auto const &, auto, auto const &) -> std::uint64_t {
+                    ++attempts;
+                    if (throwRequest) winrt::throw_hresult(E_ACCESSDENIED);
+                    return 0;
+                }, [] {});
+                const auto tagRoot = rejected.Root().as<Grid>();
+                g_panel.xamlSource.Content(tagRoot); ResizeIsland();
+                co_await NextNativeFrame();
+                const auto addRow = tagRoot.Children().GetAt(1).as<Grid>();
+                const auto name = addRow.Children().GetAt(1).as<TextBox>();
+                const auto add = addRow.Children().GetAt(2).as<Button>();
+                name.Text(L"Keep this draft");
+                co_await NextNativeFrame();
+                rejected.Refresh();
+                co_await NextNativeFrame();
+                winrt::check_hresult(name.IsEnabled() && add.IsEnabled() && name.Text() == L"Keep this draft" &&
+                    attempts == 1 && tagRoot.Children().GetAt(3).as<InfoBar>().IsOpen() ? S_OK : E_FAIL);
+                throwRequest = true;
+                rejected.Refresh();
+                winrt::check_hresult(attempts == 2 && name.IsEnabled() && add.IsEnabled() &&
+                    name.Text() == L"Keep this draft" && tagRoot.Children().GetAt(3).as<InfoBar>().IsOpen() ? S_OK : E_FAIL);
+                g_panel.xamlSource.Content(g_panel.viewport); ResizeIsland();
+                co_await NextNativeFrame();
+
+                currentStage = 115;
+                SetQueueViewActive(true);
+                const auto originalWidth = g_panel.root.Width();
+                const auto originalLanguage = g_english;
+                for (const bool english : {false, true}) {
+                    WindowProc(g_panel.window, kSetLanguage, english, 0);
+                    for (const double width : {640.0, 960.0}) {
+                        g_panel.root.Width(width);
+                        const auto rootHeight = static_cast<float>(g_panel.root.ActualHeight());
+                        g_panel.root.Measure({static_cast<float>(width), rootHeight});
+                        g_panel.root.Arrange({0.0f, 0.0f, static_cast<float>(width), rootHeight});
+                        g_panel.root.UpdateLayout();
+                        co_await NextNativeFrame();
+                        g_panel.root.UpdateLayout();
+                        const auto bounds = g_panel.selectionBar.TransformToVisual(g_panel.root).TransformBounds(
+                            {0, 0, static_cast<float>(g_panel.selectionBar.ActualWidth()), static_cast<float>(g_panel.selectionBar.ActualHeight())});
+                        const auto margin = g_panel.selectionBar.Margin();
+                        const bool fits = g_panel.selectionBar.IsLoaded() &&
+                            g_panel.selectionBar.HorizontalAlignment() == HorizontalAlignment::Center &&
+                            g_panel.selectionBar.ActualWidth() + margin.Left + margin.Right <= width &&
+                            bounds.Y >= kHeaderHeight &&
+                            bounds.Y + bounds.Height <= g_panel.root.ActualHeight() && g_panel.queueAdd.ActualWidth() >= 32 &&
+                            g_panel.cancelSelection.ActualWidth() >= 32 && g_panel.selectionCount.Text() ==
+                                (english ? L"0 selected" : L"0 条已选择");
+                        if (!fits) std::fprintf(stderr,
+                            "WinUI selection-bar bounds: english=%d width=%.1f root=%.1fx%.1f bounds=%.1f,%.1f %.1fx%.1f buttons=%.1f/%.1f count=%ls\n",
+                            english, width, g_panel.root.ActualWidth(), g_panel.root.ActualHeight(),
+                            bounds.X, bounds.Y, bounds.Width, bounds.Height,
+                            g_panel.queueAdd.ActualWidth(), g_panel.cancelSelection.ActualWidth(),
+                            g_panel.selectionCount.Text().c_str());
+                        winrt::check_hresult(fits ? S_OK : E_FAIL);
+                    }
+                }
+                SetQueueViewActive(false);
+                g_panel.root.Width(originalWidth);
+                WindowProc(g_panel.window, kSetLanguage, originalLanguage, 0);
+                currentStage = 116;
+                winrt::check_hresult(g_panel.addTag.Flyout().Placement() == Controls::Primitives::FlyoutPlacementMode::TopEdgeAlignedLeft &&
+                    !g_panel.addTag.Flyout().ShouldConstrainToRootBounds() &&
+                    g_panel.tagFilterButton.Flyout().Placement() == Controls::Primitives::FlyoutPlacementMode::TopEdgeAlignedLeft &&
+                    !g_panel.tagFilterButton.Flyout().ShouldConstrainToRootBounds() ? S_OK : E_FAIL);
+                winrt::check_hresult(g_panel.root.Children().GetAt(0).as<Grid>().BorderThickness().Bottom == 1 ? S_OK : E_FAIL);
+            }
             wchar_t artifactDirectory[MAX_PATH]{};
             const auto artifactLength = GetEnvironmentVariableW(L"VPASTE_WINUI_ARTIFACT_DIR", artifactDirectory, MAX_PATH);
             if (artifactLength > 0) {
@@ -6077,6 +6311,15 @@ winrt::fire_and_forget RunNativePresentationRegression(
                     g_panel.root.Measure({1480, static_cast<float>(kPanelHeight)});
                     g_panel.root.Arrange({0, 0, 1480, static_cast<float>(kPanelHeight)});
                     co_await CaptureNativeView(g_panel.root, folder, winrt::hstring{L"history"} + suffix);
+                    SetQueueViewActive(true);
+                    g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(0));
+                    g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(1));
+                    co_await CaptureNativeView(g_panel.root, folder, winrt::hstring{L"history-selection"} + suffix);
+                    const auto fullWidth = g_panel.root.Width();
+                    g_panel.root.Width(640);
+                    co_await CaptureNativeView(g_panel.root, folder, winrt::hstring{L"history-selection-narrow"} + suffix);
+                    g_panel.root.Width(fullWidth);
+                    SetQueueViewActive(false);
                     ShowAltHints(true);
                     co_await CaptureNativeView(g_panel.root, folder, winrt::hstring{L"history-shortcuts"} + suffix);
                     auto runtime = winrt::Windows::Data::Json::JsonObject::Parse(
@@ -6185,6 +6428,13 @@ winrt::fire_and_forget RunNativePresentationRegression(
                     emojiFixture.Children().Append(emojiName); emojiFixture.Children().Append(emojiTrigger); emojiFixture.Children().Append(emojiPlate);
                     g_panel.xamlSource.Content(emojiFixture); ResizeIsland();
                     co_await CaptureNativeView(emojiPlate, folder, winrt::hstring{L"name-emoji"} + suffix);
+                    vpaste::winui::Reader sampleReader([](auto const &, auto) {});
+                    sampleReader.SetAppearance(english, english ? ElementTheme::Dark : ElementTheme::Light);
+                    auto readerSample = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"op":"nativeReader","data":{
+                        "generation":1,"kind":"text","text":"会议备忘 / Meeting notes\n\n确认原生界面布局\n整理本周设计参考\n同步交互与键盘操作\n\nA native reader that stays open while you browse.",
+                        "rect":{"x":100,"y":100,"width":600,"height":360},"durationMs":0,"easing":[0.22,1,0.36,1]}})");
+                    sampleReader.Receive(readerSample);
+                    co_await CaptureNativeView(sampleReader.TestRoot(), folder, winrt::hstring{L"native-reader"} + suffix);
                     SetTagManagerActive(false);
                 }
                 WindowProc(g_panel.window, kSetLanguage, originalEnglish, 0);
@@ -6192,7 +6442,123 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 ConfigureAcrylicBackdrop(true);
                 ApplyActiveLayout();
             }
-            completion->set_value({S_OK, 111});
+            co_await vpaste::winui::TestReaderControls(currentStage);
+            currentStage = 125;
+            {
+                auto originalHover = std::move(g_panel.hoverPreview);
+                g_panel.hoverPreview = std::make_unique<vpaste::winui::HoverPreview>(
+                    [](auto const &operation, auto const &hash) { (void)SendRequest(operation.c_str(), hash); },
+                    [] { return true; });
+                g_panel.hoverPreview->Enter(L"reader-close-fixture", L"Text");
+                g_panel.hoverPreview->TestShow();
+                auto sample = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"op":"nativeReader","data":{
+                    "generation":1000001,"kind":"text","text":"Close returns keyboard input to the dock",
+                    "rect":{"x":100,"y":100,"width":600,"height":360},"durationMs":0,"easing":[0.22,1,0.36,1]}})");
+                g_panel.reader->Receive(sample);
+                const auto before = previewRequests.size();
+                SendMessageW(reinterpret_cast<HWND>(vpaste::winui::ReaderWindowHandle()), WM_CLOSE, 0, 0);
+                winrt::check_hresult(previewRequests.size() == before + 2 &&
+                    requestAt(before).GetNamedString(L"op") == L"hoverDismiss" &&
+                    requestAt(before + 1).GetNamedString(L"op") == L"previewClose" &&
+                    g_latestPreviewRequestId == 0 ? S_OK : E_FAIL);
+                g_panel.reader->Receive(winrt::Windows::Data::Json::JsonObject::Parse(
+                    LR"({"op":"nativeReaderHide","data":{"generation":1000002}})"));
+                g_panel.hoverPreview = std::move(originalHover);
+            }
+            currentStage = 126;
+            ApplyResponse(R"({"id":9000001,"op":"query","data":{"items":[{"hash":"accessibility-fixture","itemType":"Text","previewText":"Native keyboard target","favorite":true}]}})");
+            co_await NextNativeFrame();
+            winrt::check_hresult(g_panel.rows.size() == 1 &&
+                g_panel.rows.front().favoriteButton.Width() >= 24 &&
+                g_panel.rows.front().favoriteButton.Height() >= 24 ? S_OK : E_FAIL);
+            currentStage = 127;
+            {
+                const auto normal = g_panel.rows.front().header.Background().as<Media::SolidColorBrush>().Color();
+                ApplyRowTheme(true);
+                const auto contrast = g_panel.rows.front().header.Background().as<Media::SolidColorBrush>().Color();
+                winrt::check_hresult(normal != contrast && g_panel.rows.front().time.Opacity() == 1 &&
+                    g_panel.rows.front().preview.Text() == L"Native keyboard target" ? S_OK : E_FAIL);
+                ApplyRowTheme(false);
+                winrt::check_hresult(g_panel.rows.front().header.Background().as<Media::SolidColorBrush>().Color() == normal ? S_OK : E_FAIL);
+                const auto target = g_panel.rows.front().favoriteButton;
+                winrt::check_hresult(vpaste::winui::MotionTokens().GetNamedObject(L"duration").GetNamedNumber(L"fast") == 0.18 &&
+                    vpaste::winui::FadeFeedback(target, true) ? S_OK : E_FAIL);
+                winrt::check_hresult(!vpaste::winui::FadeFeedback(target, false) &&
+                    Hosting::ElementCompositionPreview::GetElementVisual(target).Opacity() == 1 ? S_OK : E_FAIL);
+                UpdateQueueSelectionControls();
+                winrt::check_hresult(Automation::AutomationProperties::GetLiveSetting(g_panel.selectionCount) ==
+                    Automation::Peers::AutomationLiveSetting::Polite ? S_OK : E_FAIL);
+            }
+            currentStage = 128;
+            {
+                using namespace winrt::Windows::Data::Json;
+                const auto started = std::chrono::steady_clock::now();
+                vpaste::winui::RecordNativeResources("history-before");
+                std::vector<winrt::weak_ref<Controls::Border>> retired;
+                for (int cycle = 0; cycle < 6; ++cycle) {
+                    JsonObject response, data;
+                    JsonArray items;
+                    for (int index = 0; index < 36; ++index) {
+                        JsonObject item;
+                        item.Insert(L"hash", JsonValue::CreateStringValue(L"resource-" + std::to_wstring(cycle) + L"-" + std::to_wstring(index)));
+                        item.Insert(L"itemType", JsonValue::CreateStringValue(index % 2 ? L"Text" : L"Link"));
+                        item.Insert(L"previewText", JsonValue::CreateStringValue(L"Synthetic history resource fixture"));
+                        items.Append(item);
+                    }
+                    data.Insert(L"items", items);
+                    response.Insert(L"id", JsonValue::CreateNumberValue(9000010 + cycle));
+                    response.Insert(L"op", JsonValue::CreateStringValue(L"query"));
+                    response.Insert(L"data", data);
+                    ApplyResponse(winrt::to_string(response.Stringify()));
+                    co_await NextNativeFrame();
+                    winrt::check_hresult(g_panel.rows.size() == 36 ? S_OK : E_FAIL);
+                    for (auto const &row : g_panel.rows) retired.push_back(winrt::make_weak(row.surface));
+                }
+                ApplyResponse(R"({"id":9000020,"op":"query","data":{"items":[]}})");
+                for (int frame = 0; frame < 3; ++frame) co_await NextNativeFrame();
+                winrt::check_hresult(g_panel.rows.empty() && std::none_of(retired.begin(), retired.end(),
+                    [](auto const &row) { return static_cast<bool>(row.get()); }) ? S_OK : E_FAIL);
+                vpaste::winui::RecordNativeResources("history-after-6x36-clear");
+                std::printf("WinUI history 6x36 replace/clear: %.2f ms including render waits\n",
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+            }
+            currentStage = 129;
+            {
+                using namespace winrt::Windows::Data::Json;
+                const auto started = std::chrono::steady_clock::now();
+                vpaste::winui::RecordNativeResources("queue-before");
+                winrt::weak_ref<FrameworkElement> released;
+                {
+                    vpaste::winui::QueueView queue{[](auto const &, auto const &, auto const &) { return std::uint64_t{1}; }, [] {}};
+                    const auto root = queue.Root().as<Controls::Grid>();
+                    released = winrt::make_weak(queue.Root());
+                    g_panel.xamlSource.Content(root); ResizeIsland();
+                    JsonObject state;
+                    JsonArray items;
+                    for (int index = 0; index < 100; ++index) {
+                        JsonObject item;
+                        item.Insert(L"hash", JsonValue::CreateStringValue(L"queue-resource-" + std::to_wstring(index)));
+                        item.Insert(L"previewText", JsonValue::CreateStringValue(L"Synthetic queue resource fixture"));
+                        items.Append(item);
+                    }
+                    state.Insert(L"items", items);
+                    for (int cycle = 0; cycle < 6; ++cycle) {
+                        state.Insert(L"revision", JsonValue::CreateNumberValue(cycle + 1));
+                        queue.SetState(state);
+                        co_await NextNativeFrame();
+                        winrt::check_hresult(root.Children().GetAt(1).as<Controls::ScrollViewer>()
+                            .Content().as<Controls::StackPanel>().Children().Size() == 100 ? S_OK : E_FAIL);
+                    }
+                    queue.Deactivate();
+                    g_panel.xamlSource.Content(g_panel.viewport); ResizeIsland();
+                }
+                for (int frame = 0; frame < 3; ++frame) co_await NextNativeFrame();
+                winrt::check_hresult(!released.get() ? S_OK : E_FAIL);
+                vpaste::winui::RecordNativeResources("queue-after-6x100-destroy");
+                std::printf("WinUI queue 6x100 refresh/destroy: %.2f ms including render waits\n",
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+            }
+            completion->set_value({S_OK, 129});
         } catch (...) {
             completion->set_value({winrt::to_hresult(), currentStage});
         }
@@ -6208,7 +6574,7 @@ extern "C" __declspec(dllexport) int32_t vpaste_winui_test_history_and_queue(
     if (!g_dispatcher.DispatcherQueue().TryEnqueue([completion] {
         RunNativePresentationRegression(completion);
     })) return E_FAIL;
-    if (result.wait_for(std::chrono::seconds(30)) != std::future_status::ready) {
+    if (result.wait_for(std::chrono::seconds(60)) != std::future_status::ready) {
         return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
     }
     const auto [status, completedStage] = result.get();

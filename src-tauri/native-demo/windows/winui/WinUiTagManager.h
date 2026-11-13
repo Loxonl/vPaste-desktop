@@ -12,7 +12,7 @@ namespace vpaste::winui {
 
 class TagManager {
 public:
-    using RequestCallback = std::function<void(
+    using RequestCallback = std::function<std::uint64_t(
         const std::wstring &operation, std::int64_t id, const std::wstring &name)>;
     using CloseCallback = std::function<void()>;
 

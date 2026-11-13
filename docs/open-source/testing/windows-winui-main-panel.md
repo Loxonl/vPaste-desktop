@@ -1,5 +1,8 @@
 # Windows WinUI 3 main-panel MVP
 
+The current stages 1–3 follow-up and consolidated manual checks are recorded in
+[Windows WinUI parity](windows-winui-parity.md).
+
 ## Native presentation acceptance (local experiment)
 
 ### Native name-emoji follow-up
@@ -1476,6 +1479,9 @@ Integration verification:
 Evidence is under `src-tauri/tmp/submission-362-20261113/` (ignored local output).
 
 ## Interpreting memory readings
+
+The subsequent common-content native reader slice and its remaining shared
+renderer routes are documented in [Windows native preview follow-up](windows-winui-native-preview.md).
 
 Compare the same metric after the same idle time on the same machine, and measure
 the full `vPaste.exe` process tree. Exclude the Vite/Node process from the

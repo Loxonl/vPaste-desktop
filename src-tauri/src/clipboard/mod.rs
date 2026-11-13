@@ -756,6 +756,8 @@ pub(crate) fn history_ref_page(
                 let app_icon_path = resolve_app_icon_path(&stored.app_source, stored.app_icon_path);
                 let title_color =
                     app_icon_dominant_color(&app_icon_path).unwrap_or(stored.title_color);
+                let preview_text =
+                    history_preview_text(&item_type, &stored.content, &stored.preview_content);
                 list.push(crate::history_views::HistoryRef {
                     id: stored.id,
                     hash: stored.hash,
@@ -767,6 +769,7 @@ pub(crate) fn history_ref_page(
                     source_metadata: stored.source_metadata,
                     app_icon_path,
                     title_color,
+                    preview_text,
                 });
             }
             Ok(Some(Page {
@@ -778,6 +781,36 @@ pub(crate) fn history_ref_page(
             }))
         },
     )
+}
+
+fn history_preview_text(item_type: &ItemType, content: &str, preview: &str) -> String {
+    match item_type {
+        ItemType::Text | ItemType::Color => preview.to_string(),
+        ItemType::Link => {
+            let parts = content.split("|||").collect::<Vec<_>>();
+            parts
+                .get(2)
+                .filter(|title| !title.is_empty())
+                .copied()
+                .or_else(|| parts.first().copied())
+                .unwrap_or_default()
+                .to_string()
+        }
+        ItemType::File => serde_json::from_str::<Vec<String>>(content)
+            .ok()
+            .and_then(|paths| paths.first().cloned())
+            .and_then(|path| {
+                Path::new(&path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "File".to_string()),
+        ItemType::TextFile => Path::new(content)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Text file".to_string()),
+        ItemType::Image => String::new(),
+    }
 }
 
 pub(crate) fn history_action_item(hash: &str) -> Result<Item, String> {
@@ -4103,6 +4136,29 @@ mod link_preview_tests;
 mod tests {
     use super::*;
     use rusqlite::params;
+
+    #[test]
+    fn native_history_previews_use_bounded_copy_content_and_human_readable_titles() {
+        assert_eq!(
+            history_preview_text(&ItemType::Text, "full text", "short preview"),
+            "short preview"
+        );
+        assert_eq!(
+            history_preview_text(
+                &ItemType::Link,
+                "https://example.com|||/tmp/icon.png|||Example page|||icon",
+                "",
+            ),
+            "Example page"
+        );
+        let path = std::env::temp_dir().join("report.pdf");
+        let files = serde_json::to_string(&[path.to_string_lossy()]).unwrap();
+        assert_eq!(
+            history_preview_text(&ItemType::File, &files, ""),
+            "report.pdf"
+        );
+        assert_eq!(history_preview_text(&ItemType::Image, "", ""), "");
+    }
 
     #[test]
     fn link_preview_rejects_explicit_local_or_ip_urls() {

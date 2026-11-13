@@ -26,13 +26,21 @@ async function openClipboard(page: Page, mac: boolean, extraTabs = 0, storedOrde
             ...Array.from({ length: extraTabs }, (_, i) => ({ id: `extra-${i}`, name: `更多分类${i}`, filter: {} })),
         ];
         localStorage.setItem("vpaste.customTabs.v1", JSON.stringify(tabs));
-        localStorage.setItem("vpaste.tabOrder.v1", JSON.stringify(["empty", "record:7", "text"]));
+        if (!localStorage.getItem("vpaste.tabOrder.v1")) {
+            localStorage.setItem("vpaste.tabOrder.v1", JSON.stringify(["empty", "record:7", "text"]));
+        }
         let nextId = 0;
         let previewVisible = false;
         const callbacks = new Map<number, (event: unknown) => void>();
         const listeners = new Map<string, number>();
         const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
         const emit = (name: string, payload: unknown = null) => callbacks.get(listeners.get(name)!)?.({ payload });
+        let databaseOrder: string[] = JSON.parse(sessionStorage.getItem("tab-navigation-database-order") ?? JSON.stringify(storedOrder));
+        const storeOrder = (order: string[]) => {
+            databaseOrder = order;
+            sessionStorage.setItem("tab-navigation-database-order", JSON.stringify(order));
+            emit("tab-order-changed", { order });
+        };
         Object.assign(window, {
             __tabNavigation: { calls, emit, setPreviewVisible: () => { previewVisible = true; } },
             __TAURI_INTERNALS__: {
@@ -50,7 +58,18 @@ async function openClipboard(page: Page, mac: boolean, extraTabs = 0, storedOrde
                         return JSON.stringify({ list, consumed: list.length, hasMore: false, nextId: 0, nextTime: 0 });
                     }
                     if (command === "get_custom_tabs") return tabs;
-                    if (command === "get_tab_order") return storedOrder;
+                    if (command === "get_tab_order") return databaseOrder;
+                    if (command === "save_tab_order") { storeOrder(args.order as string[]); return null; }
+                    if (command === "reorder_tab") {
+                        const known = [...tabs.map(tab => tab.id), "record:7"];
+                        const order = [...new Set([...databaseOrder, ...known])].filter(id => known.includes(id));
+                        const source = order.indexOf(args.sourceId as string);
+                        if (source < 0 || !order.includes(args.targetId as string)) throw new Error("Missing tab");
+                        const [moved] = order.splice(source, 1);
+                        order.splice(order.indexOf(args.targetId as string) + (args.before ? 0 : 1), 0, moved);
+                        storeOrder(order);
+                        return order;
+                    }
                     if (command === "list_item_tags") return [{ id: 7, name: "记录标签" }];
                     if (command === "is_preview_window_visible") return previewVisible;
                     if (command === "hide_preview_window") { previewVisible = false; return null; }
@@ -123,6 +142,9 @@ for (const mac of [false, true]) {
         await expect(cards(page)).toHaveCount(0);
         await expect(search).toBeFocused();
         await page.keyboard.press("Control+Tab");
+        await expect(activeTab(page)).toContainText("记录标签");
+        await expect(search).toBeFocused();
+        await page.keyboard.press("Control+Tab");
         await expect(activeTab(page)).toContainText("文字分类");
         await expect(cards(page).first()).toContainText("needle text record 0");
         await cards(page).first().click({ button: "right" });
@@ -131,6 +153,19 @@ for (const mac of [false, true]) {
         await expect(activeTab(page)).toContainText("文字分类");
     });
 }
+
+test("retains the legacy interleaved order after tag loading and saves a mixed drag without changing selection", async ({ page }) => {
+    await openClipboard(page, false);
+    await expect.poll(() => categoryNames(page)).toEqual(["全部", "收藏", "空分类", "记录标签", "文字分类"]);
+    const tabs = page.locator('[class*="header-tabs"] [class*="tab-item"]');
+    await tabs.filter({ hasText: "记录标签" }).dragTo(tabs.filter({ hasText: "空分类" }));
+    await expect.poll(() => categoryNames(page)).toEqual(["全部", "收藏", "记录标签", "空分类", "文字分类"]);
+    await expect(activeTab(page)).toContainText("全部");
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("vpaste.tabOrder.v1")!)))
+        .toEqual(["record:7", "empty", "text"]);
+    await page.reload();
+    await expect.poll(() => categoryNames(page)).toEqual(["全部", "收藏", "记录标签", "空分类", "文字分类"]);
+});
 
 test("preview category events use current categories and close the old preview", async ({ page }) => {
     await openClipboard(page, false);
@@ -144,6 +179,8 @@ test("preview category events use current categories and close the old preview",
         probe.setPreviewVisible();
         probe.emit("preview-navigate-selection", { key: "Tab", ctrlKey: true, direction: -1 });
     });
+    await expect(activeTab(page)).toContainText("文字分类");
+    await page.evaluate(() => (window as NavigationProbe).__tabNavigation.emit("preview-navigate-selection", { key: "Tab", ctrlKey: true, direction: -1 }));
     await expect(activeTab(page)).toContainText("记录标签");
     await expect(cards(page).first()).toHaveAttribute("data-hash", "tag-0");
     await expect.poll(() => page.evaluate(() => (window as NavigationProbe).__tabNavigation.calls.filter(call => call.command === "hide_preview_window").length)).toBe(1);

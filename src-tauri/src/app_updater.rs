@@ -1169,6 +1169,24 @@ fn notify_ready_once(_app: &AppHandle, _version: &str) {}
 
 #[tauri::command]
 pub async fn restart_and_install_app_update(app: AppHandle) -> Result<(), String> {
+    install_confirmed_update(app, None).await
+}
+
+fn validate_confirmed_version(expected: Option<&str>, pending: &str) -> Result<(), String> {
+    if let Some(version) = expected {
+        if version.is_empty() || version != pending {
+            return Err(
+                "Update changed; reopen the confirmation / 更新状态已变化，请重新确认".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn install_confirmed_update(
+    app: AppHandle,
+    expected_version: Option<&str>,
+) -> Result<(), String> {
     if update_source() == UpdateSource::MacAppStore {
         return Err("Mac App Store updates must be installed in the App Store".to_string());
     }
@@ -1181,6 +1199,9 @@ pub async fn restart_and_install_app_update(app: AppHandle) -> Result<(), String
     let Some(pending) = PENDING_UPDATE.lock().unwrap().clone() else {
         return Err("the update has not finished downloading".to_string());
     };
+    // Check the actual package while holding the existing operation guard;
+    // a toolbar snapshot alone can race a background download completing.
+    validate_confirmed_version(expected_version, &pending.metadata.version)?;
 
     {
         let mut state = UPDATE_STATE.lock().unwrap();
@@ -1335,6 +1356,14 @@ mod tests {
     const TEST_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSL3FUWm00NEg4UkNZVFNtVlJMVlI3YVloeDBTTGxHZDVuR2I5NCtLVzF3eXJHT2M3NFNVOGJSeWNHY09JWHZPRFBidG9FbmE5Wk9kcFZZL1ZFMkRaekt4UjE4c0taaGcwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODU1NTY1CWZpbGU6cGF5bG9hZC5iaW4KS2YxbHpNbHB6TnZCVDlwalh4R2QvMlU2WlJoVEZwQ1pLUURSWVZhVWZlNHl1eTVoVFpSQWI0YVpJNDdxR0lUWUZXbGdnM0NVd3NINGJHbmtVY2FCQ2c9PQo=";
     const TEST_PAYLOAD: &[u8] = b"vpaste updater cache fixture\n";
     const TARGET: &str = "darwin-aarch64";
+
+    #[test]
+    fn confirmed_install_matches_the_locked_package_without_changing_legacy_calls() {
+        assert!(super::validate_confirmed_version(None, "1.7.2").is_ok());
+        assert!(super::validate_confirmed_version(Some("1.7.1"), "1.7.1").is_ok());
+        assert!(super::validate_confirmed_version(Some("1.7.1"), "1.7.2").is_err());
+        assert!(super::validate_confirmed_version(Some(""), "1.7.2").is_err());
+    }
 
     fn gate() -> CheckGate {
         CheckGate {

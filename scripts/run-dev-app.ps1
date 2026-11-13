@@ -1,5 +1,7 @@
 param(
-  [switch]$DeveloperMode
+  [switch]$DeveloperMode,
+  [ValidateSet("webview", "winui")]
+  [string]$MainUi = "webview"
 )
 
 $ErrorActionPreference = "Stop"
@@ -7,6 +9,7 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $SrcTauri = Join-Path $Root "src-tauri"
 $DevUrlPort = 1420
+$WinUiMode = $DeveloperMode -and $MainUi -eq "winui"
 
 $escapedRoot = [Regex]::Escape($Root)
 $oldProcesses = Get-CimInstance Win32_Process | Where-Object {
@@ -26,7 +29,10 @@ if ($otherRunningApps) {
   throw "Quit the running vPaste app before starting the local debug build."
 }
 
-$listener = Get-NetTCPConnection -LocalPort $DevUrlPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+$listener = $null
+if (-not $WinUiMode) {
+  $listener = Get-NetTCPConnection -LocalPort $DevUrlPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+}
 if ($listener) {
   $listenerProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $($listener.OwningProcess)" -ErrorAction SilentlyContinue
   $isCurrentVite = $listenerProcess -and
@@ -48,14 +54,39 @@ if ($listener) {
   }
 }
 
-if (-not $listener) {
+if (-not $WinUiMode -and -not $listener) {
   Start-Process -FilePath "npm.cmd" -ArgumentList @("run", "dev") -WorkingDirectory $Root -WindowStyle Hidden
   Start-Sleep -Seconds 2
 }
 
+if ($WinUiMode) {
+  # Auxiliary readers use embedded assets; the native panel never needs Vite.
+  Push-Location $Root
+  try {
+    npm.cmd run build -- --mode native-debug
+    if ($LASTEXITCODE -ne 0) {
+      throw "Frontend build failed; the previous WinUI executable was not started."
+    }
+    node scripts/check-native-debug-assets.mjs native-debug
+    if ($LASTEXITCODE -ne 0) {
+      throw "Native Debug tool assets are missing; the previous executable was not started."
+    }
+  }
+  finally {
+    Pop-Location
+  }
+}
+
 Push-Location $SrcTauri
 try {
-  cargo build --bin vPaste
+  if ($WinUiMode) {
+    cargo build --bin vPaste --features winui-debug
+  } else {
+    cargo build --bin vPaste
+  }
+  if ($LASTEXITCODE -ne 0) {
+    throw "Rust/native build failed; the previous executable was not started."
+  }
 }
 finally {
   Pop-Location
@@ -67,7 +98,11 @@ if (-not (Test-Path $Exe)) {
 }
 
 if ($DeveloperMode) {
-  Start-Process -FilePath $Exe -ArgumentList "--dev-mode" -WorkingDirectory (Split-Path -Parent $Exe)
+  if ($WinUiMode) {
+    Start-Process -FilePath $Exe -ArgumentList @("--dev-mode", "--main-ui=winui") -WorkingDirectory (Split-Path -Parent $Exe)
+  } else {
+    Start-Process -FilePath $Exe -ArgumentList @("--dev-mode", "--main-ui=webview") -WorkingDirectory (Split-Path -Parent $Exe)
+  }
 } else {
   Start-Process -FilePath $Exe -WorkingDirectory (Split-Path -Parent $Exe)
 }

@@ -133,6 +133,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private var surface: NSView { backdrop.contentView }
   private let search = NSSearchField()
   private let toolbar = PanelToolbar()
+  private var pasteQueue = PanelPasteQueueIndicator()
+  private let queueBar: PanelPasteQueueBar
+  private var queueRequestPending = false
   private let infoBar = PanelInfoBar()
   private let emptyState = PanelEmptyState()
   private var infoHeight: NSLayoutConstraint!
@@ -197,6 +200,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
 
   init(callbacks: VPastePanelCallbacks, config: PanelConfiguration) {
     self.config = config
+    queueBar = PanelPasteQueueBar(scale: config.scale, chinese: config.chinese)
     backdrop = PanelBackdrop(scale: config.scale)
     bridge = PanelBridge(callbacks, session: config.session)
     let screen =
@@ -208,6 +212,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       width: bounds.width + config.horizontalBleed * 2, height: config.panelHeight)
     window = NativeHistoryPanel(dockedFrame: config.dockedFrame?.rect ?? fallback)
     super.init()
+    if let initial = config.pasteQueue { _ = pasteQueue.apply(initial) }
     build()
   }
   private func build() {
@@ -273,6 +278,11 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     toolbar.onRefresh = { [weak self] in self?.reload() }
     toolbar.onClose = { [weak self] in self?.dismiss() }
+    toolbar.onPasteQueue = { [weak self] in
+      guard let self else { return }
+      self.previews.clear()
+      self.menuRun("paste-queue-toggle", [:], success: nil, reload: false)
+    }
     toolbar.onSettings = { [weak self] in self?.bridge.send("settings") }
     toolbar.onDiagnostics = { [weak self] in self?.setInfoVisible(self?.infoBar.isHidden ?? true) }
     layout.cardWidth = PanelStyle.cardWidth * config.scale
@@ -300,6 +310,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     emptyState.scale = config.scale
     emptyState.translatesAutoresizingMaskIntoConstraints = false
     surface.addSubview(emptyState)
+    queueBar.translatesAutoresizingMaskIntoConstraints = false
+    queueBar.onAdd = { [weak self] in self?.addQueueSelection() }
+    surface.addSubview(queueBar)
     infoHeight = infoBar.heightAnchor.constraint(equalToConstant: 0)
     NSLayoutConstraint.activate([
       toolbar.leadingAnchor.constraint(equalTo: surface.leadingAnchor),
@@ -317,6 +330,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       emptyState.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
       emptyState.topAnchor.constraint(equalTo: scroll.topAnchor),
       emptyState.bottomAnchor.constraint(equalTo: scroll.bottomAnchor),
+      queueBar.centerXAnchor.constraint(equalTo: surface.centerXAnchor),
+      queueBar.bottomAnchor.constraint(equalTo: infoBar.topAnchor, constant: -12 * config.scale),
     ])
     scroll.contentView.postsBoundsChangedNotifications = true
     boundsObserver = NotificationCenter.default.addObserver(
@@ -336,6 +351,11 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         if let message = value["assignmentError"] as? String {
           self.showMessage(self.local("Could not add the new tag: \(message)", "无法添加新标签：\(message)"))
         }
+      } else if name == "paste-queue-state" {
+        if self.applyPasteQueueState(value), let error = value["error"] as? String {
+          self.pasteQueue.reportError(error)
+          self.showMessage(error)
+        }
       } else if name == "tab-order-changed" {
         if !self.dragging { self.refreshTabs() }
       } else if name == "preview-focused", let number = value["windowNumber"] as? Int {
@@ -354,8 +374,78 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       }
     }
     media.changed = { [weak self] in self?.status() }
+    refreshQueueSelectionUI()
+  }
+  @discardableResult
+  private func applyPasteQueueState(_ value: [String: Any]) -> Bool {
+    let wasActive = pasteQueue.active
+    guard let status = try? panelDecode(PanelPasteQueueStatus.self, value), pasteQueue.apply(status) else { return false }
+    if !wasActive && pasteQueue.active { previews.clear() }
+    refreshQueueSelectionUI()
+    return true
+  }
+  private func refreshQueueSelectionUI() {
+    toolbar.setQueueActive(pasteQueue.active)
+    queueBar.isHidden = !pasteQueue.active
+    queueBar.update(count: pasteQueue.selectedHashes.count,
+      busy: queueRequestPending || pasteQueue.selectionBusy)
+    updateVisibleSelection()
+    status()
+  }
+  private func updateVisibleSelection() {
+    for path in list.indexPathsForVisibleItems() {
+      guard let view = (list.item(at: path) as? PanelCardItem)?.cardView else { continue }
+      view.queueSelectionMode = pasteQueue.active
+      view.selected = pasteQueue.active
+        ? ref(path.item).map { pasteQueue.selectedHashes.contains($0.hash) } ?? false
+        : path.item == selected
+    }
+  }
+  private func toggleQueueSelection(at index: Int) {
+    guard !queueRequestPending, !pasteQueue.selectionBusy, let entry = ref(index) else { return }
+    pasteQueue.clearError()
+    previews.cancelHover()
+    bridge.send("paste-queue-select", ["hash": entry.hash, "activationEpoch": pasteQueue.activationEpoch]) {
+      [weak self] result in
+      guard let self, !self.closed else { return }
+      switch result {
+      case .success(let data):
+        if let value = data as? [String: Any] { self.applyPasteQueueState(value) }
+      case .failure(let error): self.showMessage(error.localizedDescription)
+      }
+    }
+  }
+  private func addQueueSelection() {
+    guard pasteQueue.active, !pasteQueue.selectedHashes.isEmpty, !queueRequestPending,
+      !pasteQueue.selectionBusy, !busyAction else { return }
+    pasteQueue.clearError()
+    queueRequestPending = true
+    refreshQueueSelectionUI()
+    bridge.send("paste-queue-add", ["activationEpoch": pasteQueue.activationEpoch]) { [weak self] result in
+      guard let self, !self.closed else { return }
+      self.queueRequestPending = false
+      var message: String?
+      switch result {
+      case .success(let data):
+        if let value = data as? [String: Any] {
+          self.applyPasteQueueState(value)
+          message = value["error"] as? String
+        }
+      case .failure(let error): message = error.localizedDescription
+      }
+      self.refreshQueueSelectionUI()
+      if let message {
+        self.pasteQueue.reportError(message)
+        self.showMessage(message)
+      }
+    }
   }
   func present() {
+    bridge.send("paste-queue-status") { [weak self] result in
+      guard let self, !self.closed, case .success(let data) = result,
+        let value = data as? [String: Any] else { return }
+      self.applyPasteQueueState(value)
+    }
     root.layoutSubtreeIfNeeded()
     if let screen = window.screen {
       let frame = window.frame
@@ -459,6 +549,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     previews.close()
     pendingPreviewSelection = nil
     toolbar.releaseContent()
+    queueBar.releaseContent()
     search.delegate = nil
     for view in renderedViews.allObjects { view.releaseContent() }
     renderedViews.removeAllObjects()
@@ -775,7 +866,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     renderedViews.add(view)
     view.configure(
       card, placeholder: local("Loading…", "加载中…"), media: media, scale: config.scale,
-      chinese: chinese, query: search.stringValue, selected: index == selected)
+      chinese: chinese, query: search.stringValue, selected: pasteQueue.active
+        ? entry.map { pasteQueue.selectedHashes.contains($0.hash) } ?? false : index == selected)
+    view.queueSelectionMode = pasteQueue.active
     if let hash = entry?.hash, filterEntryHashes.contains(hash), !filterEntryAnimated.contains(hash) {
       filterEntryAnimated.insert(hash)
       view.playFilterEntry(sequence: filterEntrySequence, hash: hash, index: index)
@@ -784,7 +877,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     view.select = { [weak self] in self?.select(index, scroll: false) }
     let previewItem = entry.map { PanelPreviewItem(hash: $0.hash, itemType: $0.itemType) }
     view.hoverEntered = { [weak self] in
-      guard let self, let previewItem, !self.dragging, !self.busyAction,
+      guard let self, let previewItem, !self.pasteQueue.active, !self.dragging, !self.busyAction,
         self.window.attachedSheet == nil else { return }
       self.select(index, scroll: false)
       self.previews.enter(previewItem)
@@ -795,7 +888,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     view.activate = { [weak self] in self?.action("paste", at: index) }
     view.requestMenu = { [weak self] point in self?.openContextMenu(at: index, point: point) }
     view.prepareDrag = { [weak self] completion in
-      guard let self, let hash = self.ref(index)?.hash else { return }
+      guard let self, !self.pasteQueue.active, let hash = self.ref(index)?.hash else { return }
       self.dragging = true
       self.heldHash = hash
       self.bridge.send("drag", ["hash": hash]) { [weak self] result in
@@ -945,6 +1038,10 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       }
     }
 
+    if let error = pasteQueue.error {
+      footer.stringValue = error
+      return
+    }
     if count == 0 {
       footer.stringValue = local("No matching history", "没有匹配的历史记录")
       return
@@ -954,9 +1051,10 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       + local("resident cards: ", "驻留卡片：") + "\(cards.count) · "
       + local("decoded images: ", "解码图片：")
       + String(format: "%.1f MiB", Double(media.decodedBytes) / 1_048_576)
-      + local(
-        " · Enter paste · ⌘C copy · Space preview · Esc close",
-        " · Enter 粘贴 · ⌘C 复制 · 空格预览 · Esc 关闭")
+      + (pasteQueue.active
+        ? local(" · Enter select · Space preview · Esc close", " · Enter 勾选 · 空格预览 · Esc 关闭")
+        : local(" · Enter paste · ⌘C copy · Space preview · Esc close",
+          " · Enter 粘贴 · ⌘C 复制 · 空格预览 · Esc 关闭"))
   }
   private func refreshSelectedPreview() {
     guard let pending = pendingPreviewSelection, pending.index == selected,
@@ -972,9 +1070,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       pendingPreviewSelection = (index, shouldScroll ? (index > previous ? 1 : -1) : 0)
       refreshSelectedPreview()
     }
-    for path in list.indexPathsForVisibleItems() {
-      (list.item(at: path) as? PanelCardItem)?.cardView.selected = path.item == index
-    }
+    updateVisibleSelection()
     if shouldScroll {
       let frame =
         layout.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame ?? .zero
@@ -1045,6 +1141,10 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private func action(_ operation: String, at index: Int) {
     guard !busyAction, let entry = ref(index) else { return }
     let hash = entry.hash
+    if operation == "paste" && pasteQueue.active {
+      toggleQueueSelection(at: index)
+      return
+    }
     if operation == "preview" {
       previews.open(PanelPreviewItem(hash: hash, itemType: entry.itemType))
       return
@@ -1064,7 +1164,11 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       self.busyAction = false
       switch result {
       case .failure(let error): self.showMessage(error.localizedDescription)
-      case .success:
+      case .success(let data):
+        if let value = data as? [String: Any], value["selectedHashes"] != nil {
+          self.applyPasteQueueState(value)
+          return
+        }
         if operation == "delete" {
           if let index {
             self.removeHistoryItem(hash: hash, at: index)

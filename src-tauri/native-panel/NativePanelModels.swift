@@ -9,6 +9,7 @@ struct PanelFrame: Decodable {
 }
 struct PanelConfiguration: Decodable {
   let session: UInt64
+  let pasteQueue: PanelPasteQueueStatus?
   let sizePreview: Bool
   let language: String
   let theme: String
@@ -25,6 +26,43 @@ struct PanelConfiguration: Decodable {
   let hideCurve: [Double]
   var chinese: Bool { language == "Chinese" || language.hasPrefix("zh") }
 }
+// Queue selection carries metadata and hashes, never card/image payloads.
+struct PanelPasteQueueStatus: Decodable {
+  let active: Bool
+  let revision: UInt64
+  let activationEpoch: UInt64
+  let selectedHashes: [String]
+  let selectionRevision: UInt64
+  let selectionBusy: Bool
+}
+struct PanelPasteQueueIndicator {
+  private(set) var active = false
+  private var revision: UInt64?
+  private(set) var activationEpoch: UInt64 = 0
+  private(set) var selectedHashes: [String] = []
+  private(set) var selectionRevision: UInt64 = 0
+  private(set) var selectionBusy = false
+  private(set) var error: String?
+  mutating func reportError(_ message: String) { error = message }
+  mutating func clearError() { error = nil }
+  mutating func apply(active: Bool, revision: UInt64) -> Bool {
+    guard self.revision.map({ revision >= $0 }) ?? true else { return false }
+    self.revision = revision
+    self.active = active
+    return true
+  }
+  mutating func apply(_ status: PanelPasteQueueStatus) -> Bool {
+    guard status.activationEpoch >= activationEpoch, status.selectionRevision >= selectionRevision,
+      apply(active: status.active, revision: status.revision) else { return false }
+    if !status.active || status.activationEpoch != activationEpoch { clearError() }
+    activationEpoch = status.activationEpoch
+    selectedHashes = status.active ? status.selectedHashes : []
+    selectionRevision = status.selectionRevision
+    selectionBusy = status.selectionBusy && status.active
+    return true
+  }
+}
+
 struct PanelToken: Decodable {
   let viewId: String
   let revision: UInt64

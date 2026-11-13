@@ -3214,12 +3214,37 @@ async fn open_onboarding_permission_window(
             .store(source_window.label() == "config", Ordering::SeqCst);
         let _ = window.unminimize();
         center_window_on_source_monitor(&window, &source_window)?;
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        if source_window.label() == "onboardingPermission" {
+            if let Some(surface) = native_panel::preview::surface() {
+                let bounds = surface.bounds;
+                let size = window
+                    .outer_size()
+                    .map_err(|err| err.to_string())?
+                    .to_logical::<f64>(window.scale_factor().map_err(|err| err.to_string())?);
+                set_window_position_for_scale(
+                    &window,
+                    bounds.x + (bounds.width - size.width) / 2.0,
+                    bounds.y + (bounds.height - size.height) / 2.0,
+                    bounds.scale_factor,
+                )?;
+            }
+        }
         let _ = window.set_shadow(false);
         window
             .set_always_on_top(true)
             .map_err(|err| err.to_string())?;
         #[cfg(target_os = "macos")]
-        set_macos_window_level(&window, 102);
+        {
+            let level = 102;
+            #[cfg(debug_assertions)]
+            let level = if native_panel::preview::active() {
+                104
+            } else {
+                level
+            };
+            set_macos_window_level(&window, level);
+        }
         window.show().map_err(|err| err.to_string())?;
         activate_native_window(&window, "onboarding permission open");
         window.set_focus().map_err(|err| err.to_string())?;
@@ -3737,7 +3762,7 @@ fn watch_paste_queue_pointer(app: tauri::AppHandle, generation: u64) {
             }
             if should_track_paste_queue_foreground_target(
                 paste_queue::is_active(),
-                CLIPBOARD_VISIBLE.load(Ordering::SeqCst),
+                main_surface_visible(),
             ) && last_foreground_recorded_at.elapsed() >= std::time::Duration::from_millis(100)
             {
                 record_foreground_app_before_clipboard();
@@ -11549,19 +11574,21 @@ fn should_refresh_paste_queue_click_target(
 }
 
 fn prepare_paste_queue_click_target(app: &tauri::AppHandle, origin: PasteQueueRequestOrigin) {
-    if !should_prepare_paste_queue_click_target(origin, CLIPBOARD_VISIBLE.load(Ordering::SeqCst)) {
+    if !should_prepare_paste_queue_click_target(origin, main_surface_visible()) {
         return;
     }
 
-    if CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+    if main_surface_visible() {
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        if native_panel::preview::active() {
+            native_panel::preview::hide(app);
+        }
         if let Some(window) = app.get_webview_window("clipboard") {
             hide_clipboard_window(&window);
-            let started = Instant::now();
-            while CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
-                && started.elapsed() < std::time::Duration::from_millis(400)
-            {
-                std::thread::sleep(std::time::Duration::from_millis(8));
-            }
+        }
+        let started = Instant::now();
+        while main_surface_visible() && started.elapsed() < std::time::Duration::from_millis(400) {
+            std::thread::sleep(std::time::Duration::from_millis(8));
         }
     }
     restore_foreground_app_before_paste();
@@ -12276,6 +12303,10 @@ fn show_paste_queue_window(
         .get_webview_window("clipboard")
         .map(|clipboard_window| target_clipboard_screen_bounds(&clipboard_window))
         .unwrap_or_else(|| screen_bounds(&window));
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    let bounds = native_panel::preview::surface()
+        .map(|surface| surface.bounds)
+        .unwrap_or(bounds);
     let size = ui_text_scale::logical_size(PASTE_QUEUE_WINDOW_WIDTH, PASTE_QUEUE_WINDOW_HEIGHT);
     let x = bounds.x + bounds.width - size.width - 24.0;
     let y = bounds.y + (bounds.height - size.height) / 2.0;
@@ -12286,7 +12317,19 @@ fn show_paste_queue_window(
     if ui_text_scale::current() > 1.0 {
         fit_content_window_to_work_area(window)?;
     }
-    window.show().map_err(|err| err.to_string())
+    window.show().map_err(|err| err.to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        let level = 102;
+        #[cfg(debug_assertions)]
+        let level = if native_panel::preview::active() {
+            104
+        } else {
+            level
+        };
+        set_macos_window_level(window, level);
+    }
+    Ok(())
 }
 
 fn schedule_paste_queue_cleanup(cleanup: paste_queue::DeferredCleanup) {
@@ -12348,7 +12391,19 @@ async fn apply_paste_queue_activation_inner(
     }
     if request.active {
         if !is_process_trusted_with_prompt(false) {
-            if let Some(source_window) = app.get_webview_window("clipboard") {
+            let source_window = app.get_webview_window("clipboard");
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            let source_window = match source_window {
+                None if native_panel::preview::active() || main_panel_mode::native() => Some(
+                    auxiliary_windows::ensure(
+                        app,
+                        auxiliary_windows::WindowKind::OnboardingPermission,
+                    )
+                    .await?,
+                ),
+                other => other,
+            };
+            if let Some(source_window) = source_window {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(err) = open_onboarding_permission_window(
@@ -12381,7 +12436,7 @@ async fn apply_paste_queue_activation_inner(
             if !auxiliary_windows::is_open(&window) {
                 return Err("paste queue window closed while opening".into());
             }
-            if !paste_queue::is_active() && !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+            if !paste_queue::is_active() && !main_surface_visible() {
                 record_foreground_app_before_clipboard();
             }
             show_paste_queue_window(&app, &window)?;
@@ -12490,7 +12545,7 @@ fn paste_queue_item(app: tauri::AppHandle, hash: Option<String>) -> Result<(), S
     }
     if should_refresh_paste_queue_click_target(
         PasteQueueRequestOrigin::QueueWindow,
-        CLIPBOARD_VISIBLE.load(Ordering::SeqCst),
+        main_surface_visible(),
     ) {
         record_foreground_app_before_clipboard();
     }

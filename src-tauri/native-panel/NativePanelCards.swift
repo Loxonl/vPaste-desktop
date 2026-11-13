@@ -131,6 +131,7 @@ final class PanelCardView: NSView, NSDraggingSource {
   private let detailSubtitle = NSTextField(labelWithString: "")
   private var tagBadges: [NSTextField] = []
   private let selectionOutline = CAShapeLayer()
+  private let queueCheck = NSImageView()
   private var headerGradientEnd: NSColor?
   private var richDark = false
   private var tracking: NSTrackingArea?
@@ -152,11 +153,25 @@ final class PanelCardView: NSView, NSDraggingSource {
   var prepareDrag: ((@escaping ([String: Any]) -> Void) -> Void)?
   var dragEnded: (() -> Void)?
   var singleClick = false
+  var queueSelectionMode = false {
+    didSet {
+      if oldValue != queueSelectionMode {
+        window?.invalidateCursorRects(for: self)
+        updateQueueCheck()
+      }
+    }
+  }
+  var queueCheckVisible: Bool { !queueCheck.isHidden }
+  private func updateQueueCheck() {
+    queueCheck.isHidden = !queueSelectionMode || !selected
+    setAccessibilityValue(queueSelectionMode ? NSNumber(value: selected) : nil)
+  }
   var selected = false {
     didSet {
       if oldValue != selected {
         needsDisplay = true
         selectionOutline.isHidden = !selected
+        updateQueueCheck()
         updateAnimation()
       }
     }
@@ -178,6 +193,11 @@ final class PanelCardView: NSView, NSDraggingSource {
     content.layer?.masksToBounds = true
     content.layer?.cornerRadius = PanelStyle.cardRadius
     addSubview(content)
+    queueCheck.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)
+    queueCheck.imageScaling = .scaleProportionallyDown
+    queueCheck.isHidden = true
+    queueCheck.wantsLayer = true
+    addSubview(queueCheck)
     title.textColor = .white
     title.font = .boldSystemFont(ofSize: 16)
     age.textColor = .white
@@ -228,14 +248,15 @@ final class PanelCardView: NSView, NSDraggingSource {
   override func resetCursorRects() {
     super.resetCursorRects()
     guard card != nil else { return }
-    let cursor: NSCursor = dragging && NSEvent.pressedMouseButtons & 1 != 0 ? .closedHand : .openHand
+    let cursor: NSCursor = queueSelectionMode ? .pointingHand
+      : dragging && NSEvent.pressedMouseButtons & 1 != 0 ? .closedHand : .openHand
     addCursorRect(visibleRect, cursor: cursor)
   }
   private func restoreDragCursor() {
     window?.invalidateCursorRects(for: self)
     guard let window, window.isKeyWindow,
       visibleRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) else { return }
-    (card == nil ? NSCursor.arrow : .openHand).set()
+    (card == nil ? NSCursor.arrow : queueSelectionMode ? .pointingHand : .openHand).set()
   }
   private var bodyRect: NSRect {
     NSRect(
@@ -268,6 +289,12 @@ final class PanelCardView: NSView, NSDraggingSource {
     selectionOutline.strokeColor =
       (PanelStyle.dark(self) ? PanelStyle.accent(self) : PanelStyle.rgb(0x1976d2)).cgColor
     selectionOutline.isHidden = !selected
+    queueCheck.frame = NSRect(x: bounds.width - 34 * scale, y: bounds.height - 34 * scale,
+      width: 24 * scale, height: 24 * scale)
+    queueCheck.layer?.cornerRadius = 12 * scale
+    queueCheck.layer?.backgroundColor = PanelStyle.control(self, hover: false).cgColor
+    queueCheck.contentTintColor = PanelStyle.accent(self)
+    updateQueueCheck()
     let hasIcon = card.map { !$0.sourceIcon.isEmpty || $0.remote } ?? false
     let available =
       bounds.width - 24 * scale - (hasIcon ? 48 * scale : 0)
@@ -722,6 +749,8 @@ final class PanelCardView: NSView, NSDraggingSource {
   }
   func releaseContent() {
     resetFilterEntryAnimation()
+    selected = false
+    queueSelectionMode = false
     hoverLeft?()
     hoverEntered = nil
     hoverLeft = nil
@@ -753,11 +782,12 @@ final class PanelCardView: NSView, NSDraggingSource {
     super.updateTrackingAreas()
   }
   override func mouseMoved(with event: NSEvent) {
+    guard !queueSelectionMode else { return }
     select?()
     hoverEntered?()
   }
   override func mouseEntered(with event: NSEvent) {
-    hoverEntered?()
+    if !queueSelectionMode { hoverEntered?() }
     hoverTimer?.invalidate()
     hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.06, repeats: true) { [weak self] _ in
       MainActor.assumeIsolated {
@@ -790,9 +820,9 @@ final class PanelCardView: NSView, NSDraggingSource {
   override func mouseUp(with event: NSEvent) {
     let inside = bounds.contains(convert(event.locationInWindow, from: nil))
     window?.invalidateCursorRects(for: self)
-    if inside, card != nil { NSCursor.openHand.set() }
+    if inside, card != nil { (queueSelectionMode ? NSCursor.pointingHand : .openHand).set() }
     guard !dragging, inside else { return }
-    if singleClick || event.clickCount >= 2 { activate?() }
+    if queueSelectionMode || singleClick || event.clickCount >= 2 { activate?() }
   }
   override func rightMouseDown(with event: NSEvent) {
     select?()
@@ -820,6 +850,7 @@ final class PanelCardView: NSView, NSDraggingSource {
         event.locationInWindow.y - down.locationInWindow.y) > 5
     else { return }
     dragging = true
+    if queueSelectionMode { return }
     window?.invalidateCursorRects(for: self)
     NSCursor.closedHand.set()
     prepareDrag? { [weak self] payload in

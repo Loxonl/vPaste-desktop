@@ -59,12 +59,33 @@ if (-not $WinUiMode -and -not $listener) {
   Start-Sleep -Seconds 2
 }
 
+if ($WinUiMode) {
+  # Auxiliary readers use embedded assets; the native panel never needs Vite.
+  Push-Location $Root
+  try {
+    npm.cmd run build -- --mode native-debug
+    if ($LASTEXITCODE -ne 0) {
+      throw "Frontend build failed; the previous WinUI executable was not started."
+    }
+    node scripts/check-native-debug-assets.mjs native-debug
+    if ($LASTEXITCODE -ne 0) {
+      throw "Native Debug tool assets are missing; the previous executable was not started."
+    }
+  }
+  finally {
+    Pop-Location
+  }
+}
+
 Push-Location $SrcTauri
 try {
   if ($WinUiMode) {
     cargo build --bin vPaste --features winui-debug
   } else {
     cargo build --bin vPaste
+  }
+  if ($LASTEXITCODE -ne 0) {
+    throw "Rust/native build failed; the previous executable was not started."
   }
 }
 finally {

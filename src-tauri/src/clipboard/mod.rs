@@ -4151,8 +4151,10 @@ mod tests {
             ),
             "Example page"
         );
+        let path = std::env::temp_dir().join("report.pdf");
+        let files = serde_json::to_string(&[path.to_string_lossy()]).unwrap();
         assert_eq!(
-            history_preview_text(&ItemType::File, r#"["C:\\Users\\Ada\\report.pdf"]"#, ""),
+            history_preview_text(&ItemType::File, &files, ""),
             "report.pdf"
         );
         assert_eq!(history_preview_text(&ItemType::Image, "", ""), "");

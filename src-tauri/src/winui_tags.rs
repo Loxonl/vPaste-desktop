@@ -7,6 +7,37 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
+fn editor_payload(mut payload: Value) -> Result<Value, String> {
+    let operation = match payload["op"].as_str() {
+        Some("recordTagCreate") => "tagsCreate",
+        Some("recordTagRename") => "tagsRename",
+        Some("recordTagDelete") => "tagsDelete",
+        _ => return Err("Unsupported record-tag editor operation".into()),
+    };
+    payload["op"] = operation.into();
+    TagRequest::parse_value(payload.clone())?;
+    Ok(payload)
+}
+
+fn tag_response(
+    items: Vec<crate::clipboard::item::ItemTag>,
+    tag: Option<crate::clipboard::item::ItemTag>,
+) -> Value {
+    json!({"items":items, "tag":tag})
+}
+
+pub async fn dispatch_editor(app: AppHandle, op: String, payload: Value) -> Result<Value, String> {
+    if payload["op"] != op {
+        return Err("Record-tag editor operation does not match its payload".into());
+    }
+    let payload = editor_payload(payload)?;
+    let operation = payload["op"]
+        .as_str()
+        .ok_or("Missing tag operation")?
+        .to_owned();
+    dispatch(app, operation, payload).await
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(
     tag = "op",
@@ -82,19 +113,14 @@ pub async fn dispatch(app: AppHandle, op: String, payload: Value) -> Result<Valu
         return Err("WinUI tag operation does not match its payload".into());
     }
 
-    let changed = match request {
-        TagRequest::TagsList => false,
-        TagRequest::TagsCreate { name } => {
-            crate::create_item_tag(name)?;
-            true
-        }
-        TagRequest::TagsRename { tag_id, name } => {
-            crate::rename_item_tag(tag_id, name)?;
-            true
-        }
+    let changed = !matches!(&request, TagRequest::TagsList);
+    let tag = match request {
+        TagRequest::TagsList => None,
+        TagRequest::TagsCreate { name } => Some(crate::create_item_tag(name)?),
+        TagRequest::TagsRename { tag_id, name } => Some(crate::rename_item_tag(tag_id, name)?),
         TagRequest::TagsDelete { tag_id } => {
             crate::delete_item_tag(tag_id)?;
-            true
+            None
         }
     };
 
@@ -102,13 +128,61 @@ pub async fn dispatch(app: AppHandle, op: String, payload: Value) -> Result<Valu
         let _ = app.emit("item-tags-changed", json!({}));
     }
 
-    serde_json::to_value(json!({ "items": crate::list_item_tags()? }))
-        .map_err(|error| error.to_string())
+    Ok(tag_response(crate::list_item_tags()?, tag))
 }
 
 #[cfg(test)]
 mod tests {
     use super::TagRequest;
+
+    #[test]
+    fn editor_routes_only_supported_tag_mutations_without_changing_payload_identity() {
+        for (native, backend, extra) in [
+            (
+                "recordTagCreate",
+                "tagsCreate",
+                serde_json::json!({"name":"工作😀"}),
+            ),
+            (
+                "recordTagRename",
+                "tagsRename",
+                serde_json::json!({"tagId":4,"name":"Notes"}),
+            ),
+            (
+                "recordTagDelete",
+                "tagsDelete",
+                serde_json::json!({"tagId":4}),
+            ),
+        ] {
+            let mut input = extra;
+            input["id"] = 123.into();
+            input["op"] = native.into();
+            let output = super::editor_payload(input.clone()).unwrap();
+            input["op"] = backend.into();
+            assert_eq!(output, input);
+            assert!(TagRequest::parse_value(output).is_ok());
+        }
+        for input in [
+            serde_json::json!({"op":"recordTagReset"}),
+            serde_json::json!({"op":"recordTagRename","tagId":0,"name":"X"}),
+            serde_json::json!({"op":"recordTagCreate","name":"X","hash":"unexpected"}),
+        ] {
+            assert!(super::editor_payload(input).is_err());
+        }
+    }
+
+    #[test]
+    fn create_response_exposes_the_returned_tag_for_assignment_and_keeps_the_management_list() {
+        let tag = crate::clipboard::item::ItemTag {
+            id: 8,
+            name: "工作😀".into(),
+        };
+        let response = super::tag_response(vec![tag.clone()], Some(tag));
+        assert_eq!(response["tag"]["id"], 8);
+        assert_eq!(response["tag"]["name"], "工作😀");
+        assert_eq!(response["items"][0]["id"], 8);
+        assert!(super::tag_response(vec![], None)["tag"].is_null());
+    }
 
     #[test]
     fn parses_supported_operations_and_payloads() {

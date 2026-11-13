@@ -26,10 +26,13 @@ const UiLab = import.meta.env.DEV
 const SettingsPreview = import.meta.env.DEV
     ? React.lazy(() => import("./config/SettingsPreview.tsx"))
     : null;
-const TestRoom = import.meta.env.DEV
+// Only the native experiment's explicit build mode embeds these on-demand tools.
+// Normal production builds still exclude them; UI Lab remains Vite-only.
+const embeddedDeveloperTools = import.meta.env.MODE === "native-debug";
+const TestRoom = import.meta.env.DEV || embeddedDeveloperTools
     ? React.lazy(() => import("./debug/TestRoom.tsx"))
     : null;
-const DeveloperMemoryWindow = import.meta.env.DEV
+const DeveloperMemoryWindow = import.meta.env.DEV || embeddedDeveloperTools
     ? React.lazy(() => import("./debug/DeveloperMemoryWindow.tsx"))
     : null;
 

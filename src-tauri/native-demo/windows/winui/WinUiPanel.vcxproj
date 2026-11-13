@@ -48,13 +48,42 @@
     <Lib>
       <AdditionalDependencies>windowsapp.lib;runtimeobject.lib;ole32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Lib>
+    <Link>
+      <AdditionalDependencies>dwmapi.lib;shlwapi.lib;shell32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="WinUiPanel.cpp" />
     <ClCompile Include="WinUiQueueView.cpp" />
+    <ClCompile Include="WinUiQueueWindow.cpp" />
     <ClCompile Include="WinUiTagManager.cpp" />
+    <ClCompile Include="WinUiRichContent.cpp" />
+    <ClCompile Include="WinUiDrag.cpp" />
+    <ClCompile Include="WinUiFilterEditor.cpp" />
+    <ClCompile Include="WinUiNameEmoji.cpp" />
+    <ClCompile Include="WinUiCardActions.cpp" />
+    <ClCompile Include="WinUiKeyboard.cpp" />
+    <ClCompile Include="WinUiHistoryViewport.cpp" />
+    <ClCompile Include="WinUiRecordTagEditor.cpp" />
+    <ClCompile Include="WinUiCardContent.cpp" />
+    <ClCompile Include="WinUiAppActions.cpp" />
+    <ClCompile Include="WinUiHoverPreview.cpp" />
+    <ResourceCompile Include="WinUiNameEmoji.rc" />
     <ClInclude Include="WinUiQueueView.h" />
+    <ClInclude Include="WinUiQueueWindow.h" />
     <ClInclude Include="WinUiTagManager.h" />
+    <ClInclude Include="WinUiAppearance.h" />
+    <ClInclude Include="WinUiRichContent.h" />
+    <ClInclude Include="WinUiDrag.h" />
+    <ClInclude Include="WinUiFilterEditor.h" />
+    <ClInclude Include="WinUiNameEmoji.h" />
+    <ClInclude Include="WinUiCardActions.h" />
+    <ClInclude Include="WinUiKeyboard.h" />
+    <ClInclude Include="WinUiHistoryViewport.h" />
+    <ClInclude Include="WinUiRecordTagEditor.h" />
+    <ClInclude Include="WinUiCardContent.h" />
+    <ClInclude Include="WinUiAppActions.h" />
+    <ClInclude Include="WinUiHoverPreview.h" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="$(NuGetPackageRoot)microsoft.web.webview2\1.0.3719.77\lib\Microsoft.Web.WebView2.Core.winmd">

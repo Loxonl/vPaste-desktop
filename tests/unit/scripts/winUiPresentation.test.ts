@@ -5,15 +5,18 @@ import { describe, expect, it } from "vitest";
 const panel = readFileSync(resolve("src-tauri/native-demo/windows/winui/WinUiPanel.cpp"), "utf8");
 
 describe("WinUI main panel presentation", () => {
-    it("uses native command overflow instead of a single unbounded button row", () => {
+    it("keeps ordinary commands compact and queue selection outside toolbar overflow", () => {
         expect(panel.includes("g_panel.commands = CommandBar()")).toBe(true);
         expect(panel.includes("g_panel.commands.IsDynamicOverflowEnabled(true)")).toBe(true);
-        for (const name of ["queueAdd", "queueSelect", "queueOpen", "settings"]) {
+        for (const name of ["queueOpen", "settings"]) {
             expect(panel.includes(`PrimaryCommands().Append(g_panel.${name})`)).toBe(true);
         }
-        for (const name of ["copy", "paste", "favorite", "manageTags"]) {
+        for (const name of ["copy", "paste", "favorite", "manageTags", "queueSelect"]) {
             expect(panel.includes(`SecondaryCommands().Append(g_panel.${name})`)).toBe(true);
         }
+        expect(panel).not.toContain("PrimaryCommands().Append(g_panel.queueAdd)");
+        expect(panel).toContain("selectionActions.Children().Append(g_panel.queueAdd)");
+        expect(panel).toContain("selectionActions.Children().Append(g_panel.cancelSelection)");
     });
 
     it("uses a native selector with the existing history filter mapping", () => {

@@ -1,3 +1,5 @@
+#include <windows.h>
+#undef GetCurrentTime
 #include "WinUiTagManager.h"
 #include "WinUiAppearance.h"
 #include "WinUiNameEmoji.h"
@@ -157,6 +159,7 @@ struct TagManager::Impl : std::enable_shared_from_this<TagManager::Impl> {
         addName = TextBox{};
         addName.MaxLength(20);
         addName.MinHeight(32);
+        addName.FontSize(13);
         addName.PlaceholderText(Text(L"输入标签名称", L"Enter a tag name"));
         addName.VerticalAlignment(VerticalAlignment::Center);
         addName.HorizontalAlignment(HorizontalAlignment::Stretch);
@@ -167,6 +170,7 @@ struct TagManager::Impl : std::enable_shared_from_this<TagManager::Impl> {
             }
         });
         addName.KeyDown([weak](auto const &, auto const &args) {
+            if (static_cast<std::uint32_t>(args.OriginalKey()) == VK_PROCESSKEY) return;
             if (args.Key() == winrt::Windows::System::VirtualKey::Enter && !args.KeyStatus().WasKeyDown) {
                 if (auto self = weak.lock()) self->CreateTag();
                 args.Handled(true);
@@ -231,13 +235,18 @@ struct TagManager::Impl : std::enable_shared_from_this<TagManager::Impl> {
     void Send(const wchar_t *operation, std::int64_t id = 0,
               const std::wstring &name = {}) {
         if (!request || busy) return;
-        request(operation, id, name);
         pendingOperation = operation;
         busy = true;
         showError = false;
         error = L"";
         status.Text(Text(L"正在处理…", L"Working…"));
         UpdateEnabled();
+        try {
+            if (!request(operation, id, name))
+                SetError(std::wstring{Text(L"操作未能发送，请重试", L"Could not send this action; try again")});
+        } catch (winrt::hresult_error const &failure) {
+            SetError(std::wstring{failure.message()});
+        }
     }
 
     void CreateTag() {
@@ -340,6 +349,7 @@ struct TagManager::Impl : std::enable_shared_from_this<TagManager::Impl> {
                 editName.Text(editingName);
                 editName.MaxLength(20);
                 editName.MinHeight(32);
+                editName.FontSize(13);
                 editName.IsEnabled(!busy);
                 Automation::AutomationProperties::SetName(editName, Text(L"编辑标签名称", L"Edit tag name"));
                 editName.TextChanged([weak](auto const &sender, auto const &) {
@@ -353,6 +363,7 @@ struct TagManager::Impl : std::enable_shared_from_this<TagManager::Impl> {
                     }
                 });
                 editName.KeyDown([weak, id = tag.id](auto const &, auto const &args) {
+                    if (static_cast<std::uint32_t>(args.OriginalKey()) == VK_PROCESSKEY) return;
                     if (auto self = weak.lock(); self && !self->busy && !args.KeyStatus().WasKeyDown) {
                         if (args.Key() == winrt::Windows::System::VirtualKey::Enter) {
                             self->UpdateTag(id);

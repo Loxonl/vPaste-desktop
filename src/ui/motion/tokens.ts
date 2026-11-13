@@ -1,30 +1,16 @@
 import type { Transition } from "motion/react";
+import sharedTokens from "./tokens.json";
 
-export const motionTokens = {
-    duration: {
-        quick: 0.12,
-        fast: 0.18,
-        standard: 0.24,
-        slow: 0.32,
-    },
-    distance: {
-        subtle: 6,
-        standard: 10,
-        emphasis: 16,
-    },
-    stagger: {
-        tight: 0.018,
-    },
-    continuous: {
-        marquee: 8,
-    },
-    easing: {
-        enter: [0.22, 1, 0.36, 1],
-        exit: [0.4, 0, 1, 1],
-        standard: [0.4, 0, 0.2, 1],
-        linear: "linear",
-    },
-} as const;
+type Bezier = [number, number, number, number];
+// Data is also embedded by the Windows native reader; values stay identical
+// across renderers without maintaining a second set of animation parameters.
+export const motionTokens = sharedTokens as {
+    duration: Record<"quick" | "fast" | "standard" | "slow", number>;
+    distance: Record<"subtle" | "standard" | "emphasis", number>;
+    stagger: { tight: number };
+    continuous: { marquee: number };
+    easing: { enter: Bezier; exit: Bezier; standard: Bezier; linear: "linear" };
+};
 
 export const motionSprings = {
     snappy: { type: "spring", stiffness: 420, damping: 32, mass: 0.8 },

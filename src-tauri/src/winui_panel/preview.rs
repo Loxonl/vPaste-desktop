@@ -1,4 +1,4 @@
-//! WinUI ownership of the existing auxiliary preview, not a second renderer.
+//! WinUI preview sessions, native reader routing and shared rich-content fallback.
 use crate::{preview_motion::PreviewRect, ScreenBounds};
 use std::sync::atomic::{AtomicU64, Ordering};
 use windows::Win32::{
@@ -143,6 +143,7 @@ pub(super) fn reserve(source_request: u64, mode: crate::PreviewMode) -> u64 {
     crate::PREVIEW_HOVER.store(mode == crate::PreviewMode::Hover, Ordering::SeqCst);
     crate::PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
     *pending = None;
+    super::reader::begin(request);
     request
 }
 
@@ -154,7 +155,35 @@ pub(crate) fn current(request: u64) -> bool {
 
 pub(crate) fn closed() -> u64 {
     NAVIGATION_SOURCE.store(0, Ordering::Release);
-    REQUESTS.cancel()
+    let ticket = REQUESTS.cancel();
+    super::reader::hide(ticket);
+    ticket
+}
+
+pub(crate) fn reader_visible() -> bool {
+    super::reader::visible()
+}
+pub(crate) fn reader_foreground() -> bool {
+    super::reader::foreground()
+}
+pub(crate) fn reader_cursor_inside() -> bool {
+    super::reader::cursor_inside()
+}
+pub(crate) fn focus_reader() {
+    super::send_response(0, "nativeReaderFocus", Ok(serde_json::json!({})));
+}
+pub(crate) fn retire_reader(shared_request: u64) -> Option<bool> {
+    // A native reservation takes this lock too. Validate the shared commit and
+    // enqueue its hide before a newer native begin can be published.
+    let _pending = crate::PREVIEW_PENDING
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if !crate::PREVIEW_REQUESTS.current(shared_request) {
+        return None;
+    }
+    let foreground = super::reader::foreground();
+    super::reader::retire();
+    Some(foreground)
 }
 
 pub(crate) fn pinned() {
@@ -302,6 +331,50 @@ pub(super) async fn show(
     } else {
         String::new()
     };
+    let Some(owner) = surface() else {
+        return Ok(serde_json::Value::Null);
+    };
+    let area = owner.preview_area(crate::PREVIEW_CLIPBOARD_GAP);
+    let owned_hash = hash.clone();
+    let body =
+        tauri::async_runtime::spawn_blocking(move || super::reader::prepare(&owned_hash, area))
+            .await
+            .map_err(|error| error.to_string())?;
+    if !current(request) {
+        return Ok(serde_json::Value::Null);
+    }
+    if mode == crate::PreviewMode::Hover
+        && (!crate::config::get().hover_preview_enabled
+            || !(foreground()
+                || (crate::PREVIEW_HOVER.load(Ordering::SeqCst)
+                    && crate::app_window_is_foreground(
+                        &app,
+                        "clipboardPreview",
+                        "native hover guard",
+                    ))))
+    {
+        cancel_hover_request(&app, Some(request));
+        return Ok(serde_json::Value::Null);
+    }
+    if !mode.allows(
+        open(),
+        crate::PREVIEW_HOVER.load(Ordering::SeqCst),
+        crate::PREVIEW_PINNED.load(Ordering::SeqCst),
+    ) {
+        return Ok(serde_json::Value::Null);
+    }
+    match body {
+        Ok(Some(body)) => {
+            super::reader::show(body, request, mode);
+            return Ok(serde_json::Value::Null);
+        }
+        Ok(None) => {}
+        Err(error) => {
+            // Preserve the existing renderer's unsupported/missing-content
+            // behavior when a native source cannot be prepared.
+            log::debug!("Native preview preparation fell back to the shared reader: {error}");
+        }
+    }
     let result = crate::prepare_preview_window(
         app.clone(),
         item_type,

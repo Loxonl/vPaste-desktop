@@ -12,7 +12,7 @@ describe("WinUI complete native presentation", () => {
         contains(panel, "constexpr double kCardRadius = 14");
         contains(panel, "sourceIcon.Width(54)");
         contains(panel, "titleBlock.Children().Append(timeText)");
-        contains(panel, 'ApplyStyle(row.type, L"VPaste.CardTitle")');
+        contains(panel, 'ApplyStyle(row.type, contrast ? L"VPaste.ContrastCardTitle" : L"VPaste.CardTitle")');
         contains(panel, 'ApplyStyle(g_panel.searchButton, L"VPaste.RoundToolbarButton")');
         contains(panel, "tagChip.Margin(Thickness{10, 44, 10, 0})");
     });

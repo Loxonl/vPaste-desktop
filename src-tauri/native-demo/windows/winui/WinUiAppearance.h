@@ -107,6 +107,7 @@ inline void InstallAppearanceResources() {
           </Style>
           <Style x:Key="VPaste.SelectedSurface" TargetType="Border" BasedOn="{StaticResource VPaste.Surface}">
             <Setter Property="BorderBrush" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
+            <Setter Property="BorderThickness" Value="2"/>
           </Style>
           <Style x:Key="VPaste.Inset" TargetType="Border">
             <Setter Property="Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>

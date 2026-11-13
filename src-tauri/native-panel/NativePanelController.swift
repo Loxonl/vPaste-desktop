@@ -168,6 +168,12 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
   }
   private var token: PanelToken?
+  private var historyDirty = false
+  private var historySyncing = false
+  private var historyRecovery = false
+  private var viewportRevision: UInt64 = 0
+  private var lastCheckpointKey = ""
+  private var applyingHistory = false
   private var pages: [Int: [PanelRef]] = [:]
   private var cards: [String: PanelCard] = [:]
   private let renderedViews = NSHashTable<PanelCardView>.weakObjects()
@@ -270,7 +276,10 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     toolbar.onTabDragging = { [weak self] active in
       guard let self, !self.closed else { return }
       self.dragging = active
-      if active { self.previews.clear() } else { self.refreshTabs() }
+      if active { self.previews.clear() } else {
+        self.refreshTabs()
+        self.synchronizeHistoryIfNeeded()
+      }
     }
     toolbar.onTabReorder = { [weak self] source, target, before in
       self?.menuRun("tab-reorder", ["tabId": source, "targetId": target, "before": before],
@@ -339,15 +348,15 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     ) { [weak self] _ in
       MainActor.assumeIsolated { self?.scheduleViewport() }
     }
-    bridge.changed = { [weak self] in
-      guard let self, !self.closed, !self.dragging, !self.busyAction else { return }
-      self.scheduleReload()
-    }
+    bridge.changed = { [weak self] in self?.requestHistorySync() }
     bridge.event = { [weak self] name, value in
       guard let self, !self.closed else { return }
-      if name == "tabs-changed" {
+      if name == "history-dirty" {
+        self.requestHistorySync()
+      } else if name == "tabs-changed" {
         if let id = value["activeId"] as? String { self.pendingTabSelection = id }
-        self.reload()
+        self.refreshTabs()
+        self.requestHistorySync()
         if let message = value["assignmentError"] as? String {
           self.showMessage(self.local("Could not add the new tag: \(message)", "无法添加新标签：\(message)"))
         }
@@ -472,7 +481,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       focus()
       animate(show: true) { [weak self] in self?.starting = false }
     }
-    reload()
+    resumeHistory()
   }
   private func focus() {
     NSApp.activate(ignoringOtherApps: true)
@@ -480,6 +489,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     // Borderless panels do not automatically become the app's main window.
     window.makeMain()
     window.makeFirstResponder(list)
+    synchronizeHistoryIfNeeded()
   }
   func activate(toggle: Bool) -> Bool {
     guard !closed, !hiding, !config.sizePreview else { return false }
@@ -535,6 +545,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   func windowWillClose(_ notification: Notification) {
     guard !closed else { return }
+    saveCheckpoint(force: true)
     closed = true
     generation &+= 1
     debounce?.cancel()
@@ -671,6 +682,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     generation &+= 1
     let epoch = generation
     token = nil
+    historySyncing = false
+    historyRecovery = false
+    lastCheckpointKey = ""
     for view in renderedViews.allObjects { view.releaseContent() }
     renderedViews.removeAllObjects()
     missingCards.removeAll()
@@ -690,18 +704,181 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     scroll.contentView.scroll(to: .zero)
     emptyState.show(title: local("Loading history…", "正在加载历史记录…"), detail: "", loading: true)
     footer.stringValue = local("Loading history…", "正在加载历史记录…")
-    bridge.send("open", ["keywords": search.stringValue, "label": filter]) { [weak self] result in
+    bridge.send("open", ["keywords": search.stringValue, "label": filter, "tabId": activeTabId]) { [weak self] result in
       guard let self, self.generation == epoch, !self.closed else { return }
       do {
         let page = try panelDecode(PanelPage.self, result.get())
         self.token = page.token
         self.accept(page)
         self.scheduleViewport()
+        self.synchronizeHistoryIfNeeded()
       } catch {
         self.filterEntryPending = false
         self.showMessage(error.localizedDescription)
       }
     }
+  }
+  private var activeTabId: String {
+    if filterIndex == 0 { return "all" }
+    if filterIndex == 1 { return "favorite" }
+    return tabs.indices.contains(filterIndex - 2) ? tabs[filterIndex - 2].id : "all"
+  }
+  private func historyCheckpoint() -> [String: Any] {
+    let stride = max(1, layout.cardWidth + layout.gap)
+    let x = max(0, scroll.contentView.bounds.minX)
+    let index = min(max(0, count - 1), Int(floor(x / stride)))
+    let desired = range()
+    var value: [String: Any] = [
+      "tabId": activeTabId, "keywords": search.stringValue, "viewRevision": token?.revision ?? 1,
+      "anchorHash": ref(index)?.hash ?? "", "anchorIndex": index,
+      "offset": Double(min(0.999999, max(0, (x - CGFloat(index) * stride) / stride))),
+      "selectedHash": ref(selected)?.hash ?? "", "start": desired.lowerBound, "end": desired.upperBound,
+    ]
+    let key = (try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]))
+      .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+    if key != lastCheckpointKey {
+      viewportRevision &+= 1
+      lastCheckpointKey = key
+    }
+    value["viewportRevision"] = viewportRevision
+    return value
+  }
+  private func saveCheckpoint(force: Bool = false) {
+    guard !closed, !applyingHistory, let token else { return }
+    let previous = viewportRevision
+    let value = historyCheckpoint()
+    if force || previous != viewportRevision {
+      bridge.send("history-checkpoint", ["viewId": token.viewId, "checkpoint": value])
+    }
+  }
+  private func resumeHistory() {
+    generation &+= 1
+    let epoch = generation
+    bridge.send("history-resume") { [weak self] result in
+      guard let self, !self.closed, self.generation == epoch else { return }
+      do {
+        let value = try panelDecode(PanelHistoryPresentation.self, result.get())
+        self.tabs = value.tabs
+        self.toolbar.setTabs(value.tabs)
+        self.filterIndex = value.tabId == "favorite" ? 1 :
+          PanelFilterQuery.index(id: value.tabId, tabs: value.tabs) ?? 0
+        self.filter = value.label
+        self.search.stringValue = value.keywords
+        self.toolbar.setSelection(self.filterIndex)
+        if !value.keywords.isEmpty {
+          self.toolbar.beginSearch()
+          DispatchQueue.main.async { [weak self] in
+            guard let self, !self.closed else { return }
+            self.window.makeFirstResponder(self.list)
+          }
+        }
+        try self.applyHistoryDelta(value.delta)
+        self.synchronizeHistoryIfNeeded()
+      } catch { self.showMessage(error.localizedDescription) }
+    }
+  }
+  private func requestHistorySync() {
+    historyDirty = true
+    synchronizeHistoryIfNeeded()
+  }
+  private func synchronizeHistoryIfNeeded() {
+    guard historyDirty, !historySyncing, !closed, !hiding, !dragging, !busyAction,
+      window.attachedSheet == nil, let token else { return }
+    historyDirty = false
+    historySyncing = true
+    let checkpoint = historyCheckpoint()
+    if count > 0, checkpoint["anchorHash"] as? String == "" {
+      historyDirty = true
+      historySyncing = false
+      return
+    }
+    let requestedViewport = viewportRevision
+    let epoch = generation
+    bridge.send("history-sync", ["viewId": token.viewId, "revision": token.revision,
+      "checkpoint": checkpoint, "hashes": historyRecovery ? [] : Array(Set(pages.values.flatMap { $0.map(\.hash) }))]) {
+      [weak self] result in
+      guard let self, !self.closed, self.generation == epoch else { return }
+      self.historySyncing = false
+      do {
+        let delta = try panelDecode(PanelHistoryDelta.self, result.get())
+        _ = self.historyCheckpoint()
+        guard self.viewportRevision == requestedViewport, delta.viewportRevision == requestedViewport else {
+          self.requestHistorySync()
+          return
+        }
+        try self.applyHistoryDelta(delta)
+        self.historyRecovery = false
+      } catch {
+        if !self.historyRecovery {
+          self.historyRecovery = true
+          self.historyDirty = true
+        } else { self.showMessage(error.localizedDescription) }
+      }
+      self.synchronizeHistoryIfNeeded()
+    }
+  }
+  private func applyHistoryDelta(_ delta: PanelHistoryDelta) throws {
+    let next = try delta.merging(pages, token: token)
+    let previousSelection = ref(selected)?.hash
+    let sameOrder = pages.mapValues { $0.map(\.hash) } == next.mapValues { $0.map(\.hash) }
+    let targetX = (CGFloat(delta.anchorIndex) + CGFloat(delta.offset)) * (layout.cardWidth + layout.gap)
+    let sameWindow = sameOrder && delta.invalidated.isEmpty && delta.knownCount == count
+      && delta.hasMore == hasMore && delta.selectedIndex == selected
+      && abs(targetX - scroll.contentView.bounds.minX) < 0.5
+    let previousTrack = count + (hasMore ? 1 : 0)
+    applyingHistory = true
+    defer { applyingHistory = false }
+    generation &+= 1
+    pageEpoch &+= 1
+    pendingPages.removeAll()
+    cardRequest = false
+    pages = next
+    token = delta.token
+    count = delta.knownCount
+    hasMore = delta.hasMore
+    terminalCount = hasMore ? nil : count
+    selected = delta.selectedIndex
+    for hash in delta.invalidated {
+      cards.removeValue(forKey: hash)
+      missingCards.remove(hash)
+    }
+    if delta.resourcesChanged { media.clear() }
+    if previousSelection != ref(selected)?.hash {
+      pendingPreviewSelection = (selected, 0)
+    } else if let pending = pendingPreviewSelection {
+      pendingPreviewSelection = (selected, pending.direction)
+    }
+    if sameWindow {
+      lastViewport = ""
+      scheduleViewport()
+      return
+    }
+    layout.itemCount = count + (hasMore ? 1 : 0)
+    // The collection still owns only visible items. Ordinary patches change
+    // its extent and rebind those items; initial binding uses one reload.
+    if previousTrack == 0 || abs(layout.itemCount - previousTrack) > 216 {
+      list.reloadData()
+    } else if layout.itemCount > previousTrack {
+      list.insertItems(at: Set((previousTrack..<layout.itemCount).map { IndexPath(item: $0, section: 0) }))
+    } else if layout.itemCount < previousTrack {
+      list.deleteItems(at: Set((layout.itemCount..<previousTrack).map { IndexPath(item: $0, section: 0) }))
+    }
+    syncListSize()
+    scroll.contentView.scroll(to: NSPoint(x: min(max(0, targetX), max(0, list.bounds.width - scroll.contentView.bounds.width)), y: 0))
+    scroll.reflectScrolledClipView(scroll.contentView)
+    for path in list.indexPathsForVisibleItems() {
+      if let item = list.item(at: path) as? PanelCardItem { configure(item, index: path.item) }
+    }
+    if count == 0 {
+      emptyState.show(title: local("No matching history", "没有匹配的历史记录"),
+        detail: local("Try another search or filter", "试试其他关键词或筛选条件"))
+    } else { emptyState.hide() }
+    lastViewport = ""
+    lastCheckpointKey = ""
+    viewportRevision = max(viewportRevision, delta.viewportRevision)
+    refreshSelectedPreview()
+    status()
+    scheduleViewport()
   }
   private func accept(_ page: PanelPage) {
     if filterEntryPending, page.pageIndex == 0 {
@@ -713,6 +890,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         filterEntryAnimated.removeAll()
       }
     }
+    let previousTrack = count + (hasMore ? 1 : 0)
     pages[page.pageIndex] = page.items
     count = max(count, page.startIndex + page.items.count)
     if !page.hasMore { terminalCount = page.knownCount }
@@ -723,8 +901,17 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       hasMore = true
     }
     layout.itemCount = count + (hasMore ? 1 : 0)
-    list.reloadData()
+    if previousTrack == 0 {
+      list.reloadData()
+    } else if layout.itemCount > previousTrack {
+      list.insertItems(at: Set((previousTrack..<layout.itemCount).map { IndexPath(item: $0, section: 0) }))
+    } else if layout.itemCount < previousTrack {
+      list.deleteItems(at: Set((layout.itemCount..<previousTrack).map { IndexPath(item: $0, section: 0) }))
+    }
     syncListSize()
+    for path in list.indexPathsForVisibleItems() {
+      if let item = list.item(at: path) as? PanelCardItem { configure(item, index: path.item) }
+    }
     if count == 0 {
       emptyState.show(
         title: local("No matching history", "没有匹配的历史记录"),
@@ -734,101 +921,6 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     refreshSelectedPreview()
     status()
-  }
-  // Remove one record from the loaded pages instead of reloading the view.
-  // Later cards shift forward, matching the WebView's local page update.
-  private func removeHistoryItem(hash: String, at index: Int) {
-    guard !closed, index >= 0, index < count,
-      let splice = PanelPageSplice.remove(hash: hash, at: index, pages: pages)
-    else {
-      reload()
-      return
-    }
-    pages = splice.pages
-    // Page payloads requested before this deletion describe the old offsets.
-    pageEpoch &+= 1
-    pendingPages.removeAll()
-    count = max(0, count - 1)
-    if let terminalCount { self.terminalCount = max(0, terminalCount - 1) }
-    cards.removeValue(forKey: hash)
-    missingCards.remove(hash)
-    previews.clear()
-    pendingPreviewSelection = nil
-    if heldHash == hash {
-      heldHash = nil
-      dragging = false
-    }
-    if selected > index {
-      selected -= 1
-    } else if selected == index {
-      selected = max(0, min(index, count - 1))
-    }
-    layout.itemCount = count + (hasMore ? 1 : 0)
-    list.deleteItems(at: [IndexPath(item: index, section: 0)])
-    if count == 0 {
-      emptyState.show(
-        title: local("No matching history", "没有匹配的历史记录"),
-        detail: local("Try another search or filter", "试试其他关键词或筛选条件"))
-    } else {
-      emptyState.hide()
-    }
-    status()
-    let needsTail = hasMore || (splice.runEndWasFull && splice.coveredEnd < count)
-    DispatchQueue.main.async { [weak self] in
-      guard let self, !self.closed else { return }
-      for path in self.list.indexPathsForVisibleItems() {
-        if let item = self.list.item(at: path) as? PanelCardItem {
-          self.configure(item, index: path.item)
-        }
-      }
-      self.syncListSize()
-      self.scheduleViewport()
-      if needsTail { self.refreshPage(splice.endPage) }
-    }
-  }
-  // Refill the final loaded page after a local deletion without touching the
-  // rest of the visible list.
-  private func refreshPage(_ index: Int) {
-    guard !closed, let token, index >= 0, !pendingPages.contains(index) else { return }
-    let epoch = generation
-    let requestEpoch = pageEpoch
-    pendingPages.insert(index)
-    bridge.send(
-      "page", ["viewId": token.viewId, "revision": token.revision, "page": index]
-    ) { [weak self] result in
-      guard let self, self.generation == epoch, self.pageEpoch == requestEpoch,
-        !self.closed
-      else { return }
-      self.pendingPages.remove(index)
-      do {
-        let page = try panelDecode(PanelPage.self, result.get())
-        guard page.pageIndex == index else { return }
-        let previous = self.count
-        if !page.hasMore {
-          // The refetched page now reaches the end of the result set; use the
-          // normal acceptance path so the "load more" row is reconciled.
-          self.accept(page)
-          return
-        }
-        self.pages[index] = page.items
-        let coverage = page.startIndex + page.items.count
-        if coverage > previous {
-          self.count = coverage
-          self.layout.itemCount = self.count + 1
-          self.list.insertItems(
-            at: Set((previous..<coverage).map { IndexPath(item: $0, section: 0) }))
-          self.emptyState.hide()
-        }
-        for path in self.list.indexPathsForVisibleItems() {
-          if let item = self.list.item(at: path) as? PanelCardItem {
-            self.configure(item, index: path.item)
-          }
-        }
-        self.syncListSize()
-        self.scheduleViewport()
-        self.status()
-      } catch { self.showMessage(error.localizedDescription) }
-    }
   }
   private func syncListSize() {
     let viewport = scroll.contentView.bounds.size
@@ -896,17 +988,18 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         if case .success(let value) = result, let value = value as? [String: Any] {
           completion(value)
         } else {
-          self.dragging = false
-          self.heldHash = nil
+          self.finishDragging()
           self.showMessage(self.local("Drag could not start", "无法开始拖拽"))
         }
       }
     }
-    view.dragEnded = { [weak self] in
-      self?.dragging = false
-      self?.heldHash = nil
-      self?.scheduleViewport()
-    }
+    view.dragEnded = { [weak self] in self?.finishDragging() }
+  }
+  private func finishDragging() {
+    dragging = false
+    heldHash = nil
+    scheduleViewport()
+    synchronizeHistoryIfNeeded()
   }
   func collectionView(
     _ collectionView: NSCollectionView, willDisplay item: NSCollectionViewItem,
@@ -939,7 +1032,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     return start..<max(start, end)
   }
   private func updateViewport() {
-    guard !closed, let token, count > 0 else { return }
+    guard !closed, !applyingHistory, let token, count > 0 else { return }
     if layout.viewportSize != scroll.contentView.bounds.size { syncListSize() }
     let desired = range()
     let epoch = generation
@@ -960,7 +1053,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         do {
           self.accept(try panelDecode(PanelPage.self, result.get()))
           self.scheduleViewport()
-        } catch { self.showMessage(error.localizedDescription) }
+          self.synchronizeHistoryIfNeeded()
+        } catch { self.handleHistoryReadError(error) }
       }
     }
     let keepPages = Set(max(0, first - 1)...last + 1)
@@ -973,6 +1067,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       if let hash = view.card?.hash, !hashes.contains(hash) { view.releaseContent() }
     }
     let viewport = "\(desired.lowerBound):\(desired.upperBound)"
+    saveCheckpoint()
     if viewport != lastViewport {
       lastViewport = viewport
       bridge.send(
@@ -1025,8 +1120,12 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         } else {
           self.scheduleViewport()
         }
-      } catch { self.showMessage(error.localizedDescription) }
+      } catch { self.handleHistoryReadError(error) }
     }
+  }
+  private func handleHistoryReadError(_ error: Error) {
+    if error.localizedDescription.contains("history view expired") { requestHistorySync() }
+    else { showMessage(error.localizedDescription) }
   }
   private func status() {
     if ProcessInfo.processInfo.arguments.contains("--native-panel-check") {
@@ -1162,6 +1261,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     bridge.send(op, args) { [weak self] result in
       guard let self, !self.closed else { return }
       self.busyAction = false
+      defer { self.synchronizeHistoryIfNeeded() }
       switch result {
       case .failure(let error): self.showMessage(error.localizedDescription)
       case .success(let data):
@@ -1169,14 +1269,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
           self.applyPasteQueueState(value)
           return
         }
-        if operation == "delete" {
-          if let index {
-            self.removeHistoryItem(hash: hash, at: index)
-          } else {
-            self.reload()
-          }
-        } else if operation == "favorite" {
-          self.reload()
+        if operation == "delete" || operation == "favorite" {
+          self.requestHistorySync()
         } else {
           self.showMessage(self.local("Copied to clipboard", "已复制到剪贴板"))
         }
@@ -1401,6 +1495,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         return
       }
       self.busyAction = false
+      defer { self.synchronizeHistoryIfNeeded() }
       switch result {
       case .failure(let error):
         self.showMessage(
@@ -1408,7 +1503,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
             "操作失败：\(error.localizedDescription)"))
       case .success:
         completed?()
-        if reload { self.reload() }
+        if reload { self.requestHistorySync() }
         if let success { self.showMessage(success) }
       }
     }

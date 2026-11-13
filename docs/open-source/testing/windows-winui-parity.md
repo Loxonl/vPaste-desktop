@@ -40,7 +40,7 @@ PR #363; it does not repeat the already implemented migration.
 | Queue operations | Existing Rust capture/add/paste/reorder/remove/clear/Undo | Regress cancel, duplicate/error replies, 100-item scrolling and focus continuity |
 | Tag management | Native form, Emoji and confirmations | Recover rejected dispatch and protect IME composition |
 | Card actions and external drag | Native menus and system DataPackage; existing Rust actions | Regress payload/state ownership; real target negotiation remains manual |
-| Space/hover preview, editing and OCR | Existing on-demand auxiliary renderers | Preserve focus/geometry and no-main-WebView routing; native preview replacement is stage 4 |
+| Space/hover preview, editing and OCR | Existing React preview window plus selection/edit flows | WinUI `Reader` handles supported text, image, color and simple file payloads; unsupported rich HTML/PDF and oversized payloads retain the existing WebView reader fallback. Native reader stays on one HWND while content and geometry transition. |
 | Settings | Existing React/MUI window, destroyed on close | No migration in this batch |
 | macOS and release | Independent native UI; WinUI remains Debug opt-in | No macOS UI, installer, release or workflow changes |
 
@@ -59,17 +59,19 @@ it does not claim to have compared a separate deployed Vue build.
 | Tabs and filters | `All`, `Favorites`, then saved filters and record tags; selected item uses a 3px underline | Native `SelectorBar` for `All`/`Favorites` and saved tabs; five content-type choices stay in the existing filter flyout | The SelectorBar pill/transition is an intentional Fluent visual difference. Keeping type choices in the flyout preserves the compact shipping tab strip while retaining the native type-filter shortcut. |
 | Menus and confirmation | Shared React overlay/dialog primitives | `MenuFlyout`, `Flyout`, and `ContentDialog` | Native placement, dismissal, focus return and system corner treatment intentionally follow WinUI. |
 | Queue and tag rows | React component/CSS layout | `ScrollViewer`/`StackPanel` rows with native buttons and menus | Custom row composition supports the ordered queue, drag insertion, inline tag editing and focus restoration. Queue is capped at 100; virtualization is not changed without profiling evidence. |
-| Rich content and preview | WebView renders broader HTML/PDF/OCR cases | XAML `Grid`, `Border`, `TextBlock`, `Image`, and `GridView` for supported native content; established renderer remains fallback | No generic WinUI card represents clipboard content, so the card is intentionally composed from native XAML primitives. Unsupported rich routes are not claimed as migrated. |
+| Rich content and preview | WebView renders broader HTML/PDF/OCR cases | XAML `Grid`, `Border`, `TextBlock`, `Image`, and native controls in `WinUiReader`; established renderer remains fallback for rich HTML/PDF, unsupported payloads and oversized bridge messages | No generic WinUI card represents clipboard content, so history cards and preview bodies are intentionally composed from native XAML primitives. The fallback preserves unsupported WebView rendering rather than approximating it. |
 | Settings | React + MUI, created on demand | Same existing WebView | Intentionally unchanged and behavior-identical. |
 
 The native control inventory matches WinUI Gallery's intended roles: `SelectorBar`
-for a small set of mutually exclusive views, `ListView` for the virtualized
-history collection, `CommandBar`/`AppBarButton` for toolbar commands,
-`ComboBox`/`TextBox` for selection and text entry, `GridView` for the emoji
-picker, `MenuFlyout` for contextual actions, `ContentDialog` for destructive
-confirmation, and `InfoBar` for non-modal feedback. The clipboard card itself is
-custom XAML because its source-color header and mixed media content are product
-specific; it is not a web control masquerading as WinUI.
+for a small set of mutually exclusive views, `ListView` for the history
+collection, `CommandBar`/`AppBarButton` for toolbar commands, `ComboBox`/`TextBox`
+for selection and text entry, `GridView` for the emoji picker, `MenuFlyout` for
+contextual actions, `ContentDialog` for destructive confirmation, and `InfoBar`
+for non-modal feedback. The ordered 100-item queue uses a `ScrollViewer` with
+custom row composition to retain its explicit drag insertion and reorder model;
+changing it to a virtualized list requires profiling and dedicated reorder
+regression first. The clipboard card and preview content are product-specific
+XAML compositions, not web controls masquerading as WinUI.
 
 References: [Microsoft SelectorBar guidance](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/selector-bar),
 [item containers and templates](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/item-containers-templates),

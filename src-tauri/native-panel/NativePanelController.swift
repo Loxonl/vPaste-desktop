@@ -294,6 +294,14 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     toolbar.onSettings = { [weak self] in self?.bridge.send("settings") }
     toolbar.onDiagnostics = { [weak self] in self?.setInfoVisible(self?.infoBar.isHidden ?? true) }
+    toolbar.onDeveloper = { [weak self] action in
+      guard let self, !self.closed else { return }
+      self.previews.clear()
+      self.bridge.send("developer", ["target": action, "language": self.config.language,
+        "theme": PanelStyle.dark(self.root) ? "dark" : "light"]) { [weak self] result in
+          if case .failure(let error) = result { self?.showMessage(error.localizedDescription) }
+        }
+    }
     layout.cardWidth = PanelStyle.cardWidth * config.scale
     layout.gap = PanelStyle.cardGap * config.scale
     layout.inset = PanelStyle.cardInset * config.scale
@@ -464,7 +472,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     // Prepare before ordering the host front, so the first composited frame is
     // already below the clipped surface, just like the existing main panel.
     PanelSlide.prepare(
-      backdrop, hidden: !config.sizePreview && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+      backdrop, hidden: !config.sizePreview && config.developerReconfigure != true && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
     if ProcessInfo.processInfo.arguments.contains("--native-panel-check") {
       NSLog("[native-panel] toolbar=%@", toolbar.rendererName)
       NSLog(
@@ -479,7 +487,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       starting = false
     } else {
       focus()
-      animate(show: true) { [weak self] in self?.starting = false }
+      if config.developerReconfigure == true { starting = false }
+      else { animate(show: true) { [weak self] in self?.starting = false } }
     }
     resumeHistory()
   }
@@ -754,7 +763,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private func resumeHistory() {
     generation &+= 1
     let epoch = generation
-    bridge.send("history-resume") { [weak self] result in
+    bridge.send("history-resume", ["preserveHistory": config.developerReconfigure == true]) { [weak self] result in
       guard let self, !self.closed, self.generation == epoch else { return }
       do {
         let value = try panelDecode(PanelHistoryPresentation.self, result.get())

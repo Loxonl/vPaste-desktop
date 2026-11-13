@@ -1650,9 +1650,7 @@ pub fn write_test_room_groups(
 ) -> Result<TestRoomOperationResult, String> {
     ensure_enabled()?;
     let written = write_test_room_groups_to_history(groups)?;
-    if let Some(window) = app.get_webview_window("clipboard") {
-        let _ = window.emit("listen_new_clipboard", ());
-    }
+    let _ = app.emit("listen_new_clipboard", ());
     Ok(TestRoomOperationResult {
         affected_items: written,
         message: format!("已写入 {} 个安全样板", written),
@@ -1690,9 +1688,7 @@ pub fn copy_test_room_item_to_clipboard(
         crate::copy_with_rich_meta(app.clone(), content, item_type, rich_meta)
     })();
     finalize_test_room_clipboard_history(created_at_ms, &hash, result)?;
-    if let Some(window) = app.get_webview_window("clipboard") {
-        let _ = window.emit("listen_new_clipboard", ());
-    }
+    let _ = app.emit("listen_new_clipboard", ());
     Ok(TestRoomOperationResult {
         affected_items: 1,
         message: "已写入当前剪贴板".to_string(),
@@ -1714,9 +1710,7 @@ pub fn cleanup_test_room_groups(
         }
     }
     atomic_write_json(&test_room_path(MANIFEST_FILE), &manifest)?;
-    if let Some(window) = app.get_webview_window("clipboard") {
-        let _ = window.emit("listen_new_clipboard", ());
-    }
+    let _ = app.emit("listen_new_clipboard", ());
     Ok(TestRoomOperationResult {
         affected_items: affected,
         message: format!("已清理 {} 个测试间粘贴项", affected),
@@ -1729,9 +1723,7 @@ pub fn cleanup_today_test_room_case_history(
 ) -> Result<TestRoomOperationResult, String> {
     ensure_enabled()?;
     let affected = cleanup_test_case_history_for_date(&current_local_date())?;
-    if let Some(window) = app.get_webview_window("clipboard") {
-        let _ = window.emit("listen_new_clipboard", ());
-    }
+    let _ = app.emit("listen_new_clipboard", ());
     Ok(TestRoomOperationResult {
         affected_items: affected,
         message: format!("已清理今日 {} 条测试历史", affected),
@@ -1758,9 +1750,7 @@ fn cleanup_test_room_history_records() -> Result<usize, String> {
 pub fn cleanup_test_room_history(app: tauri::AppHandle) -> Result<TestRoomOperationResult, String> {
     ensure_enabled()?;
     let affected = cleanup_test_room_history_records()?;
-    if let Some(window) = app.get_webview_window("clipboard") {
-        let _ = window.emit("listen_new_clipboard", ());
-    }
+    let _ = app.emit("listen_new_clipboard", ());
     Ok(TestRoomOperationResult {
         affected_items: affected,
         message: format!("已清理 {} 条测试历史", affected),
@@ -1823,6 +1813,15 @@ async fn run_case(app: &tauri::AppHandle, case_id: &str) -> Result<String, Strin
         | "file-folder-and-file"
         | "file-missing" => run_file_case(case_id),
         "main-window-cycle" => {
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            if crate::main_panel_mode::native() {
+                for _ in 0..2 {
+                    crate::show_main_panel_for_app(app)?;
+                    crate::native_panel::close_preview(app)?;
+                }
+                crate::show_main_panel_for_app(app)?;
+                return Ok("原生主面板已完成隐藏、重开和连续重开，并保持显示".into());
+            }
             let window = app
                 .get_webview_window("clipboard")
                 .ok_or_else(|| "主面板窗口不存在".to_string())?;
@@ -1885,9 +1884,7 @@ pub async fn run_test_room_case(
             duration_ms: started.elapsed().as_millis(),
         }),
     };
-    if let Some(window) = app.get_webview_window("clipboard") {
-        let _ = window.emit("listen_new_clipboard", ());
-    }
+    let _ = app.emit("listen_new_clipboard", ());
     result
 }
 

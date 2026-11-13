@@ -36,6 +36,10 @@ const DeveloperMemoryWindow = import.meta.env.DEV || embeddedDeveloperTools
     ? React.lazy(() => import("./debug/DeveloperMemoryWindow.tsx"))
     : null;
 
+const DeveloperTutorialWindow = import.meta.env.DEV || embeddedDeveloperTools
+    ? React.lazy(() => import("./debug/DeveloperTutorialWindow.tsx"))
+    : null;
+
 if ("__TAURI_INTERNALS__" in window) {
     void info(`Rendering app, path: ${window.location.pathname}`);
 }
@@ -106,6 +110,7 @@ root.render(
                         {UiLab ? <Route path="/__ui-lab" element={<UiLab />} /> : null}
                         {SettingsPreview ? <Route path="/__settings-preview" element={<SettingsPreview />} /> : null}
                         {TestRoom ? <Route path="/__test-room" element={<TestRoom />} /> : null}
+                        {DeveloperTutorialWindow ? <Route path="/__dev-tutorial" element={<DeveloperTutorialWindow />} /> : null}
                         {DeveloperMemoryWindow ? <Route path="/__dev-memory" element={<DeveloperMemoryWindow />} /> : null}
                         <Route path="/" element={<Clipboard />} />
                         <Route path="*" element={<Clipboard />} />

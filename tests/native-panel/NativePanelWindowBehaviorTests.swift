@@ -83,41 +83,6 @@ final class NativePanelWindowBehaviorTests: XCTestCase {
     window.orderOut(nil)
   }
 
-  func testPageSpliceRemovesOneItemAndShiftsLaterPages() throws {
-    func refs(_ range: Range<Int>) -> [PanelRef] {
-      range.map {
-        PanelRef(
-          hash: "h\($0)", itemType: "Text", time: 0, label: 0, appSource: "",
-          titleColor: "")
-      }
-    }
-    let pages = [0: refs(0..<36), 1: refs(36..<72)]
-    let firstPage = try XCTUnwrap(
-      PanelPageSplice.remove(hash: "h2", at: 2, pages: pages))
-    XCTAssertEqual(firstPage.pages[0]?[2].hash, "h3")
-    XCTAssertEqual(firstPage.pages[0]?[35].hash, "h36")
-    XCTAssertEqual(firstPage.pages[1]?[0].hash, "h37")
-    XCTAssertEqual(firstPage.pages[1]?[34].hash, "h71")
-    XCTAssertEqual(firstPage.pages[1]?.count, 35)
-    XCTAssertEqual(firstPage.endPage, 1)
-    XCTAssertEqual(firstPage.coveredEnd, 71)
-    XCTAssertTrue(firstPage.runEndWasFull)
-
-    let secondPage = try XCTUnwrap(
-      PanelPageSplice.remove(hash: "h40", at: 40, pages: pages))
-    XCTAssertEqual(secondPage.pages[0]?[35].hash, "h35")
-    XCTAssertEqual(secondPage.pages[1]?[4].hash, "h41")
-    XCTAssertEqual(secondPage.pages[1]?[34].hash, "h71")
-    XCTAssertEqual(secondPage.coveredEnd, 71)
-
-    let shortPage = try XCTUnwrap(
-      PanelPageSplice.remove(hash: "h0", at: 0, pages: [0: refs(0..<20)]))
-    XCTAssertEqual(shortPage.pages[0]?.count, 19)
-    XCTAssertEqual(shortPage.coveredEnd, 19)
-    XCTAssertFalse(shortPage.runEndWasFull)
-    XCTAssertNil(PanelPageSplice.remove(hash: "missing", at: 2, pages: pages))
-  }
-
   func testCardSurfaceKeepsTextReadableOverVariableGlass() {
     XCTAssertGreaterThanOrEqual(PanelStyle.cardSurface(false).alphaComponent, 0.98)
     XCTAssertGreaterThanOrEqual(PanelStyle.cardSurface(true).alphaComponent, 0.99)

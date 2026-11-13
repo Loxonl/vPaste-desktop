@@ -713,20 +713,50 @@ pub(crate) fn history_ref_page(
     label: &str,
     is_current: impl Fn() -> bool,
 ) -> Result<Option<Page<crate::history_views::HistoryRef>>, String> {
+    collect_history_refs(
+        last_id,
+        last_time,
+        limit,
+        is_current,
+        |id, time, limit, current| {
+            search_stored_batch_with_cancellation(keywords, id, time, limit, label, current)
+        },
+    )
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn native_history_ref_page(
+    keywords: &str,
+    last_id: u64,
+    last_time: u64,
+    limit: usize,
+    label: &str,
+    is_current: impl Fn() -> bool,
+) -> Result<Option<Page<crate::history_views::HistoryRef>>, String> {
+    collect_history_refs(
+        last_id,
+        last_time,
+        limit,
+        is_current,
+        |id, time, limit, current| {
+            native_search_stored_batch(keywords, id, time, limit, label, current)
+        },
+    )
+}
+
+fn collect_history_refs(
+    last_id: u64,
+    last_time: u64,
+    limit: usize,
+    is_current: impl Fn() -> bool,
+    fetch: impl Fn(u64, u64, usize, &dyn Fn() -> bool) -> Result<Option<Page<StoredItem>>, String>,
+) -> Result<Option<Page<crate::history_views::HistoryRef>>, String> {
     search_page::collect(
         (last_id, last_time),
         limit,
         &is_current,
         |id, time, remaining| {
-            let Some(page) = search_stored_batch_with_cancellation(
-                keywords,
-                id,
-                time,
-                remaining,
-                label,
-                &is_current,
-            )?
-            else {
+            let Some(page) = fetch(id, time, remaining, &is_current)? else {
                 return Ok(None);
             };
             let mut list = Vec::new();
@@ -734,15 +764,8 @@ pub(crate) fn history_ref_page(
                 if !is_current() {
                     return Ok(None);
                 }
-                if stored.item_type == "Text" && is_semantically_blank_text(&stored.content) {
-                    let rich = rich_meta_from_source(&stored.source)
-                        .and_then(|meta| rich_render_from_path(&meta.html_path));
-                    if !rich.is_some_and(|rich| {
-                        rich.html.contains("vpaste-rich-image:")
-                            || rich_html_has_renderable_image(&rich.html)
-                    }) {
-                        continue;
-                    }
+                if !history_text_visible(&stored.item_type, &stored.content, &stored.source) {
+                    continue;
                 }
                 let mut item_type =
                     ItemType::from_str(&stored.item_type).map_err(|err| err.to_string())?;
@@ -811,6 +834,120 @@ fn history_preview_text(item_type: &ItemType, content: &str, preview: &str) -> S
             .unwrap_or_else(|| "Text file".to_string()),
         ItemType::Image => String::new(),
     }
+}
+
+fn history_text_visible(item_type: &str, content: &str, source: &str) -> bool {
+    if item_type != "Text" || !is_semantically_blank_text(content) {
+        return true;
+    }
+    rich_meta_from_source(source)
+        .and_then(|meta| rich_render_from_path(&meta.html_path))
+        .is_some_and(|rich| {
+            rich.html.contains("vpaste-rich-image:") || rich_html_has_renderable_image(&rich.html)
+        })
+}
+
+// Locate a retained viewport by sort key. Only metadata crosses this cursor;
+// bodies/images and the full result hash list are never accumulated in memory.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn history_ref_seek(
+    query: &crate::history_views::HistoryQuery,
+    anchor: &crate::history_views::HistoryAnchor,
+    is_current: impl Fn() -> bool,
+) -> Result<(usize, usize, (u64, u64)), String> {
+    use std::collections::BTreeSet;
+    let started = Instant::now();
+    let filter = parse_search_filter(&query.label);
+    let mut position = 0usize;
+    let mut preceding = BTreeSet::new();
+    let mut visit = |hashes: Option<&[String]>| -> Result<(), String> {
+        let mut clauses = vec!["(time > ? or (time = ? and id >= ?))".to_string()];
+        let mut params = vec![
+            Value::Integer(anchor.time as i64),
+            Value::Integer(anchor.time as i64),
+            Value::Integer(anchor.id as i64),
+        ];
+        apply_filter_clauses(&filter, &mut clauses, &mut params);
+        if let Some(hashes) = hashes {
+            clauses.push(format!("hash in ({})", vec!["?"; hashes.len()].join(",")));
+            params.extend(hashes.iter().cloned().map(Value::Text));
+        }
+        // Nonblank bodies stay inside SQLite. Only potentially invisible legacy
+        // text needs Rust's rich-text visibility check.
+        params.insert(0, Value::Text(" \t\n\r\u{000b}\u{000c}\u{0085}\u{00a0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{200b}\u{feff}".into()));
+        let sql = format!("select id,time,hash,item_type,case when item_type='Text' and length(trim(coalesce(content, ''), ?))=0 then coalesce(content, '') else 'visible' end,coalesce(source, '') from clipboard where {}", clauses.join(" and "));
+        let conn = db();
+        let mut statement = conn.prepare(&sql).map_err(|err| err.to_string())?;
+        let mut rows = statement
+            .query(params_from_iter(params))
+            .map_err(|err| err.to_string())?;
+        while let Some(row) = rows.next().map_err(|err| err.to_string())? {
+            if !is_current() {
+                return Err("history view expired".into());
+            }
+            let id: u64 = row.get(0).map_err(|err| err.to_string())?;
+            let time: u64 = row.get(1).map_err(|err| err.to_string())?;
+            let hash: String = row.get(2).map_err(|err| err.to_string())?;
+            let kind: String = row.get(3).map_err(|err| err.to_string())?;
+            let content: String = row.get(4).map_err(|err| err.to_string())?;
+            let source: String = row.get(5).map_err(|err| err.to_string())?;
+            if !history_text_visible(&kind, &content, &source)
+                || (hash == anchor.hash && time == anchor.time && id == anchor.id as u64)
+            {
+                continue;
+            }
+            position += 1;
+            preceding.insert((time, id));
+            // Keep only the nearby page boundaries, including the overscan at an edge.
+            if preceding.len() > 108 {
+                preceding.pop_last();
+            }
+        }
+        Ok(())
+    };
+    if query.keywords.trim().is_empty() {
+        visit(None)?;
+    } else {
+        let session = search_index_session(&query.keywords)?;
+        session.visit_hashes(SEARCH_RESULT_DB_CHUNK_SIZE, &is_current, |hashes| {
+            visit(Some(hashes))
+        })?;
+    }
+    let first = (position.saturating_sub(2) / 36).saturating_sub(1);
+    let start = first * 36;
+    let cursor = if start == 0 {
+        (0, 0)
+    } else {
+        let (time, id) = preceding
+            .iter()
+            .nth(position - start)
+            .copied()
+            .ok_or("Retained history anchor is unavailable")?;
+        (id, time)
+    };
+    log::debug!(
+        "native history seek position={} metadata_ms={}",
+        position,
+        started.elapsed().as_millis()
+    );
+    Ok((position, first, cursor))
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn history_filter_deadline(
+    label: &str,
+    times: impl Iterator<Item = u64>,
+) -> Option<u64> {
+    let filter = parse_search_filter(label);
+    let duration = filter
+        .relative_amount?
+        .checked_mul(relative_unit_millis(filter.relative_unit.as_deref()?)?)?;
+    if duration == 0 {
+        return None;
+    }
+    times
+        .map(|time| time.saturating_add(duration).saturating_add(1))
+        .min()
 }
 
 pub(crate) fn history_action_item(hash: &str) -> Result<Item, String> {
@@ -971,6 +1108,79 @@ fn search_stored_batch_with_cancellation(
         has_more,
         next_id,
         next_time,
+    }))
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+fn native_search_stored_batch(
+    keywords: &str,
+    last_id: u64,
+    last_time: u64,
+    limit: usize,
+    label: &str,
+    is_current: impl Fn() -> bool,
+) -> Result<Option<Page<StoredItem>>, String> {
+    if keywords.trim().is_empty() {
+        return search_stored_batch_with_cancellation(
+            keywords, last_id, last_time, limit, label, is_current,
+        );
+    }
+    if !is_current() {
+        return Ok(None);
+    }
+    if !engine::is_ready() {
+        rebuild_search_index()?;
+    }
+    let filter = parse_search_filter(label);
+    let cursor_id = if last_id == 0 {
+        i64::MAX as u64
+    } else {
+        last_id
+    };
+    let cursor_time = if last_time == 0 {
+        i64::MAX as u64
+    } else {
+        last_time
+    };
+    let mut cursor = (cursor_time, cursor_id);
+    let session = search_index_session(keywords)?;
+    let mut items = Vec::new();
+    loop {
+        if !is_current() {
+            return Ok(None);
+        }
+        let (page, next) =
+            session.search_after(cursor, SEARCH_RESULT_DB_CHUNK_SIZE, &is_current)?;
+        if page.hashes.is_empty() {
+            break;
+        }
+        let (sql, params) =
+            build_indexed_filter_query(&filter, &page.hashes, cursor_id, cursor_time, limit + 1);
+        let conn = db();
+        let mut statement = conn.prepare(&sql).map_err(|err| err.to_string())?;
+        let batch = statement
+            .query_map(params_from_iter(params), read_stored_item)
+            .map_err(|err| err.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())?;
+        items.extend(batch);
+        items.sort_by(|a, b| b.time.cmp(&a.time).then_with(|| b.id.cmp(&a.id)));
+        items.dedup_by(|a, b| a.hash == b.hash);
+        items.truncate(limit + 1);
+        if items.len() > limit || !page.has_more {
+            break;
+        }
+        cursor = next;
+    }
+    let has_more = items.len() > limit;
+    items.truncate(limit);
+    let next = items.last().map(|item| (item.id as u64, item.time));
+    Ok(Some(Page {
+        consumed: 0,
+        list: items,
+        has_more,
+        next_id: next.map(|key| key.0).unwrap_or(last_id),
+        next_time: next.map(|key| key.1).unwrap_or(last_time),
     }))
 }
 

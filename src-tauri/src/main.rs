@@ -8479,6 +8479,7 @@ fn import_history_archive_impl(
     }
     paste_queue::emit_state(&app);
     progress.finish();
+    let _ = app.emit("history-reset", ());
 
     Ok(HistoryArchiveInfo {
         archive_path,
@@ -9846,6 +9847,9 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<SettingsSaveInfo
         }
     }
     image_ocr::wake();
+    if previous_history_dir != target_dir {
+        let _ = app.emit("history-reset", ());
+    }
     auto_cleanup::request();
     Ok(SettingsSaveInfo {
         message: if registration_info.conflict || paste_queue_registration_info.conflict {
@@ -13026,6 +13030,7 @@ fn clear_history(app: tauri::AppHandle, clear_type: String) -> Result<(), String
         clipboard::db::clear_images().map_err(|e| e.to_string())?;
     }
     paste_queue::emit_state(&app);
+    let _ = app.emit("history-reset", ());
     Ok(())
 }
 

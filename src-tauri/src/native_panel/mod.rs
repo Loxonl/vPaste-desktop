@@ -1,12 +1,13 @@
 //! macOS DEV AppKit panel. The optional --main-ui=native route uses it without
 //! creating a main WebView. Owns one bounded history view, separately from Main.
+mod history;
 pub(crate) mod preview;
 pub(crate) mod queue_selection;
 mod rich_text;
 
 use crate::{
     clipboard::{self, item::ItemType},
-    history_views::{self, HistoryQuery, ViewOwner},
+    history_views::{self, HistoryQuery},
     media_resources::{self, MediaIntent},
 };
 use serde::{Deserialize, Serialize};
@@ -41,9 +42,6 @@ static KEY: AtomicBool = AtomicBool::new(false);
 static LISTENERS: Mutex<Vec<tauri::EventId>> = Mutex::new(Vec::new());
 static ACTION: AtomicBool = AtomicBool::new(false);
 static TAG_EDITOR_TARGET: Mutex<Option<(u64, String)>> = Mutex::new(None);
-// The panel's own delete already updates its list locally; ignore the
-// "changed" notification that the same action emits.
-static SUPPRESS_CHANGED: AtomicBool = AtomicBool::new(false);
 static WORK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 static CLOSED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
@@ -69,7 +67,7 @@ fn dispose() {
     KEY.store(false, Ordering::Release);
     preview::dispose(APP.get());
     SESSION.fetch_add(1, Ordering::AcqRel);
-    history_views::close_native();
+    history::suspend();
     CLOSED.notify_waiters();
     if let Some(app) = APP.get() {
         if let Some(queue) = app.get_webview_window("pasteQueue") {
@@ -138,6 +136,7 @@ fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Res
         return Err("Native panel requires --dev-mode".into());
     }
     APP.get_or_init(|| app.clone());
+    history::watch(&app);
     app.clone()
         .run_on_main_thread(move || {
             let preview = crate::panel_size::is_previewing();
@@ -151,20 +150,12 @@ fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Res
             let session = SESSION.fetch_add(1, Ordering::AcqRel) + 1;
             ACTIVE.store(true, Ordering::Release);
             for name in [
-                "listen_new_clipboard",
-                "clipboard-item-edited",
                 "item-tags-changed",
                 "tab-order-changed",
-                "clipboard-resources-updated",
                 "paste-queue-state-changed",
                 "native-paste-queue-selection-changed",
             ] {
-                let id = app.listen(name, move |event| {
-                    if name == "listen_new_clipboard"
-                        && SUPPRESS_CHANGED.swap(false, Ordering::AcqRel)
-                    {
-                        return;
-                    }
+                let id = app.listen_any(name, move |event| {
                     if name == "native-paste-queue-selection-changed" {
                         if let Ok(mut payload) =
                             serde_json::from_str::<serde_json::Map<String, Value>>(event.payload())
@@ -186,7 +177,6 @@ fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Res
                         notify_tabs_changed(session, event.payload());
                         return;
                     }
-                    deliver(session, json!({"event":"changed"}));
                 });
                 LISTENERS.lock().unwrap_or_else(|e| e.into_inner()).push(id);
             }
@@ -403,6 +393,8 @@ struct Request {
     #[serde(default)]
     hashes: Vec<String>,
     #[serde(default)]
+    checkpoint: history::Checkpoint,
+    #[serde(default)]
     hash: String,
     #[serde(default)]
     activation_epoch: u64,
@@ -468,6 +460,10 @@ unsafe extern "C" fn request(bytes: *const u8, length: usize) {
         return;
     };
     match req.op.as_str() {
+        "history-checkpoint" => {
+            history::checkpoint(&req.view_id, req.checkpoint);
+            return;
+        }
         "paste-queue-select" => {
             let result = queue_selection::toggle(&req.hash, req.activation_epoch);
             let response = match result {
@@ -519,7 +515,7 @@ unsafe extern "C" fn request(bytes: *const u8, length: usize) {
         }
         req.preview_request = Some(preview::reserve(req.mode));
     }
-    let open = if req.op == "open" {
+    let open = if matches!(req.op.as_str(), "open" | "history-resume") {
         history_views::reserve_native_open()
     } else {
         0
@@ -585,19 +581,22 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
                 keywords: r.keywords.clone(),
                 label: r.label.clone(),
             };
-            let page = blocking(move || {
-                history_views::open_for_owner(query, 0, open, ViewOwner::NativeExperiment)
-            })
-            .await?;
-            if !current(r.session) {
-                history_views::close(&page.token.view_id);
-                return Err("panel closed".into());
+            let tab = r.tab_id.clone();
+            blocking(move || history::open(query, tab, open)).await
+        }
+        "history-resume" => blocking(move || history::resume(panel_tabs()?, open)).await,
+        "history-sync" => {
+            if r.hashes.len() > 216 {
+                return Err("too many retained refs".into());
             }
-            serde_json::to_value(page).map_err(|e| e.to_string())
+            history::checkpoint(&r.view_id, r.checkpoint.clone());
+            let (id, revision, known) = (r.view_id.clone(), r.revision, r.hashes.clone());
+            blocking(move || history::synchronize(&id, revision, &known)).await
         }
         "page" => {
             let (id, revision, page) = (r.view_id.clone(), r.revision, r.page);
             let page = blocking(move || history_views::read_page(&id, revision, page)).await?;
+            history::page_sent(&page);
             serde_json::to_value(page).map_err(|e| e.to_string())
         }
         "cards" => {
@@ -683,26 +682,13 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
         }
         "delete" => {
             let worker_app = app.clone();
-            blocking(move || {
-                crate::delete_clipboard_item(worker_app, hash)?;
-                history_views::invalidate_native_cache();
-                Ok(())
-            })
-            .await?;
-            SUPPRESS_CHANGED.store(true, Ordering::Release);
+            blocking(move || crate::delete_clipboard_item(worker_app, hash)).await?;
             app.emit("listen_new_clipboard", ())
                 .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
         "tabs" => {
-            let tabs = blocking(|| {
-                let custom = crate::get_custom_tabs()?;
-                let tags = clipboard::list_tags()?;
-                let order = clipboard::db::read_tab_order(&clipboard::db::db())
-                    .map_err(|err| err.to_string())?;
-                Ok(dynamic_tabs(&custom, &tags, &order))
-            })
-            .await?;
+            let tabs = blocking(panel_tabs).await?;
             serde_json::to_value(tabs).map_err(|e| e.to_string())
         }
         "tags" => {
@@ -1201,7 +1187,7 @@ fn display_card(hash: &str, width: u32) -> Result<Card, String> {
 
 // One dynamic toolbar tab after the fixed All and Favorites tabs: a filter tab
 // (custom tabs file) or a record tag, with the history query label it selects.
-#[derive(Serialize, Debug, PartialEq)]
+#[derive(Clone, Serialize, Debug, PartialEq)]
 struct PanelTab {
     id: String,
     name: String,
@@ -1277,6 +1263,14 @@ fn delete_tab(id: &str) -> Result<(Value, bool), String> {
     clipboard::db::write_tab_order(&clipboard::db::db(), &order)
         .map_err(|error| error.to_string())?;
     Ok((custom, record))
+}
+
+fn panel_tabs() -> Result<Vec<PanelTab>, String> {
+    let custom = crate::get_custom_tabs()?;
+    let tags = clipboard::list_tags()?;
+    let order =
+        clipboard::db::read_tab_order(&clipboard::db::db()).map_err(|err| err.to_string())?;
+    Ok(dynamic_tabs(&custom, &tags, &order))
 }
 
 // Mirrors the WebView orderedDynamicTabs: ids in the stored order first, then

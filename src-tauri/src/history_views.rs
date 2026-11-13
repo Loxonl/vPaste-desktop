@@ -36,7 +36,7 @@ impl ViewOwner {
 static VIEWS: LazyLock<Mutex<HashMap<String, Arc<View>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(crate) struct HistoryQuery {
     pub(crate) keywords: String,
     pub(crate) label: String,
@@ -252,6 +252,27 @@ pub(crate) fn read_page(id: &str, revision: u64, index: usize) -> Result<History
         let mut scan_index = mut_index;
         let mut cursor = mut_cursor;
         while scan_index <= index {
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            let page = if view.owner == ViewOwner::NativeExperiment {
+                crate::clipboard::native_history_ref_page(
+                    &view.query.keywords,
+                    cursor.0,
+                    cursor.1,
+                    PAGE_SIZE,
+                    &view.query.label,
+                    current,
+                )?
+            } else {
+                crate::clipboard::history_ref_page(
+                    &view.query.keywords,
+                    cursor.0,
+                    cursor.1,
+                    PAGE_SIZE,
+                    &view.query.label,
+                    current,
+                )?
+            };
+            #[cfg(not(all(debug_assertions, target_os = "macos")))]
             let page = crate::clipboard::history_ref_page(
                 &view.query.keywords,
                 cursor.0,
@@ -259,8 +280,8 @@ pub(crate) fn read_page(id: &str, revision: u64, index: usize) -> Result<History
                 PAGE_SIZE,
                 &view.query.label,
                 current,
-            )?
-            .ok_or_else(|| "history view expired".to_string())?;
+            )?;
+            let page = page.ok_or_else(|| "history view expired".to_string())?;
             if !current() {
                 return Err("history view expired".into());
             }
@@ -394,32 +415,69 @@ pub(crate) fn reserve_native_open() -> u64 {
         + 1
 }
 
-// A native-panel delete changes the offsets of every later page. Drop the
-// cached pages/anchors so the next read observes the shifted result set.
 #[cfg(all(debug_assertions, target_os = "macos"))]
-pub(crate) fn invalidate_native_cache() {
-    let views = VIEWS.lock().unwrap_or_else(|e| e.into_inner());
-    for view in views
-        .values()
-        .filter(|view| view.owner == ViewOwner::NativeExperiment)
+#[derive(Clone, Debug)]
+pub(crate) struct HistoryAnchor {
+    pub(crate) hash: String,
+    pub(crate) id: usize,
+    pub(crate) time: u64,
+}
+
+// Rebase only the retained page window after a mutation. Replacing the view
+// under the same id invalidates old workers without opening another query.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn refresh_native(
+    id: &str,
+    revision: u64,
+    anchor: Option<&HistoryAnchor>,
+) -> Result<(ViewToken, usize), String> {
+    let old = view(id, revision)?;
+    let (position, first, cursor) = match anchor {
+        Some(anchor) => crate::clipboard::history_ref_seek(&old.query, anchor, || {
+            !old.closed.load(Ordering::Acquire)
+        })?,
+        None => (0, 0, (0, 0)),
+    };
+    let token = ViewToken {
+        view_id: id.into(),
+        revision: revision + 1,
+    };
+    let next = Arc::new(View {
+        owner: old.owner,
+        token: token.clone(),
+        query: old.query.clone(),
+        epoch: old.epoch,
+        closed: AtomicBool::new(false),
+        cache: Mutex::new(Cache {
+            pages: BTreeMap::new(),
+            order: VecDeque::new(),
+            anchors: BTreeMap::from([(0, (0, 0)), (first, cursor)]),
+            known_count: first * PAGE_SIZE,
+            terminal: None,
+            bytes: 0,
+        }),
+    });
+    let mut views = VIEWS.lock().unwrap_or_else(|err| err.into_inner());
+    if !views
+        .get(id)
+        .is_some_and(|current| Arc::ptr_eq(current, &old))
     {
-        let mut cache = view.cache.lock().unwrap_or_else(|e| e.into_inner());
-        cache.pages.clear();
-        cache.order.clear();
-        cache.anchors = BTreeMap::from([(0, (0, 0))]);
-        cache.known_count = 0;
-        cache.terminal = None;
-        cache.bytes = 0;
+        return Err("history view expired".into());
     }
+    old.closed.store(true, Ordering::Release);
+    views.insert(id.into(), next);
+    Ok((token, position))
 }
 
 #[cfg(all(debug_assertions, target_os = "macos"))]
-pub(crate) fn close_native() {
-    reserve_native_open(); // invalidate opens still running on the worker
-    remove_owned_views(
-        &mut VIEWS.lock().unwrap_or_else(|e| e.into_inner()),
-        ViewOwner::NativeExperiment,
-    );
+pub(crate) fn native_cached_refs(id: &str, revision: u64) -> Result<Vec<HistoryRef>, String> {
+    let view = view(id, revision)?;
+    let cache = view.cache.lock().unwrap_or_else(|err| err.into_inner());
+    Ok(cache
+        .pages
+        .values()
+        .flat_map(|page| page.items.iter().cloned())
+        .collect())
 }
 
 #[cfg(all(debug_assertions, target_os = "macos"))]

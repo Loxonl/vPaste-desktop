@@ -95,43 +95,52 @@ struct PanelPage: Decodable {
   let knownCount: Int
   let hasMore: Bool
 }
-// Local deletion over the loaded page window. Refs after the removed one move
-// forward and pages are re-chunked at the 36-item boundaries, so the collection
-// view only needs to delete one item.
-enum PanelPageSplice {
-  static let pageSize = 36
-  struct Result {
-    let pages: [Int: [PanelRef]]
-    let endPage: Int
-    // First logical index not covered by the shifted loaded window.
-    let coveredEnd: Int
-    let runEndWasFull: Bool
-  }
-  static func remove(
-    hash: String, at index: Int, pages: [Int: [PanelRef]]
-  ) -> Result? {
-    let page = index / pageSize
-    let slot = index % pageSize
-    guard index >= 0, let loaded = pages[page], slot < loaded.count,
-      loaded[slot].hash == hash
-    else { return nil }
-    var flat = loaded
-    var endPage = page
-    while let next = pages[endPage + 1] {
-      flat.append(contentsOf: next)
-      endPage += 1
+struct PanelHistoryRefs: Decodable {
+  let pageIndex: Int
+  let hashes: [String]
+}
+struct PanelHistoryPresentation: Decodable {
+  let tabs: [PanelTab]
+  let tabId: String
+  let keywords: String
+  let label: String
+  let delta: PanelHistoryDelta
+}
+struct PanelHistoryDelta: Decodable {
+  let token: PanelToken
+  let baseRevision: UInt64
+  let full: Bool
+  let pages: [PanelHistoryRefs]
+  let refs: [PanelRef]
+  let knownCount: Int
+  let hasMore: Bool
+  let anchorIndex: Int
+  let selectedIndex: Int
+  let offset: Double
+  let viewportRevision: UInt64
+  let invalidated: [String]
+  let resourcesChanged: Bool
+
+  func merging(_ previous: [Int: [PanelRef]], token current: PanelToken?) throws -> [Int: [PanelRef]] {
+    guard full || (current?.viewId == token.viewId && current?.revision == baseRevision),
+      token.revision >= baseRevision, knownCount >= 0, anchorIndex >= 0, selectedIndex >= 0,
+      offset.isFinite, (0...1).contains(offset), refs.count <= 216,
+      pages.count <= 6, pages.allSatisfy({ $0.pageIndex >= 0 && $0.hashes.count <= 36 }) else {
+      throw NSError(domain: "vPaste", code: 1)
     }
-    let runEndWasFull = (pages[endPage]?.count ?? 0) >= pageSize
-    guard slot < flat.count, flat[slot].hash == hash else { return nil }
-    flat.remove(at: slot)
-    var shifted = pages
-    for current in page...endPage {
-      let start = (current - page) * pageSize
-      shifted[current] = Array(flat.dropFirst(start).prefix(pageSize))
+    var known: [String: PanelRef] = [:]
+    if !full { for item in previous.values.flatMap({ $0 }) { known[item.hash] = item } }
+    for item in refs { known[item.hash] = item }
+    var result: [Int: [PanelRef]] = [:]
+    for page in pages {
+      var items: [PanelRef] = []
+      for hash in page.hashes {
+        guard let item = known[hash] else { throw NSError(domain: "vPaste", code: 2) }
+        items.append(item)
+      }
+      result[page.pageIndex] = items
     }
-    return Result(
-      pages: shifted, endPage: endPage, coveredEnd: page * pageSize + flat.count,
-      runEndWasFull: runEndWasFull)
+    return result
   }
 }
 struct PanelRun: Decodable {

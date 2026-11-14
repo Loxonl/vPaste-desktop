@@ -3,16 +3,26 @@ use std::path::Path;
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum StartupSyncAction {
     Register(String),
+    UpdateCommand(String),
     Unregister,
     Unchanged,
 }
 
-fn startup_command(executable: &Path) -> String {
-    format!(r#""{}""#, executable.display())
+fn startup_command(executable: &Path, arguments: &[&str]) -> String {
+    let mut command = format!(r#""{}""#, executable.display());
+    if !arguments.is_empty() {
+        command.push(' ');
+        command.push_str(&arguments.join(" "));
+    }
+    command
 }
 
 fn registered_command_matches(registered_command: Option<&str>, executable: &Path) -> bool {
-    registered_command.map(str::trim_end) == Some(startup_command(executable).as_str())
+    // Ownership follows the executable; reconciliation separately compares args.
+    let quoted_path = startup_command(executable, &[]);
+    registered_command
+        .and_then(|command| command.trim_end().strip_prefix(&quoted_path))
+        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with(char::is_whitespace))
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -31,6 +41,7 @@ pub(crate) fn startup_sync_action(
     startup: bool,
     registered_command: Option<&str>,
     executable: &Path,
+    arguments: &[&str],
 ) -> StartupSyncAction {
     if !startup {
         return if registered_command_matches(registered_command, executable) {
@@ -40,10 +51,12 @@ pub(crate) fn startup_sync_action(
         };
     }
 
-    let command = startup_command(executable);
+    let command = startup_command(executable, arguments);
     // auto-launch appends a space after the path even when there are no arguments.
-    if registered_command_matches(registered_command, executable) {
+    if registered_command.map(str::trim_end) == Some(command.as_str()) {
         StartupSyncAction::Unchanged
+    } else if registered_command_matches(registered_command, executable) {
+        StartupSyncAction::UpdateCommand(command)
     } else {
         StartupSyncAction::Register(command)
     }
@@ -57,15 +70,15 @@ mod windows {
     use auto_launch::AutoLaunch;
     use std::io::ErrorKind;
     use std::path::Path;
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
     use winreg::RegKey;
 
     const ENTRY_NAME: &str = "vPaste Portable";
     const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
-    fn launcher(executable: &Path) -> AutoLaunch {
-        let quoted_path = startup_command(executable);
-        AutoLaunch::new(ENTRY_NAME, &quoted_path, &[] as &[&str])
+    fn launcher(executable: &Path, arguments: &[&str]) -> AutoLaunch {
+        let quoted_path = startup_command(executable, &[]);
+        AutoLaunch::new(ENTRY_NAME, &quoted_path, arguments)
     }
 
     fn registered_command() -> Result<Option<String>, String> {
@@ -86,13 +99,13 @@ mod windows {
         if !registered_command_matches(registered_command()?.as_deref(), executable) {
             return Ok(false);
         }
-        launcher(executable)
+        launcher(executable, &crate::main_panel_mode::autostart_arguments())
             .is_enabled()
             .map_err(|err| format!("failed to check portable startup status: {err}"))
     }
 
     pub(super) fn set_enabled(executable: &Path, enabled: bool) -> Result<bool, String> {
-        let launcher = launcher(executable);
+        let launcher = launcher(executable, &crate::main_panel_mode::autostart_arguments());
         if enabled {
             ensure_run_key()?;
             launcher
@@ -108,13 +121,22 @@ mod windows {
 
     pub(super) fn reconcile(executable: &Path, startup: bool) -> Result<(), String> {
         let existing = registered_command()?;
-        let launcher = launcher(executable);
-        match startup_sync_action(startup, existing.as_deref(), executable) {
+        let arguments = crate::main_panel_mode::autostart_arguments();
+        let launcher = launcher(executable, &arguments);
+        match startup_sync_action(startup, existing.as_deref(), executable, &arguments) {
             StartupSyncAction::Register(_) => {
                 ensure_run_key()?;
                 launcher
                     .enable()
                     .map_err(|err| format!("failed to update portable startup path: {err}"))?
+            }
+            StartupSyncAction::UpdateCommand(command) => {
+                // Changing the backend must not undo a Task Manager startup
+                // disable. AutoLaunch::enable would reset StartupApproved.
+                RegKey::predef(HKEY_CURRENT_USER)
+                    .open_subkey_with_flags(RUN_KEY, KEY_SET_VALUE)
+                    .and_then(|key| key.set_value(ENTRY_NAME, &command))
+                    .map_err(|err| format!("failed to update portable startup arguments: {err}"))?;
             }
             StartupSyncAction::Unregister => launcher
                 .disable()
@@ -124,11 +146,45 @@ mod windows {
         Ok(())
     }
 
+    pub(super) fn reconcile_before_single_instance(executable: &Path) -> Result<(), String> {
+        // A secondary launch only restores the running panel. Do not let its
+        // default arguments overwrite the primary session's chosen backend.
+        if registered_command_matches(registered_command()?.as_deref(), executable) {
+            return Ok(());
+        }
+        reconcile(executable, true)
+    }
+
     fn ensure_run_key() -> Result<(), String> {
         RegKey::predef(HKEY_CURRENT_USER)
             .create_subkey(RUN_KEY)
             .map(|_| ())
             .map_err(|err| format!("failed to create portable startup key: {err}"))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn launcher_keeps_the_quoted_path_separate_from_backend_arguments() {
+            let executable = Path::new(r"C:\Users\Ada Lovelace\vPaste\vPaste.exe");
+            let arguments = ["--dev-mode", "--main-ui=winui"];
+            let launcher = launcher(executable, &arguments);
+            assert_eq!(
+                launcher.get_app_path(),
+                r#""C:\Users\Ada Lovelace\vPaste\vPaste.exe""#
+            );
+            assert_eq!(launcher.get_args(), arguments);
+            assert_eq!(
+                format!(
+                    "{} {}",
+                    launcher.get_app_path(),
+                    launcher.get_args().join(" ")
+                ),
+                startup_command(executable, &arguments)
+            );
+        }
     }
 }
 
@@ -154,7 +210,7 @@ pub(crate) fn reconcile_before_single_instance() -> Result<(), String> {
     };
     if startup_enabled_in_config(&data_dir)? {
         crate::runtime_mode::ensure_writable_directory(&data_dir)?;
-        reconcile(true)?;
+        windows::reconcile_before_single_instance(&current_executable()?)?;
     }
     Ok(())
 }
@@ -177,7 +233,7 @@ mod tests {
         let executable = Path::new(r"C:\Users\Ada Lovelace\vPaste\vPaste.exe");
 
         assert_eq!(
-            startup_sync_action(true, None, executable),
+            startup_sync_action(true, None, executable, &[]),
             StartupSyncAction::Register(r#""C:\Users\Ada Lovelace\vPaste\vPaste.exe""#.to_string())
         );
     }
@@ -187,7 +243,12 @@ mod tests {
         let executable = Path::new(r"D:\Tools\vPaste\vPaste.exe");
 
         assert_eq!(
-            startup_sync_action(true, Some(r#""C:\Tools\vPaste\vPaste.exe""#), executable,),
+            startup_sync_action(
+                true,
+                Some(r#""C:\Tools\vPaste\vPaste.exe""#),
+                executable,
+                &[]
+            ),
             StartupSyncAction::Register(r#""D:\Tools\vPaste\vPaste.exe""#.to_string())
         );
     }
@@ -197,7 +258,12 @@ mod tests {
         let executable = Path::new(r"D:\Tools\vPaste\vPaste.exe");
 
         assert_eq!(
-            startup_sync_action(true, Some(r#""D:\Tools\vPaste\vPaste.exe""#), executable,),
+            startup_sync_action(
+                true,
+                Some(r#""D:\Tools\vPaste\vPaste.exe""#),
+                executable,
+                &[]
+            ),
             StartupSyncAction::Unchanged
         );
     }
@@ -207,7 +273,12 @@ mod tests {
         let executable = Path::new(r"D:\Tools\vPaste\vPaste.exe");
 
         assert_eq!(
-            startup_sync_action(true, Some("\"D:\\Tools\\vPaste\\vPaste.exe\" "), executable,),
+            startup_sync_action(
+                true,
+                Some("\"D:\\Tools\\vPaste\\vPaste.exe\" "),
+                executable,
+                &[]
+            ),
             StartupSyncAction::Unchanged
         );
     }
@@ -217,11 +288,16 @@ mod tests {
         let executable = Path::new(r"D:\Other Copy\vPaste.exe");
 
         assert_eq!(
-            startup_sync_action(false, Some(r#""C:\Tools\vPaste\vPaste.exe""#), executable,),
+            startup_sync_action(
+                false,
+                Some(r#""C:\Tools\vPaste\vPaste.exe""#),
+                executable,
+                &[]
+            ),
             StartupSyncAction::Unchanged
         );
         assert_eq!(
-            startup_sync_action(false, None, executable),
+            startup_sync_action(false, None, executable, &[]),
             StartupSyncAction::Unchanged
         );
     }
@@ -231,7 +307,12 @@ mod tests {
         let executable = Path::new(r"D:\Tools\vPaste\vPaste.exe");
 
         assert_eq!(
-            startup_sync_action(false, Some(r#""D:\Tools\vPaste\vPaste.exe""#), executable),
+            startup_sync_action(
+                false,
+                Some(r#""D:\Tools\vPaste\vPaste.exe""#),
+                executable,
+                &[]
+            ),
             StartupSyncAction::Unregister
         );
     }
@@ -248,6 +329,71 @@ mod tests {
             Some(r#""C:\Tools\vPaste\vPaste.exe""#),
             executable
         ));
+    }
+
+    #[test]
+    fn disabling_a_native_portable_copy_recognizes_its_backend_arguments() {
+        let executable = Path::new(r"D:\Tools\vPaste\vPaste.exe");
+        assert_eq!(
+            startup_sync_action(
+                false,
+                Some(r#""D:\Tools\vPaste\vPaste.exe" --main-ui=winui"#),
+                executable,
+                &[],
+            ),
+            StartupSyncAction::Unregister
+        );
+        assert!(registered_command_matches(
+            Some(r#""D:\Tools\vPaste\vPaste.exe" --dev-mode --main-ui=winui"#),
+            executable
+        ));
+    }
+
+    #[test]
+    fn native_arguments_do_not_make_a_different_executable_our_entry() {
+        let executable = Path::new(r"D:\Tools\vPaste\vPaste.exe");
+        for command in [
+            r#""D:\Other Copy\vPaste.exe" --main-ui=winui"#,
+            r#""D:\Tools\vPaste\vPaste.exe.backup" --main-ui=winui"#,
+            r#""D:\Tools\vPaste\vPaste.exe"unexpected"#,
+        ] {
+            assert!(!registered_command_matches(Some(command), executable));
+        }
+    }
+
+    #[test]
+    fn portable_startup_updates_the_backend_without_changing_the_executable() {
+        let executable = Path::new(r"D:\Tools\vPaste\vPaste.exe");
+        let webview = r#""D:\Tools\vPaste\vPaste.exe""#;
+        let native = r#""D:\Tools\vPaste\vPaste.exe" --main-ui=winui"#;
+        assert_eq!(
+            startup_sync_action(true, Some(webview), executable, &["--main-ui=winui"]),
+            StartupSyncAction::UpdateCommand(native.into())
+        );
+        assert_eq!(
+            startup_sync_action(true, Some(native), executable, &["--main-ui=winui"]),
+            StartupSyncAction::Unchanged
+        );
+        assert_eq!(
+            startup_sync_action(true, Some(native), executable, &[]),
+            StartupSyncAction::UpdateCommand(webview.into())
+        );
+    }
+
+    #[test]
+    fn moved_native_copy_keeps_the_requested_mode_and_debug_data_isolation() {
+        let executable = Path::new(r"E:\Moved Folder\vPaste.exe");
+        assert_eq!(
+            startup_sync_action(
+                true,
+                Some(r#""D:\Old Folder\vPaste.exe" --main-ui=winui"#),
+                executable,
+                &["--dev-mode", "--main-ui=winui"],
+            ),
+            StartupSyncAction::Register(
+                r#""E:\Moved Folder\vPaste.exe" --dev-mode --main-ui=winui"#.into()
+            )
+        );
     }
 
     #[test]

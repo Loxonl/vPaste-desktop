@@ -20,6 +20,9 @@ inline constexpr double QueueContentHeight = 448;
 inline constexpr double TagContentHeight = 420;
 inline constexpr double ManagementMinHeight = 320;
 inline constexpr double CompactActionSize = 32;
+inline constexpr double CompactIconSize = 16;
+inline constexpr double TabFontSize = 14;
+inline constexpr double TabMaxWidth = 128;
 inline constexpr double ManagementRowRadius = 8;
 inline constexpr double DragSourceOpacity = 0.65;
 // Native ThemeShadow elevation in DIPs, kept deliberately small for the dock.
@@ -230,6 +233,13 @@ inline winrt::Microsoft::UI::Xaml::Controls::FontIcon Glyph(const winrt::hstring
     return icon;
 }
 
+inline winrt::Microsoft::UI::Xaml::Controls::FontIcon CompactSymbol(
+    winrt::Microsoft::UI::Xaml::Controls::Symbol symbol) {
+    auto icon = Glyph(winrt::hstring{std::wstring(1, static_cast<wchar_t>(symbol))});
+    icon.FontSize(CompactIconSize);
+    return icon;
+}
+
 inline winrt::Microsoft::UI::Xaml::Controls::StackPanel EmptyState(
     const winrt::hstring &glyph, const winrt::hstring &title, const winrt::hstring &description) {
     using namespace winrt::Microsoft::UI::Xaml;
@@ -273,7 +283,10 @@ inline winrt::Microsoft::UI::Xaml::Controls::Button NamedIconButton(
     button.Width(CompactActionSize);
     button.Height(CompactActionSize);
     button.Padding(Thickness{0});
-    button.Content(icon);
+    // SymbolIcon has no FontSize property and otherwise renders at its system
+    // default. Use the same symbol glyph at an explicit compact size.
+    if (const auto symbol = icon.try_as<SymbolIcon>()) button.Content(CompactSymbol(symbol.Symbol()));
+    else button.Content(icon);
     NameIconButton(button, label);
     return button;
 }

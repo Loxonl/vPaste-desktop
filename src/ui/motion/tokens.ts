@@ -9,13 +9,14 @@ export const motionTokens = sharedTokens as {
     distance: Record<"subtle" | "standard" | "emphasis", number>;
     stagger: { tight: number };
     continuous: { marquee: number };
+    spring: typeof sharedTokens.spring;
     easing: { enter: Bezier; exit: Bezier; standard: Bezier; linear: "linear" };
 };
 
 export const motionSprings = {
-    snappy: { type: "spring", stiffness: 420, damping: 32, mass: 0.8 },
-    layout: { type: "spring", stiffness: 320, damping: 34, mass: 0.9 },
-    gentle: { type: "spring", stiffness: 220, damping: 28, mass: 1 },
+    snappy: { type: "spring", ...sharedTokens.spring.snappy },
+    layout: { type: "spring", ...sharedTokens.spring.layout },
+    gentle: { type: "spring", ...sharedTokens.spring.gentle },
 } as const satisfies Record<string, Transition>;
 
 export const motionDurationsMs = {

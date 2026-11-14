@@ -6,6 +6,7 @@ import {
     AnimatePresence,
     m,
     motionPresetFor,
+    motionSprings,
     syncMotionCssVariables,
     useMotionPreset,
 } from "../../../src/ui/motion";
@@ -14,6 +15,13 @@ import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
 afterEach(cleanup);
 
 describe("Motion system", () => {
+    it("preserves the existing spring behavior when shared with native controls", () => {
+        expect(motionSprings).toEqual({
+            snappy: { type: "spring", stiffness: 420, damping: 32, mass: 0.8 },
+            layout: { type: "spring", stiffness: 320, damping: 34, mass: 0.9 },
+            gentle: { type: "spring", stiffness: 220, damping: 28, mass: 1 },
+        });
+    });
     it("synchronizes the approved timing, distance, and easing CSS variables", () => {
         const root = document.createElement("div");
         syncMotionCssVariables(root);

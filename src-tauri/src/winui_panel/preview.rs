@@ -98,8 +98,8 @@ fn window() -> Option<HWND> {
 }
 
 pub(crate) fn surface() -> Option<Surface> {
-    let window = window()?;
-    let (info, rect, scale) = super::layout::physical_geometry(window)?;
+    window()?;
+    let (info, rect, scale) = super::layout::panel_geometry()?;
     Surface::from_physical(info.rcWork, rect, scale)
 }
 
@@ -158,6 +158,33 @@ pub(crate) fn closed() -> u64 {
     let ticket = REQUESTS.cancel();
     super::reader::hide(ticket);
     ticket
+}
+
+pub(crate) fn release_closed_renderer(
+    app: &tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    closed: u64,
+) {
+    let owner = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        // Reservations share this lock. Retire this exact hidden instance only
+        // if no new shared/native preview or pin has superseded its close.
+        let _pending = crate::PREVIEW_PENDING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if crate::PREVIEW_REQUESTS.inactive_version() != Some(closed)
+            || crate::PREVIEW_PINNED.load(Ordering::SeqCst)
+            || window.is_visible().unwrap_or(false)
+        {
+            return;
+        }
+        let result = crate::browser_preview::release(&owner)
+            .and_then(|_| crate::auxiliary_windows::destroy(&window));
+        match result {
+            Ok(()) => log::info!("WinUI closed preview renderer released: generation={closed}"),
+            Err(error) => log::warn!("Failed to release closed WinUI preview: {error}"),
+        }
+    });
 }
 
 pub(crate) fn reader_visible() -> bool {

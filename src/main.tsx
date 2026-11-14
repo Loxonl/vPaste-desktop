@@ -15,6 +15,7 @@ const Preview = React.lazy(() => import("./clipboard/Preview.tsx"));
 const TabEditor = React.lazy(() => import("./clipboard/TabEditor.tsx"));
 const TextEditor = React.lazy(() => import("./clipboard/TextEditor.tsx"));
 const OnboardingPermissionWindow = React.lazy(() => import("./clipboard/OnboardingPermissionWindow.tsx"));
+const NativeOnboardingWindow = React.lazy(() => import("./clipboard/NativeOnboardingWindow.tsx"));
 const PasteFallbackNotice = React.lazy(() => import("./clipboard/PasteFallbackNotice.tsx"));
 const PasteQueue = React.lazy(() => import("./clipboard/PasteQueue.tsx"));
 const Config = React.lazy(() => import("./config/Config.tsx"));
@@ -98,6 +99,7 @@ root.render(
                         <Route path="/tab-editor" element={<TabEditor />} />
                         <Route path="/text-editor" element={<TextEditor />} />
                         <Route path="/onboarding-permission" element={<OnboardingPermissionWindow />} />
+                        <Route path="/native-onboarding" element={<NativeOnboardingWindow />} />
                         <Route path="/paste-fallback-notice" element={<PasteFallbackNotice />} />
                         <Route path="/paste-failure-notice" element={<PasteFallbackNotice showSettingsAction={false} />} />
                         <Route path="/paste-queue" element={<PasteQueue />} />

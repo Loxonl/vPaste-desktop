@@ -3,12 +3,14 @@ use crate::ScreenBounds;
 use tauri::AppHandle;
 use windows::Win32::{
     Foundation::{HWND, RECT},
-    Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST},
+    Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromRect, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    },
     UI::WindowsAndMessaging::GetWindowRect,
 };
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct PanelLayout {
     x: i32,
     y: i32,
@@ -66,6 +68,23 @@ unsafe extern "system" {
 // thread whose DPI context differs from the WinUI STA. Restore it before any
 // Tauri calls or async work, and on every Win32 failure path.
 pub(super) fn physical_geometry(window: HWND) -> Option<(MONITORINFO, RECT, f64)> {
+    query_geometry(window, None)
+}
+
+// Use the native STA's canonical bounds while the actual HWND slides. The
+// management view returns its actual rectangle instead of the parked dock.
+pub(super) fn panel_geometry() -> Option<(MONITORINFO, RECT, f64)> {
+    let panel = super::api().ok()?;
+    let mut layout = PanelLayout::default();
+    // SAFETY: the output lives until the synchronous STA export has returned.
+    if unsafe { (panel.get_layout)(&mut layout) } < 0 {
+        return None;
+    }
+    let window = HWND(unsafe { (panel.window_handle)() } as isize);
+    query_geometry(window, Some(layout))
+}
+
+fn query_geometry(window: HWND, dock: Option<PanelLayout>) -> Option<(MONITORINFO, RECT, f64)> {
     if window.0 == 0 {
         return None;
     }
@@ -73,7 +92,12 @@ pub(super) fn physical_geometry(window: HWND) -> Option<(MONITORINFO, RECT, f64)
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
-    let mut rect = RECT::default();
+    let mut rect = dock.map_or_else(RECT::default, |layout| RECT {
+        left: layout.x,
+        top: layout.y,
+        right: layout.x + layout.width,
+        bottom: layout.y + layout.height,
+    });
     // SAFETY: this bounded synchronous block changes only the current thread's
     // context; all output buffers live through the calls, and no branch exits
     // after a successful context change until its previous value is restored.
@@ -82,20 +106,24 @@ pub(super) fn physical_geometry(window: HWND) -> Option<(MONITORINFO, RECT, f64)
         if previous == 0 {
             return None;
         }
-        let monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+        let monitor = if dock.is_some() {
+            MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST)
+        } else {
+            MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST)
+        };
         let valid = GetMonitorInfoW(monitor, &mut info).as_bool()
-            && GetWindowRect(window, &mut rect).is_ok();
-        let dpi = GetDpiForWindow(window);
+            && (dock.is_some() || GetWindowRect(window, &mut rect).is_ok());
+        let scale = dock.map_or_else(
+            || f64::from(GetDpiForWindow(window)) / 96.0,
+            |layout| layout.screen_scale,
+        );
         let restored = SetThreadDpiAwarenessContext(previous) != 0;
-        (valid && restored && dpi > 0).then_some((info, rect, f64::from(dpi) / 96.0))
+        (valid && restored && scale.is_finite() && scale > 0.0).then_some((info, rect, scale))
     }
 }
 
 pub(super) fn refresh(app: &AppHandle) -> Result<(), String> {
-    let panel = super::api()?;
-    // SAFETY: this export only snapshots the HWND under its native mutex.
-    let window = HWND(unsafe { (panel.window_handle)() } as isize);
-    let (info, _, scale) = physical_geometry(window)
+    let (info, _, scale) = panel_geometry()
         .ok_or_else(|| "The native panel's physical display geometry is unavailable".to_string())?;
     let r = info.rcMonitor;
     let monitor = app

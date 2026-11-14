@@ -5,6 +5,10 @@
       <Configuration>Debug</Configuration>
       <Platform>x64</Platform>
     </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{FA2A9120-3626-485B-AB31-1263F4F67C3D}</ProjectGuid>
@@ -17,6 +21,12 @@
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <PlatformToolset>v143</PlatformToolset>
     <UseDebugLibraries>true</UseDebugLibraries>
+    <CppWinRTEnabled>true</CppWinRTEnabled>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <UseDebugLibraries>false</UseDebugLibraries>
     <CppWinRTEnabled>true</CppWinRTEnabled>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
@@ -36,7 +46,7 @@
     <WindowsAppSDKMLVerifyTransitiveDependencies>false</WindowsAppSDKMLVerifyTransitiveDependencies>
     <WindowsAppSDKVerifyTransitiveDependencies>false</WindowsAppSDKVerifyTransitiveDependencies>
   </PropertyGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+  <ItemDefinitionGroup>
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
@@ -50,6 +60,17 @@
     </Lib>
     <Link>
       <AdditionalDependencies>dwmapi.lib;shlwapi.lib;shell32.lib;uuid.lib;psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -72,6 +93,9 @@
     <ResourceCompile Include="WinUiNameEmoji.rc" />
     <ResourceCompile Include="WinUiMotion.rc" />
     <ClInclude Include="WinUiMotion.h" />
+    <ClInclude Include="WinUiDockMotion.h" />
+    <ClInclude Include="WinUiTabIndicator.h" />
+    <ClInclude Include="WinUiGeometry.h" />
     <ClInclude Include="WinUiBridge.h" />
     <ClInclude Include="WinUiResourceProbe.h" />
     <ClInclude Include="WinUiQueueView.h" />
@@ -101,6 +125,7 @@
     <PackageReference Include="Microsoft.Windows.CppWinRT" Version="2.0.250303.1" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3719.77" />
     <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.6.5" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.6.5" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

@@ -1,5 +1,5 @@
-//! Windows-only WinUI 3 experiment host. The XAML bridge is loaded on demand
-//! so the ordinary WebView debug build does not load Windows App SDK runtime.
+//! Opt-in Windows WinUI 3 host. The XAML bridge is loaded on demand
+//! so the ordinary WebView backend does not load Windows App SDK runtime.
 
 use std::{
     ffi::{c_char, c_void, OsStr},
@@ -20,6 +20,7 @@ mod drag;
 mod filters;
 mod focus;
 mod layout;
+pub(crate) mod onboarding;
 mod presentation;
 pub(crate) mod preview;
 mod reader;
@@ -33,6 +34,7 @@ type PanelCall = unsafe extern "C" fn() -> i32;
 type PanelWindowHandle = unsafe extern "C" fn() -> usize;
 type PanelSetTheme = unsafe extern "C" fn(u32) -> i32;
 type PanelSetLayout = unsafe extern "C" fn(*const layout::PanelLayout) -> i32;
+type PanelGetLayout = unsafe extern "C" fn(*mut layout::PanelLayout) -> i32;
 type PanelSetLanguage = unsafe extern "C" fn(bool) -> i32;
 type PanelShutdown = unsafe extern "C" fn();
 type PanelRequest = unsafe extern "C" fn(*const u8, usize);
@@ -55,6 +57,7 @@ struct PanelApi {
     receive: PanelReceive,
     set_theme: PanelSetTheme,
     set_layout: PanelSetLayout,
+    get_layout: PanelGetLayout,
     set_language: PanelSetLanguage,
     set_click_mode: PanelSetClickMode,
     set_behavior: PanelSetBehavior,
@@ -105,13 +108,13 @@ fn runtime_directory() -> Result<PathBuf, String> {
         .ok_or_else(|| "vPaste executable has no parent directory".to_string())?
         .to_path_buf();
     // Cargo's native smoke test runs from debug/deps; build.rs copies the DLLs
-    // beside the normal Debug executable one directory above it.
+    // beside the normal executable one directory above it.
     #[cfg(test)]
     if directory.ends_with("deps") {
         return directory
             .parent()
             .map(PathBuf::from)
-            .ok_or_else(|| "native test has no Debug output directory".to_string());
+            .ok_or_else(|| "native test has no profile output directory".to_string());
     }
     Ok(directory)
 }
@@ -138,11 +141,12 @@ fn load_bootstrap() -> Result<BootstrapApi, String> {
     // SAFETY: signatures match MddBootstrapInitialize2 and MddBootstrapShutdown.
     let initialize: BootstrapInitialize = unsafe { std::mem::transmute(initialize) };
     let shutdown: BootstrapShutdown = unsafe { std::mem::transmute(shutdown) };
-    // The zero minimum accepts the installed compatible 2.x runtime; the
-    // project is compiled against the 2.6 WinUI 3 headers.
+    // Bind to the compatible 2.6 runtime, never an unrelated major/minor.
     check_hresult("runtime initialization", unsafe {
         initialize(0x0002_0006, std::ptr::null(), 0, 0)
-    })?;
+    }).map_err(|error| format!(
+        "{error}. Install the bundled Windows App SDK runtime offline with Install-WinUiRuntime.ps1, then restart vPaste."
+    ))?;
     Ok(BootstrapApi {
         _module: module as usize,
         shutdown,
@@ -174,7 +178,7 @@ fn load_panel_api() -> Result<PanelApi, String> {
     let version =
         unsafe { GetProcAddress(module, b"vpaste_winui_protocol_version\0".as_ptr().cast()) };
     if version.is_null() {
-        return Err("WinUI bridge version is missing; rebuild the native Debug app".into());
+        return Err("WinUI bridge version is missing; rebuild the native app".into());
     }
     let version: unsafe extern "C" fn() -> u32 = unsafe { std::mem::transmute(version) };
     bridge::check_version(unsafe { version() })?;
@@ -287,6 +291,12 @@ fn load_panel_api() -> Result<PanelApi, String> {
     if set_layout.is_null() {
         return Err("WinUI docking-layout export is missing".into());
     }
+    // SAFETY: the matching export synchronously fills a caller-owned repr(C) layout.
+    let get_layout =
+        unsafe { GetProcAddress(module, b"vpaste_winui_get_layout\0".as_ptr().cast()) };
+    if get_layout.is_null() {
+        return Err("WinUI stable-layout export is missing; rebuild the native app".into());
+    }
     // SAFETY: the symbol name is NUL-terminated; the module stays loaded.
     let set_behavior =
         unsafe { GetProcAddress(module, b"vpaste_winui_set_behavior\0".as_ptr().cast()) };
@@ -303,6 +313,7 @@ fn load_panel_api() -> Result<PanelApi, String> {
         receive: unsafe { receive_symbol(module)? },
         set_theme: unsafe { set_theme_symbol(module)? },
         set_layout: unsafe { std::mem::transmute::<*mut c_void, PanelSetLayout>(set_layout) },
+        get_layout: unsafe { std::mem::transmute::<*mut c_void, PanelGetLayout>(get_layout) },
         set_language: unsafe { set_language_symbol(module)? },
         set_click_mode: unsafe { set_click_mode_symbol(module)? },
         // SAFETY: matches the synchronous byte-buffer C ABI in WinUiPanel.cpp.
@@ -521,10 +532,7 @@ fn show_on_ui_thread() -> Result<(), String> {
 }
 
 pub(crate) fn current_monitor(app: &AppHandle) -> Option<tauri::Monitor> {
-    let panel = api().ok()?;
-    // SAFETY: the export snapshots the HWND under the native state mutex.
-    let window = windows::Win32::Foundation::HWND(unsafe { (panel.window_handle)() } as isize);
-    let (info, _, _) = layout::physical_geometry(window)?;
+    let (info, _, _) = layout::panel_geometry()?;
     let rect = info.rcMonitor;
     app.monitor_from_point(
         f64::from(rect.left + (rect.right - rect.left) / 2),
@@ -1353,6 +1361,13 @@ mod tests {
         let result = (|| {
             super::initialize_native(false, true)?;
             let panel = super::api()?;
+            let preferences = serde_json::to_vec(&super::behavior::from_config(
+                &crate::config::Config::default(),
+            ))
+            .unwrap();
+            super::check_hresult("test preferences", unsafe {
+                (panel.set_behavior)(preferences.as_ptr(), preferences.len())
+            })?;
             // SAFETY: the native exports marshal show and synthetic control
             // assertions to the owning STA. No AppHandle or user data is used.
             super::check_hresult("show", unsafe { (panel.show)() })?;

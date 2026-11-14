@@ -2,7 +2,7 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-pub(super) const PROTOCOL_VERSION: u32 = 1;
+pub(super) const PROTOCOL_VERSION: u32 = 2;
 pub(super) const MAX_REQUEST_BYTES: usize = 16 * 1024;
 pub(super) const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
@@ -11,7 +11,7 @@ pub(super) fn check_version(actual: u32) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "WinUI bridge version {actual} is incompatible with {PROTOCOL_VERSION}; rebuild the native Debug app"
+            "WinUI bridge version {actual} is incompatible with {PROTOCOL_VERSION}; rebuild the native app"
         ))
     }
 }
@@ -77,6 +77,7 @@ mod tests {
     #[test]
     fn rejects_incompatible_dll_before_starting_ui() {
         assert!(check_version(PROTOCOL_VERSION).is_ok());
+        assert!(check_version(1).is_err());
         assert!(check_version(0).unwrap_err().contains("rebuild"));
         assert!(check_version(PROTOCOL_VERSION + 1).is_err());
     }

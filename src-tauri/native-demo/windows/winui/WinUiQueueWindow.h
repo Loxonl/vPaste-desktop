@@ -21,6 +21,7 @@ public:
 private:
     static LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM);
     void Resize();
+    void Constrain(RECT const *suggested = nullptr);
     HWND window = nullptr, reference = nullptr;
     std::function<void()> close;
     winrt::Microsoft::UI::Xaml::Hosting::DesktopWindowXamlSource source{nullptr};

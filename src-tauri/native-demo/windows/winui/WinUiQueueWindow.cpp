@@ -1,5 +1,6 @@
 #include "WinUiQueueWindow.h"
 #include "WinUiAppearance.h"
+#include "WinUiGeometry.h"
 #include <dwmapi.h>
 #include <algorithm>
 #include <cmath>
@@ -64,6 +65,16 @@ void QueueWindow::Resize() {
     source.SiteBridge().MoveAndResize({0, 0, bounds.right, bounds.bottom});
 }
 
+void QueueWindow::Constrain(RECT const *suggested) {
+    if (!window || !positioned) return;
+    RECT current{}; winrt::check_bool(GetWindowRect(window, &current));
+    const auto fitted = FitToMonitorWorkArea(suggested ? *suggested : current);
+    if (!EqualRect(&current, &fitted)) winrt::check_bool(SetWindowPos(window, nullptr,
+        fitted.left, fitted.top, fitted.right - fitted.left, fitted.bottom - fitted.top,
+        SWP_NOZORDER | SWP_NOACTIVATE));
+    Resize();
+}
+
 void QueueWindow::Show(double scale, bool reposition) {
     const bool sizeChanged = textScale != scale; textScale = scale;
     if (!positioned || reposition || sizeChanged) {
@@ -80,7 +91,7 @@ void QueueWindow::Show(double scale, bool reposition) {
             width, height, SWP_NOACTIVATE));
         positioned = true;
     }
-    Resize(); ShowWindow(window, SW_SHOWNOACTIVATE);
+    Constrain(); Resize(); ShowWindow(window, SW_SHOWNOACTIVATE);
 }
 
 void QueueWindow::Hide() { ShowWindow(window, SW_HIDE); }
@@ -108,11 +119,13 @@ LRESULT CALLBACK QueueWindow::WindowProc(HWND handle, UINT message, WPARAM wpara
         case WM_ERASEBKGND: return 1;
         case WM_SIZE: if (self->window) self->Resize(); return 0;
         case WM_DPICHANGED: {
-            const auto bounds = reinterpret_cast<RECT *>(lparam);
-            SetWindowPos(handle, nullptr, bounds->left, bounds->top, bounds->right - bounds->left,
-                bounds->bottom - bounds->top, SWP_NOACTIVATE | SWP_NOZORDER);
-            self->Resize(); return 0;
+            self->Constrain(reinterpret_cast<RECT *>(lparam)); return 0;
         }
+        case WM_DISPLAYCHANGE: self->Constrain(); return 0;
+        case WM_SETTINGCHANGE:
+            if (wparam == SPI_SETWORKAREA) self->Constrain();
+            break;
+        case WM_EXITSIZEMOVE: self->Constrain(); return 0;
         case WM_CLOSE: if (self->close) self->close(); return 0;
         case WM_GETMINMAXINFO: {
             const auto dpi = GetDpiForWindow(handle);

@@ -39,6 +39,11 @@ impl PreviewRequests {
     pub(crate) fn version_current(&self, version: u64) -> bool {
         self.0.load(Ordering::SeqCst) == version
     }
+
+    pub(crate) fn inactive_version(&self) -> Option<u64> {
+        let version = self.0.load(Ordering::SeqCst);
+        (version & 1 == 0).then_some(version)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -103,6 +108,22 @@ mod tests {
         let reopened = requests.begin();
         assert!(requests.current(reopened));
         assert!(!requests.version_current(close));
+    }
+
+    #[test]
+    fn renderer_retirement_does_not_own_a_reopened_or_replaced_session() {
+        let requests = PreviewRequests::new();
+        requests.begin();
+        assert!(requests.inactive_version().is_none());
+        let closed = requests.cancel();
+        assert_eq!(requests.inactive_version(), Some(closed));
+        let next = requests.begin();
+        assert!(!requests.version_current(closed));
+        assert!(requests.inactive_version().is_none());
+        assert!(requests.current(next));
+        let closed_again = requests.cancel();
+        assert_eq!(requests.inactive_version(), Some(closed_again));
+        assert_ne!(closed, closed_again);
     }
 
     #[test]

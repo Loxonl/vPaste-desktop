@@ -20,8 +20,16 @@ inline constexpr double QueueContentHeight = 448;
 inline constexpr double TagContentHeight = 420;
 inline constexpr double ManagementMinHeight = 320;
 inline constexpr double CompactActionSize = 32;
+inline constexpr double CompactIconSize = 16;
+inline constexpr double TabFontSize = 14;
+inline constexpr double TabMaxWidth = 128;
 inline constexpr double ManagementRowRadius = 8;
 inline constexpr double DragSourceOpacity = 0.65;
+// Native ThemeShadow elevation in DIPs, kept deliberately small for the dock.
+inline constexpr float CardElevation = 4;
+inline constexpr float HoveredCardElevation = 8;
+inline constexpr float HeaderElevation = 4;
+inline constexpr float ControlElevation = 2;
 
 inline bool HighContrastEnabled() {
     HIGHCONTRASTW settings{sizeof(HIGHCONTRASTW)};
@@ -36,6 +44,25 @@ inline winrt::Microsoft::UI::Xaml::Thickness UniformThickness(double value) {
 
 inline winrt::Microsoft::UI::Xaml::CornerRadius UniformRadius(double value) {
     return {value, value, value, value};
+}
+
+inline void ApplyElevation(const winrt::Microsoft::UI::Xaml::UIElement &element,
+                           float elevation, bool contrast,
+                           const winrt::Microsoft::UI::Xaml::UIElement &receiver = nullptr) {
+    using namespace winrt::Microsoft::UI::Xaml::Media;
+    if (!element) return;
+    auto translation = element.Translation();
+    translation.z = contrast ? 0 : elevation;
+    element.Translation(translation);
+    if (contrast) {
+        element.Shadow(nullptr);
+    } else if (!element.Shadow()) {
+        ThemeShadow shadow;
+        // Windows 10 needs a sibling receiver. Windows 11 draws the standard
+        // drop shadow automatically and ignores this receiver collection.
+        if (receiver) shadow.Receivers().Append(receiver);
+        element.Shadow(shadow);
+    }
 }
 
 // Setters keep ThemeResource expressions alive on the actual element, including
@@ -107,7 +134,17 @@ inline void InstallAppearanceResources() {
           </Style>
           <Style x:Key="VPaste.SelectedSurface" TargetType="Border" BasedOn="{StaticResource VPaste.Surface}">
             <Setter Property="BorderBrush" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
+            <Setter Property="BorderThickness" Value="2"/>
           </Style>
+          <Style x:Key="VPaste.CardOutline" TargetType="Border" BasedOn="{StaticResource VPaste.SelectedSurface}">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="IsHitTestVisible" Value="False"/>
+          </Style>
+          <Style x:Key="VPaste.CardTagSurface" TargetType="Border" BasedOn="{StaticResource VPaste.Surface}">
+            <Setter Property="Background" Value="{ThemeResource SolidBackgroundFillColorSecondaryBrush}"/>
+            <Setter Property="CornerRadius" Value="10"/>
+          </Style>
+        )" LR"(
           <Style x:Key="VPaste.Inset" TargetType="Border">
             <Setter Property="Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
             <Setter Property="CornerRadius" Value="4"/>
@@ -196,6 +233,13 @@ inline winrt::Microsoft::UI::Xaml::Controls::FontIcon Glyph(const winrt::hstring
     return icon;
 }
 
+inline winrt::Microsoft::UI::Xaml::Controls::FontIcon CompactSymbol(
+    winrt::Microsoft::UI::Xaml::Controls::Symbol symbol) {
+    auto icon = Glyph(winrt::hstring{std::wstring(1, static_cast<wchar_t>(symbol))});
+    icon.FontSize(CompactIconSize);
+    return icon;
+}
+
 inline winrt::Microsoft::UI::Xaml::Controls::StackPanel EmptyState(
     const winrt::hstring &glyph, const winrt::hstring &title, const winrt::hstring &description) {
     using namespace winrt::Microsoft::UI::Xaml;
@@ -239,7 +283,10 @@ inline winrt::Microsoft::UI::Xaml::Controls::Button NamedIconButton(
     button.Width(CompactActionSize);
     button.Height(CompactActionSize);
     button.Padding(Thickness{0});
-    button.Content(icon);
+    // SymbolIcon has no FontSize property and otherwise renders at its system
+    // default. Use the same symbol glyph at an explicit compact size.
+    if (const auto symbol = icon.try_as<SymbolIcon>()) button.Content(CompactSymbol(symbol.Symbol()));
+    else button.Content(icon);
     NameIconButton(button, label);
     return button;
 }

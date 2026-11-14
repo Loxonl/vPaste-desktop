@@ -10,7 +10,7 @@ const capabilities = readdirSync(directory).filter(name => name.endsWith(".json"
     });
 
 describe("lazy auxiliary window IPC", () => {
-    it.each(["config", "textEditor", "pasteFallbackNotice", "onboardingPermission", "trayMenu", "emojiPicker", "tabEditor"])(
+    it.each(["config", "textEditor", "pasteFallbackNotice", "onboardingPermission", "nativeOnboarding", "trayMenu", "emojiPicker", "tabEditor"])(
         "%s can subscribe to opening events and report initialization failures", label => {
             const permissions = capabilities.filter(capability => capability.windows.includes(label))
                 .flatMap(capability => capability.permissions);

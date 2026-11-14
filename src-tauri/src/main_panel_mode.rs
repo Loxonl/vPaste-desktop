@@ -1,4 +1,4 @@
-//! Process-local DEV choice; never persists a UI backend into user configuration.
+//! Process-local UI choice; never persists a backend into user configuration.
 use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -49,16 +49,8 @@ fn parse(
     {
         return Err("--main-ui=native requires a macOS Debug build with --dev-mode".into());
     }
-    if mode == MainUi::WinUi
-        && !(windows
-            && debug
-            && winui_feature
-            && args.iter().any(|argument| argument == "--dev-mode"))
-    {
-        return Err(
-            "--main-ui=winui requires a Windows Debug build with --dev-mode and the winui-debug feature"
-                .into(),
-        );
+    if mode == MainUi::WinUi && !(windows && winui_feature) {
+        return Err("--main-ui=winui requires a Windows build with the winui feature".into());
     }
     Ok(mode)
 }
@@ -70,7 +62,7 @@ pub fn configure() -> Result<(), String> {
         cfg!(target_os = "macos"),
         cfg!(target_os = "windows"),
         cfg!(debug_assertions),
-        cfg!(feature = "winui-debug"),
+        cfg!(feature = "winui"),
     )?;
     MODE.set(mode)
         .map_err(|_| "Main interface was already selected".into())
@@ -84,6 +76,25 @@ pub fn winui() -> bool {
     MODE.get().copied().unwrap_or_default() == MainUi::WinUi
 }
 
+fn autostart_arguments_for(mode: MainUi, windows: bool, developer_mode: bool) -> Vec<&'static str> {
+    if !windows || mode != MainUi::WinUi {
+        return Vec::new();
+    }
+    if developer_mode {
+        vec!["--dev-mode", "--main-ui=winui"]
+    } else {
+        vec!["--main-ui=winui"]
+    }
+}
+
+pub(crate) fn autostart_arguments() -> Vec<&'static str> {
+    autostart_arguments_for(
+        MODE.get().copied().unwrap_or_default(),
+        cfg!(target_os = "windows"),
+        crate::get_developer_mode(),
+    )
+}
+
 pub fn keeps_background_alive(exit_code: Option<i32>) -> bool {
     MODE.get()
         .copied()
@@ -93,7 +104,7 @@ pub fn keeps_background_alive(exit_code: Option<i32>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, MainUi};
+    use super::{autostart_arguments_for, parse, MainUi};
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).into()).collect()
     }
@@ -142,21 +153,27 @@ mod tests {
     }
 
     #[test]
-    fn winui_requires_windows_debug_feature_and_developer_mode() {
+    fn winui_is_opt_in_on_windows_in_debug_and_release() {
         for arguments in [
             args(&["--dev-mode", "--main-ui=winui"]),
             args(&["--dev-mode", "--main-ui", "winui"]),
+            args(&["--main-ui=winui"]),
         ] {
-            assert_eq!(
-                parse(&arguments, false, true, true, true).unwrap(),
-                MainUi::WinUi
-            );
+            for debug in [true, false] {
+                assert_eq!(
+                    parse(&arguments, false, true, debug, true).unwrap(),
+                    MainUi::WinUi
+                );
+            }
         }
         let arguments = args(&["--dev-mode", "--main-ui=winui"]);
         assert!(parse(&arguments, true, false, true, true).is_err());
-        assert!(parse(&arguments, false, true, false, true).is_err());
         assert!(parse(&arguments, false, true, true, false).is_err());
-        assert!(parse(&args(&["--main-ui=winui"]), false, true, true, true).is_err());
+        assert!(parse(&arguments, false, true, false, false).is_err());
+        assert_eq!(
+            parse(&args(&[]), false, true, false, true).unwrap(),
+            MainUi::Webview
+        );
     }
 
     #[test]
@@ -168,6 +185,28 @@ mod tests {
             args(&["--main-ui=webview", "--main-ui=native"]),
         ] {
             assert!(parse(&argument, true, false, true, false).is_err());
+        }
+    }
+
+    #[test]
+    fn winui_autostart_replays_the_backend_and_preserves_developer_isolation() {
+        for developer_mode in [false, true] {
+            let arguments = autostart_arguments_for(MainUi::WinUi, true, developer_mode);
+            assert_eq!(arguments.contains(&"--dev-mode"), developer_mode);
+            assert_eq!(arguments.len(), if developer_mode { 2 } else { 1 });
+            assert_eq!(
+                parse(&args(&arguments), false, true, developer_mode, true).unwrap(),
+                MainUi::WinUi
+            );
+        }
+    }
+
+    #[test]
+    fn other_backends_and_platforms_keep_the_existing_autostart_arguments() {
+        for developer_mode in [false, true] {
+            assert!(autostart_arguments_for(MainUi::Webview, true, developer_mode).is_empty());
+            assert!(autostart_arguments_for(MainUi::Native, false, developer_mode).is_empty());
+            assert!(autostart_arguments_for(MainUi::WinUi, false, developer_mode).is_empty());
         }
     }
 }

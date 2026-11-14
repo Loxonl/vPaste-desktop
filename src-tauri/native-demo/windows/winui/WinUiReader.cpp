@@ -1,6 +1,8 @@
 #include "WinUiReader.h"
 #include "WinUiResourceProbe.h"
 #include "WinUiAppearance.h"
+#include "WinUiMotion.h"
+#include "WinUiGeometry.h"
 #include "WinUiRichContent.h"
 #include <dwmapi.h>
 #include <objbase.h>
@@ -45,17 +47,6 @@ TextBlock ReaderText(winrt::hstring const &text, double size = 14) {
     return block;
 }
 
-double Ease(double progress, std::array<double, 4> const &curve) {
-    const auto coordinate = [](double t, double a, double b) {
-        return 3 * (1 - t) * (1 - t) * t * a + 3 * (1 - t) * t * t * b + t * t * t;
-    };
-    double low = 0, high = 1;
-    for (int step = 0; step < 16; ++step) {
-        const auto t = (low + high) / 2;
-        if (coordinate(t, curve[0], curve[2]) < progress) low = t; else high = t;
-    }
-    return coordinate((low + high) / 2, curve[1], curve[3]);
-}
 }
 
 struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
@@ -70,7 +61,7 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
     Button close{nullptr};
     DispatcherTimer movement{nullptr}, loadTimeout{nullptr};
     std::uint64_t latest = 0, committed = 0;
-    bool english = false, takesFocus = false, retired = false, hover = false;
+    bool english = false, takesFocus = false, retired = false, hover = false, placing = false;
     ElementTheme theme = ElementTheme::Default;
     RECT target{}, from{};
     std::array<double, 4> easing{};
@@ -126,12 +117,25 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
                     self->Send(L"nativeReaderBlur");
                 break;
             case WM_DPICHANGED: {
+                // A geometry animation already has a physical destination from
+                // Rust. Do not replace it with a mid-frame suggested rectangle.
+                if (self->placing) { self->Resize(); return 0; }
                 if (self->movement) self->movement.Stop();
-                const auto rect = reinterpret_cast<RECT *>(lparam);
-                SetWindowPos(handle, nullptr, rect->left, rect->top,
-                    rect->right - rect->left, rect->bottom - rect->top, SWP_NOACTIVATE | SWP_NOZORDER);
+                self->target = FitToMonitorWorkArea(*reinterpret_cast<RECT *>(lparam));
+                self->from = self->target;
+                self->Place(self->target);
                 self->Resize(); return 0;
             }
+            case WM_DISPLAYCHANGE:
+            case WM_SETTINGCHANGE:
+                if (message == WM_SETTINGCHANGE && wparam != SPI_SETWORKAREA) break;
+                if (self->window && IsWindowVisible(self->window)) {
+                    if (self->movement) self->movement.Stop();
+                    RECT current{}; winrt::check_bool(GetWindowRect(self->window, &current));
+                    self->target = FitToMonitorWorkArea(current); self->from = self->target;
+                    self->Place(self->target); self->Resize();
+                }
+                return 0;
             }
         } catch (...) { return DefWindowProcW(handle, message, wparam, lparam); }
         return DefWindowProcW(handle, message, wparam, lparam);
@@ -160,7 +164,7 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         actions.HorizontalAlignment(HorizontalAlignment::Right); actions.Spacing(4);
         actions.Margin(Thickness{8, 4, 8, 4});
         pin = Controls::Primitives::ToggleButton();
-        pin.Content(SymbolIcon{Symbol::Pin}); pin.Width(32); pin.Height(32); pin.Padding(Thickness{0});
+        pin.Content(CompactSymbol(Symbol::Pin)); pin.Width(32); pin.Height(32); pin.Padding(Thickness{0});
         close = NamedIconButton(SymbolIcon{Symbol::Cancel}, Text(L"关闭预览", L"Close preview"));
         actions.Children().Append(pin); actions.Children().Append(close);
         root.Children().Append(actions);
@@ -213,8 +217,11 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
     }
 
     void Place(RECT const &rect) {
-        winrt::check_bool(SetWindowPos(window, HWND_TOPMOST, rect.left, rect.top,
-            rect.right - rect.left, rect.bottom - rect.top, SWP_NOACTIVATE));
+        const auto previous = std::exchange(placing, true);
+        const auto moved = SetWindowPos(window, HWND_TOPMOST, rect.left, rect.top,
+            rect.right - rect.left, rect.bottom - rect.top, SWP_NOACTIVATE);
+        placing = previous;
+        winrt::check_bool(moved);
     }
 
     void Step() {
@@ -223,7 +230,7 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         if (progress >= 1 || !winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) {
             movement.Stop(); Place(target); return;
         }
-        const auto eased = Ease(progress, easing);
+        const auto eased = BezierProgress(progress, easing);
         const auto interpolate = [eased](LONG a, LONG b) { return static_cast<LONG>(std::lround(a + (b - a) * eased)); };
         Place({interpolate(from.left, target.left), interpolate(from.top, target.top),
             interpolate(from.right, target.right), interpolate(from.bottom, target.bottom)});
@@ -252,6 +259,11 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         displayed = pending; pending = nullptr; displayed.Opacity(1); displayed.IsHitTestVisible(true);
         body.Children().Clear(); body.Children().Append(displayed);
         committed = generation; pin.IsEnabled(true);
+        if (displayed.IsLoaded()) FadeFeedback(displayed);
+        else displayed.Loaded([weak = weak_from_this(), generation](auto const &sender, auto const &) {
+            if (const auto self = weak.lock(); self && self->committed == generation && self->displayed == sender)
+                FadeFeedback(self->displayed);
+        });
         MoveToTarget(winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled());
         ShowWindow(window, SW_SHOWNOACTIVATE);
         if (takesFocus) {
@@ -478,6 +490,30 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
     state->MoveToTarget(false);
     RECT actual{}; winrt::check_bool(GetWindowRect(handle, &actual));
     winrt::check_hresult(EqualRect(&actual, &state->target) && !state->movement.IsEnabled() ? S_OK : E_FAIL);
+
+    stage = 1191;
+    RECT changedDpi{140, 120, 840, 620};
+    SendMessageW(handle, WM_DPICHANGED, MAKEWPARAM(144, 144), reinterpret_cast<LPARAM>(&changedDpi));
+    winrt::check_bool(GetWindowRect(handle, &actual));
+    const auto expectedDpiBounds = FitToMonitorWorkArea(changedDpi);
+    winrt::check_hresult(EqualRect(&actual, &expectedDpiBounds) && EqualRect(&state->target, &actual) ? S_OK : E_FAIL);
+    state->MoveToTarget(false);
+    winrt::check_bool(GetWindowRect(handle, &actual));
+    winrt::check_hresult(EqualRect(&actual, &expectedDpiBounds) ? S_OK : E_FAIL);
+    state->placing = true;
+    RECT inFlight{200, 180, 600, 480};
+    SendMessageW(handle, WM_DPICHANGED, MAKEWPARAM(144, 144), reinterpret_cast<LPARAM>(&inFlight));
+    state->placing = false;
+    winrt::check_bool(GetWindowRect(handle, &actual));
+    winrt::check_hresult(EqualRect(&actual, &expectedDpiBounds) && EqualRect(&state->target, &actual) ? S_OK : E_FAIL);
+    stage = 1192;
+    winrt::check_bool(SetWindowPos(handle, nullptr, -30000, -30000, 0, 0,
+        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE));
+    SendMessageW(handle, WM_DISPLAYCHANGE, 0, 0);
+    winrt::check_bool(GetWindowRect(handle, &actual));
+    const auto displayBounds = FitToMonitorWorkArea(actual);
+    winrt::check_hresult(EqualRect(&actual, &displayBounds) && EqualRect(&actual, &state->target) &&
+        !state->movement.IsEnabled() ? S_OK : E_FAIL);
 
     stage = 120;
     auto missing = text(5, L""); auto missingData = missing.GetNamedObject(L"data");

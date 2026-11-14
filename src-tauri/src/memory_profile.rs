@@ -500,9 +500,19 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
     crate::ensure_history_storage_dirs()?;
     crate::clipboard::db::try_init().map_err(|error| error.to_string())?;
     crate::rebuild_current_search_index()?;
-    #[cfg(all(target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if crate::main_panel_mode::winui() {
         crate::winui_panel::initialize(app.clone())?;
+        if std::env::args().any(|arg| arg == "--memory-profile-auxiliary-check") {
+            let owner = app.clone();
+            // A trusted control page for the local CDP regression. This branch
+            // is reachable only in an explicitly marked, isolated Debug fixture.
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = crate::open_config_window_from_source(owner, None, None).await {
+                    log::error!("Auxiliary regression control page failed: {error}");
+                }
+            });
+        }
         return crate::startup_panel::request_show(app);
     }
     if crate::main_panel_mode::native() {

@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 describe("WinUI auxiliary preview without a development server", () => {
     it("embeds local frontend assets when the WinUI experiment is built", () => {
         const cargo = readFileSync(resolve("src-tauri/Cargo.toml"), "utf8");
-        expect(cargo).toMatch(/winui-debug\s*=\s*\[[^\]]*"custom-protocol"/);
+        expect(cargo).toMatch(/winui\s*=\s*\[[^\]]*"custom-protocol"/);
+        expect(cargo).toMatch(/winui-debug\s*=\s*\["winui"\]/);
     });
 
     it("builds fresh frontend assets before compiling WinUI and stops on failure", () => {

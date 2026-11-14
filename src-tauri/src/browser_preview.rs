@@ -264,6 +264,15 @@ pub(crate) fn clear(app: &tauri::AppHandle) {
     park(app, None);
 }
 
+#[cfg(all(target_os = "windows", feature = "winui"))]
+pub(crate) fn release(app: &tauri::AppHandle) -> Result<(), String> {
+    *SESSION.lock().unwrap_or_else(|e| e.into_inner()) = Session::default();
+    if let Some(window) = app.get_webview_window(LABEL) {
+        crate::auxiliary_windows::destroy(&window)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn foreground(app: &tauri::AppHandle, context: &str) -> bool {
     app.get_webview_window(LABEL).is_some_and(|window| {
         window.is_visible().unwrap_or(false)

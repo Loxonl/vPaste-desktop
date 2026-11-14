@@ -30,7 +30,7 @@ it("previews the reused tutorial without writing onboarding, filter, or appearan
     const view = render(<DeveloperTutorialWindow />);
     await waitFor(() => expect(native.listen).toHaveBeenCalledWith("dev-tutorial-open", expect.any(Function)));
     act(() => open({ payload: { platform: "mac", shortcut: "Alt+V", languageCode: "Chinese", themePreview: "dark" } }));
-    expect(screen.getByText("mac · Option+V")).toBeVisible();
+    expect(screen.getByText("mac · Option + V")).toBeVisible();
     expect(native.language).toHaveBeenCalledWith("Chinese");
     expect(native.theme).toHaveBeenCalledWith("dark");
     expect(screen.getByText("4 filters")).toBeVisible();
@@ -41,7 +41,7 @@ it("previews the reused tutorial without writing onboarding, filter, or appearan
         permission: "paste", languageCode: "Chinese", themePreview: "dark",
     }));
     act(() => open({ payload: { platform: "windows", shortcut: "Alt+V", languageCode: "English", themePreview: "light" } }));
-    expect(screen.getByText("windows · Alt+V")).toBeVisible();
+    expect(screen.getByText("windows · Alt + V")).toBeVisible();
     expect(screen.getByText("4 filters")).toBeVisible();
     fireEvent.click(screen.getByText("Finish preview"));
     await waitFor(() => expect(native.invoke).toHaveBeenCalledWith("close_dev_tutorial_window"));

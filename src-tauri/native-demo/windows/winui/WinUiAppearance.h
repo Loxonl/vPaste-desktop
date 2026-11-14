@@ -22,6 +22,11 @@ inline constexpr double ManagementMinHeight = 320;
 inline constexpr double CompactActionSize = 32;
 inline constexpr double ManagementRowRadius = 8;
 inline constexpr double DragSourceOpacity = 0.65;
+// Native ThemeShadow elevation in DIPs, kept deliberately small for the dock.
+inline constexpr float CardElevation = 4;
+inline constexpr float HoveredCardElevation = 8;
+inline constexpr float HeaderElevation = 4;
+inline constexpr float ControlElevation = 2;
 
 inline bool HighContrastEnabled() {
     HIGHCONTRASTW settings{sizeof(HIGHCONTRASTW)};
@@ -36,6 +41,25 @@ inline winrt::Microsoft::UI::Xaml::Thickness UniformThickness(double value) {
 
 inline winrt::Microsoft::UI::Xaml::CornerRadius UniformRadius(double value) {
     return {value, value, value, value};
+}
+
+inline void ApplyElevation(const winrt::Microsoft::UI::Xaml::UIElement &element,
+                           float elevation, bool contrast,
+                           const winrt::Microsoft::UI::Xaml::UIElement &receiver = nullptr) {
+    using namespace winrt::Microsoft::UI::Xaml::Media;
+    if (!element) return;
+    auto translation = element.Translation();
+    translation.z = contrast ? 0 : elevation;
+    element.Translation(translation);
+    if (contrast) {
+        element.Shadow(nullptr);
+    } else if (!element.Shadow()) {
+        ThemeShadow shadow;
+        // Windows 10 needs a sibling receiver. Windows 11 draws the standard
+        // drop shadow automatically and ignores this receiver collection.
+        if (receiver) shadow.Receivers().Append(receiver);
+        element.Shadow(shadow);
+    }
 }
 
 // Setters keep ThemeResource expressions alive on the actual element, including
@@ -109,6 +133,15 @@ inline void InstallAppearanceResources() {
             <Setter Property="BorderBrush" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
             <Setter Property="BorderThickness" Value="2"/>
           </Style>
+          <Style x:Key="VPaste.CardOutline" TargetType="Border" BasedOn="{StaticResource VPaste.SelectedSurface}">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="IsHitTestVisible" Value="False"/>
+          </Style>
+          <Style x:Key="VPaste.CardTagSurface" TargetType="Border" BasedOn="{StaticResource VPaste.Surface}">
+            <Setter Property="Background" Value="{ThemeResource SolidBackgroundFillColorSecondaryBrush}"/>
+            <Setter Property="CornerRadius" Value="10"/>
+          </Style>
+        )" LR"(
           <Style x:Key="VPaste.Inset" TargetType="Border">
             <Setter Property="Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
             <Setter Property="CornerRadius" Value="4"/>

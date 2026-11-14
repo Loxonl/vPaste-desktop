@@ -43,6 +43,30 @@ Contrast detection uses desktop `SPI_GETHIGHCONTRAST` and the owning HWND's
 `HighContrastChanged` subscription: registration failed with `0x80070490` in the
 unpackaged desktop host. Native control startup is part of the regression gate.
 
+### Shipping-panel parity
+
+The shipping WebView is React, not Vue. Its clipboard header, card layout and
+window behavior remain the product baseline; WinUI supplies native interaction
+and accessibility rather than a different file-manager layout.
+
+| Surface | Native implementation and preserved behavior |
+| --- | --- |
+| Search | `AutoSuggestBox` with native query/clear buttons; live filtering, IME, Ctrl+F, latest-query Enter paste and two-step Escape. The collapsed circular trigger keeps the header compact. |
+| Header actions | Circular surfaces, in order: developer tools, queue, settings, conditional update. `CommandBar` keeps native keyboard navigation and overflow; developer actions use a native menu. |
+| Categories and tags | `SelectorBar` in a horizontal `ScrollViewer`; add follows the final tab. Tag/filter editors open above their anchor using unconstrained native `Flyout`. |
+| Cards | `ListView` with horizontal `ItemsStackPanel`; details are loaded for realized containers. One 14-DIP rounded outline covers selection and keyboard focus without resizing content; contrast themes keep system focus and selection visuals. |
+| Menus and confirmations | Native `MenuFlyout`, `ComboBox` and `ContentDialog` retain their templates, dismissal, keyboard behavior and default shadows. Do not add a second shadow behind them. |
+| Elevation | DWM owns the dock, queue and reader window shadows. `WinUiAppearance.h` owns small inline `ThemeShadow` elevations for cards, header, tag chips and toolbar controls; contrast mode removes decorative shadows. |
+| Auto-hide | External deactivation schedules a delayed recheck. Reopening, internal focus, editors, dialogs, drag, preview pinning and existing hide suppression protect the panel from stale blur events. |
+| Queue | The existing Rust queue remains authoritative; the separate non-activating native window keeps paste focus on the target app. Its toolbar toggle and multi-selection actions remain separate. |
+| Settings | The existing WebView settings page remains in use and is destroyed on close. It is not part of this native UI migration. |
+
+The shell parity regression runs real controls on the WinUI STA with synthetic
+records and no user database. Native rendering snapshots cannot prove DWM
+shadows, acrylic, IME composition or external-app focus transitions; verify
+those on an interactive Windows desktop, including mixed DPI. Keep visual
+checks local and do not add hosted screenshot jobs for this workstream.
+
 ## Resource measurement
 
 The Debug-only memory-profile path initializes the selected native renderer

@@ -44,6 +44,7 @@ const zhCN: LanguagePack = {
         "memory.kind.browser": "WebView 浏览器进程",
         "memory.kind.utility": "WebView 辅助进程",
         "common.loading": "加载中",
+        "common.retry": "重试",
         "common.default": "默认",
         "common.choose": "选择",
         "common.modify": "修改",

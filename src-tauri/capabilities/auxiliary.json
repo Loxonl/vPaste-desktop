@@ -6,6 +6,7 @@
     "devMemory",
     "pasteFallbackNotice",
     "onboardingPermission",
+    "nativeOnboarding",
     "trayMenu",
     "emojiPicker",
     "tabEditor"

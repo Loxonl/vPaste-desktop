@@ -89,11 +89,11 @@ mod paste_queue;
 mod preview_behavior;
 #[cfg(test)]
 mod resource_budget_tests;
-#[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+#[cfg(all(target_os = "windows", feature = "winui"))]
 mod winui_panel;
-#[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+#[cfg(all(target_os = "windows", feature = "winui"))]
 mod winui_queue;
-#[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+#[cfg(all(target_os = "windows", feature = "winui"))]
 mod winui_tags;
 use preview_behavior::PreviewMode;
 mod preview_motion;
@@ -1120,7 +1120,7 @@ fn target_main_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
 }
 
 fn main_panel_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if main_panel_mode::winui() {
         if let Some(monitor) = winui_panel::current_monitor(app) {
             return Some(monitor);
@@ -1167,7 +1167,7 @@ fn clipboard_screen_bounds(
     app: &tauri::AppHandle,
     fallback_window: &tauri::WebviewWindow,
 ) -> ScreenBounds {
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if let Some(surface) = winui_panel::preview::surface() {
         return surface.bounds;
     }
@@ -2823,7 +2823,7 @@ async fn open_config_window_from_source(
         if let Some(clipboard_window) = app.get_webview_window("clipboard") {
             let _ = finish_hide_window(&clipboard_window);
         }
-        #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+        #[cfg(all(target_os = "windows", feature = "winui"))]
         if main_panel_mode::winui() {
             winui_panel::hide()?;
         }
@@ -3199,10 +3199,21 @@ fn begin_onboarding_impl(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow,
 
 #[tauri::command]
 fn begin_onboarding(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        ONBOARDING_ACTIVE.store(true, Ordering::SeqCst);
+        ONBOARDING_SHORTCUT_DEMO_ENABLED.store(false, Ordering::SeqCst);
+        return Ok(());
+    }
     begin_onboarding_impl(&app).map(|_| ())
 }
 
 fn show_onboarding_window(app: &tauri::AppHandle) -> Result<(), String> {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        winui_panel::onboarding::open(app.clone());
+        return Ok(());
+    }
     info!("Opening tutorial in main panel");
     let window = begin_onboarding_impl(app)?;
     let _ = window.emit("tutorial-started", ());
@@ -3345,6 +3356,10 @@ fn complete_onboarding(app: tauri::AppHandle) -> Result<(), String> {
     mark_onboarding_completed(&app);
     ONBOARDING_ACTIVE.store(false, Ordering::SeqCst);
     ONBOARDING_SHORTCUT_DEMO_ENABLED.store(false, Ordering::SeqCst);
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        return winui_panel::onboarding::close(&app);
+    }
     if let Some(window) = app.get_webview_window("clipboard") {
         let _ = window.emit("tutorial-completed", ());
     }
@@ -3427,7 +3442,7 @@ fn preview_window_active(app: &tauri::AppHandle) -> bool {
 }
 
 fn preview_window_visible(app: &tauri::AppHandle) -> bool {
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if winui_panel::preview::reader_visible() {
         return true;
     }
@@ -3437,11 +3452,11 @@ fn preview_window_visible(app: &tauri::AppHandle) -> bool {
 }
 
 fn app_window_is_foreground(app: &tauri::AppHandle, label: &str, context: &str) -> bool {
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if label == "clipboardPreview" && winui_panel::preview::reader_foreground() {
         return true;
     }
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if label == "clipboard" && main_panel_mode::winui() {
         return winui_panel::preview::foreground();
     }
@@ -3458,7 +3473,7 @@ fn app_window_is_foreground(app: &tauri::AppHandle, label: &str, context: &str) 
 }
 
 fn retain_preview_window(app: &tauri::AppHandle) -> Result<(), String> {
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if main_panel_mode::winui() {
         winui_panel::preview::closed();
     }
@@ -3469,9 +3484,13 @@ fn retain_preview_window(app: &tauri::AppHandle) -> Result<(), String> {
     PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
     if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
-        clear_preview_content(&preview_window);
+        let _closed = clear_preview_content(&preview_window);
         if auxiliary_windows::is_open(&preview_window) {
             preview_window.hide().map_err(|err| err.to_string())?;
+        }
+        #[cfg(all(target_os = "windows", feature = "winui"))]
+        if main_panel_mode::winui() {
+            winui_panel::preview::release_closed_renderer(app, preview_window, _closed);
         }
     } else {
         cancel_preview_content();
@@ -3482,7 +3501,7 @@ fn retain_preview_window(app: &tauri::AppHandle) -> Result<(), String> {
 fn hide_preview_and_clipboard(app: &tauri::AppHandle, context: &str) {
     info!("Hide preview and clipboard: {}", context);
     let _ = retain_preview_window(app);
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if main_panel_mode::winui() {
         let _ = winui_panel::hide();
         return;
@@ -3540,11 +3559,11 @@ fn cursor_inside_window(window: &tauri::WebviewWindow) -> bool {
 }
 
 fn cursor_inside_app_windows(app: &tauri::AppHandle) -> bool {
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if winui_panel::preview::reader_cursor_inside() {
         return true;
     }
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if winui_panel::preview::cursor_inside() {
         return true;
     }
@@ -4009,7 +4028,7 @@ fn focus_preview_window(window: &tauri::WebviewWindow, context: &str) -> Result<
 }
 
 fn move_focus_to_clipboard(app: &tauri::AppHandle, context: &str) {
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if main_panel_mode::winui() {
         begin_preview_focus_handoff();
         let _ = winui_panel::preview::focus();
@@ -4032,7 +4051,7 @@ fn move_focus_to_clipboard(app: &tauri::AppHandle, context: &str) {
 /// Window under the cursor, preview first because it floats above the clipboard.
 fn cursor_focus_region(app: &tauri::AppHandle) -> Option<preview_focus::FocusTarget> {
     use preview_focus::FocusTarget;
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if winui_panel::preview::reader_cursor_inside() {
         return Some(FocusTarget::Preview);
     }
@@ -4043,7 +4062,7 @@ fn cursor_focus_region(app: &tauri::AppHandle) -> Option<preview_focus::FocusTar
     {
         return Some(FocusTarget::Preview);
     }
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if winui_panel::preview::cursor_inside() {
         return Some(FocusTarget::Clipboard);
     }
@@ -4125,7 +4144,7 @@ fn ensure_focus_watch(app: &tauri::AppHandle) {
             let Some(target) = watch.pending(cursor_focus_region(&app)) else {
                 continue;
             };
-            #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+            #[cfg(all(target_os = "windows", feature = "winui"))]
             if main_panel_mode::winui() && (winui_panel::dragging() || winui_panel::modal_active())
             {
                 continue;
@@ -4137,7 +4156,7 @@ fn ensure_focus_watch(app: &tauri::AppHandle) {
             }
             match target {
                 FocusTarget::Clipboard => {
-                    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+                    #[cfg(all(target_os = "windows", feature = "winui"))]
                     if main_panel_mode::winui() {
                         begin_preview_focus_handoff();
                         let _ = winui_panel::preview::focus();
@@ -4159,7 +4178,7 @@ fn ensure_focus_watch(app: &tauri::AppHandle) {
                     }
                 }
                 FocusTarget::Preview => {
-                    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+                    #[cfg(all(target_os = "windows", feature = "winui"))]
                     if winui_panel::preview::reader_visible() {
                         begin_preview_focus_handoff();
                         winui_panel::preview::focus_reader();
@@ -4493,7 +4512,7 @@ fn preview_position_avoiding_clipboard(
     bounds: ScreenBounds,
     size: PreviewWindowSize,
 ) -> LogicalPosition<f64> {
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if let Some(surface) = winui_panel::preview::surface() {
         return centered_preview_position(surface.preview_area(PREVIEW_CLIPBOARD_GAP), size);
     }
@@ -4537,7 +4556,7 @@ fn preview_position_avoiding_clipboard(
 }
 
 fn preview_bounds_avoiding_clipboard(app: &tauri::AppHandle, bounds: ScreenBounds) -> ScreenBounds {
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if let Some(surface) = winui_panel::preview::surface() {
         return surface.preview_area(PREVIEW_CLIPBOARD_GAP);
     }
@@ -4571,18 +4590,20 @@ fn preview_bounds_avoiding_clipboard(app: &tauri::AppHandle, bounds: ScreenBound
     }
 }
 
-fn cancel_preview_content() {
+fn cancel_preview_content() -> u64 {
     let mut pending = PREVIEW_PENDING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    PREVIEW_REQUESTS.cancel();
+    let closed = PREVIEW_REQUESTS.cancel();
     *pending = None;
+    closed
 }
 
-fn clear_preview_content(window: &tauri::WebviewWindow) {
-    cancel_preview_content();
+fn clear_preview_content(window: &tauri::WebviewWindow) -> u64 {
+    let closed = cancel_preview_content();
     browser_preview::clear(window.app_handle());
     let _ = window.emit("preview-clear", ());
+    closed
 }
 
 #[cfg(target_os = "windows")]
@@ -4777,7 +4798,7 @@ fn commit_preview_window(
     ) {
         return Ok(false);
     }
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     let native_reader_handoff = if main_panel_mode::winui() {
         let Some(foreground) = winui_panel::preview::retire_reader(request_id) else {
             return Ok(false);
@@ -4804,7 +4825,7 @@ fn commit_preview_window(
         cursor_in_preview,
         prepared.payload.item_type == "ImageText",
     );
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     let focus_target = focus_target.or_else(|| {
         (native_reader_handoff && prepared.mode != PreviewMode::Hover)
             .then_some(preview_focus::FocusTarget::Preview)
@@ -4885,7 +4906,7 @@ fn commit_preview_window(
 }
 
 fn preview_origin_current(native_request: Option<u64>) -> bool {
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     {
         return native_request.is_none_or(winui_panel::preview::current);
     }
@@ -4895,7 +4916,7 @@ fn preview_origin_current(native_request: Option<u64>) -> bool {
     }
     #[cfg(not(any(
         all(debug_assertions, target_os = "macos"),
-        all(debug_assertions, target_os = "windows", feature = "winui-debug")
+        all(target_os = "windows", feature = "winui")
     )))]
     {
         let _ = native_request;
@@ -5008,6 +5029,12 @@ async fn prepare_preview_window(
         auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::ClipboardPreview).await?;
     let window_ready_ms = started.elapsed().as_millis();
     if !PREVIEW_REQUESTS.current(request_id) || !preview_origin_current(native_request) {
+        #[cfg(all(target_os = "windows", feature = "winui"))]
+        if main_panel_mode::winui() {
+            if let Some(closed) = PREVIEW_REQUESTS.inactive_version() {
+                winui_panel::preview::release_closed_renderer(&app, window, closed);
+            }
+        }
         return Ok(());
     }
     let prepare_started = Instant::now();
@@ -5202,7 +5229,7 @@ fn preview_navigate_selection(
     ctrl_key: Option<bool>,
 ) -> Result<(), String> {
     let direction = if direction < 0 { -1 } else { 1 };
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if main_panel_mode::winui() {
         winui_panel::preview::navigate(direction, &key, ctrl_key.unwrap_or(false));
         return Ok(());
@@ -5220,7 +5247,7 @@ fn preview_navigate_selection(
 }
 #[tauri::command]
 fn preview_pointer_changed(app: tauri::AppHandle, inside: bool) -> Result<(), String> {
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if main_panel_mode::winui() {
         winui_panel::preview::pointer_changed(inside);
         return Ok(());
@@ -5242,7 +5269,7 @@ fn is_preview_window_visible(app: tauri::AppHandle) -> bool {
 fn set_preview_pinned(app: tauri::AppHandle, pinned: bool) {
     PREVIEW_PINNED.store(pinned, Ordering::SeqCst);
     if pinned {
-        #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+        #[cfg(all(target_os = "windows", feature = "winui"))]
         if main_panel_mode::winui() {
             winui_panel::preview::pinned();
         }
@@ -5409,8 +5436,11 @@ fn show_main_panel_for_app(app: &tauri::AppHandle) -> Result<(), String> {
     if main_panel_mode::native() {
         return native_panel::show_default(app.clone());
     }
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if main_panel_mode::winui() {
+        if let Some(result) = winui_panel::onboarding::show_if_active(app) {
+            return result;
+        }
         return winui_panel::show(app.clone());
     }
     let window = app
@@ -6702,7 +6732,7 @@ fn hide_text_editor_window(app: tauri::AppHandle) -> Result<(), String> {
     }
     *TEXT_EDITOR_TARGET.lock().unwrap() = None;
     TEXT_EDITOR_FOCUSED.store(false, Ordering::SeqCst);
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if main_panel_mode::winui() {
         begin_preview_focus_handoff();
         return winui_panel::restore_after_editor();
@@ -7210,8 +7240,11 @@ fn toggle_clipboard_window(app: &tauri::AppHandle) {
         }
         return;
     }
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     if main_panel_mode::winui() {
+        if winui_panel::onboarding::toggle_if_active(app) {
+            return;
+        }
         if let Err(error) = winui_panel::toggle(app.clone()) {
             error!("Failed to toggle WinUI main panel: {error}");
         }
@@ -11757,7 +11790,7 @@ fn prepare_paste_queue_click_target(
     origin: PasteQueueRequestOrigin,
 ) -> Result<(), String> {
     if winui_queue_ui_enabled() {
-        #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+        #[cfg(all(target_os = "windows", feature = "winui"))]
         {
             // Capture an external app if it is currently foreground; the helper
             // ignores vPaste itself, preserving the previously captured target.
@@ -11870,7 +11903,7 @@ fn process_paste_queue_request_inner(app: &tauri::AppHandle, request: PasteQueue
         && paste_queue::is_active()
         && request.activation_epoch == paste_queue::activation_epoch()
     {
-        #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+        #[cfg(all(target_os = "windows", feature = "winui"))]
         if let Err(error) = winui_panel::show_queue_no_activate() {
             log::warn!("failed to restore native queue view after paste: {error}");
         }
@@ -12556,11 +12589,11 @@ fn schedule_paste_queue_cleanup(cleanup: paste_queue::DeferredCleanup) {
 }
 
 fn winui_queue_ui_enabled() -> bool {
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     {
         main_panel_mode::winui()
     }
-    #[cfg(not(all(debug_assertions, target_os = "windows", feature = "winui-debug")))]
+    #[cfg(not(all(target_os = "windows", feature = "winui")))]
     false
 }
 
@@ -12577,11 +12610,11 @@ fn deactivate_paste_queue_window_inner(app: &tauri::AppHandle) -> Result<(), Str
     PASTE_QUEUE_MENU_GENERATION.fetch_add(1, Ordering::SeqCst);
     PASTE_QUEUE_MENU_OPEN.store(false, Ordering::SeqCst);
     let hide_result = if winui_queue_ui_enabled() {
-        #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+        #[cfg(all(target_os = "windows", feature = "winui"))]
         {
             winui_panel::set_queue_view(false)
         }
-        #[cfg(not(all(debug_assertions, target_os = "windows", feature = "winui-debug")))]
+        #[cfg(not(all(target_os = "windows", feature = "winui")))]
         {
             Ok(())
         }
@@ -12663,7 +12696,7 @@ async fn apply_paste_queue_activation_inner(
             }
             paste_queue::set_active(true);
             paste_queue::clear_error();
-            #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+            #[cfg(all(target_os = "windows", feature = "winui"))]
             winui_panel::set_queue_view(true)?;
             let mut requests = PASTE_QUEUE_ACTIVATION.lock().unwrap();
             if !requests.current(request) {
@@ -13467,6 +13500,21 @@ fn build_auxiliary_window(
         WindowKind::TextEditor => return build_text_editor_window(handle),
         WindowKind::PasteFallbackNotice => return build_paste_fallback_notice_window(handle),
         WindowKind::TestRoom => return build_test_room_window(handle),
+        WindowKind::NativeOnboarding => {
+            WebviewWindowBuilder::new(handle, "nativeOnboarding", App("native-onboarding".into()))
+                .title("vPaste")
+                .visible(false)
+                .focused(false)
+                .decorations(false)
+                .transparent(true)
+                .background_color(tauri::window::Color(0, 0, 0, 0))
+                .resizable(false)
+                .minimizable(false)
+                .maximizable(false)
+                .always_on_top(true)
+                .shadow(false)
+                .inner_size(1000.0 * text_scale, 360.0 * text_scale)
+        }
         WindowKind::OnboardingPermission => WebviewWindowBuilder::new(
             handle,
             "onboardingPermission",
@@ -13925,6 +13973,18 @@ fn memory_profile_active() -> bool {
 }
 
 fn main() {
+    if std::env::args().any(|argument| argument == "--winui-build-info") {
+        println!(
+            "{}",
+            serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "winui": cfg!(all(target_os = "windows", feature = "winui")),
+                "debug": cfg!(debug_assertions),
+                "arch": std::env::consts::ARCH,
+            })
+        );
+        return;
+    }
     if image_ocr::worker::run_if_requested() {
         return;
     }
@@ -14038,7 +14098,7 @@ fn main() {
     builder
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
-            Some(vec![]),
+            Some(main_panel_mode::autostart_arguments()),
         ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -14137,6 +14197,11 @@ fn main() {
                 if window.label() == "config" {
                     api.prevent_close();
                     let _ = close_config_window(window.app_handle().clone());
+                }
+                #[cfg(all(target_os = "windows", feature = "winui"))]
+                if window.label() == "nativeOnboarding" {
+                    api.prevent_close();
+                    let _ = winui_panel::onboarding::close(window.app_handle());
                 }
                 if window.label() == "testRoom" {
                     api.prevent_close();
@@ -14268,7 +14333,7 @@ fn main() {
                 panel_animation::probe::start(app.handle().clone());
                 return Ok(());
             }
-            #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+            #[cfg(all(target_os = "windows", feature = "winui"))]
             if main_panel_mode::winui() {
                 winui_panel::initialize(app.handle().clone()).map_err(io::Error::other)?;
                 info!("WinUI 3 experiment initialized; no main WebView will be created");
@@ -14374,10 +14439,7 @@ fn main() {
             #[cfg(target_os = "windows")]
             windows_main_shortcut::log_status();
             std::thread::spawn(move || {
-                if !config.onboarding_completed
-                    && !main_panel_mode::native()
-                    && !main_panel_mode::winui()
-                {
+                if !config.onboarding_completed && !main_panel_mode::native() {
                     if let Err(err) = show_onboarding_window(&handle) {
                         error!("Failed to show onboarding window: {}", err);
                     }
@@ -14390,9 +14452,7 @@ fn main() {
                 #[cfg(target_os = "windows")]
                 listen::start(handle.clone());
                 info!("Clipboard listener started");
-                if (config.onboarding_completed
-                    || main_panel_mode::native()
-                    || main_panel_mode::winui())
+                if (config.onboarding_completed || main_panel_mode::native())
                     && show_panel_on_startup
                 {
                     if let Err(err) = startup_panel::request_show(&handle) {
@@ -14598,7 +14658,7 @@ fn main() {
             }
             if matches!(&event, tauri::RunEvent::Exit) {
                 image_ocr::stop();
-                #[cfg(all(debug_assertions, target_os = "windows", feature = "winui-debug"))]
+                #[cfg(all(target_os = "windows", feature = "winui"))]
                 if main_panel_mode::winui() {
                     winui_panel::shutdown();
                 }

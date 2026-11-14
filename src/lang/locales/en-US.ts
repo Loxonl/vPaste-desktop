@@ -44,6 +44,7 @@ const enUS: LanguagePack = {
         "memory.kind.browser": "WebView browser process",
         "memory.kind.utility": "WebView utility process",
         "common.loading": "Loading",
+        "common.retry": "Retry",
         "common.default": "Default",
         "common.choose": "Choose",
         "common.modify": "Modify",

@@ -147,14 +147,12 @@ fn build_win32_native_demo() {
     }
 }
 
-fn build_winui_debug_panel() {
-    if env::var("PROFILE").as_deref() != Ok("debug")
-        || env::var_os("CARGO_FEATURE_WINUI_DEBUG").is_none()
-    {
+fn build_winui_panel() {
+    if env::var_os("CARGO_FEATURE_WINUI").is_none() {
         return;
     }
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
-        panic!("the winui-debug feature is only supported for Windows Debug builds");
+        panic!("the winui feature is only supported on Windows");
     }
     if env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("x86_64") {
         panic!("the WinUI 3 experiment currently supports Windows x64 only");
@@ -206,6 +204,9 @@ fn build_winui_debug_panel() {
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiReader.cpp");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiReader.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiMotion.h");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiDockMotion.h");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiTabIndicator.h");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiGeometry.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiMotion.rc");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiBridge.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiResourceProbe.h");
@@ -217,7 +218,12 @@ fn build_winui_debug_panel() {
     println!("cargo:rerun-if-env-changed=NUGET_PACKAGES");
 
     let project_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"));
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR")).join("winui-debug");
+    let configuration = if env::var("PROFILE").as_deref() == Ok("release") {
+        "Release"
+    } else {
+        "Debug"
+    };
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR")).join("winui");
     let intermediate_dir = out_dir.join("obj");
     fs::create_dir_all(&intermediate_dir).expect("create WinUI build output directory");
 
@@ -225,7 +231,7 @@ fn build_winui_debug_panel() {
     let status = Command::new(&msbuild)
         .current_dir(&project_dir)
         .args([PROJECT, "/restore", "/nologo", "/m", "/verbosity:minimal"])
-        .arg("/p:Configuration=Debug")
+        .arg(format!("/p:Configuration={configuration}"))
         .arg("/p:Platform=x64")
         .arg(format!("/p:OutDir={}\\", out_dir.display()))
         .arg(format!("/p:IntDir={}\\", intermediate_dir.display()))
@@ -243,7 +249,10 @@ fn build_winui_debug_panel() {
         ))
         .status()
         .unwrap_or_else(|error| panic!("failed to run {}: {error}", msbuild.display()));
-    assert!(status.success(), "WinUI 3 Debug panel failed to build");
+    assert!(
+        status.success(),
+        "WinUI 3 {configuration} panel failed to build"
+    );
 
     let profile_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"))
         .ancestors()
@@ -267,13 +276,22 @@ fn build_winui_debug_panel() {
             panel_dll.display()
         );
     }
-    fs::copy(&panel_dll, profile_dir.join("VPasteWinUiPanel.dll"))
-        .unwrap_or_else(|error| panic!("copy {} to Debug output: {error}", panel_dll.display()));
+    fs::copy(&panel_dll, profile_dir.join("VPasteWinUiPanel.dll")).unwrap_or_else(|error| {
+        panic!(
+            "copy {} to {configuration} output: {error}",
+            panel_dll.display()
+        )
+    });
     fs::copy(
         &bootstrap_dll,
         profile_dir.join("Microsoft.WindowsAppRuntime.Bootstrap.dll"),
     )
-    .unwrap_or_else(|error| panic!("copy {} to Debug output: {error}", bootstrap_dll.display()));
+    .unwrap_or_else(|error| {
+        panic!(
+            "copy {} to {configuration} output: {error}",
+            bootstrap_dll.display()
+        )
+    });
 }
 
 fn find_msbuild() -> PathBuf {
@@ -342,6 +360,6 @@ fn main() {
     }
     generate_tray_icon_mask();
     build_native_demo();
-    build_winui_debug_panel();
+    build_winui_panel();
     tauri_build::build()
 }

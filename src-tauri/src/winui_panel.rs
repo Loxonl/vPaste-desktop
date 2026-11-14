@@ -18,6 +18,7 @@ mod bridge;
 use bridge::response as response_bytes;
 mod drag;
 mod filters;
+mod focus;
 mod layout;
 mod presentation;
 pub(crate) mod preview;
@@ -422,6 +423,7 @@ fn initialize_native(english: bool, single_click_paste: bool) -> Result<(), Stri
 }
 
 extern "C" fn visibility_changed(visible: bool) {
+    focus::visibility_changed();
     crate::CLIPBOARD_VISIBLE.store(visible, std::sync::atomic::Ordering::SeqCst);
     if visible {
         crate::CLIPBOARD_HIDING.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -620,16 +622,26 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
     };
     let id = request.id;
     let op = request.op.clone();
+    if op == "panelBlur" {
+        focus::lost(app);
+        return;
+    }
     if reader::handle(&app, &op, &request.argument) {
         return;
     }
     if matches!(op.as_str(), "dragBegin" | "dragEnd") {
         DRAG_ACTIVE.store(op == "dragBegin", std::sync::atomic::Ordering::Release);
         log::info!("[winui-drag] stage={op}");
+        if op == "dragEnd" {
+            focus::lost(app);
+        }
         return;
     }
     if matches!(op.as_str(), "modalBegin" | "modalEnd") {
         MODAL_ACTIVE.store(op == "modalBegin", std::sync::atomic::Ordering::Release);
+        if op == "modalEnd" {
+            focus::lost(app);
+        }
         return;
     }
     if op == "dismiss" && preview::open() {
@@ -1333,6 +1345,38 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    #[ignore = "requires the Windows App SDK runtime and an interactive desktop"]
+    fn native_shell_parity() {
+        let result = (|| {
+            super::initialize_native(false, true)?;
+            let panel = super::api()?;
+            // SAFETY: the native exports marshal show and synthetic control
+            // assertions to the owning STA. No AppHandle or user data is used.
+            super::check_hresult("show", unsafe { (panel.show)() })?;
+            let test = unsafe {
+                super::GetProcAddress(
+                    panel._module as *mut std::ffi::c_void,
+                    b"vpaste_winui_test_shell_parity\0".as_ptr().cast(),
+                )
+            };
+            if test.is_null() {
+                return Err("WinUI shell regression export is missing".to_string());
+            }
+            // SAFETY: Debug test ABI; stage is written before the call returns.
+            let test: unsafe extern "C" fn(*mut u32) -> i32 = unsafe { std::mem::transmute(test) };
+            let mut stage = 0;
+            let result = unsafe { test(&mut stage) };
+            eprintln!(
+                "WinUI shell parity: stage={stage}, HRESULT=0x{:08X}",
+                result as u32
+            );
+            super::check_hresult(&format!("shell parity stage {stage}"), result)
+        })();
+        super::shutdown();
+        assert!(result.is_ok(), "native shell failed: {result:?}");
     }
 
     #[test]

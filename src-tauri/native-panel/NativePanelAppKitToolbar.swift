@@ -204,15 +204,14 @@ final class PanelLegacyToolbar: NSView {
   var onPasteQueue: (() -> Void)?
   var onSettings: (() -> Void)?
   var onDiagnostics: (() -> Void)?
+  var onDeveloper: ((String) -> Void)?
   private let tabScroll = PanelScroll()
   private let tabStrip = PanelTabDragSurface()
   private let addButton = PanelPointerButton()
   private var tabs: [PanelTabButton] = []
-  private let developer = PanelDeveloperGroup()
-  private let badge = NSTextField(labelWithString: "DEV · Native")
+  private var developer: PanelDeveloperToolbar!
+  private var tools: PanelDeveloperTools!
   private var searchButton: PanelIconButton!
-  private var refreshButton: PanelIconButton!
-  private var infoButton: PanelIconButton!
   private var queueButton: PanelIconButton!
   private var settingsButton: PanelIconButton!
   private var closeButton: PanelIconButton!
@@ -278,15 +277,17 @@ final class PanelLegacyToolbar: NSView {
     addButton.contentTintColor = PanelStyle.secondary(self)
     addButton.setAccessibilityLabel(local("Add tab", "添加标签"))
     tabStrip.addSubview(addButton)
+    tools = PanelDeveloperTools(scale: scale, chinese: chinese)
+    developer = PanelDeveloperToolbar(tools: tools)
+    tools.onAction = { [weak self] action in
+      switch action {
+      case "refresh": self?.onRefresh?()
+      case "diagnostics": self?.onDiagnostics?()
+      default: self?.onDeveloper?(action)
+      }
+    }
+    tools.onExpansionChanged = { [weak self] in self?.needsLayout = true }
     addSubview(developer)
-    badge.font = PanelToolbarTypography.font(size: 9 * scale, cssWeight: 800)
-    badge.textColor = PanelStyle.accent(self)
-    developer.addSubview(badge)
-    refreshButton = icon(
-      "arrow.clockwise", local("Refresh", "刷新"), #selector(refresh), in: developer)
-    infoButton = icon(
-      "info.circle", local("Memory and history details", "内存与历史记录统计"), #selector(info),
-      in: developer)
     queueButton = icon("list.bullet", local("Open paste queue", "开启粘贴队列"), #selector(toggleQueue))
     settingsButton = icon("gearshape", local("Settings", "设置"), #selector(settings))
     closeButton = icon("xmark", local("Close native panel", "关闭原生主界面"), #selector(closePanel))
@@ -330,6 +331,8 @@ final class PanelLegacyToolbar: NSView {
     onPasteQueue = nil
     onSettings = nil
     onDiagnostics = nil
+    onDeveloper = nil
+    tools?.releaseContent()
   }
   func chooseTab(_ index: Int) {
     guard tabs.indices.contains(index) else { return }
@@ -337,7 +340,6 @@ final class PanelLegacyToolbar: NSView {
   }
   override func viewDidChangeEffectiveAppearance() {
     super.viewDidChangeEffectiveAppearance()
-    badge.textColor = PanelStyle.accent(self)
     addButton.contentTintColor = PanelStyle.secondary(self)
     needsDisplay = true
   }
@@ -360,14 +362,14 @@ final class PanelLegacyToolbar: NSView {
     let gap: CGFloat = 8 * scale
     let center = (bounds.height - button) / 2
     searchButton.frame = NSRect(x: pad, y: center, width: button, height: button)
+    let devWidth = tools.width(toolbarWidth: bounds.width, searching: searchOpen)
     let fieldWidth = min(
       276 * scale,
-      max(100 * scale, bounds.width - 2 * pad - 140 * scale - 4 * button - 5 * gap - 68 * scale))
+      max(100 * scale, bounds.width - 2 * pad - devWidth - 4 * button - 5 * gap - 68 * scale))
     let expanded: CGFloat = searchOpen ? fieldWidth + 12 * scale : 0
     search?.frame = NSRect(
       x: pad + button + 7 * scale, y: (bounds.height - 32 * scale) / 2, width: fieldWidth,
       height: 32 * scale)
-    let devWidth: CGFloat = 140 * scale
     closeButton.frame = NSRect(
       x: bounds.width - pad - button, y: center, width: button, height: button)
     settingsButton.frame = closeButton.frame.offsetBy(dx: -button - gap, dy: 0)
@@ -375,9 +377,6 @@ final class PanelLegacyToolbar: NSView {
     developer.frame = NSRect(
       x: queueButton.frame.minX - gap - devWidth, y: (bounds.height - 32 * scale) / 2,
       width: devWidth, height: 32 * scale)
-    badge.frame = NSRect(x: 9 * scale, y: 8 * scale, width: 65 * scale, height: 16 * scale)
-    refreshButton.frame = NSRect(x: 77 * scale, y: 2 * scale, width: button, height: button)
-    infoButton.frame = NSRect(x: 108 * scale, y: 2 * scale, width: button, height: button)
     let left = searchButton.frame.maxX + 15 * scale + expanded
     tabScroll.frame = NSRect(
       x: left, y: 0, width: max(50 * scale, developer.frame.minX - left - 10 * scale),
@@ -415,7 +414,7 @@ final class PanelLegacyToolbar: NSView {
     layoutSubtreeIfNeeded()
     if index < tabs.count { tabs[index].scrollToVisible(tabs[index].bounds) }
   }
-  func setInfoVisible(_ visible: Bool) { infoButton?.active = visible }
+  func setInfoVisible(_ visible: Bool) { developer?.infoVisible = visible }
   func setQueueActive(_ active: Bool) {
     queueButton?.active = active
     let label = active
@@ -437,8 +436,6 @@ final class PanelLegacyToolbar: NSView {
     onFilter?(sender.tag)
   }
   @objc private func requestAddTab() { onAddTab?() }
-  @objc private func refresh() { onRefresh?() }
-  @objc private func info() { onDiagnostics?() }
   @objc private func toggleQueue() { onPasteQueue?() }
   @objc private func settings() { onSettings?() }
   @objc private func closePanel() { onClose?() }

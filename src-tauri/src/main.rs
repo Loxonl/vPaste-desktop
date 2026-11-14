@@ -184,6 +184,7 @@ static ONBOARDING_SHORTCUT_DEMO_ENABLED: AtomicBool = AtomicBool::new(false);
 static TRAY_MENU_WATCH_GENERATION: AtomicU64 = AtomicU64::new(0);
 static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
 static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
+static PERMISSION_GUIDE_RETURN_TO_DEV_TUTORIAL: AtomicBool = AtomicBool::new(false);
 static PASTE_FALLBACK_NOTICE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PASTE_QUEUE_INTERCEPTOR_READY: AtomicBool = AtomicBool::new(false);
 static PASTE_QUEUE_ACTIVATION: Mutex<paste_queue_activation::Requests> =
@@ -2783,6 +2784,17 @@ async fn open_dev_memory_window_from_source(
 }
 
 #[tauri::command]
+fn close_dev_tutorial_window(app: tauri::AppHandle) -> Result<(), String> {
+    if !get_developer_mode() {
+        return Err("Tutorial preview requires Debug + --dev-mode".into());
+    }
+    if let Some(window) = app.get_webview_window("devTutorial") {
+        auxiliary_windows::destroy(&window)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn close_dev_memory_window(app: tauri::AppHandle) -> Result<(), String> {
     if !get_developer_mode() {
         return Err("Memory monitor requires Debug + --dev-mode".into());
@@ -3226,6 +3238,14 @@ fn open_onboarding_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn restore_parent_after_permission_guide(app: &tauri::AppHandle) {
+    if PERMISSION_GUIDE_RETURN_TO_DEV_TUTORIAL.swap(false, Ordering::SeqCst) {
+        if let Some(window) = app.get_webview_window("devTutorial") {
+            let _ = window.show();
+            activate_native_window(&window, "permission guide closed to tutorial preview");
+            let _ = window.set_focus();
+            return;
+        }
+    }
     if PERMISSION_GUIDE_RETURN_TO_CONFIG.swap(false, Ordering::SeqCst) {
         if let Some(window) = app.get_webview_window("config") {
             let _ = window.unminimize();
@@ -3270,6 +3290,8 @@ async fn open_onboarding_permission_window(
     auxiliary_windows::on_main_thread(app.clone(), move || {
         PERMISSION_GUIDE_RETURN_TO_CONFIG
             .store(source_window.label() == "config", Ordering::SeqCst);
+        PERMISSION_GUIDE_RETURN_TO_DEV_TUTORIAL
+            .store(source_window.label() == "devTutorial", Ordering::SeqCst);
         let _ = window.unminimize();
         center_window_on_source_monitor(&window, &source_window)?;
         #[cfg(all(debug_assertions, target_os = "macos"))]
@@ -3296,7 +3318,8 @@ async fn open_onboarding_permission_window(
         {
             let level = 102;
             #[cfg(debug_assertions)]
-            let level = if native_panel::preview::active() {
+            let level = if native_panel::preview::active() || source_window.label() == "devTutorial"
+            {
                 104
             } else {
                 level
@@ -13494,6 +13517,8 @@ fn build_auxiliary_window(
             ui_text_scale::remember(&window, text_scale);
             return Ok(window);
         }
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        WindowKind::DevTutorial => return native_panel::developer::build_tutorial_window(handle),
         WindowKind::ClipboardPreview => return build_preview_window(handle),
         WindowKind::PasteQueue => return build_paste_queue_window(handle),
         WindowKind::Config => return build_config_window(handle),
@@ -14179,7 +14204,7 @@ fn main() {
                 }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if matches!(window.label(), "trayMenu" | "pasteFallbackNotice" | "devMemory") {
+                if matches!(window.label(), "trayMenu" | "pasteFallbackNotice" | "devMemory" | "devTutorial") {
                     api.prevent_close();
                     let _ = auxiliary_windows::destroy_native(window);
                 }
@@ -14476,6 +14501,7 @@ fn main() {
             memory_profile::memory_profile_parking_state,
             open_dev_memory_window,
             close_dev_memory_window,
+            close_dev_tutorial_window,
             open_native_demo_window,
             open_native_main_panel,
             get_dev_memory_report,

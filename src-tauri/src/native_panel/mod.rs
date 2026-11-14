@@ -1,5 +1,6 @@
 //! macOS DEV AppKit panel. The optional --main-ui=native route uses it without
 //! creating a main WebView. Owns one bounded history view, separately from Main.
+pub(crate) mod developer;
 mod history;
 pub(crate) mod preview;
 pub(crate) mod queue_selection;
@@ -110,17 +111,17 @@ fn main_docked_frame(app: &AppHandle) -> Option<Value> {
 }
 
 pub(crate) fn show(app: AppHandle, language: String, theme: String) -> Result<(), String> {
-    present(app, language, theme, false)
+    present(app, language, theme, false, false)
 }
 
 pub(crate) fn show_default(app: AppHandle) -> Result<(), String> {
     let config = crate::config::get();
-    present(app, config.multilingual, config.theme_mode, false)
+    present(app, config.multilingual, config.theme_mode, false, false)
 }
 
 pub(crate) fn toggle(app: AppHandle) -> Result<(), String> {
     let config = crate::config::get();
-    present(app, config.multilingual, config.theme_mode, true)
+    present(app, config.multilingual, config.theme_mode, true, false)
 }
 
 pub(crate) fn close_preview(app: &AppHandle) -> Result<(), String> {
@@ -131,10 +132,17 @@ pub(crate) fn close_preview(app: &AppHandle) -> Result<(), String> {
     .map_err(|error| error.to_string())
 }
 
-fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Result<(), String> {
+fn present(
+    app: AppHandle,
+    language: String,
+    theme: String,
+    toggle: bool,
+    reconfigure: bool,
+) -> Result<(), String> {
     if !crate::get_developer_mode() {
         return Err("Native panel requires --dev-mode".into());
     }
+    let (language, theme) = developer::appearance(language, theme);
     APP.get_or_init(|| app.clone());
     history::watch(&app);
     app.clone()
@@ -142,8 +150,12 @@ fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Res
             let preview = crate::panel_size::is_previewing();
             // SAFETY: AppKit owns the controller. A normal wake focuses the
             // current surface; a shortcut toggles it. Size changes recreate it.
-            if !preview && unsafe { vpaste_native_panel_activate(toggle) } {
+            if !preview && !reconfigure && unsafe { vpaste_native_panel_activate(toggle) } {
                 return;
+            }
+            if reconfigure {
+                // Save the old viewport while its bridge session is still valid.
+                unsafe { vpaste_native_panel_close(false) };
             }
             dispose();
             crate::record_foreground_app_before_clipboard();
@@ -203,6 +215,7 @@ fn present(app: AppHandle, language: String, theme: String, toggle: bool) -> Res
                 "session": session,
                 "pasteQueue": queue_selection::snapshot(),
                 "sizePreview": preview,
+                "developerReconfigure": reconfigure,
                 "language": language,
                 "theme": theme,
                 "scale": scale,
@@ -376,6 +389,12 @@ struct Request {
     id: u64,
     session: u64,
     op: String,
+    #[serde(default)]
+    language: String,
+    #[serde(default)]
+    theme: String,
+    #[serde(default)]
+    preserve_history: bool,
     #[serde(default)]
     keywords: String,
     #[serde(default)]
@@ -584,7 +603,11 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
             let tab = r.tab_id.clone();
             blocking(move || history::open(query, tab, open)).await
         }
-        "history-resume" => blocking(move || history::resume(panel_tabs()?, open)).await,
+        "history-resume" => {
+            let preserve = r.preserve_history;
+            blocking(move || history::resume(panel_tabs()?, open, preserve)).await
+        }
+        "developer" => developer::open(app.clone(), &r.target, &r.language, &r.theme).await,
         "history-sync" => {
             if r.hashes.len() > 216 {
                 return Err("too many retained refs".into());

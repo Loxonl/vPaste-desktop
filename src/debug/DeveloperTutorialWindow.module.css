@@ -1,0 +1,19 @@
+.window {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  color: var(--ui-text);
+  background: var(--ui-window-surface);
+}
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  color: var(--ui-text-muted);
+  border-bottom: 1px solid var(--ui-border);
+}
+.content {
+  flex: 1;
+  min-height: 0;
+}

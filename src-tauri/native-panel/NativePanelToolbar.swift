@@ -13,6 +13,7 @@ protocol PanelToolbarContent: AnyObject {
   var onPasteQueue: (() -> Void)? { get set }
   var onSettings: (() -> Void)? { get set }
   var onDiagnostics: (() -> Void)? { get set }
+  var onDeveloper: ((String) -> Void)? { get set }
   func beginSearch()
   func endEmptySearch()
   func setSelection(_ index: Int)
@@ -36,6 +37,7 @@ final class PanelToolbar: NSView {
   var onPasteQueue: (() -> Void)?
   var onSettings: (() -> Void)?
   var onDiagnostics: (() -> Void)?
+  var onDeveloper: ((String) -> Void)?
   private var content: (NSView & PanelToolbarContent)?
   private(set) var rendererName = "unconfigured"
 
@@ -61,6 +63,7 @@ final class PanelToolbar: NSView {
     view.onPasteQueue = { [weak self] in self?.onPasteQueue?() }
     view.onSettings = { [weak self] in self?.onSettings?() }
     view.onDiagnostics = { [weak self] in self?.onDiagnostics?() }
+    view.onDeveloper = { [weak self] in self?.onDeveloper?($0) }
     view.frame = bounds
     view.autoresizingMask = [.width, .height]
     addSubview(view)
@@ -86,6 +89,7 @@ final class PanelToolbar: NSView {
     onPasteQueue = nil
     onSettings = nil
     onDiagnostics = nil
+    onDeveloper = nil
   }
 }
 
@@ -158,6 +162,7 @@ final class PanelToolbarState: ObservableObject {
   let scale: CGFloat
   let chinese: Bool
   let search: NSSearchField
+  let developer: PanelDeveloperTools
   @Published private(set) var choices: [PanelFilterChoice]
   private let fixedChoices: [PanelFilterChoice]
   private(set) var closed = false
@@ -171,15 +176,25 @@ final class PanelToolbarState: ObservableObject {
   var onPasteQueue: (() -> Void)?
   var onSettings: (() -> Void)?
   var onDiagnostics: (() -> Void)?
+  var onDeveloper: ((String) -> Void)?
 
   init(scale: CGFloat, chinese: Bool, search: NSSearchField) {
     self.scale = scale
     self.chinese = chinese
     self.search = search
+    developer = PanelDeveloperTools(scale: scale, chinese: chinese)
     fixedChoices = [
       ("All", "全部", "", "square.grid.3x3.fill"), ("Favorites", "收藏", "", "star"),
     ].map { PanelFilterChoice(title: chinese ? $0.1 : $0.0, emoji: $0.2, symbol: $0.3) }
     choices = fixedChoices
+    developer.onAction = { [weak self] action in
+      guard let self, !self.closed else { return }
+      switch action {
+      case "refresh": self.onRefresh?()
+      case "diagnostics": self.onDiagnostics?()
+      default: self.onDeveloper?(action)
+      }
+    }
     search.isHidden = true
     search.font = PanelToolbarTypography.font(size: 13 * scale, cssWeight: 450)
     search.controlSize = .small
@@ -215,6 +230,7 @@ final class PanelToolbarState: ObservableObject {
     releaseTabDrag?()
     releaseTabDrag = nil
     closed = true
+    developer.releaseContent()
     draggingTabID = ""
     onFilter = nil
     onAddTab = nil
@@ -226,6 +242,7 @@ final class PanelToolbarState: ObservableObject {
     onPasteQueue = nil
     onSettings = nil
     onDiagnostics = nil
+    onDeveloper = nil
     searchOpen = false
   }
 }
@@ -247,7 +264,7 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
   private var focusRequest = 0
   init(scale: CGFloat, chinese: Bool, search: NSSearchField) {
     state = PanelToolbarState(scale: scale, chinese: chinese, search: search)
-    super.init(rootView: PanelToolbarView(state: state))
+    super.init(rootView: PanelToolbarView(state: state, tools: state.developer))
     rootView.onSearch = { [weak self] in self?.toggleSearch() }
   }
   required init(rootView: PanelToolbarView) { fatalError("Use the configured initializer") }
@@ -266,6 +283,7 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
   var onPasteQueue: (() -> Void)? { get { state.onPasteQueue } set { state.onPasteQueue = newValue } }
   var onSettings: (() -> Void)? { get { state.onSettings } set { state.onSettings = newValue } }
   var onDiagnostics: (() -> Void)? { get { state.onDiagnostics } set { state.onDiagnostics = newValue } }
+  var onDeveloper: ((String) -> Void)? { get { state.onDeveloper } set { state.onDeveloper = newValue } }
   func beginSearch() {
     state.beginSearch()
     focusRequest &+= 1
@@ -302,23 +320,23 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
 @MainActor
 struct PanelToolbarView: View {
   @ObservedObject var state: PanelToolbarState
+  @ObservedObject var tools: PanelDeveloperTools
   @Environment(\.colorScheme) private var scheme
   var onSearch: (() -> Void)?
   private var dark: Bool { scheme == .dark }
-  private var accent: Color { Color(PanelStyle.rgb(dark ? 0x8ab7ff : 0x2466d8)) }
   var body: some View {
     GeometryReader { geometry in
       let s = state.scale
       let button = 28 * s
       let pad = 28 * s
       let gap = 8 * s
-      let developerWidth = 140 * s
+      let developerWidth = tools.width(toolbarWidth: geometry.size.width, searching: state.searchOpen)
       let closeX = geometry.size.width - pad - button / 2
       let settingsX = closeX - button - gap
       let queueX = settingsX - button - gap
       let developerX = queueX - button / 2 - gap - developerWidth / 2
       let fieldWidth = min(276 * s, max(100 * s,
-        geometry.size.width - 2 * pad - 140 * s - 4 * button - 5 * gap - 68 * s))
+        geometry.size.width - 2 * pad - developerWidth - 4 * button - 5 * gap - 68 * s))
       let left = pad + button + 15 * s + (state.searchOpen ? fieldWidth + 12 * s : 0)
       let tabsWidth = max(50 * s, developerX - developerWidth / 2 - left - 10 * s)
       ZStack(alignment: .topLeading) {
@@ -342,22 +360,9 @@ struct PanelToolbarView: View {
         PanelFilterViewport(state: state, width: tabsWidth, height: geometry.size.height)
           .frame(width: tabsWidth, height: geometry.size.height)
           .position(x: left + tabsWidth / 2, y: geometry.size.height / 2)
-        HStack(spacing: 3 * s) {
-          HStack(spacing: 0) {
-            Text("DEV").tracking(0.72 * s)
-            Text(" · SwiftUI")
-          }
-          .font(Font(PanelToolbarTypography.font(size: 9 * s, cssWeight: 800)))
-          .lineLimit(1).accessibilityElement(children: .combine)
-          .foregroundColor(accent).frame(width: 66 * s, alignment: .leading)
-          icon("arrow.clockwise", state.local("Refresh", "刷新")) { state.onRefresh?() }
-          icon("info.circle", state.local("Memory and history details", "内存与历史记录统计"),
-            active: state.infoVisible) { state.onDiagnostics?() }
-        }
-        .padding(.leading, 9 * s).frame(width: developerWidth, height: 32 * s, alignment: .leading)
-        .background(Capsule().fill(Color(PanelStyle.rgb(dark ? 0x21262d : 0xffffff, dark ? 0.64 : 0.44))))
-        .overlay(Capsule().stroke(Color(PanelStyle.rgb(dark ? 0xdde2eb : 0x2a3230, 0.13)), lineWidth: s))
-        .position(x: developerX, y: geometry.size.height / 2)
+        PanelDeveloperToolsView(tools: tools, infoVisible: state.infoVisible)
+          .frame(width: developerWidth, height: 32 * s)
+          .position(x: developerX, y: geometry.size.height / 2)
         icon("list.bullet", state.queueActive
           ? state.local("Close paste queue", "关闭粘贴队列")
           : state.local("Open paste queue", "开启粘贴队列"), active: state.queueActive) { state.onPasteQueue?() }

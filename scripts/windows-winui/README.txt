@@ -1,10 +1,13 @@
 vPaste - opt-in WinUI Release portable (Windows x64)
 
-1. Extract the entire folder. Keep the EXE, both DLLs and runtime folder together.
+1. Extract the entire folder. Keep the EXE, both DLLs, runtime folder and
+   SHA256SUMS.txt together.
 2. If Windows App SDK 2.6 is not installed, right-click Install-WinUiRuntime.ps1
    and choose Run with PowerShell. This installs the bundled Microsoft-signed
    packages for the current user; it does not download anything or need the Store.
-   Enterprise package policy can still block installation. Do not bypass it.
+   All four packages are checked for missing files, SHA256, package identity and
+   Windows requirements before installation starts. Add-AppxPackage checks their
+   signatures. Enterprise policy can still block installation. Do not bypass it.
 3. Close any other vPaste instance, then run Start-vPaste.cmd.
 
 Requirements: Windows 10 1809 or newer; WebView2 remains required for settings
@@ -21,5 +24,7 @@ WinUI argument. This does not change the default for manually running the EXE.
 
 Settings and the first-run guide are created on demand and destroyed on close.
 Rich preview WebViews are reused while open, then released when closed.
-SHA256SUMS.txt records the included files. Runtime license and notices are in
-runtime/. vPaste's license is in LICENSE.
+SHA256SUMS.txt records the included files and is required by the runtime script.
+Hash checks detect incomplete/corrupt copies; they do not replace signature
+verification. Preflight does not roll back a later Windows installation error.
+Runtime license and notices are in runtime/. vPaste's license is in LICENSE.

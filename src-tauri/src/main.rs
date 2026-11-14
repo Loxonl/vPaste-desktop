@@ -148,6 +148,8 @@ enum PasteQueueRequestOrigin {
 
 static CLIPBOARD_VISIBLE: AtomicBool = AtomicBool::new(false);
 static CLIPBOARD_HIDING: AtomicBool = AtomicBool::new(false);
+#[cfg(all(target_os = "windows", feature = "winui-acceptance"))]
+static LOCAL_ACCEPTANCE_NO_CAPTURE: AtomicBool = AtomicBool::new(false);
 static CLIPBOARD_WINDOW_TRANSITION_LOCK: Mutex<()> = Mutex::new(());
 static IMAGE_PREVIEW_CACHE_PUBLISH_LOCK: Mutex<()> = Mutex::new(());
 static SEARCH_COMMAND_LOCK: Mutex<()> = Mutex::new(());
@@ -7211,6 +7213,9 @@ fn create_file_thumbnail(_path: &str) -> Result<String, String> {
 #[tauri::command]
 async fn wait_for_clipboard_capture() -> Result<Option<String>, String> {
     // The isolated fixture has no live clipboard monitor or pending capture.
+    if local_acceptance_no_capture() {
+        return Ok(None);
+    }
     #[cfg(debug_assertions)]
     if memory_profile_active() {
         return Ok(None);
@@ -9693,7 +9698,12 @@ fn sync_autostart(app: &tauri::AppHandle, startup: bool) -> Result<bool, String>
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn is_legacy_autostart_entry(value: &str, current_exe: Option<&str>) -> bool {
+fn is_legacy_autostart_entry(value: &str, current_exe: Option<&str>, portable: bool) -> bool {
+    // Portable startup ownership is enforced by portable_autostart. Its legacy
+    // cleanup must not remove another checkout's or installation's login entry.
+    if portable {
+        return false;
+    }
     let text = value.replace('/', "\\").to_ascii_lowercase();
     if current_exe
         .filter(|path| !path.is_empty())
@@ -9721,7 +9731,8 @@ mod autostart_tests {
         let current = r"E:\Coding\vPaste\src-tauri\target\debug\vPaste.exe";
         assert!(!is_legacy_autostart_entry(
             &format!(r#""{current}""#),
-            Some(current)
+            Some(current),
+            false
         ));
     }
 
@@ -9729,15 +9740,30 @@ mod autostart_tests {
     fn removes_another_checkout_debug_autostart_entry() {
         assert!(is_legacy_autostart_entry(
             r#""E:\Coding\old-vPaste\src-tauri\target\debug\vPaste.exe""#,
-            Some(r"E:\Coding\vPaste\src-tauri\target\debug\vPaste.exe")
+            Some(r"E:\Coding\vPaste\src-tauri\target\debug\vPaste.exe"),
+            false
         ));
+    }
+
+    #[test]
+    fn portable_sessions_keep_other_checkout_startup_entries() {
+        let portable = r"E:\Portable vPaste\vPaste.exe";
+        for value in [
+            r#""E:\Coding\vPaste\src-tauri\target\debug\vPaste.exe" --dev-mode --main-ui=winui"#,
+            r#""E:\Antigravity\vPaste-desktop\vpaste-desktop.exe""#,
+            r#"cargo run --bin vPaste"#,
+        ] {
+            assert!(!is_legacy_autostart_entry(value, Some(portable), true));
+            assert!(is_legacy_autostart_entry(value, Some(portable), false));
+        }
     }
 
     #[test]
     fn keeps_a_release_autostart_entry() {
         assert!(!is_legacy_autostart_entry(
             r#""C:\Program Files\vPaste\vPaste.exe""#,
-            None
+            None,
+            false
         ));
     }
 
@@ -9785,6 +9811,9 @@ mod autostart_tests {
 
 #[cfg(target_os = "windows")]
 fn cleanup_legacy_autostart_entries() {
+    if local_acceptance_no_capture() {
+        return;
+    }
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
     use winreg::RegKey;
 
@@ -9809,7 +9838,7 @@ fn cleanup_legacy_autostart_entries() {
         let Ok(value) = run_key.get_value::<String, _>(name) else {
             continue;
         };
-        if is_legacy_autostart_entry(&value, current_exe.as_deref()) {
+        if is_legacy_autostart_entry(&value, current_exe.as_deref(), runtime_mode::is_portable()) {
             let _ = run_key.delete_value(name);
             info!("removed legacy autostart entry: {}", name);
         }
@@ -12658,7 +12687,7 @@ async fn apply_paste_queue_activation_inner(
         return Ok(());
     }
     if request.active {
-        if !is_process_trusted_with_prompt(false) {
+        if !local_acceptance_no_capture() && !is_process_trusted_with_prompt(false) {
             let source_window = app.get_webview_window("clipboard");
             #[cfg(all(debug_assertions, target_os = "macos"))]
             let source_window = match source_window {
@@ -12689,7 +12718,9 @@ async fn apply_paste_queue_activation_inner(
             }
             return Err("需要辅助功能权限才能启用粘贴队列".to_string());
         }
-        ensure_paste_queue_interceptor(app)?;
+        if !local_acceptance_no_capture() {
+            ensure_paste_queue_interceptor(app)?;
+        }
         if winui_queue_ui_enabled() {
             if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
                 record_foreground_app_before_clipboard();
@@ -13956,6 +13987,72 @@ fn show_startup_error(message: &str) {
     }
 }
 
+fn local_acceptance_no_capture() -> bool {
+    #[cfg(all(target_os = "windows", feature = "winui-acceptance"))]
+    {
+        return LOCAL_ACCEPTANCE_NO_CAPTURE.load(Ordering::SeqCst);
+    }
+    #[cfg(not(all(target_os = "windows", feature = "winui-acceptance")))]
+    false
+}
+
+#[cfg(all(target_os = "windows", feature = "winui-acceptance"))]
+fn local_acceptance_fixture_is_marked(executable_dir: &Path) -> bool {
+    executable_dir.join("portable.flag").is_file()
+        && fs::read(executable_dir.join("data/.vpaste-memory-profile"))
+            .is_ok_and(|marker| marker == b"vpaste-memory-v1\n")
+}
+
+#[cfg(all(test, target_os = "windows", feature = "winui-acceptance"))]
+mod local_acceptance_tests {
+    use super::local_acceptance_fixture_is_marked;
+
+    #[test]
+    fn acceptance_mode_requires_the_marked_portable_fixture() {
+        let fixture = tempfile::tempdir().unwrap();
+        assert!(!local_acceptance_fixture_is_marked(fixture.path()));
+
+        std::fs::write(fixture.path().join("portable.flag"), "portable").unwrap();
+        std::fs::create_dir_all(fixture.path().join("data")).unwrap();
+        std::fs::write(
+            fixture.path().join("data/.vpaste-memory-profile"),
+            b"vpaste-memory-v1\n",
+        )
+        .unwrap();
+        assert!(local_acceptance_fixture_is_marked(fixture.path()));
+
+        std::fs::write(
+            fixture.path().join("data/.vpaste-memory-profile"),
+            b"not a fixture\n",
+        )
+        .unwrap();
+        assert!(!local_acceptance_fixture_is_marked(fixture.path()));
+    }
+}
+
+fn configure_local_acceptance_mode() -> Result<(), String> {
+    let requested = std::env::args().any(|argument| argument == "--local-acceptance-no-capture");
+    if !requested {
+        return Ok(());
+    }
+
+    #[cfg(all(target_os = "windows", feature = "winui-acceptance"))]
+    {
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let executable_dir = executable.parent().ok_or("missing executable directory")?;
+        if !local_acceptance_fixture_is_marked(executable_dir) {
+            return Err(
+                "Local acceptance mode requires an explicitly marked portable fixture".into(),
+            );
+        }
+        LOCAL_ACCEPTANCE_NO_CAPTURE.store(true, Ordering::SeqCst);
+        return Ok(());
+    }
+
+    #[cfg(not(all(target_os = "windows", feature = "winui-acceptance")))]
+    Err("Local acceptance mode is available only in the Windows acceptance build".into())
+}
+
 #[cfg(not(target_os = "windows"))]
 fn show_startup_error(message: &str) {
     eprintln!("{message}");
@@ -13979,6 +14076,7 @@ fn main() {
             serde_json::json!({
                 "version": env!("CARGO_PKG_VERSION"),
                 "winui": cfg!(all(target_os = "windows", feature = "winui")),
+                "localAcceptance": cfg!(feature = "winui-acceptance"),
                 "debug": cfg!(debug_assertions),
                 "arch": std::env::consts::ARCH,
             })
@@ -13990,6 +14088,10 @@ fn main() {
     }
     if let Err(error) = main_panel_mode::configure() {
         eprintln!("{error}");
+        std::process::exit(2);
+    }
+    if let Err(error) = configure_local_acceptance_mode() {
+        eprintln!("Local acceptance startup failed: {error}");
         std::process::exit(2);
     }
     #[cfg(debug_assertions)]
@@ -14020,7 +14122,8 @@ fn main() {
         }
     }
     let installer_exit_requested = maintenance::installer_exit_requested();
-    let show_panel_on_startup = cfg!(target_os = "macos")
+    let show_panel_on_startup = local_acceptance_no_capture()
+        || cfg!(target_os = "macos")
         || main_panel_mode::winui()
         || startup_panel::is_update_restart(std::env::args_os(), env!("CARGO_PKG_VERSION"));
 
@@ -14035,7 +14138,7 @@ fn main() {
     // The single-instance plugin may terminate this process before Tauri setup.
     // Refresh an opted-in portable path first so moving the folder still works.
     #[cfg(target_os = "windows")]
-    if !memory_profile_active() {
+    if !memory_profile_active() && !local_acceptance_no_capture() {
         if let Err(err) = portable_autostart::reconcile_before_single_instance() {
             eprintln!("Failed to reconcile portable autostart before single-instance setup: {err}");
         }
@@ -14338,7 +14441,9 @@ fn main() {
                 winui_panel::initialize(app.handle().clone()).map_err(io::Error::other)?;
                 info!("WinUI 3 experiment initialized; no main WebView will be created");
             }
-            app_updater::start_background_checks(app.handle().clone());
+            if !local_acceptance_no_capture() {
+                app_updater::start_background_checks(app.handle().clone());
+            }
             install_vpaste_tray(app.handle())?;
 
             // Register user-facing entry points before heavier startup maintenance.
@@ -14357,13 +14462,13 @@ fn main() {
                 config
             };
             #[cfg(target_os = "windows")]
-            if runtime_mode::is_portable() {
+            if runtime_mode::is_portable() && !local_acceptance_no_capture() {
                 if let Err(err) = portable_autostart::reconcile(config.startup) {
                     error!("Failed to reconcile portable autostart at startup: {}", err);
                 }
             }
             #[cfg(not(target_os = "macos"))]
-            if !runtime_mode::is_portable() {
+            if !runtime_mode::is_portable() && !local_acceptance_no_capture() {
                 if let Err(err) = sync_autostart(app.handle(), config.startup) {
                     error!("Failed to sync autostart at startup: {}", err);
                 }
@@ -14371,20 +14476,22 @@ fn main() {
             if let Err(err) = sync_tray_visibility(app.handle(), config.display_tray_icon) {
                 error!("Failed to sync tray visibility at startup: {}", err);
             }
-            if let Some(s) = config.shortcut_keys.main_window.clone() {
-                match parse_optional_shortcut(Some(s.as_str()), "唤起主窗口") {
-                    Ok(shortcut) => {
-                        let _ = register_main_window_shortcut(app.handle(), shortcut);
+            if !local_acceptance_no_capture() {
+                if let Some(s) = config.shortcut_keys.main_window.clone() {
+                    match parse_optional_shortcut(Some(s.as_str()), "唤起主窗口") {
+                        Ok(shortcut) => {
+                            let _ = register_main_window_shortcut(app.handle(), shortcut);
+                        }
+                        Err(err) => error!("Skipping invalid startup shortcut: {}", err),
                     }
-                    Err(err) => error!("Skipping invalid startup shortcut: {}", err),
                 }
-            }
-            if let Some(s) = config.shortcut_keys.paste_queue_toggle.clone() {
-                match parse_optional_shortcut(Some(s.as_str()), "开关粘贴队列") {
-                    Ok(shortcut) => {
-                        let _ = register_main_window_shortcut(app.handle(), shortcut);
+                if let Some(s) = config.shortcut_keys.paste_queue_toggle.clone() {
+                    match parse_optional_shortcut(Some(s.as_str()), "开关粘贴队列") {
+                        Ok(shortcut) => {
+                            let _ = register_main_window_shortcut(app.handle(), shortcut);
+                        }
+                        Err(err) => error!("Skipping invalid paste queue shortcut: {}", err),
                     }
-                    Err(err) => error!("Skipping invalid paste queue shortcut: {}", err),
                 }
             }
             if let Err(err) = ensure_history_storage_dirs() {
@@ -14435,7 +14542,9 @@ fn main() {
                 )
                 .expect("load log plugin error");
             #[cfg(target_os = "windows")]
-            windows_paste_focus::initialize();
+            if !local_acceptance_no_capture() {
+                windows_paste_focus::initialize();
+            }
             #[cfg(target_os = "windows")]
             windows_main_shortcut::log_status();
             std::thread::spawn(move || {
@@ -14445,13 +14554,17 @@ fn main() {
                     }
                 }
 
-                info!("Starting clipboard listener");
-                image_ocr::start(handle.clone());
-                #[cfg(target_os = "macos")]
-                listen::start(handle.clone());
-                #[cfg(target_os = "windows")]
-                listen::start(handle.clone());
-                info!("Clipboard listener started");
+                if local_acceptance_no_capture() {
+                    info!("Local acceptance mode: clipboard capture, startup reconciliation and updater checks are disabled");
+                } else {
+                    info!("Starting clipboard listener");
+                    image_ocr::start(handle.clone());
+                    #[cfg(target_os = "macos")]
+                    listen::start(handle.clone());
+                    #[cfg(target_os = "windows")]
+                    listen::start(handle.clone());
+                    info!("Clipboard listener started");
+                }
                 if (config.onboarding_completed || main_panel_mode::native())
                     && show_panel_on_startup
                 {
@@ -14459,11 +14572,13 @@ fn main() {
                         error!("Failed to show main panel after startup: {}", err);
                     }
                 }
-                auto_cleanup::start(handle.clone());
-                std::thread::spawn(|| {
-                    cleanup_runtime_caches();
-                    cleanup_legacy_autostart_entries();
-                });
+                if !local_acceptance_no_capture() {
+                    auto_cleanup::start(handle.clone());
+                    std::thread::spawn(|| {
+                        cleanup_runtime_caches();
+                        cleanup_legacy_autostart_entries();
+                    });
+                }
             });
             Ok(())
         })

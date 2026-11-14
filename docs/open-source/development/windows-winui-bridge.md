@@ -152,11 +152,32 @@ No backend is saved to the user configuration file.
 Deployment is framework-dependent. The matching Windows App SDK Runtime NuGet
 package supplies four Microsoft-signed x64 MSIX packages, runtime license and
 notices in `runtime/`; the build also writes `SHA256SUMS.txt`. If the 2.6 runtime
-is missing, run the included `Install-WinUiRuntime.ps1` once. It checks package
-identity/version and uses `Add-AppxPackage` for the current user, without
+is missing, run the included `Install-WinUiRuntime.ps1` once. Keep the complete
+bundle, including `SHA256SUMS.txt`: the script checks all four files, hashes,
+expected package identities, architecture and minimum Windows versions before
+the first installation. It then skips same/newer installed versions and uses
+`Add-AppxPackage` for the current user, without
 downloading, forcing other applications to close or bypassing enterprise
 policies. `-WhatIf` checks the proposed installation without changing the system.
+The manifest's hashes detect incomplete/corrupt copies; `Add-AppxPackage` still
+verifies Microsoft signatures. This is preflight, not transactional installation:
+a later Windows/policy error can still leave some validated packages installed.
 The bootstrap reports this installation step when runtime initialization fails.
+
+The package scripts use .NET streaming SHA256 rather than depending on
+`Get-FileHash`, which was unavailable in the npm-spawned Windows PowerShell 5.1
+host on the acceptance machine. Installer tests use generated ZIP manifests and
+mock both Appx cmdlets; they never install/uninstall a runtime on the developer's
+machine.
+
+Local verification on 2026-11-14: the bundled runtime passed `-WhatIf`; the six
+mocked installer scenarios passed, including missing, corrupt and wrong-identity
+bundles rejected before any install call. The opt-in WinUI Release build and
+portable manifest checks passed. Twenty-one focused Rust autostart/backend
+tests passed after adding a portable-mode guard to the legacy login-entry
+cleanup. A Release memory comparison and physical keyboard/IME/mixed-DPI checks
+were not completed in this run; see the task's local evidence before treating
+those as accepted.
 
 The current SDK's runtime manifest requires Windows 10 **1809 / build 17763** or
 newer; do not infer 1709 support from older framework documentation. Windows 11

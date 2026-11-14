@@ -4,6 +4,39 @@ import XCTest
 
 @MainActor
 final class NativePanelToolbarTests: XCTestCase {
+  func testDeveloperToolsKeepMacTutorialAndExistingDiagnostics() {
+    let tools = PanelDeveloperTools(scale: 1, chinese: false)
+    XCTAssertEqual(Set(tools.actions.map { $0.id }), Set([
+      "tutorial-mac", "language", "theme", "test-room", "memory",
+      "native-panel", "native-window", "ui-lab", "refresh", "diagnostics",
+    ]))
+    var received: [String] = []
+    tools.onAction = { received.append($0) }
+    tools.perform("memory")
+    tools.perform("unknown")
+    tools.perform("tutorial-windows")
+    XCTAssertEqual(received, ["memory"])
+    tools.releaseContent()
+    tools.perform("test-room")
+    XCTAssertEqual(received, ["memory"], "Closing the panel releases action callbacks")
+  }
+
+  func testDeveloperToolsCollapseAndOverflowLeaveSpaceForSearchAndTabs() {
+    let tools = PanelDeveloperTools(scale: 1, chinese: false)
+    tools.expanded = true
+    XCTAssertEqual(tools.width(toolbarWidth: 1440, searching: true), PanelDeveloperTools.fullWidth)
+    XCTAssertEqual(tools.width(toolbarWidth: 720, searching: true), PanelDeveloperTools.menuWidth)
+    tools.expanded = false
+    XCTAssertEqual(tools.width(toolbarWidth: 1440, searching: false), 28)
+    tools.expanded = true
+    let view = PanelDeveloperToolbar(tools: tools)
+    view.frame = NSRect(x: 0, y: 0, width: PanelDeveloperTools.fullWidth, height: 32)
+    view.layoutSubtreeIfNeeded()
+    let buttons = view.subviews.flatMap { [$0] + $0.subviews }.compactMap { $0 as? NSButton }
+    XCTAssertEqual(buttons.count, 12)
+    XCTAssertTrue(buttons.allSatisfy { !$0.acceptsFirstResponder }, "DEV buttons must not join Tab focus navigation")
+  }
+
   func testButtonCursorOnlyCoversEnabledControlsWithoutInterceptingClicks() {
     let region = RecordingCursorRegion(cursor: .pointingHand)
     region.frame = NSRect(x: 0, y: 0, width: 28, height: 28)

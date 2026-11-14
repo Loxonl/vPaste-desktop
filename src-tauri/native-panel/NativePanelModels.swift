@@ -10,6 +10,7 @@ struct PanelFrame: Decodable {
 struct PanelConfiguration: Decodable {
   let session: UInt64
   let pasteQueue: PanelPasteQueueStatus?
+  var developerReconfigure: Bool? = nil
   let sizePreview: Bool
   let language: String
   let theme: String

@@ -99,6 +99,8 @@ async fn wait_until_not_closing(mut lifecycle: watch::Receiver<Lifecycle>) -> Re
 pub(crate) enum WindowKind {
     #[cfg(debug_assertions)]
     DevMemory,
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    DevTutorial,
     ClipboardPreview,
     PasteQueue,
     Config,
@@ -117,6 +119,8 @@ impl WindowKind {
         match self {
             #[cfg(debug_assertions)]
             Self::DevMemory => "devMemory",
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            Self::DevTutorial => "devTutorial",
             Self::ClipboardPreview => "clipboardPreview",
             Self::PasteQueue => "pasteQueue",
             Self::Config => "config",

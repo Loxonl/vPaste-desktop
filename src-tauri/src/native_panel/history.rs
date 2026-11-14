@@ -288,7 +288,7 @@ pub(super) fn open(query: HistoryQuery, tab_id: String, request: u64) -> Result<
     serde_json::to_value(page).map_err(|err| err.to_string())
 }
 
-pub(super) fn resume(tabs: Vec<PanelTab>, request: u64) -> Result<Value, String> {
+pub(super) fn resume(tabs: Vec<PanelTab>, request: u64, preserve: bool) -> Result<Value, String> {
     let _operation = OPERATIONS.lock().unwrap_or_else(|err| err.into_inner());
     let config = crate::config::get();
     let mut saved = STATE
@@ -296,9 +296,9 @@ pub(super) fn resume(tabs: Vec<PanelTab>, request: u64) -> Result<Value, String>
         .unwrap_or_else(|err| err.into_inner())
         .checkpoint
         .for_show(
-            config.retain_search_history,
-            config.retain_tab_position,
-            config.retain_last_position,
+            preserve || config.retain_search_history,
+            preserve || config.retain_tab_position,
+            preserve || config.retain_last_position,
         );
     let label = match saved.tab_id.as_str() {
         "all" => String::new(),
@@ -685,7 +685,7 @@ mod tests {
         )
         .unwrap();
         let id = opened["token"]["viewId"].as_str().unwrap().to_string();
-        let resumed = resume(vec![], history_views::reserve_native_open()).unwrap();
+        let resumed = resume(vec![], history_views::reserve_native_open(), false).unwrap();
         assert_eq!(resumed["delta"]["token"]["viewId"], id);
         assert_eq!(resumed["delta"]["token"]["revision"], 1);
         let known = resumed["delta"]["refs"]
@@ -803,6 +803,64 @@ mod tests {
         assert_eq!(removed["knownCount"], 0);
         assert_eq!(removed["pages"][0]["hashes"].as_array().unwrap().len(), 0);
         history_views::close(favorite_id);
+        history_views::close(&id);
+        let mut state = STATE.lock().unwrap();
+        state.token = None;
+        state.sent.clear();
+        state.checkpoint = Checkpoint::default();
+        drop(state);
+        crate::search::engine::shutdown_runtime_for_tests();
+        crate::config::save(crate::config::Config::default());
+    }
+
+    #[test]
+    fn developer_appearance_rebuild_keeps_the_viewport_even_when_normal_reopen_does_not() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(root.path().to_string_lossy().into());
+        crate::config::save(crate::config::Config {
+            storage_dir: root.path().to_string_lossy().into(),
+            retain_last_position: false,
+            retain_tab_position: false,
+            retain_search_history: false,
+            ..Default::default()
+        });
+        clipboard::db::init();
+        let conn = clipboard::db::db();
+        for index in 0..4_u64 {
+            conn.execute("insert into clipboard(hash,time,content,preview_content,item_type,search_index,source,app_source,app_icon_path,title_color,icon,label) values(?1,?2,'body','body','Text',1,'','','','','',0)",
+                rusqlite::params![format!("dev-{index}"), 1000 - index]).unwrap();
+        }
+        let opened = open(
+            HistoryQuery {
+                keywords: String::new(),
+                label: String::new(),
+            },
+            "all".into(),
+            history_views::reserve_native_open(),
+        )
+        .unwrap();
+        let id = opened["token"]["viewId"].as_str().unwrap().to_string();
+        checkpoint(
+            &id,
+            Checkpoint {
+                anchor_hash: "dev-2".into(),
+                anchor_index: 2,
+                offset: 0.3,
+                selected_hash: "dev-2".into(),
+                viewport_revision: 1,
+                view_revision: 1,
+                ..Default::default()
+            },
+        );
+        suspend();
+        let preview = resume(vec![], history_views::reserve_native_open(), true).unwrap();
+        assert_eq!(preview["delta"]["token"]["viewId"], id);
+        assert_eq!(preview["delta"]["anchorIndex"], 2);
+        assert_eq!(preview["delta"]["offset"], 0.3);
+        let normal = resume(vec![], history_views::reserve_native_open(), false).unwrap();
+        assert_eq!(normal["delta"]["anchorIndex"], 0);
+        assert_eq!(normal["delta"]["offset"], 0.0);
         history_views::close(&id);
         let mut state = STATE.lock().unwrap();
         state.token = None;

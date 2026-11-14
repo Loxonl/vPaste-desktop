@@ -49,12 +49,13 @@ preparation and before native commit. Renderer handoffs transfer focus when the
 outgoing reader held it; retiring an old reader does not cancel a newer request.
 Native callbacks queue Tauri UI work instead of waiting for its event loop.
 
-The shared renderer remains loaded on demand for unsupported/rich routes. Once
-that renderer has been used, its existing retained-window lifetime remains in
-effect. This is a migration of common preview content, not a claim that all
-auxiliary WebViews have been removed. Settings remains React/MUI and is still
-destroyed on close. The main dock, queue and tag changes approved in stages 1–3
-remain in the worktree.
+The shared renderer is loaded on demand for unsupported/rich routes. In a WinUI
+session it is reused while visible, then destroyed on close; generation and
+window-instance checks protect a newer show/pin request from stale retirement.
+The ordinary WebView and macOS sessions retain their existing reader lifetime.
+This is a migration of common preview content, not a claim that all auxiliary
+WebViews have been removed. Settings remains React/MUI and is still destroyed
+on close. See the maintained [bridge lifecycle contract](../development/windows-winui-bridge.md#auxiliary-renderer-lifecycle).
 
 ## Local verification — 2026-11-13
 

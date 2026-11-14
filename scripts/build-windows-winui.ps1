@@ -18,7 +18,7 @@ try {
     $infoText = & $executable --winui-build-info | Out-String
     if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the Release executable.' }
     $info = $infoText | ConvertFrom-Json
-    if (-not $info.winui -or $info.debug -or $info.arch -ne 'x86_64') {
+    if (-not $info.winui -or $info.debug -or $info.localAcceptance -or $info.arch -ne 'x86_64') {
         throw 'Expected a Windows x64 Release binary built with --features winui.'
     }
     & node scripts/check-office-release-isolation.mjs --binary $executable

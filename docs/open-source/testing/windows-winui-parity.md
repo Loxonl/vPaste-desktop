@@ -17,8 +17,9 @@ PR #363; it does not repeat the already implemented migration.
    shipping entry. Closing it exits selection. Adding a batch clears only the
    successfully submitted selection, stays in selection mode, and accepts the
    next batch. Failed or duplicate requests cannot discard the draft selection.
-   The existing separate selection command remains available in overflow.
-   Leaving selection restores the previous browsing selection when still present,
+   Opening the queue is the selection-mode entry point and closing it exits
+   selection, matching the shipping WebView's `pasteQueueActive` state; there is
+   no separate selection command in toolbar overflow. Leaving selection restores the previous browsing selection when still present,
    without moving the viewport or automatically opening a preview.
 3. **Tags and filters:** keep the trailing add menu and above-trigger native
    editors, Emoji direction, draft retention and destructive confirmation.
@@ -49,7 +50,7 @@ PR #363; it does not repeat the already implemented migration.
 The comparison available in this repository is the shipping React 18 WebView,
 not a Vue implementation: `src/clipboard/ClipboardHeader.tsx` and
 `Clipboard.module.css`. No Vue source or the previously uploaded
-Files/PowerToys research Markdown was present in this checkout. This review
+Files/PowerToys research Markdown was present in this checkout at that time. This review
 uses the checked-in React implementation and current Microsoft documentation;
 it does not claim to have compared a separate deployed Vue build.
 
@@ -127,9 +128,9 @@ Local verification (2026-11-13):
   process check, not a claim about every auxiliary-window lifecycle.
 
 The queue's former primary-toolbar selection/Add commands are replaced by an
-automatic selection entry and the bounded bottom action bar. Manual selection
-entry remains available in overflow. Successful additions retain selection mode;
-failed requests retain the selection. Tag management now recovers its controls
+automatic selection entry and the bounded bottom action bar. Opening the queue
+is the only selection-mode entry point, matching the shipping WebView. Successful
+additions retain selection mode; failed requests retain the selection. Tag management now recovers its controls
 when dispatch returns no request ID or throws a WinRT error, without clearing the
 draft. Name-entry handlers ignore IME-processed keys; real composition still
 requires the manual check below.
@@ -163,3 +164,144 @@ Windows 10, DWM/Acrylic, external target negotiation, real keyboard/IME input,
 100/150/200% scaling, mixed monitors and native macOS have not been accepted by
 these automated results. The earlier full-suite isolated-clipboard environment
 failure is not reclassified as a pass by this focused run.
+
+### Main-panel follow-up — 2026-11-15
+
+- The toolbar now puts Settings last, after the conditional update action, and
+  hides the persistent overflow affordance. Copy, paste, favorite, tag
+  management and queue selection remain reachable from card actions, the
+  trailing tag menu and the queue entry flow. This follows the user's requested
+  Settings-last order; the shipping WebView places its conditional update action
+  after Settings.
+- Category and custom-tag labels are centered through the realized native
+  template, with zero vertical padding. The regression measures rendered label
+  bounds, not just the assigned alignment properties.
+- The tutorial auxiliary window is positioned over the bottom-docked panel area
+  on the panel's monitor, with physical-pixel clamping and small-monitor bounds.
+  It remains a separate auxiliary window rather than content inside the native
+  panel, so its windowing structure is not identical to the WebView tutorial.
+- Panel-size preview now updates the WinUI layout without creating a clipboard
+  WebView, disables hit testing without activation, and restores the previous
+  geometry and visibility on finish/cancel. The XAML regression exercises the
+  temporary layout, non-activation, hit testing and restoration.
+- Card geometry matches the WebView's 220×230 size, 14-DIP radius and outside
+  selection outline. WinUI retains a 1-DIP native surface stroke and ThemeShadow
+  elevation (4 DIP at rest, 8 DIP on pointer hover); WebView uses a subtle CSS
+  shadow without a separate hover elevation. Those remaining material
+  differences require visual review.
+- Manual checks still required: actual WinUI layout at 100/150/200% scaling and
+  mixed-DPI monitors, bottom-panel tutorial placement, toolbar narrow-width
+  behavior, and selected/hovered card appearance in light/dark themes.
+
+### Rendered parity and settings audit — 2026-11-15
+
+This record supersedes the earlier padding-only tab approach and the November 14
+statement that the native selection pill was intentional. The pinned WinUI template has two
+Auto rows: setting outer content alignment did not center its rendered label.
+The realized template now uses the full 48-DIP header height, with one shared
+3-DIP composition underline. Built-in and custom tabs have 8-DIP gaps, bounded
+single-line labels, automatic selected-tab scrolling and a trailing 36-DIP add
+button. The regression measures actual template bounds across Chinese/English,
+light/dark and 640/960-DIP headers; the padding-only version failed by 14 DIP.
+
+The outside card outline also supersedes the earlier overlay-only geometry:
+the selected border is 2 DIP thick with a 2-DIP gap, and its outer radius is
+18 DIP around the unchanged 14-DIP card. It occupies a separate non-interactive
+sibling beside the card's rounded content, with an explicit gutter. An outline
+inside that content could have correct bounds yet be clipped away; regression
+coverage therefore checks rendered pixels as well as bounds and stable content
+position. Ordinary selection and keyboard focus share this outline; contrast
+themes retain the native system selection/focus presentation.
+
+The supplied Files/PowerToys research document was available and consulted in
+this audit. It remains a reference for native controls, visible-item loading,
+focus and physical geometry; it does not replace the shipping vPaste layout or
+override the pinned SDK. No SDK or framework upgrade is part of this change.
+
+#### Settings-to-native matrix
+
+| Setting or operation | Existing owner / native consumer | Result of this audit |
+| --- | --- | --- |
+| Language and system/light/dark theme | Config save events; `apply_language`, `apply_theme`, XAML theme resources | Retained. Language/theme apply to native controls and are reapplied on show. |
+| Main-panel height | `panel_size` preview session; native canonical `PanelLayout` | Added a synchronous native-only preview route. It snapshots geometry/visibility, shows without activation or hit testing, and restores before save/cancel. Existing settings commands and config shape are unchanged. |
+| Retain search, category and position | `behavior::from_config`; `PrepareMainShow` and history viewport state | Retained, with Rust projection and native fresh-show/search/viewport regressions. |
+| Single/double-click paste, quick input, Tab selection and plain-text shortcut | Existing config projection; native click/key routing | Retained; normal control editing, menus and IME composition retain key ownership. |
+| Hover preview | Existing preference; native hover timer and Rust preview session | Retained. Manual/pinned preview protection and cancellation remain in the same session owner. |
+| Automatic link preview | Existing `BackgroundResources` preference, cache and cancellation | Connected native visible-card requests and visibility to this service; query changes reset its link view. Config changes refresh card data. No independent fetcher was added. |
+| OCR and completed clipboard resources | Existing OCR/resource workers and Tauri notifications | Native refresh now also receives notifications addressed to the absent clipboard WebView and OCR completion. |
+| Import, clear and storage-directory changes | Existing Rust data operations; `history-reset` | Native reset now cancels the old preview, clears the previous dataset's queue-selection draft, reloads tag/filter metadata and requests fresh history rather than retaining old rows. |
+| Saved filters changed outside the native editor | Existing `custom-tabs-changed` event and stored filters | Added native metadata reload for events addressed to the clipboard WebView. |
+| Privacy, capture filters, retention/cleanup, startup, tray and updates | Existing Rust capture, storage, shortcut, startup, tray and updater services | Still owned by those services. The native UI uses their existing results/events; no parallel settings store or business rules were introduced. |
+| Settings window lifetime | Existing auxiliary-window creation and close/destroy path | Retained React/MUI settings created on demand; no resident main WebView was introduced for these fixes. |
+
+#### Workflow audit
+
+| Workflow | Code and automated evidence | Physical acceptance still needed |
+| --- | --- | --- |
+| Auto-hide and focus return | `focus.rs` delayed/generation-checked blur; protects internal windows, drag, modal and pinned preview | Actual outside click, foreground paste target and auxiliary close/reopen |
+| Search/filter and selection | Stale-query protection, Enter cancellation, IME key ownership, lazy detail requests, mixed tab order and viewport restoration | Real IME and pointer/keyboard comfort at different scale factors |
+| Queue | Existing Rust state; native batch selection, duplicate/error preservation, reorder/remove/clear/Undo and 100-item lifecycle checks | Real capture/paste target and dragging |
+| Card menu, editing and external drag | Existing authoritative Rust actions and native `DataPackage`; complete file/image payload and source-state tests | Explorer, OneNote and other actual targets; clipboard format negotiation |
+| Preview | Versioned Rust session, native reader reuse, navigation and physical owner-relative geometry; existing rich HTML/PDF fallback | Held Space, rapid arrow navigation, hover/pinning and focus on real windows |
+| Motion and monitor placement | Single native dock-motion owner, shared tab indicator, animation-disabled branch, physical geometry/DPI-context restoration and interrupted-slide tests | Windows animation setting, 100/150/200%, negative-origin/mixed-DPI displays and display removal |
+
+#### Remaining visual/architectural decisions
+
+- Onboarding now opens in the bottom-panel area on the native panel's monitor,
+  reusing the shipping tutorial and shortcut-practice logic. It remains a
+  temporary auxiliary WebView, not an inline reproduction of the full shipping
+  header/filter composition. Fully native or inline onboarding is a separate
+  design decision; it must not recreate a resident main WebView.
+- Native `AutoSuggestBox`, flyouts, dialogs, editing controls and queue
+  checkboxes retain Windows interaction and focus behavior. Their exact glyphs,
+  typography and checkbox placement need not mimic browser pixels. The dock,
+  actions, cards and tab hierarchy still follow the shipping interface.
+- Card ThemeShadow elevation remains 4 DIP at rest / 8 DIP on hover. Real DWM
+  window shadows and backdrop appearance require desktop review; XAML bitmap
+  captures do not include the complete OS composition.
+
+#### Local verification for this batch
+
+- Style architecture, TypeScript/Vite production build, Rust formatting,
+  default Windows `cargo check`, WinUI `cargo check` and the actual WinUI Debug
+  executable/DLL build passed. Production frontend output was kept in the
+  ignored evidence directory rather than replacing the Debug frontend assets.
+- The WinUI Rust module suite passed 60 tests; its two desktop-dependent tests
+  were then run separately and passed on the real Windows App SDK: shell stage
+  18 and history/queue stage 131. The two shared panel-size config tests also
+  passed in the default Windows build.
+- Failing-first checks reproduced the 14-DIP tab-label offset, outside outline
+  geometry, invisible/clipped outline pixels, and stale history-reset queue
+  selection. The corrected rendered outline matched the actual theme accent.
+  The broader native suite caught an intermediate selection-content cast after
+  the outline became a sibling; selection now uses item identity/index, and
+  the complete queue/history suite passed again.
+- Submission verification on `20a5fa7` plus this batch passed all 803 frontend
+  unit tests. Six release-upload shell fixtures had initially failed because
+  this host resolved `bash` through WSL, which cannot use their Windows temporary
+  paths. Re-running with Git Bash and the official Windows `jq` executable
+  passed all six, then the complete suite. Only the test-process environment
+  changed; release scripts and fixtures were not modified. The five focused
+  native-presentation source checks also passed.
+- All 30 selected local Playwright cases passed: onboarding in both languages,
+  both themes and normal/reduced motion; compact panel-height controls; search
+  submission; deletion; and tab/preview navigation. These are browser-based
+  checks with Tauri mocks, not proof of physical native focus or macOS behavior.
+- Inspected actual XAML captures for header alignment, ordinary/multiple card
+  selection and auxiliary editors. Evidence is under ignored
+  `src-tauri/tmp/winui-main-parity-20261115/`; no snapshots were auto-approved.
+- Windows denied the synthetic test foreground focus for posted Space and some
+  queue-focus assertions. Those checks explicitly skipped. Physical keyboard,
+  IME, outside-click/focus return, external-app drag, DWM/Acrylic, Windows 10,
+  mixed monitors and 100/150/200% scaling remain manual acceptance.
+- No GitHub Actions were manually dispatched and no release was published.
+  This batch leaves macOS, installers, config formats, databases and the default
+  WebView behavior unchanged. The latest macOS native-toolbar work was retained
+  by basing submission on `20a5fa7`; the unrelated PR-template edit is excluded.
+
+One consolidated desktop pass should check the tab strip/trailing add menu and
+Settings-last toolbar, ordinary/queue selection rings, all three size presets
+and cancellation/focus-loss restoration, bottom-panel onboarding/shortcut
+practice, then search/Space/queue/paste/drag across the user's normal displays.
+Use a disposable history fixture for destructive reset/import checks, not the
+user's real history. Physical visual approval remains pending.

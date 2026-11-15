@@ -223,6 +223,12 @@ fn apply_preview(
     source: &tauri::WebviewWindow,
     size: PanelSize,
 ) -> Result<Option<tauri::WebviewWindow>, String> {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if crate::main_panel_mode::winui() {
+        PERCENT.store(size.percent(), Ordering::SeqCst);
+        crate::winui_panel::show_size_preview(source, size.scale())?;
+        return Ok(None);
+    }
     #[cfg(all(debug_assertions, target_os = "macos"))]
     if crate::main_panel_mode::native() {
         PERCENT.store(size.percent(), Ordering::SeqCst);
@@ -254,6 +260,16 @@ fn apply_preview(
     Ok(Some(window))
 }
 
+fn finish_webview_preview(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("clipboard") {
+        let hidden = crate::finish_hide_window_locked(&window, false);
+        restore_normal_order(&window);
+        hidden
+    } else {
+        Ok(())
+    }
+}
+
 fn finish(
     app: &tauri::AppHandle,
     expected_session: Option<u64>,
@@ -283,13 +299,17 @@ fn finish(
         crate::CLIPBOARD_VISIBLE.store(false, Ordering::SeqCst);
         crate::background_resources::set_visible(app, false);
     }
-    let hidden = if let Some(window) = app.get_webview_window("clipboard") {
-        let hidden = crate::finish_hide_window_locked(&window, false);
-        restore_normal_order(&window);
-        hidden
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    let hidden = if crate::main_panel_mode::winui() {
+        crate::winui_panel::finish_size_preview().map(|was_visible| {
+            crate::CLIPBOARD_VISIBLE.store(was_visible, Ordering::SeqCst);
+            crate::background_resources::set_visible(app, was_visible);
+        })
     } else {
-        Ok(())
+        finish_webview_preview(app)
     };
+    #[cfg(not(all(target_os = "windows", feature = "winui")))]
+    let hidden = finish_webview_preview(app);
     let saved = match commit {
         Some(size) if hidden.is_ok() => config::try_update(|config| {
             config.clipboard_panel_size = Some(size);

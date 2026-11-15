@@ -5,11 +5,11 @@ use std::{
     ffi::{c_char, c_void, OsStr},
     os::windows::ffi::OsStrExt,
     path::PathBuf,
-    sync::{atomic::AtomicBool, OnceLock},
+    sync::{atomic::AtomicBool, Mutex, OnceLock},
 };
 
 use serde_json::json;
-use tauri::{AppHandle, Emitter, Listener};
+use tauri::{AppHandle, Emitter, Listener, Manager};
 
 mod actions;
 mod app_actions;
@@ -35,6 +35,8 @@ type PanelWindowHandle = unsafe extern "C" fn() -> usize;
 type PanelSetTheme = unsafe extern "C" fn(u32) -> i32;
 type PanelSetLayout = unsafe extern "C" fn(*const layout::PanelLayout) -> i32;
 type PanelGetLayout = unsafe extern "C" fn(*mut layout::PanelLayout) -> i32;
+type PanelSetPreviewLayout = unsafe extern "C" fn(*const layout::PanelLayout) -> i32;
+type PanelSizePreview = unsafe extern "C" fn(bool, bool) -> i32;
 type PanelSetLanguage = unsafe extern "C" fn(bool) -> i32;
 type PanelShutdown = unsafe extern "C" fn();
 type PanelRequest = unsafe extern "C" fn(*const u8, usize);
@@ -58,6 +60,8 @@ struct PanelApi {
     set_theme: PanelSetTheme,
     set_layout: PanelSetLayout,
     get_layout: PanelGetLayout,
+    set_preview_layout: PanelSetPreviewLayout,
+    size_preview: PanelSizePreview,
     set_language: PanelSetLanguage,
     set_click_mode: PanelSetClickMode,
     set_behavior: PanelSetBehavior,
@@ -82,6 +86,13 @@ static APP: OnceLock<AppHandle> = OnceLock::new();
 static ACTION_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MODAL_ACTIVE: AtomicBool = AtomicBool::new(false);
+static SIZE_PREVIEW: Mutex<Option<SizePreviewSnapshot>> = Mutex::new(None);
+
+#[derive(Clone, Copy)]
+struct SizePreviewSnapshot {
+    layout: layout::PanelLayout,
+    was_visible: bool,
+}
 
 pub(crate) fn modal_active() -> bool {
     MODAL_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
@@ -297,6 +308,17 @@ fn load_panel_api() -> Result<PanelApi, String> {
     if get_layout.is_null() {
         return Err("WinUI stable-layout export is missing; rebuild the native app".into());
     }
+    // SAFETY: the export borrows a repr(C) preview layout for the synchronous STA message.
+    let set_preview_layout =
+        unsafe { GetProcAddress(module, b"vpaste_winui_set_preview_layout\0".as_ptr().cast()) };
+    if set_preview_layout.is_null() {
+        return Err("WinUI preview-layout export is missing; rebuild the native app".into());
+    }
+    let size_preview =
+        unsafe { GetProcAddress(module, b"vpaste_winui_size_preview\0".as_ptr().cast()) };
+    if size_preview.is_null() {
+        return Err("WinUI size-preview export is missing; rebuild the native app".into());
+    }
     // SAFETY: the symbol name is NUL-terminated; the module stays loaded.
     let set_behavior =
         unsafe { GetProcAddress(module, b"vpaste_winui_set_behavior\0".as_ptr().cast()) };
@@ -314,6 +336,10 @@ fn load_panel_api() -> Result<PanelApi, String> {
         set_theme: unsafe { set_theme_symbol(module)? },
         set_layout: unsafe { std::mem::transmute::<*mut c_void, PanelSetLayout>(set_layout) },
         get_layout: unsafe { std::mem::transmute::<*mut c_void, PanelGetLayout>(get_layout) },
+        set_preview_layout: unsafe {
+            std::mem::transmute::<*mut c_void, PanelSetPreviewLayout>(set_preview_layout)
+        },
+        size_preview: unsafe { std::mem::transmute::<*mut c_void, PanelSizePreview>(size_preview) },
         set_language: unsafe { set_language_symbol(module)? },
         set_click_mode: unsafe { set_click_mode_symbol(module)? },
         // SAFETY: matches the synchronous byte-buffer C ABI in WinUiPanel.cpp.
@@ -358,9 +384,19 @@ pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
         "listen_new_clipboard",
         "clipboard-item-edited",
         "clipboard-resources-updated",
+        "image-ocr-updated",
     ] {
-        app.listen(event, move |_| refresh());
+        // Resource notifications may explicitly target the clipboard WebView,
+        // which does not exist in this backend.
+        app.listen_any(event, move |_| refresh());
     }
+    app.listen("history-reset", move |_| {
+        preview::owner_hidden();
+        send_response(0, "historyReset", Ok(json!({})));
+    });
+    app.listen_any("custom-tabs-changed", move |_| {
+        send_response(0, "filtersChanged", Ok(json!({})));
+    });
     app.listen("item-tags-changed", move |_| {
         refresh_tags();
     });
@@ -402,6 +438,7 @@ pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
                 log::error!("Failed to schedule WinUI panel layout: {error}");
             }
         }
+        refresh();
     });
     app.listen("language-changed", move |_| {
         if let Err(error) = apply_language() {
@@ -436,6 +473,9 @@ fn initialize_native(english: bool, single_click_paste: bool) -> Result<(), Stri
 extern "C" fn visibility_changed(visible: bool) {
     focus::visibility_changed();
     crate::CLIPBOARD_VISIBLE.store(visible, std::sync::atomic::Ordering::SeqCst);
+    if let Some(app) = APP.get() {
+        crate::background_resources::set_visible(app, visible);
+    }
     if visible {
         crate::CLIPBOARD_HIDING.store(false, std::sync::atomic::Ordering::SeqCst);
         if let Some(app) = APP.get() {
@@ -486,6 +526,52 @@ pub(crate) fn set_queue_view(active: bool) -> Result<(), String> {
     check_hresult("queue-view update", unsafe {
         (panel.set_queue_view)(active)
     })
+}
+
+pub(crate) fn show_size_preview(
+    source: &tauri::WebviewWindow,
+    panel_scale: f64,
+) -> Result<(), String> {
+    let panel = api()?;
+    let mut original = layout::PanelLayout::default();
+    check_hresult("size preview layout snapshot", unsafe {
+        (panel.get_layout)(&mut original)
+    })?;
+    let mut preview = SIZE_PREVIEW
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if preview.is_none() {
+        *preview = Some(SizePreviewSnapshot {
+            layout: original,
+            was_visible: crate::CLIPBOARD_VISIBLE.load(std::sync::atomic::Ordering::SeqCst),
+        });
+    }
+    drop(preview);
+
+    layout::apply_size_preview(source, panel_scale)?;
+    check_hresult("size preview show", unsafe {
+        (panel.size_preview)(true, false)
+    })
+}
+
+pub(crate) fn finish_size_preview() -> Result<bool, String> {
+    let panel = api()?;
+    let Some(snapshot) = SIZE_PREVIEW
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take()
+    else {
+        return Ok(crate::CLIPBOARD_VISIBLE.load(std::sync::atomic::Ordering::SeqCst));
+    };
+    let layout_result = check_hresult("size preview layout restore", unsafe {
+        (panel.set_preview_layout)(&snapshot.layout)
+    });
+    let visibility_result = check_hresult("size preview restore", unsafe {
+        (panel.size_preview)(false, snapshot.was_visible)
+    });
+    layout_result?;
+    visibility_result?;
+    Ok(snapshot.was_visible)
 }
 
 pub(crate) fn show_queue_no_activate() -> Result<(), String> {
@@ -630,6 +716,10 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
     };
     let id = request.id;
     let op = request.op.clone();
+    if op == "query" {
+        let resources = app.state::<crate::background_resources::BackgroundResources>();
+        resources.reset_links_for_view(resources.epoch());
+    }
     if op == "panelBlur" {
         focus::lost(app);
         return;
@@ -819,6 +909,7 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
             "removeTag" => update_item_tag(request.hash, request.tag_id, false).await,
             "card" => {
                 query_card(
+                    app.clone(),
                     request.hash,
                     request.argument == "refresh",
                     request.card_scale,
@@ -1004,11 +1095,24 @@ async fn delete_history_item(app: AppHandle, hash: String) -> Result<serde_json:
     Ok(json!({ "deleted": true, "hash": hash }))
 }
 
-async fn query_card(hash: String, refresh: bool, scale: f64) -> Result<serde_json::Value, String> {
+async fn query_card(
+    app: AppHandle,
+    hash: String,
+    refresh: bool,
+    scale: f64,
+) -> Result<serde_json::Value, String> {
+    let resources = app
+        .state::<crate::background_resources::BackgroundResources>()
+        .inner()
+        .clone();
+    let resource_epoch = resources.epoch();
     let summary_hash = hash.clone();
     let (mut card, media_path) = tauri::async_runtime::spawn_blocking(move || {
         let payload = crate::clipboard::history_card_payload(&summary_hash, false)?;
         let item = payload.item;
+        // Match the shipping reader: schedule only requested/visible cards,
+        // reuse its link preference, cache, cancellation and visibility epoch.
+        resources.submit_refs(app, &[&item], resource_epoch, false);
         let actions = actions::metadata(&item);
         let tags = item.tags.clone();
         let title_color = item.title_color.clone();

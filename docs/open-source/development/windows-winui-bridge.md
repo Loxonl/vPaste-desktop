@@ -9,7 +9,7 @@ The shipping WebView remains the default unless `--main-ui=winui` is supplied.
 ## Initialization and messages
 
 Rust loads the adjacent DLL and checks `vpaste_winui_protocol_version` before
-initialization. Version 2 is defined by `winui_panel/bridge.rs` and `WinUiBridge.h`.
+initialization. Version 3 is defined by `winui_panel/bridge.rs` and `WinUiBridge.h`.
 A missing or incompatible version is a startup error with a rebuild instruction;
 an old DLL must not silently run against a new Rust host.
 
@@ -72,15 +72,15 @@ and accessibility rather than a different file-manager layout.
 | Surface | Native implementation and preserved behavior |
 | --- | --- |
 | Search | `AutoSuggestBox` with native query/clear buttons; live filtering, IME, Ctrl+F, latest-query Enter paste and two-step Escape. The collapsed circular trigger keeps the header compact. |
-| Header actions | Circular surfaces, in order: developer tools, queue, settings, conditional update. `CommandBar` keeps native keyboard navigation and overflow; developer actions use a native menu. |
-| Categories and tags | `SelectorBar` in a horizontal `ScrollViewer`; add follows the final tab. Tag/filter editors open above their anchor using unconstrained native `Flyout`. |
-| Cards | `ListView` with horizontal `ItemsStackPanel`; details are loaded for realized containers. One 14-DIP rounded outline covers selection and keyboard focus without resizing content; contrast themes keep system focus and selection visuals. |
+| Header actions | Circular surfaces, in order: developer tools, queue, conditional update, settings. Settings is the final standard action; the persistent overflow button and duplicate copy/paste/favorite/queue-selection actions are removed. Card-level actions, tag management, and queue selection remain reachable from their corresponding card, tab-add, and queue interactions. |
+| Categories and tags | `SelectorBar` in a horizontal `ScrollViewer`; the pinned template is centered in the 48-DIP header and its internal pill is replaced by one shared composition underline. Add follows the final tab. Tag/filter editors open above their anchor using unconstrained native `Flyout`. |
+| Cards | `ListView` with horizontal `ItemsStackPanel`; details are loaded for realized containers. A 2-DIP selection/focus outline sits 2 DIP outside the 14-DIP rounded card, in an unclipped sibling with its own gutter. Selection maps through list item indices rather than casting the visual content to a card border; contrast themes keep system focus and selection visuals. |
 | Menus and confirmations | Native `MenuFlyout`, `ComboBox` and `ContentDialog` retain their templates, dismissal, keyboard behavior and default shadows. Do not add a second shadow behind them. |
 | Elevation | DWM owns the dock, queue and reader window shadows. `WinUiAppearance.h` owns small inline `ThemeShadow` elevations for cards, header, tag chips and toolbar controls; contrast mode removes decorative shadows. |
 | Auto-hide | External deactivation schedules a delayed recheck. Reopening, internal focus, editors, dialogs, drag, preview pinning and existing hide suppression protect the panel from stale blur events. |
 | Queue | The existing Rust queue remains authoritative; the separate non-activating native window keeps paste focus on the target app. Its toolbar toggle and multi-selection actions remain separate. |
 | Settings | The existing WebView settings page remains in use and is destroyed on close. It is not part of this native UI migration. |
-| First run | A temporary `/native-onboarding` auxiliary page reuses the shipping tutorial without mounting the main clipboard WebView. It retains saved filters, completion and the configured shortcut; completion or cancellation destroys the page. Cancellation does not mark onboarding complete. |
+| First run | A temporary `/native-onboarding` auxiliary page reuses the shipping tutorial without mounting the main clipboard WebView. It is centered over the bottom-docked panel area on the panel's monitor, stays within the display bounds, and retains saved filters, completion and the configured shortcut; completion or cancellation destroys the page. Cancellation does not mark onboarding complete. |
 
 The shell parity regression runs real controls on the WinUI STA with synthetic
 records and no user database. Native rendering snapshots cannot prove DWM

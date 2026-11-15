@@ -44,6 +44,24 @@ fn apply(bounds: ScreenBounds, panel_scale: f64) -> Result<(), String> {
     super::check_hresult("docked layout", unsafe { (panel.set_layout)(&layout) })
 }
 
+pub(super) fn apply_size_preview(
+    source: &tauri::WebviewWindow,
+    panel_scale: f64,
+) -> Result<(), String> {
+    let monitor =
+        crate::source_window_monitor(source).or_else(|| source.current_monitor().ok().flatten());
+    let bounds = monitor
+        .as_ref()
+        .map(crate::screen_bounds_from_monitor)
+        .unwrap_or_else(|| crate::screen_bounds(source));
+    let layout = from_bounds(bounds, panel_scale);
+    let panel = super::api()?;
+    // SAFETY: the C export synchronously copies this repr(C) preview layout.
+    super::check_hresult("preview layout", unsafe {
+        (panel.set_preview_layout)(&layout)
+    })
+}
+
 pub(super) fn before_show(app: &AppHandle) -> Result<(), String> {
     let monitor = crate::target_clipboard_monitor_for_app(app);
     let bounds = monitor

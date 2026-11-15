@@ -305,3 +305,55 @@ and cancellation/focus-loss restoration, bottom-panel onboarding/shortcut
 practice, then search/Space/queue/paste/drag across the user's normal displays.
 Use a disposable history fixture for destructive reset/import checks, not the
 user's real history. Physical visual approval remains pending.
+
+### Desktop size-preview and queue-density follow-up — 2026-11-15
+
+This follow-up audits desktop ownership and visible parity after PR 377. It
+retains the shipping WebView as the product reference and WinUI's native
+control templates, input semantics and hover/pressed feedback.
+
+| Reproduced difference | Correction | Regression evidence |
+| --- | --- | --- |
+| Selected tab text stayed black/white while the WebView marks it with the accent. | Supply the selected normal-state foreground through Light/Dark/HighContrast theme dictionaries and SDK color resources. Keep the native selected hover/pressed states. | Actual `SelectorBarItem` label foreground is compared with the rendered indicator brush in Chinese/English, light/dark and 640/960-DIP headers. The original failed at shell stage 16. |
+| A size preview opened during a hide slide could keep moving or disappear. Display/DPI/work-area notifications, or their later Rust layout reply, could hide a preview whose ordinary dock state was hidden. | Stop and settle the old slide when entering preview. Preserve preview visibility during notifications and after layout replies, without activation or pointer input. Keep the existing Rust draft-size and cancellation/restoration mechanism. | Actual HWND visibility/bounds, stopped timer, disabled hit testing and layout-request/reply path are checked at shell stages 19–20. Each failing path was reproduced before its fix. |
+| A queue constrained by a short work area compressed its contents vertically. At 80% density its unscaled minimum width also forced a 450-DIP logical root instead of 360 DIPs. | Derive queue content bounds and native minimum tracking size from both real HWND DPI and panel density. Let the existing Grid/ScrollViewer absorb reduced height. | Stage 21 first measured scale 1.000/0.750, then reproduced the 80% minimum-width mismatch. The test uses synthetic queue records and checks uniform scale, a shorter list viewport and 80/90/100% panel density. |
+
+The focus audit retained the existing delayed, generation-checked blur path:
+internal windows, active drag/dialog, protected preview and explicit hide
+suppression remain guards. Native preview reuse/navigation and external-drag
+ownership are unchanged. The shared Rust layout still supplies physical monitor
+bounds and preserves draft size while previewing; no parallel size policy was
+introduced.
+
+The constrained-queue check changes only its isolated test HWND dimensions. The
+DPI/display checks inject native notifications and apply a simulated layout
+reply through the actual exported interface. These are regression evidence,
+not physical mixed-monitor acceptance. Real 100/150/200% monitor scaling,
+Windows 10/11 DWM shadows/backdrops, external paste targets and IME/focus still
+need one consolidated desktop pass.
+
+Local evidence is kept under ignored
+`src-tauri/tmp/winui-desktop-parity-polish-20261115/`. No Actions, installer,
+release, macOS UI, configuration-format or database changes are part of this
+follow-up.
+
+Local verification for this follow-up:
+
+- Style architecture, the five frontend native-presentation contract checks,
+  TypeScript/Vite production build and Rust formatting passed. Production
+  frontend output used the ignored evidence directory, preserving Debug assets.
+- All 60 WinUI/Rust module tests passed. The two desktop-dependent suites ran
+  separately on the installed SDK and passed: shell stage 21 and history/queue
+  stage 131. The latter includes repeated reader, 36-card and 100-item queue
+  lifecycle checks; these synthetic cycles are not release memory benchmarks.
+- Actual XAML header, selection-outline and constrained-queue captures were
+  inspected. At 100% density the constrained queue retains scale 1.000/1.000
+  while its list viewport reduces from 356 to 244 DIPs; 80/90% density keeps
+  the normal 360×448-DIP logical content dimensions within rounding tolerance.
+- Posted Space and foreground-dependent queue-focus assertions were explicitly
+  skipped because Windows did not grant the test foreground focus. Physical
+  Space/navigation, external-target drag/paste and focus return remain part of
+  the consolidated manual pass.
+- The standard `npm run dev:debug -- --main-ui=winui` launcher rebuilt the native
+  Debug frontend/executable and passed native asset isolation. The responding
+  process was confirmed to load this checkout's rebuilt WinUI DLL.

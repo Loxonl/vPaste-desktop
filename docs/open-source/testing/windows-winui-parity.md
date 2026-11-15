@@ -1,5 +1,10 @@
 # Windows WinUI parity: stages 1–3
 
+For the current source-linked coverage matrix and the single pending desktop
+checklist, see [Windows WinUI current acceptance](windows-winui-acceptance-matrix.md).
+The sections below retain the chronological implementation/regression record;
+an older completed batch is not proof of every physical desktop scenario.
+
 The reference is the shipping WebView vPaste interface. Fluent/Files inform
 native control behavior and materials, not a new layout. This batch builds on
 PR #363; it does not repeat the already implemented migration.

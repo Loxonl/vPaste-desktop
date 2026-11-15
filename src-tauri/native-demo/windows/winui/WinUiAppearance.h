@@ -73,6 +73,17 @@ inline void InstallAppearanceResources() {
         Markup::XamlReader::Load(LR"(<ResourceDictionary
             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+          <ResourceDictionary.ThemeDictionaries>
+            <ResourceDictionary x:Key="Light">
+              <SolidColorBrush x:Key="SelectorBarItemForegroundSelected" Color="{ThemeResource SystemAccentColorDark1}"/>
+            </ResourceDictionary>
+            <ResourceDictionary x:Key="Dark">
+              <SolidColorBrush x:Key="SelectorBarItemForegroundSelected" Color="{ThemeResource SystemAccentColorLight2}"/>
+            </ResourceDictionary>
+            <ResourceDictionary x:Key="HighContrast">
+              <SolidColorBrush x:Key="SelectorBarItemForegroundSelected" Color="{ThemeResource SystemColorButtonTextColor}"/>
+            </ResourceDictionary>
+          </ResourceDictionary.ThemeDictionaries>
           <Style x:Key="VPaste.Body" TargetType="TextBlock">
             <Setter Property="FontSize" Value="14"/>
             <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}"/>

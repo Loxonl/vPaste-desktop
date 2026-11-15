@@ -2839,6 +2839,10 @@ int32_t SetSizePreviewWindow(bool visible, bool restoreVisible) noexcept {
         if (visible) {
             if (!g_sizePreviewActive) {
                 g_sizePreviewRestoreHitTestVisible = g_panel.root.IsHitTestVisible();
+                // The non-interactive preview takes position ownership from
+                // any unfinished dock slide before it becomes visible.
+                g_panel.dockMotion->Suspend();
+                ApplyActiveLayout();
             }
             if (!SetWindowPos(g_panel.window, HWND_TOPMOST, 0, 0, 0, 0,
                     SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)) {
@@ -3005,6 +3009,9 @@ void ApplyActiveLayout() {
     const MARGINS shadow = management ? MARGINS{} : MARGINS{1, 1, 1, 1};
     (void)DwmExtendFrameIntoClientArea(g_panel.window, &shadow);
     ResizeIsland();
+    // A display-layout reply may suspend the dock's hidden visibility state.
+    // Keep the settings preview mapped without activating it.
+    if (g_sizePreviewActive) ShowWindow(g_panel.window, SW_SHOWNOACTIVATE);
 }
 
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -3263,7 +3270,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         return 0;
     case WM_DPICHANGED: {
         if (!g_applyingLayout) {
-            if (g_panel.dockMotion) g_panel.dockMotion->Suspend();
+            if (g_panel.dockMotion && !g_sizePreviewActive) g_panel.dockMotion->Suspend();
             g_layoutPending = true;
             const auto rect = reinterpret_cast<const RECT *>(lparam);
             SetWindowPos(window, nullptr, rect->left, rect->top, rect->right - rect->left,
@@ -3275,13 +3282,13 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         return 0;
     }
     case WM_DISPLAYCHANGE:
-        if (g_panel.dockMotion) g_panel.dockMotion->Finish();
+        if (g_panel.dockMotion && !g_sizePreviewActive) g_panel.dockMotion->Finish();
         g_layoutPending = true;
         (void)SendRequest(L"layout");
         return 0;
     case WM_SETTINGCHANGE:
         if (wparam == SPI_SETWORKAREA) {
-            if (g_panel.dockMotion) g_panel.dockMotion->Finish();
+            if (g_panel.dockMotion && !g_sizePreviewActive) g_panel.dockMotion->Finish();
             g_layoutPending = true;
             (void)SendRequest(L"layout");
         }
@@ -7251,6 +7258,16 @@ winrt::fire_and_forget RunNativeShellRegression(
             const auto root = Media::VisualTreeHelper::GetChild(tabs.back(), 0).as<Grid>();
             winrt::check_hresult(root.FindName(L"PART_SelectionVisual").as<UIElement>().Visibility() == Visibility::Collapsed &&
                 g_panel.tabIndicator->Target().Height == kHeaderHeight ? S_OK : E_FAIL);
+            const auto selectedLabel = root.FindName(L"PART_TextVisual").as<TextBlock>();
+            VisualStateManager::GoToState(tabs.back(), L"SelectedNormal", false);
+            co_await NextNativeFrame();
+            const auto selectedColor = selectedLabel.Foreground().as<Media::SolidColorBrush>().Color();
+            const auto indicatorColor = g_panel.tabIndicatorHost.BorderBrush().as<Media::SolidColorBrush>().Color();
+            if (selectedColor != indicatorColor) std::fprintf(stderr,
+                "WinUI selected tab: rgb=%u,%u,%u expected=%u,%u,%u\n",
+                selectedColor.R, selectedColor.G, selectedColor.B,
+                indicatorColor.R, indicatorColor.G, indicatorColor.B);
+            winrt::check_hresult(selectedColor == indicatorColor ? S_OK : E_FAIL);
             if (artifactFolder) {
                 const auto file = std::wstring{L"header-"} + (english ? L"en-" : L"zh-") +
                     (theme == 2 ? L"dark-" : L"light-") + std::to_wstring(static_cast<int>(width)) + L".png";
@@ -7305,6 +7322,93 @@ winrt::fire_and_forget RunNativeShellRegression(
         const auto filtersBeforeEvent = g_latestFiltersRequestId;
         ApplyResponse(R"({"op":"filtersChanged","data":{}})");
         winrt::check_hresult(g_latestFiltersRequestId > filtersBeforeEvent ? S_OK : E_FAIL);
+        stage = 19;
+        SetQueueViewActive(false);
+        SetVisible(true, false, false);
+        g_panel.dockMotion->SetVisible(false, true, true);
+        winrt::check_hresult(g_panel.dockMotion->Running() ? S_OK : E_FAIL);
+        const auto previewForeground = GetForegroundWindow();
+        winrt::check_hresult(vpaste_winui_size_preview(true, false));
+        RECT settledPreview{};
+        winrt::check_bool(GetWindowRect(g_panel.window, &settledPreview));
+        winrt::check_hresult(!g_panel.dockMotion->Running() && IsWindowVisible(g_panel.window) &&
+            settledPreview.top == g_dockedLayout.y && !g_panel.root.IsHitTestVisible() &&
+            // Finishing a hide can relinquish the panel's own foreground, but
+            // a preview must never take activation from an external window.
+            (previewForeground == g_panel.window || GetForegroundWindow() == previewForeground) ? S_OK : E_FAIL);
+        co_await NextNativeFrame(); co_await NextNativeFrame();
+        RECT stablePreview{};
+        winrt::check_bool(GetWindowRect(g_panel.window, &stablePreview));
+        winrt::check_hresult(EqualRect(&settledPreview, &stablePreview) && IsWindowVisible(g_panel.window) ? S_OK : E_FAIL);
+        stage = 20;
+        const auto beforeDisplayRequests = requests.size();
+        WindowProc(g_panel.window, WM_DISPLAYCHANGE, 0, 0);
+        winrt::check_hresult(IsWindowVisible(g_panel.window) && !g_panel.root.IsHitTestVisible() &&
+            requests.size() > beforeDisplayRequests ? S_OK : E_FAIL);
+        auto refreshedPreview = g_dockedLayout;
+        ++refreshedPreview.x;
+        winrt::check_hresult(vpaste_winui_set_layout(&refreshedPreview));
+        winrt::check_hresult(IsWindowVisible(g_panel.window) && !g_layoutPending &&
+            !g_panel.root.IsHitTestVisible() ? S_OK : E_FAIL);
+        WindowProc(g_panel.window, WM_SETTINGCHANGE, SPI_SETWORKAREA, 0);
+        winrt::check_hresult(IsWindowVisible(g_panel.window) && !g_panel.root.IsHitTestVisible() ? S_OK : E_FAIL);
+        WindowProc(g_panel.window, WM_DPICHANGED, MAKEWPARAM(144, 144), reinterpret_cast<LPARAM>(&stablePreview));
+        winrt::check_hresult(IsWindowVisible(g_panel.window) && !g_panel.root.IsHitTestVisible() ? S_OK : E_FAIL);
+        --refreshedPreview.x;
+        winrt::check_hresult(vpaste_winui_set_layout(&refreshedPreview));
+        winrt::check_hresult(IsWindowVisible(g_panel.window) && !g_layoutPending &&
+            !g_panel.root.IsHitTestVisible() ? S_OK : E_FAIL);
+        winrt::check_hresult(vpaste_winui_size_preview(false, false));
+        winrt::check_hresult(!IsWindowVisible(g_panel.window) ? S_OK : E_FAIL);
+        stage = 21;
+        JsonArray queueItems;
+        for (int index = 0; index < 8; ++index) {
+            JsonObject item;
+            item.Insert(L"hash", JsonValue::CreateStringValue(L"constrained-" + std::to_wstring(index)));
+            item.Insert(L"previewText", JsonValue::CreateStringValue(L"Queue layout fixture"));
+            queueItems.Append(item);
+        }
+        JsonObject queueState;
+        queueState.Insert(L"revision", JsonValue::CreateNumberValue(1000));
+        queueState.Insert(L"items", queueItems);
+        g_panel.queueView->SetState(queueState);
+        g_panel.queueWindow->Show(1.0, true);
+        co_await NextNativeFrame(); co_await NextNativeFrame();
+        const auto queueRoot = g_panel.queueView->Root().as<Grid>();
+        const auto queueList = queueRoot.Children().GetAt(1).as<ScrollViewer>();
+        const auto originalListHeight = queueList.ActualHeight();
+        RECT fullQueue{};
+        winrt::check_bool(GetWindowRect(queueHandle, &fullQueue));
+        winrt::check_bool(SetWindowPos(queueHandle, nullptr, 0, 0, fullQueue.right - fullQueue.left,
+            (fullQueue.bottom - fullQueue.top) * 3 / 4, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE));
+        co_await NextNativeFrame(); co_await NextNativeFrame();
+        const auto queueTransform = queueRoot.TransformToVisual(queueRoot.XamlRoot().Content());
+        const auto queueOrigin = queueTransform.TransformPoint({0, 0});
+        const auto queueAxes = queueTransform.TransformPoint({100, 100});
+        const auto scaleX = (queueAxes.X - queueOrigin.X) / 100;
+        const auto scaleY = (queueAxes.Y - queueOrigin.Y) / 100;
+        const auto shortListHeight = queueList.ActualHeight();
+        std::fprintf(stderr, "WinUI constrained queue: scale=%.3f,%.3f list=%.1f original=%.1f\n",
+            scaleX, scaleY, shortListHeight, originalListHeight);
+        if (artifactFolder) co_await CaptureNativeView(queueRoot, artifactFolder, L"queue-short-work-area.png");
+        winrt::check_bool(SetWindowPos(queueHandle, nullptr, fullQueue.left, fullQueue.top,
+            fullQueue.right - fullQueue.left, fullQueue.bottom - fullQueue.top, SWP_NOZORDER | SWP_NOACTIVATE));
+        winrt::check_hresult(std::abs(scaleX - scaleY) < 0.01 && shortListHeight < originalListHeight ? S_OK : E_FAIL);
+        for (const auto density : {0.8, 0.9}) {
+            g_panel.queueWindow->Show(density, true);
+            co_await NextNativeFrame(); co_await NextNativeFrame();
+            const auto transform = queueRoot.TransformToVisual(queueRoot.XamlRoot().Content());
+            const auto origin = transform.TransformPoint({0, 0});
+            const auto axes = transform.TransformPoint({100, 100});
+            std::fprintf(stderr, "WinUI queue density %.2f: scale=%.3f,%.3f root=%.1fx%.1f\n", density,
+                (axes.X - origin.X) / 100, (axes.Y - origin.Y) / 100,
+                queueRoot.ActualWidth(), queueRoot.ActualHeight());
+            winrt::check_hresult(std::abs(axes.X - origin.X - 100 * density) < 0.5 &&
+                std::abs(axes.Y - origin.Y - 100 * density) < 0.5 &&
+                std::abs(queueRoot.ActualWidth() - vpaste::winui::QueueContentWidth) < 1 &&
+                std::abs(queueRoot.ActualHeight() - vpaste::winui::QueueContentHeight) < 1 ? S_OK : E_FAIL);
+        }
+        g_panel.queueWindow->Hide();
         completion->set_value({S_OK, stage});
     } catch (...) { completion->set_value({winrt::to_hresult(), stage}); }
 }

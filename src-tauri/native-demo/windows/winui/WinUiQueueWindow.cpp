@@ -62,6 +62,11 @@ QueueWindow::~QueueWindow() {
 void QueueWindow::Resize() {
     if (!source) return;
     RECT bounds{}; winrt::check_bool(GetClientRect(window, &bounds));
+    // Keep the user's density uniform when the work area constrains one axis;
+    // the Grid's scroll row absorbs the lost space instead of squashing controls.
+    const auto scale = GetDpiForWindow(window) / 96.0 * textScale;
+    const auto content = viewport.Child().as<winrt::Microsoft::UI::Xaml::FrameworkElement>();
+    content.Width(bounds.right / scale); content.Height(bounds.bottom / scale);
     source.SiteBridge().MoveAndResize({0, 0, bounds.right, bounds.bottom});
 }
 
@@ -128,10 +133,10 @@ LRESULT CALLBACK QueueWindow::WindowProc(HWND handle, UINT message, WPARAM wpara
         case WM_EXITSIZEMOVE: self->Constrain(); return 0;
         case WM_CLOSE: if (self->close) self->close(); return 0;
         case WM_GETMINMAXINFO: {
-            const auto dpi = GetDpiForWindow(handle);
+            const auto scale = GetDpiForWindow(handle) / 96.0 * self->textScale;
             auto limits = reinterpret_cast<MINMAXINFO *>(lparam);
-            limits->ptMinTrackSize = {MulDiv(static_cast<int>(QueueContentWidth), dpi, 96),
-                MulDiv(static_cast<int>(ManagementMinHeight), dpi, 96)};
+            limits->ptMinTrackSize = {static_cast<LONG>(std::lround(QueueContentWidth * scale)),
+                static_cast<LONG>(std::lround(ManagementMinHeight * scale))};
             return 0;
         }
         }

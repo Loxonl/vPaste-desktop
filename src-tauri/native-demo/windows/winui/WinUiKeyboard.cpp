@@ -83,7 +83,11 @@ MainKeyResult ResolveMainKey(PanelBehavior const &behavior, MainKeyInput const &
         if (index >= 0) return input.repeated ? MainKeyResult{Action::Ignore} : MainKeyResult{Action::QuickItem, index};
     }
     if (input.control && !input.alt && !input.meta && input.key == 'F') return {Action::FocusSearch};
-    if (input.area == InputArea::Other) return {};
+    if (input.area == InputArea::Other) {
+        if (input.key == VK_ESCAPE && !input.control && !input.shift && !input.alt && !input.meta)
+            return {input.repeated ? Action::Ignore : Action::Dismiss};
+        return {};
+    }
     const auto &binding = behavior.plainBinding;
     if (binding.key && input.key == binding.key && input.control == binding.control && input.shift == binding.shift &&
         input.alt == binding.alt && input.meta == binding.meta) {

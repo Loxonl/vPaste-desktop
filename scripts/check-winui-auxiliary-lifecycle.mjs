@@ -33,6 +33,23 @@ try {
     const invoke = invokeOn(control);
     assert.equal(normalized(await invoke("get_app_data_dir")), normalized(root), "Refuse a non-fixture process");
     assert(!pages().some(page => route(page) === "/clipboard"), "Native session created a main WebView");
+    const initialQueue = await invoke("get_paste_queue_state");
+    assert(!initialQueue.active && !initialQueue.busy && !initialQueue.items.length,
+        "Refuse to exercise a populated or active queue");
+    // Activation installs an input interceptor in ordinary Debug. Keep this
+    // no-capture fixture inactive and verify that real IPC rejects mutations.
+    for (const [command, args] of [
+        ["add_paste_queue_items", { hashes: ["inactive-fixture"] }],
+        ["reorder_paste_queue", { hashes: [] }],
+        ["reverse_paste_queue", {}],
+        ["remove_paste_queue_item", { hash: "inactive-fixture" }],
+        ["clear_paste_queue", {}],
+        ["undo_paste_queue_consume", {}],
+    ]) {
+        await assert.rejects(() => invoke(command, args), /粘贴队列尚未激活/);
+        assert.deepEqual(await invoke("get_paste_queue_state"), initialQueue,
+            `Inactive ${command} changed queue state`);
+    }
     await invoke("show_preview_window", preview("Auxiliary lifecycle fixture"));
     const shell = await until(() => pages().find(page => route(page) === "/clipboard/preview"), "preview shell");
     const visibleText = (page, text) => page.getByText(text, { exact: true }).isVisible().catch(() => false);
@@ -71,7 +88,9 @@ try {
     await newSettings.waitForFunction(() => !!window.__TAURI_INTERNALS__);
     await invokeOn(newSettings)("complete_onboarding");
     await until(() => guide.isClosed(), "completed guide released");
-    console.log(JSON.stringify({ visibleReuse: true, pinPreserved: true, coldCloseReopen: 3,
+    console.log(JSON.stringify({ inactiveQueueMutationGuards: 6,
+        queueActivated: false, externalPasteTested: false,
+        visibleReuse: true, pinPreserved: true, coldCloseReopen: 3,
         settingsRecreated: true, guideReleased: true, mainWebViewCreated: false }));
 } finally {
     await browser.close();

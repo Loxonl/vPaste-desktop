@@ -44,10 +44,18 @@ bytes or plain C++ values, and create short-lived WinRT projections on the STA.
 React and Rust. Built-in menus, dialogs and controls retain WinUI's transitions.
 App-authored status/search feedback affects opacity and honors Windows animation
 settings. The shared tab underline uses a native Composition spring, calculated
-from the same spring parameters as React. Native items still own hover, press,
+from the shared `spring.tabIndicator` preset; existing React spring presets are
+unchanged. Native items still own hover, press,
 keyboard focus and selection semantics. Scrolling and layout changes realign the
 underline; contrast mode and disabled Windows animations settle it immediately.
 The main dock, preview geometry and active drag retain their separate owners.
+Feedback opacity uses `UIElement.StartAnimation`/`StopAnimation` and the current
+thread's `CompositionTarget` compositor. Keep the active animation in the
+element's resources so interruption/disabled motion stops it before resetting
+opacity. Do not call `GetElementVisual` on an element using XAML facade properties
+such as elevation's `Translation`: mixing those paths made the queue action bar
+visible but absent from pointer hit testing. A button automation Invoke alone
+does not cover this defect; regress the topmost XAML hit over real cards too.
 The dock's STA timer moves the whole HWND using the shipping Rust panel model's
 150/200-ms curves, sent through the private behavior projection. Rapid toggles
 reverse from the actual position. Logical visibility changes at the request;
@@ -72,7 +80,7 @@ and accessibility rather than a different file-manager layout.
 | Surface | Native implementation and preserved behavior |
 | --- | --- |
 | Search | `AutoSuggestBox` with native query/clear buttons; live filtering, IME, Ctrl+F, latest-query Enter paste and two-step Escape. The collapsed circular trigger keeps the header compact. |
-| Header actions | Circular surfaces, in order: developer tools, queue, conditional update, settings. Settings is the final standard action; the persistent overflow button and duplicate copy/paste/favorite/queue-selection actions are removed. Card-level actions, tag management, and queue selection remain reachable from their corresponding card, tab-add, and queue interactions. |
+| Header actions | Circular surfaces, in order: developer tools, queue, conditional update, settings. Settings is the final standard action; the persistent overflow button and duplicate copy/paste/favorite/queue-selection actions are removed. There is no extra combined-filter button. The trailing `+` has only New filter tab and New tag, matching WebView; existing tags retain edit/delete through double-click and context menus. Card actions and queue selection keep their corresponding card/queue entry points. |
 | Categories and tags | `SelectorBar` in a horizontal `ScrollViewer`; the pinned template is centered in the 48-DIP header and its internal pill is replaced by one shared composition underline. Add follows the final tab. Tag/filter editors open above their anchor using unconstrained native `Flyout`. |
 | Cards | `ListView` with horizontal `ItemsStackPanel`; details are loaded for realized containers. A 2-DIP selection/focus outline sits 2 DIP outside the 14-DIP rounded card, in an unclipped sibling with its own gutter. Selection maps through list item indices rather than casting the visual content to a card border; contrast themes keep system focus and selection visuals. |
 | Menus and confirmations | Native `MenuFlyout`, `ComboBox` and `ContentDialog` retain their templates, dismissal, keyboard behavior and default shadows. Do not add a second shadow behind them. |
@@ -105,7 +113,61 @@ can hide and reopen the same page. Other steps only restore it. Main-panel show
 requests, including a second launch, restore an active guide rather than showing
 the dock over it. Completing the guide returns the shortcut to the native panel.
 
+Leaving queue selection invalidates its pending Add request and submitted-hash
+snapshot; a history dataset reset does the same. The Rust write may already
+have committed, so its queue state can still arrive, but its reply must not
+clear or block a later selection draft. A current failure preserves the draft
+for retry; repeated success replies clear it once.
+
+A history reset retires and closes the current item-delete confirmation. Its
+asynchronous completion must still own that exact dialog before clearing modal
+state or sending Delete, including when its Primary result is already closing.
+Bare Escape from ordinary toolbar/card action buttons uses the existing panel
+dismiss operation when search is closed. A visible search retains WebView's
+two-step Escape priority even after focus moves to cards or ordinary buttons:
+clear its text first, then collapse the empty search. Menus, dialogs, editors,
+composition and modified Escape retain their existing ownership; native button
+Enter/Space activation is unchanged.
+
+A history reset also retires record-tag and custom-filter flyouts, pending
+editor replies and queued focus-return callbacks. Late tag creation must not
+chain an assignment against replacement history; late filter completion must
+not apply an old editor's list or close a newer editor. This is UI-session
+retirement, not cancellation or rollback of an already submitted Rust write.
+Successful filter writes still trigger an authoritative filter-list refresh.
+
+History reset also cancels the dataset-owned image-export UI session and hides
+open card and dynamic-tab context menus before new query results arrive. A late
+export preparation cannot reopen the picker; cancellation during its modal loop
+must keep modal begin/end paired and prevent a new export request. This does
+not cancel a file write that Rust has already received. New-dataset actions and
+ordinary export cancellation/retry keep their existing native controls.
+
+Fresh main-panel shows clear and collapse search when search retention is off,
+matching the WebView show plan. Enabled retention preserves search visibility
+and text; same-session restoration, such as returning from editing, does not
+apply fresh-show resets.
+
+Opening a custom-filter editor, item-delete confirmation, native modal or main
+panel menu retires any deferred Enter-to-paste search action. This includes
+pointer-opened card menus, record/filter-tab menus, creation and developer tools.
+Canceling that overlay must not rearm the old action: a late query may refresh
+history but cannot paste. A fresh
+explicit search submission still supports ordinary, plain-text and quick paste.
+This does not cancel a paste or Rust operation that has already been sent.
+Hiding the panel dismisses an unconfirmed item-delete dialog through its existing
+cancellation path, so it cannot reappear over a later show. Native automatic
+card/tab/creation-menu dismissal on hide/reopen is retained.
+
 ## Auxiliary renderer lifecycle
+
+The native reader leaves activation and focus-navigation keys to toolbar
+buttons, including events originating from their glyphs. Escape still closes
+the reader; content-origin Space/arrows/Tab and Ctrl+Tab keep their preview
+shortcuts. Root key routing must check the original control's ancestry before
+handling those shortcuts. A requested native focus handoff targets a named,
+focusable content host, not the pin button; the content layout and the Rust
+decision about whether to activate the reader remain unchanged.
 
 Native Text/Image/Link readers remain native where supported. HTML, PDF and OCR
 can create the shared auxiliary reader without creating the main WebView.
@@ -226,6 +288,9 @@ node scripts/check-winui-auxiliary-lifecycle.mjs <marked-memory-fixture-director
 ```
 
 The check verifies the exact process data directory before invoking commands.
-It exercises visible reuse, pin protection, canceled cold creation, reopening,
-settings recreation and guide release. It neither starts nor stops vPaste and
-does not substitute for physical keyboard, external-app focus or DPI checks.
+It exercises six inactive-queue mutation guards, visible reuse, pin protection,
+canceled cold creation, reopening, settings recreation and guide release. It
+does not activate the queue/input interceptor or paste to another App. Successful
+queue mutations are covered separately by the Rust database and actual-XAML
+regressions. It neither starts nor stops vPaste and does not substitute for
+physical keyboard, external-app focus or DPI checks.

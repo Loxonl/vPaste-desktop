@@ -16,13 +16,18 @@ describe("WinUI complete native presentation", () => {
         contains(panel, 'ApplyStyle(g_panel.searchButton, L"VPaste.RoundToolbarButton")');
         contains(panel, "tagChip.Margin(Thickness{10, 44, 10, 0})");
     });
-    it("keeps the shipping primary tabs inline and type filters in their native flyout", () => {
+    it("keeps only the shipping header and the two tag-creation entries", () => {
         const panel = native("WinUiPanel.cpp");
         const labels = panel.slice(panel.indexOf("void UpdateFilterLabels()"), panel.indexOf("void RebuildDynamicTabs()"));
         contains(labels, "item.Visibility(index < 2 ? Visibility::Visible : Visibility::Collapsed)");
-        const typeFilters = panel.slice(panel.indexOf("MenuFlyout typeMenu;"), panel.indexOf("g_panel.tagFilterButton.Flyout(tagFilterFlyout);"));
-        contains(typeFilters, "for (std::uint32_t index = 2; index < g_panel.filter.Items().Size(); ++index)");
-        contains(typeFilters, "SelectBuiltinCategory(static_cast<int>(index), false)");
+        expect(panel).not.toContain("tagFilterButton");
+        const addMenu = panel.slice(panel.indexOf("MenuFlyout addMenu;"), panel.indexOf("g_panel.addTag.Flyout(addMenu);"));
+        expect(addMenu.match(/MenuFlyoutItem /g)).toHaveLength(2);
+        contains(addMenu, "ShowFilterEditor(draft)");
+        contains(addMenu, "ShowRecordTagEditor()");
+        const reference = readFileSync(resolve("src/clipboard/ClipboardOverlays.tsx"), "utf8");
+        const referenceChoices = reference.slice(reference.indexOf("export function TagCreateChoicePopover"), reference.indexOf("type ClipboardContextMenusProps"));
+        expect(referenceChoices.match(/<InlineMenuItem\b/g)).toHaveLength(2);
     });
     it("uses the rounded card surface instead of duplicate ListView selection chrome", () => {
         const panel = native("WinUiPanel.cpp");
@@ -83,7 +88,7 @@ describe("WinUI complete native presentation", () => {
     it("releases every new XAML owner on the UI thread before COM shutdown", () => {
         const panel = native("WinUiPanel.cpp");
         const cleanup = panel.slice(panel.indexOf("// Release UI objects on their STA"), panel.indexOf("CoUninitialize();"));
-        for (const owner of ["loading", "emptyState", "resetFilters", "retry", "cancelSelection", "deletionDialog", "feedback", "filterStrip", "customTabs", "addTag", "tagFilterButton"]) {
+        for (const owner of ["loading", "emptyState", "resetFilters", "retry", "cancelSelection", "deletionDialog", "feedback", "filterStrip", "customTabs", "addTag"]) {
             contains(cleanup, `g_panel.${owner} = nullptr;`);
         }
         contains(cleanup, "g_panel.queueWindow.reset();");

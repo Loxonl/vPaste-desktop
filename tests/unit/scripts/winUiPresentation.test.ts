@@ -21,7 +21,9 @@ describe("WinUI main panel presentation", () => {
         expect(panel).not.toContain("PrimaryCommands().Append(g_panel.queueAdd)");
         expect(panel).toContain("selectionActions.Children().Append(g_panel.queueAdd)");
         expect(panel).toContain("selectionActions.Children().Append(g_panel.cancelSelection)");
-        expect(panel).toContain("addMenu.Items().Append(manageTags)");
+        expect(panel).toContain("addMenu.Items().Append(addFilter)");
+        expect(panel).toContain("addMenu.Items().Append(addRecordTag)");
+        expect(panel).not.toContain("addMenu.Items().Append(manageTags)");
     });
 
     it("uses a native selector with the existing history filter mapping", () => {

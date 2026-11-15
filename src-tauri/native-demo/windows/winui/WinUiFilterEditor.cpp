@@ -384,6 +384,7 @@ FrameworkElement FilterEditor::TestLoad(JsonObject draft, bool english) {
 }
 void FilterEditor::TestName(const winrt::hstring &name) { m_impl->name.Text(name); }
 winrt::hstring FilterEditor::TestName() const { return m_impl->name.Text(); }
+FrameworkElement FilterEditor::TestRoot() const { return m_impl->root; }
 void FilterEditor::TestSave() { m_impl->Save(); }
 void FilterEditor::TestDelete(bool confirm) { if (confirm) m_impl->Delete(); else m_impl->ConfirmDelete(true); }
 

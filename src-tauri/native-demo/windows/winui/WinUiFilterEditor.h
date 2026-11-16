@@ -33,6 +33,7 @@ public:
     winrt::Microsoft::UI::Xaml::FrameworkElement TestLoad(winrt::Windows::Data::Json::JsonObject draft, bool english);
     void TestName(const winrt::hstring &name);
     winrt::hstring TestName() const;
+    winrt::Microsoft::UI::Xaml::FrameworkElement TestRoot() const;
     void TestSave();
     void TestDelete(bool confirm);
 #endif

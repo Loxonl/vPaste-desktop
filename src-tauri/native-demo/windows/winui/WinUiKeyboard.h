@@ -30,7 +30,7 @@ enum class MainKeyAction {
     None, Ignore, ShowHints, FocusSearch, NextCategory, PreviousCategory,
     NextCard, PreviousCard, PastePlain, SearchPaste, SearchPastePlain,
     QuickAll, QuickFavorite, QuickItem, ClearSearch, CloseSearch,
-    FirstCard, LastCard, NextPage, PreviousPage, OpenCardMenu,
+    FirstCard, LastCard, NextPage, PreviousPage, OpenCardMenu, Dismiss,
 };
 struct MainKeyResult { MainKeyAction action = MainKeyAction::None; int index = -1; };
 MainKeyResult ResolveMainKey(PanelBehavior const &behavior, MainKeyInput const &input);

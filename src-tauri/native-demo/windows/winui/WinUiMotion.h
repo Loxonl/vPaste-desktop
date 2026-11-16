@@ -9,6 +9,7 @@
 #include <winrt/Microsoft.UI.Composition.h>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Hosting.h>
+#include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Windows.Data.Json.h>
 #include <winrt/Windows.UI.ViewManagement.h>
 
@@ -49,7 +50,7 @@ inline bool NativeAnimationsEnabled() {
 
 inline winrt::Microsoft::UI::Composition::SpringVector2NaturalMotionAnimation SelectionSpring(
     winrt::Microsoft::UI::Composition::Compositor const &compositor) {
-    const auto spring = MotionTokens().GetNamedObject(L"spring").GetNamedObject(L"snappy");
+    const auto spring = MotionTokens().GetNamedObject(L"spring").GetNamedObject(L"tabIndicator");
     const auto stiffness = spring.GetNamedNumber(L"stiffness");
     const auto mass = spring.GetNamedNumber(L"mass");
     const auto animation = compositor.CreateSpringVector2Animation();
@@ -60,11 +61,17 @@ inline winrt::Microsoft::UI::Composition::SpringVector2NaturalMotionAnimation Se
     return animation;
 }
 
+inline constexpr wchar_t FeedbackAnimationResource[] = L"VPaste.FeedbackAnimation";
+
 inline void ResetFeedbackOpacity(winrt::Microsoft::UI::Xaml::FrameworkElement const &element) {
     if (!element || !element.IsLoaded()) return;
-    const auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(element);
-    visual.StopAnimation(L"Opacity");
-    visual.Opacity(1);
+    const auto key = winrt::box_value(FeedbackAnimationResource);
+    const auto resources = element.Resources();
+    if (const auto active = resources.TryLookup(key)) {
+        element.StopAnimation(active.as<winrt::Microsoft::UI::Composition::ICompositionAnimationBase>());
+        resources.Remove(key);
+    }
+    element.Opacity(1);
 }
 
 // Only status/selection surfaces use this. Card drag and window geometry retain
@@ -74,19 +81,22 @@ inline bool FadeFeedback(winrt::Microsoft::UI::Xaml::FrameworkElement const &ele
     if (!element || !element.IsLoaded()) return false;
     ResetFeedbackOpacity(element);
     if (!enabled) return false;
-    const auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(element);
-    const auto compositor = visual.Compositor();
+    // Keep opacity and ThemeShadow's Translation on the XAML animation facade.
+    // Mixing it with GetElementVisual breaks hit testing on elevated surfaces.
+    const auto compositor = winrt::Microsoft::UI::Xaml::Media::CompositionTarget::GetCompositorForCurrentThread();
     const auto tokens = MotionTokens();
     const auto curve = tokens.GetNamedObject(L"easing").GetNamedArray(L"enter");
     const auto easing = compositor.CreateCubicBezierEasingFunction(
         {static_cast<float>(curve.GetNumberAt(0)), static_cast<float>(curve.GetNumberAt(1))},
         {static_cast<float>(curve.GetNumberAt(2)), static_cast<float>(curve.GetNumberAt(3))});
     const auto animation = compositor.CreateScalarKeyFrameAnimation();
+    animation.Target(L"Opacity");
     animation.InsertKeyFrame(0, 0);
     animation.InsertKeyFrame(1, 1, easing);
     animation.Duration(std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
         std::chrono::duration<double>{tokens.GetNamedObject(L"duration").GetNamedNumber(L"fast")}));
-    visual.StartAnimation(L"Opacity", animation);
+    element.StartAnimation(animation);
+    element.Resources().Insert(winrt::box_value(FeedbackAnimationResource), animation);
     return true;
 }
 }

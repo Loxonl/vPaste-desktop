@@ -13,6 +13,7 @@
 #include <cmath>
 #include <utility>
 #ifdef _DEBUG
+#include <cstdio>
 #include <vector>
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
@@ -56,6 +57,7 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
     HWND window = nullptr;
     Hosting::DesktopWindowXamlSource source{nullptr};
     Grid root{nullptr}, body{nullptr};
+    ContentControl contentFocus{nullptr};
     FrameworkElement pending{nullptr}, displayed{nullptr};
     Controls::Primitives::ToggleButton pin{nullptr};
     Button close{nullptr};
@@ -79,8 +81,17 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
     winrt::hstring Text(wchar_t const *zh, wchar_t const *en) const { return english ? en : zh; }
     void Send(wchar_t const *op) { if (request) request(op, latest); }
 
-    bool HandleKey(unsigned key, bool repeated, bool control, bool shift, bool alt, bool composing) {
+    bool HandleKey(unsigned key, bool repeated, bool control, bool shift, bool alt, bool composing,
+        winrt::Windows::Foundation::IInspectable const &origin = nullptr) {
         if (composing || alt) return false;
+        // Toolbar controls own their activation and focus-navigation keys.
+        // Escape remains a reader-wide close shortcut.
+        if (key != VK_ESCAPE) {
+            for (auto element = origin.try_as<DependencyObject>(); element && element != root;
+                 element = VisualTreeHelper::GetParent(element)) {
+                if (element.try_as<Primitives::ButtonBase>()) return false;
+            }
+        }
         if (!control && !shift && (key == VK_SPACE || key == VK_ESCAPE)) {
             if (!repeated) Send(L"nativeReaderClose");
             return true;
@@ -168,8 +179,11 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         close = NamedIconButton(SymbolIcon{Symbol::Cancel}, Text(L"关闭预览", L"Close preview"));
         actions.Children().Append(pin); actions.Children().Append(close);
         root.Children().Append(actions);
-        body = Grid(); body.Margin(Thickness{16, 0, 16, 16}); Grid::SetRow(body, 1);
-        root.Children().Append(body);
+        body = Grid(); body.Margin(Thickness{16, 0, 16, 16});
+        contentFocus = ContentControl(); contentFocus.Content(body); contentFocus.IsTabStop(true);
+        contentFocus.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+        contentFocus.VerticalContentAlignment(VerticalAlignment::Stretch);
+        Grid::SetRow(contentFocus, 1); root.Children().Append(contentFocus);
         const auto weak = weak_from_this();
         pin.Click([weak](auto const &, auto const &) {
             if (auto self = weak.lock(); self && self->committed == self->latest) {
@@ -185,7 +199,7 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
                 args.KeyStatus().WasKeyDown, (GetKeyState(VK_CONTROL) & 0x8000) != 0,
                 (GetKeyState(VK_SHIFT) & 0x8000) != 0,
                 ((GetKeyState(VK_MENU) | GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000) != 0,
-                static_cast<unsigned>(args.OriginalKey()) == VK_PROCESSKEY));
+                static_cast<unsigned>(args.OriginalKey()) == VK_PROCESSKEY, args.OriginalSource()));
         });
         root.ActualThemeChanged([weak](auto const &, auto const &) {
             if (auto self = weak.lock()) self->ApplyAppearance();
@@ -209,6 +223,7 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         const BOOL dark = root.ActualTheme() == ElementTheme::Dark;
         (void)DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
         SetWindowTextW(window, Text(L"vPaste — 预览", L"vPaste — Preview").c_str());
+        Automation::AutomationProperties::SetName(contentFocus, Text(L"预览内容", L"Preview content"));
         NameIconButton(close, Text(L"关闭预览", L"Close preview"));
         const auto label = pin.IsChecked() && pin.IsChecked().Value()
             ? Text(L"取消固定预览", L"Unpin preview") : Text(L"固定预览", L"Pin preview");
@@ -268,7 +283,7 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         ShowWindow(window, SW_SHOWNOACTIVATE);
         if (takesFocus) {
             SetForegroundWindow(window);
-            pin.Focus(FocusState::Programmatic);
+            contentFocus.Focus(FocusState::Programmatic);
         }
         Send(L"nativeReaderReady"); ApplyAppearance();
     }
@@ -393,7 +408,7 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
     void Receive(JsonObject const &response) {
         const auto operation = response.GetNamedString(L"op", L"");
         if (operation == L"nativeReaderFocus") {
-            if (window && IsWindowVisible(window)) { SetForegroundWindow(window); pin.Focus(FocusState::Programmatic); }
+            if (window && IsWindowVisible(window)) { SetForegroundWindow(window); contentFocus.Focus(FocusState::Programmatic); }
             return;
         }
         const auto data = response.GetNamedObject(L"data");
@@ -471,6 +486,25 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
     winrt::check_hresult(!key(VK_SPACE, false, false, false, false, true) &&
         !key(VK_RIGHT, false, false, false, true) && !key('C', false, true) &&
         events.size() == count ? S_OK : E_FAIL);
+    stage = 1181;
+    const auto toolbarKey = [&](unsigned value, FrameworkElement const &origin) {
+        // Route through the same reader handler as root.PreviewKeyDown. A
+        // glyph origin must retain the containing native button's ownership.
+        return state->HandleKey(value, false, false, false, false, false, origin);
+    };
+    for (auto const &origin : std::array<FrameworkElement, 4>{state->pin, state->close,
+             state->pin.Content().as<FrameworkElement>(), state->close.Content().as<FrameworkElement>()}) {
+        for (auto value : {VK_SPACE, VK_TAB, VK_LEFT, VK_RIGHT, VK_RETURN}) {
+            winrt::check_hresult(!toolbarKey(value, origin) && events.size() == count ? S_OK : E_FAIL);
+        }
+    }
+    winrt::check_hresult(!state->HandleKey(VK_TAB, false, true, true, false, false, state->pin) &&
+        events.size() == count ? S_OK : E_FAIL);
+    winrt::check_hresult(toolbarKey(VK_ESCAPE, state->pin.Content().as<FrameworkElement>()) &&
+        events.size() == count + 1 && events.back().first == L"nativeReaderClose" ? S_OK : E_FAIL);
+    winrt::check_hresult(toolbarKey(VK_LEFT, state->displayed) && events.back().first == L"readerPrevious" &&
+        toolbarKey(VK_TAB, state->displayed) && events.back().first == L"readerNext" &&
+        toolbarKey(VK_SPACE, state->displayed) && events.back().first == L"nativeReaderClose" ? S_OK : E_FAIL);
     state->pin.IsChecked(true);
     // Toggle peer invokes the same Click handler as the real native control.
     Peers::FrameworkElementAutomationPeer::CreatePeerForElement(state->pin)
@@ -479,6 +513,19 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
     winrt::check_hresult(events.back().first == L"nativeReaderUnpin" ? S_OK : E_FAIL);
     invoke(state->close); co_await NextNativeFrame();
     winrt::check_hresult(events.back().first == L"nativeReaderClose" ? S_OK : E_FAIL);
+
+    stage = 1182;
+    const auto contentFocus = state->root.Children().GetAt(1).try_as<ContentControl>();
+    winrt::check_hresult(contentFocus && contentFocus.Content() == state->body &&
+        contentFocus.IsTabStop() && !contentFocus.try_as<Primitives::ButtonBase>() ? S_OK : E_FAIL);
+    reader.Receive(message(L"nativeReaderFocus", 3));
+    co_await NextNativeFrame();
+    if (GetForegroundWindow() == handle) {
+        winrt::check_hresult(Input::FocusManager::GetFocusedElement(state->root.XamlRoot()) == contentFocus ? S_OK : E_FAIL);
+    } else {
+        std::fprintf(stderr, "WinUI reader focus target: physical foreground assertion skipped\n");
+    }
+    winrt::check_hresult(toolbarKey(VK_RIGHT, contentFocus) && events.back().first == L"readerNext" ? S_OK : E_FAIL);
 
     stage = 119;
     reader.SetAppearance(true, ElementTheme::Dark); co_await NextNativeFrame();

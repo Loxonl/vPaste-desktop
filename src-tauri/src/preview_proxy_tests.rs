@@ -56,6 +56,56 @@ fn link_preview_accepts_a_configured_localhost_proxy_and_its_authentication() {
     assert!(!request.contains("private-test-value"));
 }
 
+fn read_proxy_headers(stream: &mut std::net::TcpStream) -> Vec<u8> {
+    // Windows can inherit the listener's nonblocking mode on accepted sockets.
+    stream.set_nonblocking(false).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut bytes = Vec::new();
+    while !bytes.ends_with(b"\r\n\r\n") && bytes.len() < 8192 {
+        let mut chunk = [0; 1024];
+        let length = stream.read(&mut chunk).unwrap();
+        if length == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..length]);
+    }
+    bytes
+}
+
+#[test]
+fn proxy_fixture_waits_for_delayed_and_fragmented_headers() {
+    let request = b"CONNECT fixture.example:443 HTTP/1.1\r\nHost: fixture.example\r\n\r\n";
+    for prefix_length in [0, 20] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        client.write_all(&request[..prefix_length]).unwrap();
+        let (started, ready) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            sender.send(read_proxy_headers(&mut stream)).unwrap();
+        });
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            matches!(
+                receiver.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "fixture must wait for the complete request headers"
+        );
+        client.write_all(&request[prefix_length..]).unwrap();
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+            request
+        );
+        server.join().unwrap();
+    }
+}
+
 fn proxy_fixture_request(host: &str, authentication: bool) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -66,18 +116,7 @@ fn proxy_fixture_request(host: &str, authentication: bool) -> String {
         while Instant::now() < deadline {
             match listener.accept() {
                 Ok((mut stream, _)) => {
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
-                        .unwrap();
-                    let mut bytes = Vec::new();
-                    while !bytes.ends_with(b"\r\n\r\n") && bytes.len() < 8192 {
-                        let mut chunk = [0; 1024];
-                        let length = stream.read(&mut chunk).unwrap();
-                        if length == 0 {
-                            break;
-                        }
-                        bytes.extend_from_slice(&chunk[..length]);
-                    }
+                    let bytes = read_proxy_headers(&mut stream);
                     sender
                         .send(String::from_utf8_lossy(&bytes).into_owned())
                         .unwrap();

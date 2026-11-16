@@ -4,10 +4,11 @@ import AppKit
 // the documented embedding point for NSGlassEffectView (not arbitrary subviews).
 @MainActor
 final class PanelBackdrop: NSView {
-  let contentView: NSView = PanelBackdropContent()
+  let contentView: NSView
   private(set) var materialName = "frosted-glass"
 
-  init(scale: CGFloat) {
+  init(scale: CGFloat, onboarding: Bool = false) {
+    contentView = PanelBackdropContent(onboarding: onboarding)
     super.init(frame: .zero)
     contentView.autoresizingMask = [.width, .height]
     let effect = makeEffect(scale: scale)
@@ -40,10 +41,19 @@ final class PanelBackdrop: NSView {
   }
 }
 
-// Tint the content above the system glass, below cards and toolbar. Keep its
-// opacity below the toolbar's gradient so the page remains more translucent.
+// Tint above the system glass, below cards and toolbar. Outside onboarding,
+// keep the page more translucent than the toolbar.
 @MainActor
 private final class PanelBackdropContent: NSView {
+  private let onboarding: Bool
+
+  init(onboarding: Bool) {
+    self.onboarding = onboarding
+    super.init(frame: .zero)
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
   override func viewDidChangeEffectiveAppearance() {
     super.viewDidChangeEffectiveAppearance()
     needsDisplay = true
@@ -51,7 +61,8 @@ private final class PanelBackdropContent: NSView {
 
   override func draw(_ dirtyRect: NSRect) {
     let tint = PanelStyle.dark(self)
-      ? PanelStyle.rgb(0x161b22, 0.36) : PanelStyle.rgb(0xf2f5f2, 0.30)
+      ? PanelStyle.rgb(0x161b22, onboarding ? 0.90 : 0.36)
+      : PanelStyle.rgb(0xf2f5f2, onboarding ? 0.88 : 0.30)
     tint.setFill()
     bounds.fill(using: .sourceOver)
   }

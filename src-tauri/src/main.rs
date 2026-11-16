@@ -187,6 +187,7 @@ static TRAY_MENU_WATCH_GENERATION: AtomicU64 = AtomicU64::new(0);
 static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
 static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
 static PERMISSION_GUIDE_RETURN_TO_DEV_TUTORIAL: AtomicBool = AtomicBool::new(false);
+static PERMISSION_GUIDE_RETURN_TO_NATIVE_PANEL: AtomicBool = AtomicBool::new(false);
 static PASTE_FALLBACK_NOTICE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PASTE_QUEUE_INTERCEPTOR_READY: AtomicBool = AtomicBool::new(false);
 static PASTE_QUEUE_ACTIVATION: Mutex<paste_queue_activation::Requests> =
@@ -3240,6 +3241,11 @@ fn open_onboarding_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn restore_parent_after_permission_guide(app: &tauri::AppHandle) {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if PERMISSION_GUIDE_RETURN_TO_NATIVE_PANEL.swap(false, Ordering::SeqCst) {
+        let _ = native_panel::show_default(app.clone());
+        return;
+    }
     if PERMISSION_GUIDE_RETURN_TO_DEV_TUTORIAL.swap(false, Ordering::SeqCst) {
         if let Some(window) = app.get_webview_window("devTutorial") {
             let _ = window.show();
@@ -3277,6 +3283,23 @@ async fn open_onboarding_permission_window(
     language_code: Option<String>,
     theme_preview: Option<String>,
 ) -> Result<(), String> {
+    open_onboarding_permission_window_from_source(
+        app,
+        Some(source_window),
+        permission,
+        language_code,
+        theme_preview,
+    )
+    .await
+}
+
+async fn open_onboarding_permission_window_from_source(
+    app: tauri::AppHandle,
+    source_window: Option<tauri::WebviewWindow>,
+    permission: String,
+    language_code: Option<String>,
+    theme_preview: Option<String>,
+) -> Result<(), String> {
     if !matches!(permission.as_str(), "background" | "paste") {
         return Err(format!("unsupported onboarding permission: {}", permission));
     }
@@ -3290,14 +3313,30 @@ async fn open_onboarding_permission_window(
         auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::OnboardingPermission)
             .await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
-        PERMISSION_GUIDE_RETURN_TO_CONFIG
-            .store(source_window.label() == "config", Ordering::SeqCst);
-        PERMISSION_GUIDE_RETURN_TO_DEV_TUTORIAL
-            .store(source_window.label() == "devTutorial", Ordering::SeqCst);
+        PERMISSION_GUIDE_RETURN_TO_CONFIG.store(
+            source_window
+                .as_ref()
+                .is_some_and(|source| source.label() == "config"),
+            Ordering::SeqCst,
+        );
+        PERMISSION_GUIDE_RETURN_TO_DEV_TUTORIAL.store(
+            source_window
+                .as_ref()
+                .is_some_and(|source| source.label() == "devTutorial"),
+            Ordering::SeqCst,
+        );
+        PERMISSION_GUIDE_RETURN_TO_NATIVE_PANEL.store(source_window.is_none(), Ordering::SeqCst);
         let _ = window.unminimize();
-        center_window_on_source_monitor(&window, &source_window)?;
+        if let Some(source) = source_window.as_ref() {
+            center_window_on_source_monitor(&window, source)?;
+        } else {
+            center_window_on_monitor(&window, main_panel_monitor(&app))?;
+        }
         #[cfg(all(debug_assertions, target_os = "macos"))]
-        if source_window.label() == "onboardingPermission" {
+        if source_window
+            .as_ref()
+            .is_none_or(|source| source.label() == "onboardingPermission")
+        {
             if let Some(surface) = native_panel::preview::surface() {
                 let bounds = surface.bounds;
                 let size = window
@@ -3320,7 +3359,10 @@ async fn open_onboarding_permission_window(
         {
             let level = 102;
             #[cfg(debug_assertions)]
-            let level = if native_panel::preview::active() || source_window.label() == "devTutorial"
+            let level = if native_panel::preview::active()
+                || source_window
+                    .as_ref()
+                    .is_some_and(|source| source.label() == "devTutorial")
             {
                 104
             } else {
@@ -4265,6 +4307,10 @@ fn activate_from_background(window: &tauri::WebviewWindow, context: &str) {
 fn activate_from_background(_window: &tauri::WebviewWindow, _context: &str) {}
 
 fn handle_main_panel_focus_lost(app: tauri::AppHandle) {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if native_panel::onboarding::active() {
+        return;
+    }
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(35));
         if tab_editor_window_active(&app)
@@ -7262,7 +7308,7 @@ fn toggle_clipboard_window(app: &tauri::AppHandle) {
         }
     }
     #[cfg(all(debug_assertions, target_os = "macos"))]
-    if main_panel_mode::native() {
+    if main_panel_mode::native() || native_panel::onboarding::active() {
         if let Err(error) = native_panel::toggle(app.clone()) {
             error!("Failed to toggle native main panel: {error}");
         }

@@ -133,6 +133,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private var surface: NSView { backdrop.contentView }
   private let search = NSSearchField()
   private let toolbar = PanelToolbar()
+  private var onboarding: PanelOnboardingHost?
   private var pasteQueue = PanelPasteQueueIndicator()
   private let queueBar: PanelPasteQueueBar
   private var queueRequestPending = false
@@ -207,7 +208,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   init(callbacks: VPastePanelCallbacks, config: PanelConfiguration) {
     self.config = config
     queueBar = PanelPasteQueueBar(scale: config.scale, chinese: config.chinese)
-    backdrop = PanelBackdrop(scale: config.scale)
+    backdrop = PanelBackdrop(scale: config.scale, onboarding: config.onboarding != nil)
     bridge = PanelBridge(callbacks, session: config.session)
     let screen =
       NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) })
@@ -246,7 +247,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     ) { [weak self] notification in
       MainActor.assumeIsolated {
         guard let self, let preview = notification.object as? NSWindow,
-          self.previewWindows.contains(preview) else { return }
+          (self.previewWindows.contains(preview) || (self.onboarding != nil && preview !== self.window)) else { return }
         self.retainMainAppearanceForPreview(windowNumber: preview.windowNumber)
       }
     }
@@ -286,7 +287,10 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         success: nil, reload: false)
     }
     toolbar.onRefresh = { [weak self] in self?.reload() }
-    toolbar.onClose = { [weak self] in self?.dismiss() }
+    toolbar.onClose = { [weak self] in
+      if let intro = self?.onboarding { intro.model.perform("cancel") }
+      else { self?.dismiss() }
+    }
     toolbar.onPasteQueue = { [weak self] in
       guard let self else { return }
       self.previews.clear()
@@ -359,6 +363,11 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     bridge.changed = { [weak self] in self?.requestHistorySync() }
     bridge.event = { [weak self] name, value in
       guard let self, !self.closed else { return }
+      if let intro = self.onboarding {
+        if name == "onboarding-state", let data = value["data"],
+          let state = try? panelDecode(PanelOnboardingState.self, data) { intro.model.apply(state) }
+        return
+      }
       if name == "history-dirty" {
         self.requestHistorySync()
       } else if name == "tabs-changed" {
@@ -391,7 +400,47 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       }
     }
     media.changed = { [weak self] in self?.status() }
+    if let state = config.onboarding { installOnboarding(state) }
     refreshQueueSelectionUI()
+  }
+  private func installOnboarding(_ state: PanelOnboardingState) {
+    let intro = PanelOnboardingHost(state: state, chinese: chinese, scale: config.scale)
+    onboarding = intro
+    intro.translatesAutoresizingMaskIntoConstraints = false
+    surface.addSubview(intro)
+    NSLayoutConstraint.activate([
+      intro.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
+      intro.bottomAnchor.constraint(equalTo: surface.bottomAnchor),
+      intro.leadingAnchor.constraint(equalTo: surface.leadingAnchor),
+      intro.trailingAnchor.constraint(equalTo: surface.trailingAnchor),
+    ])
+    scroll.isHidden = true; emptyState.isHidden = true; infoBar.isHidden = true
+    toolbar.setNavigationLocked(true)
+    refreshOnboardingTabs()
+    let blocked: () -> Void = { [weak intro] in
+      intro?.model.message = intro?.model.local("Please finish the tutorial first", "请先完成向导内容") ?? ""
+    }
+    toolbar.onFilter = { _ in blocked() }; toolbar.onAddTab = blocked
+    toolbar.onTabContextMenu = { _, _ in blocked() }
+    toolbar.onTabReorder = { _, _, _ in blocked() }; toolbar.onTabDragging = nil
+    toolbar.onRefresh = blocked; toolbar.onPasteQueue = blocked
+    toolbar.onSettings = blocked; toolbar.onDiagnostics = blocked
+    intro.model.onAction = { [weak self] _, args in
+      guard let self, !self.closed else { return }
+      var payload = args
+      payload["language"] = self.config.language
+      payload["theme"] = PanelStyle.dark(self.root) ? "dark" : "light"
+      self.bridge.send("onboarding", payload) { [weak self, weak intro] result in
+        intro?.model.complete(result)
+        self?.refreshOnboardingTabs()
+      }
+    }
+  }
+  private func refreshOnboardingTabs() {
+    guard let model = onboarding?.model else { return }
+    toolbar.setTabs(model.state.filters.enumerated().compactMap { index, enabled in
+      enabled ? PanelTab(id: "tutorial-preview-\(index)", name: model.filterTitle(index), label: "", record: false) : nil
+    })
   }
   @discardableResult
   private func applyPasteQueueState(_ value: [String: Any]) -> Bool {
@@ -403,7 +452,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   private func refreshQueueSelectionUI() {
     toolbar.setQueueActive(pasteQueue.active)
-    queueBar.isHidden = !pasteQueue.active
+    queueBar.isHidden = onboarding != nil || !pasteQueue.active
     queueBar.update(count: pasteQueue.selectedHashes.count,
       busy: queueRequestPending || pasteQueue.selectionBusy)
     updateVisibleSelection()
@@ -490,14 +539,14 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       if config.developerReconfigure == true { starting = false }
       else { animate(show: true) { [weak self] in self?.starting = false } }
     }
-    resumeHistory()
+    if onboarding == nil { resumeHistory() }
   }
   private func focus() {
     NSApp.activate(ignoringOtherApps: true)
     window.makeKeyAndOrderFront(nil)
     // Borderless panels do not automatically become the app's main window.
     window.makeMain()
-    window.makeFirstResponder(list)
+    window.makeFirstResponder(onboarding == nil ? list : nil)
     synchronizeHistoryIfNeeded()
   }
   func activate(toggle: Bool) -> Bool {
@@ -568,6 +617,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     previewWindows.removeAllObjects()
     previews.close()
     pendingPreviewSelection = nil
+    onboarding?.model.close()
+    onboarding?.removeFromSuperview()
+    onboarding = nil
     toolbar.releaseContent()
     queueBar.releaseContent()
     search.delegate = nil
@@ -593,7 +645,10 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     if panelController === self { panelController = nil }
   }
-  func windowDidBecomeKey(_ notification: Notification) { bridge.setKey(NSApp.isActive) }
+  func windowDidBecomeKey(_ notification: Notification) {
+    bridge.setKey(NSApp.isActive)
+    if onboarding?.model.state.step == 1 { onboarding?.model.perform("status") }
+  }
   func windowDidResignKey(_ notification: Notification) {
     bridge.setKey(false)
     scheduleFocusLoss()
@@ -613,6 +668,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
   }
   private func scheduleFocusLoss() {
+    guard onboarding == nil else { return }
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
       guard let self, !self.closed, (!self.starting || !NSApp.isActive),
         (!self.window.isKeyWindow || !NSApp.isActive),
@@ -680,7 +736,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
   }
   private func reload() {
-    guard !closed else { return }
+    guard !closed, onboarding == nil else { return }
     refreshTabs()
     filterEntryPending = false
     filterEntryPreviousHashes = []
@@ -787,11 +843,12 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
   }
   private func requestHistorySync() {
+    guard onboarding == nil else { return }
     historyDirty = true
     synchronizeHistoryIfNeeded()
   }
   private func synchronizeHistoryIfNeeded() {
-    guard historyDirty, !historySyncing, !closed, !hiding, !dragging, !busyAction,
+    guard onboarding == nil, historyDirty, !historySyncing, !closed, !hiding, !dragging, !busyAction,
       window.attachedSheet == nil, let token else { return }
     historyDirty = false
     historySyncing = true
@@ -1195,6 +1252,13 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     scheduleViewport()
   }
   private func key(_ event: NSEvent) -> Bool {
+    if let intro = onboarding {
+      if event.keyCode == 53 { intro.model.perform("cancel"); return true }
+      if [36, 76].contains(event.keyCode), intro.model.state.step > 0 {
+        intro.model.perform(intro.model.state.step == 3 ? "finish" : "next"); return true
+      }
+      return event.modifierFlags.intersection([.command, .option, .control]).isEmpty
+    }
     guard !dragging else { return false }
     if event.keyCode == 48 && event.modifierFlags.contains(.control)
       && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.option) {

@@ -102,7 +102,11 @@ pub(super) async fn open(
                 })?;
             crate::open_url_in_browser(url.into())?;
         }
-        "tutorial-windows" | "tutorial-mac" => {
+        "tutorial-mac" => {
+            super::onboarding::start(&app)?;
+            super::present(app, language.into(), theme.into(), false, true)?;
+        }
+        "tutorial-windows" => {
             let window = crate::auxiliary_windows::ensure(
                 &app,
                 crate::auxiliary_windows::WindowKind::DevTutorial,

@@ -49,6 +49,7 @@ final class PanelTabDragSurface: NSView, NSDraggingSource, NSGestureRecognizerDe
   var onMove: ((String, String, Bool) -> Void)?
   var onDragChanged: ((String?) -> Void)?
   var scale: CGFloat = 1
+  var interactionEnabled = true { didSet { pan.isEnabled = interactionEnabled } }
   private let pan = PanelTabPan()
   private let marker = CALayer()
   private var source: String?

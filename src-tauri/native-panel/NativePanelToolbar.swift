@@ -20,6 +20,7 @@ protocol PanelToolbarContent: AnyObject {
   func setTabs(_ tabs: [PanelTab])
   func setInfoVisible(_ visible: Bool)
   func setQueueActive(_ active: Bool)
+  func setNavigationLocked(_ locked: Bool)
   func releaseContent()
 }
 
@@ -75,6 +76,7 @@ final class PanelToolbar: NSView {
   func setTabs(_ tabs: [PanelTab]) { content?.setTabs(tabs) }
   func setInfoVisible(_ visible: Bool) { content?.setInfoVisible(visible) }
   func setQueueActive(_ active: Bool) { content?.setQueueActive(active) }
+  func setNavigationLocked(_ locked: Bool) { content?.setNavigationLocked(locked) }
   func releaseContent() {
     content?.releaseContent()
     content?.removeFromSuperview()
@@ -158,6 +160,7 @@ final class PanelToolbarState: ObservableObject {
   var releaseTabDrag: (() -> Void)?
   @Published var infoVisible = false
   @Published var queueActive = false
+  @Published var navigationLocked = false
   @Published private(set) var searchOpen = false
   let scale: CGFloat
   let chinese: Bool
@@ -216,7 +219,7 @@ final class PanelToolbarState: ObservableObject {
     onFilter?(index)
   }
   func beginSearch() {
-    guard !closed else { return }
+    guard !closed, !navigationLocked else { return }
     searchOpen = true
     search.isHidden = false
   }
@@ -308,6 +311,7 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
   }
   func setInfoVisible(_ visible: Bool) { state.infoVisible = visible }
   func setQueueActive(_ active: Bool) { state.queueActive = active }
+  func setNavigationLocked(_ locked: Bool) { state.navigationLocked = locked }
   func setTabs(_ tabs: [PanelTab]) { state.setTabs(tabs) }
   func releaseContent() {
     focusRequest &+= 1
@@ -350,14 +354,17 @@ struct PanelToolbarView: View {
           Color(PanelStyle.rgb(dark ? 0xffffff : 0x747e7a, dark ? 0.08 : 0.14)).frame(height: s)
         }
         icon("magnifyingglass", state.local("Search", "搜索"), active: state.searchOpen) { onSearch?() }
+          .disabled(state.navigationLocked)
           .position(x: pad + button / 2, y: geometry.size.height / 2)
         PanelNativeSearch(search: state.search, open: state.searchOpen)
           .frame(width: fieldWidth, height: 32 * s)
           .opacity(state.searchOpen ? 1 : 0)
-          .allowsHitTesting(state.searchOpen)
+          .allowsHitTesting(state.searchOpen && !state.navigationLocked)
           .accessibilityHidden(!state.searchOpen)
           .position(x: pad + button + 7 * s + fieldWidth / 2, y: geometry.size.height / 2)
         PanelFilterViewport(state: state, width: tabsWidth, height: geometry.size.height)
+          .disabled(state.navigationLocked)
+          .allowsHitTesting(!state.navigationLocked)
           .frame(width: tabsWidth, height: geometry.size.height)
           .position(x: left + tabsWidth / 2, y: geometry.size.height / 2)
         PanelDeveloperToolsView(tools: tools, infoVisible: state.infoVisible)
@@ -525,6 +532,7 @@ private struct PanelFilterViewport: NSViewRepresentable {
     return scroll
   }
   func updateNSView(_ scroll: PanelScroll, context: Context) {
+    context.coordinator.surface?.interactionEnabled = !state.navigationLocked
     let widths = state.choices.enumerated().map {
       $0.element.width(scale: state.scale, selected: $0.offset == state.selected)
     }

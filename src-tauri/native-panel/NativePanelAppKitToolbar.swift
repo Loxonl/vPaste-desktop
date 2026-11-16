@@ -219,6 +219,7 @@ final class PanelLegacyToolbar: NSView {
   private var scale: CGFloat = 1
   private var chinese = false
   private var searchOpen = false
+  private var navigationLocked = false
   private var built = false
   override init(frame: NSRect) { super.init(frame: frame) }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -306,6 +307,7 @@ final class PanelLegacyToolbar: NSView {
     if !id.isEmpty {
       button.onContextMenu = { [weak self] point in self?.onTabContextMenu?(id, point) }
     }
+    button.isEnabled = !navigationLocked
     tabs.append(button)
     tabStrip.addSubview(button)
   }
@@ -393,6 +395,7 @@ final class PanelLegacyToolbar: NSView {
       x: 0, y: 0, width: max(tabScroll.bounds.width, addButton.frame.maxX), height: bounds.height)
   }
   func beginSearch() {
+    guard !navigationLocked else { return }
     searchOpen = true
     search?.isHidden = false
     searchButton.active = true
@@ -413,6 +416,14 @@ final class PanelLegacyToolbar: NSView {
     needsLayout = true
     layoutSubtreeIfNeeded()
     if index < tabs.count { tabs[index].scrollToVisible(tabs[index].bounds) }
+  }
+  func setNavigationLocked(_ locked: Bool) {
+    navigationLocked = locked
+    searchButton?.isEnabled = !locked
+    search?.isEnabled = !locked
+    addButton.isEnabled = !locked
+    tabs.forEach { $0.isEnabled = !locked }
+    tabStrip.interactionEnabled = !locked
   }
   func setInfoVisible(_ visible: Bool) { developer?.infoVisible = visible }
   func setQueueActive(_ active: Bool) {

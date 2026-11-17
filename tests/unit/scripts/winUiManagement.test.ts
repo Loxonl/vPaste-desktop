@@ -21,7 +21,7 @@ describe("WinUI management surfaces", () => {
     it("keeps queue commands in a native command bar and uses one row boundary", () => {
         const queue = native("WinUiQueueView.cpp");
         expect(queue.includes("toolbar = CommandBar{}")).toBe(true);
-        expect(queue.includes("container.BorderThickness(Thickness{1, 1, 1, 1})")).toBe(true);
+        expect(queue.includes("container.BorderThickness(Thickness{0, 0, 0, 1})")).toBe(true);
         expect(queue.includes("surface.BorderThickness(")).toBe(false);
         expect(queue.includes("ContentDialogResult::Primary")).toBe(true);
     });

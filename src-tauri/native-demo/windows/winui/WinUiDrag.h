@@ -23,6 +23,10 @@ struct DragRequestState {
 winrt::Windows::Foundation::IAsyncAction PopulateDragPackage(
     winrt::Windows::ApplicationModel::DataTransfer::DataPackage package,
     winrt::Windows::Data::Json::JsonObject data);
+void DeclareDragFormats(winrt::Windows::ApplicationModel::DataTransfer::DataPackage const &package,
+    std::wstring const &type, bool rich,
+    winrt::Windows::ApplicationModel::DataTransfer::DataProviderHandler const &provider);
+bool SuppressInternalCardDrag(winrt::Microsoft::UI::Xaml::DragEventArgs const &args, bool ownCardDrag);
 
 class CardDragSource {
 public:
@@ -36,12 +40,17 @@ public:
     CardDragSource &operator=(CardDragSource &&) = delete;
     void Start(const winrt::Microsoft::UI::Xaml::UIElement &source,
                const winrt::Microsoft::UI::Xaml::DragStartingEventArgs &args,
-               const std::wstring &hash);
+               const std::wstring &hash, const std::wstring &type, bool rich);
     void Receive(const winrt::Windows::Data::Json::JsonObject &response);
     void Finish(const winrt::Microsoft::UI::Xaml::UIElement &source,
                 winrt::Windows::ApplicationModel::DataTransfer::DataPackageOperation result);
     void Cancel();
     bool Active() const;
+#ifdef _DEBUG
+    static winrt::Windows::Foundation::IAsyncAction TestDataProviders(
+        winrt::Windows::ApplicationModel::DataTransfer::DataPackage prepared,
+        std::wstring type, bool rich);
+#endif
 private:
     struct Impl;
     std::shared_ptr<Impl> m_impl;

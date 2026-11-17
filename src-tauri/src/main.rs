@@ -73,8 +73,6 @@ mod maintenance;
 mod media_resources;
 #[cfg(debug_assertions)]
 mod memory_profile;
-#[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]
-mod native_demo;
 #[cfg(target_os = "macos")]
 mod native_drag_preview;
 #[cfg(target_os = "macos")]
@@ -304,23 +302,6 @@ async fn set_dev_memory_monitoring(
 }
 
 #[tauri::command]
-fn open_native_demo_window(app: tauri::AppHandle) -> Result<(), String> {
-    if !get_developer_mode() {
-        return Err("Native window demo requires Debug + --dev-mode".into());
-    }
-    #[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]
-    {
-        app.run_on_main_thread(native_demo::show)
-            .map_err(|error| error.to_string())
-    }
-    #[cfg(not(all(debug_assertions, any(target_os = "macos", target_os = "windows"))))]
-    {
-        let _ = app;
-        Err("Native window demo is only available in macOS and Windows Debug builds".into())
-    }
-}
-
-#[tauri::command]
 fn open_native_main_panel(
     app: tauri::AppHandle,
     language_code: String,
@@ -340,21 +321,12 @@ fn open_native_main_panel(
     }
 }
 
-fn native_demo_window_active() -> bool {
-    #[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]
+fn native_auxiliary_window_active() -> bool {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
     {
-        native_demo::is_key_window() || {
-            #[cfg(target_os = "macos")]
-            {
-                native_panel::is_key_window()
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                false
-            }
-        }
+        native_panel::is_key_window()
     }
-    #[cfg(not(all(debug_assertions, any(target_os = "macos", target_os = "windows"))))]
+    #[cfg(not(all(debug_assertions, target_os = "macos")))]
     {
         false
     }
@@ -2797,6 +2769,24 @@ fn close_dev_tutorial_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(debug_assertions)]
+fn build_dev_tutorial_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let scale = ui_text_scale::current();
+    let window = WebviewWindowBuilder::new(app, "devTutorial", App("__dev-tutorial".into()))
+        .title("vPaste · Tutorial preview")
+        .visible(false)
+        .focused(false)
+        .decorations(true)
+        .resizable(true)
+        .always_on_top(true)
+        .inner_size(1120.0 * scale, 440.0 * scale)
+        .min_inner_size(860.0 * scale, 360.0 * scale)
+        .build()?;
+    ui_text_scale::remember(&window, scale);
+    apply_vpaste_window_icon(&window);
+    Ok(window)
+}
+
 #[tauri::command]
 fn close_dev_memory_window(app: tauri::AppHandle) -> Result<(), String> {
     if !get_developer_mode() {
@@ -3823,7 +3813,7 @@ fn watch_tray_menu_outside_click(window: tauri::WebviewWindow) {
                 break;
             }
             if mouse_button_pressed() && !cursor_inside_window(&window) {
-                let _ = auxiliary_windows::destroy(&window);
+                let _ = hide_tray_menu(window.clone());
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(30));
@@ -4316,7 +4306,7 @@ fn handle_main_panel_focus_lost(app: tauri::AppHandle) {
         if tab_editor_window_active(&app)
             || text_editor_window_active(&app)
             || memory_monitor_window_active(&app)
-            || native_demo_window_active()
+            || native_auxiliary_window_active()
         {
             return;
         }
@@ -4870,13 +4860,13 @@ fn commit_preview_window(
         return Ok(false);
     }
     #[cfg(all(target_os = "windows", feature = "winui"))]
-    let native_reader_handoff = if main_panel_mode::winui() {
-        let Some(foreground) = winui_panel::preview::retire_reader(request_id) else {
+    let (native_reader_handoff, native_reader_rect) = if main_panel_mode::winui() {
+        let Some(handoff) = winui_panel::preview::reader_handoff(request_id) else {
             return Ok(false);
         };
-        foreground
+        handoff
     } else {
-        false
+        (false, None)
     };
     let cursor_in_preview = cursor_physical_position().is_some_and(|cursor| {
         let rect = prepared.rect;
@@ -4902,15 +4892,25 @@ fn commit_preview_window(
             .then_some(preview_focus::FocusTarget::Preview)
     });
     let from = current_preview_rect(&window, prepared.scale_factor)?;
-    let animated = visible
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    let from = native_reader_rect.map_or(from, |rect| PreviewRect {
+        x: f64::from(rect.left) / prepared.scale_factor,
+        y: f64::from(rect.top) / prepared.scale_factor,
+        width: f64::from(rect.right - rect.left) / prepared.scale_factor,
+        height: f64::from(rect.bottom - rect.top) / prepared.scale_factor,
+    });
+    let continuous = visible;
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    let continuous = continuous || native_reader_rect.is_some();
+    let animated = continuous
         && !reduced_motion
         && !system_reduces_motion()
         && !from.near(prepared.rect)
         && easing.iter().all(|value| value.is_finite());
-    if animated {
-        animate_preview_rect(window.clone(), &prepared, from, duration_ms, easing);
-    } else {
+    if !animated {
         set_preview_rect(&window, prepared.rect, prepared.scale_factor)?;
+    } else if !visible {
+        set_preview_rect(&window, from, prepared.scale_factor)?;
     }
     if !visible {
         window
@@ -4922,6 +4922,15 @@ fn commit_preview_window(
         // level, putting the preview below the main panel (101).
         #[cfg(not(target_os = "macos"))]
         let _ = window.set_always_on_top(true);
+    }
+    // Keep the native content visible until the ready shared window is mapped.
+    // A stale shared commit must not retire a newer native selection.
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        winui_panel::preview::retire_reader(request_id);
+    }
+    if animated {
+        animate_preview_rect(window.clone(), &prepared, from, duration_ms, easing);
     }
     // Restore the native level for first show and visible-window reuse alike.
     #[cfg(target_os = "macos")]
@@ -5528,6 +5537,13 @@ fn show_main_panel(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn hide_tray_menu(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Reuse the styled menu instead of booting WebView2 at every click.
+        TRAY_MENU_WATCH_GENERATION.fetch_add(1, Ordering::SeqCst);
+        return window.hide().map_err(|err| err.to_string());
+    }
+    #[cfg(not(target_os = "windows"))]
     auxiliary_windows::destroy(&window).map_err(|err| err.to_string())
 }
 
@@ -7101,16 +7117,13 @@ fn build_file_preview_info(content: String) -> Result<FilePreviewInfo, String> {
     let is_pdf = lower_extension == "pdf";
     let is_text_preview = is_plain_text_preview_extension(&extension);
     let is_image_preview = is_image_preview_extension(&extension);
-    let preview_path =
-        if exists && !display_path.is_empty() && !is_directory && !is_pdf && !is_text_preview {
-            if is_image_preview {
-                display_path.clone()
-            } else {
-                create_file_thumbnail(&display_path).unwrap_or_default()
-            }
-        } else {
-            String::new()
-        };
+    // Ordinary files stay icon-only: do not invoke Shell thumbnail handlers
+    // (video/document codecs) while rendering a clipboard card or Space preview.
+    let preview_path = if exists && !is_directory && is_image_preview {
+        display_path.clone()
+    } else {
+        String::new()
+    };
     let image_dimensions = if !preview_path.is_empty() {
         image_preview::metadata_for_path(&preview_path)
             .ok()
@@ -7146,137 +7159,6 @@ fn build_file_preview_info(content: String) -> Result<FilePreviewInfo, String> {
         image_width: image_dimensions.map(|(width, _)| width),
         image_height: image_dimensions.map(|(_, height)| height),
     })
-}
-
-#[cfg(target_os = "windows")]
-fn create_file_thumbnail(path: &str) -> Result<String, String> {
-    use image::{ImageBuffer, Rgba};
-    use sha2::{Digest, Sha256};
-    use std::mem::{size_of, zeroed};
-    use windows::core::HSTRING;
-    use windows::Win32::Foundation::{HWND, SIZE};
-    use windows::Win32::Graphics::Gdi::{
-        DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
-        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-    };
-    use windows::Win32::System::Com::{
-        CoInitializeEx, CoUninitialize, IBindCtx, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
-    };
-    use windows::Win32::UI::Shell::{
-        IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK, SIIGBF_SCALEUP,
-        SIIGBF_THUMBNAILONLY,
-    };
-
-    let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-
-    let mut hasher = Sha256::new();
-    hasher.update(path.as_bytes());
-    hasher.update(modified.to_string().as_bytes());
-    let hash = hex::encode(hasher.finalize());
-
-    let preview_dir = PathBuf::from(app_runtime_dir(&["file_previews"]));
-    fs::create_dir_all(&preview_dir).map_err(|err| err.to_string())?;
-    let preview_path = preview_dir.join(format!("{}.png", hash));
-    if preview_path.exists() {
-        return Ok(preview_path.to_string_lossy().to_string());
-    }
-
-    unsafe {
-        let coinited =
-            CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_ok();
-
-        let result = (|| {
-            let shell_item: IShellItemImageFactory =
-                SHCreateItemFromParsingName(&HSTRING::from(path), None::<&IBindCtx>)
-                    .map_err(|err| err.to_string())?;
-            let bitmap = shell_item
-                .GetImage(
-                    SIZE { cx: 420, cy: 300 },
-                    SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK | SIIGBF_SCALEUP,
-                )
-                .map_err(|err| err.to_string())?;
-
-            let mut bitmap_info: BITMAP = zeroed();
-            let object_size = GetObjectW(
-                bitmap,
-                size_of::<BITMAP>() as i32,
-                Some(&mut bitmap_info as *mut _ as *mut _),
-            );
-            if object_size == 0 || bitmap_info.bmWidth <= 0 || bitmap_info.bmHeight <= 0 {
-                let _ = DeleteObject(bitmap);
-                return Err("read thumbnail bitmap metadata failed".to_string());
-            }
-
-            let width = bitmap_info.bmWidth as u32;
-            let height = bitmap_info.bmHeight as u32;
-            let mut bits = vec![0_u8; (width * height * 4) as usize];
-            let mut dib_info = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: width as i32,
-                    biHeight: -(height as i32),
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    biSizeImage: (width * height * 4) as u32,
-                    biXPelsPerMeter: 0,
-                    biYPelsPerMeter: 0,
-                    biClrUsed: 0,
-                    biClrImportant: 0,
-                },
-                bmiColors: Default::default(),
-            };
-
-            let hdc = GetDC(HWND(0));
-            let lines = GetDIBits(
-                hdc,
-                bitmap,
-                0,
-                height,
-                Some(bits.as_mut_ptr() as *mut _),
-                &mut dib_info,
-                DIB_RGB_COLORS,
-            );
-            let _ = ReleaseDC(HWND(0), hdc);
-            let _ = DeleteObject(bitmap);
-            if lines == 0 {
-                return Err("read thumbnail bitmap pixels failed".to_string());
-            }
-
-            for pixel in bits.chunks_exact_mut(4) {
-                pixel.swap(0, 2);
-            }
-
-            let image: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_vec(width, height, bits)
-                .ok_or_else(|| "create thumbnail image buffer failed".to_string())?;
-            let mut png_bytes = Vec::new();
-            image
-                .write_to(
-                    &mut std::io::Cursor::new(&mut png_bytes),
-                    image::ImageFormat::Png,
-                )
-                .map_err(|err| err.to_string())?;
-            history_store::write_file(&preview_path, &png_bytes)?;
-            Ok(preview_path.to_string_lossy().to_string())
-        })();
-
-        if coinited {
-            CoUninitialize();
-        }
-
-        result
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn create_file_thumbnail(_path: &str) -> Result<String, String> {
-    Ok(String::new())
 }
 
 #[tauri::command]
@@ -8852,8 +8734,37 @@ mod file_preview_tests {
     use std::io::Cursor;
 
     #[test]
-    fn gif_file_preview_uses_original_path_and_dimensions() {
+    fn ordinary_files_do_not_request_shell_thumbnails() {
+        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
         let workspace = tempfile::tempdir().unwrap();
+        let previous = GLOBAL_APP_DATA_DIR
+            .lock()
+            .unwrap()
+            .replace(workspace.path().to_string_lossy().into_owned());
+        for extension in ["mp4", "mov", "mp3", "docx", "zip"] {
+            let file = workspace.path().join(format!("sample.{extension}"));
+            fs::write(&file, b"file preview must not invoke a Shell handler").unwrap();
+            let info = build_file_preview_info(
+                serde_json::to_string(&vec![file.to_string_lossy()]).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(info.kind, "single-icon");
+            assert!(info.preview_path.is_empty());
+            assert_eq!((info.image_width, info.image_height), (None, None));
+        }
+        *GLOBAL_APP_DATA_DIR.lock().unwrap() = previous;
+        assert!(
+            !workspace.path().join("file_previews").exists(),
+            "ordinary files must not even initialize the Shell thumbnail cache"
+        );
+    }
+
+    #[test]
+    fn gif_file_preview_uses_original_path_and_dimensions() {
+        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        *GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(workspace.path().to_string_lossy().into_owned());
         let gif_path = workspace.path().join("sample.gif");
         let image = image::RgbaImage::from_pixel(2, 3, image::Rgba([255, 0, 0, 255]));
         let mut bytes = Vec::new();
@@ -8875,7 +8786,10 @@ mod file_preview_tests {
 
     #[test]
     fn image_file_preview_uses_original_path_for_file_semantics() {
+        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
         let workspace = tempfile::tempdir().unwrap();
+        *GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(workspace.path().to_string_lossy().into_owned());
         let image_path = workspace.path().join("sample.png");
         let image = image::RgbaImage::from_pixel(4, 5, image::Rgba([0, 128, 255, 255]));
         image
@@ -13391,6 +13305,7 @@ fn toggle_clipboard_history_paused(app: tauri::AppHandle) -> Result<bool, String
 }
 
 async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
+    let started = Instant::now();
     let cursor = cursor_physical_position();
     match auxiliary_windows::ensure(app, auxiliary_windows::WindowKind::TrayMenu).await {
         Err(err) => error!("Failed to open tray menu: {err}"),
@@ -13467,6 +13382,10 @@ async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
                 let _ = window.show();
                 let _ = window.set_focus();
                 watch_tray_menu_outside_click(window.clone());
+                info!(
+                    "WebView tray menu shown: elapsed_ms={}",
+                    started.elapsed().as_millis()
+                );
                 Ok(())
             })
             .await
@@ -13594,8 +13513,8 @@ fn build_auxiliary_window(
             ui_text_scale::remember(&window, text_scale);
             return Ok(window);
         }
-        #[cfg(all(debug_assertions, target_os = "macos"))]
-        WindowKind::DevTutorial => return native_panel::developer::build_tutorial_window(handle),
+        #[cfg(debug_assertions)]
+        WindowKind::DevTutorial => return build_dev_tutorial_window(handle),
         WindowKind::ClipboardPreview => return build_preview_window(handle),
         WindowKind::PasteQueue => return build_paste_queue_window(handle),
         WindowKind::Config => return build_config_window(handle),
@@ -13605,6 +13524,7 @@ fn build_auxiliary_window(
         WindowKind::NativeOnboarding => {
             WebviewWindowBuilder::new(handle, "nativeOnboarding", App("native-onboarding".into()))
                 .title("vPaste")
+                .skip_taskbar(true)
                 .visible(false)
                 .focused(false)
                 .decorations(false)
@@ -14317,7 +14237,9 @@ fn main() {
             }
             if window.label() == "config" && matches!(event,
                 tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }) {
-                let _ = window.emit("panel-size-display-changed", ());
+                if panel_size::settings_display_changed(window) {
+                    let _ = window.emit("panel-size-display-changed", ());
+                }
             }
             if window.label() == "config"
                 && matches!(event, tauri::WindowEvent::Focused(false) | tauri::WindowEvent::Destroyed)
@@ -14353,8 +14275,15 @@ fn main() {
                 }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                #[cfg(target_os = "windows")]
+                if window.label() == "trayMenu" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
                 if matches!(window.label(), "trayMenu" | "pasteFallbackNotice" | "devMemory" | "devTutorial") {
                     api.prevent_close();
+                    #[cfg(target_os = "windows")]
+                    if window.label() == "trayMenu" { return; }
                     let _ = auxiliary_windows::destroy_native(window);
                 }
                 if window.label() == "textEditor" {
@@ -14445,6 +14374,9 @@ fn main() {
             }
             if let tauri::WindowEvent::Focused(false) = event {
                 if window.label() == "trayMenu" {
+                    #[cfg(target_os = "windows")]
+                    { let _ = window.hide(); }
+                    #[cfg(not(target_os = "windows"))]
                     let _ = auxiliary_windows::destroy_native(window);
                 }
             }
@@ -14501,7 +14433,10 @@ fn main() {
             *GLOBAL_APP_DATA_DIR.lock().unwrap() = app_data_dir;
             #[cfg(debug_assertions)]
             if memory_profile_active() {
-                memory_profile::setup(app.handle()).map_err(io::Error::other)?;
+                memory_profile::setup(app.handle()).map_err(|error| {
+                    eprintln!("Isolated App setup failed: {error}");
+                    io::Error::other(error)
+                })?;
                 #[cfg(target_os = "macos")]
                 panel_size::layout_check::start(app.handle().clone());
                 panel_animation::probe::start(app.handle().clone());
@@ -14516,6 +14451,18 @@ fn main() {
                 app_updater::start_background_checks(app.handle().clone());
             }
             install_vpaste_tray(app.handle())?;
+            #[cfg(target_os = "windows")]
+            if !memory_profile_active() {
+                let tray_owner = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    // Readiness includes the first measured content resize.
+                    // This stays hidden and never creates a main WebView.
+                    if let Err(error) = auxiliary_windows::ensure(&tray_owner,
+                        auxiliary_windows::WindowKind::TrayMenu).await {
+                        log::warn!("Tray menu warmup failed: {error}");
+                    }
+                });
+            }
 
             // Register user-facing entry points before heavier startup maintenance.
             #[cfg(target_os = "macos")]
@@ -14663,7 +14610,6 @@ fn main() {
             open_dev_memory_window,
             close_dev_memory_window,
             close_dev_tutorial_window,
-            open_native_demo_window,
             open_native_main_panel,
             get_dev_memory_report,
             set_dev_memory_monitoring,

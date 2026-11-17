@@ -17,6 +17,7 @@ mod behavior;
 mod bridge;
 use bridge::response as response_bytes;
 mod drag;
+mod file_icons;
 mod filters;
 mod focus;
 mod layout;
@@ -419,6 +420,7 @@ pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
         send_response(0, "captureRejected", Ok(json!({})));
     });
     app.listen("clipboard-behavior-config-changed", move |_| {
+        app_actions::reset_preview();
         if let Err(error) = apply_behavior() {
             log::error!("Failed to update WinUI input preferences: {error}");
         }
@@ -441,6 +443,7 @@ pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
         refresh();
     });
     app.listen("language-changed", move |_| {
+        app_actions::reset_preview();
         if let Err(error) = apply_language() {
             log::debug!("WinUI language update deferred: {error}");
         }
@@ -663,7 +666,9 @@ fn apply_behavior() -> Result<(), String> {
 }
 
 fn apply_theme() -> Result<(), String> {
-    let theme = match crate::config::get().theme_mode.as_str() {
+    let config = crate::config::get();
+    let (_, theme) = app_actions::appearance(config.multilingual, config.theme_mode);
+    let theme = match theme.as_str() {
         "light" => 1,
         "dark" => 2,
         _ => 0,
@@ -674,7 +679,8 @@ fn apply_theme() -> Result<(), String> {
 }
 
 fn apply_language() -> Result<(), String> {
-    let language = crate::config::get().multilingual;
+    let config = crate::config::get();
+    let (language, _) = app_actions::appearance(config.multilingual, config.theme_mode);
     let english = language.to_ascii_lowercase().starts_with("en");
     let panel = api()?;
     // SAFETY: the DLL synchronously applies the language on the WinUI UI thread.
@@ -1109,6 +1115,7 @@ async fn query_card(
     let summary_hash = hash.clone();
     let (mut card, media_path) = tauri::async_runtime::spawn_blocking(move || {
         let payload = crate::clipboard::history_card_payload(&summary_hash, false)?;
+        let is_rich_text = presentation::is_rich_format(&payload);
         let item = payload.item;
         // Match the shipping reader: schedule only requested/visible cards,
         // reuse its link preference, cache, cancellation and visibility epoch.
@@ -1122,6 +1129,8 @@ async fn query_card(
         let mut file_count = 0;
         let mut file_format = String::new();
         let mut file_kind = String::new();
+        let mut file_presentation = serde_json::Value::Null;
+        let mut image_kind = String::new();
         let display_text = match item.item_type {
             crate::clipboard::item::ItemType::Image => {
                 media_path = Some(item.preview_content.clone());
@@ -1130,6 +1139,13 @@ async fn query_card(
             crate::clipboard::item::ItemType::File => {
                 let info = crate::build_file_preview_info(item.content.clone()).ok();
                 if let Some(info) = info {
+                    file_presentation = file_icons::presentation(
+                        &info,
+                        crate::config::get()
+                            .multilingual
+                            .to_ascii_lowercase()
+                            .starts_with("en"),
+                    );
                     file_count = info.paths.len();
                     file_format = info.extension.to_uppercase();
                     file_kind = info.kind.clone();
@@ -1172,7 +1188,18 @@ async fn query_card(
                 }
                 let title = parts.get(2).filter(|title| !title.is_empty()).copied();
                 display_subtitle = parts.first().copied().unwrap_or("").to_string();
-                display_title = title.unwrap_or(&display_subtitle).to_string();
+                display_title = title.map(str::to_string).unwrap_or_else(|| {
+                    reqwest::Url::parse(&display_subtitle)
+                        .ok()
+                        .and_then(|url| {
+                            url.host_str().map(|host| match url.port() {
+                                Some(port) => format!("{host}:{port}"),
+                                None => host.to_string(),
+                            })
+                        })
+                        .unwrap_or_else(|| display_subtitle.clone())
+                });
+                image_kind = parts.get(3).copied().unwrap_or("").to_string();
                 format!(
                     "{}\n{}",
                     title.unwrap_or_else(|| parts.first().copied().unwrap_or("")),
@@ -1192,6 +1219,11 @@ async fn query_card(
                 }
             }
         };
+        let is_gif = presentation::is_gif_format(
+            &item.item_type.to_string(),
+            &item.content,
+            &item.preview_content,
+        );
         let source_icon = item.app_icon_path;
         let swatch_color = (item.item_type == crate::clipboard::item::ItemType::Color)
             .then(|| native_color(&display_text))
@@ -1201,17 +1233,22 @@ async fn query_card(
                 "hash": summary_hash,
                 "itemType": item.item_type.to_string(),
                 "displayText": display_text,
+                "visualType": presentation::visual_type(&item.item_type.to_string(), &item.content),
                 "displayTitle": display_title,
                 "displaySubtitle": display_subtitle,
                 "fileCount": file_count,
                 "fileFormat": file_format,
                 "fileKind": file_kind,
+                "filePresentation": file_presentation,
+                "imageKind": image_kind,
                 "tags": tags,
                 "titleColor": title_color,
                 "headerColor": native_color(&title_color),
                 "appIconPath": source_icon,
                 "swatchColor": swatch_color,
                 "actions": actions,
+                "isRichText": is_rich_text,
+                "isGif": is_gif,
                 "rich": if item.item_type == crate::clipboard::item::ItemType::Text {
                     presentation::rich_content(payload.rich_render.as_ref())
                 } else { serde_json::Value::Null },
@@ -1521,12 +1558,33 @@ mod tests {
             if test.is_null() {
                 return Err("WinUI regression test export is missing".to_string());
             }
-            // SAFETY: the Debug export accepts a uint32_t pointer and returns HRESULT.
-            let test: unsafe extern "C" fn(*mut u32) -> i32 = unsafe { std::mem::transmute(test) };
+            let fixtures = [
+                ("C:/docs/report.pdf", "single-icon", false),
+                ("C:/notes.txt", "single-icon", false),
+                ("C:/project/package.json", "single-icon", false),
+                ("C:/unknown.something-vpaste", "single-icon", false),
+                ("C:/documents", "single-folder", false),
+                ("C:/notes.txt", "multiple", true),
+                ("C:/notes.txt", "multiple", false),
+            ].map(|(path, kind, mixed)| {
+                let info = crate::FilePreviewInfo {
+                    kind: kind.into(), paths: if kind == "multiple" {
+                        vec![path.into(), "C:/report.pdf".into(), "C:/README.md".into()]
+                    } else { vec![path.into()] },
+                    exists: true, missing_paths: vec![], display_path: path.into(),
+                    secondary_text: String::new(), extension: path.rsplit('.').next().unwrap().into(),
+                    preview_path: String::new(), contains_directories: mixed,
+                    image_width: None, image_height: None,
+                };
+                super::file_icons::presentation(&info, true)
+            });
+            let fixtures = serde_json::to_vec(&fixtures).map_err(|error| error.to_string())?;
+            // SAFETY: Debug-only ABI copies fixture bytes before returning.
+            let test: unsafe extern "C" fn(*const u8, usize, *mut u32) -> i32 = unsafe { std::mem::transmute(test) };
             let mut stage = 0;
             // SAFETY: stage lives for the whole call; the DLL writes it only
             // before returning, never from its asynchronous UI callback.
-            let result = unsafe { test(&mut stage) };
+            let result = unsafe { test(fixtures.as_ptr(), fixtures.len(), &mut stage) };
             eprintln!(
                 "WinUI native history/queue regression: stage={stage}, HRESULT=0x{:08X}",
                 result as u32

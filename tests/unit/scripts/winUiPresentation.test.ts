@@ -17,7 +17,9 @@ describe("WinUI main panel presentation", () => {
         for (const name of ["copy", "paste", "favorite", "manageTags", "queueSelect"]) {
             expect(panel.includes(`SecondaryCommands().Append(g_panel.${name})`)).toBe(false);
         }
-        expect(panel).toMatch(/PrimaryCommands\(\)\.Append\(g_panel\.appActions->UpdateButton\(\)\);\s*g_panel\.settings = AppBarButton\(\);[\s\S]*?PrimaryCommands\(\)\.Append\(g_panel\.settings\);/);
+        // Match ClipboardHeader: queue, settings, then the conditional update.
+        // Settings is the final ordinary command, not the final conditional one.
+        expect(panel).toMatch(/PrimaryCommands\(\)\.Append\(g_panel\.queueOpen\);[\s\S]*?PrimaryCommands\(\)\.Append\(g_panel\.settings\);\s*g_panel\.commands\.PrimaryCommands\(\)\.Append\(g_panel\.appActions->UpdateButton\(\)\);/);
         expect(panel).not.toContain("PrimaryCommands().Append(g_panel.queueAdd)");
         expect(panel).toContain("selectionActions.Children().Append(g_panel.queueAdd)");
         expect(panel).toContain("selectionActions.Children().Append(g_panel.cancelSelection)");

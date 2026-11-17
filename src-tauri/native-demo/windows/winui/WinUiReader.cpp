@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cmath>
 #include <utility>
+#include <thread>
 #ifdef _DEBUG
 #include <cstdio>
 #include <vector>
@@ -20,8 +21,10 @@
 winrt::Windows::Foundation::IAsyncAction NextNativeFrame();
 #endif
 #include <winrt/Microsoft.UI.Content.h>
+#include <winrt/Microsoft.UI.Composition.SystemBackdrops.h>
 #include <winrt/Microsoft.UI.Interop.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Microsoft.UI.Xaml.Hosting.h>
@@ -38,6 +41,7 @@ using namespace winrt::Microsoft::UI::Xaml::Controls;
 using namespace winrt::Microsoft::UI::Xaml::Media;
 using namespace winrt::Windows::Data::Json;
 constexpr wchar_t ReaderClass[] = L"VPasteWinUiReader";
+constexpr UINT ReaderFrameMessage = WM_APP + 0x3F1;
 std::atomic<HWND> publishedWindow{nullptr};
 
 TextBlock ReaderText(winrt::hstring const &text, double size = 14) {
@@ -54,24 +58,31 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
     explicit Impl(Request callback, HWND reference) : request(std::move(callback)), owner(reference) {}
     Request request;
     HWND owner;
-    HWND window = nullptr;
+    HWND window = nullptr, handoffWindow = nullptr;
     Hosting::DesktopWindowXamlSource source{nullptr};
     Grid root{nullptr}, body{nullptr};
     ContentControl contentFocus{nullptr};
-    FrameworkElement pending{nullptr}, displayed{nullptr};
+    FrameworkElement pending{nullptr}, displayed{nullptr}, outgoing{nullptr};
+    winrt::Microsoft::UI::Composition::ScalarKeyFrameAnimation contentEnter{nullptr}, contentExit{nullptr};
     Controls::Primitives::ToggleButton pin{nullptr};
     Button close{nullptr};
-    DispatcherTimer movement{nullptr}, loadTimeout{nullptr};
+    DispatcherTimer loadTimeout{nullptr};
+    std::jthread movement;
+    std::atomic<bool> framePosted{false};
     std::uint64_t latest = 0, committed = 0;
     bool english = false, takesFocus = false, retired = false, hover = false, placing = false;
     ElementTheme theme = ElementTheme::Default;
-    RECT target{}, from{};
-    std::array<double, 4> easing{};
-    double durationMs = 0;
+    RECT target{}, from{}, pendingTarget{};
+    std::array<double, 4> easing{}, pendingEasing{};
+    double durationMs = 0, pendingDurationMs = 0;
     std::chrono::steady_clock::time_point started;
+#ifdef _DEBUG
+    std::vector<std::chrono::steady_clock::time_point> movementFrames;
+#endif
 
     ~Impl() {
-        if (movement) movement.Stop();
+        FinishContentTransition();
+        StopMovement();
         if (loadTimeout) loadTimeout.Stop();
         publishedWindow.store(nullptr, std::memory_order_release);
         if (source) { source.Content(nullptr); source.Close(); }
@@ -118,6 +129,10 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         if (!self) return DefWindowProcW(handle, message, wparam, lparam);
         try {
             switch (message) {
+            case ReaderFrameMessage:
+                self->framePosted = false;
+                if (self->Moving()) self->Step();
+                return 0;
             case WM_NCCALCSIZE: if (wparam) return 0; break;
             case WM_NCHITTEST: return HTCLIENT;
             case WM_ERASEBKGND: return 1;
@@ -131,7 +146,7 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
                 // A geometry animation already has a physical destination from
                 // Rust. Do not replace it with a mid-frame suggested rectangle.
                 if (self->placing) { self->Resize(); return 0; }
-                if (self->movement) self->movement.Stop();
+                self->StopMovement();
                 self->target = FitToMonitorWorkArea(*reinterpret_cast<RECT *>(lparam));
                 self->from = self->target;
                 self->Place(self->target);
@@ -141,7 +156,7 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
             case WM_SETTINGCHANGE:
                 if (message == WM_SETTINGCHANGE && wparam != SPI_SETWORKAREA) break;
                 if (self->window && IsWindowVisible(self->window)) {
-                    if (self->movement) self->movement.Stop();
+                    self->StopMovement();
                     RECT current{}; winrt::check_bool(GetWindowRect(self->window, &current));
                     self->target = FitToMonitorWorkArea(current); self->from = self->target;
                     self->Place(self->target); self->Resize();
@@ -164,11 +179,7 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         winrt::check_bool(window != nullptr);
         source = Hosting::DesktopWindowXamlSource();
         source.Initialize(winrt::Microsoft::UI::GetWindowIdFromWindow(window));
-        // This reader has no Acrylic controller. Use a live theme resource,
-        // rather than the main dock's potentially transparent canvas brush.
-        root = Markup::XamlReader::Load(LR"(<Grid
-            xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-            Background="{ThemeResource ApplicationPageBackgroundThemeBrush}"/>)").as<Grid>();
+        root = Grid(); ApplyStyle(root, L"VPaste.ReaderCanvas");
         RowDefinition heading; heading.Height(GridLength{40, GridUnitType::Pixel});
         root.RowDefinitions().Append(heading); root.RowDefinitions().Append(RowDefinition{});
         StackPanel actions; actions.Orientation(Orientation::Horizontal);
@@ -180,6 +191,10 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         actions.Children().Append(pin); actions.Children().Append(close);
         root.Children().Append(actions);
         body = Grid(); body.Margin(Thickness{16, 0, 16, 16});
+        // Keep the text/image canvas readable while the same outer reader
+        // frame exposes a restrained system material around every content type.
+        ApplyStyle(body, L"VPaste.ReaderCanvas");
+        body.CornerRadius(UniformRadius(8));
         contentFocus = ContentControl(); contentFocus.Content(body); contentFocus.IsTabStop(true);
         contentFocus.HorizontalContentAlignment(HorizontalAlignment::Stretch);
         contentFocus.VerticalContentAlignment(VerticalAlignment::Stretch);
@@ -204,8 +219,6 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         root.ActualThemeChanged([weak](auto const &, auto const &) {
             if (auto self = weak.lock()) self->ApplyAppearance();
         });
-        movement = DispatcherTimer(); movement.Interval(std::chrono::milliseconds(16));
-        movement.Tick([weak](auto const &, auto const &) { if (auto self = weak.lock()) self->Step(); });
         loadTimeout = DispatcherTimer(); loadTimeout.Interval(std::chrono::seconds(5));
         loadTimeout.Tick([weak](auto const &, auto const &) {
             if (auto self = weak.lock()) { self->loadTimeout.Stop(); self->ImageError(self->latest); }
@@ -214,12 +227,24 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         const auto corners = DWMWCP_ROUND;
         (void)DwmSetWindowAttribute(window, DWMWA_WINDOW_CORNER_PREFERENCE, &corners, sizeof(corners));
         const MARGINS shadow{1, 1, 1, 1}; (void)DwmExtendFrameIntoClientArea(window, &shadow);
+        const BOOL disableTransitions = TRUE;
+        (void)DwmSetWindowAttribute(window, DWMWA_TRANSITIONS_FORCEDISABLED, &disableTransitions, sizeof(disableTransitions));
         publishedWindow.store(window, std::memory_order_release);
     }
 
     void ApplyAppearance() {
         if (!root) return;
         root.RequestedTheme(theme);
+        const bool material = !HighContrastEnabled() &&
+            winrt::Microsoft::UI::Composition::SystemBackdrops::DesktopAcrylicController::IsSupported();
+        if (material && !source.SystemBackdrop()) {
+            try { source.SystemBackdrop(DesktopAcrylicBackdrop{}); }
+            catch (winrt::hresult_error const &error) { OutputDebugStringW(error.message().c_str()); }
+        } else if (!material && source.SystemBackdrop()) {
+            source.SystemBackdrop(nullptr);
+        }
+        root.ClearValue(Controls::Panel::BackgroundProperty());
+        if (source.SystemBackdrop()) root.Background(SolidColorBrush{winrt::Windows::UI::Color{0, 0, 0, 0}});
         const BOOL dark = root.ActualTheme() == ElementTheme::Dark;
         (void)DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
         SetWindowTextW(window, Text(L"vPaste — 预览", L"vPaste — Preview").c_str());
@@ -240,10 +265,13 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
     }
 
     void Step() {
+#ifdef _DEBUG
+        movementFrames.push_back(std::chrono::steady_clock::now());
+#endif
         const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
         const auto progress = std::clamp(elapsed / std::max(1.0, durationMs), 0.0, 1.0);
         if (progress >= 1 || !winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) {
-            movement.Stop(); Place(target); return;
+            StopMovement(); Place(target); return;
         }
         const auto eased = BezierProgress(progress, easing);
         const auto interpolate = [eased](LONG a, LONG b) { return static_cast<LONG>(std::lround(a + (b - a) * eased)); };
@@ -251,12 +279,68 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
             interpolate(from.right, target.right), interpolate(from.bottom, target.bottom)});
     }
 
+    bool Moving() const { return movement.joinable(); }
+    void StopMovement() {
+        if (movement.joinable()) { movement.request_stop(); movement.join(); }
+        framePosted = false;
+    }
+
     void MoveToTarget(bool animationsEnabled) {
-        movement.Stop();
+        StopMovement();
+#ifdef _DEBUG
+        movementFrames.clear();
+#endif
         winrt::check_bool(GetWindowRect(window, &from));
         if (IsWindowVisible(window) && animationsEnabled && !EqualRect(&from, &target) && durationMs > 0) {
-            started = std::chrono::steady_clock::now(); movement.Start();
+            started = std::chrono::steady_clock::now();
+            // Match the shipping preview's DWM pacing. DispatcherTimer ticks
+            // run after XAML layout and coalesce to ~3 display frames on resize.
+            // The worker only posts; this STA remains the sole HWND owner.
+            movement = std::jthread([this](std::stop_token stop) {
+                while (!stop.stop_requested()) {
+                    const auto before = std::chrono::steady_clock::now();
+                    const auto composed = SUCCEEDED(DwmFlush());
+                    if (!composed || std::chrono::steady_clock::now() - before < std::chrono::milliseconds(1))
+                        std::this_thread::sleep_for(std::chrono::milliseconds(8));
+                    if (!stop.stop_requested() && !framePosted.exchange(true))
+                        if (!PostMessageW(window, ReaderFrameMessage, 0, 0)) framePosted = false;
+                }
+            });
         } else Place(target);
+    }
+
+    void FinishContentTransition() {
+        if (displayed) { if (contentEnter) displayed.StopAnimation(contentEnter); displayed.Opacity(1); }
+        if (outgoing) {
+            if (contentExit) outgoing.StopAnimation(contentExit);
+            std::uint32_t index = 0;
+            if (body.Children().IndexOf(outgoing, index)) body.Children().RemoveAt(index);
+        }
+        outgoing = nullptr; contentEnter = nullptr; contentExit = nullptr;
+    }
+
+    void StartContentTransition(std::uint64_t generation, bool enabled) {
+        if (generation != committed || !outgoing) return;
+        displayed.Opacity(1);
+        if (!enabled || !NativeAnimationsEnabled()) { FinishContentTransition(); return; }
+        const auto compositor = CompositionTarget::GetCompositorForCurrentThread();
+        const auto tokens = MotionTokens();
+        const auto curve = tokens.GetNamedObject(L"easing").GetNamedArray(L"enter");
+        const auto contentEasing = compositor.CreateCubicBezierEasingFunction(
+            {static_cast<float>(curve.GetNumberAt(0)), static_cast<float>(curve.GetNumberAt(1))},
+            {static_cast<float>(curve.GetNumberAt(2)), static_cast<float>(curve.GetNumberAt(3))});
+        auto batch = compositor.CreateScopedBatch(winrt::Microsoft::UI::Composition::CompositionBatchTypes::Animation);
+        const auto duration = std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
+            std::chrono::duration<double>{tokens.GetNamedObject(L"duration").GetNamedNumber(L"fast")});
+        contentEnter = compositor.CreateScalarKeyFrameAnimation(); contentEnter.Target(L"Opacity");
+        contentEnter.InsertKeyFrame(0, 0); contentEnter.InsertKeyFrame(1, 1, contentEasing); contentEnter.Duration(duration);
+        contentExit = compositor.CreateScalarKeyFrameAnimation(); contentExit.Target(L"Opacity");
+        contentExit.InsertKeyFrame(0, 1); contentExit.InsertKeyFrame(1, 0, contentEasing); contentExit.Duration(duration);
+        displayed.StartAnimation(contentEnter); outgoing.StartAnimation(contentExit);
+        batch.Completed([weak = weak_from_this(), generation](auto const &, auto const &) {
+            if (auto self = weak.lock(); self && self->committed == generation) self->FinishContentTransition();
+        });
+        batch.End();
     }
 
     void Commit(std::uint64_t generation) {
@@ -270,17 +354,36 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
                 Send(L"nativeReaderCancelled"); Hide(generation); return;
             }
         }
-        loadTimeout.Stop(); movement.Stop();
-        displayed = pending; pending = nullptr; displayed.Opacity(1); displayed.IsHitTestVisible(true);
-        body.Children().Clear(); body.Children().Append(displayed);
+        loadTimeout.Stop(); StopMovement();
+        // Geometry belongs to accepted content. A pending image must not
+        // retarget the previous resize before its pixels are ready.
+        target = pendingTarget; durationMs = pendingDurationMs; easing = pendingEasing;
+        const bool visible = IsWindowVisible(window) != FALSE;
+        FinishContentTransition(); outgoing = displayed;
+        displayed = pending; pending = nullptr; displayed.IsHitTestVisible(true);
+        std::uint32_t index = 0;
+        if (!body.Children().IndexOf(displayed, index)) body.Children().Append(displayed);
         committed = generation; pin.IsEnabled(true);
-        if (displayed.IsLoaded()) FadeFeedback(displayed);
-        else displayed.Loaded([weak = weak_from_this(), generation](auto const &sender, auto const &) {
-            if (const auto self = weak.lock(); self && self->committed == generation && self->displayed == sender)
-                FadeFeedback(self->displayed);
-        });
-        MoveToTarget(winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled());
-        ShowWindow(window, SW_SHOWNOACTIVATE);
+        if (outgoing) {
+            outgoing.IsHitTestVisible(false);
+            Automation::AutomationProperties::SetAccessibilityView(outgoing, Automation::Peers::AccessibilityView::Raw);
+            const bool animate = visible && durationMs > 0 && NativeAnimationsEnabled();
+            displayed.Opacity(animate ? 0 : 1);
+            if (!animate || displayed.IsLoaded()) StartContentTransition(generation, animate);
+            else displayed.Loaded([weak = weak_from_this(), generation](auto const &sender, auto const &) {
+                if (const auto self = weak.lock(); self && self->committed == generation && self->displayed == sender)
+                    self->StartContentTransition(generation, true);
+            });
+        } else displayed.Opacity(1);
+        if (!visible) {
+            RECT inherited{}; DWORD process = 0;
+            if (handoffWindow) GetWindowThreadProcessId(handoffWindow, &process);
+            const bool handoff = process == GetCurrentProcessId() && IsWindowVisible(handoffWindow) &&
+                GetWindowRect(handoffWindow, &inherited);
+            Place(handoff ? inherited : target);
+            ShowWindow(window, SW_SHOWNOACTIVATE);
+        }
+        MoveToTarget(NativeAnimationsEnabled());
         if (takesFocus) {
             SetForegroundWindow(window);
             contentFocus.Focus(FocusState::Programmatic);
@@ -299,7 +402,8 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         if (generation <= latest) return;
         latest = generation;
         retired = false;
-        if (movement) movement.Stop();
+        // A slow next image must not freeze the previous accepted resize.
+        FinishContentTransition();
         if (loadTimeout) loadTimeout.Stop();
         if (pending && body) { std::uint32_t index = 0; if (body.Children().IndexOf(pending, index)) body.Children().RemoveAt(index); }
         pending = nullptr;
@@ -309,8 +413,9 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
     void Hide(std::uint64_t generation) {
         if (generation < latest) return;
         latest = generation; committed = 0; retired = true;
-        if (movement) movement.Stop();
+        StopMovement();
         if (loadTimeout) loadTimeout.Stop();
+        FinishContentTransition();
         pending = nullptr; displayed = nullptr;
         if (body) body.Children().Clear();
         if (pin) { pin.IsChecked(false); pin.IsEnabled(false); }
@@ -327,17 +432,17 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
             winrt::check_hresult(std::isfinite(value) && std::abs(value) < 1000000 ? S_OK : E_INVALIDARG);
             return static_cast<LONG>(std::lround(value));
         };
-        target = {number(L"x"), number(L"y"), 0, 0};
+        pendingTarget = {number(L"x"), number(L"y"), 0, 0};
         const auto width = number(L"width"), height = number(L"height");
         winrt::check_hresult(width > 0 && height > 0 ? S_OK : E_INVALIDARG);
-        target.right = target.left + width; target.bottom = target.top + height;
-        durationMs = std::clamp(data.GetNamedNumber(L"durationMs"), 0.0, 320.0);
+        pendingTarget.right = pendingTarget.left + width; pendingTarget.bottom = pendingTarget.top + height;
+        pendingDurationMs = std::clamp(data.GetNamedNumber(L"durationMs"), 0.0, 320.0);
         const auto curve = data.GetNamedArray(L"easing");
         winrt::check_hresult(curve.Size() == 4 ? S_OK : E_INVALIDARG);
-        for (unsigned i = 0; i < 4; ++i) { easing[i] = curve.GetNumberAt(i); winrt::check_hresult(std::isfinite(easing[i]) ? S_OK : E_INVALIDARG); }
+        for (unsigned i = 0; i < 4; ++i) { pendingEasing[i] = curve.GetNumberAt(i); winrt::check_hresult(std::isfinite(pendingEasing[i]) ? S_OK : E_INVALIDARG); }
         takesFocus = data.GetNamedBoolean(L"takesFocus", false);
         hover = data.GetNamedBoolean(L"hover", false);
-        if (!IsWindowVisible(window)) Place(target);
+        handoffWindow = reinterpret_cast<HWND>(static_cast<std::uintptr_t>(data.GetNamedNumber(L"handoffWindow", 0)));
         const auto kind = data.GetNamedString(L"kind");
         Grid content;
         const auto caption = data.GetNamedString(L"caption", L"");
@@ -532,11 +637,15 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
     const auto dark = state->root.Background().as<SolidColorBrush>().Color();
     reader.SetAppearance(false, ElementTheme::Light); co_await NextNativeFrame();
     const auto light = state->root.Background().as<SolidColorBrush>().Color();
-    winrt::check_hresult(dark.A == 255 && light.A == 255 && dark.R < light.R ? S_OK : E_FAIL);
+    const bool transparentFrame = winrt::Microsoft::UI::Composition::SystemBackdrops::DesktopAcrylicController::IsSupported() && !HighContrastEnabled();
+    winrt::check_hresult((transparentFrame ? (dark.A == 0 && light.A == 0 && state->source.SystemBackdrop())
+        : (dark.A == 255 && light.A == 255 && dark.R < light.R)) ? S_OK : E_FAIL);
+    const auto canvas = state->body.Background().as<SolidColorBrush>().Color();
+    winrt::check_hresult(canvas.A == 255 && state->root.Padding() == UniformThickness(0) ? S_OK : E_FAIL);
     state->target = {120, 110, 720, 510}; state->durationMs = 240;
     state->MoveToTarget(false);
     RECT actual{}; winrt::check_bool(GetWindowRect(handle, &actual));
-    winrt::check_hresult(EqualRect(&actual, &state->target) && !state->movement.IsEnabled() ? S_OK : E_FAIL);
+    winrt::check_hresult(EqualRect(&actual, &state->target) && !state->Moving() ? S_OK : E_FAIL);
 
     stage = 1191;
     RECT changedDpi{140, 120, 840, 620};
@@ -560,7 +669,7 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
     winrt::check_bool(GetWindowRect(handle, &actual));
     const auto displayBounds = FitToMonitorWorkArea(actual);
     winrt::check_hresult(EqualRect(&actual, &displayBounds) && EqualRect(&actual, &state->target) &&
-        !state->movement.IsEnabled() ? S_OK : E_FAIL);
+        !state->Moving() ? S_OK : E_FAIL);
 
     stage = 120;
     auto missing = text(5, L""); auto missingData = missing.GetNamedObject(L"data");
@@ -634,7 +743,7 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
     winrt::check_bool(GetWindowRect(handle, &actual));
     winrt::check_hresult(EqualRect(&state->from, &actual) ? S_OK : E_FAIL);
     state->MoveToTarget(false); winrt::check_bool(GetWindowRect(handle, &actual));
-    winrt::check_hresult(EqualRect(&state->target, &actual) && !state->movement.IsEnabled() ? S_OK : E_FAIL);
+    winrt::check_hresult(EqualRect(&state->target, &actual) && !state->Moving() ? S_OK : E_FAIL);
     reader.Receive(message(L"nativeReaderHide", 16));
 
     stage = 123;
@@ -654,8 +763,72 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
         events.back().second == 19 ? S_OK : E_FAIL);
     state->target = {200, 180, 800, 580}; state->durationMs = 240;
     state->MoveToTarget(true); reader.Receive(message(L"nativeReaderBegin", 21));
-    winrt::check_hresult(!state->movement.IsEnabled() && state->latest == 21 ? S_OK : E_FAIL);
+    winrt::check_hresult(state->Moving() && state->latest == 21 && IsWindowVisible(handle) ? S_OK : E_FAIL);
     reader.Receive(message(L"nativeReaderHide", 22));
+
+    stage = 1242;
+    reader.Receive(text(24, L"Visible content remains until its replacement is ready"));
+    co_await NextNativeFrame();
+    const auto oldContent = state->displayed;
+    auto replacement = text(26, L"Continuous next content");
+    replacement.GetNamedObject(L"data").Insert(L"durationMs", JsonValue::CreateNumberValue(240));
+    replacement.GetNamedObject(L"data").Insert(L"rect", JsonObject::Parse(LR"({"x":160,"y":120,"width":640,"height":400})"));
+    reader.Receive(replacement);
+    winrt::check_hresult(state->window == handle && IsWindowVisible(handle) &&
+        state->displayed && state->body.Children().Size() >= 1 && state->body.Children().Size() <= 2 ? S_OK : E_FAIL);
+    if (NativeAnimationsEnabled()) winrt::check_hresult(state->outgoing == oldContent && !oldContent.IsHitTestVisible() ? S_OK : E_FAIL);
+    for (int frame = 0; frame < 90 && state->outgoing; ++frame) {
+        co_await NextNativeFrame();
+        winrt::check_hresult(IsWindowVisible(handle) && state->body.Children().Size() >= 1 &&
+            state->body.Children().Size() <= 2 ? S_OK : E_FAIL);
+    }
+    winrt::check_hresult(!state->outgoing && state->body.Children().Size() == 1 && state->displayed.Opacity() == 1 ? S_OK : E_FAIL);
+    const auto accepted = state->displayed;
+    reader.Receive(message(L"nativeReaderBegin", 27)); co_await NextNativeFrame();
+    winrt::check_hresult(state->displayed == accepted && accepted.Opacity() == 1 && IsWindowVisible(handle) ? S_OK : E_FAIL);
+    reader.Receive(text(28, L"Reduced motion settles immediately"));
+    winrt::check_bool(GetWindowRect(handle, &actual));
+    winrt::check_hresult(!state->outgoing && state->body.Children().Size() == 1 &&
+        state->displayed.Opacity() == 1 && !state->Moving() &&
+        EqualRect(&state->target, &actual) ? S_OK : E_FAIL);
+    reader.Receive(message(L"nativeReaderHide", 28));
+
+    stage = 1243;
+    // Renderer handoff must animate the outer rectangle, not just fade a new
+    // HWND at its final size. Sample actual OS bounds while frames advance.
+    const auto shared = CreateWindowExW(WS_EX_TOOLWINDOW, L"STATIC", L"Preview handoff fixture",
+        WS_POPUP, 120, 90, 880, 600, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    winrt::check_bool(shared != nullptr);
+    struct SharedFixture { HWND window; ~SharedFixture() { DestroyWindow(window); } } sharedFixture{shared};
+    ShowWindow(shared, SW_SHOWNOACTIVATE);
+    RECT sharedBounds{}; winrt::check_bool(GetWindowRect(shared, &sharedBounds));
+    auto handoff = text(29, L"Native preview inherits the visible shared rectangle");
+    handoff.GetNamedObject(L"data").Insert(L"handoffWindow", JsonValue::CreateNumberValue(
+        static_cast<double>(reinterpret_cast<std::uintptr_t>(shared))));
+    handoff.GetNamedObject(L"data").Insert(L"durationMs", JsonValue::CreateNumberValue(240));
+    reader.Receive(handoff); winrt::check_bool(GetWindowRect(handle, &actual));
+    const bool animatedHandoff = NativeAnimationsEnabled();
+    winrt::check_hresult((animatedHandoff ? EqualRect(&actual, &sharedBounds) && state->Moving()
+        : EqualRect(&actual, &state->target)) ? S_OK : E_FAIL);
+    bool intermediate = false;
+    for (int frame = 0; frame < 90 && state->Moving(); ++frame) {
+        co_await NextNativeFrame(); winrt::check_bool(GetWindowRect(handle, &actual));
+        intermediate = intermediate || (!EqualRect(&actual, &sharedBounds) && !EqualRect(&actual, &state->target));
+        winrt::check_hresult(IsWindowVisible(handle) ? S_OK : E_FAIL);
+    }
+    winrt::check_bool(GetWindowRect(handle, &actual));
+    winrt::check_hresult(EqualRect(&actual, &state->target) && (!animatedHandoff || intermediate) ? S_OK : E_FAIL);
+    if (animatedHandoff && state->movementFrames.size() > 1) {
+        double maximum = 0;
+        for (std::size_t i = 1; i < state->movementFrames.size(); ++i)
+            maximum = std::max(maximum, std::chrono::duration<double, std::milli>(
+                state->movementFrames[i] - state->movementFrames[i - 1]).count());
+        const auto span = std::chrono::duration<double, std::milli>(
+            state->movementFrames.back() - state->movementFrames.front()).count();
+        std::fprintf(stderr, "WinUI reader resize cadence: frames=%zu mean=%.2fms max=%.2fms\n",
+            state->movementFrames.size(), span / (state->movementFrames.size() - 1), maximum);
+    }
+    reader.Receive(message(L"nativeReaderHide", 29)); ShowWindow(shared, SW_HIDE);
 
     stage = 1241;
     const auto started = std::chrono::steady_clock::now();
@@ -668,17 +841,34 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
         imageData.Insert(L"generation", JsonValue::CreateNumberValue(static_cast<double>(generation + 1)));
         reader.Receive(image);
         for (int frame = 0; frame < 180 && state->committed != generation + 1; ++frame) co_await NextNativeFrame();
+        for (int frame = 0; frame < 90 && state->outgoing; ++frame) co_await NextNativeFrame();
         winrt::check_hresult(state->committed == generation + 1 && !textContent.get() ? S_OK : E_FAIL);
         auto imageContent = winrt::make_weak(state->displayed);
         reader.Receive(message(L"nativeReaderHide", generation + 2));
         co_await NextNativeFrame();
         winrt::check_hresult(!imageContent.get() && !state->pending && !state->displayed &&
-            !state->movement.IsEnabled() && !state->loadTimeout.IsEnabled() &&
+            !state->Moving() && !state->loadTimeout.IsEnabled() &&
             state->window == handle && !IsWindowVisible(handle) ? S_OK : E_FAIL);
     }
     RecordNativeResources("reader-after-20-text-image-hide");
     std::printf("WinUI reader 20 text/image/hide cycles: %.2f ms including decode/render waits\n",
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+
+    stage = 1244;
+    reader.Receive(text(200, L"Accepted geometry continues while the next image decodes"));
+    co_await NextNativeFrame();
+    const auto acceptedTarget = state->target;
+    const auto acceptedContent = state->displayed;
+    imageData.Insert(L"generation", JsonValue::CreateNumberValue(201));
+    imageData.Insert(L"rect", JsonObject::Parse(LR"({"x":240,"y":160,"width":320,"height":640})"));
+    reader.Receive(image);
+    winrt::check_hresult(state->committed == 200 && state->pending &&
+        state->displayed == acceptedContent && EqualRect(&state->target, &acceptedTarget) ? S_OK : E_FAIL);
+    reader.Receive(text(202, L"Newer text wins over pending image geometry"));
+    co_await NextNativeFrame();
+    state->ImageError(201);
+    winrt::check_hresult(state->committed == 202 && state->displayed != acceptedContent ? S_OK : E_FAIL);
+    reader.Receive(message(L"nativeReaderHide", 204));
 }
 #endif
 }

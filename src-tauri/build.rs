@@ -26,24 +26,6 @@ fn generate_tray_icon_mask() {
     fs::write(output_path, pixmap.data()).expect("write tray RGBA mask");
 }
 
-const NATIVE_DEMO_HEADER: &str = "native-demo/NativeDemoBridge.h";
-
-/// Compiles the DEV native window (native-demo/) for macOS (Swift) or
-/// Windows (C++ Win32) and links it into the binary. Only Debug builds use it,
-/// so release, App Store and installer builds never invoke these toolchains.
-fn build_native_demo() {
-    // Use Cargo's profile rather than an unavailable target-cfg environment variable.
-    if env::var("PROFILE").as_deref() != Ok("debug") {
-        return;
-    }
-    println!("cargo:rerun-if-changed={NATIVE_DEMO_HEADER}");
-    match env::var("CARGO_CFG_TARGET_OS").as_deref() {
-        Ok("macos") => build_swift_native_demo(),
-        Ok("windows") => build_win32_native_demo(),
-        _ => {}
-    }
-}
-
 fn generate_onboarding_art() {
     let options = resvg::usvg::Options::default();
     for name in [
@@ -79,9 +61,14 @@ fn generate_onboarding_art() {
     }
 }
 
-fn build_swift_native_demo() {
+/// The real macOS panel is independent of the retired standalone sample.
+fn build_swift_native_panel() {
+    if env::var("PROFILE").as_deref() != Ok("debug")
+        || env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
+    {
+        return;
+    }
     generate_onboarding_art();
-    const SOURCE: &str = "native-demo/macos/NativeDemoWindow.swift";
     const PANEL_SOURCES: &[&str] = &[
         "native-panel/NativePanelModels.swift",
         "native-panel/NativePanelStyle.swift",
@@ -103,16 +90,14 @@ fn build_swift_native_demo() {
         println!("cargo:rerun-if-changed={source}");
     }
 
-    println!("cargo:rerun-if-changed={SOURCE}");
-
     let arch = match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
         Ok("aarch64") => "arm64",
         Ok("x86_64") => "x86_64",
-        other => panic!("unsupported macOS architecture for the native demo: {other:?}"),
+        other => panic!("unsupported macOS architecture for the native panel: {other:?}"),
     };
     let target = format!("{arch}-apple-macos11.0");
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
-    let library = out_dir.join("libVPasteNativeDemo.a");
+    let library = out_dir.join("libVPasteNativePanel.a");
 
     println!("cargo:rerun-if-env-changed=SDKROOT");
     println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
@@ -134,25 +119,24 @@ fn build_swift_native_demo() {
     }
     let status = swift
         .args(["-emit-library", "-static", "-parse-as-library"])
-        .args(["-swift-version", "5", "-module-name", "VPasteNativeDemo"])
+        .args(["-swift-version", "5", "-module-name", "VPasteNativePanel"])
         .args([
             "-target",
             &target,
             "-import-objc-header",
-            NATIVE_DEMO_HEADER,
+            "native-panel/NativePanelBridge.h",
         ])
         .arg("-module-cache-path")
         .arg(out_dir.join("swift-module-cache"))
         .arg("-o")
         .arg(&library)
-        .arg(SOURCE)
         .args(PANEL_SOURCES)
         .status()
         .expect("run `xcrun swiftc` (install Xcode or the Command Line Tools)");
-    assert!(status.success(), "Swift native demo failed to compile");
+    assert!(status.success(), "Swift native panel failed to compile");
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib=static=VPasteNativeDemo");
+    println!("cargo:rustc-link-lib=static=VPasteNativePanel");
     // The Swift objects autolink their runtime libraries; point the linker at them.
     let info = Command::new("xcrun")
         .args(["swiftc", "-print-target-info", "-target", &target])
@@ -162,27 +146,6 @@ fn build_swift_native_demo() {
         println!("cargo:rustc-link-search=native={path}");
     }
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
-}
-
-fn build_win32_native_demo() {
-    const SOURCE: &str = "native-demo/windows/NativeDemoWindow.cpp";
-    println!("cargo:rerun-if-changed={SOURCE}");
-    let mut build = cc::Build::new();
-    build
-        .cpp(true)
-        .std("c++17")
-        .include("native-demo")
-        .file(SOURCE)
-        .define("UNICODE", None)
-        .define("_UNICODE", None);
-    if build.get_compiler().is_like_msvc() {
-        // The source contains Chinese wide-string literals.
-        build.flag("/utf-8");
-    }
-    build.compile("VPasteNativeDemo");
-    for library in ["user32", "gdi32", "comctl32"] {
-        println!("cargo:rustc-link-lib=dylib={library}");
-    }
 }
 
 fn build_winui_panel() {
@@ -195,6 +158,33 @@ fn build_winui_panel() {
     if env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("x86_64") {
         panic!("the WinUI 3 experiment currently supports Windows x64 only");
     }
+
+    // Reuse the installed WebView icon library, including its filename and
+    // theme associations. No second hand-maintained extension/icon list.
+    let icons = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
+        .join("../node_modules/material-icon-theme/icons");
+    println!("cargo:rerun-if-changed={}", icons.display());
+    println!("cargo:rerun-if-changed=../node_modules/material-icon-theme/dist/material-icons.json");
+    let mut files = fs::read_dir(&icons)
+        .expect("npm install must provide material-icon-theme")
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "svg"))
+        .collect::<Vec<_>>();
+    files.sort();
+    let mut embedded = String::from("match filename {\n");
+    for file in files {
+        embedded.push_str(&format!(
+            "{:?} => Some(include_str!({:?})),\n",
+            file.file_name().unwrap().to_string_lossy(),
+            file
+        ));
+    }
+    embedded.push_str("_ => None,\n}\n");
+    fs::write(
+        PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("native-file-icons.rs"),
+        embedded,
+    )
+    .expect("write native file icon assets");
 
     const PROJECT: &str = "native-demo/windows/winui/WinUiPanel.vcxproj";
     const SOURCE: &str = "native-demo/windows/winui/WinUiPanel.cpp";
@@ -234,6 +224,7 @@ fn build_winui_panel() {
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiRecordTagEditor.cpp");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiRecordTagEditor.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiCardContent.cpp");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiCardPreview.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiCardContent.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiAppActions.cpp");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiAppActions.h");
@@ -397,7 +388,7 @@ fn main() {
         );
     }
     generate_tray_icon_mask();
-    build_native_demo();
+    build_swift_native_panel();
     build_winui_panel();
     tauri_build::build()
 }

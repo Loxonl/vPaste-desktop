@@ -5,6 +5,7 @@ import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
+import { motionTokens, useReducedMotion } from "../ui/motion";
 import { Item, ItemType } from "./Item";
 import { FileTypePresentation } from "./FileTypePresentation";
 import { HistoryMediaImage } from "./HistoryMediaImage";
@@ -224,6 +225,7 @@ function AutoScrollPreview({
     children?: React.ReactNode;
 }) {
     const ref = useRichPreviewCanvas(html);
+    const reducedMotion = useReducedMotion();
 
     useEffect(() => {
         const element = ref.current;
@@ -245,17 +247,18 @@ function AutoScrollPreview({
             }
         };
 
-        if (!active) {
-            element.scrollTo({ top: 0, behavior: "smooth" });
+        if (!active || reducedMotion) {
+            element.scrollTo({ top: 0, behavior: reducedMotion ? "auto" : "smooth" });
             return cleanup;
         }
 
         const maxScroll = element.scrollHeight - element.clientHeight;
-        if (maxScroll <= 8) return cleanup;
+        const timing = motionTokens.cardPreview;
+        if (maxScroll <= timing.overflowThreshold) return cleanup;
 
         const start = () => {
             const startTime = performance.now();
-            const duration = Math.min(8500, Math.max(1500, maxScroll * 12));
+            const duration = Math.min(timing.maxDuration, Math.max(timing.minDuration, maxScroll * timing.secondsPerDip)) * 1000;
             const animate = (now: number) => {
                 if (cancelled) return;
                 const progress = Math.min(1, (now - startTime) / duration);
@@ -268,16 +271,16 @@ function AutoScrollPreview({
                         element.scrollTo({ top: 0, behavior: "smooth" });
                         timeout = window.setTimeout(() => {
                             if (!cancelled) start();
-                        }, 1100);
-                    }, 900);
+                        }, timing.restartPause * 1000);
+                    }, timing.bottomPause * 1000);
                 }
             };
             frame = window.requestAnimationFrame(animate);
         };
 
-        timeout = window.setTimeout(start, 320);
+        timeout = window.setTimeout(start, timing.delay * 1000);
         return cleanup;
-    }, [active, html, children]);
+    }, [active, html, children, reducedMotion]);
 
     if (html !== undefined) {
         return <div ref={ref} className={className} dangerouslySetInnerHTML={{ __html: html }} />;

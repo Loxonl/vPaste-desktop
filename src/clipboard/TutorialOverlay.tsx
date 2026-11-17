@@ -341,7 +341,8 @@ export default function TutorialOverlay({
     return (
         <div className={styles["tutorial-root"]} ref={scope}>
             {step === 0 && (
-                <section className={styles["tutorial-welcome"]} aria-live="polite">
+                <section className={styles["tutorial-welcome"]} aria-live="polite"
+                    style={{ opacity: reduceMotion ? 1 : 0 }}>
                     <div className={styles["tutorial-welcome-orbit"]}>
                         <img className={styles["tutorial-welcome-logo"]} src={logoSrc} alt="vPaste" />
                     </div>

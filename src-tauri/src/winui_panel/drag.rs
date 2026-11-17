@@ -66,6 +66,18 @@ fn from_item(item: Item, html: String, full_text: Option<String>) -> Result<Valu
                 .filter(|url| matches!(url.scheme(), "http" | "https"))
                 .map(|url| url.to_string())
                 .unwrap_or_default();
+            // Match the shipping browser drag: desktop consumers such as
+            // OneNote can prefer HTML over WebLink or plain text.
+            let escaped = payload
+                .text
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+                .replace('\'', "&#39;");
+            if !payload.url.is_empty() {
+                payload.html = format!("<a href=\"{escaped}\">{escaped}</a>");
+            }
         }
         ItemType::TextFile => payload.text = full_text.ok_or("Full text is unavailable")?,
         ItemType::Text | ItemType::Color => {
@@ -158,7 +170,20 @@ mod tests {
         .unwrap();
         assert_eq!(link["text"], "https://example.com/a");
         assert_eq!(link["url"], "https://example.com/a");
-        assert_eq!(link["html"], "");
+        assert_eq!(
+            link["html"],
+            "<a href=\"https://example.com/a\">https://example.com/a</a>"
+        );
+        let escaped = from_item(
+            item(ItemType::Link, "https://example.com/?a=1&b=2"),
+            String::new(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            escaped["html"],
+            "<a href=\"https://example.com/?a=1&amp;b=2\">https://example.com/?a=1&amp;b=2</a>"
+        );
         let malformed = from_item(
             item(ItemType::Link, "javascript:bad()"),
             String::new(),

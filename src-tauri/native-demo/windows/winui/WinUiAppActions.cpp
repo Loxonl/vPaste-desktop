@@ -25,19 +25,38 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
     Report report;
     std::function<void()> restoreFocus;
     AppBarButton tools, update;
-    MenuFlyout toolsMenu;
+    std::vector<AppBarButton> developerButtons;
     ContentDialog confirmation{nullptr};
     std::int64_t revision = -1;
     std::uint64_t generation = 0, pendingTool = 0, pendingInstall = 0;
-    bool english = false, developer = false, ready = false, installing = false, confirming = false, closing = false;
+    bool english = false, developer = false, toolsVisible = true, darkPreview = false;
+    bool ready = false, installing = false, confirming = false, closing = false;
     winrt::hstring version;
 
     winrt::hstring Text(const wchar_t *zh, const wchar_t *en) const { return english ? en : zh; }
 
+    void OpenTool(std::wstring const &name) {
+        if (!developer || !toolsVisible || pendingTool) return;
+        pendingTool = request(L"appTool", name); Refresh();
+    }
+
     void Initialize() {
         const auto weak = weak_from_this();
-        tools.Icon(Glyph(L"\uE943"));
-        tools.Flyout(toolsMenu);
+        tools.Click([weak](auto const &, auto const &) {
+            if (const auto self = weak.lock(); self && self->developer) {
+                self->toolsVisible = !self->toolsVisible; self->Refresh();
+            }
+        });
+        for (const auto name : {L"tutorial-windows", L"tutorial-mac", L"language", L"theme",
+                               L"testRoom", L"memory", L"uiLab"}) {
+            AppBarButton button;
+            ApplyStyle(button, L"VPaste.RoundToolbarCommand");
+            button.Tag(winrt::box_value(winrt::hstring{name}));
+            button.Click([weak, name = std::wstring{name}](auto const &, auto const &) {
+                if (const auto self = weak.lock()) self->OpenTool(name);
+            });
+            developerButtons.push_back(button);
+        }
         update.Icon(SymbolIcon{Symbol::Sync});
         for (const auto &button : {tools, update}) ApplyStyle(button, L"VPaste.RoundToolbarCommand");
         ApplyStyle(update, L"VPaste.RoundToolbarUpdate");
@@ -47,7 +66,12 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
 
     void Refresh() {
         tools.Visibility(developer ? Visibility::Visible : Visibility::Collapsed);
-        tools.IsEnabled(!pendingTool);
+        tools.Icon(Glyph(toolsVisible ? L"\uE890" : L"\uED1A"));
+        tools.Label(toolsVisible ? Text(L"隐藏开发工具", L"Hide developer tools") : Text(L"显示开发工具", L"Show developer tools"));
+        for (const auto &button : developerButtons) {
+            button.Visibility(developer && toolsVisible ? Visibility::Visible : Visibility::Collapsed);
+            button.IsEnabled(!pendingTool);
+        }
         update.Visibility(ready || installing ? Visibility::Visible : Visibility::Collapsed);
         update.IsEnabled(ready && !confirming && !closing && !pendingInstall);
         update.Label(installing || pendingInstall ? Text(L"正在安装…", L"Installing…") : Text(L"重启更新", L"Restart to update"));
@@ -68,24 +92,23 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
     }
 
     void Localize() {
-        toolsMenu.Hide();
-        tools.Label(Text(L"开发工具", L"Developer tools"));
-        toolsMenu.Items().Clear();
-        const auto weak = weak_from_this();
-        auto add = [&](const wchar_t *zh, const wchar_t *en, const wchar_t *glyph, const wchar_t *name) {
-            MenuFlyoutItem item;
-            item.Text(Text(zh, en)); item.Icon(Glyph(glyph));
-            item.Click([weak, name = std::wstring{name}](auto const &, auto const &) {
-                if (const auto self = weak.lock(); self && self->developer && !self->pendingTool) {
-                    self->pendingTool = self->request(L"appTool", name);
-                    self->Refresh();
-                }
-            });
-            toolsMenu.Items().Append(item);
+        std::size_t index = 0;
+        const auto set = [&](const wchar_t *zh, const wchar_t *en, const wchar_t *glyph) {
+            const auto button = developerButtons[index++];
+            button.Label(Text(zh, en)); button.Icon(Glyph(glyph));
+            Automation::AutomationProperties::SetName(button, button.Label());
+            ToolTipService::SetToolTip(button, winrt::box_value(button.Label()));
         };
-        add(L"内存监视器", L"Memory monitor", L"\uE950", L"memory");
-        add(L"测试间", L"Test room", L"\uE9D9", L"testRoom");
-        add(L"组件样板间（浏览器）", L"UI Lab (browser)", L"\uE774", L"uiLab");
+        set(L"Windows 使用引导", L"Windows tutorial", L"\uE782");
+        set(L"Mac 使用引导", L"Mac tutorial", L"\uE977");
+        set(L"切换预览语言", L"Switch preview language", L"\uF2B7");
+        // The current language remains visible, like the shipping 中 / EN button.
+        FontIcon language; language.Glyph(english ? L"EN" : L"中"); language.FontSize(11);
+        language.FontFamily(Media::FontFamily{L"Segoe UI"}); developerButtons[2].Icon(language);
+        set(L"切换预览主题", L"Switch preview theme", darkPreview ? L"\uE708" : L"\uE706");
+        set(L"测试间", L"Test room", L"\uE9D9");
+        set(L"内存监视器", L"Memory monitor", L"\uE950");
+        set(L"组件样板间（浏览器）", L"UI Lab (browser)", L"\uE774");
         LocalizeConfirmation(); Refresh();
     }
 
@@ -146,9 +169,9 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
                 const auto state = response.GetNamedObject(L"data");
                 if (op == L"appState") {
                     developer = state.GetNamedBoolean(L"developerMode", false);
-                    if (!developer) toolsMenu.Hide();
+                    darkPreview = state.GetNamedString(L"themePreview", L"light") == L"dark";
                     SetUpdate(state.GetNamedObject(L"update"));
-                    Refresh();
+                    Localize();
                 } else SetUpdate(state);
             }
             return true;
@@ -159,6 +182,11 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
         if (!id || id != pending) return true;
         pending = 0;
         if (response.HasKey(L"error")) report(response.GetNamedString(L"error"), true);
+        else if (op == L"appTool") {
+            const auto state = response.GetNamedObject(L"data", JsonObject{});
+            darkPreview = state.GetNamedString(L"themePreview", darkPreview ? L"dark" : L"light") == L"dark";
+            Localize();
+        }
         Refresh();
         return true;
     }
@@ -172,14 +200,16 @@ AppActions::AppActions(FrameworkElement owner, Request request, Report report,
 }
 AppActions::~AppActions() { Deactivate(); }
 AppBarButton AppActions::ToolsButton() const { return impl_->tools; }
+std::vector<AppBarButton> AppActions::DeveloperButtons() const { return impl_->developerButtons; }
 AppBarButton AppActions::UpdateButton() const { return impl_->update; }
 bool AppActions::Receive(JsonObject const &response) { return impl_->Receive(response); }
 bool AppActions::ModalOpen() const { return impl_->confirming || impl_->closing; }
 void AppActions::SetLanguage(bool english) { impl_->english = english; impl_->Localize(); }
 void AppActions::SetTheme(ElementTheme theme) { if (impl_->confirmation) impl_->confirmation.RequestedTheme(theme); }
-void AppActions::Deactivate() { impl_->toolsMenu.Hide(); impl_->CancelConfirmation(); }
+void AppActions::Deactivate() { impl_->CancelConfirmation(); }
 #ifdef _DEBUG
 ContentDialog AppActions::TestDialog() const { return impl_->confirmation; }
+void AppActions::TestToolAction(std::wstring const &name) { impl_->OpenTool(name); }
 
 namespace {
 Button DialogButton(DependencyObject const &root, const wchar_t *name) {
@@ -234,6 +264,7 @@ winrt::Windows::Foundation::IAsyncAction TestAppActionsControls(FrameworkElement
     };
     CommandBar bar;
     bar.DefaultLabelPosition(CommandBarDefaultLabelPosition::Collapsed);
+    for (const auto &button : actions.DeveloperButtons()) bar.PrimaryCommands().Append(button);
     bar.PrimaryCommands().Append(actions.ToolsButton()); bar.PrimaryCommands().Append(actions.UpdateButton());
     bar.HorizontalAlignment(HorizontalAlignment::Right); bar.VerticalAlignment(VerticalAlignment::Top);
     const auto host = owner.as<Grid>();
@@ -246,35 +277,36 @@ winrt::Windows::Foundation::IAsyncAction TestAppActionsControls(FrameworkElement
     runtime(false); co_await NextNativeFrame();
     winrt::check_hresult(actions.ToolsButton().Visibility() == Visibility::Collapsed &&
         actions.UpdateButton().Visibility() == Visibility::Collapsed ? S_OK : E_FAIL);
+    for (const auto &button : actions.DeveloperButtons()) winrt::check_hresult(button.Visibility() == Visibility::Collapsed ? S_OK : E_FAIL);
     stage = 98;
     runtime(true); update(1, L"ready"); co_await NextNativeFrame();
     winrt::check_hresult(actions.ToolsButton().Visibility() == Visibility::Visible && actions.UpdateButton().IsEnabled() ? S_OK : E_FAIL);
-    const auto tools = actions.ToolsButton().Flyout().as<MenuFlyout>();
-    winrt::check_hresult(tools.Items().Size() == 3 && tools.Items().GetAt(0).as<MenuFlyoutItem>().Text() == L"内存监视器" ? S_OK : E_FAIL);
+    const auto tools = actions.DeveloperButtons();
+    winrt::check_hresult(tools.size() == 7 && !actions.ToolsButton().Flyout() && tools[5].Label() == L"内存监视器" ? S_OK : E_FAIL);
+    for (const auto &button : tools) winrt::check_hresult(button.Visibility() == Visibility::Visible ? S_OK : E_FAIL);
+    Invoke(actions.ToolsButton()); co_await NextNativeFrame();
+    for (const auto &button : tools) winrt::check_hresult(button.Visibility() == Visibility::Collapsed ? S_OK : E_FAIL);
+    Invoke(actions.ToolsButton()); co_await NextNativeFrame();
     stage = 99;
-    tools.ShowAt(actions.ToolsButton()); co_await NextNativeFrame();
-    Invoke(tools.Items().GetAt(0));
+    Invoke(tools[5]);
     const auto toolId = requests.back().GetNamedNumber(L"id");
-    winrt::check_hresult(requests.back().GetNamedString(L"argument") == L"memory" && !actions.ToolsButton().IsEnabled() ? S_OK : E_FAIL);
+    winrt::check_hresult(requests.back().GetNamedString(L"argument") == L"memory" && !tools[5].IsEnabled() ? S_OK : E_FAIL);
     const auto beforeRepeatedTool = requests.size();
-    Invoke(tools.Items().GetAt(0));
+    actions.TestToolAction(L"memory");
     winrt::check_hresult(requests.size() == beforeRepeatedTool ? S_OK : E_FAIL);
     reply(L"appTool", static_cast<std::uint64_t>(toolId) + 1, true);
-    winrt::check_hresult(!actions.ToolsButton().IsEnabled() && errors.empty() ? S_OK : E_FAIL);
+    winrt::check_hresult(!tools[5].IsEnabled() && errors.empty() ? S_OK : E_FAIL);
     reply(L"appTool", static_cast<std::uint64_t>(toolId), true);
-    winrt::check_hresult(actions.ToolsButton().IsEnabled() && errors.size() == 1 ? S_OK : E_FAIL);
-    tools.Hide(); co_await NextNativeFrame();
-    for (std::uint32_t index = 1; index < 3; ++index) {
-        tools.ShowAt(actions.ToolsButton()); co_await NextNativeFrame();
-        Invoke(tools.Items().GetAt(index));
-        winrt::check_hresult(requests.back().GetNamedString(L"argument") == (index == 1 ? L"testRoom" : L"uiLab") ? S_OK : E_FAIL);
+    winrt::check_hresult(tools[5].IsEnabled() && errors.size() == 1 ? S_OK : E_FAIL);
+    for (const auto &button : tools) {
+        Invoke(button);
+        winrt::check_hresult(requests.back().GetNamedString(L"argument") == winrt::unbox_value<winrt::hstring>(button.Tag()) ? S_OK : E_FAIL);
         reply(L"appTool", static_cast<std::uint64_t>(requests.back().GetNamedNumber(L"id")), false);
-        tools.Hide(); co_await NextNativeFrame();
     }
     stage = 100;
     actions.SetLanguage(true);
-    winrt::check_hresult(actions.ToolsButton().Label() == L"Developer tools" &&
-        tools.Items().GetAt(2).as<MenuFlyoutItem>().Text() == L"UI Lab (browser)" ? S_OK : E_FAIL);
+    winrt::check_hresult(actions.ToolsButton().Label() == L"Hide developer tools" &&
+        tools[6].Label() == L"UI Lab (browser)" ? S_OK : E_FAIL);
     Invoke(actions.UpdateButton()); co_await NextNativeFrame();
     winrt::check_hresult(actions.ModalOpen() && !actions.UpdateButton().IsEnabled() && actions.TestDialog().DefaultButton() == ContentDialogButton::Close &&
         actions.TestDialog().PrimaryButtonText() == L"Restart to update" ? S_OK : E_FAIL);

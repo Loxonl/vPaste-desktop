@@ -22,7 +22,7 @@ public:
 
     void Show(winrt::Microsoft::UI::Xaml::FrameworkElement anchor,
               winrt::Windows::Data::Json::JsonObject draft, bool english,
-              winrt::Microsoft::UI::Xaml::ElementTheme theme, bool confirmDelete = false,
+              winrt::Microsoft::UI::Xaml::ElementTheme theme,
               winrt::Microsoft::UI::Xaml::FrameworkElement owner = nullptr,
               std::function<void()> closed = {});
     void Receive(winrt::Windows::Data::Json::JsonObject response);
@@ -35,7 +35,6 @@ public:
     winrt::hstring TestName() const;
     winrt::Microsoft::UI::Xaml::FrameworkElement TestRoot() const;
     void TestSave();
-    void TestDelete(bool confirm);
 #endif
 private:
     struct Impl;

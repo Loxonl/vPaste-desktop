@@ -253,6 +253,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unknown_or_windowless_sources_never_invent_notepad_artwork() {
+        let temporary = tempfile::tempdir().unwrap();
+        for source in ["", "Orca"] {
+            let path = fallback(source, temporary.path());
+            assert_eq!(Path::new(&path).file_name().unwrap(), NEUTRAL_ICON);
+            let image = bounded_icon(Path::new(&path)).unwrap();
+            assert!(image
+                .pixels()
+                .filter(|pixel| pixel[3] != 0)
+                .all(|pixel| pixel[0] == pixel[1] && pixel[1] == pixel[2]));
+        }
+    }
+
+    #[test]
     fn source_icon_allows_only_rounding_on_translucent_edges() {
         let temporary = tempfile::tempdir().unwrap();
         let cache = temporary.path();

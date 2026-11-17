@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit, listen } from "@tauri-apps/api/event";
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
 import CircularProgress from "@mui/material/CircularProgress";
@@ -20,6 +21,8 @@ import styles from "./NativeOnboardingWindow.module.css";
 export default function NativeOnboardingWindow() {
     const { t, setLanguageCode } = useLanguage();
     const [tabs, setTabs] = useState<CustomTab[] | null>(null);
+    const [shown, setShown] = useState(false);
+    const [finishing, setFinishing] = useState(false);
     const [shortcut, setShortcut] = useState("");
     const [actionError, setActionError] = useState("");
     const [loadAttempt, setLoadAttempt] = useState(0);
@@ -32,11 +35,19 @@ export default function NativeOnboardingWindow() {
     useEffect(() => {
         let disposed = false;
         let cancelReady = () => undefined as void;
+        // Readiness attaches the host; it is not visibility. Keep the shipping
+        // welcome sequence unmounted until the owner has mapped this window.
+        const shownListener = listen("native-onboarding-shown", () => {
+            if (!disposed && !completing.current) setShown(true);
+        });
         initialization.current ??= (async () => {
+            const welcomeImage = new Image();
+            welcomeImage.src = appIcon;
             const [rawConfig, value] = await Promise.all([
                 invoke<string>("get_config", { skipAutostartRefresh: true }),
                 invoke<unknown>("get_custom_tabs"),
                 loadAndApplyTheme(),
+                welcomeImage.decode?.().catch(() => undefined),
             ]);
             const config = JSON.parse(rawConfig) as ConfigData;
             const stored = normalizeCustomTabs(value);
@@ -46,6 +57,7 @@ export default function NativeOnboardingWindow() {
             if (initial !== previous || (!stored.length && previous.length)) {
                 saveCustomTabs(initial);
                 await invoke("save_custom_tabs", { tabs: initial });
+                await emit("custom-tabs-changed", { tabs: initial });
             }
             await invoke("begin_onboarding");
             return { tabs: initial, config };
@@ -61,9 +73,12 @@ export default function NativeOnboardingWindow() {
             if (!disposed) setActionError(String(reason));
             initialization.current = null;
         }).finally(() => {
-            if (!disposed) cancelReady = notifyAuxiliaryWindowReady();
+            if (!disposed) cancelReady = notifyAuxiliaryWindowReady([shownListener]);
         });
-        return () => { disposed = true; cancelReady(); };
+        return () => {
+            disposed = true; cancelReady();
+            void shownListener.then(unlisten => unlisten());
+        };
     }, [loadAttempt]);
 
     const toggle = (id: TutorialFilterId, enabled: boolean) => {
@@ -77,6 +92,7 @@ export default function NativeOnboardingWindow() {
             saved.current = next;
             saveCustomTabs(next);
             markTutorialFiltersInitialized();
+            await emit("custom-tabs-changed", { tabs: next });
         });
         writes.current = write;
         void write.catch(reason => {
@@ -91,11 +107,17 @@ export default function NativeOnboardingWindow() {
     const complete = async () => {
         if (completing.current) return;
         completing.current = true;
+        setFinishing(true);
         try {
             await writes.current;
+            // Commit removal of the final illustration before Win32 detaches
+            // the owned window; queued owner-show messages must have no image
+            // left to flash. No additional exit/window animation is introduced.
+            await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
             await invoke("complete_onboarding");
         } catch (reason) {
             setActionError(String(reason));
+            setFinishing(false);
             // The failed draft was rolled back. Allow completion to retry.
             writes.current = Promise.resolve();
         } finally {
@@ -105,15 +127,15 @@ export default function NativeOnboardingWindow() {
 
     return (
         <main className={styles.root}>
-            <section className={styles.surface} aria-label={t("tutorial.welcome.title")}>
-                {tabs ? <TutorialOverlay t={t} logoSrc={appIcon} shortcutText={shortcut}
+            <section className={`${styles.surface} ${finishing ? styles.finishing : ""}`} aria-hidden={finishing || undefined} aria-label={t("tutorial.welcome.title")}>
+                {tabs && shown ? <TutorialOverlay t={t} logoSrc={appIcon} shortcutText={shortcut}
                     platform="windows" permissions={[]} filters={buildTutorialFilterTabs(tabs, t)}
                     onPermissionAction={() => undefined} onToggleFilter={toggle}
                     onShortcutDemoAvailabilityChange={enabled => {
                         void invoke("set_onboarding_shortcut_demo_enabled", { enabled })
                             .catch(reason => setActionError(String(reason)));
                     }} onComplete={() => void complete()} />
-                    : !actionError && <CircularProgress aria-label={t("common.loading")} />}
+                    : !tabs && !actionError && <CircularProgress aria-label={t("common.loading")} />}
                 {actionError && <Alert severity="error" className={styles.error} action={!tabs
                     ? <Button onClick={() => setLoadAttempt(attempt => attempt + 1)}>{t("common.retry")}</Button>
                     : undefined}>{actionError}</Alert>}

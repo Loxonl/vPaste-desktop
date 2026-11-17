@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 #include <winrt/Windows.Data.Json.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 
@@ -21,6 +22,7 @@ public:
     AppActions &operator=(AppActions const &) = delete;
 
     winrt::Microsoft::UI::Xaml::Controls::AppBarButton ToolsButton() const;
+    std::vector<winrt::Microsoft::UI::Xaml::Controls::AppBarButton> DeveloperButtons() const;
     winrt::Microsoft::UI::Xaml::Controls::AppBarButton UpdateButton() const;
     bool Receive(winrt::Windows::Data::Json::JsonObject const &response);
     bool ModalOpen() const;
@@ -29,6 +31,7 @@ public:
     void Deactivate();
 #ifdef _DEBUG
     winrt::Microsoft::UI::Xaml::Controls::ContentDialog TestDialog() const;
+    void TestToolAction(std::wstring const &name);
 #endif
 private:
     struct Impl;

@@ -26,7 +26,6 @@ fn validate(action: &str, developer: bool, language: &str, theme: &str) -> Resul
             | "test-room"
             | "memory"
             | "native-panel"
-            | "native-window"
             | "ui-lab"
     ) {
         return Err("Unknown developer tool".into());
@@ -80,7 +79,6 @@ pub(super) async fn open(
         }
         "test-room" => crate::open_test_room_window_from_source(app, None).await?,
         "native-panel" => super::show(app, language.into(), theme.into())?,
-        "native-window" => crate::open_native_demo_window(app)?,
         "ui-lab" => {
             let url = app
                 .config()
@@ -142,27 +140,6 @@ pub(super) async fn open(
     Ok(json!(null))
 }
 
-pub(crate) fn build_tutorial_window(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
-    let scale = crate::ui_text_scale::current();
-    let window = tauri::WebviewWindowBuilder::new(
-        app,
-        "devTutorial",
-        tauri::WebviewUrl::App("__dev-tutorial".into()),
-    )
-    .title("vPaste · Tutorial preview")
-    .visible(false)
-    .focused(false)
-    .decorations(true)
-    .resizable(true)
-    .always_on_top(true)
-    .inner_size(1120.0 * scale, 440.0 * scale)
-    .min_inner_size(860.0 * scale, 360.0 * scale)
-    .build()?;
-    crate::ui_text_scale::remember(&window, scale);
-    crate::apply_vpaste_window_icon(&window);
-    Ok(window)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,13 +153,13 @@ mod tests {
             "test-room",
             "memory",
             "native-panel",
-            "native-window",
             "ui-lab",
         ] {
             assert!(validate(action, true, "Chinese", "light").is_ok());
             assert!(validate(action, false, "Chinese", "light").is_err());
         }
         assert!(validate("unknown", true, "Chinese", "light").is_err());
+        assert!(validate("native-window", true, "Chinese", "light").is_err());
         assert!(validate("memory", true, "Chinese", "system").is_err());
         assert_ne!(
             crate::auxiliary_windows::WindowKind::DevTutorial.label(),

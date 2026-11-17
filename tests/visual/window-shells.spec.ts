@@ -184,7 +184,8 @@ test.describe("window shells", () => {
 
         await page.goto("/clipboard");
         const developerToolbar = page.getByRole("group", { name: /developer preview tools|开发者预览工具/i });
-        await expect(developerToolbar).toBeVisible();
+        // A cold local Vite transform may overlap a native Debug compilation.
+        await expect(developerToolbar).toBeVisible({ timeout: 30_000 });
         const launcher = developerToolbar.getByRole("button", { name: /component UI lab|组件样板间/i });
         await expect(launcher).toBeVisible();
         await launcher.click();
@@ -199,6 +200,7 @@ test.describe("window shells", () => {
 
         const testRoomLauncher = developerToolbar.getByRole("button", { name: /open test room|打开测试间/i });
         await expect(testRoomLauncher).toBeVisible();
+        await expect(developerToolbar.getByRole("button", { name: /native demo window|原生测试窗口|原生演示窗口/i })).toHaveCount(0);
         await testRoomLauncher.click();
         await expect.poll(() => page.evaluate(() => {
             const calls = (window as typeof window & {

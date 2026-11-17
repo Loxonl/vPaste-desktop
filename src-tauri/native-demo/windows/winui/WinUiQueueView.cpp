@@ -16,6 +16,7 @@
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Xaml.Input.h>
+#include <winrt/Microsoft.UI.Input.h>
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include <winrt/Microsoft.UI.Interop.h>
 #include <winrt/Microsoft.UI.Content.h>
@@ -26,7 +27,6 @@
 #include <winrt/Windows.Data.Json.h>
 #include <winrt/Windows.UI.h>
 #include <winrt/Windows.UI.Text.h>
-#include <winrt/Windows.ApplicationModel.DataTransfer.h>
 #include <winrt/Windows.System.h>
 #ifdef _DEBUG
 #include <cstdio>
@@ -43,8 +43,6 @@ using namespace winrt::Microsoft::UI::Xaml::Controls;
 using namespace winrt::Microsoft::UI::Xaml::Media;
 using namespace winrt::Windows::Data::Json;
 using winrt::Windows::UI::Color;
-using winrt::Windows::ApplicationModel::DataTransfer::DataPackageOperation;
-constexpr wchar_t QueueDragFormat[] = L"com.vpaste.native-queue-item";
 
 TextBlock MakeText(const winrt::hstring &text, double size, bool bold = false) {
     TextBlock block;
@@ -95,6 +93,8 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
     AppBarButton reverse{nullptr};
     AppBarButton clear{nullptr};
     AppBarButton undo{nullptr};
+    Border undoToast{nullptr};
+    TextBlock undoMessage{nullptr};
     Button closeButton{nullptr};
     ContentDialog confirmation{nullptr};
     MenuFlyout openItemMenu{nullptr};
@@ -124,6 +124,11 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
     winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer dragScroll{nullptr};
     winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer undoExpiry{nullptr};
     int dragScrollDirection = 0;
+    UIElement pointerOwner{nullptr};
+    std::uint32_t pointerId = 0;
+    double pointerStartY = 0, pointerY = 0, pointerStartScroll = 0;
+    std::vector<QueueRowMetric> dragMetrics;
+    std::vector<std::wstring> dragOrder;
     ElementTheme theme = ElementTheme::Default;
     std::uint64_t lastRevision = 0;
     bool hasRevision = false;
@@ -154,8 +159,33 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         root.Unloaded([weak](auto const &, auto const &) {
             if (auto self = weak.lock()) self->Deactivate();
         });
-        root.PreviewKeyDown([weak](auto const &, auto const &) { if (auto self = weak.lock()) self->rowFocus.reset(); });
+        root.PreviewKeyDown([weak](auto const &, auto const &args) {
+            if (auto self = weak.lock()) {
+                self->rowFocus.reset();
+                if (args.Key() == winrt::Windows::System::VirtualKey::Escape && !self->draggingHash.empty()) {
+                    self->FinishDrag(); args.Handled(true);
+                }
+            }
+        });
         root.PointerPressed([weak](auto const &, auto const &) { if (auto self = weak.lock()) self->rowFocus.reset(); });
+        root.AddHandler(UIElement::PointerMovedEvent(), winrt::box_value(Input::PointerEventHandler{
+            [weak](auto const &, auto const &args) {
+                if (const auto self = weak.lock(); self && self->pointerOwner && self->pointerId == args.Pointer().PointerId()) {
+                    self->MovePointerReorder(args.GetCurrentPoint(self->list).Position().Y); args.Handled(true);
+                }
+            }}), true);
+        root.AddHandler(UIElement::PointerReleasedEvent(), winrt::box_value(Input::PointerEventHandler{
+            [weak](auto const &, auto const &args) {
+                if (const auto self = weak.lock(); self && self->pointerOwner && self->pointerId == args.Pointer().PointerId()) {
+                    self->EndPointerReorder(true); args.Handled(true);
+                }
+            }}), true);
+        root.PointerCanceled([weak](auto const &, auto const &args) {
+            if (const auto self = weak.lock(); self && self->pointerOwner && self->pointerId == args.Pointer().PointerId()) self->FinishDrag();
+        });
+        root.PointerCaptureLost([weak](auto const &, auto const &args) {
+            if (const auto self = weak.lock(); self && self->pointerOwner == args.OriginalSource()) self->FinishDrag();
+        });
         root.Loaded([weak](auto const &, auto const &) {
             if (auto self = weak.lock()) self->Activate();
         });
@@ -170,30 +200,34 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         header.ColumnDefinitions().Append(ColumnDefinition{});
         header.ColumnDefinitions().Append(ColumnDefinition{});
         header.ColumnSpacing(8);
+        header.MinHeight(54);
         header.Margin(Thickness{0, 0, 0, 8});
         header.RowDefinitions().Append(RowDefinition{});
         header.RowDefinitions().Append(RowDefinition{});
         header.RowDefinitions().GetAt(0).Height(GridLength{1, GridUnitType::Auto});
         header.RowDefinitions().GetAt(1).Height(GridLength{1, GridUnitType::Auto});
-        header.ColumnDefinitions().GetAt(0).Width(GridLength{1, GridUnitType::Auto});
-        header.ColumnDefinitions().GetAt(1).Width(GridLength{1, GridUnitType::Auto});
-        header.ColumnDefinitions().GetAt(2).Width(GridLength{1, GridUnitType::Star});
+        header.ColumnDefinitions().GetAt(0).Width(GridLength{72, GridUnitType::Pixel});
+        header.ColumnDefinitions().GetAt(1).Width(GridLength{1, GridUnitType::Star});
+        header.ColumnDefinitions().GetAt(2).Width(GridLength{72, GridUnitType::Pixel});
 
         StackPanel heading;
-        heading.Orientation(Orientation::Horizontal);
-        heading.Spacing(8);
+        heading.Orientation(Orientation::Vertical);
+        heading.Spacing(0);
+        heading.HorizontalAlignment(HorizontalAlignment::Center);
         heading.VerticalAlignment(VerticalAlignment::Center);
         title = MakeText(Text(L"粘贴队列", L"Paste queue"), 14, true);
+        title.HorizontalAlignment(HorizontalAlignment::Center);
         ApplyStyle(title, L"VPaste.CompactTitle");
         count = MakeText(L"0 / 100", 12);
+        count.FontSize(10.5); count.HorizontalAlignment(HorizontalAlignment::Center);
         heading.Children().Append(title);
         heading.Children().Append(count);
         Grid::SetColumn(heading, 1);
         header.Children().Append(heading);
 
         toolbar = CommandBar{};
-        toolbar.DefaultLabelPosition(CommandBarDefaultLabelPosition::Right);
-        toolbar.IsDynamicOverflowEnabled(true);
+        toolbar.DefaultLabelPosition(CommandBarDefaultLabelPosition::Collapsed);
+        toolbar.IsDynamicOverflowEnabled(false);
         toolbar.HorizontalAlignment(HorizontalAlignment::Right);
         toolbar.Background(SolidColorBrush{Color{0, 0, 0, 0}});
         reverse = AppBarButton{};
@@ -202,7 +236,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         reverse.Click([weak](auto const &, auto const &) {
             if (auto self = weak.lock()) self->Send(L"queueReverse");
         });
-        toolbar.SecondaryCommands().Append(reverse);
+        toolbar.PrimaryCommands().Append(reverse);
 
         clear = AppBarButton{};
         clear.Label(Text(L"清空", L"Clear"));
@@ -221,9 +255,20 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
                 if (self->undo.IsEnabled()) self->Send(L"queueUndo");
             }
         });
-        toolbar.PrimaryCommands().Append(undo);
+        StackPanel undoContent;
+        undoContent.Orientation(Orientation::Horizontal); undoContent.Spacing(8);
+        undoMessage = MakeText(Text(L"已粘贴", L"Pasted"), 12);
+        undoContent.Children().Append(undoMessage); undoContent.Children().Append(undo);
+        undoToast = Border(); ApplyStyle(undoToast, L"VPaste.SelectionBar");
+        undoToast.Child(undoContent); undoToast.HorizontalAlignment(HorizontalAlignment::Center);
+        undoToast.VerticalAlignment(VerticalAlignment::Bottom); undoToast.Margin(Thickness{8, 0, 8, 8});
+        undoToast.Visibility(Visibility::Collapsed);
+        for (const auto &button : {reverse, undo}) {
+            button.Width(32); button.Height(32); button.MinWidth(0); button.MinHeight(0);
+        }
 
         closeButton = NamedIconButton(SymbolIcon{Symbol::Cancel}, Text(L"关闭粘贴队列", L"Close paste queue"));
+        closeButton.HorizontalAlignment(HorizontalAlignment::Left);
         closeButton.Click([weak](auto const &, auto const &) {
             if (auto self = weak.lock()) {
                 if (self->close) self->close();
@@ -250,7 +295,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         list.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
 
         rows = StackPanel{};
-        rows.Spacing(8);
+        rows.Spacing(0);
         rows.Margin(Thickness{0, 4, 0, 4});
         list.Content(rows);
         dragScroll = winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().CreateTimer();
@@ -260,10 +305,8 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
             if (const auto self = weak.lock(); self && !self->draggingHash.empty() && self->dragScrollDirection != 0) {
                 self->list.ChangeView(nullptr, winrt::box_value(std::clamp(self->list.VerticalOffset() +
                     self->dragScrollDirection * 18.0, 0.0, self->list.ScrollableHeight())).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, true);
+                if (!self->dragMetrics.empty()) self->MovePointerReorder(self->pointerY);
             }
-        });
-        list.DragLeave([weak](auto const &, auto const &) {
-            if (const auto self = weak.lock()) self->dragScrollDirection = 0;
         });
 
         emptyState = EmptyState(L"\uE8FD", Text(L"队列为空", L"Queue is empty"),
@@ -280,6 +323,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         feedback.Margin(Thickness{0, 12, 0, 0});
         Grid::SetRow(feedback, 2);
         root.Children().Append(feedback);
+        Grid::SetRow(undoToast, 1); root.Children().Append(undoToast);
         ApplyLanguage();
         ApplyTheme();
     }
@@ -365,6 +409,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         const bool live = hash && hash.ValueType() == JsonValueType::String && !hash.GetString().empty() &&
             std::isfinite(deadline) && deadline > static_cast<double>(now);
         undo.Visibility(live ? Visibility::Visible : Visibility::Collapsed);
+        undoToast.Visibility(live ? Visibility::Visible : Visibility::Collapsed);
         undo.IsEnabled(live && !busy && !confirmingClear);
         if (live && root.IsLoaded() && !suspended) {
             // Only the Undo affordance changes at expiry; keep rows and focus intact.
@@ -400,17 +445,18 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         if (dragScroll) dragScroll.Stop();
         const bool wasDragging = !draggingHash.empty();
         draggingHash.clear();
+        dragMetrics.clear(); dragOrder.clear();
+        const auto latest = std::exchange(pendingDragState, nullptr);
+        pointerId = 0;
+        if (auto owner = std::exchange(pointerOwner, nullptr)) owner.ReleasePointerCaptures();
         if (wasDragging && request) request(L"dragEnd", {}, {});
         for (const auto &child : rows.Children()) {
             const auto surface = child.as<Border>();
             surface.Opacity(1);
-            const auto row = surface.Child().as<Grid>();
-            if (row.Children().Size() > 3) row.Children().GetAt(3).as<Border>().Visibility(Visibility::Collapsed);
+            surface.RenderTransform(nullptr);
+            Canvas::SetZIndex(surface, 0);
         }
-        if (pendingDragState) {
-            const auto latest = std::exchange(pendingDragState, nullptr);
-            SetState(latest);
-        }
+        if (latest) SetState(latest);
     }
 
     bool BeginReorder(const std::wstring &hash) {
@@ -423,10 +469,51 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         return true;
     }
 
-    bool AcceptsDrop(const DragEventArgs &args) const {
-        return !busy && !confirmingClear && !draggingHash.empty() &&
-            !(pendingDragState && pendingDragState.GetNamedBoolean(L"busy", false)) &&
-            args.DataView().Contains(QueueDragFormat);
+    bool StartPointerReorder(const std::wstring &hash, double y) {
+        if (!root.IsLoaded() || !BeginReorder(hash)) return false;
+        pointerStartY = pointerY = y; pointerStartScroll = list.VerticalOffset();
+        dragMetrics.clear(); dragOrder = OrderedHashes();
+        for (const auto &child : rows.Children()) {
+            const auto surface = child.as<Border>();
+            const auto point = surface.TransformToVisual(rows).TransformPoint({0, 0});
+            dragMetrics.push_back({point.Y, surface.ActualHeight()});
+        }
+        MovePointerReorder(y);
+        return true;
+    }
+
+    void MovePointerReorder(double y) {
+        if (draggingHash.empty() || dragMetrics.size() != items.size()) return;
+        pointerY = y;
+        const auto original = OrderedHashes();
+        const auto from = static_cast<std::size_t>(std::find(original.begin(), original.end(), draggingHash) - original.begin());
+        const auto &source = dragMetrics[from];
+        const auto offset = std::clamp(y - pointerStartY + list.VerticalOffset() - pointerStartScroll,
+            dragMetrics.front().top - source.top,
+            dragMetrics.back().top + dragMetrics.back().height - source.top - source.height);
+        dragOrder = QueuePointerOrder(original, dragMetrics, draggingHash, offset);
+        double top = dragMetrics.front().top;
+        for (const auto &hash : dragOrder) {
+            const auto index = static_cast<std::size_t>(std::find(original.begin(), original.end(), hash) - original.begin());
+            const auto surface = rows.Children().GetAt(static_cast<std::uint32_t>(index)).as<Border>();
+            auto transform = surface.RenderTransform().try_as<TranslateTransform>();
+            if (!transform) transform = TranslateTransform();
+            transform.Y(hash == draggingHash ? offset : top - dragMetrics[index].top);
+            surface.RenderTransform(transform);
+            surface.Opacity(hash == draggingHash ? DragSourceOpacity : 1);
+            Canvas::SetZIndex(surface, hash == draggingHash ? 1 : 0);
+            top += dragMetrics[index].height;
+        }
+        dragScrollDirection = y < 24 ? -1 : y > list.ActualHeight() - 24 ? 1 : 0;
+    }
+
+    void EndPointerReorder(bool commit) {
+        if (!commit || dragOrder == OrderedHashes() || dragOrder.empty()) { FinishDrag(); return; }
+        const auto found = std::find(dragOrder.begin(), dragOrder.end(), draggingHash);
+        if (found == dragOrder.end()) { FinishDrag(); return; }
+        const bool after = found + 1 == dragOrder.end();
+        const auto target = after ? *(found - 1) : *(found + 1);
+        DropItem(target, after);
     }
 
     void DropItem(const std::wstring &target, bool after) {
@@ -461,8 +548,8 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         const auto row = rows.Children().GetAt(static_cast<std::uint32_t>(index)).as<Border>().Child().as<Grid>();
         auto target = row.Children().GetAt(0).as<Button>();
         if (rowFocus->role == L"queue-handle") target = row.Children().GetAt(2).as<Button>();
-        if (rowFocus->role == L"queue-more" || rowFocus->role == L"queue-remove")
-            target = row.Children().GetAt(1).as<StackPanel>().Children().GetAt(rowFocus->role == L"queue-more" ? 0 : 1).as<Button>();
+        if (rowFocus->role == L"queue-remove")
+            target = row.Children().GetAt(1).as<StackPanel>().Children().GetAt(0).as<Button>();
         const auto generation = renderGeneration;
         const auto focusAtSchedule = winrt::make_weak(
             Input::FocusManager::GetFocusedElement(root.XamlRoot()).try_as<DependencyObject>());
@@ -495,7 +582,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
             row.ColumnDefinitions().Append(ColumnDefinition{});
             row.ColumnDefinitions().Append(ColumnDefinition{});
             row.ColumnDefinitions().Append(ColumnDefinition{});
-            row.ColumnDefinitions().GetAt(0).Width(GridLength{36, GridUnitType::Pixel});
+            row.ColumnDefinitions().GetAt(0).Width(GridLength{34, GridUnitType::Pixel});
             row.ColumnDefinitions().GetAt(1).Width(GridLength{1, GridUnitType::Star});
             row.ColumnDefinitions().GetAt(2).Width(GridLength{1, GridUnitType::Auto});
             row.ColumnSpacing(8);
@@ -503,22 +590,25 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
             StackPanel details;
             details.Orientation(Orientation::Vertical);
             details.Spacing(2);
-            TextBlock type = MakeText((index == 0 ? Text(L"下一项 · ", L"Next · ") : winrt::hstring{}) + TypeLabel(item.itemType, english), 12);
+            TextBlock type = MakeText(index == 0 ? Text(L"下一项", L"Next") : TypeLabel(item.itemType, english), 10.5);
+            type.FontSize(10.5); type.TextWrapping(TextWrapping::NoWrap); type.MaxLines(1);
             TextBlock preview = MakeText(
                 item.itemType == L"Image" || item.previewText.empty()
                     ? TypeLabel(item.itemType, english) : item.previewText, 13);
             ApplyStyle(preview, L"VPaste.Body");
-            preview.FontSize(13);
+            preview.FontSize(12.5);
             preview.MaxLines(1);
             preview.TextWrapping(TextWrapping::NoWrap);
             details.Children().Append(preview);
             details.Children().Append(type);
-            ToolTipService::SetToolTip(details, winrt::box_value(item.appSource));
 
             auto weak = weak_from_this();
             Button paste;
             ApplyStyle(paste, L"VPaste.IconButton");
-            paste.Content(details);
+            Grid itemContent; itemContent.ColumnSpacing(10);
+            ColumnDefinition iconColumn; iconColumn.Width(GridLength{36, GridUnitType::Pixel});
+            itemContent.ColumnDefinitions().Append(iconColumn); itemContent.ColumnDefinitions().Append(ColumnDefinition{});
+            paste.Content(itemContent);
             paste.MinHeight(48);
             paste.HorizontalAlignment(HorizontalAlignment::Stretch);
             paste.HorizontalContentAlignment(HorizontalAlignment::Stretch);
@@ -526,13 +616,13 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
             paste.IsEnabled(!busy);
             Automation::AutomationProperties::SetAutomationId(paste, L"queue-paste");
             Automation::AutomationProperties::SetName(paste, Text(L"粘贴：", L"Paste: ") + preview.Text());
-            ToolTipService::SetToolTip(paste, winrt::box_value(preview.Text() + L"\n" + item.appSource));
             paste.Click([weak, hash = item.hash](auto const &, auto const &) {
                 if (auto self = weak.lock(); self && !self->suppressDragPaste && self->draggingHash.empty()) self->Send(L"queuePaste", hash);
             });
-            paste.PointerPressed([weak](auto const &, auto const &) {
-                if (auto self = weak.lock()) self->suppressDragPaste = false;
-            });
+            paste.AddHandler(UIElement::PointerPressedEvent(), winrt::box_value(Input::PointerEventHandler{
+                [weak](auto const &, auto const &) {
+                    if (auto self = weak.lock()) self->suppressDragPaste = false;
+                }}), true);
             paste.PreviewKeyDown([weak](auto const &, auto const &args) {
                 if (args.Key() == winrt::Windows::System::VirtualKey::Enter ||
                     args.Key() == winrt::Windows::System::VirtualKey::Space) {
@@ -576,12 +666,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
                 if (auto self = weak.lock()) self->MoveItem(hash, 1);
             });
             rowMenu.Items().Append(down);
-            auto more = NamedIconButton(SymbolIcon{Symbol::More}, Text(L"队列项操作", L"Queue item actions"));
-            more.IsEnabled(!busy);
-            Automation::AutomationProperties::SetAutomationId(more, L"queue-more");
-            more.Flyout(rowMenu);
             paste.ContextFlyout(rowMenu);
-            actions.Children().Append(more);
 
             Button remove = NamedIconButton(SymbolIcon{Symbol::Remove}, Text(L"移出队列", L"Remove from queue"));
             remove.IsEnabled(!busy);
@@ -620,15 +705,13 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
                     // Keep the native type glyph when a stored image is missing.
                 }
             }
-            position.Children().Append(identity);
-            auto ordinal = MakeText(winrt::hstring{std::to_wstring(index + 1)}, 12, true);
-            ordinal.HorizontalAlignment(HorizontalAlignment::Center);
-            position.Children().Append(ordinal);
+            Grid::SetColumn(details, 1); itemContent.Children().Append(identity); itemContent.Children().Append(details);
+            position.Children().Append(Glyph(L"\uE784"));
             Button handle; ApplyStyle(handle, L"VPaste.IconButton");
             NameIconButton(handle, Text(L"调整顺序：", L"Reorder: ") + preview.Text());
-            handle.Content(position); handle.Width(36); handle.Height(48); handle.Padding(Thickness{0});
+            handle.Content(position); handle.Width(34); handle.Height(48); handle.Padding(Thickness{0});
             handle.IsEnabled(!busy && !confirmingClear);
-            handle.CanDrag(!busy && !confirmingClear);
+            handle.ContextFlyout(rowMenu);
             Automation::AutomationProperties::SetAutomationId(handle, L"queue-handle");
             Automation::AutomationProperties::SetHelpText(handle, Text(L"拖动排序，或使用上下方向键及更多菜单",
                 L"Drag to reorder, or use the Up/Down keys or item menu"));
@@ -639,61 +722,44 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
                     self->MoveItem(hash, args.Key() == winrt::Windows::System::VirtualKey::Up ? -1 : 1, true);
                 args.Handled(true);
             });
-            handle.DragStarting([weak, hash = item.hash](auto const &sender, auto const &args) {
-                if (auto self = weak.lock(); self && self->BeginReorder(hash)) {
-                    sender.as<Button>().Parent().as<Grid>().Parent().as<Border>().Opacity(DragSourceOpacity);
-                    args.Data().SetData(QueueDragFormat, winrt::box_value(winrt::hstring{hash}));
-                    args.Data().RequestedOperation(DataPackageOperation::Move);
-                    args.AllowedOperations(DataPackageOperation::Move);
-                } else args.Cancel(true);
-            });
-            handle.DropCompleted([weak](auto const &, auto const &) {
-                if (auto self = weak.lock()) self->FinishDrag();
-            });
+            handle.ManipulationMode(Input::ManipulationModes::None);
+            // Button class handlers consume presses; handledEventsToo is essential.
+            handle.AddHandler(UIElement::PointerPressedEvent(), winrt::box_value(Input::PointerEventHandler{
+                [weak, hash = item.hash](auto const &sender, auto const &args) {
+                    const auto self = weak.lock();
+                    if (!self || !args.GetCurrentPoint(self->list).Properties().IsLeftButtonPressed()) return;
+                    if (!self->StartPointerReorder(hash, args.GetCurrentPoint(self->list).Position().Y)) return;
+                    // ButtonBase already captures on press and releases before
+                    // our release handler. Transfer capture to the stable root;
+                    // ignore the old button's capture-lost event during transfer.
+                    self->pointerOwner = self->root; self->pointerId = args.Pointer().PointerId();
+                    sender.as<Button>().ReleasePointerCapture(args.Pointer());
+                    if (!self->root.CapturePointer(args.Pointer())) { self->FinishDrag(); return; }
+                    args.Handled(true);
+                }}), true);
             row.Children().Append(handle);
-
-            Border insertion;
-            ApplyStyle(insertion, L"VPaste.QueueInsertion");
-            insertion.Visibility(Visibility::Collapsed);
-            Grid::SetColumnSpan(insertion, 3);
-            row.Children().Append(insertion);
 
             Border container;
             container.Tag(winrt::box_value(winrt::hstring{item.hash}));
             container.Child(row);
-            container.CornerRadius(UniformRadius(ManagementRowRadius));
-            container.BorderThickness(Thickness{1, 1, 1, 1});
-            container.Padding(UniformThickness(8));
-            container.MinHeight(66);
             ApplyStyle(container, L"VPaste.Surface");
-            container.AllowDrop(true);
-            container.DragOver([weak, insertion](auto const &sender, auto const &args) {
-                if (auto self = weak.lock(); self && self->AcceptsDrop(args)) {
-                    const auto surface = sender.as<Border>();
-                    insertion.VerticalAlignment(args.GetPosition(surface).Y >= surface.ActualHeight() / 2
-                        ? VerticalAlignment::Bottom : VerticalAlignment::Top);
-                    insertion.Visibility(Visibility::Visible);
-                    const auto y = args.GetPosition(self->list).Y;
-                    self->dragScrollDirection = y < 24 ? -1 : y > self->list.ActualHeight() - 24 ? 1 : 0;
-                    args.AcceptedOperation(DataPackageOperation::Move);
-                    args.DragUIOverride().Caption(self->Text(L"调整队列顺序", L"Reorder queue"));
-                    args.Handled(true);
-                } else {
-                    insertion.Visibility(Visibility::Collapsed);
-                    args.AcceptedOperation(DataPackageOperation::None);
-                }
+            container.CornerRadius(UniformRadius(0));
+            container.BorderThickness(Thickness{0, 0, 0, 1});
+            container.Background(SolidColorBrush{Color{0, 0, 0, 0}});
+            container.Padding(Thickness{0}); container.MinHeight(66);
+            remove.Opacity(0);
+            const auto pointerInside = std::make_shared<bool>(false);
+            container.PointerEntered([remove, pointerInside](auto const &, auto const &) { *pointerInside = true; remove.Opacity(1); });
+            container.PointerExited([remove, pointerInside, weakSurface = winrt::make_weak(container)](auto const &, auto const &) {
+                *pointerInside = false;
+                const auto surface = weakSurface.get();
+                if (!surface || !surface.XamlRoot()) return;
+                auto focused = Input::FocusManager::GetFocusedElement(surface.XamlRoot()).try_as<DependencyObject>();
+                while (focused && focused != surface) focused = VisualTreeHelper::GetParent(focused);
+                if (!focused) remove.Opacity(0);
             });
-            container.DragLeave([insertion](auto const &, auto const &) { insertion.Visibility(Visibility::Collapsed); });
-            container.Drop([weak, insertion, hash = item.hash](auto const &sender, auto const &args) {
-                insertion.Visibility(Visibility::Collapsed);
-                if (auto self = weak.lock(); self && self->AcceptsDrop(args)) {
-                    const auto surface = sender.as<Border>();
-                    const bool after = args.GetPosition(surface).Y >= surface.ActualHeight() / 2;
-                    args.AcceptedOperation(DataPackageOperation::Move);
-                    args.Handled(true);
-                    self->DropItem(hash, after);
-                }
-            });
+            container.GotFocus([remove](auto const &, auto const &) { remove.Opacity(1); });
+            container.LostFocus([remove, pointerInside](auto const &, auto const &) { if (!*pointerInside) remove.Opacity(0); });
             rows.Children().Append(container);
         }
         list.Visibility(items.empty() ? Visibility::Collapsed : Visibility::Visible);
@@ -797,6 +863,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         reverse.Label(Text(L"反转", L"Reverse"));
         clear.Label(Text(L"清空", L"Clear"));
         undo.Label(Text(L"撤销", L"Undo"));
+        undoMessage.Text(Text(L"已粘贴", L"Pasted"));
         NameIconButton(closeButton, Text(L"关闭粘贴队列", L"Close paste queue"));
         LocalizeConfirmation();
         guidance.Text(Text(L"按顺序整理，逐项粘贴。关闭队列会清空这份临时列表。",
@@ -906,6 +973,94 @@ void QueueView::TestDragScroll(int direction) {
 void QueueView::TestMoveByKeyboard(const std::wstring &hash, int direction) {
     if (m_impl) m_impl->MoveItem(hash, direction, true);
 }
+bool QueueView::TestStartPointerReorder(const std::wstring &hash, double y) {
+    return m_impl && m_impl->StartPointerReorder(hash, y);
+}
+void QueueView::TestMovePointerReorder(double y) { if (m_impl) m_impl->MovePointerReorder(y); }
+void QueueView::TestEndPointerReorder(bool commit) { if (m_impl) m_impl->EndPointerReorder(commit); }
+
+winrt::Windows::Foundation::IAsyncAction TestQueuePointerReorderControls(FrameworkElement fixture, std::uint32_t &stage) {
+    stage = 258;
+    std::vector<JsonObject> requests;
+    QueueView queue{[&](auto const &operation, auto const &, auto const &hashes) {
+        JsonObject value; value.Insert(L"op", JsonValue::CreateStringValue(operation));
+        JsonArray order; for (auto const &hash : hashes) order.Append(JsonValue::CreateStringValue(hash));
+        value.Insert(L"hashes", order); requests.push_back(value);
+        return static_cast<std::uint64_t>(requests.size());
+    }, [] {}};
+    const auto root = queue.Root().as<Grid>(); root.Width(360); root.Height(448);
+    fixture.as<Border>().Child(root);
+    auto state = JsonObject::Parse(LR"({"revision":1,"items":[{"hash":"a","previewText":"A long entry that must not push controls out of the queue viewport"},{"hash":"b","previewText":"Second"},{"hash":"c","previewText":"Third"}]})");
+    queue.SetState(state); co_await NextNativeFrame();
+    const auto list = root.Children().GetAt(1).as<ScrollViewer>();
+    const auto rows = list.Content().as<StackPanel>();
+    const auto row = rows.Children().GetAt(0).as<Border>().Child().as<Grid>();
+    const auto paste = row.Children().GetAt(0).as<Button>();
+    const auto handle = row.Children().GetAt(2).as<Button>();
+    const auto remove = row.Children().GetAt(1).as<StackPanel>().Children().GetAt(0).as<Button>();
+    const auto bounds = [&](FrameworkElement const &element) {
+        return element.TransformToVisual(row).TransformBounds({0, 0,
+            static_cast<float>(element.ActualWidth()), static_cast<float>(element.ActualHeight())});
+    };
+    const auto p = bounds(paste), h = bounds(handle), r = bounds(remove);
+    std::fprintf(stderr, "WinUI queue geometry: row=%.1f paste=%.1f handle=%.1f remove=%.1f\n",
+        row.ActualWidth(), paste.ActualWidth(), handle.ActualWidth(), remove.ActualWidth());
+    std::fprintf(stderr, "WinUI queue bounds: paste=(%.1f %.1f) handle=(%.1f %.1f) remove=(%.1f %.1f) rowHeight=%.1f\n",
+        p.X, p.Width, h.X, h.Width, r.X, r.Width, rows.Children().GetAt(0).as<Border>().ActualHeight());
+    winrt::check_hresult(paste.ActualWidth() > 120 && h.X + h.Width <= p.X + 0.5 &&
+        p.X + p.Width <= r.X + 0.5 && r.X + r.Width <= row.ActualWidth() + 0.5 &&
+        rows.Children().GetAt(0).as<Border>().ActualHeight() <= 67 ? S_OK : E_FAIL);
+    stage = 2581;
+    winrt::check_hresult(queue.TestStartPointerReorder(L"a", 33) && !queue.TestStartPointerReorder(L"b", 99) ? S_OK : E_FAIL);
+    queue.TestMovePointerReorder(183);
+    winrt::check_hresult(rows.Children().GetAt(0).as<Border>().RenderTransform().as<TranslateTransform>().Y() > 100 &&
+        rows.Children().GetAt(1).as<Border>().RenderTransform().as<TranslateTransform>().Y() < -60 ? S_OK : E_FAIL);
+    queue.TestEndPointerReorder(true);
+    stage = 2582;
+    winrt::check_hresult(requests.size() == 3 && requests[0].GetNamedString(L"op") == L"dragBegin" &&
+        requests[1].GetNamedString(L"op") == L"dragEnd" && requests[2].GetNamedString(L"op") == L"queueReorder" &&
+        requests[2].GetNamedArray(L"hashes").GetStringAt(2) == L"a" ? S_OK : E_FAIL);
+    JsonObject response; response.Insert(L"id", JsonValue::CreateNumberValue(3));
+    response.Insert(L"op", JsonValue::CreateStringValue(L"queueReorder"));
+    response.Insert(L"error", JsonValue::CreateStringValue(L"Synthetic reorder failure")); queue.Receive(response);
+    stage = 2583;
+    winrt::check_hresult(queue.TestStartPointerReorder(L"b", 99) ? S_OK : E_FAIL);
+    queue.TestMovePointerReorder(-100); queue.TestEndPointerReorder(false);
+    const auto cancelled = rows.Children().GetAt(1).as<Border>();
+    const auto resting = cancelled.RenderTransform().TransformPoint({0, 0});
+    winrt::check_hresult(requests.size() == 5 && resting.X == 0 && resting.Y == 0 &&
+        cancelled.Opacity() == 1 ? S_OK : E_FAIL);
+    // Capture during drag is merged; a deleted source cannot be resurrected.
+    winrt::check_hresult(queue.TestStartPointerReorder(L"a", 33) ? S_OK : E_FAIL);
+    queue.TestMovePointerReorder(180);
+    queue.SetState(JsonObject::Parse(LR"({"revision":2,"items":[{"hash":"b"},{"hash":"c"},{"hash":"new"}]})"));
+    queue.TestEndPointerReorder(true);
+    stage = 2584;
+    winrt::check_hresult(requests.size() == 7 && rows.Children().Size() == 3 &&
+        winrt::unbox_value<winrt::hstring>(rows.Children().GetAt(0).as<Border>().Tag()) == L"b" ? S_OK : E_FAIL);
+    queue.SetState(JsonObject::Parse(LR"({"revision":3,"busy":true,"items":[{"hash":"b"}]})"));
+    winrt::check_hresult(!queue.TestStartPointerReorder(L"b", 33) ? S_OK : E_FAIL);
+    stage = 2585;
+    JsonObject fullState; JsonArray fullItems;
+    for (int index = 0; index < 100; ++index) {
+        JsonObject item; item.Insert(L"hash", JsonValue::CreateStringValue(L"item-" + std::to_wstring(index)));
+        item.Insert(L"itemType", JsonValue::CreateStringValue(L"Text"));
+        item.Insert(L"previewText", JsonValue::CreateStringValue(L"Queue item " + std::to_wstring(index)));
+        fullItems.Append(item);
+    }
+    fullState.Insert(L"revision", JsonValue::CreateNumberValue(4)); fullState.Insert(L"items", fullItems);
+    queue.SetState(fullState); co_await NextNativeFrame(); root.UpdateLayout();
+    winrt::check_hresult(rows.Children().Size() == 100 && queue.TestStartPointerReorder(L"item-0", 33) ? S_OK : E_FAIL);
+    const auto start = std::chrono::steady_clock::now();
+    for (int step = 1; step <= 120; ++step) queue.TestMovePointerReorder(33 + step * 56.0);
+    const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    std::fprintf(stderr, "WinUI queue pointer benchmark: rows=100 moves=120 totalMs=%.2f meanMs=%.3f\n", elapsed, elapsed / 120);
+    queue.TestEndPointerReorder(true);
+    winrt::check_hresult(requests.back().GetNamedString(L"op") == L"queueReorder" &&
+        requests.back().GetNamedArray(L"hashes").Size() == 100 &&
+        requests.back().GetNamedArray(L"hashes").GetStringAt(99) == L"item-0" ? S_OK : E_FAIL);
+    fixture.as<Border>().Child(nullptr);
+}
 
 winrt::Windows::Foundation::IAsyncAction TestQueueConsolidationControls(FrameworkElement fixture, std::uint32_t &stage) {
     std::vector<JsonObject> requests;
@@ -924,7 +1079,7 @@ winrt::Windows::Foundation::IAsyncAction TestQueueConsolidationControls(Framewor
     const auto toolbar = root.Children().GetAt(0).as<Grid>().Children().GetAt(2).as<CommandBar>();
     const auto feedback = root.Children().GetAt(3).as<InfoBar>();
     const auto button = [&](std::uint32_t index) { return rows.Children().GetAt(index).as<Border>().Child().as<Grid>().Children().GetAt(0).as<Button>(); };
-    const auto label = [&](std::uint32_t index) { return button(index).Content().as<StackPanel>().Children().GetAt(0).as<TextBlock>().Text(); };
+    const auto label = [&](std::uint32_t index) { return button(index).Content().as<Grid>().Children().GetAt(1).as<StackPanel>().Children().GetAt(0).as<TextBlock>().Text(); };
     const auto invoke = [](FrameworkElement element) {
         Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(element)
             .GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
@@ -951,8 +1106,7 @@ winrt::Windows::Foundation::IAsyncAction TestQueueConsolidationControls(Framewor
     auto older = JsonObject::Parse(LR"({"revision":100,"busy":false,"items":[{"hash":"old","previewText":"Old state"}]})");
     winrt::check_hresult(queue.Receive(reply(0, older)) && button(0).IsEnabled() && label(0) == L"First" && rows.Children().Size() == 3 ? S_OK : E_FAIL);
     stage = 80;
-    const auto menu = rows.Children().GetAt(0).as<Border>().Child().as<Grid>().Children().GetAt(1).as<StackPanel>()
-        .Children().GetAt(0).as<Button>().Flyout().as<MenuFlyout>();
+    const auto menu = button(0).ContextFlyout().as<MenuFlyout>();
     invoke(menu.Items().GetAt(1)); co_await NextNativeFrame();
     winrt::check_hresult(requests.size() == 2 && requests[1].GetNamedString(L"op") == L"queueReorder" &&
         requests[1].GetNamedArray(L"hashes").GetStringAt(0) == L"b" && label(0) == L"First" ? S_OK : E_FAIL);
@@ -965,7 +1119,7 @@ winrt::Windows::Foundation::IAsyncAction TestQueueConsolidationControls(Framewor
     state.Insert(L"undoExpiresAt", JsonValue::CreateNumberValue(static_cast<double>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() + 60'000)));
     state.Insert(L"undoHash", JsonValue::CreateStringValue(L"consumed")); queue.SetState(state);
-    const auto undo = toolbar.PrimaryCommands().GetAt(0).as<AppBarButton>();
+    const auto undo = root.Children().GetAt(4).as<Border>().Child().as<StackPanel>().Children().GetAt(1).as<AppBarButton>();
     winrt::check_hresult(undo.Visibility() == Visibility::Visible && undo.IsEnabled() && undo.Label() == L"Undo" ? S_OK : E_FAIL);
     invoke(undo); co_await NextNativeFrame();
     winrt::check_hresult(requests.size() == 3 && requests[2].GetNamedString(L"op") == L"queueUndo" ? S_OK : E_FAIL);
@@ -983,8 +1137,7 @@ winrt::Windows::Foundation::IAsyncAction TestQueueConsolidationControls(Framewor
     if (GetWindowThreadProcessId(GetForegroundWindow(), nullptr) == GetCurrentThreadId())
         winrt::check_hresult(Input::FocusManager::GetFocusedElement(root.XamlRoot()) == handle ? S_OK : E_FAIL);
     // A menu stays tied to its item even when an external capture reorders rows.
-    const auto captured = rows.Children().GetAt(0).as<Border>().Child().as<Grid>().Children().GetAt(1).as<StackPanel>()
-        .Children().GetAt(0).as<Button>().Flyout().as<MenuFlyout>().Items().GetAt(1);
+    const auto captured = button(0).ContextFlyout().as<MenuFlyout>().Items().GetAt(1);
     state.Insert(L"revision", JsonValue::CreateNumberValue(105)); queue.SetState(state);
     invoke(captured); co_await NextNativeFrame();
     winrt::check_hresult(requests.size() == 5 && requests[4].GetNamedArray(L"hashes").GetStringAt(1) == L"new" &&
@@ -1000,16 +1153,23 @@ winrt::Windows::Foundation::IAsyncAction TestQueueConsolidationControls(Framewor
         item.Insert(L"previewText", JsonValue::CreateStringValue(L"Synthetic queue entry")); many.Append(item);
     }
     JsonObject scrollState; scrollState.Insert(L"revision", JsonValue::CreateNumberValue(107)); scrollState.Insert(L"items", many);
-    queue.SetState(scrollState); co_await NextNativeFrame();
+    queue.SetState(scrollState); co_await NextNativeFrame(); root.UpdateLayout();
     const auto list = root.Children().GetAt(1).as<ScrollViewer>();
     winrt::handle ready{CreateEventW(nullptr, false, false, nullptr)}; winrt::check_bool(static_cast<bool>(ready));
     const winrt::apartment_context ui;
-    const auto token = list.ViewChanged([signal = ready.get(), list](auto const &, auto const &args) {
-        if (!args.IsIntermediate() && list.VerticalOffset() >= 180) SetEvent(signal);
+    // Observe the settled offset, not a particular ViewChanged edge: layout
+    // and synchronous ChangeView can deliver that event before the await.
+    const auto token = CompositionTarget::Rendering([signal = ready.get(), list](auto const &, auto const &) {
+        if (std::abs(list.VerticalOffset() - 180) < 0.5) SetEvent(signal);
     });
-    list.ChangeView(nullptr, winrt::box_value(180.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, true);
+    const auto acceptedScroll = list.ChangeView(nullptr, winrt::box_value(180.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, true);
+    std::fprintf(stderr, "WinUI queue scroll request: accepted=%d loaded=%d height=%.1f viewport=%.1f max=%.1f offset=%.3f\n",
+        acceptedScroll, list.IsLoaded(), root.ActualHeight(), list.ViewportHeight(), list.ScrollableHeight(), list.VerticalOffset());
     const bool scrolled = co_await winrt::resume_on_signal(ready.get(), std::chrono::seconds(5));
-    co_await ui; list.ViewChanged(token); winrt::check_hresult(scrolled ? S_OK : HRESULT_FROM_WIN32(ERROR_TIMEOUT));
+    co_await ui; CompositionTarget::Rendering(token);
+    if (!scrolled) std::fprintf(stderr, "WinUI queue scroll timeout: viewport=%.1f max=%.1f offset=%.3f loaded=%d\n",
+        list.ViewportHeight(), list.ScrollableHeight(), list.VerticalOffset(), list.IsLoaded());
+    winrt::check_hresult(scrolled ? S_OK : HRESULT_FROM_WIN32(ERROR_TIMEOUT));
     many.Append(JsonObject::Parse(LR"({"hash":"last-capture","previewText":"Last capture"})"));
     scrollState.Insert(L"revision", JsonValue::CreateNumberValue(108)); queue.SetState(scrollState);
     co_await NextNativeFrame();
@@ -1022,7 +1182,7 @@ winrt::Windows::Foundation::IAsyncAction TestQueueUndoExpiryControls(FrameworkEl
     QueueView queue{[&](auto const &, auto const &, auto const &) { return ++sent; }, [] {}};
     const auto root = queue.Root().as<Grid>(); fixture.as<Border>().Child(root);
     const auto toolbar = root.Children().GetAt(0).as<Grid>().Children().GetAt(2).as<CommandBar>();
-    const auto undo = toolbar.PrimaryCommands().GetAt(0).as<AppBarButton>();
+    const auto undo = root.Children().GetAt(4).as<Border>().Child().as<StackPanel>().Children().GetAt(1).as<AppBarButton>();
     auto state = JsonObject::Parse(LR"({"revision":1,"items":[],"undoHash":"consumed","undoExpiresAt":1})");
     stage = 107;
     queue.SetState(state); co_await NextNativeFrame();
@@ -1066,7 +1226,9 @@ winrt::Windows::Foundation::IAsyncAction TestQueueFocusContinuityControls(Framew
     const auto root = queue.Root().as<Grid>(); fixture.as<Border>().Child(root);
     const auto rows = root.Children().GetAt(1).as<ScrollViewer>().Content().as<StackPanel>();
     const auto control = [&](std::uint32_t index, std::uint32_t action) {
-        return rows.Children().GetAt(index).as<Border>().Child().as<Grid>().Children().GetAt(1).as<StackPanel>().Children().GetAt(action).as<Button>();
+        const auto row = rows.Children().GetAt(index).as<Border>().Child().as<Grid>();
+        return action == 0 ? row.Children().GetAt(2).as<Button>()
+            : row.Children().GetAt(1).as<StackPanel>().Children().GetAt(0).as<Button>();
     };
     const auto refresh = [&](std::uint64_t revision, const wchar_t *items) {
         JsonObject state; state.Insert(L"revision", JsonValue::CreateNumberValue(static_cast<double>(revision)));

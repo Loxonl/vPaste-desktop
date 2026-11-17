@@ -2,6 +2,49 @@
 use crate::{clipboard::color::ParsedColor, rich_card_assets::RichRenderPayload};
 use serde_json::{json, Value};
 
+pub(super) fn visual_type<'a>(item_type: &'a str, content: &str) -> &'a str {
+    if item_type == "File" {
+        let paths = crate::parse_file_clipboard_content(content).unwrap_or_default();
+        if let [path] = paths.as_slice() {
+            let extension = std::path::Path::new(path)
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            if crate::is_image_preview_extension(extension) {
+                return "Image";
+            }
+        }
+    }
+    item_type
+}
+
+pub(super) fn is_rich_format(payload: &crate::history_views::HistoryCardPayload) -> bool {
+    // Light cards deliberately omit drag HTML. Rendering failure must not
+    // erase the stored format badge either.
+    payload
+        .rich_render
+        .as_ref()
+        .is_some_and(|render| !render.html.trim().is_empty())
+        || crate::clipboard::rich_clipboard_meta(&payload.item.hash)
+            .is_some_and(|meta| !meta.html_path.trim().is_empty())
+}
+
+pub(super) fn is_gif_format(item_type: &str, content: &str, preview: &str) -> bool {
+    // Match itemPresentation.ts, including URI query/fragment suffixes.
+    let gif = |path: &str| {
+        let path = path.trim().to_ascii_lowercase();
+        path.ends_with(".gif") || path.contains(".gif?") || path.contains(".gif#")
+    };
+    match item_type {
+        "Image" => gif(content) || gif(preview),
+        "File" => {
+            let paths = crate::parse_file_clipboard_content(content).unwrap_or_default();
+            paths.len() == 1 && gif(&paths[0])
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn media_details(
     metadata: &crate::image_preview::HistoryImageMetadata,
     source: &str,
@@ -100,6 +143,89 @@ pub(super) fn rich_content(render: Option<&RichRenderPayload>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rich_badge_uses_the_actual_light_history_payload_without_generating_drag_html() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let _cleanup = crate::auto_cleanup::pause();
+        let directory = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(directory.path().to_string_lossy().into_owned());
+        crate::config::save(crate::config::Config::default());
+        crate::clipboard::db::init();
+        let rich = crate::clipboard::insert_rich_text_from_app(
+            "Formatted native card".into(),
+            Some(b"<p><b>Formatted native card</b></p>".to_vec()),
+            None,
+            None,
+            "Native parity fixture",
+            "",
+        )
+        .unwrap();
+        let payload = crate::clipboard::history_card_payload(&rich, false).unwrap();
+        assert!(
+            payload.item.rich_html.is_empty(),
+            "lightweight cards must not expand drag HTML"
+        );
+        assert!(payload.rich_render.is_some());
+        assert!(
+            is_rich_format(&payload),
+            "real rich history needs its header badge"
+        );
+        let mut fallback = payload;
+        fallback.rich_render = None;
+        assert!(
+            is_rich_format(&fallback),
+            "plain render fallback retains the stored rich format"
+        );
+        let plain = crate::clipboard::insert_text_from_app(
+            "Plain native card".into(),
+            "Native parity fixture",
+            "",
+        )
+        .unwrap();
+        assert!(!is_rich_format(
+            &crate::clipboard::history_card_payload(&plain, false).unwrap()
+        ));
+    }
+
+    #[test]
+    fn gif_header_follows_the_source_even_when_the_card_uses_a_static_thumbnail() {
+        assert!(is_gif_format(
+            "Image",
+            r"C:\cache\animated.GIF",
+            "thumb.png"
+        ));
+        assert!(is_gif_format("Image", "", "animated.gif"));
+        assert!(is_gif_format("Image", "animated.gif?cached=1", ""));
+        assert!(is_gif_format("Image", "animated.GIF#frame", ""));
+        assert!(is_gif_format("File", r#"["C:\\animated.gif"]"#, ""));
+        assert!(!is_gif_format("File", r#"["C:\\a.gif","C:\\b.png"]"#, ""));
+        assert!(!is_gif_format("Image", "still.png", "thumb.png"));
+        assert!(!is_gif_format("Text", "animated.gif", ""));
+    }
+
+    #[test]
+    fn a_single_image_file_has_the_reference_image_header_without_changing_identity() {
+        for extension in [
+            "png", "JPG", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff", "svg",
+        ] {
+            assert_eq!(
+                visual_type("File", &format!(r#"["C:\\photo.{extension}"]"#)),
+                "Image"
+            );
+        }
+        for content in [
+            r#"["a.png","b.png"]"#,
+            r#"["movie.mp4"]"#,
+            r#"["a.png.txt"]"#,
+            "invalid",
+            "[]",
+        ] {
+            assert_eq!(visual_type("File", content), "File");
+        }
+        assert_eq!(visual_type("Text", "photo.png"), "Text");
+    }
 
     #[test]
     fn media_details_preserve_dimensions_budget_flags_and_original_byte_size() {

@@ -24,6 +24,25 @@ inline std::vector<std::wstring> QueueDropOrder(const std::vector<std::wstring> 
     return result;
 }
 
+struct QueueRowMetric { double top, height; };
+
+inline std::vector<std::wstring> QueuePointerOrder(const std::vector<std::wstring> &current,
+    const std::vector<QueueRowMetric> &metrics, const std::wstring &source, double offset) {
+    const auto found = std::find(current.begin(), current.end(), source);
+    if (found == current.end() || current.size() != metrics.size()) return current;
+    const auto from = static_cast<std::size_t>(found - current.begin());
+    const auto center = metrics[from].top + metrics[from].height / 2 + offset;
+    auto order = current;
+    order.erase(order.begin() + from);
+    std::size_t to = 0;
+    for (std::size_t i = 0; i < current.size(); ++i) {
+        const auto targetCenter = metrics[i].top + metrics[i].height / 2;
+        if (i != from && (offset > 0 ? center >= targetCenter : center > targetCenter)) ++to;
+    }
+    order.insert(order.begin() + to, source);
+    return order;
+}
+
 class QueueView {
 public:
     using RequestCallback = std::function<std::uint64_t(
@@ -54,6 +73,9 @@ public:
     void TestDropReorder(const std::wstring &target, bool after);
     void TestDragScroll(int direction);
     void TestMoveByKeyboard(const std::wstring &hash, int direction);
+    bool TestStartPointerReorder(const std::wstring &hash, double y);
+    void TestMovePointerReorder(double y);
+    void TestEndPointerReorder(bool commit);
 #endif
 
 private:
@@ -67,6 +89,8 @@ winrt::Windows::Foundation::IAsyncAction TestQueueUndoExpiryControls(
 winrt::Windows::Foundation::IAsyncAction TestQueueFocusContinuityControls(
     winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
 winrt::Windows::Foundation::IAsyncAction TestQueueConsolidationControls(
+    winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
+winrt::Windows::Foundation::IAsyncAction TestQueuePointerReorderControls(
     winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
 #endif
 

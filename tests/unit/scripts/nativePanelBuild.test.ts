@@ -18,4 +18,11 @@ describe("standalone mac native panel build", () => {
         expect(gate).toContain('"cargo:rustc-link-lib=static=VPasteNativePanel"');
         expect(source).not.toContain("NativeDemo");
     });
+    it("preserves upstream native onboarding sources and generates their assets after the platform gate", () => {
+        const generator = source.indexOf("fn generate_onboarding_art()");
+        expect(generator).toBeGreaterThan(-1);
+        expect(generator).toBeLessThan(source.indexOf("fn build_swift_native_panel()"));
+        expect(gate).toContain('"native-panel/NativePanelOnboarding.swift"');
+        expect(gate.indexOf("return;")).toBeLessThan(gate.indexOf("generate_onboarding_art();"));
+    });
 });

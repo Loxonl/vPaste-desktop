@@ -2,6 +2,7 @@
 //! creating a main WebView. Owns one bounded history view, separately from Main.
 pub(crate) mod developer;
 mod history;
+pub(crate) mod onboarding;
 pub(crate) mod preview;
 pub(crate) mod queue_selection;
 mod rich_text;
@@ -121,7 +122,8 @@ pub(crate) fn show_default(app: AppHandle) -> Result<(), String> {
 
 pub(crate) fn toggle(app: AppHandle) -> Result<(), String> {
     let config = crate::config::get();
-    present(app, config.multilingual, config.theme_mode, true, false)
+    let toggle = !onboarding::blocks_toggle();
+    present(app, config.multilingual, config.theme_mode, toggle, false)
 }
 
 pub(crate) fn close_preview(app: &AppHandle) -> Result<(), String> {
@@ -166,8 +168,15 @@ fn present(
                 "tab-order-changed",
                 "paste-queue-state-changed",
                 "native-paste-queue-selection-changed",
+                "onboarding-permission-status-changed",
             ] {
                 let id = app.listen_any(name, move |event| {
+                    if name == "onboarding-permission-status-changed" {
+                        if let Some(state) = onboarding::snapshot() {
+                            deliver(session, json!({"event":"onboarding-state", "data":state}));
+                        }
+                        return;
+                    }
                     if name == "native-paste-queue-selection-changed" {
                         if let Ok(mut payload) =
                             serde_json::from_str::<serde_json::Map<String, Value>>(event.payload())
@@ -216,6 +225,7 @@ fn present(
                 "pasteQueue": queue_selection::snapshot(),
                 "sizePreview": preview,
                 "developerReconfigure": reconfigure,
+                "onboarding": onboarding::snapshot(),
                 "language": language,
                 "theme": theme,
                 "scale": scale,
@@ -395,6 +405,12 @@ struct Request {
     theme: String,
     #[serde(default)]
     preserve_history: bool,
+    #[serde(default)]
+    onboarding_id: u64,
+    #[serde(default)]
+    step: u8,
+    #[serde(default)]
+    enabled: bool,
     #[serde(default)]
     keywords: String,
     #[serde(default)]
@@ -608,6 +624,7 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
             blocking(move || history::resume(panel_tabs()?, open, preserve)).await
         }
         "developer" => developer::open(app.clone(), &r.target, &r.language, &r.theme).await,
+        "onboarding" => onboarding::handle(app.clone(), r).await,
         "history-sync" => {
             if r.hashes.len() > 216 {
                 return Err("too many retained refs".into());

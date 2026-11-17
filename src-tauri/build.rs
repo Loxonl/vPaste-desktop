@@ -26,6 +26,41 @@ fn generate_tray_icon_mask() {
     fs::write(output_path, pixmap.data()).expect("write tray RGBA mask");
 }
 
+fn generate_onboarding_art() {
+    let options = resvg::usvg::Options::default();
+    for name in [
+        "permission-background",
+        "permission-paste",
+        "shortcut-popover",
+    ] {
+        let source = format!("../src/assets/tutorial/{name}.svg");
+        println!("cargo:rerun-if-changed={source}");
+        let tree = resvg::usvg::Tree::from_str(
+            &fs::read_to_string(source).expect("read tutorial SVG"),
+            &options,
+        )
+        .expect("parse tutorial SVG");
+        let size = tree
+            .size()
+            .to_int_size()
+            .scale_by(2.0)
+            .expect("tutorial image size");
+        let mut pixmap =
+            resvg::tiny_skia::Pixmap::new(size.width(), size.height()).expect("tutorial bitmap");
+        resvg::render(
+            &tree,
+            resvg::tiny_skia::Transform::from_scale(2.0, 2.0),
+            &mut pixmap.as_mut(),
+        );
+        let output =
+            PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR")).join(format!("{name}.png"));
+        let png = pixmap.encode_png().expect("encode native tutorial art");
+        if fs::read(&output).ok().as_deref() != Some(png.as_slice()) {
+            fs::write(output, png).expect("write native tutorial art");
+        }
+    }
+}
+
 /// The real macOS panel is independent of the retired standalone sample.
 fn build_swift_native_panel() {
     if env::var("PROFILE").as_deref() != Ok("debug")
@@ -33,12 +68,14 @@ fn build_swift_native_panel() {
     {
         return;
     }
+    generate_onboarding_art();
     const PANEL_SOURCES: &[&str] = &[
         "native-panel/NativePanelModels.swift",
         "native-panel/NativePanelStyle.swift",
         "native-panel/NativePanelAppKitToolbar.swift",
         "native-panel/NativePanelToolbar.swift",
         "native-panel/NativePanelDeveloperToolbar.swift",
+        "native-panel/NativePanelOnboarding.swift",
         "native-panel/NativePanelPasteQueue.swift",
         "native-panel/NativePanelTabDrag.swift",
         "native-panel/NativePanelBackdrop.swift",

@@ -10,6 +10,10 @@ layout, operations and Rust behavior; use actual WinUI controls for native
 input, menus and dialogs. This audit does not switch the default renderer,
 remove the WebView implementation, change distribution or benchmark Release.
 
+For the next batch, see the [concrete differences and decision list](windows-winui-next-decisions.md).
+It separates confirmed remaining differences from implemented scenarios awaiting
+physical acceptance; it does not authorize further product changes.
+
 ## How to read the evidence
 
 - **S**: the current reference, native implementation and shared Rust route were

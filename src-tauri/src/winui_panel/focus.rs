@@ -61,7 +61,7 @@ pub(super) fn lost(app: AppHandle) {
                     || crate::tab_editor_window_active(&owner)
                     || crate::text_editor_window_active(&owner)
                     || crate::memory_monitor_window_active(&owner)
-                    || crate::native_demo_window_active(),
+                    || crate::native_auxiliary_window_active(),
                 preview_protected,
             };
             if should_hide(

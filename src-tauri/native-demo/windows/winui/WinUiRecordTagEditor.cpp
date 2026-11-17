@@ -38,22 +38,21 @@ struct RecordTagEditor::Impl : std::enable_shared_from_this<RecordTagEditor::Imp
     Saved saved;
     Flyout flyout{nullptr};
     std::function<void()> returnFocus;
-    StackPanel root{nullptr}, form{nullptr}, actions{nullptr}, confirmation{nullptr};
-    TextBlock title{nullptr}, guidance{nullptr}, warning{nullptr};
+    StackPanel root{nullptr}, form{nullptr}, actions{nullptr};
+    TextBlock title{nullptr}, guidance{nullptr};
     TextBox name{nullptr};
-    Button emoji{nullptr}, save{nullptr}, cancel{nullptr}, remove{nullptr}, keep{nullptr}, confirmRemove{nullptr};
+    Button emoji{nullptr}, save{nullptr}, cancel{nullptr};
     InfoBar error{nullptr};
     std::int64_t tagId = 0;
     std::wstring originalName, hash, operation;
     std::uint64_t pending = 0;
-    bool english = false, active = false, busy = false, confirming = false, createdForItem = false;
+    bool english = false, active = false, busy = false, createdForItem = false;
 
     Impl(Request send, Saved onSaved) : request(std::move(send)), saved(std::move(onSaved)) {}
     winrt::hstring Text(wchar_t const *zh, wchar_t const *en) const { return english ? en : zh; }
     void Language() {
-        title.Text(confirming ? Text(L"删除标签？", L"Delete tag?") : tagId && !createdForItem
-            ? Text(L"编辑标签", L"Edit tag") : hash.empty() ? Text(L"新增标签", L"New tag")
-            : Text(L"新建并添加标签", L"Create and assign tag"));
+        title.Text(tagId && !createdForItem
+            ? Text(L"编辑记录标签", L"Edit Record Tag") : Text(L"添加记录标签", L"Add Record Tag"));
         guidance.Text(hash.empty() ? Text(L"用于整理和筛选剪贴项。", L"Organize and filter clipboard items.")
             : Text(L"保存后添加到这条剪贴项。", L"Assign to this clipboard item after saving."));
         name.PlaceholderText(Text(L"标签名称", L"Tag name"));
@@ -61,32 +60,15 @@ struct RecordTagEditor::Impl : std::enable_shared_from_this<RecordTagEditor::Imp
         SetNameEmojiLanguage(emoji, english);
         save.Content(winrt::box_value(createdForItem ? Text(L"重试添加", L"Retry assignment") : Text(L"保存", L"Save")));
         cancel.Content(winrt::box_value(Text(L"取消", L"Cancel")));
-        remove.Content(winrt::box_value(Text(L"删除…", L"Delete…")));
-        keep.Content(winrt::box_value(Text(L"取消", L"Cancel")));
-        confirmRemove.Content(winrt::box_value(Text(L"确认删除", L"Delete tag")));
-        warning.Text(originalName + Text(L"\n不会删除剪贴板内容，但会从所有剪贴项中移除此标签。",
-            L"\nClipboard content is kept. This tag will be removed from all items."));
     }
     void Enabled() {
         name.IsEnabled(!busy && !createdForItem);
         name.IsReadOnly(busy || createdForItem);
         emoji.IsEnabled(!busy && !createdForItem);
         save.IsEnabled(!busy); cancel.IsEnabled(!busy);
-        keep.IsEnabled(!busy); confirmRemove.IsEnabled(!busy);
-        remove.IsEnabled(!busy);
-        remove.Visibility(tagId > 0 && !createdForItem ? Visibility::Visible : Visibility::Collapsed);
     }
     void Error(winrt::hstring const &message) {
         error.Message(message); error.IsOpen(!message.empty());
-    }
-    void Confirm(bool value) {
-        if (busy || (value && (!tagId || createdForItem))) return;
-        confirming = value;
-        form.Visibility(value ? Visibility::Collapsed : Visibility::Visible);
-        actions.Visibility(value ? Visibility::Collapsed : Visibility::Visible);
-        confirmation.Visibility(value ? Visibility::Visible : Visibility::Collapsed);
-        Error(L""); Language();
-        if (root.IsLoaded()) (value ? keep : remove).Focus(FocusState::Programmatic);
     }
     void Send(wchar_t const *op) {
         if (!active || busy || !root.IsLoaded() || !request) return;
@@ -105,7 +87,7 @@ struct RecordTagEditor::Impl : std::enable_shared_from_this<RecordTagEditor::Imp
         }
     }
     void Save() {
-        if (!active || busy || confirming) return;
+        if (!active || busy) return;
         if (createdForItem) { Send(L"recordTagAssign"); return; }
         const std::wstring value{name.Text()};
         if (value.find_first_not_of(L" \t\r\n") == value.npos || (value.size() > 20 && value != originalName)) {
@@ -121,7 +103,7 @@ struct RecordTagEditor::Impl : std::enable_shared_from_this<RecordTagEditor::Imp
     }
     void Build(std::int64_t id, std::wstring const &text, std::wstring const &itemHash, bool useEnglish) {
         tagId = id; originalName = text; hash = itemHash; english = useEnglish;
-        pending = 0; busy = false; confirming = false; createdForItem = false; active = true;
+        pending = 0; busy = false; createdForItem = false; active = true;
         root = StackPanel{}; root.Width(300); root.Spacing(12);
         title = Label(L"", true); root.Children().Append(title);
         form = StackPanel{}; form.Spacing(8);
@@ -139,25 +121,13 @@ struct RecordTagEditor::Impl : std::enable_shared_from_this<RecordTagEditor::Imp
         root.Children().Append(error);
         actions = StackPanel{}; actions.Orientation(Orientation::Horizontal); actions.Spacing(8);
         actions.HorizontalAlignment(HorizontalAlignment::Right);
-        remove = Action(); cancel = Action(); save = Action();
+        cancel = Action(); save = Action();
         save.Style(Application::Current().Resources().Lookup(winrt::box_value(L"AccentButtonStyle")).as<Style>());
-        actions.Children().Append(remove); actions.Children().Append(cancel); actions.Children().Append(save);
+        actions.Children().Append(cancel); actions.Children().Append(save);
         root.Children().Append(actions);
-        confirmation = StackPanel{}; confirmation.Spacing(12); confirmation.Visibility(Visibility::Collapsed);
-        warning = Label(L""); confirmation.Children().Append(warning);
-        StackPanel confirmActions; confirmActions.Orientation(Orientation::Horizontal); confirmActions.Spacing(8);
-        confirmActions.HorizontalAlignment(HorizontalAlignment::Right);
-        keep = Action(); confirmRemove = Action();
-        confirmActions.Children().Append(keep); confirmActions.Children().Append(confirmRemove);
-        confirmation.Children().Append(confirmActions); root.Children().Append(confirmation);
         const auto weak = weak_from_this();
         save.Click([weak](auto const &sender, auto const &) { if (auto self = weak.lock(); self && sender == self->save) self->Save(); });
         cancel.Click([weak](auto const &sender, auto const &) { if (auto self = weak.lock(); self && sender == self->cancel) self->Hide(); });
-        remove.Click([weak](auto const &sender, auto const &) { if (auto self = weak.lock(); self && sender == self->remove) self->Confirm(true); });
-        keep.Click([weak](auto const &sender, auto const &) { if (auto self = weak.lock(); self && sender == self->keep) self->Confirm(false); });
-        confirmRemove.Click([weak](auto const &sender, auto const &) {
-            if (auto self = weak.lock(); self && sender == self->confirmRemove && self->confirming) self->Send(L"recordTagDelete");
-        });
         name.KeyDown([weak](auto const &sender, auto const &args) {
             if (static_cast<std::uint32_t>(args.OriginalKey()) == VK_PROCESSKEY) return;
             if (args.Key() == winrt::Windows::System::VirtualKey::Enter && !args.KeyStatus().WasKeyDown) {
@@ -179,7 +149,7 @@ RecordTagEditor::~RecordTagEditor() {
     catch (winrt::hresult_error const &failure) { OutputDebugStringW(failure.message().c_str()); }
 }
 void RecordTagEditor::Show(FrameworkElement anchor, std::int64_t id, std::wstring const &name,
-    std::wstring const &hash, bool english, ElementTheme theme, bool confirmDelete,
+    std::wstring const &hash, bool english, ElementTheme theme,
     FrameworkElement owner, std::function<void()> closed) {
     if (m_impl->busy) return;
     Hide(); m_impl->Build(id, name, hash, english); m_impl->root.RequestedTheme(theme);
@@ -189,10 +159,9 @@ void RecordTagEditor::Show(FrameworkElement anchor, std::int64_t id, std::wstrin
     m_impl->flyout.Placement(Controls::Primitives::FlyoutPlacementMode::TopEdgeAlignedLeft);
     m_impl->flyout.Content(m_impl->root);
     const auto weak = std::weak_ptr<Impl>{m_impl};
-    m_impl->flyout.Opened([weak, confirmDelete](auto const &sender, auto const &) {
+    m_impl->flyout.Opened([weak](auto const &sender, auto const &) {
         if (auto self = weak.lock(); self && sender == self->flyout) {
-            if (confirmDelete) self->Confirm(true);
-            else self->name.Focus(FocusState::Programmatic);
+            self->name.Focus(FocusState::Programmatic);
         }
     });
     m_impl->flyout.Closing([weak](auto const &sender, auto const &args) {
@@ -284,31 +253,31 @@ winrt::Windows::Foundation::IAsyncAction TestRecordTagEditorControls(FrameworkEl
     stage = 63;
     mount(0, L"", L"", false); co_await NextNativeFrame();
     winrt::check_hresult(editor.IsOpen() && input().IsLoaded() && input().MaxLength() == 20 ? S_OK : E_FAIL);
-    invoke(button(2)); co_await NextNativeFrame();
+    invoke(button(1)); co_await NextNativeFrame();
     winrt::check_hresult(requests.empty() && error().IsOpen() ? S_OK : E_FAIL);
-    input().Text(L"Keep this draft"); invoke(button(2)); co_await NextNativeFrame(); editor.TestSave();
-    winrt::check_hresult(requests.size() == 1 && !button(2).IsEnabled() &&
+    input().Text(L"Keep this draft"); invoke(button(1)); co_await NextNativeFrame(); editor.TestSave();
+    winrt::check_hresult(requests.size() == 1 && !button(1).IsEnabled() &&
         requests.back().GetNamedString(L"op") == L"recordTagCreate" && requests.back().GetNamedString(L"name") == L"Keep this draft" ? S_OK : E_FAIL);
     const auto firstRequest = requests.back();
     editor.Receive(JsonObject::Parse(LR"({"id":999,"op":"recordTagCreate","data":{"tag":{"id":9,"name":"Wrong"}}})"));
     auto wrongOperation = JsonObject::Parse(LR"({"op":"recordTagRename","error":"Wrong operation"})");
     wrongOperation.Insert(L"id", firstRequest.GetNamedValue(L"id")); editor.Receive(wrongOperation);
-    winrt::check_hresult(!button(2).IsEnabled() && saved.empty() ? S_OK : E_FAIL);
+    winrt::check_hresult(!button(1).IsEnabled() && saved.empty() ? S_OK : E_FAIL);
     reply(firstRequest, JsonObject{}, L"Synthetic storage failure");
-    winrt::check_hresult(error().IsOpen() && button(2).IsEnabled() && input().Text() == L"Keep this draft" ? S_OK : E_FAIL);
-    invoke(button(1)); co_await NextNativeFrame();
+    winrt::check_hresult(error().IsOpen() && button(1).IsEnabled() && input().Text() == L"Keep this draft" ? S_OK : E_FAIL);
+    invoke(button(0)); co_await NextNativeFrame();
     winrt::check_hresult(!editor.IsOpen() && requests.size() == 1 && saved.empty() ? S_OK : E_FAIL);
 
     stage = 64;
     mount(0, L"Work", L"captured-card"); co_await NextNativeFrame();
-    invoke(button(2)); co_await NextNativeFrame();
+    invoke(button(1)); co_await NextNativeFrame();
     const auto create = requests.back();
     reply(create, JsonObject::Parse(LR"({"tag":{"id":9,"name":"Work"},"items":[{"id":9,"name":"Work"}]})"));
     const auto assignment = requests.back();
     winrt::check_hresult(requests.size() == 3 && assignment.GetNamedString(L"op") == L"recordTagAssign" &&
         assignment.GetNamedNumber(L"tagId") == 9 && assignment.GetNamedString(L"hash") == L"captured-card" && saved.empty() ? S_OK : E_FAIL);
     reply(assignment, JsonObject{}, L"Synthetic missing card");
-    winrt::check_hresult(error().IsOpen() && input().IsReadOnly() && button(2).IsEnabled() &&
+    winrt::check_hresult(error().IsOpen() && input().IsReadOnly() && button(1).IsEnabled() &&
         !TryApplyNameEmoji(input(), L"📌") && std::wstring{error().Message()}.find(L"Tag created") != std::wstring::npos ? S_OK : E_FAIL);
     editor.TestSave(); editor.TestSave();
     winrt::check_hresult(requests.size() == 4 && requests.back().GetNamedString(L"op") == L"recordTagAssign" &&
@@ -317,46 +286,27 @@ winrt::Windows::Foundation::IAsyncAction TestRecordTagEditorControls(FrameworkEl
     winrt::check_hresult(!editor.IsOpen() && saved.size() == 1 && saved.back() == std::pair<std::wstring, std::int64_t>{L"recordTagAssign", 9} ? S_OK : E_FAIL);
 
     stage = 65;
-    mount(9, L"Work", L""); co_await NextNativeFrame(); input().Text(L"Old request"); editor.TestSave();
+    mount(9, L"Work", L""); co_await NextNativeFrame();
+    winrt::check_hresult(actions().Children().Size() == 2 ? S_OK : E_FAIL);
+    input().Text(L"Old request"); editor.TestSave();
     const auto stale = requests.back(); editor.Hide();
     mount(9, L"Fresh draft", L""); co_await NextNativeFrame();
     reply(stale, JsonObject::Parse(LR"({"tag":{"id":9,"name":"Old request"}})"));
     winrt::check_hresult(editor.IsOpen() && input().Text() == L"Fresh draft" && saved.size() == 1 ? S_OK : E_FAIL);
-    input().Text(L"Edited name"); invoke(button(2)); co_await NextNativeFrame();
+    input().Text(L"Edited name"); invoke(button(1)); co_await NextNativeFrame();
     const auto rename = requests.back();
     winrt::check_hresult(rename.GetNamedString(L"op") == L"recordTagRename" && rename.GetNamedNumber(L"tagId") == 9 ? S_OK : E_FAIL);
     reply(rename, JsonObject{}, L"Synthetic rename failure");
     editor.SetLanguage(false); editor.SetTheme(ElementTheme::Dark); editor.SetLanguage(true);
     winrt::check_hresult(input().Text() == L"Edited name" && error().IsOpen() &&
-        root.RequestedTheme() == ElementTheme::Dark && root.Children().GetAt(0).as<TextBlock>().Text() == L"Edit tag" ? S_OK : E_FAIL);
-    invoke(button(1)); co_await NextNativeFrame();
+        root.RequestedTheme() == ElementTheme::Dark && root.Children().GetAt(0).as<TextBlock>().Text() == L"Edit Record Tag" ? S_OK : E_FAIL);
+    invoke(button(0)); co_await NextNativeFrame();
     const auto beforeLegacy = requests.size(); const std::wstring legacy(32, L'x');
     mount(9, legacy, L""); co_await NextNativeFrame();
     winrt::check_hresult(input().Text() == legacy && input().MaxLength() == 32 ? S_OK : E_FAIL);
-    invoke(button(1)); co_await NextNativeFrame();
+    invoke(button(0)); co_await NextNativeFrame();
     winrt::check_hresult(requests.size() == beforeLegacy ? S_OK : E_FAIL);
 
-    stage = 66;
-    mount(9, L"Work", L""); co_await NextNativeFrame(); input().Text(L"Unsaved name");
-    const auto beforeDelete = requests.size();
-    invoke(button(0)); co_await NextNativeFrame();
-    const auto confirmation = root.Children().GetAt(4).as<StackPanel>();
-    const auto confirmActions = confirmation.Children().GetAt(1).as<StackPanel>();
-    const auto keep = confirmActions.Children().GetAt(0).as<Button>();
-    const auto remove = confirmActions.Children().GetAt(1).as<Button>();
-    winrt::check_hresult(confirmation.Visibility() == Visibility::Visible && requests.size() == beforeDelete &&
-        winrt::unbox_value<winrt::hstring>(keep.Content()) == L"Cancel" &&
-        std::wstring{confirmation.Children().GetAt(0).as<TextBlock>().Text()}.find(L"Clipboard content is kept") != std::wstring::npos ? S_OK : E_FAIL);
-    invoke(keep); co_await NextNativeFrame();
-    winrt::check_hresult(input().Text() == L"Unsaved name" && requests.size() == beforeDelete ? S_OK : E_FAIL);
-    invoke(button(0)); co_await NextNativeFrame(); invoke(remove); co_await NextNativeFrame(); editor.TestSave();
-    winrt::check_hresult(requests.size() == beforeDelete + 1 && !remove.IsEnabled() &&
-        requests.back().GetNamedString(L"op") == L"recordTagDelete" && requests.back().GetNamedNumber(L"tagId") == 9 ? S_OK : E_FAIL);
-    reply(requests.back(), JsonObject{}, L"Synthetic delete failure");
-    winrt::check_hresult(error().IsOpen() && confirmation.Visibility() == Visibility::Visible && remove.IsEnabled() ? S_OK : E_FAIL);
-    invoke(remove); co_await NextNativeFrame(); reply(requests.back(), JsonObject{});
-    winrt::check_hresult(!editor.IsOpen() && saved.size() == 2 &&
-        saved.back() == std::pair<std::wstring, std::int64_t>{L"recordTagDelete", 9} ? S_OK : E_FAIL);
     fixture.Child(nullptr);
 }
 #endif

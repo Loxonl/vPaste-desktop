@@ -4,7 +4,7 @@ import SwiftUI
 
 @MainActor
 final class PanelDeveloperTools: ObservableObject {
-  static let fullWidth: CGFloat = 405
+  static let fullWidth: CGFloat = 374
   static let menuWidth: CGFloat = 104
   private static var rememberedExpanded = true
   @Published var expanded = rememberedExpanded {
@@ -32,7 +32,6 @@ final class PanelDeveloperTools: ObservableObject {
       Action(id: "test-room", symbol: "testtube.2", title: local("Test room", "测试间")),
       Action(id: "memory", symbol: "memorychip", title: local("Memory monitor", "内存监控")),
       Action(id: "native-panel", symbol: "macwindow", title: local("Native main panel (current)", "原生主界面（当前）")),
-      Action(id: "native-window", symbol: "rectangle.on.rectangle", title: local("Native demo window", "原生演示窗口")),
       Action(id: "ui-lab", symbol: "square.grid.2x2", title: local("UI Lab (requires Vite)", "UI 样板间（需要 Vite）")),
       Action(id: "refresh", symbol: "arrow.clockwise", title: local("Refresh", "刷新")),
       Action(id: "diagnostics", symbol: "info.circle", title: local("Memory and history details", "内存与历史记录统计")),

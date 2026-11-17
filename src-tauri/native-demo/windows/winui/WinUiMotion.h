@@ -63,6 +63,37 @@ inline winrt::Microsoft::UI::Composition::SpringVector2NaturalMotionAnimation Se
 
 inline constexpr wchar_t FeedbackAnimationResource[] = L"VPaste.FeedbackAnimation";
 
+// The dedicated outer frame owns filter motion; inner cards retain elevation,
+// hover and native drag transforms. All ages use the same bounded batch stagger.
+inline bool AnimateResultItem(winrt::Microsoft::UI::Xaml::FrameworkElement const &element,
+                              std::size_t index, bool enabled = NativeAnimationsEnabled()) {
+    const auto key = winrt::box_value(L"VPaste.ResultAnimation");
+    if (const auto previous = element.Resources().TryLookup(key)) {
+        element.StopAnimation(previous.as<winrt::Microsoft::UI::Composition::ICompositionAnimationBase>());
+        element.Resources().Remove(key);
+    }
+    element.Translation({0, 0, 0});
+    if (!enabled || !element.IsLoaded()) return false;
+    const auto compositor = winrt::Microsoft::UI::Xaml::Media::CompositionTarget::GetCompositorForCurrentThread();
+    const auto tokens = MotionTokens();
+    const auto curve = tokens.GetNamedObject(L"easing").GetNamedArray(L"enter");
+    const auto easing = compositor.CreateCubicBezierEasingFunction(
+        {static_cast<float>(curve.GetNumberAt(0)), static_cast<float>(curve.GetNumberAt(1))},
+        {static_cast<float>(curve.GetNumberAt(2)), static_cast<float>(curve.GetNumberAt(3))});
+    const auto animation = compositor.CreateVector3KeyFrameAnimation();
+    animation.Target(L"Translation");
+    animation.InsertKeyFrame(0, {static_cast<float>(tokens.GetNamedObject(L"distance").GetNamedNumber(L"emphasis")), 0, 0});
+    animation.InsertKeyFrame(1, {0, 0, 0}, easing);
+    animation.Duration(std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
+        std::chrono::duration<double>{tokens.GetNamedObject(L"duration").GetNamedNumber(L"slow")}));
+    animation.DelayTime(std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
+        std::chrono::duration<double>{(index % 12) * tokens.GetNamedObject(L"stagger").GetNamedNumber(L"tight")}));
+    animation.DelayBehavior(winrt::Microsoft::UI::Composition::AnimationDelayBehavior::SetInitialValueBeforeDelay);
+    element.StartAnimation(animation);
+    element.Resources().Insert(key, animation);
+    return true;
+}
+
 inline void ResetFeedbackOpacity(winrt::Microsoft::UI::Xaml::FrameworkElement const &element) {
     if (!element || !element.IsLoaded()) return;
     const auto key = winrt::box_value(FeedbackAnimationResource);

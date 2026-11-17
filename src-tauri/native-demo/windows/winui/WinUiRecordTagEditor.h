@@ -18,7 +18,7 @@ public:
 
     void Show(winrt::Microsoft::UI::Xaml::FrameworkElement anchor, std::int64_t tagId,
               const std::wstring &name, const std::wstring &hash, bool english,
-              winrt::Microsoft::UI::Xaml::ElementTheme theme, bool confirmDelete = false,
+              winrt::Microsoft::UI::Xaml::ElementTheme theme,
               winrt::Microsoft::UI::Xaml::FrameworkElement owner = nullptr,
               std::function<void()> closed = {});
     void Receive(winrt::Windows::Data::Json::JsonObject const &response);

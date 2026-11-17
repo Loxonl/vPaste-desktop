@@ -8,6 +8,7 @@
 #include <string_view>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
+#include <winrt/Microsoft.UI.Xaml.Media.Animation.h>
 #include <winrt/Windows.Data.Json.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.UI.Xaml.Interop.h>
@@ -96,6 +97,9 @@ void SetNameEmojiLanguage(const Button &button, bool english) {
 
 Button NameEmojiButton(const TextBox &target, bool english) {
     Button button = NamedIconButton(Glyph(L"\uE76E"), english ? L"Choose name emoji" : L"选择名称表情");
+    ApplyStyle(button, L"VPaste.RoundToolbarButton");
+    button.Width(32); button.Height(32);
+    button.CornerRadius(UniformRadius(8));
     button.VerticalAlignment(VerticalAlignment::Bottom);
     button.Tag(winrt::box_value(english));
     Grid root; root.Width(256); root.RowSpacing(8);
@@ -117,6 +121,9 @@ Button NameEmojiButton(const TextBox &target, bool english) {
     itemStyle.Setters().Append(Setter{Control::HorizontalContentAlignmentProperty(), winrt::box_value(HorizontalAlignment::Center)});
     itemStyle.Setters().Append(Setter{Control::VerticalContentAlignmentProperty(), winrt::box_value(VerticalAlignment::Center)});
     grid.ItemContainerStyle(itemStyle);
+    // The compact palette is already revealed by its Flyout. GridView's
+    // staggered item entrance otherwise reveals these 112 choices late.
+    grid.ItemContainerTransitions(Media::Animation::TransitionCollection{});
     for (const auto &emoji : NameEmojiOptions()) grid.Items().Append(winrt::box_value(emoji));
     Grid::SetRow(grid, 1); root.Children().Append(grid);
     TextBlock error; ApplyStyle(error, L"VPaste.Secondary"); error.TextWrapping(TextWrapping::Wrap);
@@ -153,10 +160,7 @@ Button NameEmojiButton(const TextBox &target, bool english) {
     };
     clear.Click([choose](auto const &, auto const &) { choose(L""); });
     grid.ItemClick([choose](auto const &, auto const &args) { choose(std::wstring{winrt::unbox_value<winrt::hstring>(args.ClickedItem())}); });
-    flyout.Opening([weakTarget, weakRoot](auto const &, auto const &) {
-        if (const auto input = weakTarget.get()) if (const auto content = weakRoot.get()) content.RequestedTheme(input.ActualTheme());
-    });
-    flyout.Opened([weakTarget, weakButton, weakGrid, weakError, weakClear, weakRoot, applied](auto const &, auto const &) {
+    flyout.Opening([weakTarget, weakButton, weakGrid, weakError, weakClear, weakRoot, applied](auto const &, auto const &) {
         *applied = false;
         const auto input = weakTarget.get(); const auto owner = weakButton.get(); const auto options = weakGrid.get();
         if (!input || !owner || !options) return;
@@ -167,7 +171,9 @@ Button NameEmojiButton(const TextBox &target, bool english) {
         Automation::AutomationProperties::SetName(options, English(owner) ? L"Name emoji" : L"名称表情");
         options.SelectedItem(selected.empty() ? nullptr : winrt::box_value(selected));
         if (!selected.empty()) options.ScrollIntoView(options.SelectedItem());
-        options.Focus(FocusState::Programmatic);
+    });
+    flyout.Opened([weakGrid](auto const &, auto const &) {
+        if (const auto options = weakGrid.get()) options.Focus(FocusState::Programmatic);
     });
     flyout.Closed([weakTarget, applied](auto const &, auto const &) {
         if (*applied) if (const auto input = weakTarget.get(); input && input.IsLoaded() && input.IsEnabled()) {

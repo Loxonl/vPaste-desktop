@@ -84,11 +84,11 @@ and accessibility rather than a different file-manager layout.
 | Categories and tags | `SelectorBar` in a horizontal `ScrollViewer`; the pinned template is centered in the 48-DIP header and its internal pill is replaced by one shared composition underline. Add follows the final tab. Tag/filter editors open above their anchor using unconstrained native `Flyout`. |
 | Cards | `ListView` with horizontal `ItemsStackPanel`; details are loaded for realized containers. A 2-DIP selection/focus outline sits 2 DIP outside the 14-DIP rounded card, in an unclipped sibling with its own gutter. Selection maps through list item indices rather than casting the visual content to a card border; contrast themes keep system focus and selection visuals. |
 | Menus and confirmations | Native `MenuFlyout`, `ComboBox` and `ContentDialog` retain their templates, dismissal, keyboard behavior and default shadows. Do not add a second shadow behind them. |
-| Elevation | DWM owns the dock, queue and reader window shadows. `WinUiAppearance.h` owns small inline `ThemeShadow` elevations for cards, header, tag chips and toolbar controls; contrast mode removes decorative shadows. |
+| Elevation | DWM owns the dock, queue and reader window shadows. `WinUiAppearance.h` owns small inline `ThemeShadow` elevations for cards, header and toolbar controls; contrast mode removes decorative shadows. The clipped record-tag track does not own a second shadow. |
 | Auto-hide | External deactivation schedules a delayed recheck. Reopening, internal focus, editors, dialogs, drag, preview pinning and existing hide suppression protect the panel from stale blur events. |
-| Queue | The existing Rust queue remains authoritative; the separate non-activating native window keeps paste focus on the target app. Its toolbar toggle and multi-selection actions remain separate. |
+| Queue | The existing Rust queue remains authoritative; the separate non-activating native window keeps paste focus on the target app. Its toolbar toggle and multi-selection actions remain separate. Centered title/count, Reverse/More, separator rows and bottom Undo follow the reference hierarchy. Native OLE sorting with an insertion line, always-visible Remove and InfoBar errors remain documented differences from WebView. |
 | Settings | The existing WebView settings page remains in use and is destroyed on close. It is not part of this native UI migration. |
-| First run | A temporary `/native-onboarding` auxiliary page reuses the shipping tutorial without mounting the main clipboard WebView. It is centered over the bottom-docked panel area on the panel's monitor, stays within the display bounds, and retains saved filters, completion and the configured shortcut; completion or cancellation destroys the page. Cancellation does not mark onboarding complete. |
+| First run | A temporary transparent `/native-onboarding` content host reuses the shipping tutorial over the native panel's actual history area, without its own guide card or taskbar entry and without mounting the main clipboard WebView. The retained dock owns its position and visibility. Saved filters, completion and shortcut practice remain shared; completion or cancellation destroys the host and restores native input. Cancellation does not mark onboarding complete. |
 
 The shell parity regression runs real controls on the WinUI STA with synthetic
 records and no user database. Native rendering snapshots cannot prove DWM
@@ -96,7 +96,7 @@ shadows, acrylic, IME composition or external-app focus transitions; verify
 those on an interactive Windows desktop, including mixed DPI. Keep visual
 checks local and do not add hosted screenshot jobs for this workstream.
 
-The header remains 48 DIPs high with 28-DIP circular actions and explicit 16-DIP
+The header remains 48 DIPs high with 32-DIP circular actions and explicit 16-DIP
 glyphs. Native tab labels use 14 DIPs (the React baseline is 14.5), a 5-DIP
 icon/text gap and at most 128 DIPs for custom tabs. Full names remain accessible
 through tooltips and automation names. Keep Windows text scaling enabled; do
@@ -250,6 +250,56 @@ formal release workflow. Testing this package is not publication authorization.
 
 ## Resource measurement
 
+Selection/focus changes update selection chrome only. They must not reapply the
+whole panel theme or reconstruct unrelated file SVGs. Keep file presentation
+identity while its data and effective theme are unchanged; explicit new detail
+responses and real theme changes still update it. An unchanged `set_theme`
+message on summon is a no-op, not a second initial-render pass. The native shell
+regression checks child identity, card-request counts, real theme changes and
+explicit detail replacement. Its replay of the former 36-card focus restyle is
+a component benchmark, not an end-to-end summon or Release-memory result.
+
+Batch visible local verification. Run source/unit checks, builds and read-only
+resource sampling silently during implementation. Announce one final interval
+for mapped native/actual-App tests; do not repeatedly open test windows after
+each edit, inject desktop input into the user's session, or automatically
+restart ordinary Debug afterward. Any repeated visible runs needed to correct
+a failing test stay within that announced interval. Keep physical smoothness,
+mouse/keyboard focus, DPI and live external-App behavior explicitly manual.
+
+Filter and record-tag context deletion use the panel-owned confirmation dialog,
+with the reference's type-specific description. Do not construct an editor or
+query source apps for a deletion. Cancel/hide/history reset retire confirmation;
+only a primary result with current ownership sends a write. Pending writes block
+duplicate tab deletes, surface errors, and refresh authoritative lists even if
+the panel was hidden. Neither editing form contains a Delete action.
+
+Tab captions and card/source labels do not need duplicate hover text. Preserve
+accessible names/help, shortcut hints for assistive technology, the native
+pointer-over/pressed states, keyboard focus and useful icon-command/error
+tooltips. Card record tags are separate ordered pills in a non-interactive,
+clipped overlay. More than two tags use the shared marquee timing; hidden,
+unloaded and reduced-motion states stop the track.
+
+Card-only text previews use `AutoScrollCardPreview` and the shared
+`cardPreview` Motion tokens for delayed automatic scrolling and the bottom
+pause/reset/restart cycle. The viewport cannot receive pointer or keyboard
+scrolling. Focus/hover starts the overflowing preview; inactivity, hiding,
+unloading and disabled Windows animation stop/reset it. Full readers keep
+their existing interactive scrolling. The main panel rejects its own card
+drops while suppressing that target's drag adorners; external data providers,
+target negotiation and tab/queue sorting remain separate.
+
+Native developer tools use the same Debug plus exact `--dev-mode` gate as
+WebView. Eight independent buttons precede the eye toggle: Windows tutorial,
+Mac tutorial, language preview, theme preview, Test Room, memory monitor, native
+demo and UI Lab. The group starts expanded; ordinary dev and Release hide it.
+Language/theme previews last only for the session and never save configuration;
+real configuration events retire the preview. Windows and macOS reuse the same
+Debug tutorial builder and isolated draft. UI Lab stays Vite-only and opens in
+the browser; native-debug assets include tutorial/Test Room/memory routes while
+production excludes them. No main WebView is created for a developer action.
+
 The Debug-only memory-profile path initializes the selected native renderer
 before requesting its first show. It must not create the main WebView as a
 fallback for a WinUI measurement. The existing explicitly marked temporary
@@ -294,3 +344,85 @@ does not activate the queue/input interceptor or paste to another App. Successfu
 queue mutations are covered separately by the Rust database and actual-XAML
 regressions. It neither starts nor stops vPaste and does not substitute for
 physical keyboard, external-app focus or DPI checks.
+
+Native migration regressions must exercise the real projection and presentation
+boundary. Lightweight card payloads omit drag HTML even when stored rich content
+exists. Determine the native Rich badge from render/stored-format presence; do
+not enable drag expansion just to populate a chip. Tutorial readiness registers
+its visibility listener; the owned host emits `native-onboarding-shown` after
+mapping, so hidden initialization cannot consume the welcome animation.
+
+Reader handoff preserves the current physical rectangle across native/shared
+renderers, then interpolates to the accepted content's size. Keep the old
+renderer mapped until the replacement is ready. Pending image decode must not
+retarget the accepted resize; commit the new content and geometry together.
+Bound native window callbacks:
+WinRT exceptions must be logged and must never unwind across Win32's callback
+ABI. Focus restoration schedules ordinary XAML layout rather than forcing
+`UpdateLayout` during focus/preview callbacks.
+
+For settings consumers and the distinction between source/native/actual-App
+evidence and physical acceptance, use the
+[configuration inventory](../testing/windows-winui-settings-parity.md) and
+[scenario matrix](../testing/windows-winui-acceptance-matrix.md). The tray keeps
+the shipping React WebView menu in WinUI mode too. On Windows it is prepared
+hidden and hidden/reused after dismissal, avoiding a cold WebView creation at
+each right-click; its React layout and actions are unchanged. Settings remains
+on-demand and is still destroyed on close. Its Windows title-bar drag now uses
+WebView2 non-client CSS caption regions with no competing JS/IPC drag handler.
+The manual packed-coordinate move workaround did not pass the user's physical
+test and was removed. Other platforms retain their existing drag route.
+Drag formats must be declared synchronously before the
+WinUI core operation begins; asynchronous Rust preparation supplies their
+values and cancellation must release pending provider requests.
+
+File-preview eligibility is shared by React and WinUI: ordinary files such as
+MP4 remain type-icon presentations and no longer invoke Shell thumbnail/codecs.
+Image, text, PDF and multi-file paths retain their existing behavior. A single
+image File has the Image *visual header* while retaining File identity, category
+queries and native file drag semantics. The native reader exposes a system
+material around its opaque content canvas, with an opaque system-theme fallback;
+rich WebView rendering is preserved. A source icon without a dominant color
+uses the reference neutral gray header; an empty replacement clears any prior
+decoded source artwork. Do not infer an application identity from that generic
+fallback. See the scenario matrix for the separate
+unit/XAML/actual-App/manual evidence boundaries.
+
+### Material comparison: Files (2026-11-17)
+
+The main island already uses the SDK `DesktopAcrylicBackdrop`, attached to
+`DesktopWindowXamlSource.SystemBackdrop`. A supported backdrop makes the shared
+window canvas transparent; initialization failure uses the existing light/dark
+opaque canvas and contrast mode uses the system background. Content cards keep
+their readable surfaces. This is background material, not whole-window opacity.
+
+Files' `AppSystemBackdrop` supports Mica, Mica Alt, base Acrylic and Thin Acrylic.
+Its Thin Acrylic path explicitly chooses `DesktopAcrylicKind.Thin`; the light
+recipe uses tint opacity 0 and luminosity opacity 0.44, the dark recipe 0 and
+0.64, with separate fallback colors. It also updates input-active state from the
+window activation event. vPaste currently leaves the base Acrylic recipe and
+activation policy with the SDK. The user's local Files material selection was
+not inspected; source support alone does not prove which recipe they see.
+
+Translucency also depends on opaque foreground surfaces, wallpaper/other windows,
+activation, Windows transparency settings, battery saver and contrast mode.
+Therefore lowering the whole window's opacity would not reproduce Files and
+would also fade text. No material redesign is included in the queue/shortcut
+fix. A future comparison should hold backdrop content, theme, activation, DPI
+and foreground surfaces constant, comparing base and Thin Acrylic on the
+window background only; retain readable cards and system fallbacks.
+
+Primary references:
+- [Files AppSystemBackdrop at 754c991](https://github.com/files-community/Files/blob/754c99145e9cee89eb9005a7dd1d86a0705c08b8/src/Files.App/Helpers/UI/AppSystemBackdrop.cs)
+- [Microsoft Acrylic material](https://learn.microsoft.com/en-us/windows/apps/design/style/acrylic)
+- [Microsoft DesktopAcrylicBackdrop](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.media.desktopacrylicbackdrop)
+
+### Retired standalone sample
+
+The obsolete native sample command/FFI and its Win32/Swift demo windows have
+been removed. The `native-demo/windows/winui` directory still contains the real
+WinUI application and must not be deleted as sample cleanup. The real macOS
+Debug panel now compiles directly against `native-panel/NativePanelBridge.h`
+into `VPasteNativePanel`; its entry and focus guard remain independent. Debug
+keeps seven individual shared tools (the mac native-panel entry is additional),
+with the same Debug plus `--dev-mode` gate.

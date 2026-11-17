@@ -14,7 +14,7 @@ describe("WinUI complete native presentation", () => {
         contains(panel, "titleBlock.Children().Append(timeText)");
         contains(panel, 'ApplyStyle(row.type, contrast ? L"VPaste.ContrastCardTitle" : L"VPaste.CardTitle")');
         contains(panel, 'ApplyStyle(g_panel.searchButton, L"VPaste.RoundToolbarButton")');
-        contains(panel, "tagChip.Margin(Thickness{10, 44, 10, 0})");
+        contains(panel, "tagChip.Margin(Thickness{10, 38, 10, 0})");
     });
     it("keeps only the shipping header and the two tag-creation entries", () => {
         const panel = native("WinUiPanel.cpp");
@@ -93,14 +93,14 @@ describe("WinUI complete native presentation", () => {
         }
         contains(cleanup, "g_panel.queueWindow.reset();");
         expect(panel.includes("TryEnqueue([completion]() -> winrt::fire_and_forget")).toBe(false);
-        contains(panel, "RunNativePresentationRegression(completion)");
+        contains(panel, "RunNativePresentationRegression(completion, files)");
     });
 
     it("finishes management context and feedback with native primitives", () => {
         const queue = native("WinUiQueueView.cpp");
         const tags = native("WinUiTagManager.cpp");
         contains(queue, "TypeLabel(item.itemType, english)");
-        contains(queue, "std::to_wstring(index + 1)");
+        contains(queue, 'GridLength{34, GridUnitType::Pixel}');
         contains(queue, "InfoBar feedback");
         contains(tags, "InfoBar feedback");
         contains(tags, "TextBlock count");

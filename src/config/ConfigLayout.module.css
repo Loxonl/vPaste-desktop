@@ -40,6 +40,15 @@
   height: 74px;
 }
 
+/* Wry enables WebView2 non-client regions. Let Windows own the entire gesture
+   so a delayed JS/IPC callback cannot start another modal move after release. */
+.nativeWindowsSurface .dragRegion,
+.nativeWindowsSurface .sidebarDragRegion,
+.nativeWindowsSurface .contentTitleBar {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
 .windowControls {
   position: absolute;
   top: 10px;

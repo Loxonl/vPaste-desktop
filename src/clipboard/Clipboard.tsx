@@ -1971,12 +1971,6 @@ export default function Clipboard() {
             });
     };
 
-    const openNativeWindow = () => {
-        if (!import.meta.env.DEV || !developerMode) return;
-        void invoke("open_native_demo_window")
-            .catch(e => error(`Failed to open native window: ${e}`));
-    };
-
     const publishMemoryPreview = (language: string, theme: ResolvedTheme) => {
         if (!import.meta.env.DEV || !developerMode) return;
         void emitTo("devMemory", "dev-memory-open", { languageCode: language, themePreview: theme })
@@ -2206,7 +2200,6 @@ export default function Clipboard() {
                     onOpenUiLab={openUiLab}
                     onOpenTestRoom={openTestRoom}
                     onOpenMemoryMonitor={openMemoryMonitor}
-                    onOpenNativeWindow={openNativeWindow}
                     onOpenNativePanel={openNativePanel}
                     onOpenSettings={tutorialActive ? blockTutorialNavigation : openConfigWindow}
                     updateReadyVersion={updateEntryVisible(updateState) ? updateState.availableVersion || "" : null}

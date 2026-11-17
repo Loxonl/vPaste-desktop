@@ -113,6 +113,69 @@ fn settings_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
         .or_else(|| app.primary_monitor().ok().flatten())
 }
 
+#[cfg(target_os = "windows")]
+type SettingsDisplayStamp = (isize, [i32; 8], u32);
+
+#[cfg(target_os = "windows")]
+fn display_notification_changed(
+    previous: &mut Option<SettingsDisplayStamp>,
+    next: SettingsDisplayStamp,
+) -> bool {
+    previous.replace(next) != Some(next)
+}
+
+/// Settings only needs a new size recommendation after its display changes,
+/// not a WebView IPC round trip for every pixel of a native window drag.
+pub(crate) fn settings_display_changed(window: &tauri::Window) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use std::cell::RefCell;
+        use windows::Win32::{
+            Foundation::HWND,
+            Graphics::Gdi::{
+                GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+            },
+        };
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn GetDpiForWindow(window: HWND) -> u32;
+        }
+        thread_local! {
+            static LAST: RefCell<Option<SettingsDisplayStamp>> = const { RefCell::new(None) };
+        }
+        let Ok(handle) = window.hwnd() else {
+            return false;
+        };
+        let handle = HWND(handle.0 as isize);
+        // SAFETY: read-only snapshots of the event's live process-owned HWND.
+        let stamp = unsafe {
+            let monitor = MonitorFromWindow(handle, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+                return false;
+            }
+            let m = info.rcMonitor;
+            let w = info.rcWork;
+            (
+                handle.0,
+                [
+                    m.left, m.top, m.right, m.bottom, w.left, w.top, w.right, w.bottom,
+                ],
+                GetDpiForWindow(handle),
+            )
+        };
+        LAST.with(|last| display_notification_changed(&mut last.borrow_mut(), stamp))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        true
+    }
+}
+
 static PERCENT: AtomicU8 = AtomicU8::new(100);
 static PREVIEWING: AtomicBool = AtomicBool::new(false);
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(0);
@@ -460,6 +523,30 @@ pub async fn finish_clipboard_size_preview(
 #[cfg(test)]
 mod tests {
     use super::{recommended_size, PanelSize};
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn settings_drag_only_notifies_when_display_metrics_change() {
+        use super::display_notification_changed;
+        let first = (1, [0, 0, 1920, 1080, 0, 0, 1920, 1040], 96);
+        let mut last = None;
+        let count = (0..80)
+            .filter(|_| display_notification_changed(&mut last, first))
+            .count();
+        assert_eq!(
+            count, 1,
+            "a same-monitor drag must not enqueue 80 WebView evaluations"
+        );
+        for changed in [
+            (1, [-2560, 0, 0, 1440, -2560, 0, 0, 1400], 144),
+            (1, [-2560, 0, 0, 1440, -2560, 0, 0, 1360], 144),
+            (1, [-2560, 0, 0, 1440, -2560, 0, 0, 1360], 192),
+            (2, [-2560, 0, 0, 1440, -2560, 0, 0, 1360], 192),
+        ] {
+            assert!(display_notification_changed(&mut last, changed));
+            assert!(!display_notification_changed(&mut last, changed));
+        }
+    }
 
     #[test]
     fn configurations_without_an_override_follow_the_screen_and_manual_sizes_are_preserved() {

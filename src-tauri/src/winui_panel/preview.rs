@@ -199,9 +199,9 @@ pub(crate) fn reader_cursor_inside() -> bool {
 pub(crate) fn focus_reader() {
     super::send_response(0, "nativeReaderFocus", Ok(serde_json::json!({})));
 }
-pub(crate) fn retire_reader(shared_request: u64) -> Option<bool> {
-    // A native reservation takes this lock too. Validate the shared commit and
-    // enqueue its hide before a newer native begin can be published.
+pub(crate) fn reader_handoff(shared_request: u64) -> Option<(bool, Option<RECT>)> {
+    // Snapshot focus without hiding the old content. Retirement happens only
+    // after the shared renderer has successfully shown its ready replacement.
     let _pending = crate::PREVIEW_PENDING
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -209,8 +209,16 @@ pub(crate) fn retire_reader(shared_request: u64) -> Option<bool> {
         return None;
     }
     let foreground = super::reader::foreground();
-    super::reader::retire();
-    Some(foreground)
+    Some((foreground, super::reader::visible_rect()))
+}
+
+pub(crate) fn retire_reader(shared_request: u64) {
+    let _pending = crate::PREVIEW_PENDING
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if crate::PREVIEW_REQUESTS.current(shared_request) {
+        super::reader::retire();
+    }
 }
 
 pub(crate) fn pinned() {
@@ -392,7 +400,7 @@ pub(super) async fn show(
     }
     match body {
         Ok(Some(body)) => {
-            super::reader::show(body, request, mode);
+            super::reader::show(&app, body, request, mode);
             return Ok(serde_json::Value::Null);
         }
         Ok(None) => {}

@@ -5796,6 +5796,24 @@ mod tests {
 
         assert!(!item_matches_filter(&item, &file_filter));
         assert!(item_matches_filter(&item, &text_filter));
+
+        // The shipping query categorizes by stored identity, independently
+        // of the single-image File card's visual header.
+        let image_filter = SearchFilter {
+            item_type: Some("Image".into()),
+            ..Default::default()
+        };
+        let image_file = Item {
+            item_type: ItemType::File,
+            content: r#"["photo.png"]"#.into(),
+            ..item
+        };
+        assert!(item_matches_filter(&image_file, &file_filter));
+        assert!(!item_matches_filter(&image_file, &image_filter));
+        let (_, image_params) =
+            build_filter_query(&image_filter, i64::MAX as u64, i64::MAX as u64, 36);
+        assert!(image_params.contains(&Value::Text("Image".into())));
+        assert!(!image_params.contains(&Value::Text("File".into())));
     }
 }
 

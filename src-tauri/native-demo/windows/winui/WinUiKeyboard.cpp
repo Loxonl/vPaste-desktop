@@ -75,7 +75,7 @@ MainKeyResult ResolveMainKey(PanelBehavior const &behavior, MainKeyInput const &
     if (input.key == VK_MENU && !input.control && !input.meta) return {behavior.quickInput ? Action::ShowHints : Action::Ignore};
     if (input.control && !input.alt && !input.meta && input.key == VK_TAB)
         return {input.shift ? Action::PreviousCategory : Action::NextCategory};
-    if (input.area != InputArea::Other && behavior.quickInput && input.alt && !input.control && !input.meta) {
+    if (behavior.quickInput && input.alt && !input.control && !input.meta) {
         if (input.key == 'A') return {Action::QuickAll};
         if (input.key == 'F') return {Action::QuickFavorite};
         int index = -1;

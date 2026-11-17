@@ -2,10 +2,10 @@
 
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use windows::Win32::{
-    Foundation::HWND,
-    UI::WindowsAndMessaging::{GetForegroundWindow, IsChild, IsWindowVisible},
+    Foundation::{HWND, RECT},
+    UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect, IsChild, IsWindowVisible},
 };
 
 static EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -127,7 +127,19 @@ pub(super) fn begin(request: u64) {
     super::send_response(0, "nativeReaderBegin", Ok(json!({"generation":request})));
 }
 
-pub(super) fn show(mut body: Value, request: u64, mode: crate::PreviewMode) {
+pub(super) fn show(
+    app: &tauri::AppHandle,
+    mut body: Value,
+    request: u64,
+    mode: crate::PreviewMode,
+) {
+    // Snapshot only the handle before taking the pending lock. The owning
+    // native STA reads its bounds at content commit, after any image decoding.
+    let handoff_window = app
+        .get_webview_window("clipboardPreview")
+        .and_then(|window| window.hwnd().ok())
+        .map(|hwnd| HWND(hwnd.0 as isize))
+        .filter(|hwnd| unsafe { IsWindowVisible(*hwnd).as_bool() });
     // The same lock serializes reservations and closure. A worker that loses
     // its generation cannot overwrite the newer renderer or its ready callback.
     let mut pending = crate::PREVIEW_PENDING
@@ -144,6 +156,9 @@ pub(super) fn show(mut body: Value, request: u64, mode: crate::PreviewMode) {
     }
     NATIVE.store(request, Ordering::Release);
     body["generation"] = json!(request);
+    if let Some(window) = handoff_window {
+        body["handoffWindow"] = json!(window.0 as usize);
+    }
     let rect = &body["rect"];
     let cursor_inside = crate::cursor_physical_position().is_some_and(|point| {
         let (x, y) = (f64::from(point.x), f64::from(point.y));
@@ -197,6 +212,13 @@ fn window() -> Option<HWND> {
 
 pub(super) fn visible() -> bool {
     window().is_some()
+}
+
+pub(super) fn visible_rect() -> Option<RECT> {
+    let window = window()?;
+    let mut bounds = RECT::default();
+    unsafe { GetWindowRect(window, &mut bounds) }.ok()?;
+    Some(bounds)
 }
 
 pub(super) fn foreground() -> bool {

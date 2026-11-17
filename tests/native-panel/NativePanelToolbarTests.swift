@@ -8,7 +8,7 @@ final class NativePanelToolbarTests: XCTestCase {
     let tools = PanelDeveloperTools(scale: 1, chinese: false)
     XCTAssertEqual(Set(tools.actions.map { $0.id }), Set([
       "tutorial-mac", "language", "theme", "test-room", "memory",
-      "native-panel", "native-window", "ui-lab", "refresh", "diagnostics",
+      "native-panel", "ui-lab", "refresh", "diagnostics",
     ]))
     var received: [String] = []
     tools.onAction = { received.append($0) }
@@ -33,7 +33,7 @@ final class NativePanelToolbarTests: XCTestCase {
     view.frame = NSRect(x: 0, y: 0, width: PanelDeveloperTools.fullWidth, height: 32)
     view.layoutSubtreeIfNeeded()
     let buttons = view.subviews.flatMap { [$0] + $0.subviews }.compactMap { $0 as? NSButton }
-    XCTAssertEqual(buttons.count, 12)
+    XCTAssertEqual(buttons.count, 11)
     XCTAssertTrue(buttons.allSatisfy { !$0.acceptsFirstResponder }, "DEV buttons must not join Tab focus navigation")
   }
 

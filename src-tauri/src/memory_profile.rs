@@ -481,6 +481,16 @@ fn prepare() -> Result<(), String> {
     .map_err(|error| error.to_string())
 }
 
+fn record_startup_memory(phase: &str) {
+    if let Ok(Some(memory)) = crate::dev_memory::read_memory(std::process::id()) {
+        log::info!(
+            "Isolated startup memory: phase={phase} privateBytes={} residentBytes={}",
+            memory.accounted_bytes,
+            memory.resident_bytes
+        );
+    }
+}
+
 pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
     // The isolated startup returns before ordinary plugin initialization.
     // Keep frontend logging available for both renderer measurements.
@@ -497,12 +507,16 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory)
         .map_err(|error| error.to_string())?;
+    record_startup_memory("core-ready");
     crate::ensure_history_storage_dirs()?;
     crate::clipboard::db::try_init().map_err(|error| error.to_string())?;
+    record_startup_memory("history-open");
     crate::rebuild_current_search_index()?;
+    record_startup_memory("search-index-ready");
     #[cfg(all(target_os = "windows", feature = "winui"))]
     if crate::main_panel_mode::winui() {
         crate::winui_panel::initialize(app.clone())?;
+        record_startup_memory("winui-initialized");
         if std::env::args().any(|arg| arg == "--memory-profile-auxiliary-check") {
             let owner = app.clone();
             // A trusted control page for the local CDP regression. This branch

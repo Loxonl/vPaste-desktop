@@ -1,6 +1,8 @@
 #include <windows.h>
 #undef GetCurrentTime
 #include "WinUiCardContent.h"
+#include "WinUiAppearance.h"
+#include <winrt/Microsoft.UI.Text.h>
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -8,6 +10,8 @@
 #include <locale>
 #include <sstream>
 #include <winrt/Microsoft.UI.Xaml.Markup.h>
+#include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
+#include <winrt/Windows.Storage.Streams.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #ifdef _DEBUG
 #include "WinUiRichContent.h"
@@ -17,6 +21,74 @@ winrt::Windows::Foundation::IAsyncAction NextNativeFrame();
 
 namespace vpaste::winui {
 using namespace winrt::Microsoft::UI::Xaml::Documents;
+
+namespace {
+winrt::fire_and_forget LoadFileSvg(winrt::Microsoft::UI::Xaml::Media::Imaging::SvgImageSource source,
+    winrt::hstring svg) {
+    try {
+        winrt::Windows::Storage::Streams::InMemoryRandomAccessStream stream;
+        winrt::Windows::Storage::Streams::DataWriter writer{stream};
+        writer.WriteString(svg); co_await writer.StoreAsync(); writer.DetachStream(); stream.Seek(0);
+        const auto result = co_await source.SetSourceAsync(stream);
+        winrt::check_hresult(result == winrt::Microsoft::UI::Xaml::Media::Imaging::SvgImageSourceLoadStatus::Success ? S_OK : E_FAIL);
+    } catch (winrt::hresult_error const &error) { OutputDebugStringW(error.message().c_str()); }
+}
+winrt::fire_and_forget LoadTransparencyGrid(winrt::Microsoft::UI::Xaml::Media::Imaging::SvgImageSource source, bool dark) {
+    try {
+        std::wstring cells;
+        for (int y = 0; y < 256; y += 8) for (int x = (y / 8 % 2) * 8; x < 256; x += 16)
+            cells += L"M" + std::to_wstring(x) + L"," + std::to_wstring(y) + L"h8v8h-8z";
+        const auto svg = std::wstring{L"<svg xmlns='http://www.w3.org/2000/svg' width='256' height='256'><rect width='256' height='256' fill='"} +
+            (dark ? L"#505050" : L"#f2f2f2") + L"'/><path fill='" + (dark ? L"#3c3c3c" : L"#d8d8d8") +
+            L"' d='" + cells + L"'/></svg>";
+        winrt::Windows::Storage::Streams::InMemoryRandomAccessStream stream;
+        winrt::Windows::Storage::Streams::DataWriter writer{stream};
+        writer.WriteString(svg); co_await writer.StoreAsync(); writer.DetachStream(); stream.Seek(0);
+        const auto status = co_await source.SetSourceAsync(stream);
+        winrt::check_hresult(status == winrt::Microsoft::UI::Xaml::Media::Imaging::SvgImageSourceLoadStatus::Success ? S_OK : E_FAIL);
+    } catch (winrt::hresult_error const &error) { OutputDebugStringW(error.message().c_str()); }
+}
+}
+
+winrt::Microsoft::UI::Xaml::Controls::Grid FileTypePresentation(
+    winrt::Windows::Data::Json::JsonObject const &file, bool dark) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace winrt::Microsoft::UI::Xaml::Controls;
+    // Same canvas, icon and badge dimensions as FileTypePresentation.module.css.
+    Grid presentation; presentation.Width(88); presentation.Height(64);
+    const auto icon = file.GetNamedObject(dark ? L"dark" : L"light");
+    presentation.Tag(winrt::box_value(icon.GetNamedString(L"name")));
+    Image image; image.Width(file.GetNamedBoolean(L"multiple", false) ? 76 : 64);
+    image.Height(file.GetNamedBoolean(L"multiple", false) ? 60 : 64); image.Stretch(Media::Stretch::Uniform);
+    Media::Imaging::SvgImageSource source; image.Source(source);
+    presentation.Children().Append(image); LoadFileSvg(source, icon.GetNamedString(L"svg"));
+    const auto label = file.GetNamedString(L"label", L"");
+    if (!label.empty()) {
+        Border badge; ApplyStyle(badge, L"VPaste.Surface");
+        badge.CornerRadius(UniformRadius(8)); badge.Padding(Thickness{5, 1, 5, 1});
+        badge.MaxWidth(82); badge.HorizontalAlignment(HorizontalAlignment::Center);
+        badge.VerticalAlignment(VerticalAlignment::Top); badge.Margin(Thickness{0, 58, 0, -20});
+        TextBlock text; ApplyStyle(text, L"VPaste.Secondary"); text.Text(label); text.FontSize(10);
+        text.LineHeight(13); text.FontWeight(winrt::Microsoft::UI::Text::FontWeights::Medium());
+        text.TextWrapping(TextWrapping::NoWrap); text.TextTrimming(TextTrimming::CharacterEllipsis);
+        badge.Child(text); presentation.Children().Append(badge);
+    }
+    return presentation;
+}
+
+winrt::Microsoft::UI::Xaml::Media::Brush TransparencyBrush(bool dark) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    // One bitmap per theme, owned by the XAML application rather than every
+    // card. Stretch=None keeps the reference 8 DIP squares at every image size.
+    const auto resources = Application::Current().Resources();
+    const auto key = winrt::box_value(dark ? L"VPaste.TransparencyDark" : L"VPaste.TransparencyLight");
+    if (resources.HasKey(key)) return resources.Lookup(key).as<Media::Brush>();
+    Media::Imaging::SvgImageSource source;
+    source.RasterizePixelWidth(256); source.RasterizePixelHeight(256);
+    Media::ImageBrush brush; brush.ImageSource(source); brush.Stretch(Media::Stretch::None);
+    resources.Insert(key, brush); LoadTransparencyGrid(source, dark);
+    return brush;
+}
 
 std::vector<TextRange> FindSearchRanges(std::wstring_view text, SearchTerms const &terms) {
     std::vector<TextRange> result;
@@ -89,7 +161,8 @@ std::wstring MediaCaption(winrt::Windows::Data::Json::JsonObject const &media,
 }
 #ifdef _DEBUG
 winrt::Windows::Foundation::IAsyncAction TestCardContentControls(
-    winrt::Microsoft::UI::Xaml::FrameworkElement host, std::uint32_t &stage) {
+    winrt::Microsoft::UI::Xaml::FrameworkElement host, std::uint32_t &stage,
+    winrt::Windows::Data::Json::JsonArray files) {
     using namespace winrt::Microsoft::UI::Xaml;
     using namespace winrt::Microsoft::UI::Xaml::Controls;
     using namespace winrt::Windows::Data::Json;
@@ -141,6 +214,52 @@ winrt::Windows::Foundation::IAsyncAction TestCardContentControls(
     }
     HighlightText(plain, {});
     winrt::check_hresult(plain.TextHighlighters().Size() == 0 && plain.Text() == L"😀 HELLO a+b" ? S_OK : E_FAIL);
+    stage = 171;
+    for (const bool dark : {false, true}) {
+        Border swatch; swatch.Height(96); swatch.HorizontalAlignment(HorizontalAlignment::Left);
+        swatch.Background(TransparencyBrush(dark)); fixture.Child(swatch);
+        for (const auto width : {64, 160}) {
+            swatch.Width(width);
+            // The shared source must keep 8-DIP cells after another card size
+            // has caused its first decode, in both theme caches.
+            for (int frame = 0; frame < 6; ++frame) co_await NextNativeFrame();
+            Media::Imaging::RenderTargetBitmap bitmap;
+            co_await bitmap.RenderAsync(swatch, width, 96);
+            const auto buffer = co_await bitmap.GetPixelsAsync();
+            winrt::com_array<std::uint8_t> pixels(buffer.Length());
+            winrt::Windows::Storage::Streams::DataReader::FromBuffer(buffer).ReadBytes(pixels);
+            int transitions = 0;
+            for (int x = 1; x < width; ++x) {
+                const auto offset = (12 * width + x) * 4;
+                if (std::abs(static_cast<int>(pixels[offset]) - pixels[offset - 4]) > 10) ++transitions;
+            }
+            std::fprintf(stderr, "WinUI transparency grid: dark=%d width=%d transitions=%d\n", dark, width, transitions);
+            winrt::check_hresult(transitions >= width / 8 - 2 && transitions <= width / 8 + 1 ? S_OK : E_FAIL);
+        }
+    }
+    stage = 172;
+    // Use the real Rust-resolved, embedded library SVGs rather than testing a
+    // replacement font glyph or treating a nonempty source string as a decode.
+    for (const bool dark : {false, true}) for (auto const &value : files) {
+        const auto file = value.GetObject();
+        const auto presentation = FileTypePresentation(file, dark);
+        fixture.Child(presentation);
+        const auto image = presentation.Children().GetAt(0).as<Image>();
+        unsigned opaque = 0;
+        for (int frame = 0; frame < 20 && opaque < 100; ++frame) {
+            co_await NextNativeFrame();
+            Media::Imaging::RenderTargetBitmap bitmap;
+            co_await bitmap.RenderAsync(image, 88, 64);
+            const auto buffer = co_await bitmap.GetPixelsAsync();
+            winrt::com_array<std::uint8_t> pixels(buffer.Length());
+            winrt::Windows::Storage::Streams::DataReader::FromBuffer(buffer).ReadBytes(pixels);
+            opaque = 0;
+            for (std::size_t i = 3; i < pixels.size(); i += 4) if (pixels[i] > 128) ++opaque;
+        }
+        std::fprintf(stderr, "WinUI file SVG: dark=%d name=%ls opaque=%u\n", dark,
+            file.GetNamedObject(dark ? L"dark" : L"light").GetNamedString(L"name").c_str(), opaque);
+        winrt::check_hresult(opaque >= 100 && presentation.Width() == 88 && presentation.Height() == 64 ? S_OK : E_FAIL);
+    }
     fixture.Child(nullptr);
 }
 #endif

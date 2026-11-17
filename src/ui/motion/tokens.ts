@@ -9,6 +9,7 @@ export const motionTokens = sharedTokens as {
     distance: Record<"subtle" | "standard" | "emphasis", number>;
     stagger: { tight: number };
     continuous: { marquee: number };
+    cardPreview: typeof sharedTokens.cardPreview;
     spring: typeof sharedTokens.spring;
     easing: { enter: Bezier; exit: Bezier; standard: Bezier; linear: "linear" };
 };

@@ -65,6 +65,21 @@ inline void ApplyElevation(const winrt::Microsoft::UI::Xaml::UIElement &element,
     }
 }
 
+// Shipping clipboard file-stage colors (src/ui/tokens.css), with Windows
+// contrast themes retaining the system brushes instead of the product palette.
+inline void ApplyFileStage(winrt::Microsoft::UI::Xaml::Controls::Border const &stage,
+    bool dark, bool missing, bool image) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    if (HighContrastEnabled()) return;
+    const winrt::Windows::UI::Color background = missing
+        ? (dark ? winrt::Windows::UI::Color{204, 52, 38, 28} : winrt::Windows::UI::Color{242, 250, 241, 229})
+        : (dark ? winrt::Windows::UI::Color{184, 15, 18, 23} : winrt::Windows::UI::Color{255, 255, 255, 255});
+    stage.Background(image && !missing ? nullptr : Media::SolidColorBrush{background});
+    stage.BorderThickness(UniformThickness(image ? 0 : 1));
+    stage.BorderBrush(Media::SolidColorBrush{dark ? winrt::Windows::UI::Color{20, 255, 255, 255}
+        : winrt::Windows::UI::Color{15, 0, 0, 0}});
+}
+
 // Setters keep ThemeResource expressions alive on the actual element, including
 // an explicit app theme and Windows contrast themes. Do not cache resolved brushes.
 inline void InstallAppearanceResources() {
@@ -143,6 +158,9 @@ inline void InstallAppearanceResources() {
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="CornerRadius" Value="8"/>
           </Style>
+          <Style x:Key="VPaste.ReaderCanvas" TargetType="Grid">
+            <Setter Property="Background" Value="{ThemeResource ApplicationPageBackgroundThemeBrush}"/>
+          </Style>
           <Style x:Key="VPaste.SelectedSurface" TargetType="Border" BasedOn="{StaticResource VPaste.Surface}">
             <Setter Property="BorderBrush" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
             <Setter Property="BorderThickness" Value="2"/>
@@ -159,11 +177,6 @@ inline void InstallAppearanceResources() {
           <Style x:Key="VPaste.Inset" TargetType="Border">
             <Setter Property="Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
             <Setter Property="CornerRadius" Value="4"/>
-          </Style>
-          <Style x:Key="VPaste.QueueInsertion" TargetType="Border">
-            <Setter Property="Background" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
-            <Setter Property="Height" Value="2"/>
-            <Setter Property="IsHitTestVisible" Value="False"/>
           </Style>
           <Style x:Key="VPaste.Glyph" TargetType="FontIcon">
             <Setter Property="FontSize" Value="16"/>
@@ -183,9 +196,10 @@ inline void InstallAppearanceResources() {
             <Setter Property="BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}"/>
           </Style>
           <Style x:Key="VPaste.RoundToolbarCommand" TargetType="AppBarButton" BasedOn="{StaticResource DefaultAppBarButtonStyle}">
-            <Setter Property="Width" Value="36"/>
-            <Setter Property="Height" Value="40"/>
+            <Setter Property="Width" Value="28"/>
+            <Setter Property="Height" Value="28"/>
             <Setter Property="MinWidth" Value="0"/>
+            <Setter Property="MinHeight" Value="0"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="CornerRadius" Value="14"/>
             <Setter Property="Background" Value="{ThemeResource ControlFillColorDefaultBrush}"/>

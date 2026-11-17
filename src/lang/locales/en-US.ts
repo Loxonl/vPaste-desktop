@@ -542,7 +542,6 @@ const enUS: LanguagePack = {
         "tutorial.debug.testRoom": "Open test room",
         "tutorial.debug.nativePanel": "Open native main panel (macOS DEV)",
         "tutorial.debug.nativePanelLabel": "Native panel",
-        "tutorial.debug.nativeWindow": "Open native window experiment",
         "tutorial.debug.language": "Switch tutorial language",
         "tutorial.debug.theme.light": "Light theme preview",
         "tutorial.debug.theme.dark": "Dark theme preview",

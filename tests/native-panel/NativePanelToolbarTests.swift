@@ -462,6 +462,63 @@ final class NativePanelToolbarTests: XCTestCase {
   }
 
   @available(macOS 12.0, *)
+  func testTabViewportFitsNativeButtonsUntilTheAddButtonReachesItsLimit() throws {
+    _ = NSApplication.shared
+    for scale: CGFloat in [0.8, 0.9, 1] {
+      for chinese in [false, true] {
+        let toolbar = PanelToolbar(frame: NSRect(x: 0, y: 0, width: 1920, height: 48 * scale))
+        let window = NSWindow(contentRect: toolbar.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.contentView = toolbar
+        toolbar.configure(scale: scale, chinese: chinese, search: NSSearchField())
+        defer { toolbar.releaseContent(); window.contentView = nil }
+        func settle() {
+          toolbar.layoutSubtreeIfNeeded()
+          RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+          toolbar.layoutSubtreeIfNeeded()
+        }
+        settle()
+        let scroll = try XCTUnwrap(filterScroll(in: toolbar))
+        let control = try XCTUnwrap(descendants(of: toolbar).compactMap { $0 as? PanelFilterControl }.first)
+        let developer = try XCTUnwrap(descendants(of: toolbar).compactMap { $0 as? PanelDeveloperToolbar }.first)
+        func naturalWidth() -> CGFloat { control.frame.width + 4 * scale }
+        func limit() -> CGFloat {
+          developer.convert(developer.bounds, to: toolbar).minX
+            - scroll.convert(scroll.bounds, to: toolbar).minX - 54 * scale
+        }
+        XCTAssertEqual(scroll.frame.width, naturalWidth(), accuracy: 0.5,
+          "With few tabs, Add must follow the actual native button extent")
+        let fixedWidth = scroll.frame.width
+        toolbar.setTabs([PanelTab(id: "a", name: "📝 Text", label: "Text", record: false)])
+        settle()
+        XCTAssertGreaterThan(scroll.frame.width, fixedWidth)
+        XCTAssertEqual(scroll.frame.width, naturalWidth(), accuracy: 0.5)
+        let shortWidth = scroll.frame.width
+        toolbar.setTabs([PanelTab(id: "a", name: "📝 很长的标签 A much longer category", label: "Text", record: false)])
+        settle()
+        XCTAssertGreaterThan(scroll.frame.width, shortWidth, "Renaming must move Add using native fitting size")
+        XCTAssertEqual(scroll.frame.width, naturalWidth(), accuracy: 0.5)
+        toolbar.setTabs((0..<24).map {
+          PanelTab(id: "overflow-\($0)", name: "📌 标签 Overflow \($0)", label: "Text", record: false)
+        })
+        toolbar.setSelection(25)
+        settle()
+        XCTAssertEqual(scroll.frame.width, limit(), accuracy: 0.5, "Overflow must stop Add at its existing right limit")
+        XCTAssertGreaterThan(naturalWidth(), scroll.frame.width)
+        toolbar.beginSearch()
+        settle()
+        XCTAssertEqual(scroll.frame.width, limit(), accuracy: 0.5, "Search must preserve the right limit")
+        let selected = control.convert(try XCTUnwrap(control.buttonFrames.last), to: scroll.documentView)
+        XCTAssertTrue(scroll.documentVisibleRect.insetBy(dx: -1, dy: -1).contains(selected))
+        toolbar.endEmptySearch()
+        toolbar.setTabs([])
+        settle()
+        XCTAssertEqual(scroll.frame.width, fixedWidth, accuracy: 0.5, "Removing tabs must return Add to the last fixed tab")
+        XCTAssertEqual(scroll.documentVisibleRect.minX, 0, accuracy: 0.5, "Shrinking must clear the old overflow offset")
+      }
+    }
+  }
+
+  @available(macOS 12.0, *)
   func testSearchResizeKeepsTheLastNativeButtonVisible() throws {
     for scale: CGFloat in [0.8, 0.9, 1] {
       let state = PanelToolbarState(scale: scale, chinese: false, search: NSSearchField())

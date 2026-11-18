@@ -1131,3 +1131,42 @@ selection, tab identity and callback lifetimes, and the actual viewport bounds.
 It was run during implementation alongside macOS Debug builds and a typecheck
 with the glass SDK condition disabled. The final tint was checked in the real
 panel in both appearances. Older macOS runtime behavior was not tested.
+
+
+### Add button follows the tab extent
+
+Acceptance: on the macOS 12+ native toolbar, Add follows the actual AppKit
+button widths, including fixed and custom tabs, until it reaches the existing
+right limit before the DEV tools. Further tabs scroll inside that limit while
+Add remains visible. Adding, removing or renaming tabs and opening search must
+recompute the viewport; the three scales retain the existing toolbar height,
+glass, input bounds and drag/selection geometry.
+
+The viewport now reports its native content width after the SwiftUI update and
+caps its occupied width at the existing maximum. Superseded measurements and
+measurements from detached or closed controls are discarded. The macOS 11
+legacy toolbar retains its existing implementation.
+
+Verification on 2026-11-18: macOS 26.5.1 Debug build, production Swift and focused
+test-source typechecks with and without the Liquid Glass SDK flag, style
+architecture and diff checks passed. An isolated real native panel with 500
+synthetic history rows confirmed few-tab placement, growth after a tab refresh,
+the Add menu, overflow wheel scrolling with Add fixed, search expansion,
+shrinking after a scrolled overflow, and dismissal/reopen. No clipboard capture
+or paste was performed. Added coverage for English/Chinese labels, long-name
+renaming, growth, overflow, search, deletion and scroll-offset cleanup at
+0.8/0.9/1 scales is typechecked, not executed; local regression suites were
+not run as requested. Older macOS runtime behavior and physical drag sorting
+were not rechecked in this follow-up.
+
+### Add button glass hover
+
+On macOS 26 with the Liquid Glass SDK, the Add button uses SwiftUI's native
+`GlassButtonStyle` with a circular border shape so its hover feedback comes from
+the system. Existing cursor, disabled and accessibility behavior remains. Other
+toolbar buttons and older SDK/macOS fallbacks keep their existing style.
+
+Verification on 2026-11-18: macOS Debug build, `cargo check`, Swift typecheck
+without the Liquid Glass SDK condition, style architecture check and diff check
+passed. The existing native-panel process was left running, so hover appearance
+was not visually rechecked in this pass. Local regression suites were not run.

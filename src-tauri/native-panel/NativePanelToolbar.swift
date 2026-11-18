@@ -336,6 +336,7 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
 struct PanelToolbarView: View {
   @ObservedObject var state: PanelToolbarState
   @ObservedObject var tools: PanelDeveloperTools
+  @State private var filterContentWidth: CGFloat?
   @Environment(\.colorScheme) private var scheme
   var onSearch: (() -> Void)?
   private var dark: Bool { scheme == .dark }
@@ -356,7 +357,7 @@ struct PanelToolbarView: View {
       let left = pad + button + 15 * s + (state.searchOpen ? fieldWidth + 12 * s : 0)
       let tabsWidth = max(50 * s, developerX - developerWidth / 2 - left - 10 * s)
       let liquidGlass = PanelToolbarMaterial.liquidGlass
-      let viewportWidth = max(6 * s, tabsWidth - 44 * s)
+      let viewportWidth = min(filterContentWidth ?? .greatestFiniteMagnitude, max(6 * s, tabsWidth - 44 * s))
       ZStack(alignment: .topLeading) {
         if !liquidGlass {
           LinearGradient(
@@ -378,12 +379,13 @@ struct PanelToolbarView: View {
           .allowsHitTesting(state.searchOpen && !state.navigationLocked)
           .accessibilityHidden(!state.searchOpen)
           .position(x: pad + button + 7 * s + fieldWidth / 2, y: geometry.size.height / 2)
-        PanelFilterViewport(state: state, width: viewportWidth, height: geometry.size.height)
+        PanelFilterViewport(state: state, width: viewportWidth, height: geometry.size.height,
+          contentWidth: $filterContentWidth)
           .disabled(state.navigationLocked)
           .allowsHitTesting(!state.navigationLocked)
           .frame(width: viewportWidth, height: geometry.size.height)
           .position(x: left + viewportWidth / 2, y: geometry.size.height / 2)
-        icon("plus", state.local("Add tab", "添加标签")) { state.addTab() }
+        icon("plus", state.local("Add tab", "添加标签"), systemGlass: true) { state.addTab() }
           .disabled(!state.interactive)
           .position(x: left + viewportWidth + 22 * s, y: geometry.size.height / 2)
         PanelDeveloperToolsView(tools: tools, infoVisible: state.infoVisible)
@@ -401,9 +403,10 @@ struct PanelToolbarView: View {
     }
   }
   private func icon(_ symbol: String, _ label: String, active: Bool = false,
+    systemGlass: Bool = false,
     action: @escaping () -> Void) -> some View {
     PanelSwiftUIIcon(symbol: symbol, label: label, scale: state.scale,
-      dark: dark, active: active, action: action)
+      dark: dark, active: active, systemGlass: systemGlass, action: action)
   }
 }
 
@@ -424,6 +427,7 @@ private struct PanelSwiftUIIcon: View {
   let scale: CGFloat
   let dark: Bool
   let active: Bool
+  let systemGlass: Bool
   let action: () -> Void
   private var symbolSize: CGFloat {
     // SF Symbols have no SVG viewBox padding. Match the visible glyph size of
@@ -434,14 +438,30 @@ private struct PanelSwiftUIIcon: View {
     default: return 16
     }
   }
-  var body: some View {
+  private var button: some View {
     Button(action: action) {
       Image(systemName: symbol).font(.system(size: symbolSize * scale))
         .frame(width: 28 * scale, height: 28 * scale)
     }
-    .buttonStyle(PanelIconStyle(scale: scale, dark: dark, active: active))
+  }
+  var body: some View {
+    Group {
+      #if VPASTE_LIQUID_GLASS_SDK
+        if systemGlass, #available(macOS 26.0, *) {
+          button
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .background(PanelButtonCursor().accessibilityHidden(true))
+        } else {
+          button.buttonStyle(PanelIconStyle(scale: scale, dark: dark, active: active))
+        }
+      #else
+        button.buttonStyle(PanelIconStyle(scale: scale, dark: dark, active: active))
+      #endif
+    }
     .focusable(false)
-    .help(label).accessibilityLabel(Text(label))
+    .help(label)
+    .accessibilityLabel(Text(label))
   }
 }
 
@@ -629,12 +649,14 @@ private struct PanelFilterViewport: NSViewRepresentable {
   @ObservedObject var state: PanelToolbarState
   let width: CGFloat
   let height: CGFloat
+  @Binding var contentWidth: CGFloat?
   final class Coordinator {
     var control: PanelFilterControl?
     var surface: PanelTabDragSurface?
     var selection: Int?
     var choices: [PanelFilterChoice] = []
     var width: CGFloat = 0
+    var contentWidth: CGFloat = 0
   }
   func makeCoordinator() -> Coordinator { Coordinator() }
   func makeNSView(context: Context) -> PanelScroll {
@@ -687,7 +709,19 @@ private struct PanelFilterViewport: NSViewRepresentable {
     }
     surface.interactionEnabled = !state.navigationLocked && !state.closed
     control.update()
-    surface.setFrameSize(NSSize(width: max(width, control.frame.width + 4 * state.scale), height: height))
+    let naturalWidth = control.frame.width + 4 * state.scale
+    if context.coordinator.contentWidth != naturalWidth {
+      context.coordinator.contentWidth = naturalWidth
+      let coordinator = context.coordinator
+      let measuredWidth = $contentWidth
+      // Report native fitting size after SwiftUI's update, discarding obsolete or detached measurements.
+      DispatchQueue.main.async { [weak coordinator, weak state] in
+        guard let coordinator, coordinator.control != nil, coordinator.contentWidth == naturalWidth,
+          let state, !state.closed else { return }
+        measuredWidth.wrappedValue = naturalWidth
+      }
+    }
+    surface.setFrameSize(NSSize(width: max(width, naturalWidth), height: height))
     control.setFrameOrigin(NSPoint(x: 2 * state.scale, y: (height - control.frame.height) / 2))
     if context.coordinator.selection != state.selected || context.coordinator.choices != state.choices
       || context.coordinator.width != width {

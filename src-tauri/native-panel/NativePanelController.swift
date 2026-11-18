@@ -266,7 +266,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     root.addSubview(backdrop)
     toolbar.configure(scale: config.scale, chinese: chinese, search: search)
     toolbar.translatesAutoresizingMaskIntoConstraints = false
-    surface.addSubview(toolbar)
+    // Keep control glass outside the window material while sharing its slide surface.
+    backdrop.addSubview(toolbar)
     search.placeholderString = local("Search clipboard history", "搜索剪贴板历史")
     search.delegate = self
     search.sendsSearchStringImmediately = true
@@ -592,6 +593,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   func dismiss(animated: Bool = true) {
     guard !closed else { return }
+    toolbar.cancelInteraction()
     if animated {
       guard !hiding else { return }
       hiding = true

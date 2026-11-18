@@ -1102,3 +1102,32 @@ preview showed the English prompt and full Add 0 items title within the glass
 bounds with clear side insets. No Auto Layout conflicts were logged; the preview
 was stopped. Digit-growth and Chinese/scale coverage is compiled but not run,
 following the no-local-regression instruction.
+
+### Native Liquid Glass tabs
+
+The macOS native main panel uses AppKit buttons for its filter and record tag
+tabs. On macOS 26 with a compatible SDK, the buttons use the system glass bezel
+and capsule shape. The selected button uses a denser neutral glass tint. The
+toolbar uses the full window's existing glass backdrop and fades the tab
+viewport edges to avoid cutting the native shadows into a visible rectangle.
+macOS 12–25 and older SDK builds use rounded AppKit buttons. macOS 11 keeps
+the legacy toolbar.
+
+The native button bounds drive hit testing, selection reveal and drag targets.
+The row retains single selection, keyboard navigation, wheel scrolling, right
+click and Control-click menus, and custom-tab reordering. The Add button stays
+outside the scrolling categories. Toolbar interaction is cancelled on dismissal
+or navigation lock so stale drags and handlers cannot act on rebuilt tabs.
+
+During implementation, the real native panel was exercised on macOS 26.5.1
+with an isolated fixture containing 500 synthetic clipboard items. Light and
+dark appearance, 27-category overflow, search narrowing, shortcut selection,
+context menus and a persisted drag reorder were verified. A striped backdrop
+made the clipping seam reproducible. The maximum sampled brightness jump at
+the viewport's left edge fell from 12 to 1 on a 0–255 scale.
+
+Focused Swift coverage verifies the native button hierarchy, accessible single
+selection, tab identity and callback lifetimes, and the actual viewport bounds.
+It was run during implementation alongside macOS Debug builds and a typecheck
+with the glass SDK condition disabled. The final tint was checked in the real
+panel in both appearances. Older macOS runtime behavior was not tested.

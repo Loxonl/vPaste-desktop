@@ -10,7 +10,7 @@ final class NativePanelRecordTagTabsTests: XCTestCase {
     PanelTab(id: "record:9", name: "Home", label: "__filter:{\"mode\":\"record-tag\"}", record: true),
   ]
 
-  func testDynamicTabChoicesShowTheStoredNameWithWebViewMinimumWidths() {
+  func testLegacyDynamicTabChoicesKeepStoredNamesAndMinimumWidths() {
     let record = PanelFilterChoice(title: "A", emoji: "", symbol: "", record: true)
     let filter = PanelFilterChoice(title: "A", emoji: "", symbol: "")
     XCTAssertFalse(record.isFixed)
@@ -77,14 +77,19 @@ final class NativePanelRecordTagTabsTests: XCTestCase {
     XCTAssertNil(host.onAddTab)
   }
 
-  func testFilterStripReservesRoomForTheAddButton() {
-    let choices = [PanelFilterChoice(title: "All", emoji: "", symbol: "square.grid.3x3.fill")]
-    for scale: CGFloat in [0.8, 1] {
-      // One 78px tab, then the WebView's 1px margin and 36px add button.
-      XCTAssertEqual(
-        PanelFilterIndicatorLayout.extent(choices: choices, selected: 0, scale: scale),
-        (78 + 1 + 36) * scale, accuracy: 0.01)
-    }
+  @available(macOS 12.0, *)
+  func testCreationActionNeverBecomesANativeFilterButton() {
+    let state = PanelToolbarState(scale: 1, chinese: false, search: NSSearchField())
+    state.setTabs(tabs)
+    let control = PanelFilterControl(state: state)
+    defer { control.releaseContent(); state.close() }
+    var adds = 0
+    state.onAddTab = { adds += 1 }
+    state.addTab()
+    XCTAssertEqual(adds, 1)
+    XCTAssertEqual(control.buttons.count, PanelFilterQuery.count(tabs: tabs))
+    XCTAssertEqual(control.buttons.map(\.state), [.on, .off, .off, .off])
+    XCTAssertFalse(control.buttons.contains { $0.title == "+" })
   }
 
   func testAddButtonOffersTheWebViewsTwoTagKinds() throws {

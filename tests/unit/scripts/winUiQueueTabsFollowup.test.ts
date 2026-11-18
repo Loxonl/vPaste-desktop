@@ -6,6 +6,17 @@ const read = (path: string) => readFileSync(join(process.cwd(), path), "utf8");
 const native = (file: string) => read(`src-tauri/native-demo/windows/winui/${file}`);
 
 describe("queue input and category shortcut contracts", () => {
+    it("exposes queue failure recovery to native automation with stable action names", () => {
+        const source = native("WinUiQueueView.cpp");
+        expect(source).toContain('L"queue-error-retry"');
+        expect(source).toContain('L"queue-error-remove"');
+        expect(source).toContain("TestQueueFailureRecoveryControls");
+    });
+
+    it("keeps native row-identity, reduced-motion and 100-item continuity regression coverage connected", () => {
+        expect(native("WinUiPanel.cpp")).toContain("TestQueueRowContinuityControls(fixture, currentStage)");
+    });
+
     it("uses captured pointer sorting rather than a system drag for an internal queue", () => {
         const source = native("WinUiQueueView.cpp");
         expect(source).toContain("CapturePointer(args.Pointer())");

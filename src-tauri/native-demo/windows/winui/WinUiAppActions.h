@@ -21,15 +21,16 @@ public:
     AppActions(AppActions const &) = delete;
     AppActions &operator=(AppActions const &) = delete;
 
-    winrt::Microsoft::UI::Xaml::Controls::AppBarButton ToolsButton() const;
-    std::vector<winrt::Microsoft::UI::Xaml::Controls::AppBarButton> DeveloperButtons() const;
-    winrt::Microsoft::UI::Xaml::Controls::AppBarButton UpdateButton() const;
+    winrt::Microsoft::UI::Xaml::Controls::Border DeveloperGroup() const;
+    winrt::Microsoft::UI::Xaml::Controls::Button ToolsButton() const;
+    winrt::Microsoft::UI::Xaml::Controls::Button UpdateButton() const;
     bool Receive(winrt::Windows::Data::Json::JsonObject const &response);
     bool ModalOpen() const;
     void SetLanguage(bool english);
     void SetTheme(winrt::Microsoft::UI::Xaml::ElementTheme theme);
     void Deactivate();
 #ifdef _DEBUG
+    std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> DeveloperButtons() const;
     winrt::Microsoft::UI::Xaml::Controls::ContentDialog TestDialog() const;
     void TestToolAction(std::wstring const &name);
 #endif

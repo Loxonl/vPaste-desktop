@@ -7,6 +7,11 @@ const native = (name: string) => read(`src-tauri/native-demo/windows/winui/${nam
 const panel = native("WinUiPanel.cpp");
 
 describe("reported native continuity parity", () => {
+    it("connects IME composition to the search debounce lifecycle", () => {
+        expect(panel).toContain("TextCompositionStarted(winrt::auto_revoke");
+        expect(panel).toContain("TextCompositionEnded(winrt::auto_revoke");
+        expect(panel).toContain("SearchCompositionChanged(");
+    });
     it("leaves dock visibility animation to the shipping dock controller", () => {
         expect(panel).toContain("DWMWA_TRANSITIONS_FORCEDISABLED");
     });

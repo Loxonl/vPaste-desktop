@@ -17,8 +17,8 @@ describe("WinUI shipping-layout parity", () => {
     it("keeps queue and settings on the right with the existing settings command", () => {
         const native = source("src-tauri/native-demo/windows/winui/WinUiPanel.cpp");
         const bridge = source("src-tauri/src/winui_panel.rs");
-        expect(native.includes("PrimaryCommands().Append(g_panel.queueOpen)")).toBe(true);
-        expect(native.includes("PrimaryCommands().Append(g_panel.settings)")).toBe(true);
+        expect(native.includes("g_panel.commands.Children().Append(g_panel.queueOpen)")).toBe(true);
+        expect(native.includes("g_panel.commands.Children().Append(g_panel.settings)")).toBe(true);
         expect(bridge.includes('"settings" => crate::open_config_window_from_source')).toBe(true);
     });
 

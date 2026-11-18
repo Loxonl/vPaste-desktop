@@ -61,6 +61,44 @@ body,
   box-shadow: var(--ui-preview-pin-active-shadow);
 }
 
+.preview-native-toolbar {
+  flex: 0 0 calc(var(--ui-control-height) + var(--ui-space-2));
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: var(--ui-space-1) var(--ui-space-2);
+}
+
+.preview-native-action {
+  width: var(--ui-control-height);
+  height: var(--ui-control-height);
+  border-radius: var(--ui-preview-native-action-radius);
+  padding: 0;
+  background: transparent;
+  color: var(--ui-preview-pin-text);
+}
+
+.preview-native-action:hover {
+  background: var(--ui-preview-pin-hover-surface);
+  color: var(--ui-preview-pin-hover-text);
+}
+
+.preview-native-action.pinned {
+  background: var(--ui-preview-pin-active-surface);
+  color: var(--ui-preview-pin-active-text);
+}
+
+.preview-native-action:active {
+  opacity: 0.8;
+}
+
+.preview-native-glyph {
+  font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+  font-size: var(--ui-space-4);
+  line-height: 1;
+}
+
 .preview-content {
   position: relative;
   flex: 1;

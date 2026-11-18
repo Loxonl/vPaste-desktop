@@ -71,6 +71,28 @@ pub(super) fn media_details(
     value
 }
 
+pub(super) async fn resolve_image_card(
+    preview: String,
+    original: String,
+    refresh: bool,
+    width: u32,
+) -> Result<(crate::media_resources::MediaResource, String), String> {
+    use crate::media_resources::{resolve_for_card_width, MediaIntent};
+    let path = if preview.is_empty() {
+        original.clone()
+    } else {
+        preview
+    };
+    match resolve_for_card_width(path.clone(), MediaIntent::Card, refresh, width).await {
+        Err(_) if !original.is_empty() && original != path => {
+            resolve_for_card_width(original.clone(), MediaIntent::Card, refresh, width)
+                .await
+                .map(|media| (media, original))
+        }
+        result => result.map(|media| (media, path)),
+    }
+}
+
 fn luminance(color: &ParsedColor) -> f64 {
     let linear = |value: u8| {
         let value = f64::from(value) / 255.0;
@@ -88,7 +110,7 @@ pub(super) fn rich_content(render: Option<&RichRenderPayload>) -> Value {
         return Value::Null;
     };
     // The converter serializes only strings, booleans and finite bounded sizes.
-    let mut blocks = serde_json::to_value(super::rich_text::convert(render))
+    let mut blocks = serde_json::to_value(super::rich_text::convert_for_windows(render))
         .expect("native rich projection is serializable");
     let mut dark = 0;
     let mut light = 0;
@@ -143,6 +165,63 @@ pub(super) fn rich_content(render: Option<&RichRenderPayload>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extensionless_gif_card_uses_a_static_first_frame_even_with_a_missing_preview() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(directory.path().to_string_lossy().into_owned());
+        let original = directory.path().join("0123456789abcdef");
+        let file = std::fs::File::create(&original).unwrap();
+        let mut encoder = image::codecs::gif::GifEncoder::new(file);
+        for rgb in [[255, 0, 0, 255], [0, 0, 255, 255]] {
+            encoder
+                .encode_frame(image::Frame::new(image::RgbaImage::from_pixel(
+                    4,
+                    4,
+                    image::Rgba(rgb),
+                )))
+                .unwrap();
+        }
+        drop(encoder);
+        let bytes = std::fs::read(&original).unwrap();
+        let path = original.to_str().unwrap();
+        let missing = directory.path().join("missing.png");
+        let previews = [path, "", missing.to_str().unwrap()];
+        for preview in previews {
+            let (media, loaded_path) = tauri::async_runtime::block_on(resolve_image_card(
+                preview.to_string(),
+                path.to_string(),
+                false,
+                240,
+            ))
+            .unwrap();
+            assert_eq!(loaded_path, path);
+            assert!(media.metadata.is_gif);
+            let thumbnail = std::fs::read(&media.asset_path).unwrap();
+            assert_eq!(
+                image::guess_format(&thumbnail).unwrap(),
+                image::ImageFormat::Png
+            );
+            assert_eq!(
+                image::open(&media.asset_path)
+                    .unwrap()
+                    .to_rgba8()
+                    .get_pixel(0, 0)
+                    .0,
+                [255, 0, 0, 255]
+            );
+        }
+        assert_eq!(std::fs::read(&original).unwrap(), bytes);
+        let animated = crate::media_resources::build(
+            path,
+            crate::media_resources::MediaIntent::Preview,
+            false,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(animated.asset_path).unwrap(), bytes);
+    }
 
     #[test]
     fn rich_badge_uses_the_actual_light_history_payload_without_generating_drag_html() {
@@ -261,6 +340,80 @@ mod tests {
             html: html.into(),
             resources: Vec::new(),
         }))
+    }
+
+    #[test]
+    fn fixed_rich_samples_preserve_office_web_code_and_merged_table_information() {
+        let office = project(include_str!("../../tests/fixtures/winui-rich/office.html"));
+        let runs = office["blocks"][0]["runs"].as_array().unwrap();
+        let title = runs
+            .iter()
+            .find(|r| r["text"] == "季度计划 Office😀")
+            .unwrap();
+        assert_eq!(title["foreground"], json!({"r":23,"g":54,"b":93,"a":255}));
+        assert_eq!(title["bold"], true);
+        assert_eq!(title["size"], 16.0);
+        let text: String = runs.iter().filter_map(|r| r["text"].as_str()).collect();
+        for marker in ["1. ", "2. ", "3. ", "  • "] {
+            assert!(text.contains(marker), "{text}");
+        }
+        assert!(text.contains("2. 评审\n  • 确认结论\n"), "{text}");
+        for html in [
+            "<style>.x{color:red}.x{position:absolute}</style><span class='x'>Color</span>",
+            "<style>.x{color:red}.x{color:}</style><span class='x'>Color</span>",
+        ] {
+            let repeated = project(html);
+            assert_eq!(
+                repeated["blocks"][0]["runs"][0]["foreground"],
+                json!({"r":255,"g":0,"b":0,"a":255})
+            );
+        }
+
+        let render = RichRenderPayload {
+            html: include_str!("../../tests/fixtures/winui-rich/webpage.html").into(),
+            resources: vec![RichImageResource {
+                token: "trusted-small".into(),
+                asset_path: r"C:\cache\small.png".into(),
+                revision: "fixture".into(),
+            }],
+        };
+        let original = render.html.clone();
+        let web = rich_content(Some(&render));
+        let runs = web["blocks"][0]["runs"].as_array().unwrap();
+        let inline = runs.iter().find(|r| r["text"] == "Inline wins").unwrap();
+        assert_eq!(inline["foreground"], json!({"r":17,"g":34,"b":51,"a":255}));
+        assert_eq!(inline["bold"], true);
+        assert!(runs
+            .iter()
+            .any(|r| r["text"] == "Revised" && r["strike"] == true && r["underline"] == true));
+        let image = runs
+            .iter()
+            .find(|r| r["image"] == r"C:\cache\small.png")
+            .unwrap();
+        assert_eq!(image["imageWidth"], 16.0);
+        assert_eq!(image["imageHeight"], 16.0);
+        assert!(!web.to_string().contains("untrusted.png"));
+        assert_eq!(render.html, original);
+        let code = project(include_str!("../../tests/fixtures/winui-rich/code.html"));
+        assert!(code["blocks"][0]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["mono"] == true
+                && r["text"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("\n    let label"))));
+        let table = project(include_str!("../../tests/fixtures/winui-rich/table.html"));
+        let merged = table["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["rows"].as_array().is_some_and(|rows| !rows.is_empty()))
+            .unwrap();
+        assert_eq!(merged["spans"][0][0]["columnSpan"], 2);
+        assert_eq!(merged["spans"][1][0]["rowSpan"], 2);
+        assert_eq!(merged["spans"][2][0]["column"], 1);
+        assert!(table.to_string().contains("表前") && table.to_string().contains("表后"));
     }
 
     #[test]

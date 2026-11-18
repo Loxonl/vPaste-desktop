@@ -17,3 +17,10 @@
   flex: 1;
   min-height: 0;
 }
+.embedded {
+  background: transparent;
+}
+.finishing {
+  visibility: hidden;
+  pointer-events: none;
+}

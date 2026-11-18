@@ -28,7 +28,7 @@ struct MainKeyInput {
 };
 enum class MainKeyAction {
     None, Ignore, ShowHints, FocusSearch, NextCategory, PreviousCategory,
-    NextCard, PreviousCard, PastePlain, SearchPaste, SearchPastePlain,
+    NextCard, PreviousCard, PasteCard, PastePlain, SearchPaste, SearchPastePlain,
     QuickAll, QuickFavorite, QuickItem, ClearSearch, CloseSearch,
     FirstCard, LastCard, NextPage, PreviousPage, OpenCardMenu, Dismiss,
 };

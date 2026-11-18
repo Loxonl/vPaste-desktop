@@ -2,6 +2,7 @@
 #undef GetCurrentTime
 #include "WinUiAppActions.h"
 #include "WinUiAppearance.h"
+#include "WinUiHeaderArtwork.h"
 #include <utility>
 #ifdef _DEBUG
 #include <algorithm>
@@ -24,8 +25,9 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
     Request request;
     Report report;
     std::function<void()> restoreFocus;
-    AppBarButton tools, update;
-    std::vector<AppBarButton> developerButtons;
+    Border developerGroup;
+    Button tools, update;
+    std::vector<Button> developerButtons;
     ContentDialog confirmation{nullptr};
     std::int64_t revision = -1;
     std::uint64_t generation = 0, pendingTool = 0, pendingInstall = 0;
@@ -42,6 +44,20 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
 
     void Initialize() {
         const auto weak = weak_from_this();
+        ApplyStyle(developerGroup, L"VPaste.Surface");
+        developerGroup.CornerRadius(UniformRadius(16));
+        developerGroup.Padding(UniformThickness(2));
+        developerGroup.VerticalAlignment(VerticalAlignment::Center);
+        StackPanel developerActions;
+        developerActions.Orientation(Orientation::Horizontal);
+        developerActions.Spacing(2);
+        developerGroup.Child(developerActions);
+        TextBlock badge;
+        badge.Text(L"DEV"); badge.FontSize(9); badge.FontWeight({800});
+        badge.Margin({7, 0, 7, 0}); badge.VerticalAlignment(VerticalAlignment::Center);
+        developerActions.Children().Append(badge);
+        ApplyStyle(tools, L"VPaste.RoundToolbarCommand");
+        tools.Content(HeaderIcon(HeaderArtwork::VisibilityOutlined));
         tools.Click([weak](auto const &, auto const &) {
             if (const auto self = weak.lock(); self && self->developer) {
                 self->toolsVisible = !self->toolsVisible; self->Refresh();
@@ -49,16 +65,22 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
         });
         for (const auto name : {L"tutorial-windows", L"tutorial-mac", L"language", L"theme",
                                L"testRoom", L"memory", L"uiLab"}) {
-            AppBarButton button;
-            ApplyStyle(button, L"VPaste.RoundToolbarCommand");
+            Button button;
+            ApplyStyle(button, L"VPaste.DeveloperToolbarButton");
             button.Tag(winrt::box_value(winrt::hstring{name}));
             button.Click([weak, name = std::wstring{name}](auto const &, auto const &) {
                 if (const auto self = weak.lock()) self->OpenTool(name);
             });
             developerButtons.push_back(button);
+            developerActions.Children().Append(button);
+            if (developerButtons.size() == 2 || developerButtons.size() == 4) {
+                Border divider; ApplyStyle(divider, L"VPaste.Surface");
+                divider.Width(1); divider.Height(14);
+                divider.Margin({2, 0, 2, 0}); divider.VerticalAlignment(VerticalAlignment::Center);
+                developerActions.Children().Append(divider);
+            }
         }
-        update.Icon(SymbolIcon{Symbol::Sync});
-        for (const auto &button : {tools, update}) ApplyStyle(button, L"VPaste.RoundToolbarCommand");
+        update.Content(HeaderIcon(HeaderArtwork::SyncRounded));
         ApplyStyle(update, L"VPaste.RoundToolbarUpdate");
         update.Click([weak](auto const &, auto const &) { if (const auto self = weak.lock()) self->Confirm(); });
         Localize();
@@ -66,19 +88,16 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
 
     void Refresh() {
         tools.Visibility(developer ? Visibility::Visible : Visibility::Collapsed);
-        tools.Icon(Glyph(toolsVisible ? L"\uE890" : L"\uED1A"));
-        tools.Label(toolsVisible ? Text(L"隐藏开发工具", L"Hide developer tools") : Text(L"显示开发工具", L"Show developer tools"));
+        NameIconButton(tools, toolsVisible ? Text(L"隐藏开发工具", L"Hide developer tools") : Text(L"显示开发工具", L"Show developer tools"));
+        developerGroup.Visibility(developer && toolsVisible ? Visibility::Visible : Visibility::Collapsed);
         for (const auto &button : developerButtons) {
             button.Visibility(developer && toolsVisible ? Visibility::Visible : Visibility::Collapsed);
             button.IsEnabled(!pendingTool);
         }
         update.Visibility(ready || installing ? Visibility::Visible : Visibility::Collapsed);
         update.IsEnabled(ready && !confirming && !closing && !pendingInstall);
-        update.Label(installing || pendingInstall ? Text(L"正在安装…", L"Installing…") : Text(L"重启更新", L"Restart to update"));
-        const auto label = update.Label() + (version.empty() ? L"" : L" · " + version);
-        ToolTipService::SetToolTip(update, winrt::box_value(label));
-        Automation::AutomationProperties::SetName(update, label);
-        Automation::AutomationProperties::SetName(tools, tools.Label());
+        const auto label = installing || pendingInstall ? Text(L"正在安装…", L"Installing…") : Text(L"重启更新", L"Restart to update");
+        NameIconButton(update, label + (version.empty() ? L"" : L" · " + version));
     }
 
     void LocalizeConfirmation() {
@@ -93,22 +112,31 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
 
     void Localize() {
         std::size_t index = 0;
-        const auto set = [&](const wchar_t *zh, const wchar_t *en, const wchar_t *glyph) {
+        const auto set = [&](const wchar_t *zh, const wchar_t *en, const wchar_t *path, const wchar_t *caption = nullptr) {
             const auto button = developerButtons[index++];
-            button.Label(Text(zh, en)); button.Icon(Glyph(glyph));
-            Automation::AutomationProperties::SetName(button, button.Label());
-            ToolTipService::SetToolTip(button, winrt::box_value(button.Label()));
+            NameIconButton(button, Text(zh, en));
+            if (caption) {
+                StackPanel content;
+                content.Orientation(Orientation::Horizontal); content.Spacing(3);
+                content.Children().Append(HeaderIcon(path, 13));
+                TextBlock text; text.Text(caption); text.FontSize(10); text.FontWeight({720});
+                text.VerticalAlignment(VerticalAlignment::Center);
+                content.Children().Append(text);
+                button.Width(42);
+                button.Content(content);
+            } else if (path) button.Content(HeaderIcon(path, 13));
+            else {
+                TextBlock text; text.Text(english ? L"EN" : L"中"); text.FontSize(10); text.FontWeight({720});
+                button.Content(text);
+            }
         };
-        set(L"Windows 使用引导", L"Windows tutorial", L"\uE782");
-        set(L"Mac 使用引导", L"Mac tutorial", L"\uE977");
-        set(L"切换预览语言", L"Switch preview language", L"\uF2B7");
-        // The current language remains visible, like the shipping 中 / EN button.
-        FontIcon language; language.Glyph(english ? L"EN" : L"中"); language.FontSize(11);
-        language.FontFamily(Media::FontFamily{L"Segoe UI"}); developerButtons[2].Icon(language);
-        set(L"切换预览主题", L"Switch preview theme", darkPreview ? L"\uE708" : L"\uE706");
-        set(L"测试间", L"Test room", L"\uE9D9");
-        set(L"内存监视器", L"Memory monitor", L"\uE950");
-        set(L"组件样板间（浏览器）", L"UI Lab (browser)", L"\uE774");
+        set(L"Windows 使用引导", L"Windows tutorial", HeaderArtwork::WindowOutlined, L"Win");
+        set(L"Mac 使用引导", L"Mac tutorial", HeaderArtwork::Apple, L"Mac");
+        set(L"切换预览语言", L"Switch preview language", nullptr);
+        set(L"切换预览主题", L"Switch preview theme", darkPreview ? HeaderArtwork::DarkModeRounded : HeaderArtwork::LightModeRounded);
+        set(L"测试间", L"Test room", HeaderArtwork::ScienceOutlined);
+        set(L"内存监视器", L"Memory monitor", HeaderArtwork::MemoryOutlined);
+        set(L"组件样板间（浏览器）", L"UI Lab (browser)", HeaderArtwork::DashboardCustomizeOutlined);
         LocalizeConfirmation(); Refresh();
     }
 
@@ -199,15 +227,16 @@ AppActions::AppActions(FrameworkElement owner, Request request, Report report,
     impl_->Initialize();
 }
 AppActions::~AppActions() { Deactivate(); }
-AppBarButton AppActions::ToolsButton() const { return impl_->tools; }
-std::vector<AppBarButton> AppActions::DeveloperButtons() const { return impl_->developerButtons; }
-AppBarButton AppActions::UpdateButton() const { return impl_->update; }
+Border AppActions::DeveloperGroup() const { return impl_->developerGroup; }
+Button AppActions::ToolsButton() const { return impl_->tools; }
+Button AppActions::UpdateButton() const { return impl_->update; }
 bool AppActions::Receive(JsonObject const &response) { return impl_->Receive(response); }
 bool AppActions::ModalOpen() const { return impl_->confirming || impl_->closing; }
 void AppActions::SetLanguage(bool english) { impl_->english = english; impl_->Localize(); }
 void AppActions::SetTheme(ElementTheme theme) { if (impl_->confirmation) impl_->confirmation.RequestedTheme(theme); }
 void AppActions::Deactivate() { impl_->CancelConfirmation(); }
 #ifdef _DEBUG
+std::vector<Button> AppActions::DeveloperButtons() const { return impl_->developerButtons; }
 ContentDialog AppActions::TestDialog() const { return impl_->confirmation; }
 void AppActions::TestToolAction(std::wstring const &name) { impl_->OpenTool(name); }
 
@@ -262,15 +291,15 @@ winrt::Windows::Foundation::IAsyncAction TestAppActionsControls(FrameworkElement
         if (failed) response.Insert(L"error", JsonValue::CreateStringValue(L"Synthetic retryable failure"));
         actions.Receive(response);
     };
-    CommandBar bar;
-    bar.DefaultLabelPosition(CommandBarDefaultLabelPosition::Collapsed);
-    for (const auto &button : actions.DeveloperButtons()) bar.PrimaryCommands().Append(button);
-    bar.PrimaryCommands().Append(actions.ToolsButton()); bar.PrimaryCommands().Append(actions.UpdateButton());
+    StackPanel bar;
+    bar.Orientation(Orientation::Horizontal);
+    bar.Children().Append(actions.DeveloperGroup());
+    bar.Children().Append(actions.ToolsButton()); bar.Children().Append(actions.UpdateButton());
     bar.HorizontalAlignment(HorizontalAlignment::Right); bar.VerticalAlignment(VerticalAlignment::Top);
     const auto host = owner.as<Grid>();
     host.Children().Append(bar);
     struct RemoveBar {
-        Grid host; CommandBar bar;
+        Grid host; StackPanel bar;
         ~RemoveBar() { std::uint32_t index = 0; if (host.Children().IndexOf(bar, index)) host.Children().RemoveAt(index); }
     } remove{host, bar};
     stage = 97;
@@ -282,7 +311,8 @@ winrt::Windows::Foundation::IAsyncAction TestAppActionsControls(FrameworkElement
     runtime(true); update(1, L"ready"); co_await NextNativeFrame();
     winrt::check_hresult(actions.ToolsButton().Visibility() == Visibility::Visible && actions.UpdateButton().IsEnabled() ? S_OK : E_FAIL);
     const auto tools = actions.DeveloperButtons();
-    winrt::check_hresult(tools.size() == 7 && !actions.ToolsButton().Flyout() && tools[5].Label() == L"内存监视器" ? S_OK : E_FAIL);
+    winrt::check_hresult(tools.size() == 7 && !actions.ToolsButton().Flyout() &&
+        Automation::AutomationProperties::GetName(tools[5]) == L"内存监视器" ? S_OK : E_FAIL);
     for (const auto &button : tools) winrt::check_hresult(button.Visibility() == Visibility::Visible ? S_OK : E_FAIL);
     Invoke(actions.ToolsButton()); co_await NextNativeFrame();
     for (const auto &button : tools) winrt::check_hresult(button.Visibility() == Visibility::Collapsed ? S_OK : E_FAIL);
@@ -305,8 +335,8 @@ winrt::Windows::Foundation::IAsyncAction TestAppActionsControls(FrameworkElement
     }
     stage = 100;
     actions.SetLanguage(true);
-    winrt::check_hresult(actions.ToolsButton().Label() == L"Hide developer tools" &&
-        tools[6].Label() == L"UI Lab (browser)" ? S_OK : E_FAIL);
+    winrt::check_hresult(Automation::AutomationProperties::GetName(actions.ToolsButton()) == L"Hide developer tools" &&
+        Automation::AutomationProperties::GetName(tools[6]) == L"UI Lab (browser)" ? S_OK : E_FAIL);
     Invoke(actions.UpdateButton()); co_await NextNativeFrame();
     winrt::check_hresult(actions.ModalOpen() && !actions.UpdateButton().IsEnabled() && actions.TestDialog().DefaultButton() == ContentDialogButton::Close &&
         actions.TestDialog().PrimaryButtonText() == L"Restart to update" ? S_OK : E_FAIL);

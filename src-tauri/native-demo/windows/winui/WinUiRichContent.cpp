@@ -50,6 +50,9 @@ RichTextBlock RichParagraph(const JsonArray &runs, bool darkCanvas, SearchTerms 
                 Image image;
                 image.MaxWidth(188);
                 image.MaxHeight(100);
+                const auto width = data.GetNamedNumber(L"imageWidth", 0), height = data.GetNamedNumber(L"imageHeight", 0);
+                if (width > 0) image.Width(std::clamp(width, 1.0, 188.0));
+                if (height > 0) image.Height(std::clamp(height, 1.0, 100.0));
                 image.Stretch(Stretch::Uniform);
                 Imaging::BitmapImage bitmap;
                 bitmap.DecodePixelWidth(384);
@@ -77,7 +80,10 @@ RichTextBlock RichParagraph(const JsonArray &runs, bool darkCanvas, SearchTerms 
             ? std::clamp(data.GetNamedNumber(L"size"), 10.0, 26.0) : 13);
         if (data.GetNamedBoolean(L"bold", false)) run.FontWeight(winrt::Windows::UI::Text::FontWeights::Bold());
         if (data.GetNamedBoolean(L"italic", false)) run.FontStyle(winrt::Windows::UI::Text::FontStyle::Italic);
-        if (data.GetNamedBoolean(L"underline", false)) run.TextDecorations(winrt::Windows::UI::Text::TextDecorations::Underline);
+        auto decorations = winrt::Windows::UI::Text::TextDecorations::None;
+        if (data.GetNamedBoolean(L"underline", false)) decorations |= winrt::Windows::UI::Text::TextDecorations::Underline;
+        if (data.GetNamedBoolean(L"strike", false)) decorations |= winrt::Windows::UI::Text::TextDecorations::Strikethrough;
+        run.TextDecorations(decorations);
         if (data.GetNamedBoolean(L"mono", false)) run.FontFamily(FontFamily{L"Consolas"});
         const auto foreground = data.GetNamedValue(L"foreground", nullptr);
         if (foreground && foreground.ValueType() == JsonValueType::Object) run.Foreground(ColorBrush(foreground.GetObject()));
@@ -122,8 +128,15 @@ ScrollViewer RenderRichContent(const JsonArray &blocks, bool darkCanvas, SearchT
         const auto rows = data.GetNamedArray(L"rows");
         if (!rows.Size()) continue;
         Grid table;
+        const auto spans = data.GetNamedArray(L"spans", JsonArray{});
         std::uint32_t columns = 0;
-        for (const auto &row : rows) columns = std::max(columns, row.GetArray().Size());
+        for (std::uint32_t row = 0; row < rows.Size(); ++row) {
+            columns = std::max(columns, rows.GetArrayAt(row).Size());
+            if (row < spans.Size()) for (const auto &spanValue : spans.GetArrayAt(row)) {
+                const auto cell = spanValue.GetObject();
+                columns = std::max(columns, static_cast<std::uint32_t>(std::clamp(cell.GetNamedNumber(L"column", 0) + cell.GetNamedNumber(L"columnSpan", 1), 1.0, 12.0)));
+            }
+        }
         table.MinWidth(columns * 80.0);
         for (std::uint32_t column = 0; column < columns; ++column) table.ColumnDefinitions().Append(ColumnDefinition{});
         for (std::uint32_t row = 0; row < rows.Size(); ++row) {
@@ -136,10 +149,18 @@ ScrollViewer RenderRichContent(const JsonArray &blocks, bool darkCanvas, SearchT
                 cell.Child(RichParagraph(cells.GetArrayAt(column), darkCanvas, terms));
                 cell.BorderBrush(SolidColorBrush{darkCanvas ? winrt::Windows::UI::Color{51, 255, 255, 255}
                     : winrt::Windows::UI::Color{35, 0, 0, 0}});
-                cell.BorderThickness(Thickness{1, 1, column + 1 == columns ? 1.0 : 0.0, row + 1 == rows.Size() ? 1.0 : 0.0});
                 cell.Padding(Thickness{6, 4, 6, 4});
                 Grid::SetRow(cell, row);
-                Grid::SetColumn(cell, column);
+                if (row < spans.Size() && column < spans.GetArrayAt(row).Size()) {
+                    const auto span = spans.GetArrayAt(row).GetObjectAt(column);
+                    const auto left = static_cast<int>(std::clamp(span.GetNamedNumber(L"column", column), 0.0, static_cast<double>(columns - 1)));
+                    Grid::SetColumn(cell, left);
+                    Grid::SetColumnSpan(cell, static_cast<int>(std::clamp(span.GetNamedNumber(L"columnSpan", 1), 1.0, static_cast<double>(columns - left))));
+                    Grid::SetRowSpan(cell, static_cast<int>(std::clamp(span.GetNamedNumber(L"rowSpan", 1), 1.0, static_cast<double>(rows.Size() - row))));
+                } else Grid::SetColumn(cell, column);
+                cell.BorderThickness(Thickness{1, 1,
+                    Grid::GetColumn(cell) + Grid::GetColumnSpan(cell) == columns ? 1.0 : 0.0,
+                    row + Grid::GetRowSpan(cell) == rows.Size() ? 1.0 : 0.0});
                 table.Children().Append(cell);
             }
         }

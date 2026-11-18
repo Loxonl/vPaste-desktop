@@ -7,20 +7,19 @@ const host = readFileSync(resolve("src-tauri/src/winui_panel.rs"), "utf8");
 
 describe("WinUI main panel presentation", () => {
     it("keeps the visible toolbar compact and removes the redundant overflow menu", () => {
-        expect(panel.includes("g_panel.commands = CommandBar()")).toBe(true);
-        expect(panel.includes("g_panel.commands.IsDynamicOverflowEnabled(false)")).toBe(true);
-        expect(panel.includes("CommandBarOverflowButtonVisibility::Collapsed")).toBe(true);
-        expect(panel.includes("g_panel.commands.SecondaryCommands().Size() == 0")).toBe(true);
+        expect(panel.includes("g_panel.commands = StackPanel()")).toBe(true);
+        expect(panel.includes("g_panel.commands.Spacing(8)")).toBe(true);
+        expect(panel.includes("g_panel.commands.SecondaryCommands()")).toBe(false);
         for (const name of ["queueOpen", "settings"]) {
-            expect(panel.includes(`PrimaryCommands().Append(g_panel.${name})`)).toBe(true);
+            expect(panel.includes(`g_panel.commands.Children().Append(g_panel.${name})`)).toBe(true);
         }
         for (const name of ["copy", "paste", "favorite", "manageTags", "queueSelect"]) {
-            expect(panel.includes(`SecondaryCommands().Append(g_panel.${name})`)).toBe(false);
+            expect(panel.includes(`g_panel.commands.Children().Append(g_panel.${name})`)).toBe(false);
         }
         // Match ClipboardHeader: queue, settings, then the conditional update.
         // Settings is the final ordinary command, not the final conditional one.
-        expect(panel).toMatch(/PrimaryCommands\(\)\.Append\(g_panel\.queueOpen\);[\s\S]*?PrimaryCommands\(\)\.Append\(g_panel\.settings\);\s*g_panel\.commands\.PrimaryCommands\(\)\.Append\(g_panel\.appActions->UpdateButton\(\)\);/);
-        expect(panel).not.toContain("PrimaryCommands().Append(g_panel.queueAdd)");
+        expect(panel).toMatch(/Children\(\)\.Append\(g_panel\.queueOpen\);[\s\S]*?Children\(\)\.Append\(g_panel\.settings\);\s*g_panel\.commands\.Children\(\)\.Append\(g_panel\.appActions->UpdateButton\(\)\);/);
+        expect(panel).not.toContain("g_panel.commands.Children().Append(g_panel.queueAdd)");
         expect(panel).toContain("selectionActions.Children().Append(g_panel.queueAdd)");
         expect(panel).toContain("selectionActions.Children().Append(g_panel.cancelSelection)");
         expect(panel).toContain("addMenu.Items().Append(addFilter)");

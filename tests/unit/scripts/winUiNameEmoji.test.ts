@@ -3,6 +3,11 @@ import { describe, expect, it } from "vitest";
 import { NAME_PREFIX_EMOJIS, applyNameEmoji, selectedNameEmoji } from "../../../src/clipboard/nameEmoji";
 
 describe("shared native name emoji catalog", () => {
+    it("uses the shared compact emoji density without changing its native GridView", () => {
+        const picker = readFileSync("src-tauri/native-demo/windows/winui/WinUiNameEmoji.cpp", "utf8");
+        expect(picker).toContain('ItemWidth="28" ItemHeight="28"');
+        expect(picker).toContain('FontSize="16"');
+    });
     it("retains the shipping catalog and prefix semantics", () => {
         const catalog: string[] = JSON.parse(readFileSync("src/clipboard/name-prefix-emojis.json", "utf8"));
         expect(catalog).toEqual(NAME_PREFIX_EMOJIS);

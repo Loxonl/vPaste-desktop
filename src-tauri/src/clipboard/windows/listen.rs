@@ -143,6 +143,7 @@ struct ClipboardSnapshot {
     sequence: u32,
     context: Option<clipboard::CaptureContext>,
     app_source: AppSource,
+    ownerless_foreground_exe: Option<PathBuf>,
     text: Option<String>,
     html: Option<Vec<u8>>,
     rtf: Option<Vec<u8>>,
@@ -169,14 +170,20 @@ impl ClipboardSnapshot {
         let (Some(current), Some(previous)) = (self.context, earlier.context) else {
             return false;
         };
+        let same_source = self.app_source.name == earlier.app_source.name
+            && self.app_source.exe_path == earlier.app_source.exe_path;
+        // If the plain phase had no clipboard owner, only a later, actual
+        // clipboard owner from the same executable may confirm the hint.
+        let owner_confirms_hint = earlier.app_source.name.is_empty()
+            && earlier.ownerless_foreground_exe.as_deref()
+                == Some(self.app_source.exe_path.as_path());
         earlier.is_plain_text_candidate()
             && self.text == earlier.text
             && (self.html.is_some() || self.rtf.is_some())
             && self.gif.is_none()
             && self.files.is_none()
             && !self.app_source.name.is_empty()
-            && self.app_source.name == earlier.app_source.name
-            && self.app_source.exe_path == earlier.app_source.exe_path
+            && (same_source || owner_confirms_hint)
             && current.queue_epoch == previous.queue_epoch
             && current
                 .time
@@ -538,7 +545,7 @@ fn read_snapshot(
         trace.event("sequence_changed_before_read", false, None);
         return Err("剪贴板已更新，重新读取最新内容".into());
     }
-    let app_source = clipboard_app_source().unwrap_or_default();
+    let (app_source, ownerless_foreground_exe) = clipboard_app_source();
     let internal_requested = should_skip_internal_clipboard_change();
     if has_internal_clipboard_marker() {
         trace.event("skip_internal_marker", false, None);
@@ -661,6 +668,7 @@ fn read_snapshot(
         sequence: clipboard_sequence_number(),
         context: Some(context),
         app_source,
+        ownerless_foreground_exe,
         text,
         html,
         rtf,
@@ -1526,10 +1534,9 @@ fn clipboard_sequence_number() -> u32 {
 }
 
 #[cfg(target_os = "windows")]
-fn clipboard_app_source() -> Option<AppSource> {
+fn clipboard_app_source() -> (AppSource, Option<PathBuf>) {
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStringExt;
-    use std::path::PathBuf;
 
     type Hwnd = *mut c_void;
     type Handle = *mut c_void;
@@ -1539,6 +1546,7 @@ fn clipboard_app_source() -> Option<AppSource> {
     #[link(name = "user32")]
     extern "system" {
         fn GetClipboardOwner() -> Hwnd;
+        fn GetForegroundWindow() -> Hwnd;
         fn GetWindowThreadProcessId(hwnd: Hwnd, process_id: *mut u32) -> u32;
     }
 
@@ -1554,11 +1562,14 @@ fn clipboard_app_source() -> Option<AppSource> {
         fn CloseHandle(handle: Handle) -> i32;
     }
 
-    // A background sync can write without owning a window. The foreground app
-    // is not evidence of who wrote that data and must not be recorded as its source.
-    let hwnd = unsafe { GetClipboardOwner() };
+    let owner = unsafe { GetClipboardOwner() };
+    let hwnd = if owner.is_null() {
+        unsafe { GetForegroundWindow() }
+    } else {
+        owner
+    };
     if hwnd.is_null() {
-        return None;
+        return Default::default();
     }
 
     let mut pid = 0_u32;
@@ -1566,12 +1577,12 @@ fn clipboard_app_source() -> Option<AppSource> {
         GetWindowThreadProcessId(hwnd, &mut pid as *mut u32);
     }
     if pid == 0 {
-        return None;
+        return Default::default();
     }
 
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if process.is_null() {
-        return None;
+        return Default::default();
     }
 
     let mut buffer = [0_u16; 1024];
@@ -1581,10 +1592,15 @@ fn clipboard_app_source() -> Option<AppSource> {
         CloseHandle(process);
     }
     if !ok || size == 0 {
-        return None;
+        return Default::default();
     }
 
     let exe_path = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..size as usize]));
+    if owner.is_null() {
+        // Foreground identity is not source attribution. Keep it separate so
+        // it never becomes a history source, icon, or privacy-filter identity.
+        return (AppSource::default(), Some(exe_path));
+    }
     let exe_key = exe_path.to_string_lossy().to_string();
     if let Some(cached) = APP_SOURCE_CACHE
         .get_or_init(|| Mutex::new(HashMap::new()))
@@ -1599,7 +1615,7 @@ fn clipboard_app_source() -> Option<AppSource> {
                 .cloned()
         })
     {
-        return Some(cached);
+        return (cached, None);
     }
 
     let app_name = exe_path
@@ -1607,11 +1623,16 @@ fn clipboard_app_source() -> Option<AppSource> {
         .and_then(|name| name.to_str())
         .map(clean_app_source)
         .filter(|name| !name.is_empty());
-    app_name.map(|name| AppSource {
-        icon_path: String::new(),
-        exe_path,
-        name,
-    })
+    (
+        app_name
+            .map(|name| AppSource {
+                icon_path: String::new(),
+                exe_path,
+                name,
+            })
+            .unwrap_or_default(),
+        None,
+    )
 }
 
 fn resolve_app_source_icon(source: &mut AppSource) {
@@ -1640,8 +1661,8 @@ fn resolve_app_source_icon(source: &mut AppSource) {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn clipboard_app_source() -> Option<AppSource> {
-    None
+fn clipboard_app_source() -> (AppSource, Option<PathBuf>) {
+    (AppSource::default(), None)
 }
 
 fn is_vpaste_app_source(name: &str) -> bool {
@@ -3281,6 +3302,12 @@ mod tests {
                 let mut snapshot =
                     qq_text_snapshot(number * 2 + u32::from(rich), &number.to_string(), rich);
                 snapshot.context.as_mut().unwrap().queue_epoch = Some(epoch);
+                // Sometimes the first Windows update has no owner, even though
+                // the next, rich update is actually owned by the active QQ app.
+                if !rich && number % 2 == 0 {
+                    snapshot.ownerless_foreground_exe =
+                        Some(std::mem::take(&mut snapshot.app_source).exe_path);
+                }
                 buffer_snapshot(snapshot, &sender, &bytes).unwrap();
             }
         }
@@ -3301,6 +3328,8 @@ mod tests {
         for (index, hash) in processed.iter().enumerate() {
             let item = clipboard::try_get_by_hash(hash).unwrap();
             assert_eq!(item.content, (index + 1).to_string());
+            assert_eq!(item.app_source, "QQ");
+            assert_eq!(item.time, 1000 + (index as u64 + 1) * 20);
             assert!(clipboard::rich_clipboard_meta(hash).is_some());
         }
         let count: usize = clipboard::db::db()
@@ -3311,6 +3340,37 @@ mod tests {
             "history must not retain the incomplete plain phase either"
         );
         assert_eq!(*bytes.lock().unwrap(), 0);
+
+        let mut unmatched = qq_text_snapshot(12, "separate ownerless copy", false);
+        unmatched.ownerless_foreground_exe =
+            Some(std::mem::take(&mut unmatched.app_source).exe_path);
+        let hash = parse_snapshot(&mut unmatched).unwrap().unwrap();
+        let item = clipboard::try_get_by_hash(&hash).unwrap();
+        assert!(
+            item.app_source.is_empty(),
+            "a hint alone must not label a record"
+        );
+    }
+
+    #[test]
+    fn ownerless_text_needs_a_followup_with_a_corroborating_clipboard_owner() {
+        let mut plain = qq_text_snapshot(1, "text", false);
+        plain.app_source = AppSource::default();
+        let rich = qq_text_snapshot(2, "text", true);
+        assert!(!rich.is_rich_completion_of(&plain));
+        plain.ownerless_foreground_exe = Some(PathBuf::from("Other.exe"));
+        assert!(!rich.is_rich_completion_of(&plain));
+        plain.ownerless_foreground_exe = Some(rich.app_source.exe_path.clone());
+        assert!(rich.is_rich_completion_of(&plain));
+        let mut mismatched_owned_plain = qq_text_snapshot(1, "text", false);
+        mismatched_owned_plain.app_source.name = "Other".into();
+        mismatched_owned_plain.app_source.exe_path = PathBuf::from("Other.exe");
+        mismatched_owned_plain.ownerless_foreground_exe = plain.ownerless_foreground_exe.clone();
+        assert!(!rich.is_rich_completion_of(&mismatched_owned_plain));
+        let mut unowned_rich = rich;
+        unowned_rich.ownerless_foreground_exe = plain.ownerless_foreground_exe.clone();
+        unowned_rich.app_source = AppSource::default();
+        assert!(!unowned_rich.is_rich_completion_of(&plain));
     }
 
     #[test]

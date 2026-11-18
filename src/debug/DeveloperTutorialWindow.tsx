@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { error } from "@tauri-apps/plugin-log";
@@ -9,10 +9,12 @@ import TutorialOverlay from "../clipboard/TutorialOverlay";
 import {
     buildTutorialFilterTabs,
     buildTutorialPermissions,
+    configuredTutorialTabs,
     createDefaultTutorialFilterTabs,
     updateTutorialFilterTabs,
     type TutorialPermissionStatus,
     type TutorialPlatform,
+    type TutorialFilterId,
 } from "../clipboard/clipboardTutorial";
 import { useLanguage } from "../lang";
 import { formatShortcutLabel } from "../shortcutDisplay";
@@ -26,6 +28,9 @@ type Preview = {
     languageCode: string;
     themePreview: ResolvedTheme;
     shortcut: string;
+    embedded?: boolean;
+    savedTabs?: unknown;
+    previewSession?: number;
 };
 
 // This preview leaves the real onboarding policy and user preferences alone.
@@ -38,8 +43,28 @@ export default function DeveloperTutorialWindow() {
     const [tabs, setTabs] = useState(() => createDefaultTutorialFilterTabs(t));
     const [permissions, setPermissions] = useState<TutorialPermissionStatus | null>(null);
     const [message, setMessage] = useState("");
+    const [shown, setShown] = useState(false);
+    const [finishing, setFinishing] = useState(false);
+    const activePreview = useRef<Preview | null>(null);
+    const draft = useRef(tabs);
+    const completing = useRef(false);
     const report = (reason: unknown) => setMessage(String(reason));
-    const close = () => { void invoke("close_dev_tutorial_window").catch(report); };
+    const close = async () => {
+        if (completing.current) return;
+        completing.current = true;
+        setFinishing(true);
+        try {
+            if (activePreview.current?.embedded) {
+                await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+            }
+            await invoke("close_dev_tutorial_window");
+        } catch (reason) {
+            setFinishing(false);
+            report(reason);
+        } finally {
+            completing.current = false;
+        }
+    };
 
     useEffect(() => {
         const unlisten = listen<Preview>("dev-tutorial-open", event => {
@@ -47,15 +72,26 @@ export default function DeveloperTutorialWindow() {
             if (!["windows", "mac"].includes(payload.platform)) return;
             setPreviewLanguageCode(payload.languageCode);
             setThemePreview(payload.themePreview);
+            activePreview.current = payload;
+            completing.current = false;
             setPreview(payload);
+            setShown(false);
+            setFinishing(false);
             setRun(value => value + 1);
-            setTabs(createDefaultTutorialFilterTabs(t));
+            draft.current = payload.embedded
+                ? configuredTutorialTabs(payload.savedTabs).tabs
+                : createDefaultTutorialFilterTabs(t);
+            setTabs(draft.current);
             setMessage("");
         });
-        const cancelReady = notifyAuxiliaryWindowReady([unlisten]);
+        const unlistenShown = listen("native-onboarding-shown", () => {
+            if (!completing.current) setShown(true);
+        });
+        const cancelReady = notifyAuxiliaryWindowReady([unlisten, unlistenShown]);
         return () => {
             cancelReady();
             void unlisten.then(remove => remove()).catch(reason => error(String(reason)));
+            void unlistenShown.then(remove => remove()).catch(reason => error(String(reason)));
         };
     }, [setPreviewLanguageCode]);
 
@@ -69,7 +105,7 @@ export default function DeveloperTutorialWindow() {
         refresh();
         window.addEventListener("focus", refresh);
         const onKey = (event: KeyboardEvent) => {
-            if (event.key === "Escape") void invoke("close_dev_tutorial_window").catch(report);
+            if (event.key === "Escape") void close();
         };
         window.addEventListener("keydown", onKey);
         return () => {
@@ -79,19 +115,32 @@ export default function DeveloperTutorialWindow() {
         };
     }, []);
 
-    return <main className={styles.window}>
-        <div className={styles.header}>
+    const toggleFilter = (id: TutorialFilterId, enabled: boolean) => {
+        const session = activePreview.current;
+        if (completing.current || !session) return;
+        const next = updateTutorialFilterTabs(draft.current, id, enabled, t);
+        draft.current = next;
+        setTabs(next);
+        if (session.embedded) {
+            void invoke("update_dev_tutorial_filters", { tabs: next, previewSession: session.previewSession })
+                .catch(reason => { if (activePreview.current === session) report(reason); });
+        }
+    };
+
+    return <main className={`${styles.window} ${preview?.embedded ? styles.embedded : ""} ${finishing ? styles.finishing : ""}`}
+        aria-hidden={finishing || undefined}>
+        {!preview?.embedded && <div className={styles.header}>
             <span>DEV · {preview?.platform === "windows" ? "Windows" : "Mac"}</span>
             <ToolbarIconButton label={t("common.close")} onClick={close}><CloseRoundedIcon /></ToolbarIconButton>
-        </div>
+        </div>}
         {message ? <Alert severity="error">{message}</Alert> : null}
         <div className={styles.content}>
-            {preview ? <TutorialOverlay key={run} t={t} logoSrc={appIcon}
+            {preview && (!preview.embedded || shown) ? <TutorialOverlay key={run} t={t} logoSrc={appIcon}
                 platform={preview.platform}
                 shortcutText={formatShortcutLabel(preview.shortcut, preview.platform === "mac")}
                 permissions={buildTutorialPermissions(permissions, t)}
                 filters={buildTutorialFilterTabs(tabs, t)}
-                onToggleFilter={(id, enabled) => setTabs(current => updateTutorialFilterTabs(current, id, enabled, t))}
+                onToggleFilter={toggleFilter}
                 onPermissionAction={async permission => {
                     try {
                         await invoke("open_onboarding_permission_window", {
@@ -99,7 +148,9 @@ export default function DeveloperTutorialWindow() {
                         });
                     } catch (reason) { report(reason); }
                 }}
-                onShortcutDemoAvailabilityChange={keepShortcutPolicy}
+                onShortcutDemoAvailabilityChange={preview.embedded ? enabled => {
+                    void invoke("set_onboarding_shortcut_demo_enabled", { enabled }).catch(report);
+                } : keepShortcutPolicy}
                 onComplete={close} /> : null}
         </div>
     </main>;

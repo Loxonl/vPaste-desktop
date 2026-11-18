@@ -46,4 +46,14 @@ describe("card, queue and developer reference parity", () => {
         expect(auxiliary).not.toMatch(/cfg\(all\(debug_assertions, target_os = "macos"\)\)\]\s*DevTutorial/);
         expect(rust("main.rs")).toContain("WindowKind::DevTutorial => return build_dev_tutorial_window(handle)");
     });
+    it("routes Debug guides through the real native content host without hiding or centering a new window", () => {
+        const tools = rust("winui_panel/app_actions.rs");
+        const tutorial = tools.slice(tools.indexOf("Tool::TutorialWindows | Tool::TutorialMac =>"), tools.indexOf("Tool::Memory =>"));
+        expect(tutorial).toContain("onboarding::open_preview");
+        expect(tutorial).not.toContain("hide_on_ui_thread");
+        expect(tutorial).not.toContain("center_window_on_monitor");
+        const onboarding = rust("winui_panel/onboarding.rs");
+        expect(onboarding.includes("set_tutorial_active(Some(&window), session)")).toBe(true);
+        expect(onboarding).toContain("pub(crate) fn close_preview");
+    });
 });

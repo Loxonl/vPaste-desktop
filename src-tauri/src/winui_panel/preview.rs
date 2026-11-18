@@ -10,6 +10,81 @@ static REQUESTS: crate::preview_motion::PreviewRequests =
     crate::preview_motion::PreviewRequests::new();
 static NAVIGATION_SOURCE: AtomicU64 = AtomicU64::new(0);
 
+pub(crate) fn install_escape_handler(window: &tauri::WebviewWindow) {
+    use tauri::Manager;
+    use webview2_com::{
+        AcceleratorKeyPressedEventHandler,
+        Microsoft::Web::WebView2::Win32::{
+            COREWEBVIEW2_KEY_EVENT_KIND, COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN,
+            COREWEBVIEW2_PHYSICAL_KEY_STATUS,
+        },
+    };
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyState, VK_CONTROL, VK_ESCAPE, VK_LWIN, VK_RWIN, VK_SHIFT,
+    };
+
+    let app = window.app_handle().clone();
+    let result = window.with_webview(move |view| {
+        let handler = AcceleratorKeyPressedEventHandler::create(Box::new(move |_, args| {
+            let Some(args) = args else { return Ok(()) };
+            if crate::WINUI_IMAGE_TEXT_PREVIEW.load(Ordering::SeqCst) {
+                return Ok(()); // The OCR editor owns its own input and IME.
+            }
+            // SAFETY: these event args are live and used on the controller's STA.
+            unsafe {
+                let mut kind = COREWEBVIEW2_KEY_EVENT_KIND::default();
+                let mut key = 0;
+                args.KeyEventKind(&mut kind)?;
+                args.VirtualKey(&mut key)?;
+                if kind != COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN
+                    || key != u32::from(VK_ESCAPE.0)
+                    || [VK_CONTROL, VK_SHIFT, VK_LWIN, VK_RWIN]
+                        .into_iter()
+                        .any(|modifier| GetKeyState(modifier.0.into()) < 0)
+                {
+                    return Ok(());
+                }
+                args.SetHandled(true)?;
+                let mut status = COREWEBVIEW2_PHYSICAL_KEY_STATUS::default();
+                args.PhysicalKeyStatus(&mut status)?;
+                if status.WasKeyDown.as_bool() {
+                    return Ok(());
+                }
+            }
+            // PDF's embedded viewer does not bubble keydown to the React shell.
+            // Leave WebView2's synchronous accelerator callback before closing it.
+            let generation = crate::PREVIEW_WINDOW_GENERATION.load(Ordering::SeqCst);
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) =
+                    crate::auxiliary_windows::on_main_thread(app.clone(), move || {
+                        if crate::PREVIEW_WINDOW_GENERATION.load(Ordering::SeqCst) == generation {
+                            crate::hide_preview_window(app)?;
+                        }
+                        Ok(())
+                    })
+                    .await
+                {
+                    log::warn!("Failed to close WinUI preview with Escape: {error}");
+                }
+            });
+            Ok(())
+        }));
+        // SAFETY: with_webview runs on the owning STA; the controller owns the
+        // callback until the auxiliary WebView is destroyed.
+        let mut token = 0;
+        if let Err(error) = unsafe {
+            view.controller()
+                .add_AcceleratorKeyPressed(&handler, &mut token)
+        } {
+            log::warn!("Failed to install WinUI preview Escape handler: {error}");
+        }
+    });
+    if let Err(error) = result {
+        log::warn!("Failed to reach WinUI preview WebView: {error}");
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Surface {
     pub(crate) bounds: ScreenBounds,
@@ -394,7 +469,7 @@ pub(super) async fn show(
     if !mode.allows(
         open(),
         crate::PREVIEW_HOVER.load(Ordering::SeqCst),
-        crate::PREVIEW_PINNED.load(Ordering::SeqCst),
+        crate::preview_protected_from_replacement(),
     ) {
         return Ok(serde_json::Value::Null);
     }

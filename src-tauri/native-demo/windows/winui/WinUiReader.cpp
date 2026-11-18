@@ -4,6 +4,7 @@
 #include "WinUiMotion.h"
 #include "WinUiGeometry.h"
 #include "WinUiRichContent.h"
+#include "WinUiCardContent.h"
 #include <dwmapi.h>
 #include <objbase.h>
 #include <algorithm>
@@ -31,7 +32,9 @@ winrt::Windows::Foundation::IAsyncAction NextNativeFrame();
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 #include <winrt/Windows.System.h>
+#include <winrt/Windows.Storage.Streams.h>
 #include <winrt/Windows.UI.h>
+#include <winrt/Windows.UI.Text.h>
 #include <winrt/Windows.UI.ViewManagement.h>
 
 namespace vpaste::winui {
@@ -52,6 +55,30 @@ TextBlock ReaderText(winrt::hstring const &text, double size = 14) {
     return block;
 }
 
+Canvas ReaderTransparencyMatte() {
+    Canvas matte; matte.IsHitTestVisible(false);
+    // Tile the shared 256-DIP source rather than stretching its 8-DIP cells or
+    // allocating another decoded image at every preview/window size.
+    const auto paint = [](Canvas const &canvas) {
+        RectangleGeometry clip; clip.Rect({0, 0, static_cast<float>(canvas.ActualWidth()), static_cast<float>(canvas.ActualHeight())});
+        canvas.Clip(clip);
+        const bool contrast = HighContrastEnabled(), dark = canvas.ActualTheme() == ElementTheme::Dark;
+        const auto columns = static_cast<int>(std::ceil(canvas.ActualWidth() / 256));
+        const auto rows = static_cast<int>(std::ceil(canvas.ActualHeight() / 256));
+        const auto key = winrt::to_hstring(columns) + L":" + winrt::to_hstring(rows) + (contrast ? L":contrast" : dark ? L":dark" : L":light");
+        if (canvas.Tag() && winrt::unbox_value<winrt::hstring>(canvas.Tag()) == key) return;
+        canvas.Tag(winrt::box_value(key)); canvas.Children().Clear();
+        if (contrast) return;
+        for (int y = 0; y < rows; ++y) for (int x = 0; x < columns; ++x) {
+            Border tile; tile.Width(256); tile.Height(256); tile.Background(TransparencyBrush(dark));
+            Canvas::SetLeft(tile, x * 256); Canvas::SetTop(tile, y * 256); canvas.Children().Append(tile);
+        }
+    };
+    matte.SizeChanged([paint](auto const &sender, auto const &) { paint(sender.as<Canvas>()); });
+    matte.ActualThemeChanged([paint](auto const &sender, auto const &) { paint(sender.as<Canvas>()); });
+    return matte;
+}
+
 }
 
 struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
@@ -65,7 +92,6 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
     FrameworkElement pending{nullptr}, displayed{nullptr}, outgoing{nullptr};
     winrt::Microsoft::UI::Composition::ScalarKeyFrameAnimation contentEnter{nullptr}, contentExit{nullptr};
     Controls::Primitives::ToggleButton pin{nullptr};
-    Button close{nullptr};
     DispatcherTimer loadTimeout{nullptr};
     std::jthread movement;
     std::atomic<bool> framePosted{false};
@@ -182,14 +208,17 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         root = Grid(); ApplyStyle(root, L"VPaste.ReaderCanvas");
         RowDefinition heading; heading.Height(GridLength{40, GridUnitType::Pixel});
         root.RowDefinitions().Append(heading); root.RowDefinitions().Append(RowDefinition{});
-        StackPanel actions; actions.Orientation(Orientation::Horizontal);
-        actions.HorizontalAlignment(HorizontalAlignment::Right); actions.Spacing(4);
-        actions.Margin(Thickness{8, 4, 8, 4});
         pin = Controls::Primitives::ToggleButton();
-        pin.Content(CompactSymbol(Symbol::Pin)); pin.Width(32); pin.Height(32); pin.Padding(Thickness{0});
-        close = NamedIconButton(SymbolIcon{Symbol::Cancel}, Text(L"关闭预览", L"Close preview"));
-        actions.Children().Append(pin); actions.Children().Append(close);
-        root.Children().Append(actions);
+        FontIcon pinGlyph;
+        pinGlyph.FontFamily(FontFamily{L"Segoe Fluent Icons, Segoe MDL2 Assets"});
+        pinGlyph.FontSize(CompactIconSize);
+        pin.Content(pinGlyph);
+        pin.Width(CompactActionSize); pin.Height(CompactActionSize); pin.Padding(Thickness{0});
+        pin.Margin(Thickness{8, 4, 8, 4}); pin.CornerRadius(UniformRadius(4));
+        pin.HorizontalAlignment(HorizontalAlignment::Right); pin.VerticalAlignment(VerticalAlignment::Center);
+        const auto transparent = SolidColorBrush{winrt::Windows::UI::Colors::Transparent()};
+        pin.Background(transparent); pin.BorderBrush(transparent);
+        root.Children().Append(pin);
         body = Grid(); body.Margin(Thickness{16, 0, 16, 16});
         // Keep the text/image canvas readable while the same outer reader
         // frame exposes a restrained system material around every content type.
@@ -206,7 +235,6 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
                 self->ApplyAppearance();
             }
         });
-        close.Click([weak](auto const &, auto const &) { if (auto self = weak.lock()) self->Send(L"nativeReaderClose"); });
         root.PointerEntered([weak](auto const &, auto const &) { if (auto self = weak.lock()) self->Send(L"nativeReaderEnter"); });
         root.PointerExited([weak](auto const &, auto const &) { if (auto self = weak.lock()) self->Send(L"nativeReaderLeave"); });
         root.PreviewKeyDown([weak](auto const &, auto const &args) {
@@ -249,9 +277,10 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         (void)DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
         SetWindowTextW(window, Text(L"vPaste — 预览", L"vPaste — Preview").c_str());
         Automation::AutomationProperties::SetName(contentFocus, Text(L"预览内容", L"Preview content"));
-        NameIconButton(close, Text(L"关闭预览", L"Close preview"));
-        const auto label = pin.IsChecked() && pin.IsChecked().Value()
-            ? Text(L"取消固定预览", L"Unpin preview") : Text(L"固定预览", L"Pin preview");
+        const auto pinned = pin.IsChecked() && pin.IsChecked().Value();
+        // Match the Segoe Pin and PinnedFill glyphs used in Preview.tsx.
+        pin.Content().as<FontIcon>().Glyph(pinned ? L"\uE842" : L"\uE718");
+        const auto label = pinned ? Text(L"取消固定", L"Unpin preview") : Text(L"固定预览", L"Pin preview");
         Automation::AutomationProperties::SetName(pin, label);
         ToolTipService::SetToolTip(pin, winrt::box_value(label));
     }
@@ -446,31 +475,54 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         const auto kind = data.GetNamedString(L"kind");
         Grid content;
         const auto caption = data.GetNamedString(L"caption", L"");
-        if (!caption.empty()) {
+        if (!caption.empty() && kind != L"files") {
             RowDefinition label; label.Height(GridLength{1, GridUnitType::Auto});
             const bool imageCaption = kind == L"image";
             content.RowDefinitions().Append(imageCaption ? RowDefinition{} : label);
             content.RowDefinitions().Append(imageCaption ? label : RowDefinition{});
             StackPanel description; description.Spacing(4);
             auto title = ReaderText(caption); ApplyStyle(title, L"VPaste.CompactTitle");
+            if (imageCaption) { title.FontSize(13); title.TextAlignment(TextAlignment::Center); }
             description.Children().Append(title);
             const auto detail = data.GetNamedString(L"detail", L"");
             if (!detail.empty()) {
                 auto path = ReaderText(detail, 12); ApplyStyle(path, L"VPaste.Secondary");
                 path.TextWrapping(TextWrapping::NoWrap); path.TextTrimming(TextTrimming::CharacterEllipsis);
+                if (imageCaption) path.TextAlignment(TextAlignment::Center);
                 ToolTipService::SetToolTip(path, winrt::box_value(detail)); description.Children().Append(path);
             }
-            description.Margin(imageCaption ? Thickness{0, 8, 0, 0} : Thickness{0, 0, 0, 8});
+            description.Margin(imageCaption ? Thickness{0, 12, 0, 0} : Thickness{0, 0, 0, 8});
             if (imageCaption) Grid::SetRow(description, 1);
             content.Children().Append(description);
         }
         if (kind == L"image") {
+            Grid stage, frame;
+            frame.HorizontalAlignment(HorizontalAlignment::Center); frame.VerticalAlignment(VerticalAlignment::Center);
+            frame.CornerRadius(UniformRadius(8));
+            if (data.GetNamedBoolean(L"checkerboard", true)) frame.Children().Append(ReaderTransparencyMatte());
             Image image; image.Stretch(Stretch::Uniform);
-            content.Children().Append(image);
+            frame.Children().Append(image); stage.Children().Append(frame); content.Children().Append(stage);
+            const auto natural = std::make_shared<winrt::Windows::Foundation::Size>(winrt::Windows::Foundation::Size{
+                static_cast<float>(data.GetNamedNumber(L"imageWidth", 0)), static_cast<float>(data.GetNamedNumber(L"imageHeight", 0))});
+            const auto fit = [natural, weakFrame = winrt::make_weak(frame)](Grid const &area) {
+                if (const auto target = weakFrame.get(); target && natural->Width > 0 && natural->Height > 0 &&
+                    area.ActualWidth() > 0 && area.ActualHeight() > 0) {
+                    const auto scale = std::min({1.0, area.ActualWidth() / natural->Width, area.ActualHeight() / natural->Height});
+                    target.Width(natural->Width * scale); target.Height(natural->Height * scale);
+                }
+            };
+            stage.SizeChanged([fit](auto const &sender, auto const &) { fit(sender.as<Grid>()); });
             pending = content; pending.Opacity(0); pending.IsHitTestVisible(false);
             body.Children().Append(pending);
             const auto weak = weak_from_this();
-            image.ImageOpened([weak, generation](auto const &, auto const &) { if (auto self = weak.lock()) self->Commit(generation); });
+            image.ImageOpened([weak, generation, natural, fit, weakStage = winrt::make_weak(stage)](auto const &sender, auto const &) {
+                if (const auto area = weakStage.get()) {
+                    const auto bitmap = sender.as<Image>().Source().as<Imaging::BitmapImage>();
+                    if (natural->Width <= 0 || natural->Height <= 0) *natural = {static_cast<float>(bitmap.PixelWidth()), static_cast<float>(bitmap.PixelHeight())};
+                    fit(area);
+                }
+                if (auto self = weak.lock()) self->Commit(generation);
+            });
             image.ImageFailed([weak, generation](auto const &, auto const &) { if (auto self = weak.lock()) self->ImageError(generation); });
             try {
                 Imaging::BitmapImage bitmap;
@@ -488,20 +540,41 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
             Border label; ApplyStyle(label, L"VPaste.Surface"); label.Padding(Thickness{12, 8, 12, 8});
             label.HorizontalAlignment(HorizontalAlignment::Center); label.VerticalAlignment(VerticalAlignment::Center);
             label.Child(ReaderText(data.GetNamedString(L"text"))); content.Children().Append(label);
+        } else if (kind == L"files") {
+            const auto file = data.GetNamedObject(L"file");
+            StackPanel info; info.MaxWidth(460); info.Padding(UniformThickness(28));
+            info.HorizontalAlignment(HorizontalAlignment::Center); info.VerticalAlignment(VerticalAlignment::Center);
+            auto icon = FileTypePresentation(file, root.ActualTheme() == ElementTheme::Dark, FilePresentationVariant::Preview);
+            icon.HorizontalAlignment(HorizontalAlignment::Center); icon.Margin(Thickness{0, 0, 0, 18});
+            info.Children().Append(icon);
+            auto name = ReaderText(caption.empty() ? Text(L"文件", L"File") : caption, 18);
+            name.FontWeight(winrt::Windows::UI::Text::FontWeights::SemiBold()); name.LineHeight(24);
+            name.TextAlignment(TextAlignment::Center); info.Children().Append(name);
+            auto path = ReaderText(file.GetNamedString(L"path"), 12); ApplyStyle(path, L"VPaste.Secondary");
+            path.LineHeight(18); path.TextAlignment(TextAlignment::Center); path.Margin(Thickness{0, 7, 0, 0});
+            info.Children().Append(path);
+            if (data.GetNamedBoolean(L"batch", false)) {
+                const auto count = static_cast<unsigned>(data.GetNamedNumber(L"count", 1));
+                auto note = ReaderText(english ? winrt::to_hstring(count) + L" files. Batch preview is not supported yet"
+                    : L"共 " + winrt::to_hstring(count) + L" 个文件，暂不支持批量文件预览", 13);
+                ApplyStyle(note, L"VPaste.Secondary"); note.TextAlignment(TextAlignment::Center);
+                note.Margin(Thickness{0, 14, 0, 0}); info.Children().Append(note);
+            }
+            if (data.GetNamedBoolean(L"missing", false)) {
+                auto warning = ReaderText(Text(L"源文件不存在或已移动", L"Source file is missing or moved"), 13);
+                ApplyStyle(warning, L"VPaste.WarningText"); warning.TextAlignment(TextAlignment::Center);
+                warning.Margin(Thickness{0, 14, 0, 0}); info.Children().Append(warning);
+            }
+            ScrollViewer scroll; scroll.Content(info); scroll.HorizontalScrollMode(ScrollMode::Disabled);
+            scroll.VerticalScrollBarVisibility(ScrollBarVisibility::Auto); content.Children().Append(scroll);
         } else {
             StackPanel textContent; textContent.Spacing(12);
-            if (kind == L"files") {
-                const auto count = static_cast<unsigned>(data.GetNamedNumber(L"count", 1));
-                textContent.Children().Append(ReaderText(winrt::to_hstring(count) + Text(L" 个文件 / 文件夹", L" files / folders"), 12));
-            }
             const auto value = data.GetNamedString(L"text", L"");
             auto text = ReaderText(value.empty() ? Text(L"没有可预览的文本", L"No text to preview") : value);
             text.IsTextSelectionEnabled(true);
             textContent.Children().Append(text);
             if (data.GetNamedBoolean(L"truncated", false))
                 textContent.Children().Append(ReaderText(Text(L"仅显示部分内容，复制和粘贴保留完整文本。", L"Partial preview; copy and paste keep the full text."), 12));
-            if (data.GetNamedBoolean(L"missing", false))
-                textContent.Children().Append(ReaderText(Text(L"部分文件已不存在。", L"Some files no longer exist."), 12));
             ScrollViewer scroll; scroll.Content(textContent);
             scroll.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
             scroll.HorizontalScrollMode(ScrollMode::Disabled); content.Children().Append(scroll);
@@ -557,11 +630,6 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
         data.Insert(L"easing", JsonArray::Parse(L"[0.22,1,0.36,1]"));
         return response;
     };
-    const auto invoke = [](auto const &control) {
-        Peers::FrameworkElementAutomationPeer::CreatePeerForElement(control)
-            .GetPattern(Peers::PatternInterface::Invoke).as<Provider::IInvokeProvider>().Invoke();
-    };
-
     stage = 117;
     winrt::check_hresult(!state->window ? S_OK : E_FAIL);
     reader.Receive(text(1, L"可选择的原生文本 / Native selectable text"));
@@ -597,8 +665,11 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
         // glyph origin must retain the containing native button's ownership.
         return state->HandleKey(value, false, false, false, false, false, origin);
     };
-    for (auto const &origin : std::array<FrameworkElement, 4>{state->pin, state->close,
-             state->pin.Content().as<FrameworkElement>(), state->close.Content().as<FrameworkElement>()}) {
+    const auto pinGlyph = state->pin.Content().as<FontIcon>();
+    winrt::check_hresult(state->root.Children().Size() == 2 && state->root.Children().GetAt(0) == state->pin &&
+        state->pin.ActualWidth() == CompactActionSize && state->pin.ActualHeight() == CompactActionSize &&
+        pinGlyph.Glyph() == L"\uE718" ? S_OK : E_FAIL);
+    for (auto const &origin : std::array<FrameworkElement, 2>{state->pin, pinGlyph}) {
         for (auto value : {VK_SPACE, VK_TAB, VK_LEFT, VK_RIGHT, VK_RETURN}) {
             winrt::check_hresult(!toolbarKey(value, origin) && events.size() == count ? S_OK : E_FAIL);
         }
@@ -610,14 +681,15 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
     winrt::check_hresult(toolbarKey(VK_LEFT, state->displayed) && events.back().first == L"readerPrevious" &&
         toolbarKey(VK_TAB, state->displayed) && events.back().first == L"readerNext" &&
         toolbarKey(VK_SPACE, state->displayed) && events.back().first == L"nativeReaderClose" ? S_OK : E_FAIL);
-    state->pin.IsChecked(true);
     // Toggle peer invokes the same Click handler as the real native control.
-    Peers::FrameworkElementAutomationPeer::CreatePeerForElement(state->pin)
-        .GetPattern(Peers::PatternInterface::Toggle).as<Provider::IToggleProvider>().Toggle();
+    const auto toggle = Peers::FrameworkElementAutomationPeer::CreatePeerForElement(state->pin)
+        .GetPattern(Peers::PatternInterface::Toggle).as<Provider::IToggleProvider>();
+    toggle.Toggle();
     co_await NextNativeFrame();
-    winrt::check_hresult(events.back().first == L"nativeReaderUnpin" ? S_OK : E_FAIL);
-    invoke(state->close); co_await NextNativeFrame();
-    winrt::check_hresult(events.back().first == L"nativeReaderClose" ? S_OK : E_FAIL);
+    winrt::check_hresult(events.back().first == L"nativeReaderPin" && pinGlyph.Glyph() == L"\uE842" ? S_OK : E_FAIL);
+    toggle.Toggle();
+    co_await NextNativeFrame();
+    winrt::check_hresult(events.back().first == L"nativeReaderUnpin" && pinGlyph.Glyph() == L"\uE718" ? S_OK : E_FAIL);
 
     stage = 1182;
     const auto contentFocus = state->root.Children().GetAt(1).try_as<ContentControl>();
@@ -672,6 +744,25 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
         !state->Moving() ? S_OK : E_FAIL);
 
     stage = 120;
+    auto files = text(4, L""); auto filesData = files.GetNamedObject(L"data");
+    filesData.Insert(L"kind", JsonValue::CreateStringValue(L"files"));
+    filesData.Insert(L"caption", JsonValue::CreateStringValue(L"report.zip"));
+    filesData.Insert(L"count", JsonValue::CreateNumberValue(2));
+    filesData.Insert(L"batch", JsonValue::CreateBooleanValue(true));
+    filesData.Insert(L"missing", JsonValue::CreateBooleanValue(true));
+    filesData.Insert(L"file", JsonObject::Parse(LR"({"path":".../documents/report.zip","label":"2 个文件","multiple":true,"light":{"name":"zip-light","svg":"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='blue'/></svg>"},"dark":{"name":"zip-dark","svg":"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='white'/></svg>"}})"));
+    reader.Receive(files); co_await NextNativeFrame();
+    const auto fileInfo = state->displayed.as<Grid>().Children().GetAt(0).as<ScrollViewer>().Content().as<StackPanel>();
+    winrt::check_hresult(fileInfo.Children().Size() == 5 &&
+        fileInfo.Children().GetAt(0).as<Grid>().Width() == 104 &&
+        fileInfo.Children().GetAt(1).as<TextBlock>().Text() == L"report.zip" &&
+        fileInfo.Children().GetAt(2).as<TextBlock>().Text() == L".../documents/report.zip" &&
+        fileInfo.Children().GetAt(3).as<TextBlock>().Text() == L"共 2 个文件，暂不支持批量文件预览" &&
+        fileInfo.Children().GetAt(4).as<TextBlock>().Text() == L"源文件不存在或已移动" ? S_OK : E_FAIL);
+    reader.SetAppearance(false, ElementTheme::Dark); co_await NextNativeFrame();
+    winrt::check_hresult(winrt::unbox_value<winrt::hstring>(fileInfo.Children().GetAt(0).as<Grid>().Tag()) == L"zip-dark" ? S_OK : E_FAIL);
+    reader.SetAppearance(false, ElementTheme::Light); co_await NextNativeFrame();
+    winrt::check_hresult(winrt::unbox_value<winrt::hstring>(fileInfo.Children().GetAt(0).as<Grid>().Tag()) == L"zip-light" ? S_OK : E_FAIL);
     auto missing = text(5, L""); auto missingData = missing.GetNamedObject(L"data");
     missingData.Insert(L"kind", JsonValue::CreateStringValue(L"image"));
     missingData.Insert(L"imagePath", JsonValue::CreateStringValue(L"Z:\\vpaste-missing-synthetic-image.png"));
@@ -723,7 +814,39 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
     for (int frame = 0; frame < 180 && state->committed != 11; ++frame) co_await NextNativeFrame();
     winrt::check_hresult(state->committed == 11 && state->window == handle &&
         state->displayed.as<Grid>().Children().GetAt(0).as<StackPanel>().Children().GetAt(0).as<TextBlock>().Text() == L"图片 #100%.bmp" &&
-        state->displayed.as<Grid>().Children().GetAt(1).try_as<Image>() ? S_OK : E_FAIL);
+        state->displayed.as<Grid>().Children().GetAt(1).as<Grid>().Children().GetAt(0).as<Grid>()
+            .Children().GetAt(1).try_as<Image>() ? S_OK : E_FAIL);
+    const auto imageFrame = state->displayed.as<Grid>().Children().GetAt(1).as<Grid>().Children().GetAt(0).as<Grid>();
+    co_await NextNativeFrame();
+    winrt::check_hresult(imageFrame.Width() == 2 && imageFrame.Height() == 2 &&
+        imageFrame.Children().GetAt(0).try_as<Canvas>() ? S_OK : E_FAIL);
+    // A large image needs repeated tiles, not a centered 256-DIP patch. Verify
+    // pixels across tile boundaries, separately from the image's own alpha.
+    for (const auto appearance : {ElementTheme::Light, ElementTheme::Dark}) {
+        reader.SetAppearance(false, appearance);
+        auto matte = ReaderTransparencyMatte(); matte.Width(560); matte.Height(96);
+        state->body.Children().Append(matte);
+        for (int frame = 0; frame < 6; ++frame) co_await NextNativeFrame();
+        winrt::check_hresult(HighContrastEnabled() || matte.Children().Size() == 3 ? S_OK : E_FAIL);
+        if (!HighContrastEnabled()) {
+            Imaging::RenderTargetBitmap bitmap; co_await bitmap.RenderAsync(matte, 560, 96);
+            const auto buffer = co_await bitmap.GetPixelsAsync();
+            winrt::com_array<std::uint8_t> pixels(buffer.Length());
+            winrt::Windows::Storage::Streams::DataReader::FromBuffer(buffer).ReadBytes(pixels);
+            winrt::check_hresult(bitmap.PixelWidth() == 560 && bitmap.PixelHeight() == 96 ? S_OK : E_FAIL);
+            // Fractional layout can antialias one edge into two adjacent color
+            // changes. Count light/dark crossings, not those intermediate shades.
+            const auto midpoint = appearance == ElementTheme::Dark ? 70 : 229;
+            int transitions = 0;
+            for (int x = 1; x < 560; ++x)
+                if ((pixels[(12 * 560 + x) * 4] > midpoint) != (pixels[(12 * 560 + x - 1) * 4] > midpoint)) ++transitions;
+            std::fprintf(stderr, "WinUI reader matte: theme=%d transitions=%d logical=%.1fx%.1f pixels=%dx%d scale=%.3f\n",
+                static_cast<int>(appearance), transitions, matte.ActualWidth(), matte.ActualHeight(),
+                bitmap.PixelWidth(), bitmap.PixelHeight(), matte.XamlRoot().RasterizationScale());
+            winrt::check_hresult(transitions >= 68 && transitions <= 71 ? S_OK : E_FAIL);
+        }
+        state->body.Children().RemoveAtEnd();
+    }
     auto decoded = winrt::make_weak(state->displayed);
     reader.Receive(message(L"nativeReaderHide", 12)); co_await NextNativeFrame();
     winrt::check_hresult(!decoded.get() && state->body.Children().Size() == 0 ? S_OK : E_FAIL);

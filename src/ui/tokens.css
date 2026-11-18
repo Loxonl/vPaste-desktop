@@ -224,6 +224,7 @@
   --ui-preview-pin-active-surface: #1e63d6;
   --ui-preview-pin-active-text: #ffffff;
   --ui-preview-pin-active-shadow: var(--ui-preview-pin-shadow);
+  --ui-preview-native-action-radius: 4px;
   --ui-preview-link-stage-surface: rgba(255, 255, 255, 0.64);
   --ui-preview-link-stage-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
   --ui-preview-link-bar-surface: rgba(255, 255, 255, 0.92);

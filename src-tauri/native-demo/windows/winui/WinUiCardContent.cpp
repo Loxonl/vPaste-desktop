@@ -9,12 +9,14 @@
 #include <limits>
 #include <locale>
 #include <sstream>
+#include <vector>
 #include <winrt/Microsoft.UI.Xaml.Markup.h>
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 #include <winrt/Windows.Storage.Streams.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #ifdef _DEBUG
 #include "WinUiRichContent.h"
+#include "WinUiResourceProbe.h"
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 winrt::Windows::Foundation::IAsyncAction NextNativeFrame();
 #endif
@@ -30,9 +32,32 @@ winrt::fire_and_forget LoadFileSvg(winrt::Microsoft::UI::Xaml::Media::Imaging::S
         winrt::Windows::Storage::Streams::DataWriter writer{stream};
         writer.WriteString(svg); co_await writer.StoreAsync(); writer.DetachStream(); stream.Seek(0);
         const auto result = co_await source.SetSourceAsync(stream);
+#ifdef _DEBUG
+        if (TraceCardMedia()) std::fprintf(stderr, "WinUI media probe: file SVG status=%d\n", static_cast<int>(result));
+#endif
         winrt::check_hresult(result == winrt::Microsoft::UI::Xaml::Media::Imaging::SvgImageSourceLoadStatus::Success ? S_OK : E_FAIL);
     } catch (winrt::hresult_error const &error) { OutputDebugStringW(error.message().c_str()); }
 }
+
+winrt::Microsoft::UI::Xaml::Media::Imaging::SvgImageSource SharedFileIcon(
+    winrt::Windows::Data::Json::JsonObject const &icon) {
+    using winrt::Microsoft::UI::Xaml::Media::Imaging::SvgImageSource;
+    struct Entry { winrt::hstring name; winrt::weak_ref<SvgImageSource> source; };
+    // A file type names one immutable asset (including light variants). Share
+    // it on the owning XAML thread without keeping unloaded images alive.
+    static thread_local std::vector<Entry> icons;
+    const auto name = icon.GetNamedString(L"name");
+    std::erase_if(icons, [](auto const &entry) { return !entry.source.get(); });
+    for (auto const &entry : icons) if (entry.name == name) {
+        if (auto source = entry.source.get()) return source;
+    }
+    SvgImageSource source;
+    if (icons.size() == 32) icons.erase(icons.begin());
+    icons.push_back({name, winrt::make_weak(source)});
+    LoadFileSvg(source, icon.GetNamedString(L"svg"));
+    return source;
+}
+
 winrt::fire_and_forget LoadTransparencyGrid(winrt::Microsoft::UI::Xaml::Media::Imaging::SvgImageSource source, bool dark) {
     try {
         std::wstring cells;
@@ -51,23 +76,30 @@ winrt::fire_and_forget LoadTransparencyGrid(winrt::Microsoft::UI::Xaml::Media::I
 }
 
 winrt::Microsoft::UI::Xaml::Controls::Grid FileTypePresentation(
-    winrt::Windows::Data::Json::JsonObject const &file, bool dark) {
+    winrt::Windows::Data::Json::JsonObject const &file, bool dark, FilePresentationVariant variant) {
     using namespace winrt::Microsoft::UI::Xaml;
     using namespace winrt::Microsoft::UI::Xaml::Controls;
     // Same canvas, icon and badge dimensions as FileTypePresentation.module.css.
-    Grid presentation; presentation.Width(88); presentation.Height(64);
+    const bool preview = variant == FilePresentationVariant::Preview;
+    Grid presentation; presentation.Width(preview ? 104 : 88); presentation.Height(preview ? 72 : 64);
     const auto icon = file.GetNamedObject(dark ? L"dark" : L"light");
     presentation.Tag(winrt::box_value(icon.GetNamedString(L"name")));
-    Image image; image.Width(file.GetNamedBoolean(L"multiple", false) ? 76 : 64);
-    image.Height(file.GetNamedBoolean(L"multiple", false) ? 60 : 64); image.Stretch(Media::Stretch::Uniform);
-    Media::Imaging::SvgImageSource source; image.Source(source);
-    presentation.Children().Append(image); LoadFileSvg(source, icon.GetNamedString(L"svg"));
+    Image image; image.Width(file.GetNamedBoolean(L"multiple", false) ? (preview ? 86 : 76) : (preview ? 72 : 64));
+    image.Height(file.GetNamedBoolean(L"multiple", false) ? (preview ? 68 : 60) : (preview ? 72 : 64)); image.Stretch(Media::Stretch::Uniform);
+    image.Source(SharedFileIcon(icon));
+    presentation.Children().Append(image);
+    if (preview) presentation.ActualThemeChanged([file](auto const &sender, auto const &) {
+        const auto host = sender.as<Grid>();
+        const auto themed = file.GetNamedObject(host.ActualTheme() == ElementTheme::Dark ? L"dark" : L"light");
+        host.Tag(winrt::box_value(themed.GetNamedString(L"name")));
+        host.Children().GetAt(0).as<Image>().Source(SharedFileIcon(themed));
+    });
     const auto label = file.GetNamedString(L"label", L"");
     if (!label.empty()) {
         Border badge; ApplyStyle(badge, L"VPaste.Surface");
         badge.CornerRadius(UniformRadius(8)); badge.Padding(Thickness{5, 1, 5, 1});
-        badge.MaxWidth(82); badge.HorizontalAlignment(HorizontalAlignment::Center);
-        badge.VerticalAlignment(VerticalAlignment::Top); badge.Margin(Thickness{0, 58, 0, -20});
+        badge.MaxWidth(preview ? 98 : 82); badge.HorizontalAlignment(HorizontalAlignment::Center);
+        badge.VerticalAlignment(VerticalAlignment::Top); badge.Margin(Thickness{0, preview ? 66.0 : 58.0, 0, -20});
         TextBlock text; ApplyStyle(text, L"VPaste.Secondary"); text.Text(label); text.FontSize(10);
         text.LineHeight(13); text.FontWeight(winrt::Microsoft::UI::Text::FontWeights::Medium());
         text.TextWrapping(TextWrapping::NoWrap); text.TextTrimming(TextTrimming::CharacterEllipsis);
@@ -204,6 +236,22 @@ winrt::Windows::Foundation::IAsyncAction TestCardContentControls(
         highlight.Ranges().GetAt(0).Length == 9 && source.Stringify() == serialized ? S_OK : E_FAIL);
     const auto table = rich.Content().as<StackPanel>().Children().GetAt(1).as<ScrollViewer>().Content().as<Grid>();
     winrt::check_hresult(table.Children().GetAt(0).as<Border>().Child().as<RichTextBlock>().TextHighlighters().Size() == 1 ? S_OK : E_FAIL);
+    const auto mergedSource = JsonArray::Parse(LR"([{"runs":[{"text":"Revised code","strike":true,"underline":true,"mono":true}],"rows":[[[{"text":"Header"}]],[[{"text":"Left"}],[{"text":"A"}]],[[{"text":"B"}]]],"spans":[[{"column":0,"columnSpan":2,"rowSpan":1}],[{"column":0,"columnSpan":1,"rowSpan":2},{"column":1,"columnSpan":1,"rowSpan":1}],[{"column":1,"columnSpan":1,"rowSpan":1}]]}])");
+    auto merged = RenderRichContent(mergedSource, false); plate.Children().Append(merged); co_await NextNativeFrame();
+    const auto mergedContent = merged.Content().as<StackPanel>();
+    const auto revised = mergedContent.Children().GetAt(0).as<RichTextBlock>().Blocks().GetAt(0).as<Paragraph>().Inlines().GetAt(0).as<Run>();
+    winrt::check_hresult(static_cast<unsigned>(revised.TextDecorations()) ==
+        (static_cast<unsigned>(winrt::Windows::UI::Text::TextDecorations::Underline) | static_cast<unsigned>(winrt::Windows::UI::Text::TextDecorations::Strikethrough)) && revised.FontFamily().Source() == L"Consolas" ? S_OK : E_FAIL);
+    const auto mergedTable = mergedContent.Children().GetAt(1).as<ScrollViewer>().Content().as<Grid>();
+    stage = 701;
+    std::fprintf(stderr, "WinUI merged table: columns=%u rows=%u headingRight=%.1f spanningBottom=%.1f\n",
+        mergedTable.ColumnDefinitions().Size(), mergedTable.RowDefinitions().Size(),
+        mergedTable.Children().GetAt(0).as<Border>().BorderThickness().Right,
+        mergedTable.Children().GetAt(1).as<Border>().BorderThickness().Bottom);
+    winrt::check_hresult(mergedTable.ColumnDefinitions().Size() == 2 && Grid::GetColumnSpan(mergedTable.Children().GetAt(0).as<FrameworkElement>()) == 2 &&
+        Grid::GetRowSpan(mergedTable.Children().GetAt(1).as<FrameworkElement>()) == 2 && Grid::GetColumn(mergedTable.Children().GetAt(3).as<FrameworkElement>()) == 1 &&
+        mergedTable.Children().GetAt(0).as<Border>().BorderThickness().Right == 1 &&
+        mergedTable.Children().GetAt(1).as<Border>().BorderThickness().Bottom == 1 ? S_OK : E_FAIL);
     for (const auto theme : {ElementTheme::Light, ElementTheme::Dark}) {
         fixture.RequestedTheme(theme); co_await NextNativeFrame();
         const auto match = plain.TextHighlighters().GetAt(0);
@@ -245,6 +293,8 @@ winrt::Windows::Foundation::IAsyncAction TestCardContentControls(
         const auto presentation = FileTypePresentation(file, dark);
         fixture.Child(presentation);
         const auto image = presentation.Children().GetAt(0).as<Image>();
+        const auto sameFile = FileTypePresentation(file, dark);
+        winrt::check_hresult(image.Source() == sameFile.Children().GetAt(0).as<Image>().Source() ? S_OK : E_FAIL);
         unsigned opaque = 0;
         for (int frame = 0; frame < 20 && opaque < 100; ++frame) {
             co_await NextNativeFrame();

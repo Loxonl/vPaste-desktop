@@ -45,7 +45,6 @@ type PanelReceive = unsafe extern "C" fn(*const u8, usize);
 type PanelSetBehavior = unsafe extern "C" fn(*const u8, usize) -> i32;
 type PanelSetClickMode = unsafe extern "C" fn(bool) -> i32;
 type PanelSetQueueView = unsafe extern "C" fn(bool) -> i32;
-type PanelShowQueueNoActivate = unsafe extern "C" fn() -> i32;
 type PanelInitialize = unsafe extern "C" fn(extern "C" fn(bool), PanelRequest, bool, bool) -> i32;
 type BootstrapInitialize = unsafe extern "system" fn(u32, *const u16, u64, u32) -> i32;
 type BootstrapShutdown = unsafe extern "system" fn();
@@ -67,7 +66,6 @@ struct PanelApi {
     set_click_mode: PanelSetClickMode,
     set_behavior: PanelSetBehavior,
     set_queue_view: PanelSetQueueView,
-    show_queue_no_activate: PanelShowQueueNoActivate,
     hide_for_queue_paste: PanelCall,
     refresh_tags: PanelCall,
     window_handle: PanelWindowHandle,
@@ -269,22 +267,6 @@ fn load_panel_api() -> Result<PanelApi, String> {
         // SAFETY: the exported function accepts the queue-view visibility flag.
         Ok(unsafe { std::mem::transmute::<*mut c_void, PanelSetQueueView>(address) })
     }
-    unsafe fn show_queue_no_activate_symbol(
-        module: *mut c_void,
-    ) -> Result<PanelShowQueueNoActivate, String> {
-        let address = unsafe {
-            GetProcAddress(
-                module,
-                b"vpaste_winui_show_queue_no_activate\0".as_ptr().cast(),
-            )
-        };
-        if address.is_null() {
-            return Err("WinUI no-activate queue-show export is missing".into());
-        }
-        // SAFETY: the exported function accepts no arguments and returns HRESULT.
-        Ok(unsafe { std::mem::transmute::<*mut c_void, PanelShowQueueNoActivate>(address) })
-    }
-
     // SAFETY: the matching C++ export snapshots an HWND as uintptr_t.
     let window_handle =
         unsafe { GetProcAddress(module, b"vpaste_winui_window_handle\0".as_ptr().cast()) };
@@ -346,7 +328,6 @@ fn load_panel_api() -> Result<PanelApi, String> {
         // SAFETY: matches the synchronous byte-buffer C ABI in WinUiPanel.cpp.
         set_behavior: unsafe { std::mem::transmute::<*mut c_void, PanelSetBehavior>(set_behavior) },
         set_queue_view: unsafe { set_queue_view_symbol(module)? },
-        show_queue_no_activate: unsafe { show_queue_no_activate_symbol(module)? },
         hide_for_queue_paste: unsafe { symbol(module, b"vpaste_winui_hide_for_queue_paste\0")? },
         refresh_tags: unsafe { symbol(module, b"vpaste_winui_refresh_tags\0")? },
         window_handle: unsafe {
@@ -385,12 +366,14 @@ pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
         "listen_new_clipboard",
         "clipboard-item-edited",
         "clipboard-resources-updated",
-        "image-ocr-updated",
     ] {
         // Resource notifications may explicitly target the clipboard WebView,
         // which does not exist in this backend.
         app.listen_any(event, move |_| refresh());
     }
+    app.listen_any("image-ocr-updated", move |_| {
+        send_response(0, "imageOcrUpdated", Ok(json!({})));
+    });
     app.listen("history-reset", move |_| {
         preview::owner_hidden();
         send_response(0, "historyReset", Ok(json!({})));
@@ -577,14 +560,6 @@ pub(crate) fn finish_size_preview() -> Result<bool, String> {
     Ok(snapshot.was_visible)
 }
 
-pub(crate) fn show_queue_no_activate() -> Result<(), String> {
-    let panel = api()?;
-    // SAFETY: the DLL marshals the non-activating show operation to its UI thread.
-    check_hresult("non-activating queue show", unsafe {
-        (panel.show_queue_no_activate)()
-    })
-}
-
 pub(crate) fn hide_for_queue_paste() -> Result<(), String> {
     let panel = api()?;
     // SAFETY: the DLL hides the panel without discarding its queue return state.
@@ -766,7 +741,7 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
     } else {
         crate::PreviewMode::Selection
     };
-    if op == "previewDismiss" && crate::PREVIEW_PINNED.load(std::sync::atomic::Ordering::SeqCst) {
+    if op == "previewDismiss" && crate::preview_protected_from_replacement() {
         return;
     }
     if matches!(op.as_str(), "previewClose" | "previewDismiss")
@@ -788,7 +763,7 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
         if !preview_mode.allows(
             preview::open(),
             crate::PREVIEW_HOVER.load(std::sync::atomic::Ordering::SeqCst),
-            crate::PREVIEW_PINNED.load(std::sync::atomic::Ordering::SeqCst),
+            crate::preview_protected_from_replacement(),
         ) {
             return;
         }
@@ -1113,7 +1088,7 @@ async fn query_card(
         .clone();
     let resource_epoch = resources.epoch();
     let summary_hash = hash.clone();
-    let (mut card, media_path) = tauri::async_runtime::spawn_blocking(move || {
+    let (mut card, media_path, original_image) = tauri::async_runtime::spawn_blocking(move || {
         let payload = crate::clipboard::history_card_payload(&summary_hash, false)?;
         let is_rich_text = presentation::is_rich_format(&payload);
         let item = payload.item;
@@ -1125,6 +1100,7 @@ async fn query_card(
         let title_color = item.title_color.clone();
         let mut media_path = None;
         let mut display_title = String::new();
+        let mut original_image = None;
         let mut display_subtitle = String::new();
         let mut file_count = 0;
         let mut file_format = String::new();
@@ -1134,6 +1110,7 @@ async fn query_card(
         let display_text = match item.item_type {
             crate::clipboard::item::ItemType::Image => {
                 media_path = Some(item.preview_content.clone());
+                original_image = Some(item.content.clone());
                 item.text_content.clone()
             }
             crate::clipboard::item::ItemType::File => {
@@ -1254,6 +1231,7 @@ async fn query_card(
                 } else { serde_json::Value::Null },
             }),
             media_path,
+            original_image,
         ))
     })
     .await
@@ -1268,16 +1246,21 @@ async fn query_card(
     card["cardPixelWidth"] = json!(width);
     card["assetPath"] = json!("");
     card["dimensions"] = json!("");
-    if let Some(path) = media_path.filter(|path| !path.is_empty()) {
-        match crate::media_resources::resolve_for_card_width(
-            path.clone(),
-            crate::media_resources::MediaIntent::Card,
-            refresh,
-            width,
-        )
-        .await
-        {
-            Ok(media) => {
+    if let Some(path) = media_path {
+        let resource = if let Some(original) = original_image {
+            presentation::resolve_image_card(path, original, refresh, width).await
+        } else {
+            crate::media_resources::resolve_for_card_width(
+                path.clone(),
+                crate::media_resources::MediaIntent::Card,
+                refresh,
+                width,
+            )
+            .await
+            .map(|media| (media, path))
+        };
+        match resource {
+            Ok((media, path)) => {
                 card["assetPath"] = json!(media.asset_path);
                 if media.metadata.width > 0 && media.metadata.height > 0 {
                     card["dimensions"] = json!(format!(
@@ -1289,8 +1272,6 @@ async fn query_card(
             }
             Err(error) => card["mediaError"] = json!(error),
         }
-    } else if card["itemType"] == "Image" {
-        card["mediaError"] = json!("Image source is unavailable / 图片源文件不可用");
     }
     Ok(card)
 }

@@ -11,6 +11,30 @@ The Release workflow runs `npm run check:licenses` and publishes `THIRD_PARTY_LI
 
 macOS DMG creation also uses the build-only Python packages `dmgbuild` 1.6.7, `ds_store` 1.3.3, and `mac_alias` 2.2.3 (all MIT). Their versions are pinned in `scripts/requirements-macos-dmg.txt`; they are not bundled into the app or installer.
 
+## Native Icon Artwork
+
+The WinUI OCR menu embeds [Scan Text 24 Regular](https://github.com/microsoft/fluentui-system-icons/blob/main/assets/Scan%20Text/SVG/ic_fluent_scan_text_24_regular.svg) from Microsoft Fluent UI System Icons (MIT).
+
+> Copyright (c) 2020 Microsoft Corporation
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all
+> copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
 ## Direct npm Dependencies
 
 The current lockfile resolves these direct npm dependencies:

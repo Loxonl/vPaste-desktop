@@ -1,6 +1,8 @@
 import { ItemType } from "./Item";
 import {
     DEFAULT_CUSTOM_FILTER,
+    loadCustomTabs,
+    normalizeCustomTabs,
     type CustomTab,
 } from "./customTabs";
 
@@ -116,6 +118,11 @@ export function createDefaultTutorialFilterTabs(t: TFunction): CustomTab[] {
     return TUTORIAL_FILTER_DEFINITIONS
         .filter(filter => filter.id !== "color")
         .reduce<CustomTab[]>((next, filter) => updateTutorialFilterTabs(next, filter.id, true, t), []);
+}
+
+export function configuredTutorialTabs(value: unknown) {
+    const stored = normalizeCustomTabs(value);
+    return { stored, tabs: stored.length ? stored : loadCustomTabs() };
 }
 
 export function markTutorialFiltersInitialized() {

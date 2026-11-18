@@ -228,6 +228,7 @@ fn build_winui_panel() {
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiCardContent.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiAppActions.cpp");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiAppActions.h");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiHeaderArtwork.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiHoverPreview.cpp");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiHoverPreview.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiReader.cpp");

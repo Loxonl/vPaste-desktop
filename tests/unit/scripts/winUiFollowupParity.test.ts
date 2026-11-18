@@ -7,12 +7,14 @@ const panel = read("src-tauri/native-demo/windows/winui/WinUiPanel.cpp");
 
 describe("reviewed reference artwork and native window contracts", () => {
     it("uses both original toolbar SVG paths rather than a different settings font glyph", () => {
+        const artwork = read("src-tauri/native-demo/windows/winui/WinUiHeaderArtwork.h");
         for (const name of ["SettingsOutlined", "PlaylistAddCheckRounded"]) {
             const source = read(`node_modules/@mui/icons-material/${name}.js`);
-            expect(panel).toContain(source.match(/d: "([^"]+)"/)![1]);
+            expect(artwork.includes(source.match(/d: "([^"]+)"/)![1])).toBe(true);
+            expect(panel.includes("HeaderArtwork::" + name)).toBe(true);
         }
-        expect(panel).toContain("artworkScale.ScaleX(vpaste::winui::CompactIconSize / 24.0)");
-        expect(panel).toContain("action.Icon().as<PathIcon>().Data().Transform(artworkScale)");
+        expect(artwork).toContain("scale.ScaleX(size / 24.0)");
+        expect(artwork).toContain("icon.Data().Transform(scale)");
         expect(panel).not.toContain("g_panel.settings.Icon(vpaste::winui::CompactSymbol(Symbol::Setting))");
     });
     it("keeps a cancellable animation object for a dragged tab instead of an unowned implicit transition", () => {

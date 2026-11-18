@@ -112,6 +112,7 @@
     <ClInclude Include="WinUiRecordTagEditor.h" />
     <ClInclude Include="WinUiCardContent.h" />
     <ClInclude Include="WinUiAppActions.h" />
+    <ClInclude Include="WinUiHeaderArtwork.h" />
     <ClInclude Include="WinUiHoverPreview.h" />
     <ClInclude Include="WinUiReader.h" />
   </ItemGroup>

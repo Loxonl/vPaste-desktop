@@ -15,6 +15,7 @@ const Preview = React.lazy(() => import("./clipboard/Preview.tsx"));
 const TabEditor = React.lazy(() => import("./clipboard/TabEditor.tsx"));
 const TextEditor = React.lazy(() => import("./clipboard/TextEditor.tsx"));
 const OnboardingPermissionWindow = React.lazy(() => import("./clipboard/OnboardingPermissionWindow.tsx"));
+const NativeOnboardingWindow = React.lazy(() => import("./clipboard/NativeOnboardingWindow.tsx"));
 const PasteFallbackNotice = React.lazy(() => import("./clipboard/PasteFallbackNotice.tsx"));
 const PasteQueue = React.lazy(() => import("./clipboard/PasteQueue.tsx"));
 const Config = React.lazy(() => import("./config/Config.tsx"));
@@ -26,11 +27,18 @@ const UiLab = import.meta.env.DEV
 const SettingsPreview = import.meta.env.DEV
     ? React.lazy(() => import("./config/SettingsPreview.tsx"))
     : null;
-const TestRoom = import.meta.env.DEV
+// Only the native experiment's explicit build mode embeds these on-demand tools.
+// Normal production builds still exclude them; UI Lab remains Vite-only.
+const embeddedDeveloperTools = import.meta.env.MODE === "native-debug";
+const TestRoom = import.meta.env.DEV || embeddedDeveloperTools
     ? React.lazy(() => import("./debug/TestRoom.tsx"))
     : null;
-const DeveloperMemoryWindow = import.meta.env.DEV
+const DeveloperMemoryWindow = import.meta.env.DEV || embeddedDeveloperTools
     ? React.lazy(() => import("./debug/DeveloperMemoryWindow.tsx"))
+    : null;
+
+const DeveloperTutorialWindow = import.meta.env.DEV || embeddedDeveloperTools
+    ? React.lazy(() => import("./debug/DeveloperTutorialWindow.tsx"))
     : null;
 
 if ("__TAURI_INTERNALS__" in window) {
@@ -95,6 +103,7 @@ root.render(
                         <Route path="/tab-editor" element={<TabEditor />} />
                         <Route path="/text-editor" element={<TextEditor />} />
                         <Route path="/onboarding-permission" element={<OnboardingPermissionWindow />} />
+                        <Route path="/native-onboarding" element={<NativeOnboardingWindow />} />
                         <Route path="/paste-fallback-notice" element={<PasteFallbackNotice />} />
                         <Route path="/paste-failure-notice" element={<PasteFallbackNotice showSettingsAction={false} />} />
                         <Route path="/paste-queue" element={<PasteQueue />} />
@@ -103,6 +112,7 @@ root.render(
                         {UiLab ? <Route path="/__ui-lab" element={<UiLab />} /> : null}
                         {SettingsPreview ? <Route path="/__settings-preview" element={<SettingsPreview />} /> : null}
                         {TestRoom ? <Route path="/__test-room" element={<TestRoom />} /> : null}
+                        {DeveloperTutorialWindow ? <Route path="/__dev-tutorial" element={<DeveloperTutorialWindow />} /> : null}
                         {DeveloperMemoryWindow ? <Route path="/__dev-memory" element={<DeveloperMemoryWindow />} /> : null}
                         <Route path="/" element={<Clipboard />} />
                         <Route path="*" element={<Clipboard />} />

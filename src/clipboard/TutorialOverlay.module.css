@@ -25,6 +25,7 @@
   place-items: center;
 }
 
+.tutorial-welcome-logo,
 .tutorial-welcome img {
   width: 118px;
   height: 118px;

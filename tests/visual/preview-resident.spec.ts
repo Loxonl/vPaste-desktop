@@ -37,7 +37,7 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
                         if (command === "pending_preview_item") return null;
                         if (command === "plugin:event|listen") { listeners.set(args.event as string, args.handler as number); return ++nextId; }
                         if (command === "commit_preview_window") return true;
-                        if (command === "fetch_link_preview_document") return { url: "https://example.com", html: "<p>Synthetic page</p>" };
+                        if (command === "sync_preview_browser") return true;
                         if (command === "file_preview_info") return {
                             kind: "single-icon", paths: ["C:\\synthetic\\demo.doc"], display_path: "C:\\synthetic\\demo.doc",
                             extension: "DOC", exists: true, preview_path: "", contains_directories: false,
@@ -58,7 +58,7 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
         await expect.poll(() => page.evaluate(() => (window as PreviewWindow).__residentPreview.calls
             .some(call => call.command === "auxiliary_window_ready"))).toBe(true);
         expect(await page.evaluate(() => (window as PreviewWindow).__residentPreview.calls
-            .filter(call => ["file_preview_info", "resolve_history_media", "fetch_link_preview_document", "search"].includes(call.command)))).toEqual([]);
+            .filter(call => ["file_preview_info", "resolve_history_media", "sync_preview_browser", "fetch_link_preview_document", "search"].includes(call.command)))).toEqual([]);
         expect(requests.filter(url => url.includes("/material-icon-theme/icons/"))).toHaveLength(0);
         await expect(page.locator("[data-preview-phase]")).toHaveCount(0);
 
@@ -71,10 +71,20 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
         await expect.poll(() => committed(page, 3)).toBe(true);
         await expect(current(page).locator("img")).toHaveAttribute("src", pixel);
         await emit(page, { request_id: 4, item_type: "Link", content: "https://example.com" });
-        await expect(current(page).locator("iframe")).toHaveAttribute("srcdoc", /Synthetic page/);
+        await expect.poll(() => page.evaluate(() => (window as PreviewWindow).__residentPreview.calls
+            .find(call => call.command === "sync_preview_browser")?.args)).toMatchObject({
+            requestId: 4, url: "https://example.com",
+            bounds: { width: expect.any(Number), height: expect.any(Number) },
+        });
+        await expect(current(page)).toContainText("https://example.com");
+        await expect(current(page).locator("iframe")).toHaveCount(0);
+        expect(await page.evaluate(() => (window as PreviewWindow).__residentPreview.calls
+            .some(call => call.command === "fetch_link_preview_document"))).toBe(false);
         expect(requests.filter(url => url.includes("/material-icon-theme/icons/"))).toHaveLength(0);
 
         await emit(page, { request_id: 5, item_type: "File", content: '["C:\\synthetic\\demo.doc"]' });
+        await expect.poll(() => page.evaluate(() => (window as PreviewWindow).__residentPreview.calls
+            .some(call => call.command === "hide_preview_browser" && call.args.requestId === 4))).toBe(true);
         await expect(current(page).locator("[data-file-presentation='known']")).toHaveText("DOC");
         await expect.poll(() => committed(page, 5)).toBe(true);
         expect(await page.evaluate(() => (window as PreviewWindow).__residentPreview.calls
@@ -99,7 +109,7 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
         await expect(page.locator("img")).toHaveCount(0);
         await page.keyboard.press("ArrowRight");
         await expect.poll(() => page.evaluate(() => (window as PreviewWindow).__residentPreview.calls
-            .filter(call => call.command === "plugin:event|emit_to").at(-1)?.args.payload)).toMatchObject({ direction: 1, key: "ArrowRight" });
+            .filter(call => call.command === "preview_navigate_selection").at(-1)?.args)).toMatchObject({ direction: 1, key: "ArrowRight" });
         await page.screenshot({ path: testInfo.outputPath("resident-reopened.png"), animations: "disabled" });
     });
 }

@@ -22,6 +22,7 @@
     "dev:debug": "node ./scripts/run-dev-debug.mjs",
     "build": "tsc && vite build",
     "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-windows-release.ps1",
+    "build:windows:winui": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-windows-winui.ps1",
     "build:windows:signed-updater": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-windows-release.ps1 -SignUpdater",
     "build:macos": "bash ./scripts/build-macos-local.sh",
     "build:macos-release": "bash ./scripts/build-macos-release.sh",

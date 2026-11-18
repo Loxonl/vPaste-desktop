@@ -10,6 +10,7 @@ export type WindowShowPayload = {
 } | null;
 
 export type CustomTabsChangedPayload = {
+    mode?: "add" | "edit";
     activeId?: string;
     tabs?: CustomTab[];
 };
@@ -26,6 +27,7 @@ type ClipboardTauriEventHandlers = {
     onCaptureRejected?: () => void;
     onResourcesUpdated?: (payload: { epoch: number }) => void;
     onCustomTabsChanged: (payload: CustomTabsChangedPayload) => void;
+    onTabOrderChanged?: (payload: { order: string[] }) => void;
     onItemTagsChanged: (payload: ItemTagsChangedPayload) => void;
     onPermissionStatusChanged: () => void;
     onPreviewNavigation: (payload: PreviewNavigationPayload) => void;
@@ -112,6 +114,9 @@ export function useClipboardLifecycleSubscriptions(
                 subscriptions.tauri.onBehaviorConfigChanged(event.payload);
             },
         );
+        const unlistenTabOrder = listen<{ order: string[] }>("tab-order-changed", event => {
+            subscriptions.tauri.onTabOrderChanged?.(event.payload);
+        });
         const unlistenCustomTabs = listen<CustomTabsChangedPayload | string | null>(
             "custom-tabs-changed",
             event => {
@@ -162,6 +167,7 @@ export function useClipboardLifecycleSubscriptions(
             unlistenPermissionStatusChanged,
             unlistenBehaviorConfigChanged,
             unlistenCustomTabs,
+            unlistenTabOrder,
             unlistenItemTags,
             unlistenPreviewNavigation,
         ]).then(() => {
@@ -189,6 +195,7 @@ export function useClipboardLifecycleSubscriptions(
             removeTauriListener(unlistenCaptureRejected, "capture rejection");
             removeTauriListener(unlistenResources, "resources");
             removeTauriListener(unlistenCustomTabs, "custom tabs");
+            removeTauriListener(unlistenTabOrder, "tab order");
             removeTauriListener(unlistenItemTags, "item tags");
             removeTauriListener(unlistenPreviewNavigation, "preview navigation");
             removeTauriListener(unlistenTutorialStarted, "tutorial start");

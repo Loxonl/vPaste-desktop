@@ -113,6 +113,69 @@ fn settings_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
         .or_else(|| app.primary_monitor().ok().flatten())
 }
 
+#[cfg(target_os = "windows")]
+type SettingsDisplayStamp = (isize, [i32; 8], u32);
+
+#[cfg(target_os = "windows")]
+fn display_notification_changed(
+    previous: &mut Option<SettingsDisplayStamp>,
+    next: SettingsDisplayStamp,
+) -> bool {
+    previous.replace(next) != Some(next)
+}
+
+/// Settings only needs a new size recommendation after its display changes,
+/// not a WebView IPC round trip for every pixel of a native window drag.
+pub(crate) fn settings_display_changed(window: &tauri::Window) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use std::cell::RefCell;
+        use windows::Win32::{
+            Foundation::HWND,
+            Graphics::Gdi::{
+                GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+            },
+        };
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn GetDpiForWindow(window: HWND) -> u32;
+        }
+        thread_local! {
+            static LAST: RefCell<Option<SettingsDisplayStamp>> = const { RefCell::new(None) };
+        }
+        let Ok(handle) = window.hwnd() else {
+            return false;
+        };
+        let handle = HWND(handle.0 as isize);
+        // SAFETY: read-only snapshots of the event's live process-owned HWND.
+        let stamp = unsafe {
+            let monitor = MonitorFromWindow(handle, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+                return false;
+            }
+            let m = info.rcMonitor;
+            let w = info.rcWork;
+            (
+                handle.0,
+                [
+                    m.left, m.top, m.right, m.bottom, w.left, w.top, w.right, w.bottom,
+                ],
+                GetDpiForWindow(handle),
+            )
+        };
+        LAST.with(|last| display_notification_changed(&mut last.borrow_mut(), stamp))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        true
+    }
+}
+
 static PERCENT: AtomicU8 = AtomicU8::new(100);
 static PREVIEWING: AtomicBool = AtomicBool::new(false);
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(0);
@@ -222,7 +285,19 @@ fn apply_preview(
     app: &tauri::AppHandle,
     source: &tauri::WebviewWindow,
     size: PanelSize,
-) -> Result<tauri::WebviewWindow, String> {
+) -> Result<Option<tauri::WebviewWindow>, String> {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if crate::main_panel_mode::winui() {
+        PERCENT.store(size.percent(), Ordering::SeqCst);
+        crate::winui_panel::show_size_preview(source, size.scale())?;
+        return Ok(None);
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if crate::main_panel_mode::native() {
+        PERCENT.store(size.percent(), Ordering::SeqCst);
+        crate::native_panel::show_default(app.clone())?;
+        return Ok(None);
+    }
     let window = app
         .get_webview_window("clipboard")
         .ok_or("Main panel is unavailable")?;
@@ -245,7 +320,17 @@ fn apply_preview(
     crate::ui_text_scale::remember(&window, layout.content_scale);
     PERCENT.store(size.percent(), Ordering::SeqCst);
     show_without_activation(&window, source)?;
-    Ok(window)
+    Ok(Some(window))
+}
+
+fn finish_webview_preview(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("clipboard") {
+        let hidden = crate::finish_hide_window_locked(&window, false);
+        restore_normal_order(&window);
+        hidden
+    } else {
+        Ok(())
+    }
 }
 
 fn finish(
@@ -271,13 +356,23 @@ fn finish(
 
     // Remove the preview before writing configuration. Neither cancellation nor
     // a failed save may leave a non-interactive main panel on screen.
-    let hidden = if let Some(window) = app.get_webview_window("clipboard") {
-        let hidden = crate::finish_hide_window_locked(&window, false);
-        restore_normal_order(&window);
-        hidden
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if crate::main_panel_mode::native() {
+        crate::native_panel::close_preview(app)?;
+        crate::CLIPBOARD_VISIBLE.store(false, Ordering::SeqCst);
+        crate::background_resources::set_visible(app, false);
+    }
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    let hidden = if crate::main_panel_mode::winui() {
+        crate::winui_panel::finish_size_preview().map(|was_visible| {
+            crate::CLIPBOARD_VISIBLE.store(was_visible, Ordering::SeqCst);
+            crate::background_resources::set_visible(app, was_visible);
+        })
     } else {
-        Ok(())
+        finish_webview_preview(app)
     };
+    #[cfg(not(all(target_os = "windows", feature = "winui")))]
+    let hidden = finish_webview_preview(app);
     let saved = match commit {
         Some(size) if hidden.is_ok() => config::try_update(|config| {
             config.clipboard_panel_size = Some(size);
@@ -372,8 +467,10 @@ pub async fn begin_clipboard_size_preview(
             Ok(window) => {
                 crate::CLIPBOARD_VISIBLE.store(true, Ordering::SeqCst);
                 crate::background_resources::set_visible(&app, true);
-                let _ = window.emit("window-show", Option::<serde_json::Value>::None);
-                let _ = window.emit("window-show-complete", ());
+                if let Some(window) = window {
+                    let _ = window.emit("window-show", Option::<serde_json::Value>::None);
+                    let _ = window.emit("window-show-complete", ());
+                }
                 Ok(id)
             }
             Err(err) => {
@@ -426,6 +523,30 @@ pub async fn finish_clipboard_size_preview(
 #[cfg(test)]
 mod tests {
     use super::{recommended_size, PanelSize};
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn settings_drag_only_notifies_when_display_metrics_change() {
+        use super::display_notification_changed;
+        let first = (1, [0, 0, 1920, 1080, 0, 0, 1920, 1040], 96);
+        let mut last = None;
+        let count = (0..80)
+            .filter(|_| display_notification_changed(&mut last, first))
+            .count();
+        assert_eq!(
+            count, 1,
+            "a same-monitor drag must not enqueue 80 WebView evaluations"
+        );
+        for changed in [
+            (1, [-2560, 0, 0, 1440, -2560, 0, 0, 1400], 144),
+            (1, [-2560, 0, 0, 1440, -2560, 0, 0, 1360], 144),
+            (1, [-2560, 0, 0, 1440, -2560, 0, 0, 1360], 192),
+            (2, [-2560, 0, 0, 1440, -2560, 0, 0, 1360], 192),
+        ] {
+            assert!(display_notification_changed(&mut last, changed));
+            assert!(!display_notification_changed(&mut last, changed));
+        }
+    }
 
     #[test]
     fn configurations_without_an_override_follow_the_screen_and_manual_sizes_are_preserved() {

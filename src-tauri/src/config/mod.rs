@@ -55,6 +55,8 @@ pub struct Config {
     pub retain_tab_position: bool,
     #[serde(default = "default_true")]
     pub link_auto_preview: bool,
+    #[serde(default = "default_true")]
+    pub image_ocr_enabled: bool,
     #[serde(default)]
     pub mouse_paste_mode: MousePasteMode,
     // None follows the target screen; Some is a manual override, including Large.
@@ -94,6 +96,7 @@ impl Default for Config {
             retain_last_position: false,
             retain_tab_position: false,
             link_auto_preview: true,
+            image_ocr_enabled: true,
             mouse_paste_mode: MousePasteMode::Single,
             clipboard_panel_size: None,
             hover_preview_enabled: false,

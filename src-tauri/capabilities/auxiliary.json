@@ -4,8 +4,10 @@
   "local": true,
   "windows": [
     "devMemory",
+    "devTutorial",
     "pasteFallbackNotice",
     "onboardingPermission",
+    "nativeOnboarding",
     "trayMenu",
     "emojiPicker",
     "tabEditor"

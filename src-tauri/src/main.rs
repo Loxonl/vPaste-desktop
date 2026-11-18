@@ -64,9 +64,11 @@ mod config;
 mod dev_memory;
 mod history_store;
 mod history_views;
+mod image_ocr;
 mod image_preview;
 #[cfg(all(target_os = "macos", feature = "mac-app-store"))]
 mod mac_app_store;
+mod main_panel_mode;
 mod maintenance;
 mod media_resources;
 #[cfg(debug_assertions)]
@@ -75,6 +77,8 @@ mod memory_profile;
 mod native_drag_preview;
 #[cfg(target_os = "macos")]
 mod native_drag_snapshot;
+#[cfg(all(debug_assertions, target_os = "macos"))]
+mod native_panel;
 #[cfg(any(test, debug_assertions))]
 mod office_test_fixtures;
 mod panel_animation;
@@ -83,9 +87,16 @@ mod paste_queue;
 mod preview_behavior;
 #[cfg(test)]
 mod resource_budget_tests;
+#[cfg(all(target_os = "windows", feature = "winui"))]
+mod winui_panel;
+#[cfg(all(target_os = "windows", feature = "winui"))]
+mod winui_queue;
+#[cfg(all(target_os = "windows", feature = "winui"))]
+mod winui_tags;
 use preview_behavior::PreviewMode;
 mod preview_motion;
 use preview_motion::{PreviewRect, PreviewRequests};
+mod browser_preview;
 mod paste_queue_activation;
 #[cfg(any(target_os = "windows", test))]
 mod portable_autostart;
@@ -103,6 +114,8 @@ mod ui_text_scale;
 mod windows_main_shortcut;
 #[cfg(target_os = "windows")]
 mod windows_paste_focus;
+#[cfg(target_os = "windows")]
+mod windows_window_icon;
 
 #[cfg(test)]
 #[ctor]
@@ -133,6 +146,8 @@ enum PasteQueueRequestOrigin {
 
 static CLIPBOARD_VISIBLE: AtomicBool = AtomicBool::new(false);
 static CLIPBOARD_HIDING: AtomicBool = AtomicBool::new(false);
+#[cfg(all(target_os = "windows", feature = "winui-acceptance"))]
+static LOCAL_ACCEPTANCE_NO_CAPTURE: AtomicBool = AtomicBool::new(false);
 static CLIPBOARD_WINDOW_TRANSITION_LOCK: Mutex<()> = Mutex::new(());
 static IMAGE_PREVIEW_CACHE_PUBLISH_LOCK: Mutex<()> = Mutex::new(());
 static SEARCH_COMMAND_LOCK: Mutex<()> = Mutex::new(());
@@ -169,6 +184,8 @@ static ONBOARDING_SHORTCUT_DEMO_ENABLED: AtomicBool = AtomicBool::new(false);
 static TRAY_MENU_WATCH_GENERATION: AtomicU64 = AtomicU64::new(0);
 static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
 static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
+static PERMISSION_GUIDE_RETURN_TO_DEV_TUTORIAL: AtomicBool = AtomicBool::new(false);
+static PERMISSION_GUIDE_RETURN_TO_NATIVE_PANEL: AtomicBool = AtomicBool::new(false);
 static PASTE_FALLBACK_NOTICE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PASTE_QUEUE_INTERCEPTOR_READY: AtomicBool = AtomicBool::new(false);
 static PASTE_QUEUE_ACTIVATION: Mutex<paste_queue_activation::Requests> =
@@ -199,7 +216,6 @@ const CLIPBOARD_HIDE_ANIMATION_MS: u64 = panel_animation::model::HIDE_DURATION_M
 const CLIPBOARD_ANIMATION_FRAME_MS: u64 = 8;
 // Trial: keep the bounded main view warm while the native window is parked.
 const CLIPBOARD_PARK_WHEN_COLLAPSED: bool = true;
-const CLIPBOARD_HORIZONTAL_BLEED: f64 = 12.0;
 const PASTE_FALLBACK_NOTICE_WIDTH: f64 = 560.0;
 const PASTE_FALLBACK_NOTICE_HEIGHT: f64 = 76.0;
 const PASTE_QUEUE_WINDOW_WIDTH: f64 = 360.0;
@@ -282,6 +298,37 @@ async fn set_dev_memory_monitoring(
     {
         let _ = (app, enabled);
         Err("Memory monitor is unavailable in release builds".into())
+    }
+}
+
+#[tauri::command]
+fn open_native_main_panel(
+    app: tauri::AppHandle,
+    language_code: String,
+    theme: String,
+) -> Result<(), String> {
+    if !get_developer_mode() {
+        return Err("Native main panel requires a Debug build with --dev-mode".into());
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    {
+        native_panel::show(app, language_code, theme)
+    }
+    #[cfg(not(all(debug_assertions, target_os = "macos")))]
+    {
+        let _ = (app, language_code, theme);
+        Err("Native main panel is only available on macOS DEV".into())
+    }
+}
+
+fn native_auxiliary_window_active() -> bool {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    {
+        native_panel::is_key_window()
+    }
+    #[cfg(not(all(debug_assertions, target_os = "macos")))]
+    {
+        false
     }
 }
 
@@ -441,12 +488,6 @@ struct PreparedPreview {
     started: Instant,
     window_ready_ms: u128,
     prepare_ms: u128,
-}
-
-#[derive(Serialize)]
-struct LinkPreviewDocument {
-    url: String,
-    html: String,
 }
 
 fn now_millis() -> u64 {
@@ -670,7 +711,7 @@ fn cursor_is_over_windows_desktop(position: tauri::PhysicalPosition<i32>) -> boo
 
 #[cfg(target_os = "windows")]
 fn native_window_monitor(
-    window: &tauri::WebviewWindow,
+    app: &tauri::AppHandle,
     hwnd: windows::Win32::Foundation::HWND,
 ) -> Option<tauri::Monitor> {
     use windows::Win32::Graphics::Gdi::{
@@ -693,39 +734,38 @@ fn native_window_monitor(
     let monitor_rect = monitor_info.rcMonitor;
     let center_x = monitor_rect.left as f64 + (monitor_rect.right - monitor_rect.left) as f64 / 2.0;
     let center_y = monitor_rect.top as f64 + (monitor_rect.bottom - monitor_rect.top) as f64 / 2.0;
-    window
-        .app_handle()
-        .monitor_from_point(center_x, center_y)
-        .ok()
-        .flatten()
+    app.monitor_from_point(center_x, center_y).ok().flatten()
 }
 
 #[cfg(target_os = "windows")]
-fn focused_window_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
+fn focused_window_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
     let foreground = unsafe { GetForegroundWindow() };
     if foreground.0 == 0 {
         return None;
     }
-    native_window_monitor(window, foreground)
+    native_window_monitor(app, foreground)
 }
 
 #[cfg(target_os = "windows")]
 fn target_clipboard_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
-    let focused = focused_window_monitor(window);
+    target_clipboard_monitor_for_app(window.app_handle())
+}
+
+#[cfg(target_os = "windows")]
+fn target_clipboard_monitor_for_app(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
+    let focused = focused_window_monitor(app);
     let cursor_position = cursor_physical_position();
     let cursor_is_over_desktop = cursor_position
         .map(cursor_is_over_windows_desktop)
         .unwrap_or(false);
     let cursor = cursor_position.and_then(|position| {
-        window
-            .app_handle()
-            .monitor_from_point(position.x as f64, position.y as f64)
+        app.monitor_from_point(position.x as f64, position.y as f64)
             .ok()
             .flatten()
     });
-    let primary = window.primary_monitor().ok().flatten();
+    let primary = app.primary_monitor().ok().flatten();
     select_clipboard_monitor(cursor_is_over_desktop, focused, cursor, primary)
 }
 
@@ -767,10 +807,10 @@ fn clipboard_window_layout(bounds: ScreenBounds, panel_scale: f64) -> ClipboardW
     #[cfg(not(target_os = "windows"))]
     let height = CLIPBOARD_WINDOW_HEIGHT * panel_scale;
     ClipboardWindowLayout {
-        x: bounds.x - CLIPBOARD_HORIZONTAL_BLEED,
+        x: bounds.x,
         target_y: bounds.y + bounds.height - height,
         hidden_y: bounds.y + bounds.height,
-        width: bounds.width + CLIPBOARD_HORIZONTAL_BLEED * 2.0,
+        width: bounds.width,
         height,
         scale_factor: bounds.scale_factor,
         content_scale,
@@ -781,6 +821,18 @@ fn clipboard_window_physical_size(layout: ClipboardWindowLayout) -> (u32, u32) {
     (
         (layout.width * layout.scale_factor).round() as u32,
         (layout.height * layout.scale_factor).round() as u32,
+    )
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn outer_origin_for_client_target(
+    target: (i32, i32),
+    client_origin: (i32, i32),
+    outer_origin: (i32, i32),
+) -> (i32, i32) {
+    (
+        target.0 - (client_origin.0 - outer_origin.0),
+        target.1 - (client_origin.1 - outer_origin.1),
     )
 }
 
@@ -961,7 +1013,7 @@ fn source_window_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor
     #[cfg(target_os = "windows")]
     if let Ok(hwnd) = window.hwnd() {
         let native_hwnd = windows::Win32::Foundation::HWND(hwnd.0 as isize);
-        if let Some(monitor) = native_window_monitor(window, native_hwnd) {
+        if let Some(monitor) = native_window_monitor(window.app_handle(), native_hwnd) {
             return Some(monitor);
         }
     }
@@ -1022,12 +1074,42 @@ fn center_window_on_source_monitor(
     } else {
         None
     };
-    let Some(monitor) = select_auxiliary_monitor(
-        use_last_clipboard_monitor,
-        last_clipboard_monitor,
-        source_monitor,
-        target_clipboard_monitor(source_window),
-    ) else {
+    center_window_on_monitor(
+        window,
+        select_auxiliary_monitor(
+            use_last_clipboard_monitor,
+            last_clipboard_monitor,
+            source_monitor,
+            target_clipboard_monitor(source_window),
+        ),
+    )
+}
+
+fn target_main_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
+    cursor_physical_position()
+        .and_then(|position| {
+            app.monitor_from_point(position.x as f64, position.y as f64)
+                .ok()
+                .flatten()
+        })
+        .or_else(|| app.primary_monitor().ok().flatten())
+}
+
+fn main_panel_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        if let Some(monitor) = winui_panel::current_monitor(app) {
+            return Some(monitor);
+        }
+    }
+    target_main_monitor(app)
+}
+
+fn center_window_on_monitor(
+    window: &tauri::WebviewWindow,
+    monitor: Option<tauri::Monitor>,
+) -> Result<(), String> {
+    let Some(monitor) = monitor else {
         return window.center().map_err(|err| err.to_string());
     };
     let current_scale_factor = window.scale_factor().map_err(|err| err.to_string())?;
@@ -1061,6 +1143,14 @@ fn clipboard_screen_bounds(
     app: &tauri::AppHandle,
     fallback_window: &tauri::WebviewWindow,
 ) -> ScreenBounds {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if let Some(surface) = winui_panel::preview::surface() {
+        return surface.bounds;
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if let Some(surface) = native_panel::preview::surface() {
+        return surface.bounds;
+    }
     app.get_webview_window("clipboard")
         .as_ref()
         .map(screen_bounds)
@@ -1125,12 +1215,61 @@ mod clipboard_monitor_selection_tests {
 
         let layout = clipboard_window_layout(bounds, 1.0);
 
-        assert_eq!(layout.x, -12.0);
-        assert_eq!(layout.width, 2072.0);
+        assert_eq!(layout.x, 0.0);
+        assert_eq!(layout.width, 2048.0);
         assert_eq!(layout.target_y, 978.0);
         assert_eq!(layout.hidden_y, 1280.0);
         assert_eq!(layout.scale_factor, 1.25);
-        assert_eq!(clipboard_window_physical_size(layout), (2590, 378));
+        assert_eq!(clipboard_window_physical_size(layout), (2560, 378));
+    }
+
+    #[test]
+    fn clipboard_layout_never_bleeds_into_adjacent_monitors() {
+        let mut mismatches = Vec::new();
+        for (x, y, width, height, scale_factor) in [
+            (1600, 216, 3840, 2160, 2.0),
+            (0, 0, 1600, 2560, 2.25),
+            (-1600, -256, 1600, 2560, 2.25),
+            (-3024, 0, 3024, 1964, 2.0),
+            (0, -1080, 1920, 1080, 1.0),
+        ] {
+            let bounds = ScreenBounds {
+                x: f64::from(x) / scale_factor,
+                y: f64::from(y) / scale_factor,
+                width: f64::from(width) / scale_factor,
+                height: f64::from(height) / scale_factor,
+                scale_factor,
+            };
+            for panel_scale in [0.8, 0.9, 1.0] {
+                let layout = clipboard_window_layout(bounds, panel_scale);
+                let actual_x = (layout.x * scale_factor).round() as i32;
+                let (actual_width, actual_height) = clipboard_window_physical_size(layout);
+                if actual_x != x || actual_width != width as u32 {
+                    mismatches.push((x, width, scale_factor, panel_scale, actual_x, actual_width));
+                }
+                let bottom = (layout.target_y * scale_factor).round() as i32 + actual_height as i32;
+                assert!((bottom - (y + height)).abs() <= 1);
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "visible panel crosses its monitor: {mismatches:?}"
+        );
+    }
+
+    #[test]
+    fn clipboard_client_edges_ignore_native_shadow_frame_offsets() {
+        for (target, client, outer, expected) in [
+            ((1600, 1772), (1612, 1774), (1600, 1772), (1588, 1770)),
+            ((0, 1880), (-14, 1882), (-27, 1880), (-13, 1878)),
+            ((-1600, 0), (-1587, 2), (-1600, 0), (-1613, -2)),
+            ((0, -1080), (0, -1080), (0, -1080), (0, -1080)),
+        ] {
+            let actual = super::outer_origin_for_client_target(target, client, outer);
+            assert_eq!(actual, expected);
+            assert_eq!(actual.0 + client.0 - outer.0, target.0);
+            assert_eq!(actual.1 + client.1 - outer.1, target.1);
+        }
     }
 
     #[test]
@@ -1510,8 +1649,26 @@ fn current_window_logical_y(
     window: &tauri::WebviewWindow,
     target_scale_factor: f64,
 ) -> Option<f64> {
+    #[cfg(target_os = "windows")]
+    let position = window.inner_position().ok()?;
+    #[cfg(not(target_os = "windows"))]
     let position = window.outer_position().ok()?;
     Some(position.y as f64 / target_scale_factor)
+}
+
+#[cfg(target_os = "windows")]
+fn clipboard_window_outer_position(
+    window: &tauri::WebviewWindow,
+    target: tauri::PhysicalPosition<i32>,
+) -> Result<tauri::PhysicalPosition<i32>, String> {
+    let client = window.inner_position().map_err(|err| err.to_string())?;
+    let outer = window.outer_position().map_err(|err| err.to_string())?;
+    let (x, y) = outer_origin_for_client_target(
+        (target.x, target.y),
+        (client.x, client.y),
+        (outer.x, outer.y),
+    );
+    Ok(tauri::PhysicalPosition { x, y })
 }
 
 #[cfg(target_os = "windows")]
@@ -1521,11 +1678,19 @@ fn set_window_position_for_scale(
     y: f64,
     scale_factor: f64,
 ) -> Result<(), String> {
+    let target = tauri::PhysicalPosition {
+        x: (x * scale_factor).round() as i32,
+        y: (y * scale_factor).round() as i32,
+    };
+    // Only the main panel uses client-area coordinates; auxiliary windows keep
+    // their existing outer-frame positioning contract.
+    let target = if window.label() == "clipboard" {
+        clipboard_window_outer_position(window, target)?
+    } else {
+        target
+    };
     window
-        .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-            x: (x * scale_factor).round() as i32,
-            y: (y * scale_factor).round() as i32,
-        }))
+        .set_position(tauri::Position::Physical(target))
         .map_err(|err| err.to_string())
 }
 
@@ -1578,27 +1743,38 @@ fn reapply_clipboard_size_after_scale_change(window: &tauri::WebviewWindow, scal
         .as_ref()
         .map(screen_bounds_from_monitor)
         .unwrap_or_else(|| screen_bounds(window));
+    // The DPI event can precede the monitor metadata update. Preserve the
+    // physical monitor rectangle while using the window's reported DPI.
+    let ratio = bounds.scale_factor / scale_factor;
+    let bounds = ScreenBounds {
+        x: bounds.x * ratio,
+        y: bounds.y * ratio,
+        width: bounds.width * ratio,
+        height: bounds.height * ratio,
+        scale_factor,
+    };
     let previous_scale = panel_size::scale();
     let panel_scale = panel_size::use_configured_size(monitor.as_ref()).scale();
     if let Err(err) = window.set_zoom(panel_scale) {
         error!("Failed to apply main panel zoom after DPI change: {err}");
     }
-    let monitor_physical_width = bounds.width * bounds.scale_factor;
-    let logical_width = monitor_physical_width / scale_factor + CLIPBOARD_HORIZONTAL_BLEED * 2.0;
     let layout = clipboard_window_layout(bounds, panel_scale);
-    if let Err(err) = set_window_size_for_scale(window, logical_width, layout.height, scale_factor)
-    {
+    if let Err(err) = set_window_size_for_scale(window, layout.width, layout.height, scale_factor) {
         error!("Failed to reapply clipboard size after DPI change: {}", err);
     } else {
         ui_text_scale::remember(window, layout.content_scale);
     }
-    if previous_scale != panel_scale {
+    let y = if previous_scale != panel_scale {
         CLIPBOARD_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
-        let x = bounds.x * bounds.scale_factor / scale_factor - CLIPBOARD_HORIZONTAL_BLEED;
-        let y = (bounds.y + bounds.height) * bounds.scale_factor / scale_factor - layout.height;
-        if let Err(err) = set_window_position_for_scale(window, x, y, scale_factor) {
-            error!("Failed to dock resized main panel after DPI change: {err}");
-        }
+        layout.target_y
+    } else {
+        // Keep an in-flight vertical animation at its current client origin.
+        current_window_logical_y(window, scale_factor).unwrap_or(layout.target_y)
+    };
+    if let Err(err) = set_window_position_for_scale(window, layout.x, y, scale_factor) {
+        error!("Failed to dock resized main panel after DPI change: {err}");
+    }
+    if previous_scale != panel_scale {
         let _ = window.emit("window-show-complete", ());
     }
 }
@@ -1743,14 +1919,9 @@ fn park_clipboard_window(window: &tauri::WebviewWindow) -> Result<(), String> {
             .fold(f64::NEG_INFINITY, f64::max)
             + CLIPBOARD_WINDOW_HEIGHT * panel_size::scale();
         #[cfg(target_os = "macos")]
-        set_macos_clipboard_window_position(window, bounds.x - CLIPBOARD_HORIZONTAL_BLEED, y)?;
+        set_macos_clipboard_window_position(window, bounds.x, y)?;
         #[cfg(not(target_os = "macos"))]
-        set_window_position_for_scale(
-            window,
-            bounds.x - CLIPBOARD_HORIZONTAL_BLEED,
-            y,
-            bounds.scale_factor,
-        )?;
+        set_window_position_for_scale(window, bounds.x, y, bounds.scale_factor)?;
     }
     Ok(())
 }
@@ -1834,7 +2005,7 @@ fn finish_animated_hide_window(
     #[cfg(not(target_os = "macos"))]
     let animation_result = {
         let bounds = screen_bounds(window);
-        let x = bounds.x - CLIPBOARD_HORIZONTAL_BLEED;
+        let x = bounds.x;
         let target_y = bounds.y + bounds.height;
         let start_y = current_window_logical_y(window, bounds.scale_factor)
             .unwrap_or(clipboard_window_layout(bounds, panel_size::scale()).target_y);
@@ -2532,6 +2703,15 @@ async fn open_dev_memory_window(
     language_code: String,
     theme_preview: String,
 ) -> Result<(), String> {
+    open_dev_memory_window_from_source(app, Some(source_window), language_code, theme_preview).await
+}
+
+async fn open_dev_memory_window_from_source(
+    app: tauri::AppHandle,
+    source_window: Option<tauri::WebviewWindow>,
+    language_code: String,
+    theme_preview: String,
+) -> Result<(), String> {
     if !get_developer_mode() {
         return Err("Memory monitor requires Debug + --dev-mode".into());
     }
@@ -2549,7 +2729,11 @@ async fn open_dev_memory_window(
             let was_visible = window.is_visible().unwrap_or(false);
             let _ = window.unminimize();
             if !was_visible {
-                center_window_on_source_monitor(&window, &source_window)?;
+                if let Some(source) = source_window.as_ref() {
+                    center_window_on_source_monitor(&window, source)?;
+                } else {
+                    center_window_on_monitor(&window, main_panel_monitor(&app))?;
+                }
             }
             dev_memory::keep_on_top(&window)?;
             window
@@ -2575,6 +2759,35 @@ async fn open_dev_memory_window(
 }
 
 #[tauri::command]
+fn close_dev_tutorial_window(app: tauri::AppHandle) -> Result<(), String> {
+    if !get_developer_mode() {
+        return Err("Tutorial preview requires Debug + --dev-mode".into());
+    }
+    if let Some(window) = app.get_webview_window("devTutorial") {
+        auxiliary_windows::destroy(&window)?;
+    }
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+fn build_dev_tutorial_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let scale = ui_text_scale::current();
+    let window = WebviewWindowBuilder::new(app, "devTutorial", App("__dev-tutorial".into()))
+        .title("vPaste · Tutorial preview")
+        .visible(false)
+        .focused(false)
+        .decorations(true)
+        .resizable(true)
+        .always_on_top(true)
+        .inner_size(1120.0 * scale, 440.0 * scale)
+        .min_inner_size(860.0 * scale, 360.0 * scale)
+        .build()?;
+    ui_text_scale::remember(&window, scale);
+    apply_vpaste_window_icon(&window);
+    Ok(window)
+}
+
+#[tauri::command]
 fn close_dev_memory_window(app: tauri::AppHandle) -> Result<(), String> {
     if !get_developer_mode() {
         return Err("Memory monitor requires Debug + --dev-mode".into());
@@ -2591,6 +2804,14 @@ async fn open_config_window(
     source_window: tauri::WebviewWindow,
     target: Option<String>,
 ) -> Result<(), String> {
+    open_config_window_from_source(app, Some(source_window), target).await
+}
+
+async fn open_config_window_from_source(
+    app: tauri::AppHandle,
+    source_window: Option<tauri::WebviewWindow>,
+    target: Option<String>,
+) -> Result<(), String> {
     info!("Opening config window");
     let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::Config).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
@@ -2599,9 +2820,17 @@ async fn open_config_window(
         let _ = window.set_always_on_top(false);
         let _ = window.set_title("vPaste设置");
         apply_vpaste_window_icon(&window);
-        center_window_on_source_monitor(&window, &source_window)?;
+        if let Some(source) = source_window.as_ref() {
+            center_window_on_source_monitor(&window, source)?;
+        } else {
+            center_window_on_monitor(&window, main_panel_monitor(&app))?;
+        }
         if let Some(clipboard_window) = app.get_webview_window("clipboard") {
             let _ = finish_hide_window(&clipboard_window);
+        }
+        #[cfg(all(target_os = "windows", feature = "winui"))]
+        if main_panel_mode::winui() {
+            winui_panel::hide()?;
         }
         window.show().map_err(|err| err.to_string())?;
         activate_native_window(&window, "config open");
@@ -2631,6 +2860,13 @@ async fn open_test_room_window(
     app: tauri::AppHandle,
     source_window: tauri::WebviewWindow,
 ) -> Result<(), String> {
+    open_test_room_window_from_source(app, Some(source_window)).await
+}
+
+async fn open_test_room_window_from_source(
+    app: tauri::AppHandle,
+    source_window: Option<tauri::WebviewWindow>,
+) -> Result<(), String> {
     if let Some(message) = test_room_window_open_error(get_developer_mode()) {
         return Err(message.to_string());
     }
@@ -2641,7 +2877,11 @@ async fn open_test_room_window(
         if was_maximized {
             let _ = window.unmaximize();
         }
-        center_window_on_source_monitor(&window, &source_window)?;
+        if let Some(source) = source_window.as_ref() {
+            center_window_on_source_monitor(&window, source)?;
+        } else {
+            center_window_on_monitor(&window, main_panel_monitor(&app))?;
+        }
         window.show().map_err(|err| err.to_string())?;
         if was_maximized {
             let _ = window.maximize();
@@ -2666,13 +2906,19 @@ fn close_test_room_window(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 async fn show_paste_fallback_notice(app: tauri::AppHandle) -> Result<(), String> {
-    let clipboard_window = app
-        .get_webview_window("clipboard")
-        .ok_or_else(|| "clipboard window not found".to_string())?;
+    let clipboard_window = app.get_webview_window("clipboard");
     let notice_window =
         auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::PasteFallbackNotice).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
-        let bounds = screen_bounds(&clipboard_window);
+        let bounds = clipboard_window
+            .as_ref()
+            .map(screen_bounds)
+            .unwrap_or_else(|| {
+                target_main_monitor(&app)
+                    .as_ref()
+                    .map(screen_bounds_from_monitor)
+                    .unwrap_or_else(default_screen_bounds)
+            });
         let text_scale = ui_text_scale::current();
         let size =
             ui_text_scale::logical_size(PASTE_FALLBACK_NOTICE_WIDTH, PASTE_FALLBACK_NOTICE_HEIGHT);
@@ -2723,6 +2969,14 @@ fn minimize_current_window(window: tauri::WebviewWindow) -> Result<(), String> {
     window.minimize().map_err(|err| err.to_string())
 }
 
+#[cfg(target_os = "windows")]
+fn apply_vpaste_window_icon(window: &tauri::WebviewWindow) {
+    if let Err(err) = windows_window_icon::apply(&window.as_ref().window()) {
+        error!("Failed to schedule Windows window icon: {err}");
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 fn apply_vpaste_window_icon(window: &tauri::WebviewWindow) {
     match build_vpaste_window_icon() {
         Ok(icon) => {
@@ -2763,6 +3017,140 @@ fn build_vpaste_window_icon() -> Result<TauriImage<'static>, image::ImageError> 
 #[cfg(all(test, target_os = "windows"))]
 mod window_icon_tests {
     use super::build_vpaste_window_icon;
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::Graphics::Gdi::{DeleteObject, GetBitmapBits, GetObjectW, BITMAP, HBITMAP};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetIconInfo, SendMessageW, HICON, ICONINFO, ICON_BIG, ICON_SMALL, WM_GETICON,
+    };
+
+    struct IconBitmaps(ICONINFO);
+
+    impl Drop for IconBitmaps {
+        fn drop(&mut self) {
+            // SAFETY: GetIconInfo returns bitmap copies owned by this guard.
+            unsafe {
+                let _ = DeleteObject(self.0.hbmMask);
+                let _ = DeleteObject(self.0.hbmColor);
+            }
+        }
+    }
+
+    fn read_bitmap(handle: HBITMAP) -> (BITMAP, Vec<u8>) {
+        // SAFETY: the bitmap copy remains owned by the caller's IconBitmaps guard.
+        unsafe {
+            let mut bitmap = BITMAP::default();
+            assert_ne!(
+                GetObjectW(
+                    handle,
+                    std::mem::size_of::<BITMAP>() as i32,
+                    Some((&mut bitmap as *mut BITMAP).cast()),
+                ),
+                0
+            );
+            let mut bytes = vec![0_u8; (bitmap.bmWidthBytes * bitmap.bmHeight) as usize];
+            assert_eq!(
+                GetBitmapBits(handle, bytes.len() as i32, bytes.as_mut_ptr().cast()),
+                bytes.len() as i32
+            );
+            (bitmap, bytes)
+        }
+    }
+
+    fn window_icon(window: &tauri::Window, kind: u32) -> HICON {
+        let hwnd = HWND(window.hwnd().expect("get the fixture HWND").0 as isize);
+        // SAFETY: only query an icon from a live hidden fixture.
+        unsafe { HICON(SendMessageW(hwnd, WM_GETICON, WPARAM(kind as usize), LPARAM(0)).0) }
+    }
+
+    fn assert_native_icon_matches_image(handle: HICON, image: &tauri::image::Image<'_>) {
+        assert!(!handle.is_invalid());
+        let mut info = IconBitmaps(ICONINFO::default());
+        // SAFETY: the icon is owned by the process-lifetime cache throughout inspection.
+        unsafe { GetIconInfo(handle, &mut info.0).expect("read native icon bitmaps") };
+        let (bitmap, mask) = read_bitmap(info.0.hbmMask);
+        assert_eq!(
+            (bitmap.bmWidth, bitmap.bmHeight, bitmap.bmBitsPixel),
+            (32, 32, 1)
+        );
+        let stride = bitmap.bmWidthBytes as usize;
+        let mismatches = image
+            .rgba()
+            .chunks_exact(4)
+            .enumerate()
+            .filter(|(pixel, rgba)| {
+                let x = pixel % image.width() as usize;
+                let y = pixel / image.width() as usize;
+                let transparent = mask[y * stride + x / 8] & (0x80 >> (x % 8)) != 0;
+                transparent != (rgba[3] == 0)
+            })
+            .count();
+        assert_eq!(
+            mismatches, 0,
+            "native AND mask must match RGBA transparency"
+        );
+
+        let (bitmap, bgra) = read_bitmap(info.0.hbmColor);
+        assert_eq!(
+            (bitmap.bmWidth, bitmap.bmHeight, bitmap.bmBitsPixel),
+            (32, 32, 32)
+        );
+        for (native, rgba) in bgra.chunks_exact(4).zip(image.rgba().chunks_exact(4)) {
+            assert_eq!(
+                native,
+                &[rgba[2], rgba[1], rgba[0], rgba[3]],
+                "preserve logo colors and alpha"
+            );
+        }
+    }
+
+    #[test]
+    fn native_small_icon_mask_matches_image_alpha() {
+        let image = build_vpaste_window_icon().expect("build the window icon");
+        let mut app = tauri::Builder::<tauri::Wry>::new()
+            .any_thread()
+            .build(tauri::generate_context!())
+            .expect("build an isolated icon-test runtime");
+        let hidden_window = |label| {
+            // Hidden fixtures only; never show or focus a user's window.
+            tauri::WindowBuilder::new(&app, label)
+                .visible(false)
+                .focused(false)
+                .skip_taskbar(true)
+                .build()
+                .expect("build a hidden window")
+        };
+        let first = hidden_window("window-icon-test-first");
+        let second = hidden_window("window-icon-test-second");
+        let big_icon_before = window_icon(&first, ICON_BIG);
+        for window in [&first, &second] {
+            super::windows_window_icon::apply(window).expect("set the window icon");
+        }
+        // Drain the updates once, not a polling loop.
+        #[allow(deprecated)]
+        app.run_iteration(|_, _| {});
+
+        let handle = window_icon(&second, ICON_SMALL);
+        assert_native_icon_matches_image(handle, &image);
+        assert_eq!(
+            window_icon(&first, ICON_SMALL),
+            handle,
+            "reuse the shared HICON"
+        );
+        assert_eq!(
+            window_icon(&first, ICON_BIG),
+            big_icon_before,
+            "leave the taskbar icon unchanged"
+        );
+        assert!(!first.is_visible().expect("read fixture visibility"));
+        assert!(!second.is_visible().expect("read fixture visibility"));
+
+        first.destroy().expect("destroy the first hidden window");
+        #[allow(deprecated)]
+        app.run_iteration(|_, _| {});
+        assert_eq!(window_icon(&second, ICON_SMALL), handle);
+        assert_native_icon_matches_image(handle, &image);
+        second.destroy().expect("destroy the second hidden window");
+    }
 
     #[test]
     fn small_windows_icon_has_fully_transparent_corners() {
@@ -2777,6 +3165,19 @@ mod window_icon_tests {
             assert_eq!(alpha, 0, "corner ({x}, {y})");
         }
     }
+
+    #[test]
+    fn small_windows_icon_keeps_the_two_pixel_transparent_inset() {
+        let icon = build_vpaste_window_icon().expect("build the window icon");
+        for y in 0..icon.height() {
+            for x in 0..icon.width() {
+                if x < 2 || y < 2 || x >= icon.width() - 2 || y >= icon.height() - 2 {
+                    let alpha = icon.rgba()[((y * icon.width() + x) * 4 + 3) as usize];
+                    assert_eq!(alpha, 0, "inset ({x}, {y})");
+                }
+            }
+        }
+    }
 }
 
 fn mark_onboarding_completed(app: &tauri::AppHandle) {
@@ -2789,6 +3190,9 @@ fn mark_onboarding_completed(app: &tauri::AppHandle) {
 }
 
 fn begin_onboarding_impl(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if main_panel_mode::native() {
+        return Err("The main-panel tutorial requires --main-ui=webview".into());
+    }
     let window = app
         .get_webview_window("clipboard")
         .ok_or_else(|| "clipboard window not found".to_string())?;
@@ -2800,10 +3204,21 @@ fn begin_onboarding_impl(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow,
 
 #[tauri::command]
 fn begin_onboarding(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        ONBOARDING_ACTIVE.store(true, Ordering::SeqCst);
+        ONBOARDING_SHORTCUT_DEMO_ENABLED.store(false, Ordering::SeqCst);
+        return Ok(());
+    }
     begin_onboarding_impl(&app).map(|_| ())
 }
 
 fn show_onboarding_window(app: &tauri::AppHandle) -> Result<(), String> {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        winui_panel::onboarding::open(app.clone());
+        return Ok(());
+    }
     info!("Opening tutorial in main panel");
     let window = begin_onboarding_impl(app)?;
     let _ = window.emit("tutorial-started", ());
@@ -2816,6 +3231,19 @@ fn open_onboarding_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn restore_parent_after_permission_guide(app: &tauri::AppHandle) {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if PERMISSION_GUIDE_RETURN_TO_NATIVE_PANEL.swap(false, Ordering::SeqCst) {
+        let _ = native_panel::show_default(app.clone());
+        return;
+    }
+    if PERMISSION_GUIDE_RETURN_TO_DEV_TUTORIAL.swap(false, Ordering::SeqCst) {
+        if let Some(window) = app.get_webview_window("devTutorial") {
+            let _ = window.show();
+            activate_native_window(&window, "permission guide closed to tutorial preview");
+            let _ = window.set_focus();
+            return;
+        }
+    }
     if PERMISSION_GUIDE_RETURN_TO_CONFIG.swap(false, Ordering::SeqCst) {
         if let Some(window) = app.get_webview_window("config") {
             let _ = window.unminimize();
@@ -2825,6 +3253,11 @@ fn restore_parent_after_permission_guide(app: &tauri::AppHandle) {
             let _ = AsRef::<tauri::Webview>::as_ref(&window).set_focus();
             return;
         }
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if main_panel_mode::native() {
+        let _ = native_panel::show_default(app.clone());
+        return;
     }
     if let Some(window) = app.get_webview_window("clipboard") {
         show_clipboard_window(&window);
@@ -2836,6 +3269,23 @@ fn restore_parent_after_permission_guide(app: &tauri::AppHandle) {
 async fn open_onboarding_permission_window(
     app: tauri::AppHandle,
     source_window: tauri::WebviewWindow,
+    permission: String,
+    language_code: Option<String>,
+    theme_preview: Option<String>,
+) -> Result<(), String> {
+    open_onboarding_permission_window_from_source(
+        app,
+        Some(source_window),
+        permission,
+        language_code,
+        theme_preview,
+    )
+    .await
+}
+
+async fn open_onboarding_permission_window_from_source(
+    app: tauri::AppHandle,
+    source_window: Option<tauri::WebviewWindow>,
     permission: String,
     language_code: Option<String>,
     theme_preview: Option<String>,
@@ -2853,16 +3303,63 @@ async fn open_onboarding_permission_window(
         auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::OnboardingPermission)
             .await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
-        PERMISSION_GUIDE_RETURN_TO_CONFIG
-            .store(source_window.label() == "config", Ordering::SeqCst);
+        PERMISSION_GUIDE_RETURN_TO_CONFIG.store(
+            source_window
+                .as_ref()
+                .is_some_and(|source| source.label() == "config"),
+            Ordering::SeqCst,
+        );
+        PERMISSION_GUIDE_RETURN_TO_DEV_TUTORIAL.store(
+            source_window
+                .as_ref()
+                .is_some_and(|source| source.label() == "devTutorial"),
+            Ordering::SeqCst,
+        );
+        PERMISSION_GUIDE_RETURN_TO_NATIVE_PANEL.store(source_window.is_none(), Ordering::SeqCst);
         let _ = window.unminimize();
-        center_window_on_source_monitor(&window, &source_window)?;
+        if let Some(source) = source_window.as_ref() {
+            center_window_on_source_monitor(&window, source)?;
+        } else {
+            center_window_on_monitor(&window, main_panel_monitor(&app))?;
+        }
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        if source_window
+            .as_ref()
+            .is_none_or(|source| source.label() == "onboardingPermission")
+        {
+            if let Some(surface) = native_panel::preview::surface() {
+                let bounds = surface.bounds;
+                let size = window
+                    .outer_size()
+                    .map_err(|err| err.to_string())?
+                    .to_logical::<f64>(window.scale_factor().map_err(|err| err.to_string())?);
+                set_window_position_for_scale(
+                    &window,
+                    bounds.x + (bounds.width - size.width) / 2.0,
+                    bounds.y + (bounds.height - size.height) / 2.0,
+                    bounds.scale_factor,
+                )?;
+            }
+        }
         let _ = window.set_shadow(false);
         window
             .set_always_on_top(true)
             .map_err(|err| err.to_string())?;
         #[cfg(target_os = "macos")]
-        set_macos_window_level(&window, 102);
+        {
+            let level = 102;
+            #[cfg(debug_assertions)]
+            let level = if native_panel::preview::active()
+                || source_window
+                    .as_ref()
+                    .is_some_and(|source| source.label() == "devTutorial")
+            {
+                104
+            } else {
+                level
+            };
+            set_macos_window_level(&window, level);
+        }
         window.show().map_err(|err| err.to_string())?;
         activate_native_window(&window, "onboarding permission open");
         window.set_focus().map_err(|err| err.to_string())?;
@@ -2916,6 +3413,10 @@ fn complete_onboarding(app: tauri::AppHandle) -> Result<(), String> {
     mark_onboarding_completed(&app);
     ONBOARDING_ACTIVE.store(false, Ordering::SeqCst);
     ONBOARDING_SHORTCUT_DEMO_ENABLED.store(false, Ordering::SeqCst);
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        return winui_panel::onboarding::close(&app);
+    }
     if let Some(window) = app.get_webview_window("clipboard") {
         let _ = window.emit("tutorial-completed", ());
     }
@@ -2929,6 +3430,10 @@ fn set_onboarding_shortcut_demo_enabled(enabled: bool) {
 }
 
 fn prewarm_preview_window(app: tauri::AppHandle) {
+    // First-page profiling compares only the selected main renderer.
+    if memory_profile_active() {
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         let started = Instant::now();
         match auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::ClipboardPreview).await
@@ -2971,10 +3476,14 @@ fn build_preview_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewW
             set_macos_window_level(window, 102); // Above NSPopUpMenuWindowLevel
             configure_macos_overlay_window(window);
         }
+        browser_preview::prewarm(window.app_handle());
     })
 }
 
 fn preview_window_active(app: &tauri::AppHandle) -> bool {
+    if browser_preview::foreground(app, "webpage preview active") {
+        return true;
+    }
     if PREVIEW_PINNED.load(Ordering::SeqCst)
         || now_millis() < PREVIEW_IGNORE_BLUR_UNTIL.load(Ordering::SeqCst)
     {
@@ -2990,26 +3499,55 @@ fn preview_window_active(app: &tauri::AppHandle) -> bool {
 }
 
 fn preview_window_visible(app: &tauri::AppHandle) -> bool {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if winui_panel::preview::reader_visible() {
+        return true;
+    }
     app.get_webview_window("clipboardPreview")
         .map(|window| window.is_visible().unwrap_or(false))
         .unwrap_or(false)
 }
 
 fn app_window_is_foreground(app: &tauri::AppHandle, label: &str, context: &str) -> bool {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if label == "clipboardPreview" && winui_panel::preview::reader_foreground() {
+        return true;
+    }
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if label == "clipboard" && main_panel_mode::winui() {
+        return winui_panel::preview::foreground();
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if label == "clipboard" && native_panel::preview::active() {
+        return native_panel::is_key_window();
+    }
+    if label == "clipboardPreview" && browser_preview::foreground(app, context) {
+        return true;
+    }
     app.get_webview_window(label)
         .map(|window| is_native_window_foreground(&window, context))
         .unwrap_or(false)
 }
 
 fn retain_preview_window(app: &tauri::AppHandle) -> Result<(), String> {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        winui_panel::preview::closed();
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    native_panel::preview::closed();
     PREVIEW_HOVER.store(false, Ordering::SeqCst);
     PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
     PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
     if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
-        clear_preview_content(&preview_window);
+        let _closed = clear_preview_content(&preview_window);
         if auxiliary_windows::is_open(&preview_window) {
             preview_window.hide().map_err(|err| err.to_string())?;
+        }
+        #[cfg(all(target_os = "windows", feature = "winui"))]
+        if main_panel_mode::winui() {
+            winui_panel::preview::release_closed_renderer(app, preview_window, _closed);
         }
     } else {
         cancel_preview_content();
@@ -3020,6 +3558,15 @@ fn retain_preview_window(app: &tauri::AppHandle) -> Result<(), String> {
 fn hide_preview_and_clipboard(app: &tauri::AppHandle, context: &str) {
     info!("Hide preview and clipboard: {}", context);
     let _ = retain_preview_window(app);
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        let _ = winui_panel::hide();
+        return;
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if native_panel::preview::active() {
+        native_panel::preview::hide(app);
+    }
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
         hide_clipboard_window(&clipboard_window);
     }
@@ -3069,6 +3616,18 @@ fn cursor_inside_window(window: &tauri::WebviewWindow) -> bool {
 }
 
 fn cursor_inside_app_windows(app: &tauri::AppHandle) -> bool {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if winui_panel::preview::reader_cursor_inside() {
+        return true;
+    }
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if winui_panel::preview::cursor_inside() {
+        return true;
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if native_panel::preview::cursor_inside() {
+        return true;
+    }
     [
         "clipboard",
         "clipboardPreview",
@@ -3254,7 +3813,7 @@ fn watch_tray_menu_outside_click(window: tauri::WebviewWindow) {
                 break;
             }
             if mouse_button_pressed() && !cursor_inside_window(&window) {
-                let _ = auxiliary_windows::destroy(&window);
+                let _ = hide_tray_menu(window.clone());
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(30));
@@ -3359,7 +3918,7 @@ fn watch_paste_queue_pointer(app: tauri::AppHandle, generation: u64) {
             }
             if should_track_paste_queue_foreground_target(
                 paste_queue::is_active(),
-                CLIPBOARD_VISIBLE.load(Ordering::SeqCst),
+                main_surface_visible(),
             ) && last_foreground_recorded_at.elapsed() >= std::time::Duration::from_millis(100)
             {
                 record_foreground_app_before_clipboard();
@@ -3515,6 +4074,9 @@ fn begin_preview_focus_handoff() {
 
 fn focus_preview_window(window: &tauri::WebviewWindow, context: &str) -> Result<(), String> {
     begin_preview_focus_handoff();
+    if browser_preview::focus_under_cursor(window.app_handle())? {
+        return Ok(());
+    }
     focus_clipboard_window(window, context);
     window.set_focus().map_err(|err| err.to_string())?;
     AsRef::<tauri::Webview>::as_ref(window)
@@ -3523,6 +4085,18 @@ fn focus_preview_window(window: &tauri::WebviewWindow, context: &str) -> Result<
 }
 
 fn move_focus_to_clipboard(app: &tauri::AppHandle, context: &str) {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        begin_preview_focus_handoff();
+        let _ = winui_panel::preview::focus();
+        return;
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if native_panel::preview::active() {
+        begin_preview_focus_handoff();
+        let _ = native_panel::preview::focus(app);
+        return;
+    }
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
         if !is_native_window_foreground(&clipboard_window, context) {
             begin_preview_focus_handoff();
@@ -3534,12 +4108,24 @@ fn move_focus_to_clipboard(app: &tauri::AppHandle, context: &str) {
 /// Window under the cursor, preview first because it floats above the clipboard.
 fn cursor_focus_region(app: &tauri::AppHandle) -> Option<preview_focus::FocusTarget> {
     use preview_focus::FocusTarget;
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if winui_panel::preview::reader_cursor_inside() {
+        return Some(FocusTarget::Preview);
+    }
     if preview_window_visible(app)
         && app
             .get_webview_window("clipboardPreview")
             .is_some_and(|window| cursor_inside_window(&window))
     {
         return Some(FocusTarget::Preview);
+    }
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if winui_panel::preview::cursor_inside() {
+        return Some(FocusTarget::Clipboard);
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if native_panel::preview::cursor_inside() {
+        return Some(FocusTarget::Clipboard);
     }
     if CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
         && app
@@ -3557,6 +4143,7 @@ fn other_vpaste_window_focused(app: &tauri::AppHandle) -> bool {
     app.webview_windows().iter().any(|(label, window)| {
         label != "clipboard"
             && label != "clipboardPreview"
+            && label != browser_preview::LABEL
             && window.is_visible().unwrap_or(false)
             && window.is_focused().unwrap_or(false)
     })
@@ -3566,7 +4153,7 @@ fn focus_watch_state(app: &tauri::AppHandle) -> preview_focus::WatchState {
     let clipboard_foreground = app_window_is_foreground(app, "clipboard", "focus watch");
     let preview_foreground = app_window_is_foreground(app, "clipboardPreview", "focus watch");
     preview_focus::WatchState {
-        clipboard_available: CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+        clipboard_available: main_surface_visible()
             && !CLIPBOARD_HIDING.load(Ordering::SeqCst)
             && !other_vpaste_window_focused(app),
         clipboard_foreground,
@@ -3576,8 +4163,15 @@ fn focus_watch_state(app: &tauri::AppHandle) -> preview_focus::WatchState {
     }
 }
 
-fn focus_watch_needed() -> bool {
+fn main_surface_visible() -> bool {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if native_panel::preview::active() {
+        return true;
+    }
     CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+}
+fn focus_watch_needed() -> bool {
+    main_surface_visible()
 }
 
 /// Lets keyboard focus follow the cursor: entering the clipboard always takes
@@ -3607,6 +4201,11 @@ fn ensure_focus_watch(app: &tauri::AppHandle) {
             let Some(target) = watch.pending(cursor_focus_region(&app)) else {
                 continue;
             };
+            #[cfg(all(target_os = "windows", feature = "winui"))]
+            if main_panel_mode::winui() && (winui_panel::dragging() || winui_panel::modal_active())
+            {
+                continue;
+            }
             let eligibility = preview_focus::eligibility(target, focus_watch_state(&app));
             watch.resolve(eligibility);
             if eligibility != Eligibility::Ready {
@@ -3614,6 +4213,18 @@ fn ensure_focus_watch(app: &tauri::AppHandle) {
             }
             match target {
                 FocusTarget::Clipboard => {
+                    #[cfg(all(target_os = "windows", feature = "winui"))]
+                    if main_panel_mode::winui() {
+                        begin_preview_focus_handoff();
+                        let _ = winui_panel::preview::focus();
+                        continue;
+                    }
+                    #[cfg(all(debug_assertions, target_os = "macos"))]
+                    if native_panel::preview::active() {
+                        begin_preview_focus_handoff();
+                        let _ = native_panel::preview::focus(&app);
+                        continue;
+                    }
                     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
                         begin_preview_focus_handoff();
                         activate_from_background(
@@ -3624,6 +4235,12 @@ fn ensure_focus_watch(app: &tauri::AppHandle) {
                     }
                 }
                 FocusTarget::Preview => {
+                    #[cfg(all(target_os = "windows", feature = "winui"))]
+                    if winui_panel::preview::reader_visible() {
+                        begin_preview_focus_handoff();
+                        winui_panel::preview::focus_reader();
+                        continue;
+                    }
                     if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
                         if let Err(err) =
                             focus_preview_window(&preview_window, "preview focus follows cursor")
@@ -3679,6 +4296,56 @@ fn activate_from_background(window: &tauri::WebviewWindow, context: &str) {
 #[cfg(not(target_os = "windows"))]
 fn activate_from_background(_window: &tauri::WebviewWindow, _context: &str) {}
 
+fn handle_main_panel_focus_lost(app: tauri::AppHandle) {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if native_panel::onboarding::active() {
+        return;
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        if tab_editor_window_active(&app)
+            || text_editor_window_active(&app)
+            || memory_monitor_window_active(&app)
+            || native_auxiliary_window_active()
+        {
+            return;
+        }
+        if preview_window_visible(&app) {
+            let pinned = PREVIEW_PINNED.load(Ordering::SeqCst);
+            let preview_foreground =
+                app_window_is_foreground(&app, "clipboardPreview", "clipboard blur preview guard");
+            let clipboard_foreground =
+                app_window_is_foreground(&app, "clipboard", "clipboard blur self guard");
+            let cursor_inside_app = cursor_inside_app_windows(&app);
+            if pinned || preview_foreground || clipboard_foreground || cursor_inside_app {
+                return;
+            }
+            hide_preview_and_clipboard(&app, "clipboard blur outside app");
+            return;
+        }
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        if native_panel::preview::active() {
+            if !native_panel::is_key_window() {
+                hide_preview_and_clipboard(&app, "native main blur outside app");
+            }
+            return;
+        }
+        if let Some(window) = app.get_webview_window("clipboard") {
+            let tauri_focused = window.is_focused().unwrap_or(false);
+            let native_foreground = is_native_window_foreground(&window, "focus-loss hide guard");
+            let tab_editor_active =
+                tab_editor_window_active(&app) || memory_monitor_window_active(&app);
+            if CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+                && !tauri_focused
+                && !native_foreground
+                && !tab_editor_active
+            {
+                hide_clipboard_window(&window);
+            }
+        }
+    });
+}
+
 fn handle_preview_focus_lost(app: tauri::AppHandle) {
     use preview_focus::{Action, Phase};
     let generation = PREVIEW_WINDOW_GENERATION.load(Ordering::SeqCst);
@@ -3707,9 +4374,7 @@ fn handle_preview_focus_lost(app: tauri::AppHandle) {
             Action::Keep | Action::Recheck => {}
             Action::HidePreview => {
                 let _ = retain_preview_window(&app);
-                if let Some(clipboard_window) = app.get_webview_window("clipboard") {
-                    focus_clipboard_window(&clipboard_window, "preview blur to clipboard");
-                }
+                move_focus_to_clipboard(&app, "preview blur to clipboard");
             }
             Action::HideBoth => hide_preview_and_clipboard(&app, "preview blur outside app"),
         }
@@ -3822,15 +4487,102 @@ fn preview_window_size(
     }
 }
 
+fn image_text_preview_source(hash: &str) -> String {
+    clipboard::db::db()
+        .query_row(
+            "SELECT content FROM clipboard WHERE hash = ?1 AND item_type = 'Image'",
+            [hash],
+            |row| row.get(0),
+        )
+        .unwrap_or_default()
+}
+
+fn centered_preview_position(
+    bounds: ScreenBounds,
+    size: PreviewWindowSize,
+) -> LogicalPosition<f64> {
+    LogicalPosition {
+        x: bounds.x + (bounds.width - size.width) / 2.0,
+        y: bounds.y + (bounds.height - size.height) / 2.0,
+    }
+}
+
+#[cfg(test)]
+mod image_text_preview_tests {
+    use super::*;
+
+    #[test]
+    fn comparison_uses_the_original_image_path_and_keeps_missing_images_safe() {
+        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(root.path().to_string_lossy().into_owned());
+        config::save(config::Config::default());
+        clipboard::db::init();
+        clipboard::db::db()
+            .execute_batch(
+                "INSERT INTO clipboard(hash,time,content,preview_content,item_type)
+                 VALUES('image',1,'original.png','thumbnail.png','Image'),
+                       ('text',2,'not an image','text-preview','Text');",
+            )
+            .unwrap();
+        assert_eq!(image_text_preview_source("image"), "original.png");
+        assert!(image_text_preview_source("text").is_empty());
+        assert!(image_text_preview_source("deleted").is_empty());
+    }
+
+    #[test]
+    fn image_text_uses_text_preview_dimensions_and_centers_within_the_screen() {
+        for bounds in [
+            ScreenBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+                scale_factor: 1.0,
+            },
+            ScreenBounds {
+                x: -1280.0,
+                y: -200.0,
+                width: 1280.0,
+                height: 720.0,
+                scale_factor: 1.5,
+            },
+            ScreenBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 480.0,
+                height: 320.0,
+                scale_factor: 2.0,
+            },
+        ] {
+            let size = preview_window_size("ImageText", "image-hash", "", "", "", bounds);
+            let position = centered_preview_position(bounds, size);
+            assert!(size.width <= bounds.width * 0.8);
+            assert!(size.height <= bounds.height * 0.8);
+            assert_eq!(position.x + size.width / 2.0, bounds.x + bounds.width / 2.0);
+            assert_eq!(
+                position.y + size.height / 2.0,
+                bounds.y + bounds.height / 2.0
+            );
+        }
+    }
+}
+
 fn preview_position_avoiding_clipboard(
     app: &tauri::AppHandle,
     bounds: ScreenBounds,
     size: PreviewWindowSize,
 ) -> LogicalPosition<f64> {
-    let fallback = LogicalPosition {
-        x: bounds.x + (bounds.width - size.width) / 2.0,
-        y: bounds.y + (bounds.height - size.height) / 2.0,
-    };
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if let Some(surface) = winui_panel::preview::surface() {
+        return centered_preview_position(surface.preview_area(PREVIEW_CLIPBOARD_GAP), size);
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if let Some(surface) = native_panel::preview::surface() {
+        let area = surface.preview_area(PREVIEW_CLIPBOARD_GAP);
+        return centered_preview_position(area, size);
+    }
+    let fallback = centered_preview_position(bounds, size);
 
     let Some(clipboard_window) = app.get_webview_window("clipboard") else {
         return fallback;
@@ -3865,6 +4617,14 @@ fn preview_position_avoiding_clipboard(
 }
 
 fn preview_bounds_avoiding_clipboard(app: &tauri::AppHandle, bounds: ScreenBounds) -> ScreenBounds {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if let Some(surface) = winui_panel::preview::surface() {
+        return surface.preview_area(PREVIEW_CLIPBOARD_GAP);
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if let Some(surface) = native_panel::preview::surface() {
+        return surface.preview_area(PREVIEW_CLIPBOARD_GAP);
+    }
     let Some(clipboard_window) = app.get_webview_window("clipboard") else {
         return bounds;
     };
@@ -3891,17 +4651,20 @@ fn preview_bounds_avoiding_clipboard(app: &tauri::AppHandle, bounds: ScreenBound
     }
 }
 
-fn cancel_preview_content() {
+fn cancel_preview_content() -> u64 {
     let mut pending = PREVIEW_PENDING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    PREVIEW_REQUESTS.cancel();
+    let closed = PREVIEW_REQUESTS.cancel();
     *pending = None;
+    closed
 }
 
-fn clear_preview_content(window: &tauri::WebviewWindow) {
-    cancel_preview_content();
+fn clear_preview_content(window: &tauri::WebviewWindow) -> u64 {
+    let closed = cancel_preview_content();
+    browser_preview::clear(window.app_handle());
     let _ = window.emit("preview-clear", ());
+    closed
 }
 
 #[cfg(target_os = "windows")]
@@ -4096,6 +4859,15 @@ fn commit_preview_window(
     ) {
         return Ok(false);
     }
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    let (native_reader_handoff, native_reader_rect) = if main_panel_mode::winui() {
+        let Some(handoff) = winui_panel::preview::reader_handoff(request_id) else {
+            return Ok(false);
+        };
+        handoff
+    } else {
+        (false, None)
+    };
     let cursor_in_preview = cursor_physical_position().is_some_and(|cursor| {
         let rect = prepared.rect;
         preview_focus::rect_contains_point(
@@ -4104,18 +4876,41 @@ fn commit_preview_window(
             (cursor.x, cursor.y),
         )
     });
-    let focus_target =
-        preview_focus::commit_focus_target(prepared.mode.takes_focus(), cursor_in_preview);
+    browser_preview::prepare(
+        &app,
+        request_id,
+        (prepared.payload.item_type == "Link").then_some(prepared.payload.content.as_str()),
+    );
+    let focus_target = preview_focus::commit_focus_target(
+        prepared.mode.takes_focus(),
+        cursor_in_preview,
+        prepared.payload.item_type == "ImageText",
+    );
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    let focus_target = focus_target.or_else(|| {
+        (native_reader_handoff && prepared.mode != PreviewMode::Hover)
+            .then_some(preview_focus::FocusTarget::Preview)
+    });
     let from = current_preview_rect(&window, prepared.scale_factor)?;
-    if visible
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    let from = native_reader_rect.map_or(from, |rect| PreviewRect {
+        x: f64::from(rect.left) / prepared.scale_factor,
+        y: f64::from(rect.top) / prepared.scale_factor,
+        width: f64::from(rect.right - rect.left) / prepared.scale_factor,
+        height: f64::from(rect.bottom - rect.top) / prepared.scale_factor,
+    });
+    let continuous = visible;
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    let continuous = continuous || native_reader_rect.is_some();
+    let animated = continuous
         && !reduced_motion
         && !system_reduces_motion()
         && !from.near(prepared.rect)
-        && easing.iter().all(|value| value.is_finite())
-    {
-        animate_preview_rect(window.clone(), &prepared, from, duration_ms, easing);
-    } else {
+        && easing.iter().all(|value| value.is_finite());
+    if !animated {
         set_preview_rect(&window, prepared.rect, prepared.scale_factor)?;
+    } else if !visible {
+        set_preview_rect(&window, from, prepared.scale_factor)?;
     }
     if !visible {
         window
@@ -4123,9 +4918,35 @@ fn commit_preview_window(
             .map_err(|err| err.to_string())?;
         window.show().map_err(|err| err.to_string())?;
         window.set_focusable(true).map_err(|err| err.to_string())?;
+        // On macOS this API queues a floating-level write after our native
+        // level, putting the preview below the main panel (101).
+        #[cfg(not(target_os = "macos"))]
         let _ = window.set_always_on_top(true);
-        #[cfg(target_os = "macos")]
-        set_macos_window_level(&window, 102);
+    }
+    // Keep the native content visible until the ready shared window is mapped.
+    // A stale shared commit must not retire a newer native selection.
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        winui_panel::preview::retire_reader(request_id);
+    }
+    if animated {
+        animate_preview_rect(window.clone(), &prepared, from, duration_ms, easing);
+    }
+    // Restore the native level for first show and visible-window reuse alike.
+    #[cfg(target_os = "macos")]
+    {
+        let level = 102;
+        #[cfg(debug_assertions)]
+        let level = if native_panel::preview::active() {
+            104
+        } else {
+            level
+        };
+        set_macos_window_level(&window, level);
+        #[cfg(debug_assertions)]
+        if let Some(browser) = app.get_webview_window(browser_preview::LABEL) {
+            set_macos_window_level(&browser, level);
+        }
     }
     match focus_target {
         Some(preview_focus::FocusTarget::Preview) => {
@@ -4135,6 +4956,21 @@ fn commit_preview_window(
             move_focus_to_clipboard(&app, "preview show keeps clipboard focus")
         }
         None => {}
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if native_panel::preview::active() && std::env::args().any(|arg| arg == "--native-panel-check")
+    {
+        eprintln!(
+            "[native-preview] mode={:?} direction={} rect={:?} main={:?} visible={} mainKey={} animated={} reduced={}",
+            prepared.mode,
+            prepared.payload.navigation_direction,
+            prepared.rect,
+            native_panel::preview::surface().map(|surface| surface.rect),
+            window.is_visible().unwrap_or(false),
+            native_panel::is_key_window(),
+            animated,
+            reduced_motion || system_reduces_motion()
+        );
     }
     info!(
         "preview timing: request={} first_show={} window_ready_ms={} prepare_ms={} render_wait_ms={} commit_ms={} total_ms={}",
@@ -4147,6 +4983,25 @@ fn commit_preview_window(
         prepared.started.elapsed().as_millis()
     );
     Ok(true)
+}
+
+fn preview_origin_current(native_request: Option<u64>) -> bool {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    {
+        return native_request.is_none_or(winui_panel::preview::current);
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    {
+        native_request.is_none_or(native_panel::preview::current)
+    }
+    #[cfg(not(any(
+        all(debug_assertions, target_os = "macos"),
+        all(target_os = "windows", feature = "winui")
+    )))]
+    {
+        let _ = native_request;
+        true
+    }
 }
 
 #[tauri::command]
@@ -4165,17 +5020,57 @@ async fn show_preview_window(
     history_hash: Option<String>,
     text_truncated: Option<bool>,
 ) -> Result<(), String> {
+    prepare_preview_window(
+        app,
+        item_type,
+        content,
+        preview_content,
+        text_content,
+        rich_html,
+        app_source,
+        mode,
+        hover_request,
+        navigation_direction,
+        rich_resources,
+        history_hash,
+        text_truncated,
+        None,
+    )
+    .await
+}
+
+async fn prepare_preview_window(
+    app: tauri::AppHandle,
+    item_type: String,
+    content: String,
+    preview_content: String,
+    text_content: String,
+    rich_html: String,
+    app_source: String,
+    mode: Option<PreviewMode>,
+    hover_request: Option<u64>,
+    navigation_direction: Option<i8>,
+    rich_resources: Option<Vec<rich_card_assets::RichImageResource>>,
+    history_hash: Option<String>,
+    text_truncated: Option<bool>,
+    native_request: Option<u64>,
+) -> Result<(), String> {
     let started = Instant::now();
     let mode = mode.unwrap_or_default();
     if mode == PreviewMode::Hover {
-        let navigation_foreground = ["clipboard", "clipboardPreview"].iter().any(|label| {
-            (*label == "clipboard" || PREVIEW_HOVER.load(Ordering::SeqCst))
-                && app.get_webview_window(label).is_some_and(|window| {
-                    window.is_focused().unwrap_or(false)
-                        || is_native_window_foreground(&window, "hover preview foreground guard")
-                })
-        });
-        if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+        let navigation_foreground =
+            app_window_is_foreground(&app, "clipboard", "hover preview native guard")
+                || ["clipboard", "clipboardPreview"].iter().any(|label| {
+                    (*label == "clipboard" || PREVIEW_HOVER.load(Ordering::SeqCst))
+                        && app.get_webview_window(label).is_some_and(|window| {
+                            window.is_focused().unwrap_or(false)
+                                || is_native_window_foreground(
+                                    &window,
+                                    "hover preview foreground guard",
+                                )
+                        })
+                });
+        if !main_surface_visible()
             || !navigation_foreground
             || !matches!(item_type.as_str(), "Text" | "TextFile" | "Image" | "Link")
             || hover_request.unwrap_or(0) < PREVIEW_HOVER_REQUEST.load(Ordering::SeqCst)
@@ -4195,25 +5090,45 @@ async fn show_preview_window(
         let mut pending = PREVIEW_PENDING
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !preview_origin_current(native_request) {
+            return Ok(());
+        }
         PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
         let request_id = PREVIEW_REQUESTS.begin();
         *pending = None;
         PREVIEW_HOVER.store(mode == PreviewMode::Hover, Ordering::SeqCst);
         if mode == PreviewMode::Manual {
             PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
-            PREVIEW_PINNED.store(false, Ordering::SeqCst);
+            // A reading surface stays open until Close/Escape and must not be
+            // replaced by selection-following or a hover preview.
+            PREVIEW_PINNED.store(item_type == "ImageText", Ordering::SeqCst);
         }
         request_id
     };
     let window =
         auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::ClipboardPreview).await?;
     let window_ready_ms = started.elapsed().as_millis();
-    if !PREVIEW_REQUESTS.current(request_id) {
+    if !PREVIEW_REQUESTS.current(request_id) || !preview_origin_current(native_request) {
+        #[cfg(all(target_os = "windows", feature = "winui"))]
+        if main_panel_mode::winui() {
+            if let Some(closed) = PREVIEW_REQUESTS.inactive_version() {
+                winui_panel::preview::release_closed_renderer(&app, window, closed);
+            }
+        }
         return Ok(());
     }
     let prepare_started = Instant::now();
     let bounds = clipboard_screen_bounds(&app, &window);
-    let preview_bounds = preview_bounds_avoiding_clipboard(&app, bounds);
+    let image_text = item_type == "ImageText";
+    let preview_bounds = if image_text {
+        bounds
+    } else {
+        preview_bounds_avoiding_clipboard(&app, bounds)
+    };
+    let native_layout = native_request.is_some() && !image_text;
+    if native_layout && (preview_bounds.width <= 0.0 || preview_bounds.height <= 0.0) {
+        return Err("No screen space is available above the main panel".into());
+    }
     // File materialization and thumbnail reads must not block the native event loop.
     let (payload, size) = tauri::async_runtime::spawn_blocking(move || {
         let (
@@ -4257,6 +5172,11 @@ async fn show_preview_window(
                 text_truncated.unwrap_or(false),
             )
         };
+        let preview_content = if item_type == "ImageText" {
+            image_text_preview_source(&content)
+        } else {
+            preview_content
+        };
         let source_image_path = if content.is_empty() {
             &preview_content
         } else {
@@ -4267,7 +5187,7 @@ async fn show_preview_window(
         } else {
             String::new()
         };
-        let size = preview_window_size(
+        let mut size = preview_window_size(
             &item_type,
             &content,
             &preview_content,
@@ -4275,6 +5195,13 @@ async fn show_preview_window(
             &rich_html,
             preview_bounds,
         );
+        if native_layout {
+            let fit = (preview_bounds.width / size.width)
+                .min(preview_bounds.height / size.height)
+                .min(1.0);
+            size.width *= fit;
+            size.height *= fit;
+        }
         Ok::<_, String>((
             PreviewPayload {
                 text_truncated,
@@ -4296,7 +5223,7 @@ async fn show_preview_window(
     .await
     .map_err(|err| err.to_string())??;
     let prepare_ms = prepare_started.elapsed().as_millis();
-    if !PREVIEW_REQUESTS.current(request_id) {
+    if !PREVIEW_REQUESTS.current(request_id) || !preview_origin_current(native_request) {
         return Ok(());
     }
     if mode == PreviewMode::Hover
@@ -4312,7 +5239,10 @@ async fn show_preview_window(
         return Ok(());
     }
     auxiliary_windows::on_main_thread(app.clone(), move || {
-        if !auxiliary_windows::is_open(&window) || !PREVIEW_REQUESTS.current(request_id) {
+        if !auxiliary_windows::is_open(&window)
+            || !PREVIEW_REQUESTS.current(request_id)
+            || !preview_origin_current(native_request)
+        {
             return Ok(());
         }
         PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
@@ -4320,12 +5250,16 @@ async fn show_preview_window(
             now_millis().saturating_add(if mode == PreviewMode::Hover { 0 } else { 1800 }),
             Ordering::SeqCst,
         );
-        let position = preview_position_avoiding_clipboard(&app, bounds, size);
+        let position = if image_text {
+            centered_preview_position(bounds, size)
+        } else {
+            preview_position_avoiding_clipboard(&app, bounds, size)
+        };
         {
             let mut pending = PREVIEW_PENDING
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if !PREVIEW_REQUESTS.current(request_id) {
+            if !PREVIEW_REQUESTS.current(request_id) || !preview_origin_current(native_request) {
                 return Ok(());
             }
             *pending = Some(PreparedPreview {
@@ -4368,43 +5302,42 @@ fn resize_preview_image_window(
 }
 
 #[tauri::command]
-async fn fetch_link_preview_document(url: String) -> Result<LinkPreviewDocument, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let parsed = reqwest::Url::parse(url.trim()).map_err(|_| "link_preview_blocked".to_string())?;
-        if !clipboard::is_previewable_domain_link(parsed.as_str()) {
-            return Err("link_preview_blocked".to_string());
-        }
-        let client = clipboard::preview_http_client(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 vPaste/1.0",
-            6,
-            false,
-        )?;
-        let response = client.get(parsed.clone(), &[])?;
-        let final_url = response.url().clone();
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if !content_type.is_empty() && !content_type.contains("text/html") {
-            return Err("link_preview_not_html".to_string());
-        }
-        let mut html = client.text(response)?;
-        let base = format!(r#"<base href="{}">"#, final_url);
-        if html.to_ascii_lowercase().contains("<head") {
-            html = html.replacen("<head>", &format!("<head>{}", base), 1);
-            html = html.replacen("<HEAD>", &format!("<HEAD>{}", base), 1);
-        } else {
-            html = format!("<head>{}</head>{}", base, html);
-        }
-        Ok(LinkPreviewDocument {
-            url: final_url.to_string(),
-            html,
-        })
-    })
-    .await
-    .map_err(|err| err.to_string())?
+fn preview_navigate_selection(
+    app: tauri::AppHandle,
+    direction: i8,
+    key: String,
+    ctrl_key: Option<bool>,
+) -> Result<(), String> {
+    let direction = if direction < 0 { -1 } else { 1 };
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        winui_panel::preview::navigate(direction, &key, ctrl_key.unwrap_or(false));
+        return Ok(());
+    }
+    let payload =
+        serde_json::json!({"direction":direction,"key":key,"ctrlKey":ctrl_key.unwrap_or(false)});
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if native_panel::preview::route(serde_json::json!({"event":"preview-navigation",
+        "direction":direction,"key":key,"ctrlKey":ctrl_key.unwrap_or(false)}))
+    {
+        return Ok(());
+    }
+    app.emit_to("clipboard", "preview-navigate-selection", payload)
+        .map_err(|error| error.to_string())
+}
+#[tauri::command]
+fn preview_pointer_changed(app: tauri::AppHandle, inside: bool) -> Result<(), String> {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        winui_panel::preview::pointer_changed(inside);
+        return Ok(());
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if native_panel::preview::route(serde_json::json!({"event":"preview-hover","inside":inside})) {
+        return Ok(());
+    }
+    app.emit_to("clipboard", "preview-hover", inside)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -4416,6 +5349,10 @@ fn is_preview_window_visible(app: tauri::AppHandle) -> bool {
 fn set_preview_pinned(app: tauri::AppHandle, pinned: bool) {
     PREVIEW_PINNED.store(pinned, Ordering::SeqCst);
     if pinned {
+        #[cfg(all(target_os = "windows", feature = "winui"))]
+        if main_panel_mode::winui() {
+            winui_panel::preview::pinned();
+        }
         cancel_preview_content();
         PREVIEW_HOVER.store(false, Ordering::SeqCst);
         PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
@@ -4562,13 +5499,30 @@ fn maybe_hide_macos_dock_icon() {
 #[tauri::command]
 fn hide_preview_window(app: tauri::AppHandle) -> Result<(), String> {
     retain_preview_window(&app)?;
-    if let Some(clipboard_window) = app.get_webview_window("clipboard") {
-        focus_clipboard_window(&clipboard_window, "preview closed");
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if native_panel::preview::active() {
+        return native_panel::preview::focus(&app);
     }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if main_panel_mode::native() {
+        return native_panel::show_default(app);
+    }
+    move_focus_to_clipboard(&app, "preview closed");
     Ok(())
 }
 
 fn show_main_panel_for_app(app: &tauri::AppHandle) -> Result<(), String> {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if main_panel_mode::native() {
+        return native_panel::show_default(app.clone());
+    }
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        if let Some(result) = winui_panel::onboarding::show_if_active(app) {
+            return result;
+        }
+        return winui_panel::show(app.clone());
+    }
     let window = app
         .get_webview_window("clipboard")
         .ok_or_else(|| "clipboard window not found".to_string())?;
@@ -4583,6 +5537,13 @@ fn show_main_panel(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn hide_tray_menu(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Reuse the styled menu instead of booting WebView2 at every click.
+        TRAY_MENU_WATCH_GENERATION.fetch_add(1, Ordering::SeqCst);
+        return window.hide().map_err(|err| err.to_string());
+    }
+    #[cfg(not(target_os = "windows"))]
     auxiliary_windows::destroy(&window).map_err(|err| err.to_string())
 }
 
@@ -4661,6 +5622,10 @@ async fn open_tab_editor_window(
                 fit_content_window_to_work_area(&window)?;
             }
         }
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        if native_panel::preview::active() {
+            set_macos_window_level(&window, 104);
+        }
         window.show().map_err(|err| err.to_string())?;
         let _ = activate_native_window(&window, "tab editor open");
         window.set_focus().map_err(|err| err.to_string())?;
@@ -4712,6 +5677,10 @@ async fn open_emoji_picker_window(
     let window =
         auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::EmojiPicker).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        if native_panel::preview::active() {
+            set_macos_window_level(&window, 105);
+        }
         let editor_position = editor.outer_position().map_err(|err| err.to_string())?;
         let scale_factor =
             editor.scale_factor().map_err(|err| err.to_string())? * ui_text_scale::current();
@@ -4827,6 +5796,10 @@ fn hide_tab_editor_window(window: tauri::WebviewWindow) -> Result<(), String> {
         let _ = auxiliary_windows::destroy(&emoji_picker_window);
     }
     auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if native_panel::tab_editor_closed(&app) {
+        return Ok(());
+    }
     if let Some(clipboard_window) = app.get_webview_window("clipboard") {
         focus_clipboard_window(&clipboard_window, "tab editor closed");
     }
@@ -4838,6 +5811,15 @@ fn apply_custom_tabs_from_editor(
     app: tauri::AppHandle,
     payload: serde_json::Value,
 ) -> Result<(), String> {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    {
+        // The editor also saves these itself, but as a separate request; store
+        // them before the native panel re-reads its tabs.
+        if let Some(tabs) = payload.get("tabs") {
+            save_custom_tabs(tabs.clone())?;
+        }
+        native_panel::tabs_changed(&payload);
+    }
     app.emit_to("clipboard", "custom-tabs-changed", payload)
         .map_err(|err| err.to_string())
 }
@@ -5662,6 +6644,54 @@ fn set_item_favorite(hash: String, favorite: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_tab_order() -> Result<Vec<String>, String> {
+    clipboard::db::read_tab_order(&clipboard::db::db()).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn save_tab_order(app: tauri::AppHandle, order: Vec<String>) -> Result<(), String> {
+    let conn = clipboard::db::db();
+    clipboard::db::write_tab_order(&conn, &order).map_err(|err| err.to_string())?;
+    let order = clipboard::db::read_tab_order(&conn).map_err(|err| err.to_string())?;
+    publish_tab_order(&app, &order)
+}
+
+fn publish_tab_order(app: &tauri::AppHandle, order: &[String]) -> Result<(), String> {
+    app.emit("tab-order-changed", serde_json::json!({"order": order}))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn reorder_tab(
+    app: tauri::AppHandle,
+    source_id: String,
+    target_id: String,
+    before: bool,
+) -> Result<Vec<String>, String> {
+    let custom = get_custom_tabs()?;
+    let mut known = custom
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|tab| tab["id"].as_str().map(String::from))
+        .collect::<Vec<_>>();
+    known.extend(
+        clipboard::list_tags()?
+            .into_iter()
+            .map(|tag| format!("record:{}", tag.id)),
+    );
+    let order = clipboard::db::reorder_tab_order(
+        &clipboard::db::db(),
+        &known,
+        &source_id,
+        &target_id,
+        before,
+    )?;
+    publish_tab_order(&app, &order)?;
+    Ok(order)
+}
+
+#[tauri::command]
 fn list_item_tags() -> Result<Vec<clipboard::item::ItemTag>, String> {
     clipboard::list_tags()
 }
@@ -5789,6 +6819,15 @@ fn hide_text_editor_window(app: tauri::AppHandle) -> Result<(), String> {
     }
     *TEXT_EDITOR_TARGET.lock().unwrap() = None;
     TEXT_EDITOR_FOCUSED.store(false, Ordering::SeqCst);
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        begin_preview_focus_handoff();
+        return winui_panel::restore_after_editor();
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if main_panel_mode::native() {
+        return native_panel::show_default(app);
+    }
     if let Some(window) = app.get_webview_window("clipboard") {
         if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
             show_clipboard_window(&window);
@@ -6078,16 +7117,13 @@ fn build_file_preview_info(content: String) -> Result<FilePreviewInfo, String> {
     let is_pdf = lower_extension == "pdf";
     let is_text_preview = is_plain_text_preview_extension(&extension);
     let is_image_preview = is_image_preview_extension(&extension);
-    let preview_path =
-        if exists && !display_path.is_empty() && !is_directory && !is_pdf && !is_text_preview {
-            if is_image_preview {
-                display_path.clone()
-            } else {
-                create_file_thumbnail(&display_path).unwrap_or_default()
-            }
-        } else {
-            String::new()
-        };
+    // Ordinary files stay icon-only: do not invoke Shell thumbnail handlers
+    // (video/document codecs) while rendering a clipboard card or Space preview.
+    let preview_path = if exists && !is_directory && is_image_preview {
+        display_path.clone()
+    } else {
+        String::new()
+    };
     let image_dimensions = if !preview_path.is_empty() {
         image_preview::metadata_for_path(&preview_path)
             .ok()
@@ -6125,139 +7161,16 @@ fn build_file_preview_info(content: String) -> Result<FilePreviewInfo, String> {
     })
 }
 
-#[cfg(target_os = "windows")]
-fn create_file_thumbnail(path: &str) -> Result<String, String> {
-    use image::{ImageBuffer, Rgba};
-    use sha2::{Digest, Sha256};
-    use std::mem::{size_of, zeroed};
-    use windows::core::HSTRING;
-    use windows::Win32::Foundation::{HWND, SIZE};
-    use windows::Win32::Graphics::Gdi::{
-        DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
-        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-    };
-    use windows::Win32::System::Com::{
-        CoInitializeEx, CoUninitialize, IBindCtx, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
-    };
-    use windows::Win32::UI::Shell::{
-        IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK, SIIGBF_SCALEUP,
-        SIIGBF_THUMBNAILONLY,
-    };
-
-    let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-
-    let mut hasher = Sha256::new();
-    hasher.update(path.as_bytes());
-    hasher.update(modified.to_string().as_bytes());
-    let hash = hex::encode(hasher.finalize());
-
-    let preview_dir = PathBuf::from(app_runtime_dir(&["file_previews"]));
-    fs::create_dir_all(&preview_dir).map_err(|err| err.to_string())?;
-    let preview_path = preview_dir.join(format!("{}.png", hash));
-    if preview_path.exists() {
-        return Ok(preview_path.to_string_lossy().to_string());
-    }
-
-    unsafe {
-        let coinited =
-            CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_ok();
-
-        let result = (|| {
-            let shell_item: IShellItemImageFactory =
-                SHCreateItemFromParsingName(&HSTRING::from(path), None::<&IBindCtx>)
-                    .map_err(|err| err.to_string())?;
-            let bitmap = shell_item
-                .GetImage(
-                    SIZE { cx: 420, cy: 300 },
-                    SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK | SIIGBF_SCALEUP,
-                )
-                .map_err(|err| err.to_string())?;
-
-            let mut bitmap_info: BITMAP = zeroed();
-            let object_size = GetObjectW(
-                bitmap,
-                size_of::<BITMAP>() as i32,
-                Some(&mut bitmap_info as *mut _ as *mut _),
-            );
-            if object_size == 0 || bitmap_info.bmWidth <= 0 || bitmap_info.bmHeight <= 0 {
-                let _ = DeleteObject(bitmap);
-                return Err("read thumbnail bitmap metadata failed".to_string());
-            }
-
-            let width = bitmap_info.bmWidth as u32;
-            let height = bitmap_info.bmHeight as u32;
-            let mut bits = vec![0_u8; (width * height * 4) as usize];
-            let mut dib_info = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: width as i32,
-                    biHeight: -(height as i32),
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    biSizeImage: (width * height * 4) as u32,
-                    biXPelsPerMeter: 0,
-                    biYPelsPerMeter: 0,
-                    biClrUsed: 0,
-                    biClrImportant: 0,
-                },
-                bmiColors: Default::default(),
-            };
-
-            let hdc = GetDC(HWND(0));
-            let lines = GetDIBits(
-                hdc,
-                bitmap,
-                0,
-                height,
-                Some(bits.as_mut_ptr() as *mut _),
-                &mut dib_info,
-                DIB_RGB_COLORS,
-            );
-            let _ = ReleaseDC(HWND(0), hdc);
-            let _ = DeleteObject(bitmap);
-            if lines == 0 {
-                return Err("read thumbnail bitmap pixels failed".to_string());
-            }
-
-            for pixel in bits.chunks_exact_mut(4) {
-                pixel.swap(0, 2);
-            }
-
-            let image: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_vec(width, height, bits)
-                .ok_or_else(|| "create thumbnail image buffer failed".to_string())?;
-            let mut png_bytes = Vec::new();
-            image
-                .write_to(
-                    &mut std::io::Cursor::new(&mut png_bytes),
-                    image::ImageFormat::Png,
-                )
-                .map_err(|err| err.to_string())?;
-            history_store::write_file(&preview_path, &png_bytes)?;
-            Ok(preview_path.to_string_lossy().to_string())
-        })();
-
-        if coinited {
-            CoUninitialize();
-        }
-
-        result
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn create_file_thumbnail(_path: &str) -> Result<String, String> {
-    Ok(String::new())
-}
-
 #[tauri::command]
 async fn wait_for_clipboard_capture() -> Result<Option<String>, String> {
+    // The isolated fixture has no live clipboard monitor or pending capture.
+    if local_acceptance_no_capture() {
+        return Ok(None);
+    }
+    #[cfg(debug_assertions)]
+    if memory_profile_active() {
+        return Ok(None);
+    }
     #[cfg(target_os = "windows")]
     {
         return tauri::async_runtime::spawn_blocking(clipboard::windows::listen::wait_for_capture)
@@ -6275,6 +7188,23 @@ fn toggle_clipboard_window(app: &tauri::AppHandle) {
             let _ = editor.set_focus();
             return;
         }
+    }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if main_panel_mode::native() || native_panel::onboarding::active() {
+        if let Err(error) = native_panel::toggle(app.clone()) {
+            error!("Failed to toggle native main panel: {error}");
+        }
+        return;
+    }
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        if winui_panel::onboarding::toggle_if_active(app) {
+            return;
+        }
+        if let Err(error) = winui_panel::toggle(app.clone()) {
+            error!("Failed to toggle WinUI main panel: {error}");
+        }
+        return;
     }
     if let Some(window) = app.get_webview_window("clipboard") {
         if CLIPBOARD_VISIBLE.load(Ordering::SeqCst) && !CLIPBOARD_HIDING.load(Ordering::SeqCst) {
@@ -7583,6 +8513,7 @@ fn import_history_archive_impl(
     }
     paste_queue::emit_state(&app);
     progress.finish();
+    let _ = app.emit("history-reset", ());
 
     Ok(HistoryArchiveInfo {
         archive_path,
@@ -7803,8 +8734,37 @@ mod file_preview_tests {
     use std::io::Cursor;
 
     #[test]
-    fn gif_file_preview_uses_original_path_and_dimensions() {
+    fn ordinary_files_do_not_request_shell_thumbnails() {
+        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
         let workspace = tempfile::tempdir().unwrap();
+        let previous = GLOBAL_APP_DATA_DIR
+            .lock()
+            .unwrap()
+            .replace(workspace.path().to_string_lossy().into_owned());
+        for extension in ["mp4", "mov", "mp3", "docx", "zip"] {
+            let file = workspace.path().join(format!("sample.{extension}"));
+            fs::write(&file, b"file preview must not invoke a Shell handler").unwrap();
+            let info = build_file_preview_info(
+                serde_json::to_string(&vec![file.to_string_lossy()]).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(info.kind, "single-icon");
+            assert!(info.preview_path.is_empty());
+            assert_eq!((info.image_width, info.image_height), (None, None));
+        }
+        *GLOBAL_APP_DATA_DIR.lock().unwrap() = previous;
+        assert!(
+            !workspace.path().join("file_previews").exists(),
+            "ordinary files must not even initialize the Shell thumbnail cache"
+        );
+    }
+
+    #[test]
+    fn gif_file_preview_uses_original_path_and_dimensions() {
+        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        *GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(workspace.path().to_string_lossy().into_owned());
         let gif_path = workspace.path().join("sample.gif");
         let image = image::RgbaImage::from_pixel(2, 3, image::Rgba([255, 0, 0, 255]));
         let mut bytes = Vec::new();
@@ -7826,7 +8786,10 @@ mod file_preview_tests {
 
     #[test]
     fn image_file_preview_uses_original_path_for_file_semantics() {
+        let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
         let workspace = tempfile::tempdir().unwrap();
+        *GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(workspace.path().to_string_lossy().into_owned());
         let image_path = workspace.path().join("sample.png");
         let image = image::RgbaImage::from_pixel(4, 5, image::Rgba([0, 128, 255, 255]));
         image
@@ -8718,7 +9681,12 @@ fn sync_autostart(app: &tauri::AppHandle, startup: bool) -> Result<bool, String>
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn is_legacy_autostart_entry(value: &str, current_exe: Option<&str>) -> bool {
+fn is_legacy_autostart_entry(value: &str, current_exe: Option<&str>, portable: bool) -> bool {
+    // Portable startup ownership is enforced by portable_autostart. Its legacy
+    // cleanup must not remove another checkout's or installation's login entry.
+    if portable {
+        return false;
+    }
     let text = value.replace('/', "\\").to_ascii_lowercase();
     if current_exe
         .filter(|path| !path.is_empty())
@@ -8746,7 +9714,8 @@ mod autostart_tests {
         let current = r"E:\Coding\vPaste\src-tauri\target\debug\vPaste.exe";
         assert!(!is_legacy_autostart_entry(
             &format!(r#""{current}""#),
-            Some(current)
+            Some(current),
+            false
         ));
     }
 
@@ -8754,15 +9723,30 @@ mod autostart_tests {
     fn removes_another_checkout_debug_autostart_entry() {
         assert!(is_legacy_autostart_entry(
             r#""E:\Coding\old-vPaste\src-tauri\target\debug\vPaste.exe""#,
-            Some(r"E:\Coding\vPaste\src-tauri\target\debug\vPaste.exe")
+            Some(r"E:\Coding\vPaste\src-tauri\target\debug\vPaste.exe"),
+            false
         ));
+    }
+
+    #[test]
+    fn portable_sessions_keep_other_checkout_startup_entries() {
+        let portable = r"E:\Portable vPaste\vPaste.exe";
+        for value in [
+            r#""E:\Coding\vPaste\src-tauri\target\debug\vPaste.exe" --dev-mode --main-ui=winui"#,
+            r#""E:\Antigravity\vPaste-desktop\vpaste-desktop.exe""#,
+            r#"cargo run --bin vPaste"#,
+        ] {
+            assert!(!is_legacy_autostart_entry(value, Some(portable), true));
+            assert!(is_legacy_autostart_entry(value, Some(portable), false));
+        }
     }
 
     #[test]
     fn keeps_a_release_autostart_entry() {
         assert!(!is_legacy_autostart_entry(
             r#""C:\Program Files\vPaste\vPaste.exe""#,
-            None
+            None,
+            false
         ));
     }
 
@@ -8810,6 +9794,9 @@ mod autostart_tests {
 
 #[cfg(target_os = "windows")]
 fn cleanup_legacy_autostart_entries() {
+    if local_acceptance_no_capture() {
+        return;
+    }
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
     use winreg::RegKey;
 
@@ -8834,7 +9821,7 @@ fn cleanup_legacy_autostart_entries() {
         let Ok(value) = run_key.get_value::<String, _>(name) else {
             continue;
         };
-        if is_legacy_autostart_entry(&value, current_exe.as_deref()) {
+        if is_legacy_autostart_entry(&value, current_exe.as_deref(), runtime_mode::is_portable()) {
             let _ = run_key.delete_value(name);
             info!("removed legacy autostart entry: {}", name);
         }
@@ -8847,6 +9834,7 @@ fn cleanup_legacy_autostart_entries() {}
 #[tauri::command]
 fn save_config(app: tauri::AppHandle, config: String) -> Result<SettingsSaveInfo, String> {
     let _cleanup = auto_cleanup::pause();
+    let _ocr_storage = image_ocr::storage_guard();
     let mut config_struct: Config =
         serde_json::from_str(&config).map_err(|err| format!("配置格式无效，无法保存：{}", err))?;
     #[cfg(not(target_os = "windows"))]
@@ -8941,9 +9929,16 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<SettingsSaveInfo
     clipboard::db::try_init().map_err(|err| err.to_string())?;
     let target_dir = history_storage_dir();
     if previous_history_dir != target_dir || !search::engine::is_ready() {
+        if previous_history_dir != target_dir {
+            image_ocr::resume_requested_jobs();
+        }
         if let Err(err) = rebuild_current_search_index() {
             error!("Failed to rebuild search index after changing history storage: {err}");
         }
+    }
+    image_ocr::wake();
+    if previous_history_dir != target_dir {
+        let _ = app.emit("history-reset", ());
     }
     auto_cleanup::request();
     Ok(SettingsSaveInfo {
@@ -9946,6 +10941,26 @@ fn close_history_view(view_id: String) {
 }
 
 #[tauri::command]
+async fn show_image_text_window(app: tauri::AppHandle, hash: String) -> Result<(), String> {
+    show_preview_window(
+        app,
+        "ImageText".to_string(),
+        hash,
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+        Some(PreviewMode::Manual),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
 async fn show_history_preview(
     app: tauri::AppHandle,
     hash: String,
@@ -10782,24 +11797,51 @@ fn should_refresh_paste_queue_click_target(
     origin == PasteQueueRequestOrigin::QueueWindow && !clipboard_visible
 }
 
-fn prepare_paste_queue_click_target(app: &tauri::AppHandle, origin: PasteQueueRequestOrigin) {
-    if !should_prepare_paste_queue_click_target(origin, CLIPBOARD_VISIBLE.load(Ordering::SeqCst)) {
-        return;
+fn prepare_paste_queue_click_target(
+    app: &tauri::AppHandle,
+    origin: PasteQueueRequestOrigin,
+) -> Result<(), String> {
+    if winui_queue_ui_enabled() {
+        #[cfg(all(target_os = "windows", feature = "winui"))]
+        {
+            // Capture an external app if it is currently foreground; the helper
+            // ignores vPaste itself, preserving the previously captured target.
+            record_foreground_app_before_clipboard();
+            if CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+                winui_panel::hide_for_queue_paste()?;
+                let started = Instant::now();
+                while CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
+                    && started.elapsed() < std::time::Duration::from_millis(400)
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(8));
+                }
+            }
+        }
+        restore_foreground_app_before_paste();
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        return Ok(());
     }
 
-    if CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+    if !should_prepare_paste_queue_click_target(origin, main_surface_visible()) {
+        return Ok(());
+    }
+
+    if main_surface_visible() {
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        if native_panel::preview::active() {
+            native_panel::preview::hide(app);
+        }
         if let Some(window) = app.get_webview_window("clipboard") {
             hide_clipboard_window(&window);
-            let started = Instant::now();
-            while CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
-                && started.elapsed() < std::time::Duration::from_millis(400)
-            {
-                std::thread::sleep(std::time::Duration::from_millis(8));
-            }
+        }
+        let started = Instant::now();
+        while main_surface_visible() && started.elapsed() < std::time::Duration::from_millis(400) {
+            std::thread::sleep(std::time::Duration::from_millis(8));
         }
     }
     restore_foreground_app_before_paste();
     std::thread::sleep(std::time::Duration::from_millis(40));
+    Ok(())
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -10834,12 +11876,13 @@ fn process_paste_queue_request_inner(app: &tauri::AppHandle, request: PasteQueue
             return;
         }
     };
+    let restore_native_queue_view = winui_queue_ui_enabled();
 
     paste_queue::clear_error();
     paste_queue::set_busy(true);
     paste_queue::emit_state(app);
     let result = restore_paste_queue_item(app.clone(), &hash).and_then(|_| {
-        prepare_paste_queue_click_target(app, request.origin);
+        prepare_paste_queue_click_target(app, request.origin)?;
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         PASTE_QUEUE_INTERNAL_PASTE.store(true, Ordering::SeqCst);
         let result = simulate_paste_shortcut();
@@ -10868,6 +11911,15 @@ fn process_paste_queue_request_inner(app: &tauri::AppHandle, request: PasteQueue
     }
     paste_queue::set_busy(false);
     paste_queue::emit_state(app);
+    if restore_native_queue_view
+        && paste_queue::is_active()
+        && request.activation_epoch == paste_queue::activation_epoch()
+    {
+        #[cfg(all(target_os = "windows", feature = "winui"))]
+        if let Err(error) = winui_panel::show_queue_no_activate() {
+            log::warn!("failed to restore native queue view after paste: {error}");
+        }
+    }
 }
 
 fn process_paste_queue_request(app: &tauri::AppHandle, request: PasteQueueRequest) {
@@ -11510,6 +12562,10 @@ fn show_paste_queue_window(
         .get_webview_window("clipboard")
         .map(|clipboard_window| target_clipboard_screen_bounds(&clipboard_window))
         .unwrap_or_else(|| screen_bounds(&window));
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    let bounds = native_panel::preview::surface()
+        .map(|surface| surface.bounds)
+        .unwrap_or(bounds);
     let size = ui_text_scale::logical_size(PASTE_QUEUE_WINDOW_WIDTH, PASTE_QUEUE_WINDOW_HEIGHT);
     let x = bounds.x + bounds.width - size.width - 24.0;
     let y = bounds.y + (bounds.height - size.height) / 2.0;
@@ -11520,7 +12576,19 @@ fn show_paste_queue_window(
     if ui_text_scale::current() > 1.0 {
         fit_content_window_to_work_area(window)?;
     }
-    window.show().map_err(|err| err.to_string())
+    window.show().map_err(|err| err.to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        let level = 102;
+        #[cfg(debug_assertions)]
+        let level = if native_panel::preview::active() {
+            104
+        } else {
+            level
+        };
+        set_macos_window_level(window, level);
+    }
+    Ok(())
 }
 
 fn schedule_paste_queue_cleanup(cleanup: paste_queue::DeferredCleanup) {
@@ -11530,6 +12598,15 @@ fn schedule_paste_queue_cleanup(cleanup: paste_queue::DeferredCleanup) {
     drop(tauri::async_runtime::spawn_blocking(move || {
         paste_queue::run_deferred_cleanup(cleanup);
     }));
+}
+
+fn winui_queue_ui_enabled() -> bool {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    {
+        main_panel_mode::winui()
+    }
+    #[cfg(not(all(target_os = "windows", feature = "winui")))]
+    false
 }
 
 fn deactivate_paste_queue_window(app: &tauri::AppHandle) -> Result<(), String> {
@@ -11544,10 +12621,22 @@ fn deactivate_paste_queue_window_inner(app: &tauri::AppHandle) -> Result<(), Str
     PASTE_QUEUE_POINTER_GENERATION.fetch_add(1, Ordering::SeqCst);
     PASTE_QUEUE_MENU_GENERATION.fetch_add(1, Ordering::SeqCst);
     PASTE_QUEUE_MENU_OPEN.store(false, Ordering::SeqCst);
-    paste_queue::destroy_window(app);
+    let hide_result = if winui_queue_ui_enabled() {
+        #[cfg(all(target_os = "windows", feature = "winui"))]
+        {
+            winui_panel::set_queue_view(false)
+        }
+        #[cfg(not(all(target_os = "windows", feature = "winui")))]
+        {
+            Ok(())
+        }
+    } else {
+        paste_queue::destroy_window(app);
+        Ok(())
+    };
     let cleanup = paste_queue::deactivate_with_deferred_cleanup()?;
     schedule_paste_queue_cleanup(cleanup);
-    Ok(())
+    hide_result
 }
 
 async fn set_paste_queue_active_impl(app: &tauri::AppHandle, active: bool) -> Result<(), String> {
@@ -11581,8 +12670,20 @@ async fn apply_paste_queue_activation_inner(
         return Ok(());
     }
     if request.active {
-        if !is_process_trusted_with_prompt(false) {
-            if let Some(source_window) = app.get_webview_window("clipboard") {
+        if !local_acceptance_no_capture() && !is_process_trusted_with_prompt(false) {
+            let source_window = app.get_webview_window("clipboard");
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            let source_window = match source_window {
+                None if native_panel::preview::active() || main_panel_mode::native() => Some(
+                    auxiliary_windows::ensure(
+                        app,
+                        auxiliary_windows::WindowKind::OnboardingPermission,
+                    )
+                    .await?,
+                ),
+                other => other,
+            };
+            if let Some(source_window) = source_window {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(err) = open_onboarding_permission_window(
@@ -11600,7 +12701,26 @@ async fn apply_paste_queue_activation_inner(
             }
             return Err("需要辅助功能权限才能启用粘贴队列".to_string());
         }
-        ensure_paste_queue_interceptor(app)?;
+        if !local_acceptance_no_capture() {
+            ensure_paste_queue_interceptor(app)?;
+        }
+        if winui_queue_ui_enabled() {
+            if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+                record_foreground_app_before_clipboard();
+            }
+            paste_queue::set_active(true);
+            paste_queue::clear_error();
+            #[cfg(all(target_os = "windows", feature = "winui"))]
+            winui_panel::set_queue_view(true)?;
+            let mut requests = PASTE_QUEUE_ACTIVATION.lock().unwrap();
+            if !requests.current(request) {
+                let _ = deactivate_paste_queue_window_inner(app);
+                return Ok(());
+            }
+            requests.finish(request);
+            paste_queue::emit_state(app);
+            return Ok(());
+        }
         let window =
             auxiliary_windows::ensure(app, auxiliary_windows::WindowKind::PasteQueue).await?;
         let app = app.clone();
@@ -11615,7 +12735,7 @@ async fn apply_paste_queue_activation_inner(
             if !auxiliary_windows::is_open(&window) {
                 return Err("paste queue window closed while opening".into());
             }
-            if !paste_queue::is_active() && !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+            if !paste_queue::is_active() && !main_surface_visible() {
                 record_foreground_app_before_clipboard();
             }
             show_paste_queue_window(&app, &window)?;
@@ -11724,7 +12844,7 @@ fn paste_queue_item(app: tauri::AppHandle, hash: Option<String>) -> Result<(), S
     }
     if should_refresh_paste_queue_click_target(
         PasteQueueRequestOrigin::QueueWindow,
-        CLIPBOARD_VISIBLE.load(Ordering::SeqCst),
+        main_surface_visible(),
     ) {
         record_foreground_app_before_clipboard();
     }
@@ -11798,7 +12918,8 @@ fn record_text_history(content: String) {
     else {
         return;
     };
-    clipboard::insert_text(content);
+    let icon = clipboard::vpaste_source_icon_path().unwrap_or_default();
+    let _ = clipboard::insert_text_from_app(content, "vPaste", &icon);
 }
 
 fn recordable_text_history_content(content: String, paused: bool) -> Option<String> {
@@ -11807,7 +12928,62 @@ fn recordable_text_history_content(content: String, paused: bool) -> Option<Stri
 
 #[cfg(test)]
 mod record_text_history_tests {
-    use super::recordable_text_history_content;
+    use super::{clipboard, config, record_text_history, recordable_text_history_content};
+
+    fn seed() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        config::save(config::Config::default());
+        clipboard::db::init();
+        root
+    }
+
+    fn assert_vpaste_source(hash: &String) {
+        let (source, icon): (String, String) = clipboard::db::db()
+            .query_row(
+                "select app_source, app_icon_path from clipboard where hash = ?1",
+                [hash],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(source, "vPaste");
+        assert!(!icon.is_empty());
+        assert!(std::path::Path::new(&icon).is_file());
+        assert_eq!(Some(icon), clipboard::vpaste_source_icon_path());
+    }
+
+    #[test]
+    fn app_generated_full_and_selected_text_have_vpaste_source_and_icon() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let _root = seed();
+        for content in ["图片中的全部文字\n第二行", "选中的文字 🖼️"] {
+            record_text_history(content.to_string());
+            let hash = clipboard::calculate_xxhash64(content.as_bytes());
+            assert_vpaste_source(&hash);
+        }
+    }
+
+    #[test]
+    fn app_generated_recopy_updates_source_and_preserves_favorite_and_tags() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let _root = seed();
+        let content = "previously copied in browser";
+        let hash =
+            clipboard::insert_text_from_app(content.to_string(), "Chrome", "old-icon.png").unwrap();
+        clipboard::set_favorite(&hash, true).unwrap();
+        let tag = clipboard::create_tag("Keep").unwrap();
+        clipboard::assign_tag(&hash, tag.id).unwrap();
+
+        record_text_history(content.to_string());
+
+        assert_vpaste_source(&hash);
+        assert_eq!(clipboard::count_by_hash(&hash), 1);
+        let item = clipboard::try_get_by_hash(&hash).unwrap();
+        assert_eq!(item.label, 1);
+        assert_eq!(item.tags.len(), 1);
+        assert_eq!(item.tags[0].id, tag.id);
+    }
 
     #[test]
     fn explicit_copy_only_records_while_history_is_active() {
@@ -11946,6 +13122,7 @@ fn clear_history(app: tauri::AppHandle, clear_type: String) -> Result<(), String
         clipboard::db::clear_images().map_err(|e| e.to_string())?;
     }
     paste_queue::emit_state(&app);
+    let _ = app.emit("history-reset", ());
     Ok(())
 }
 
@@ -12128,6 +13305,7 @@ fn toggle_clipboard_history_paused(app: tauri::AppHandle) -> Result<bool, String
 }
 
 async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
+    let started = Instant::now();
     let cursor = cursor_physical_position();
     match auxiliary_windows::ensure(app, auxiliary_windows::WindowKind::TrayMenu).await {
         Err(err) => error!("Failed to open tray menu: {err}"),
@@ -12204,6 +13382,10 @@ async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
                 let _ = window.show();
                 let _ = window.set_focus();
                 watch_tray_menu_outside_click(window.clone());
+                info!(
+                    "WebView tray menu shown: elapsed_ms={}",
+                    started.elapsed().as_millis()
+                );
                 Ok(())
             })
             .await
@@ -12331,12 +13513,30 @@ fn build_auxiliary_window(
             ui_text_scale::remember(&window, text_scale);
             return Ok(window);
         }
+        #[cfg(debug_assertions)]
+        WindowKind::DevTutorial => return build_dev_tutorial_window(handle),
         WindowKind::ClipboardPreview => return build_preview_window(handle),
         WindowKind::PasteQueue => return build_paste_queue_window(handle),
         WindowKind::Config => return build_config_window(handle),
         WindowKind::TextEditor => return build_text_editor_window(handle),
         WindowKind::PasteFallbackNotice => return build_paste_fallback_notice_window(handle),
         WindowKind::TestRoom => return build_test_room_window(handle),
+        WindowKind::NativeOnboarding => {
+            WebviewWindowBuilder::new(handle, "nativeOnboarding", App("native-onboarding".into()))
+                .title("vPaste")
+                .skip_taskbar(true)
+                .visible(false)
+                .focused(false)
+                .decorations(false)
+                .transparent(true)
+                .background_color(tauri::window::Color(0, 0, 0, 0))
+                .resizable(false)
+                .minimizable(false)
+                .maximizable(false)
+                .always_on_top(true)
+                .shadow(false)
+                .inner_size(1000.0 * text_scale, 360.0 * text_scale)
+        }
         WindowKind::OnboardingPermission => WebviewWindowBuilder::new(
             handle,
             "onboardingPermission",
@@ -12444,7 +13644,7 @@ fn build_config_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Webvie
     let url = App("config".into());
     #[cfg(debug_assertions)]
     let url = if memory_profile_active() {
-        tauri::WebviewUrl::External(memory_profile::dev_origin().join("config").unwrap())
+        memory_profile::webview_url("config")
     } else {
         url
     };
@@ -12528,6 +13728,9 @@ fn refresh_clipboard_window_frame(window: &tauri::Window) -> tauri::Result<()> {
 }
 
 fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    if main_panel_mode::native() {
+        return Err(io::Error::other("The main WebView is disabled by --main-ui=native").into());
+    }
     let monitor = handle.primary_monitor().ok().flatten();
     panel_size::use_configured_size(monitor.as_ref());
     let (screen_x, screen_y, screen_width, screen_height) = if let Some(monitor) = monitor {
@@ -12553,7 +13756,7 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
     let url = App("clipboard".into());
     #[cfg(debug_assertions)]
     let url = if memory_profile_active() {
-        tauri::WebviewUrl::External(memory_profile::dev_origin().join("clipboard").unwrap())
+        memory_profile::webview_url("clipboard")
     } else {
         url
     };
@@ -12572,14 +13775,8 @@ fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::Web
         .visible_on_all_workspaces(true)
         .accept_first_mouse(true)
         .disable_drag_drop_handler()
-        .inner_size(
-            screen_width + CLIPBOARD_HORIZONTAL_BLEED * 2.0,
-            window_height,
-        )
-        .position(
-            screen_x - CLIPBOARD_HORIZONTAL_BLEED,
-            screen_y + screen_height - window_height,
-        );
+        .inner_size(screen_width, window_height)
+        .position(screen_x, screen_y + screen_height - window_height);
 
     #[cfg(debug_assertions)]
     let clipboard_window = if memory_profile_active() {
@@ -12781,6 +13978,72 @@ fn show_startup_error(message: &str) {
     }
 }
 
+fn local_acceptance_no_capture() -> bool {
+    #[cfg(all(target_os = "windows", feature = "winui-acceptance"))]
+    {
+        return LOCAL_ACCEPTANCE_NO_CAPTURE.load(Ordering::SeqCst);
+    }
+    #[cfg(not(all(target_os = "windows", feature = "winui-acceptance")))]
+    false
+}
+
+#[cfg(all(target_os = "windows", feature = "winui-acceptance"))]
+fn local_acceptance_fixture_is_marked(executable_dir: &Path) -> bool {
+    executable_dir.join("portable.flag").is_file()
+        && fs::read(executable_dir.join("data/.vpaste-memory-profile"))
+            .is_ok_and(|marker| marker == b"vpaste-memory-v1\n")
+}
+
+#[cfg(all(test, target_os = "windows", feature = "winui-acceptance"))]
+mod local_acceptance_tests {
+    use super::local_acceptance_fixture_is_marked;
+
+    #[test]
+    fn acceptance_mode_requires_the_marked_portable_fixture() {
+        let fixture = tempfile::tempdir().unwrap();
+        assert!(!local_acceptance_fixture_is_marked(fixture.path()));
+
+        std::fs::write(fixture.path().join("portable.flag"), "portable").unwrap();
+        std::fs::create_dir_all(fixture.path().join("data")).unwrap();
+        std::fs::write(
+            fixture.path().join("data/.vpaste-memory-profile"),
+            b"vpaste-memory-v1\n",
+        )
+        .unwrap();
+        assert!(local_acceptance_fixture_is_marked(fixture.path()));
+
+        std::fs::write(
+            fixture.path().join("data/.vpaste-memory-profile"),
+            b"not a fixture\n",
+        )
+        .unwrap();
+        assert!(!local_acceptance_fixture_is_marked(fixture.path()));
+    }
+}
+
+fn configure_local_acceptance_mode() -> Result<(), String> {
+    let requested = std::env::args().any(|argument| argument == "--local-acceptance-no-capture");
+    if !requested {
+        return Ok(());
+    }
+
+    #[cfg(all(target_os = "windows", feature = "winui-acceptance"))]
+    {
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let executable_dir = executable.parent().ok_or("missing executable directory")?;
+        if !local_acceptance_fixture_is_marked(executable_dir) {
+            return Err(
+                "Local acceptance mode requires an explicitly marked portable fixture".into(),
+            );
+        }
+        LOCAL_ACCEPTANCE_NO_CAPTURE.store(true, Ordering::SeqCst);
+        return Ok(());
+    }
+
+    #[cfg(not(all(target_os = "windows", feature = "winui-acceptance")))]
+    Err("Local acceptance mode is available only in the Windows acceptance build".into())
+}
+
 #[cfg(not(target_os = "windows"))]
 fn show_startup_error(message: &str) {
     eprintln!("{message}");
@@ -12798,6 +14061,30 @@ fn memory_profile_active() -> bool {
 }
 
 fn main() {
+    if std::env::args().any(|argument| argument == "--winui-build-info") {
+        println!(
+            "{}",
+            serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "winui": cfg!(all(target_os = "windows", feature = "winui")),
+                "localAcceptance": cfg!(feature = "winui-acceptance"),
+                "debug": cfg!(debug_assertions),
+                "arch": std::env::consts::ARCH,
+            })
+        );
+        return;
+    }
+    if image_ocr::worker::run_if_requested() {
+        return;
+    }
+    if let Err(error) = main_panel_mode::configure() {
+        eprintln!("{error}");
+        std::process::exit(2);
+    }
+    if let Err(error) = configure_local_acceptance_mode() {
+        eprintln!("Local acceptance startup failed: {error}");
+        std::process::exit(2);
+    }
     #[cfg(debug_assertions)]
     match memory_profile::configure() {
         Ok(true) => return,
@@ -12826,7 +14113,9 @@ fn main() {
         }
     }
     let installer_exit_requested = maintenance::installer_exit_requested();
-    let show_panel_on_startup = cfg!(target_os = "macos")
+    let show_panel_on_startup = local_acceptance_no_capture()
+        || cfg!(target_os = "macos")
+        || main_panel_mode::winui()
         || startup_panel::is_update_restart(std::env::args_os(), env!("CARGO_PKG_VERSION"));
 
     if !memory_profile_active() {
@@ -12840,7 +14129,7 @@ fn main() {
     // The single-instance plugin may terminate this process before Tauri setup.
     // Refresh an opted-in portable path first so moving the folder still works.
     #[cfg(target_os = "windows")]
-    if !memory_profile_active() {
+    if !memory_profile_active() && !local_acceptance_no_capture() {
         if let Err(err) = portable_autostart::reconcile_before_single_instance() {
             eprintln!("Failed to reconcile portable autostart before single-instance setup: {err}");
         }
@@ -12884,8 +14173,10 @@ fn main() {
             if let Some(window) = app.get_webview_window("onboardingPermission") {
                 let _ = auxiliary_windows::destroy(&window);
             }
+            if let Err(error) = show_main_panel_for_app(app) {
+                error!("Failed to show main panel on second instance launch: {error}");
+            }
             if let Some(window) = app.get_webview_window("clipboard") {
-                show_clipboard_window(&window);
                 focus_clipboard_window(&window, "second instance launch");
             }
         }))
@@ -12901,7 +14192,7 @@ fn main() {
     builder
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
-            Some(vec![]),
+            Some(main_panel_mode::autostart_arguments()),
         ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -12937,9 +14228,18 @@ fn main() {
                 .build(),
         )
         .on_window_event(|window, event| {
+            if window.label() == "clipboardPreview"
+                && matches!(event, tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_))
+            {
+                if let Err(error) = browser_preview::follow_parent(window.app_handle()) {
+                    log::warn!("Failed to follow preview content bounds: {error}");
+                }
+            }
             if window.label() == "config" && matches!(event,
                 tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }) {
-                let _ = window.emit("panel-size-display-changed", ());
+                if panel_size::settings_display_changed(window) {
+                    let _ = window.emit("panel-size-display-changed", ());
+                }
             }
             if window.label() == "config"
                 && matches!(event, tauri::WindowEvent::Focused(false) | tauri::WindowEvent::Destroyed)
@@ -12964,6 +14264,7 @@ fn main() {
                     }
                 }
                 if window.label() != "clipboard" && window.label() != "clipboardPreview"
+                    && window.label() != browser_preview::LABEL
                     && ui_text_scale::current() > 1.0 && window.is_visible().unwrap_or(false)
                 {
                     if let Some(webview_window) = window.app_handle().get_webview_window(window.label()) {
@@ -12974,8 +14275,15 @@ fn main() {
                 }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if matches!(window.label(), "trayMenu" | "pasteFallbackNotice" | "devMemory") {
+                #[cfg(target_os = "windows")]
+                if window.label() == "trayMenu" {
                     api.prevent_close();
+                    let _ = window.hide();
+                }
+                if matches!(window.label(), "trayMenu" | "pasteFallbackNotice" | "devMemory" | "devTutorial") {
+                    api.prevent_close();
+                    #[cfg(target_os = "windows")]
+                    if window.label() == "trayMenu" { return; }
                     let _ = auxiliary_windows::destroy_native(window);
                 }
                 if window.label() == "textEditor" {
@@ -12993,22 +14301,25 @@ fn main() {
                     api.prevent_close();
                     let _ = close_config_window(window.app_handle().clone());
                 }
+                #[cfg(all(target_os = "windows", feature = "winui"))]
+                if window.label() == "nativeOnboarding" {
+                    api.prevent_close();
+                    let _ = winui_panel::onboarding::close(window.app_handle());
+                }
                 if window.label() == "testRoom" {
                     api.prevent_close();
                     let _ = auxiliary_windows::destroy_native(window);
                 }
-                if window.label() == "clipboardPreview" {
+                if matches!(window.label(), "clipboardPreview" | browser_preview::LABEL) {
                     api.prevent_close();
                     let _ = retain_preview_window(window.app_handle());
-                    if let Some(clipboard_window) =
-                        window.app_handle().get_webview_window("clipboard")
-                    {
-                        focus_clipboard_window(&clipboard_window, "preview close requested");
-                    }
+                    move_focus_to_clipboard(window.app_handle(), "preview close requested");
                 }
                 if window.label() == "tabEditor" {
                     api.prevent_close();
                     let _ = auxiliary_windows::destroy_native(window);
+                    #[cfg(all(debug_assertions, target_os = "macos"))]
+                    native_panel::tab_editor_closed(window.app_handle());
                 }
                 if window.label() == "emojiPicker" {
                     api.prevent_close();
@@ -13021,6 +14332,20 @@ fn main() {
                 }
             }
             if let tauri::WindowEvent::Focused(focused) = event {
+                #[cfg(all(debug_assertions, target_os = "macos"))]
+                if *focused && matches!(window.label(), "clipboardPreview" | browser_preview::LABEL) {
+                    // A focusable Tao window also becomes AppKit's main window.
+                    // Keep the native panel's glass active without reclaiming key focus.
+                    if let Ok(native) = window.ns_window() {
+                        use cocoa::base::id;
+                        use objc::{msg_send, sel, sel_impl};
+                        // SAFETY: AppKit window event; Tauri owns this live NSWindow.
+                        let number: isize = unsafe { msg_send![native as id, windowNumber] };
+                        native_panel::preview::route(serde_json::json!({
+                            "event":"preview-focused", "windowNumber":number
+                        }));
+                    }
+                }
                 #[cfg(debug_assertions)]
                 if *focused && window.label() != "devMemory" {
                     if let Some(monitor) = window.app_handle().get_webview_window("devMemory") {
@@ -13043,12 +14368,15 @@ fn main() {
                 }
             }
             if let tauri::WindowEvent::Focused(false) = event {
-                if window.label() == "clipboardPreview" {
+                if matches!(window.label(), "clipboardPreview" | browser_preview::LABEL) {
                     handle_preview_focus_lost(window.app_handle().clone());
                 }
             }
             if let tauri::WindowEvent::Focused(false) = event {
                 if window.label() == "trayMenu" {
+                    #[cfg(target_os = "windows")]
+                    { let _ = window.hide(); }
+                    #[cfg(not(target_os = "windows"))]
                     let _ = auxiliary_windows::destroy_native(window);
                 }
             }
@@ -13063,53 +14391,7 @@ fn main() {
                     && CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
                     && !clipboard_blur_hide_suppressed()
                 {
-                    let app = window.app_handle().clone();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(35));
-                        if tab_editor_window_active(&app)
-                            || text_editor_window_active(&app)
-                            || memory_monitor_window_active(&app)
-                        {
-                            return;
-                        }
-                        if preview_window_visible(&app) {
-                            let pinned = PREVIEW_PINNED.load(Ordering::SeqCst);
-                            let preview_foreground = app_window_is_foreground(
-                                &app,
-                                "clipboardPreview",
-                                "clipboard blur preview guard",
-                            );
-                            let clipboard_foreground = app_window_is_foreground(
-                                &app,
-                                "clipboard",
-                                "clipboard blur self guard",
-                            );
-                            let cursor_inside_app = cursor_inside_app_windows(&app);
-                            if pinned
-                                || preview_foreground
-                                || clipboard_foreground
-                                || cursor_inside_app
-                            {
-                                return;
-                            }
-                            hide_preview_and_clipboard(&app, "clipboard blur outside app");
-                            return;
-                        }
-                        if let Some(window) = app.get_webview_window("clipboard") {
-                            let tauri_focused = window.is_focused().unwrap_or(false);
-                            let native_foreground =
-                                is_native_window_foreground(&window, "focus-loss hide guard");
-                            let tab_editor_active = tab_editor_window_active(&app)
-                                || memory_monitor_window_active(&app);
-                            if CLIPBOARD_VISIBLE.load(Ordering::SeqCst)
-                                && !tauri_focused
-                                && !native_foreground
-                                && !tab_editor_active
-                            {
-                                hide_clipboard_window(&window);
-                            }
-                        }
-                    });
+                    handle_main_panel_focus_lost(window.app_handle().clone());
                 }
             }
         })
@@ -13151,14 +14433,36 @@ fn main() {
             *GLOBAL_APP_DATA_DIR.lock().unwrap() = app_data_dir;
             #[cfg(debug_assertions)]
             if memory_profile_active() {
-                memory_profile::setup(app.handle()).map_err(io::Error::other)?;
+                memory_profile::setup(app.handle()).map_err(|error| {
+                    eprintln!("Isolated App setup failed: {error}");
+                    io::Error::other(error)
+                })?;
                 #[cfg(target_os = "macos")]
                 panel_size::layout_check::start(app.handle().clone());
                 panel_animation::probe::start(app.handle().clone());
                 return Ok(());
             }
-            app_updater::start_background_checks(app.handle().clone());
+            #[cfg(all(target_os = "windows", feature = "winui"))]
+            if main_panel_mode::winui() {
+                winui_panel::initialize(app.handle().clone()).map_err(io::Error::other)?;
+                info!("WinUI 3 experiment initialized; no main WebView will be created");
+            }
+            if !local_acceptance_no_capture() {
+                app_updater::start_background_checks(app.handle().clone());
+            }
             install_vpaste_tray(app.handle())?;
+            #[cfg(target_os = "windows")]
+            if !memory_profile_active() {
+                let tray_owner = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    // Readiness includes the first measured content resize.
+                    // This stays hidden and never creates a main WebView.
+                    if let Err(error) = auxiliary_windows::ensure(&tray_owner,
+                        auxiliary_windows::WindowKind::TrayMenu).await {
+                        log::warn!("Tray menu warmup failed: {error}");
+                    }
+                });
+            }
 
             // Register user-facing entry points before heavier startup maintenance.
             #[cfg(target_os = "macos")]
@@ -13176,13 +14480,13 @@ fn main() {
                 config
             };
             #[cfg(target_os = "windows")]
-            if runtime_mode::is_portable() {
+            if runtime_mode::is_portable() && !local_acceptance_no_capture() {
                 if let Err(err) = portable_autostart::reconcile(config.startup) {
                     error!("Failed to reconcile portable autostart at startup: {}", err);
                 }
             }
             #[cfg(not(target_os = "macos"))]
-            if !runtime_mode::is_portable() {
+            if !runtime_mode::is_portable() && !local_acceptance_no_capture() {
                 if let Err(err) = sync_autostart(app.handle(), config.startup) {
                     error!("Failed to sync autostart at startup: {}", err);
                 }
@@ -13190,20 +14494,22 @@ fn main() {
             if let Err(err) = sync_tray_visibility(app.handle(), config.display_tray_icon) {
                 error!("Failed to sync tray visibility at startup: {}", err);
             }
-            if let Some(s) = config.shortcut_keys.main_window.clone() {
-                match parse_optional_shortcut(Some(s.as_str()), "唤起主窗口") {
-                    Ok(shortcut) => {
-                        let _ = register_main_window_shortcut(app.handle(), shortcut);
+            if !local_acceptance_no_capture() {
+                if let Some(s) = config.shortcut_keys.main_window.clone() {
+                    match parse_optional_shortcut(Some(s.as_str()), "唤起主窗口") {
+                        Ok(shortcut) => {
+                            let _ = register_main_window_shortcut(app.handle(), shortcut);
+                        }
+                        Err(err) => error!("Skipping invalid startup shortcut: {}", err),
                     }
-                    Err(err) => error!("Skipping invalid startup shortcut: {}", err),
                 }
-            }
-            if let Some(s) = config.shortcut_keys.paste_queue_toggle.clone() {
-                match parse_optional_shortcut(Some(s.as_str()), "开关粘贴队列") {
-                    Ok(shortcut) => {
-                        let _ = register_main_window_shortcut(app.handle(), shortcut);
+                if let Some(s) = config.shortcut_keys.paste_queue_toggle.clone() {
+                    match parse_optional_shortcut(Some(s.as_str()), "开关粘贴队列") {
+                        Ok(shortcut) => {
+                            let _ = register_main_window_shortcut(app.handle(), shortcut);
+                        }
+                        Err(err) => error!("Skipping invalid paste queue shortcut: {}", err),
                     }
-                    Err(err) => error!("Skipping invalid paste queue shortcut: {}", err),
                 }
             }
             if let Err(err) = ensure_history_storage_dirs() {
@@ -13227,7 +14533,13 @@ fn main() {
             if let Err(err) = search::engine::resume_pending_updates() {
                 error!("Failed to resume clipboard search index updates: {err}");
             }
-            let _ = build_clipboard_window(app.handle())?;
+            if !main_panel_mode::native() && !main_panel_mode::winui() {
+                let _ = build_clipboard_window(app.handle())?;
+            }
+            #[cfg(target_os = "macos")]
+            if main_panel_mode::native() {
+                hide_macos_dock_icon();
+            }
             initialize_paste_queue_worker(app.handle());
             get_app_data_dir();
             let handle = app.handle().clone();
@@ -13248,33 +14560,43 @@ fn main() {
                 )
                 .expect("load log plugin error");
             #[cfg(target_os = "windows")]
-            windows_paste_focus::initialize();
+            if !local_acceptance_no_capture() {
+                windows_paste_focus::initialize();
+            }
             #[cfg(target_os = "windows")]
             windows_main_shortcut::log_status();
             std::thread::spawn(move || {
-                let clipboard_window = handle
-                    .get_webview_window("clipboard")
-                    .unwrap_or_else(|| build_clipboard_window(&handle).unwrap());
-
-                if !config.onboarding_completed {
+                if !config.onboarding_completed && !main_panel_mode::native() {
                     if let Err(err) = show_onboarding_window(&handle) {
                         error!("Failed to show onboarding window: {}", err);
                     }
                 }
 
-                info!("Starting clipboard listener");
-                listen::start(clipboard_window);
-                info!("Clipboard listener started");
-                if config.onboarding_completed && show_panel_on_startup {
+                if local_acceptance_no_capture() {
+                    info!("Local acceptance mode: clipboard capture, startup reconciliation and updater checks are disabled");
+                } else {
+                    info!("Starting clipboard listener");
+                    image_ocr::start(handle.clone());
+                    #[cfg(target_os = "macos")]
+                    listen::start(handle.clone());
+                    #[cfg(target_os = "windows")]
+                    listen::start(handle.clone());
+                    info!("Clipboard listener started");
+                }
+                if (config.onboarding_completed || main_panel_mode::native())
+                    && show_panel_on_startup
+                {
                     if let Err(err) = startup_panel::request_show(&handle) {
                         error!("Failed to show main panel after startup: {}", err);
                     }
                 }
-                auto_cleanup::start(handle.clone());
-                std::thread::spawn(|| {
-                    cleanup_runtime_caches();
-                    cleanup_legacy_autostart_entries();
-                });
+                if !local_acceptance_no_capture() {
+                    auto_cleanup::start(handle.clone());
+                    std::thread::spawn(|| {
+                        cleanup_runtime_caches();
+                        cleanup_legacy_autostart_entries();
+                    });
+                }
             });
             Ok(())
         })
@@ -13287,6 +14609,8 @@ fn main() {
             memory_profile::memory_profile_parking_state,
             open_dev_memory_window,
             close_dev_memory_window,
+            close_dev_tutorial_window,
+            open_native_main_panel,
             get_dev_memory_report,
             set_dev_memory_monitoring,
             auxiliary_window_ready,
@@ -13301,6 +14625,9 @@ fn main() {
             copy,
             copy_history_item,
             copy_history_record,
+            image_ocr::get_image_ocr,
+            image_ocr::recognize_image_text,
+            show_image_text_window,
             history_item_action_info,
             native_drag_history_file,
             record_text_history,
@@ -13387,12 +14714,15 @@ fn main() {
             commit_preview_window,
             dismiss_hover_preview_window,
             is_preview_window_visible,
+            preview_navigate_selection,
+            preview_pointer_changed,
             set_preview_pinned,
             hide_preview_window,
             resize_preview_image_window,
             prewarm_image_clipboard_cache,
             prewarm_image_preview_cache,
-            fetch_link_preview_document,
+            browser_preview::sync_preview_browser,
+            browser_preview::hide_preview_browser,
             show_main_panel,
             hide_tray_menu,
             resize_tray_menu,
@@ -13414,6 +14744,9 @@ fn main() {
             check_paste_accessibility_permission,
             open_accessibility_settings,
             set_item_favorite,
+            get_tab_order,
+            save_tab_order,
+            reorder_tab,
             list_item_tags,
             create_item_tag,
             rename_item_tag,
@@ -13448,6 +14781,21 @@ fn main() {
         .build(context)
         .expect("build vpaste failed")
         .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
+                // With no main WebView, the last auxiliary window can be Tauri's
+                // last window. Closing it must not stop the clipboard service.
+                // Explicit Quit/restart requests carry a code and still proceed.
+                if main_panel_mode::keeps_background_alive(*code) {
+                    api.prevent_exit();
+                }
+            }
+            if matches!(&event, tauri::RunEvent::Exit) {
+                image_ocr::stop();
+                #[cfg(all(target_os = "windows", feature = "winui"))]
+                if main_panel_mode::winui() {
+                    winui_panel::shutdown();
+                }
+            }
             #[cfg(not(target_os = "macos"))]
             let _ = (app, event);
 

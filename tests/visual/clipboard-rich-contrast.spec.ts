@@ -19,6 +19,17 @@ const samples = [
     { id: "table", html: '<table><tbody><tr><td style="color: #123456; background: #ffff00; border: 1px solid red">Table cell</td></tr></tbody></table>', text: "Table cell", color: "rgb(18, 52, 86)", background: "rgb(255, 255, 0)" },
 ] as const;
 
+async function showColorSample(page: Page, hash: string) {
+    const index = hash === "plain" ? samples.length : samples.findIndex(sample => sample.id === hash);
+    // Virtualized cards outside the resident range have no DOM to scroll into view.
+    await page.locator('[class*="cards-container"]').evaluate((element, index) => {
+        element.scrollLeft = index * 236;
+    }, index);
+    const card = page.locator(`[data-hash="${hash}"]`);
+    await expect(card).toBeVisible();
+    return card;
+}
+
 async function decodedOfficePicture(picture: Locator, source: string) {
     await expect.poll(() => picture.evaluate((image, expected) => {
         const img = image as HTMLImageElement;
@@ -128,14 +139,15 @@ for (const theme of ["light", "dark"] as const) {
     test(`rich card colors and highlights survive the ${theme} app theme`, async ({ page }, testInfo) => {
         await openFixture(page, theme);
         for (const sample of samples) {
-            const card = page.locator(`[data-hash="${sample.id}"]`);
+            const card = await showColorSample(page, sample.id);
             const text = card.getByText(sample.text, { exact: true });
             await expect(text).toHaveCSS("color", sample.color);
             await expect(text).toHaveCSS("-webkit-text-fill-color", "fill" in sample ? sample.fill : sample.color);
             await expect(text).toHaveCSS("background-color", sample.background);
             if (sample.id === "highlight") await expect(text).toHaveCSS("font-weight", "700");
         }
-        const plain = page.locator('[data-hash="plain"]').getByText("Plain text", { exact: true });
+        const plainCard = await showColorSample(page, "plain");
+        const plain = plainCard.getByText("Plain text", { exact: true });
         const expectedPlain = theme === "dark"
             ? await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--ui-text").trim())
             : "#333333";
@@ -150,7 +162,8 @@ for (const theme of ["light", "dark"] as const) {
         await page.screenshot({ path: testInfo.outputPath(`rich-cards-${theme}.png`) });
         await page.evaluate(() => document.documentElement.setAttribute("data-theme", document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
         for (const sample of samples) {
-            await expect(page.locator(`[data-hash="${sample.id}"]`).getByText(sample.text, { exact: true }))
+            const card = await showColorSample(page, sample.id);
+            await expect(card.getByText(sample.text, { exact: true }))
                 .toHaveCSS("color", sample.color);
         }
     });
@@ -158,7 +171,8 @@ for (const theme of ["light", "dark"] as const) {
     test(`transparent rich text gets a readable default canvas in the ${theme} app theme`, async ({ page }) => {
         await openFixture(page, theme);
         for (const id of ["dark-ink", "unstyled", "light-ink"]) {
-            const canvas = page.locator(`[data-hash="${id}"] [class*="card-preview-rich"]`);
+            const card = await showColorSample(page, id);
+            const canvas = card.locator('[class*="card-preview-rich"]');
             await expect(canvas).toHaveAttribute("data-rich-canvas", id === "light-ink" ? "dark" : "light");
             await expect(canvas).toHaveCSS("color-scheme", id === "light-ink" ? "dark" : "light");
         }

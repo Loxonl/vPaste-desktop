@@ -108,6 +108,12 @@ export function saveTabOrder(order: string[]) {
     localStorage.setItem(TAB_ORDER_STORAGE_KEY, JSON.stringify(order));
 }
 
+// The tab order now lives in the history database (get_tab_order /
+// save_tab_order). A WebView order saved before that is copied over once.
+export function tabOrderToMigrate(stored: string[], local: string[]): string[] | null {
+    return stored.length === 0 && local.length > 0 ? local : null;
+}
+
 export function customTabFilterPayload(tab: CustomTab): string {
     const filter = tab.filter;
     const payload: Record<string, string | number | boolean | string[]> = {
@@ -134,6 +140,17 @@ export function recordTagIdFromTab(tabId: string): number | null {
     if (!tabId.startsWith(RECORD_TAG_TAB_PREFIX)) return null;
     const id = Number(tabId.slice(RECORD_TAG_TAB_PREFIX.length));
     return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+export function appendDynamicTabId(
+    customTabs: CustomTab[],
+    itemTags: ItemTag[],
+    order: string[],
+    id: string,
+): string[] {
+    const known = orderedDynamicTabs(customTabs, itemTags, order).map(tab => tab.id);
+    const current = [...new Set([...order, ...known])];
+    return order.includes(id) ? current : [...current.filter(candidate => candidate !== id), id];
 }
 
 export function orderedDynamicTabs(

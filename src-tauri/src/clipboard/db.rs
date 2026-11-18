@@ -150,6 +150,9 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     )?;
     if has_tables {
         validate_schema(conn)?;
+        crate::image_ocr::init_schema(conn)?;
+        super::source_metadata::init_schema(conn)?;
+        init_tab_order(conn)?;
         if version == 0 {
             conn.pragma_update(None, "user_version", HISTORY_SCHEMA_VERSION)?;
         }
@@ -171,6 +174,8 @@ create table if not exists clipboard
     source          text,
     app_source      text default '' not null,
     app_icon_path   text default '' not null,
+    source_is_remote integer default 0 not null,
+    source_bundle_id text default '' not null,
     title_color     text,
     icon            text,
     label           integer default 0 not null
@@ -231,6 +236,8 @@ create table if not exists paste_queue
     source          text    default '' not null,
     app_source      text    default '' not null,
     app_icon_path   text    default '' not null,
+    source_is_remote integer default 0 not null,
+    source_bundle_id text default '' not null,
     title_color     text    default '' not null,
     label           integer default 0 not null
 )
@@ -242,8 +249,96 @@ create unique index if not exists hash on clipboard(hash);
     ";
     let transaction = conn.unchecked_transaction()?;
     transaction.execute_batch(sql)?;
+    crate::image_ocr::init_schema(&transaction)?;
+    init_tab_order(&transaction)?;
     transaction.pragma_update(None, "user_version", HISTORY_SCHEMA_VERSION)?;
     transaction.commit()
+}
+
+// Order of the dynamic toolbar tabs (filter tabs and record tags) by tab id.
+// Additive UI state, independent of the supported history payload format.
+fn init_tab_order(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS tab_order (
+            tab_id   TEXT    NOT NULL PRIMARY KEY,
+            position INTEGER NOT NULL
+        ) STRICT;",
+    )
+}
+
+pub fn read_tab_order(conn: &Connection) -> Result<Vec<String>> {
+    conn.prepare("SELECT tab_id FROM tab_order ORDER BY position")?
+        .query_map([], |row| row.get(0))?
+        .collect()
+}
+
+pub fn append_tab_order(conn: &Connection, tab_id: &str, known_ids: &[String]) -> Result<()> {
+    let mut order = read_tab_order(conn)?;
+    if !order.iter().any(|id| id == tab_id) {
+        for id in known_ids {
+            if id != tab_id && !order.contains(id) {
+                order.push(id.clone());
+            }
+        }
+        order.push(tab_id.to_string());
+        write_tab_order(conn, &order)?;
+    }
+    Ok(())
+}
+
+// Replaces the whole order; blank and repeated ids are dropped.
+pub fn write_tab_order(conn: &Connection, order: &[String]) -> Result<()> {
+    let transaction = conn.unchecked_transaction()?;
+    replace_tab_order(&transaction, order)?;
+    transaction.commit()
+}
+
+fn replace_tab_order(conn: &Connection, order: &[String]) -> Result<()> {
+    conn.execute("DELETE FROM tab_order", [])?;
+    for (position, tab_id) in order.iter().map(|id| id.trim()).enumerate() {
+        if !tab_id.is_empty() {
+            conn.execute(
+                "INSERT OR IGNORE INTO tab_order(tab_id, position) VALUES(?1, ?2)",
+                rusqlite::params![tab_id, position as i64],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub fn reorder_tab_order(
+    conn: &Connection,
+    known: &[String],
+    source: &str,
+    target: &str,
+    before: bool,
+) -> std::result::Result<Vec<String>, String> {
+    if [source, target].iter().any(|id| {
+        id.is_empty() || matches!(*id, "all" | "favorite") || !known.iter().any(|known| known == id)
+    }) {
+        return Err("Tab no longer exists or cannot be moved".into());
+    }
+    // Lock before reading: a simultaneous order write must not overwrite this move.
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let stored = read_tab_order(&tx).map_err(|error| error.to_string())?;
+    let mut order = Vec::new();
+    for id in stored.iter().chain(known) {
+        if known.contains(id) && !order.contains(id) {
+            order.push(id.clone());
+        }
+    }
+    if source != target {
+        order.retain(|id| id != source);
+        let position = order
+            .iter()
+            .position(|id| id == target)
+            .ok_or("Target tab no longer exists")?;
+        order.insert(position + usize::from(!before), source.to_string());
+    }
+    replace_tab_order(&tx, &order).map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(order)
 }
 
 pub fn clear_all() -> Result<usize> {
@@ -336,6 +431,102 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap()
+    }
+
+    #[test]
+    fn tab_reordering_preserves_new_tabs_and_moves_only_the_requested_id() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO clipboard(hash,time,content) VALUES('kept',1,'body')",
+            [],
+        )
+        .unwrap();
+        let known = ["tab-a", "record:9", "tab-b", "new-tab"].map(String::from);
+        super::write_tab_order(
+            &conn,
+            &[
+                "tab-a".into(),
+                "record:9".into(),
+                "tab-b".into(),
+                "missing".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            super::reorder_tab_order(&conn, &known, "tab-a", "tab-b", false).unwrap(),
+            ["record:9", "tab-b", "tab-a", "new-tab"]
+        );
+        assert_eq!(
+            super::reorder_tab_order(&conn, &known, "new-tab", "record:9", true).unwrap(),
+            ["new-tab", "record:9", "tab-b", "tab-a"]
+        );
+        let saved = super::read_tab_order(&conn).unwrap();
+        for (source, target) in [("all", "tab-a"), ("tab-a", "favorite"), ("gone", "tab-a")] {
+            assert!(super::reorder_tab_order(&conn, &known, source, target, true).is_err());
+            assert_eq!(super::read_tab_order(&conn).unwrap(), saved);
+        }
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM clipboard", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        super::write_tab_order(&conn, &[]).unwrap();
+        assert_eq!(
+            super::reorder_tab_order(&conn, &known, "tab-b", "tab-a", true).unwrap(),
+            ["tab-b", "tab-a", "record:9", "new-tab"]
+        );
+    }
+
+    #[test]
+    fn tab_order_is_added_to_existing_history_and_replaced_as_a_whole() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        // A database created before tab order existed gains the table in place.
+        connection.execute_batch("DROP TABLE tab_order").unwrap();
+        connection
+            .execute(
+                "INSERT INTO clipboard(hash,time,content) VALUES('kept',1,'body')",
+                [],
+            )
+            .unwrap();
+        init_schema(&connection).unwrap();
+        assert!(super::read_tab_order(&connection).unwrap().is_empty());
+
+        let order =
+            ["record:2", "tab-1", "record:2", " ", "tutorial-filter-text"].map(String::from);
+        super::write_tab_order(&connection, &order).unwrap();
+        assert_eq!(
+            super::read_tab_order(&connection).unwrap(),
+            ["record:2", "tab-1", "tutorial-filter-text"]
+        );
+        super::write_tab_order(&connection, &["tab-1".to_string()]).unwrap();
+        assert_eq!(super::read_tab_order(&connection).unwrap(), ["tab-1"]);
+        // A newly created tab goes to the end once.
+        super::append_tab_order(&connection, "record:5", &[]).unwrap();
+        super::append_tab_order(&connection, "tab-1", &[]).unwrap();
+        assert_eq!(
+            super::read_tab_order(&connection).unwrap(),
+            ["tab-1", "record:5"]
+        );
+        // Native-only startup may not have persisted the existing tabs yet.
+        super::write_tab_order(&connection, &[]).unwrap();
+        let known = ["tab-1", "record:5", "tab-new"].map(String::from);
+        super::append_tab_order(&connection, "tab-new", &known).unwrap();
+        assert_eq!(super::read_tab_order(&connection).unwrap(), known);
+        super::write_tab_order(&connection, &["record:5".into()]).unwrap();
+        super::append_tab_order(&connection, "tab-new", &known).unwrap();
+        assert_eq!(
+            super::read_tab_order(&connection).unwrap(),
+            ["record:5", "tab-1", "tab-new"]
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM clipboard", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 
     #[test]

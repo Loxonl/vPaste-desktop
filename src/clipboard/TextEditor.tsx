@@ -55,8 +55,13 @@ export default function TextEditor() {
     useEffect(() => {
         let disposed = false;
         const load = async () => {
+            if (saveInFlight.current) return;
             const request = ++generation.current;
             setLoading(true);
+            setEntry(null);
+            setDraft("");
+            setInitial("");
+            setComposing(false);
             setFailure("");
             setConfirmClose(false);
             void loadAndApplyTheme();
@@ -68,7 +73,7 @@ export default function TextEditor() {
                     setEntry({ ...document, html: document.html ? content : "" });
                     setDraft(content);
                     setInitial(content);
-                }
+                } else setFailure("editor.missing");
             } catch (reason) {
                 if (!disposed && request === generation.current) setFailure(errorMessage(reason));
             } finally {

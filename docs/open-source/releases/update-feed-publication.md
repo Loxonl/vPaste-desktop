@@ -36,8 +36,9 @@ an upgrade.
    packages directly downloadable. Generate checksums for the final public
    assets, upload them, and confirm the Release lists every package the manifest
    references. Normalize bilingual notes to `## English` before `## 中文`, then
-   append or refresh the English-first download table at the end of the Release
-   notes. Existing handwritten content is preserved.
+   append or refresh the English-first table-only download block at the end of
+   the Release notes, following the [shared format](release-notes-template.md).
+   Existing handwritten content is preserved.
 3. `scripts/publish-updater-manifest.mjs`:
    - rejects channel mismatches (Stable never publishes `-rc` versions, RC only
      publishes `-rc` versions);

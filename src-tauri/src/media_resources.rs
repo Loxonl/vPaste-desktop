@@ -71,7 +71,7 @@ static CHANGED: Notify = Notify::const_new();
 static MEDIA_WORK: Semaphore = Semaphore::const_new(2);
 static CAPTURE_CARD_WIDTH: AtomicU32 = AtomicU32::new(240);
 
-fn card_width_for_scale_factor(scale_factor: f64) -> u32 {
+pub(crate) fn card_width_for_scale_factor(scale_factor: f64) -> u32 {
     let pixels = 220.0 * scale_factor;
     if pixels <= 240.0 {
         240

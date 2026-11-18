@@ -1,5 +1,6 @@
 import React, { forwardRef, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import DevicesRoundedIcon from "@mui/icons-material/DevicesRounded";
 import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
 import styles from "./Clipboard.module.css";
 import { classes } from "../ui/classNames";
@@ -207,6 +208,12 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
     const formatTagColor = getFormatTagColor(visualType, headerColor, Boolean(appIconSrc));
     const headerBackground = getHeaderBackground(visualType, headerColor, Boolean(appIconSrc));
     const isMacosAppIcon = appIconPath.endsWith("-macos.png");
+    const hasSourceIcon = Boolean(appIconSrc) || item.isRemoteSource();
+    const sourceTitle = item.isRemoteSource()
+        ? item.getAppSource()
+            ? t("clipboard.remoteSourceApp", { source: item.getAppSource() })
+            : t("clipboard.remoteSource")
+        : t("clipboard.source", { source: item.getAppSource() || t("clipboard.unknownApp") });
     const previewActive = selected || simulatedHover;
     const updateGifFormat = useCallback((gif: boolean) => {
         setIsGifFormat(gif);
@@ -536,7 +543,7 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                 </div>
             )}
             <div
-                className={classes(styles, `card-header ${appIconSrc ? 'with-app-icon' : ''}`)}
+                className={classes(styles, `card-header ${hasSourceIcon ? 'with-app-icon' : ''}`)}
                 style={{ background: headerBackground, color: WHITE_HEADER_TEXT_COLOR }}
             >
                 <div className={classes(styles, "card-title-block")}>
@@ -573,9 +580,9 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                         )}
                     </AnimatePresence>
                 </span>
-                {appIconSrc && (
-                    <div className={classes(styles, `app-icon-crop ${isMacosAppIcon ? 'macos-app-icon-crop' : ''}`)} title={t("clipboard.source", { source: item.getAppSource() || t("clipboard.unknownApp") })}>
-                        <img
+                {hasSourceIcon && (
+                    <div className={classes(styles, `app-icon-crop ${isMacosAppIcon ? 'macos-app-icon-crop' : ''}`)} title={sourceTitle}>
+                        {appIconSrc ? <img
                             className={classes(styles, `app-header-icon ${isMacosAppIcon ? 'macos-app-icon' : ''}`)}
                             src={appIconSrc}
                             alt=""
@@ -584,7 +591,10 @@ const ClipboardCardComponent = forwardRef<HTMLDivElement, ClipboardCardProps>(fu
                                 const color = dominantColorFromImage(event.currentTarget);
                                 if (color) setHeaderColor(color);
                             }}
-                        />
+                        /> : <DevicesRoundedIcon
+                            className={classes(styles, "remote-source-icon")}
+                            titleAccess={sourceTitle}
+                        />}
                     </div>
                 )}
             </div>

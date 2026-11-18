@@ -44,6 +44,7 @@ function actions(): ClipboardContextMenuActions {
         onCreateRecordTag: vi.fn(),
         onDelete: vi.fn(),
         onEditText: vi.fn(),
+        onViewImageText: vi.fn(),
         onExportImage: vi.fn(),
         onOpenContainingFolder: vi.fn(),
         onPastePlainText: vi.fn(),
@@ -57,6 +58,20 @@ function actions(): ClipboardContextMenuActions {
 const t = (key: string) => key;
 
 describe("buildClipboardContextMenuOptions", () => {
+    it.each(Object.values(ItemType))("offers image text only for saved Image items, not %s", type => {
+        const callbacks = actions();
+        const target = item(type);
+        const options = buildClipboardContextMenuOptions({ actions: callbacks, colorOptions: [], currentItemTags: [], item: target, t });
+        const option = options.find(option => option.label === "ocr.title");
+        expect(Boolean(option)).toBe(type === ItemType.Image);
+        if (option) {
+            expect(options[1]).toBe(option);
+            void option.action?.();
+            expect(callbacks.onViewImageText).toHaveBeenCalledWith(target);
+            expect(option).not.toHaveProperty("shortcut");
+        }
+    });
+
     it("keeps base, favorite, text, and delete actions in their established order", () => {
         const callbacks = actions();
         const target = item(ItemType.Text, { favorite: true });

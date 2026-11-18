@@ -131,7 +131,7 @@ async fn sample(app: &tauri::AppHandle, generation: Option<u64>) {
     state.history.push(snapshot);
 }
 
-fn read_memory(pid: u32) -> Result<Option<model::Counters>, String> {
+pub(crate) fn read_memory(pid: u32) -> Result<Option<model::Counters>, String> {
     #[cfg(target_os = "macos")]
     {
         macos::read_memory(pid)

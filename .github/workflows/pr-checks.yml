@@ -89,7 +89,7 @@ jobs:
           - platform: Windows
             os: windows-2022
           - platform: macOS
-            os: macos-14
+            os: macos-15
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     defaults:

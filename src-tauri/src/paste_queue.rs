@@ -79,6 +79,8 @@ const QUEUE_RECORD_COLUMNS: &str = "
     source,
     app_source,
     app_icon_path,
+    source_is_remote,
+    source_bundle_id,
     title_color,
     time,
     search_index,
@@ -92,6 +94,26 @@ fn now_ms() -> u64 {
 
 pub fn is_active() -> bool {
     ACTIVE.load(Ordering::SeqCst)
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+#[derive(Default)]
+pub(crate) struct ToolbarStatus {
+    pub(crate) active: bool,
+    pub(crate) revision: u64,
+    pub(crate) activation_epoch: u64,
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn toolbar_status() -> ToolbarStatus {
+    // Read the version first so a concurrent activation cannot pair an old
+    // active value with its newer version and overwrite a newer toolbar event.
+    let revision = REVISION.load(Ordering::SeqCst);
+    ToolbarStatus {
+        active: is_active(),
+        revision,
+        activation_epoch: activation_epoch(),
+    }
 }
 
 pub fn set_active(active: bool) {
@@ -122,6 +144,8 @@ pub(crate) fn deactivate_with_deferred_cleanup() -> Result<DeferredCleanup, Stri
     ACTIVATION_EPOCH.fetch_add(1, Ordering::SeqCst);
     BUSY.store(false, Ordering::SeqCst);
     bump_revision();
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    crate::native_panel::queue_selection::deactivate();
 
     let _operation = lock_operation();
     let result = detach_all_records();
@@ -266,6 +290,7 @@ fn record_from_capture(item: &Item, source: &str) -> QueueRecord {
             source: source.to_string(),
             app_source: item.app_source.clone(),
             app_icon_path: item.app_icon_path.clone(),
+            source_metadata: item.source_metadata.clone(),
             title_color: item.title_color.clone(),
             time: item.time,
             search_index: item.search_index,
@@ -284,9 +309,9 @@ fn insert_record(
         .execute(
             "INSERT INTO paste_queue(
                 hash, position, queued_at, time, content, preview_content, item_type,
-                search_index, source, app_source, app_icon_path, title_color, label
+                search_index, source, app_source, app_icon_path, title_color, label, source_is_remote, source_bundle_id
              ) VALUES(
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
              )",
             params![
                 record.stored.hash,
@@ -302,6 +327,8 @@ fn insert_record(
                 record.stored.app_icon_path,
                 record.stored.title_color,
                 record.stored.label,
+                record.stored.source_metadata.is_remote,
+                record.stored.source_metadata.bundle_id,
             ],
         )
         .map_err(|err| err.to_string())?;

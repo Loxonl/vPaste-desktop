@@ -535,6 +535,152 @@ pub fn start_search(keywords: &str) -> Result<SearchSession, String> {
 }
 
 impl SearchSession {
+    // Native viewport seeking counts matches without collecting a TopDocs
+    // prefix proportional to the retained scroll position.
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    pub(crate) fn visit_hashes(
+        &self,
+        batch_size: usize,
+        is_current: impl Fn() -> bool,
+        mut visit: impl FnMut(&[String]) -> Result<(), String>,
+    ) -> Result<(), String> {
+        use tantivy::{DocAddress, DocSet, TERMINATED};
+        let size = batch_size.clamp(1, 400);
+        let mut batch = Vec::with_capacity(size);
+        let weight = self
+            .query
+            .weight(tantivy::query::EnableScoring::disabled_from_searcher(
+                &self.searcher,
+            ))
+            .map_err(|err| err.to_string())?;
+        for (segment_ord, segment) in self.searcher.segment_readers().iter().enumerate() {
+            let mut scorer = weight.scorer(segment, 1.0).map_err(|err| err.to_string())?;
+            let mut doc = scorer.doc();
+            while doc != TERMINATED {
+                if !is_current() {
+                    return Err("history view expired".into());
+                }
+                if !segment.is_deleted(doc) {
+                    let document = self
+                        .searcher
+                        .doc::<TantivyDocument>(DocAddress::new(segment_ord as u32, doc))
+                        .map_err(|err| err.to_string())?;
+                    let hash = document
+                        .get_first(*HASH_FIELD)
+                        .and_then(|value| value.as_str())
+                        .ok_or("search index document is missing its hash")?;
+                    if !self.pending_hashes.contains(hash) {
+                        batch.push(hash.to_string());
+                    }
+                    if batch.len() == size {
+                        visit(&batch)?;
+                        batch.clear();
+                    }
+                }
+                doc = scorer.advance();
+            }
+        }
+        for (_, hash) in &self.pending_matches {
+            if !is_current() {
+                return Err("history view expired".into());
+            }
+            batch.push(hash.clone());
+            if batch.len() == size {
+                visit(&batch)?;
+                batch.clear();
+            }
+        }
+        if !batch.is_empty() {
+            visit(&batch)?;
+        }
+        Ok(())
+    }
+
+    // A fixed TopDocs heap with a sort-key cursor: skipped pending documents
+    // advance the cursor instead of growing the heap with the browse depth.
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    pub(crate) fn search_after(
+        &self,
+        before: (u64, u64),
+        limit: usize,
+        is_current: impl Fn() -> bool,
+    ) -> Result<(SearchPage, (u64, u64)), String> {
+        let limit = limit.clamp(1, 400);
+        let target = limit + 1;
+        let mut cursor = before;
+        let mut found = Vec::with_capacity(target);
+        while found.len() < target {
+            if !is_current() {
+                return Err("history view expired".into());
+            }
+            let cutoff = cursor;
+            let collector =
+                TopDocs::with_limit(target).custom_score(move |segment: &SegmentReader| {
+                    let time = segment
+                        .fast_fields()
+                        .u64("time")
+                        .expect("time fast field")
+                        .first_or_default_col(0);
+                    let id = segment
+                        .fast_fields()
+                        .u64("id")
+                        .expect("id fast field")
+                        .first_or_default_col(0);
+                    move |doc: DocId| {
+                        let key = (time.get_val(doc), id.get_val(doc));
+                        (key < cutoff).then_some(key)
+                    }
+                });
+            let matches = self
+                .searcher
+                .search(self.query.as_ref(), &collector)
+                .map_err(|err| err.to_string())?;
+            let mut scanned = 0;
+            for (key, address) in matches {
+                let Some(key) = key else {
+                    continue;
+                };
+                cursor = key;
+                scanned += 1;
+                let document = self
+                    .searcher
+                    .doc::<TantivyDocument>(address)
+                    .map_err(|err| err.to_string())?;
+                let hash = document
+                    .get_first(*HASH_FIELD)
+                    .and_then(|value| value.as_str())
+                    .ok_or("search index document is missing its hash")?;
+                if !self.pending_hashes.contains(hash) {
+                    found.push((key, hash.to_string()));
+                }
+                if found.len() == target {
+                    break;
+                }
+            }
+            if scanned < target {
+                break;
+            }
+        }
+        for (key, hash) in &self.pending_matches {
+            if *key < before {
+                found.push((*key, hash.clone()));
+                found.sort_by(|a, b| b.0.cmp(&a.0));
+                found.truncate(target);
+            }
+        }
+        found.sort_by(|a, b| b.0.cmp(&a.0));
+        let has_more = found.len() > limit;
+        found.truncate(limit);
+        let cursor = found.last().map(|item| item.0).unwrap_or(before);
+        Ok((
+            SearchPage {
+                hashes: found.into_iter().map(|item| item.1).collect(),
+                has_more,
+            },
+            cursor,
+        ))
+    }
+
     pub fn search_page(&self, offset: usize, limit: usize) -> Result<SearchPage, String> {
         if limit == 0 {
             return Ok(SearchPage {
@@ -686,6 +832,57 @@ fn background_indexing_uses_the_current_durable_record() {
         vec![hash]
     );
     assert!(search_page("old needle", 0, 10).unwrap().hashes.is_empty());
+    RUNTIME.lock().unwrap().take();
+}
+
+#[cfg(all(test, debug_assertions, target_os = "macos"))]
+#[test]
+fn native_anchor_stream_keeps_batches_bounded_and_merges_pending_updates_and_deletes() {
+    let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(root.path().to_string_lossy().into());
+    crate::config::save(crate::config::Config::default());
+    crate::clipboard::db::init();
+    rebuild(vec![
+        (1, 10, "needle old".into(), "moved".into()),
+        (2, 20, "needle deleted".into(), "deleted".into()),
+        (3, 30, "needle stable".into(), "stable".into()),
+    ])
+    .unwrap();
+    let index_work = ENGINE_LOCK.lock().unwrap();
+    insert("needle current", "moved", &1, 40);
+    delete("deleted");
+    let session = start_search("needle").unwrap();
+    let mut hashes = Vec::new();
+    session
+        .visit_hashes(
+            1,
+            || true,
+            |batch| {
+                assert_eq!(batch.len(), 1);
+                hashes.extend_from_slice(batch);
+                Ok(())
+            },
+        )
+        .unwrap();
+    hashes.sort();
+    assert_eq!(hashes, ["moved", "stable"]);
+    let (head, cursor) = session
+        .search_after((u64::MAX, u64::MAX), 1, || true)
+        .unwrap();
+    assert_eq!(head.hashes, ["moved"]);
+    assert!(head.has_more);
+    let (tail, _) = session.search_after(cursor, 1, || true).unwrap();
+    assert_eq!(tail.hashes, ["stable"]);
+    assert!(!tail.has_more);
+    assert!(session
+        .visit_hashes(
+            1,
+            || false,
+            |_| panic!("cancelled visits must not reach the caller")
+        )
+        .is_err());
+    drop(index_work);
     RUNTIME.lock().unwrap().take();
 }
 

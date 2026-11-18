@@ -14,6 +14,10 @@
 - List user-visible behavior changes and removed mechanisms explicitly in the pull request description.
 - Do not mix unrelated cleanup, refactoring, or formatting into the same pull request.
 
+## Release notes
+
+- When preparing or editing a Release, follow the shared [Release Notes Format and Template](docs/open-source/releases/release-notes-template.md) and [release checklist](docs/open-source/releases/release-checklist.md). Use the same format for Windows, macOS, Stable, and RC releases; do not reconstruct it from previous chat history or generated PR titles.
+
 ## UI Governance (React/MUI/Motion)
 
 These rules apply to every React UI change, including auxiliary Tauri windows. The detailed reference is [docs/open-source/frontend-ui-guidelines.md](docs/open-source/frontend-ui-guidelines.md).
@@ -26,3 +30,10 @@ These rules apply to every React UI change, including auxiliary Tauri windows. T
 - Preserve Tauri window geometry, transparent gutters, native window motion, commands, configuration formats, database behavior, and installer/release files unless the task explicitly requires otherwise.
 - Before opening a UI PR, run `npm run check:styles`; for a complete local UI verification run `npm run check:ui`. Visual tests are local-only for this workstream because GitHub Actions quota is limited.
 - For UI changes, record user-visible behavior changes, removed mechanisms, platforms checked, and local verification results in the PR. Check normal and reduced-motion behavior when Motion is involved.
+
+## Native UI migration parity
+
+- Treat the shipping React WebView as the product reference. Before changing WinUI behavior, trace the matching reference UI and shared Rust path using [the acceptance matrix](docs/open-source/testing/windows-winui-acceptance-matrix.md).
+- Compare complete scenarios: triggering conditions, event order, geometry, content readiness, window/control lifetime, cancellation and rapid repeated input. Native control defaults are not automatically equivalent to the reference interaction.
+- Add regression coverage for the reported difference and preserved neighboring behavior. A connected command, source assertion, unchanged HWND or resting screenshot alone does not establish interaction parity.
+- Record source, unit, native-XAML, actual-App and physical/manual evidence separately in the matrix. Document intentional differences; do not mark physical motion, DPI or focus as passed from synthetic tests. Keep visual checks local.

@@ -2,6 +2,10 @@
 
 Official releases provide separate Apple silicon (`aarch64`) and Intel (`x86_64`) packages, plus a download-only universal DMG that runs natively on both. All target macOS 11 Big Sur or newer.
 
+Both platform maintainers use the shared [release checklist](release-checklist.md)
+and [Release Notes Format and Template](release-notes-template.md) for the same
+English-first bilingual Release, rather than publishing generated PR titles alone.
+
 The universal DMG is meant for website downloads. It has no updater archive and is not in `latest.json`: each slice of the universal binary reports its own architecture, so the first update moves an installed universal app onto the matching `darwin-aarch64` or `darwin-x86_64` package.
 
 ## Local package

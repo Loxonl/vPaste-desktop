@@ -150,7 +150,7 @@ export class HistoryViewStore {
         const row = card.item;
         return new Item(row.id, row.hash, row.itemType, row.content, row.time, row.titleColor,
             row.previewContent, row.textContent, row.label, row.appSource, row.appIconPath,
-            row.richHtml, row.tags ?? [], card.richRender ?? undefined, true);
+            row.richHtml, row.tags ?? [], card.richRender ?? undefined, true, row.sourceMetadata);
     }
 
     async actionItem(hash: string): Promise<Item | undefined> {

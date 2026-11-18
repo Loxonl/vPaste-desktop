@@ -3,6 +3,7 @@
 #include "WinUiQueueView.h"
 #include "WinUiAppearance.h"
 #include "WinUiRichContent.h"
+#include "WinUiMotion.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -11,6 +12,7 @@
 #include <cmath>
 #include <utility>
 #include <optional>
+#include <unordered_map>
 
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
@@ -83,6 +85,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
     Grid header{nullptr};
     CommandBar toolbar{nullptr};
     StackPanel rows{nullptr};
+    Canvas exitingRows{nullptr};
     ScrollViewer list{nullptr};
     StackPanel emptyState{nullptr};
     TextBlock title{nullptr};
@@ -90,9 +93,13 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
     TextBlock status{nullptr};
     TextBlock guidance{nullptr};
     InfoBar feedback{nullptr};
+    StackPanel errorActions{nullptr};
+    Button retryFailed{nullptr}, removeFailed{nullptr};
+    std::wstring failedHash;
     AppBarButton reverse{nullptr};
     AppBarButton clear{nullptr};
-    AppBarButton undo{nullptr};
+    Button undo{nullptr};
+    TextBlock undoLabel{nullptr};
     Border undoToast{nullptr};
     TextBlock undoMessage{nullptr};
     Button closeButton{nullptr};
@@ -100,6 +107,20 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
     MenuFlyout openItemMenu{nullptr};
     JsonObject state{nullptr};
     std::vector<QueueItem> items;
+    struct RowVisual {
+        QueueItem item;
+        bool english;
+        Border surface{nullptr};
+        TextBlock type{nullptr};
+        Button paste{nullptr}, remove{nullptr}, handle{nullptr};
+        MenuFlyoutItem up{nullptr}, down{nullptr};
+    };
+    std::unordered_map<std::wstring, RowVisual> rowVisuals;
+    winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer exitExpiry{nullptr};
+#ifdef _DEBUG
+    bool testRebuildRows = false;
+    std::optional<bool> testAnimations;
+#endif
     bool english = false;
     bool busy = false;
     bool suspended = false;
@@ -156,6 +177,8 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         root.RowDefinitions().GetAt(0).Height(GridLength{1, GridUnitType::Auto});
         root.RowDefinitions().GetAt(1).Height(GridLength{1, GridUnitType::Star});
         root.RowDefinitions().GetAt(2).Height(GridLength{1, GridUnitType::Auto});
+        root.RowDefinitions().Append(RowDefinition{});
+        root.RowDefinitions().GetAt(3).Height(GridLength{1, GridUnitType::Auto});
         root.Unloaded([weak](auto const &, auto const &) {
             if (auto self = weak.lock()) self->Deactivate();
         });
@@ -246,9 +269,16 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         });
         toolbar.SecondaryCommands().Append(clear);
 
-        undo = AppBarButton{};
-        undo.Label(Text(L"撤销", L"Undo"));
-        undo.Icon(SymbolIcon{Symbol::Undo});
+        undo = Button{};
+        ApplyStyle(undo, L"VPaste.CompactButton");
+        Automation::AutomationProperties::SetAutomationId(undo, L"queue-undo");
+        StackPanel undoAction;
+        undoAction.Orientation(Orientation::Horizontal); undoAction.Spacing(4);
+        undoAction.Children().Append(CompactSymbol(Symbol::Undo));
+        undoLabel = MakeText(Text(L"撤销", L"Undo"), 12);
+        undoAction.Children().Append(undoLabel);
+        undo.Content(undoAction);
+        Automation::AutomationProperties::SetName(undo, undoLabel.Text());
         undo.Click([weak](auto const &, auto const &) {
             if (auto self = weak.lock()) {
                 self->UpdateUndo();
@@ -258,14 +288,13 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         StackPanel undoContent;
         undoContent.Orientation(Orientation::Horizontal); undoContent.Spacing(8);
         undoMessage = MakeText(Text(L"已粘贴", L"Pasted"), 12);
+        undoMessage.VerticalAlignment(VerticalAlignment::Center);
         undoContent.Children().Append(undoMessage); undoContent.Children().Append(undo);
         undoToast = Border(); ApplyStyle(undoToast, L"VPaste.SelectionBar");
-        undoToast.Child(undoContent); undoToast.HorizontalAlignment(HorizontalAlignment::Center);
-        undoToast.VerticalAlignment(VerticalAlignment::Bottom); undoToast.Margin(Thickness{8, 0, 8, 8});
+        undoToast.Child(undoContent);
+        undoToast.Margin(Thickness{0, 8, 0, 0});
         undoToast.Visibility(Visibility::Collapsed);
-        for (const auto &button : {reverse, undo}) {
-            button.Width(32); button.Height(32); button.MinWidth(0); button.MinHeight(0);
-        }
+        reverse.Width(32); reverse.Height(32); reverse.MinWidth(0); reverse.MinHeight(0);
 
         closeButton = NamedIconButton(SymbolIcon{Symbol::Cancel}, Text(L"关闭粘贴队列", L"Close paste queue"));
         closeButton.HorizontalAlignment(HorizontalAlignment::Left);
@@ -321,9 +350,29 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         feedback.IsOpen(false);
         feedback.IsClosable(false);
         feedback.Margin(Thickness{0, 12, 0, 0});
+        errorActions = StackPanel(); errorActions.Orientation(Orientation::Horizontal); errorActions.Spacing(8);
+        retryFailed = Button(); removeFailed = Button();
+        ApplyStyle(retryFailed, L"VPaste.CompactButton"); ApplyStyle(removeFailed, L"VPaste.CompactButton");
+        Automation::AutomationProperties::SetAutomationId(retryFailed, L"queue-error-retry");
+        Automation::AutomationProperties::SetAutomationId(removeFailed, L"queue-error-remove");
+        retryFailed.Click([weak](auto const &, auto const &) { if (auto self = weak.lock()) self->RecoverFailure(L"queuePaste"); });
+        removeFailed.Click([weak](auto const &, auto const &) { if (auto self = weak.lock()) self->RecoverFailure(L"queueRemove"); });
+        errorActions.Children().Append(retryFailed); errorActions.Children().Append(removeFailed);
+        feedback.Content(errorActions);
         Grid::SetRow(feedback, 2);
         root.Children().Append(feedback);
-        Grid::SetRow(undoToast, 1); root.Children().Append(undoToast);
+        Grid::SetRow(undoToast, 3); root.Children().Append(undoToast);
+        exitingRows = Canvas(); exitingRows.IsHitTestVisible(false);
+        exitingRows.SizeChanged([](auto const &sender, auto const &) {
+            const auto canvas = sender.as<Canvas>(); RectangleGeometry clip;
+            clip.Rect({0, 0, static_cast<float>(canvas.ActualWidth()), static_cast<float>(canvas.ActualHeight())}); canvas.Clip(clip);
+        });
+        Grid::SetRow(exitingRows, 1); root.Children().Append(exitingRows);
+        exitExpiry = winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().CreateTimer();
+        exitExpiry.IsRepeating(false);
+        exitExpiry.Interval(std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
+            std::chrono::duration<double>{MotionTokens().GetNamedObject(L"duration").GetNamedNumber(L"fast")}));
+        exitExpiry.Tick([weak](auto const &, auto const &) { if (auto self = weak.lock()) self->ClearExits(); });
         ApplyLanguage();
         ApplyTheme();
     }
@@ -371,6 +420,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         suspended = true;
         rowFocus.reset(); ++renderGeneration;
         undoExpiry.Stop();
+        ClearExits();
         ++confirmationGeneration;
         const auto dialog = std::exchange(confirmation, nullptr);
         confirmingClear = false;
@@ -386,7 +436,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
               const std::vector<std::wstring> &hashes = {}) {
         if (!request || busy || !draggingHash.empty()) return;
         showError = false;
-        status.Text(Text(L"正在处理…", L"Working…"));
+        status.Text(L"");
         busy = true;
         pendingOperation = operation;
         pendingRequest = request(operation, hash, hashes);
@@ -396,6 +446,13 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
             return;
         }
         RenderItems();
+    }
+
+    void RecoverFailure(wchar_t const *operation) {
+        if (!showError || busy || confirmingClear || failedHash.empty() ||
+            std::none_of(items.begin(), items.end(), [&](auto const &item) { return item.hash == failedHash; })) return;
+        const auto hash = failedHash;
+        Send(operation, hash);
     }
 
     void UpdateUndo() {
@@ -462,6 +519,8 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
     bool BeginReorder(const std::wstring &hash) {
         if (busy || confirmingClear || !draggingHash.empty() ||
             std::none_of(items.begin(), items.end(), [&](const auto &item) { return item.hash == hash; })) return false;
+        ClearExits();
+        for (auto const &entry : rowVisuals) ResetFeedbackOpacity(entry.second.surface);
         draggingHash = hash;
         suppressDragPaste = true;
         dragScroll.Start();
@@ -571,13 +630,67 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         else target.Loaded(restore);
     }
 
+    bool AnimateRows() const {
+#ifdef _DEBUG
+        if (testAnimations) return *testAnimations;
+#endif
+        return NativeAnimationsEnabled();
+    }
+
+    void ClearExits() {
+        if (exitExpiry) exitExpiry.Stop();
+        if (!exitingRows) return;
+        for (auto const &child : exitingRows.Children()) ResetFeedbackOpacity(child.as<FrameworkElement>());
+        exitingRows.Children().Clear();
+    }
+
+    void ExitRow(RowVisual const &visual) {
+        const auto surface = visual.surface;
+        if (!AnimateRows() || suspended || !surface.IsLoaded() || surface.ActualHeight() <= 0) return;
+        const auto point = surface.TransformToVisual(exitingRows).TransformPoint({0, 0});
+        const auto width = surface.ActualWidth(), height = surface.ActualHeight();
+        std::uint32_t oldIndex = 0;
+        if (!rows.Children().IndexOf(surface, oldIndex)) return;
+        rows.Children().RemoveAt(oldIndex);
+        surface.Width(width); surface.Height(height); surface.IsHitTestVisible(false);
+        visual.paste.IsEnabled(false); visual.remove.IsEnabled(false); visual.handle.IsEnabled(false);
+        Canvas::SetLeft(surface, point.X); Canvas::SetTop(surface, point.Y);
+        exitingRows.Children().Append(surface);
+        const auto compositor = CompositionTarget::GetCompositorForCurrentThread();
+        const auto curve = MotionTokens().GetNamedObject(L"easing").GetNamedArray(L"exit");
+        const auto easing = compositor.CreateCubicBezierEasingFunction(
+            {static_cast<float>(curve.GetNumberAt(0)), static_cast<float>(curve.GetNumberAt(1))},
+            {static_cast<float>(curve.GetNumberAt(2)), static_cast<float>(curve.GetNumberAt(3))});
+        const auto animation = compositor.CreateScalarKeyFrameAnimation(); animation.Target(L"Opacity");
+        animation.InsertKeyFrame(0, 1); animation.InsertKeyFrame(1, 0, easing);
+        animation.Duration(exitExpiry.Interval()); surface.StartAnimation(animation);
+        surface.Resources().Insert(winrt::box_value(FeedbackAnimationResource), animation);
+        exitExpiry.Start();
+    }
+
     void RenderItems() {
         CaptureRowFocus();
         if (!reorderFocusHash.empty()) rowFocus = RowFocus{reorderFocusHash, 0, L"queue-handle", FocusState::Keyboard};
         ++renderGeneration;
-        rows.Children().Clear();
+        if (!AnimateRows()) ClearExits();
+#ifdef _DEBUG
+        if (testRebuildRows) { rows.Children().Clear(); rowVisuals.clear(); }
+#endif
+        const bool initial = rowVisuals.empty();
+        std::unordered_map<std::wstring, RowVisual> nextRows;
+        std::vector<Border> desired;
         for (std::size_t index = 0; index < items.size(); ++index) {
             const auto item = items[index];
+            if (const auto found = rowVisuals.find(item.hash); found != rowVisuals.end()) {
+                auto visual = found->second;
+                if (visual.english == english && visual.item.itemType == item.itemType && visual.item.previewText == item.previewText &&
+                    visual.item.imagePath == item.imagePath && visual.item.appSource == item.appSource) {
+                    visual.type.Text(index == 0 ? Text(L"下一项", L"Next") : TypeLabel(item.itemType, english));
+                    visual.paste.IsEnabled(!busy); visual.remove.IsEnabled(!busy); visual.handle.IsEnabled(!busy && !confirmingClear);
+                    visual.up.IsEnabled(!busy && index > 0); visual.down.IsEnabled(!busy && index + 1 < items.size());
+                    desired.push_back(visual.surface); nextRows.emplace(item.hash, std::move(visual)); continue;
+                }
+            }
             Grid row;
             row.ColumnDefinitions().Append(ColumnDefinition{});
             row.ColumnDefinitions().Append(ColumnDefinition{});
@@ -760,8 +873,38 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
             });
             container.GotFocus([remove](auto const &, auto const &) { remove.Opacity(1); });
             container.LostFocus([remove, pointerInside](auto const &, auto const &) { if (!*pointerInside) remove.Opacity(0); });
-            rows.Children().Append(container);
+            desired.push_back(container);
+            nextRows.emplace(item.hash, RowVisual{item, english, container, type, paste, remove, handle, up, down});
+            if (!initial && !rowVisuals.contains(item.hash) && !suspended) {
+                container.Loaded([weak, hash = item.hash, weakRow = winrt::make_weak(container), entered = std::make_shared<bool>(false)](auto const &, auto const &) {
+                    if (*entered) return;
+                    *entered = true;
+                    const auto self = weak.lock(); const auto row = weakRow.get();
+                    if (!self || !row || !self->draggingHash.empty() || self->suspended) return;
+                    const auto current = self->rowVisuals.find(hash);
+                    if (current != self->rowVisuals.end() && current->second.surface == row) FadeFeedback(row, self->AnimateRows());
+                });
+            }
         }
+        for (auto const &entry : rowVisuals) if (!nextRows.contains(entry.first)) ExitRow(entry.second);
+        // Broadcast and command reply often carry the same revision. Keep the
+        // pending exits alive across those refreshes; only Undo/re-add cancels
+        // an outgoing copy of the same hash.
+        for (std::uint32_t i = exitingRows.Children().Size(); i > 0; --i) {
+            const auto surface = exitingRows.Children().GetAt(i - 1).as<Border>();
+            if (nextRows.contains(std::wstring{winrt::unbox_value<winrt::hstring>(surface.Tag())})) {
+                ResetFeedbackOpacity(surface); exitingRows.Children().RemoveAt(i - 1);
+            }
+        }
+        for (std::uint32_t index = 0; index < desired.size(); ++index) {
+            const auto target = desired[index];
+            if (index < rows.Children().Size() && rows.Children().GetAt(index) == target) continue;
+            std::uint32_t previous = 0;
+            if (rows.Children().IndexOf(target, previous)) rows.Children().RemoveAt(previous);
+            rows.Children().InsertAt(index, target);
+        }
+        while (rows.Children().Size() > desired.size()) rows.Children().RemoveAtEnd();
+        rowVisuals = std::move(nextRows);
         list.Visibility(items.empty() ? Visibility::Collapsed : Visibility::Visible);
         emptyState.Visibility(items.empty() ? Visibility::Visible : Visibility::Collapsed);
         const auto capacity = state
@@ -832,14 +975,18 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         }
 
         winrt::hstring error;
+        failedHash.clear();
         if (state.HasKey(L"error") && state.GetNamedValue(L"error").ValueType() == JsonValueType::Object) {
-            error = state.GetNamedObject(L"error").GetNamedString(L"message", L"");
+            const auto failure = state.GetNamedObject(L"error");
+            error = failure.GetNamedString(L"message", L"");
+            const auto hash = failure.GetNamedValue(L"hash", nullptr);
+            if (hash && hash.ValueType() == JsonValueType::String) failedHash = hash.GetString();
         }
         showError = !error.empty();
         if (showError) {
             status.Text(error);
         } else {
-            status.Text(busy ? Text(L"正在处理…", L"Working…") : winrt::hstring{});
+            status.Text(L"");
         }
         RenderItems();
         return true;
@@ -852,7 +999,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         busy = serverBusy;
         if (response.HasKey(L"error")) SetError(std::wstring{response.GetNamedString(L"error")});
         else if (!SetState(response.GetNamedObject(L"data"))) {
-            status.Text(serverBusy ? Text(L"正在处理…", L"Working…") : winrt::hstring{});
+            status.Text(L"");
             RenderItems();
         }
         return true;
@@ -862,8 +1009,12 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         title.Text(Text(L"粘贴队列", L"Paste queue"));
         reverse.Label(Text(L"反转", L"Reverse"));
         clear.Label(Text(L"清空", L"Clear"));
-        undo.Label(Text(L"撤销", L"Undo"));
+        undoLabel.Text(Text(L"撤销", L"Undo"));
+        Automation::AutomationProperties::SetName(undo, undoLabel.Text());
         undoMessage.Text(Text(L"已粘贴", L"Pasted"));
+        retryFailed.Content(winrt::box_value(Text(L"重试", L"Retry")));
+        removeFailed.Content(winrt::box_value(Text(L"删除", L"Delete")));
+        Automation::AutomationProperties::SetName(removeFailed, Text(L"删除失败项", L"Delete failed item"));
         NameIconButton(closeButton, Text(L"关闭粘贴队列", L"Close paste queue"));
         LocalizeConfirmation();
         guidance.Text(Text(L"按顺序整理，逐项粘贴。关闭队列会清空这份临时列表。",
@@ -887,6 +1038,10 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         feedback.Severity(showError ? InfoBarSeverity::Error : InfoBarSeverity::Informational);
         feedback.Message(status.Text());
         feedback.IsOpen(!status.Text().empty());
+        errorActions.Visibility(showError && !failedHash.empty() ? Visibility::Visible : Visibility::Collapsed);
+        const bool recoverable = showError && !busy && !confirmingClear &&
+            std::any_of(items.begin(), items.end(), [&](auto const &item) { return item.hash == failedHash; });
+        retryFailed.IsEnabled(recoverable); removeFailed.IsEnabled(recoverable);
     }
 
     void SetLanguage(bool useEnglish) {
@@ -898,6 +1053,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
 
     void SetError(const std::wstring &message) {
         FinishDrag();
+        failedHash.clear();
         busy = serverBusy || pendingRequest != 0;
         showError = true;
         status.Text(winrt::hstring{message});
@@ -1094,13 +1250,15 @@ winrt::Windows::Foundation::IAsyncAction TestQueueConsolidationControls(Framewor
     stage = 79;
     auto state = JsonObject::Parse(LR"({"revision":100,"busy":false,"items":[{"hash":"a","previewText":"First"},{"hash":"b","previewText":"Second"}]})");
     queue.SetState(state); co_await NextNativeFrame();
+    const auto listHeight = root.Children().GetAt(1).as<ScrollViewer>().ActualHeight();
     invoke(button(0)); co_await NextNativeFrame();
-    winrt::check_hresult(requests.size() == 1 && requests[0].GetNamedString(L"op") == L"queuePaste" && !button(0).IsEnabled() ? S_OK : E_FAIL);
+    winrt::check_hresult(requests.size() == 1 && requests[0].GetNamedString(L"op") == L"queuePaste" && !button(0).IsEnabled() &&
+        !feedback.IsOpen() && root.Children().GetAt(1).as<ScrollViewer>().ActualHeight() == listHeight ? S_OK : E_FAIL);
     state.Insert(L"revision", JsonValue::CreateNumberValue(101));
     state.GetNamedArray(L"items").Append(JsonObject::Parse(LR"({"hash":"new","previewText":"New capture"})"));
     queue.SetState(state); queue.AddItems({L"duplicate"});
     winrt::check_hresult(requests.size() == 1 && rows.Children().Size() == 3 && !button(0).IsEnabled() &&
-        feedback.Message() == L"Working…" ? S_OK : E_FAIL);
+        !feedback.IsOpen() ? S_OK : E_FAIL);
     auto wrong = reply(0, JsonObject{}, L"Wrong operation"); wrong.Insert(L"op", JsonValue::CreateStringValue(L"queueRemove"));
     winrt::check_hresult(!queue.Receive(wrong) && !button(0).IsEnabled() ? S_OK : E_FAIL);
     auto older = JsonObject::Parse(LR"({"revision":100,"busy":false,"items":[{"hash":"old","previewText":"Old state"}]})");
@@ -1119,8 +1277,9 @@ winrt::Windows::Foundation::IAsyncAction TestQueueConsolidationControls(Framewor
     state.Insert(L"undoExpiresAt", JsonValue::CreateNumberValue(static_cast<double>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() + 60'000)));
     state.Insert(L"undoHash", JsonValue::CreateStringValue(L"consumed")); queue.SetState(state);
-    const auto undo = root.Children().GetAt(4).as<Border>().Child().as<StackPanel>().Children().GetAt(1).as<AppBarButton>();
-    winrt::check_hresult(undo.Visibility() == Visibility::Visible && undo.IsEnabled() && undo.Label() == L"Undo" ? S_OK : E_FAIL);
+    const auto undo = root.Children().GetAt(4).as<Border>().Child().as<StackPanel>().Children().GetAt(1).as<Button>();
+    winrt::check_hresult(undo.Visibility() == Visibility::Visible && undo.IsEnabled() &&
+        Automation::AutomationProperties::GetName(undo) == L"Undo" ? S_OK : E_FAIL);
     invoke(undo); co_await NextNativeFrame();
     winrt::check_hresult(requests.size() == 3 && requests[2].GetNamedString(L"op") == L"queueUndo" ? S_OK : E_FAIL);
     state.Insert(L"revision", JsonValue::CreateNumberValue(103)); state.Remove(L"undoHash");
@@ -1177,12 +1336,142 @@ winrt::Windows::Foundation::IAsyncAction TestQueueConsolidationControls(Framewor
     fixture.as<Border>().Child(nullptr);
 }
 
+winrt::Windows::Foundation::IAsyncAction TestQueueFailureRecoveryControls(FrameworkElement fixture, std::uint32_t &stage) {
+    stage = 260;
+    std::vector<JsonObject> requests;
+    QueueView queue{[&](auto const &op, auto const &hash, auto const &) {
+        JsonObject value; value.Insert(L"op", JsonValue::CreateStringValue(op));
+        value.Insert(L"hash", JsonValue::CreateStringValue(hash)); requests.push_back(value);
+        return static_cast<std::uint64_t>(requests.size());
+    }, [] {}};
+    queue.SetLanguage(true);
+    const auto root = queue.Root().as<Grid>(); fixture.as<Border>().Child(root);
+    const auto feedback = root.Children().GetAt(3).as<InfoBar>();
+    const auto actions = feedback.Content().as<StackPanel>();
+    const auto retry = actions.Children().GetAt(0).as<Button>(), remove = actions.Children().GetAt(1).as<Button>();
+    const auto invoke = [](FrameworkElement const &button) {
+        Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(button)
+            .GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+    };
+    auto failure = JsonObject::Parse(LR"({"revision":1,"items":[{"hash":"first"},{"hash":"failed"}],"error":{"hash":"failed","message":"Target rejected paste"}})");
+    queue.SetState(failure); co_await NextNativeFrame();
+    winrt::check_hresult(actions.Visibility() == Visibility::Visible && retry.IsEnabled() && remove.IsEnabled() &&
+        winrt::unbox_value<winrt::hstring>(retry.Content()) == L"Retry" && feedback.Message() == L"Target rejected paste" ? S_OK : E_FAIL);
+    invoke(retry); co_await NextNativeFrame();
+    winrt::check_hresult(requests.size() == 1 && requests[0].GetNamedString(L"op") == L"queuePaste" &&
+        requests[0].GetNamedString(L"hash") == L"failed" && !retry.IsEnabled() && !remove.IsEnabled() ? S_OK : E_FAIL);
+    // A fresh capture must not unlock a request still awaiting its reply.
+    failure.Insert(L"revision", JsonValue::CreateNumberValue(2)); queue.SetState(failure);
+    winrt::check_hresult(!retry.IsEnabled() && requests.size() == 1 ? S_OK : E_FAIL);
+    JsonObject reply; reply.Insert(L"id", JsonValue::CreateNumberValue(1));
+    reply.Insert(L"op", JsonValue::CreateStringValue(L"queuePaste")); reply.Insert(L"data", failure);
+    winrt::check_hresult(queue.Receive(reply) && retry.IsEnabled() ? S_OK : E_FAIL);
+    invoke(remove); co_await NextNativeFrame();
+    winrt::check_hresult(requests.size() == 2 && requests[1].GetNamedString(L"op") == L"queueRemove" &&
+        requests[1].GetNamedString(L"hash") == L"failed" ? S_OK : E_FAIL);
+    const auto recovered = JsonObject::Parse(LR"({"revision":3,"items":[{"hash":"first"}]})");
+    reply.Insert(L"id", JsonValue::CreateNumberValue(2)); reply.Insert(L"op", JsonValue::CreateStringValue(L"queueRemove"));
+    reply.Insert(L"data", recovered); queue.Receive(reply);
+    winrt::check_hresult(actions.Visibility() == Visibility::Collapsed && !feedback.IsOpen() ? S_OK : E_FAIL);
+    // A stale failure may still be explained, but cannot act on a deleted item.
+    failure.Insert(L"revision", JsonValue::CreateNumberValue(4));
+    failure.Insert(L"items", recovered.GetNamedArray(L"items")); queue.SetState(failure);
+    winrt::check_hresult(!retry.IsEnabled() && !remove.IsEnabled() && requests.size() == 2 ? S_OK : E_FAIL);
+    queue.SetState(JsonObject::Parse(LR"({"revision":5,"items":[],"error":{"hash":null,"message":"General queue error"}})"));
+    winrt::check_hresult(actions.Visibility() == Visibility::Collapsed && feedback.IsOpen() ? S_OK : E_FAIL);
+    stage = 2601;
+    // General RPC errors must not inherit an unrelated failed paste target.
+    failure.Insert(L"revision", JsonValue::CreateNumberValue(6));
+    failure.Insert(L"items", JsonArray::Parse(LR"([{"hash":"first"},{"hash":"failed"}])")); queue.SetState(failure);
+    const auto toolbar = root.Children().GetAt(0).as<Grid>().Children().GetAt(2).as<CommandBar>();
+    invoke(toolbar.PrimaryCommands().GetAt(0).as<AppBarButton>());
+    const auto reverse = requests.back();
+    JsonObject generalError; generalError.Insert(L"id", JsonValue::CreateNumberValue(requests.size()));
+    generalError.Insert(L"op", reverse.GetNamedValue(L"op"));
+    generalError.Insert(L"error", JsonValue::CreateStringValue(L"Reverse failed"));
+    winrt::check_hresult(queue.Receive(generalError) && feedback.Message() == L"Reverse failed" &&
+        actions.Visibility() == Visibility::Collapsed && !retry.IsEnabled() && !remove.IsEnabled() ? S_OK : E_FAIL);
+    const auto beforeStaleRecovery = requests.size();
+    for (const auto &action : {retry, remove}) {
+        bool disabled = false;
+        try { invoke(action); }
+        catch (winrt::hresult_error const &error) { disabled = error.code() == static_cast<HRESULT>(0x80040200); }
+        winrt::check_hresult(disabled ? S_OK : E_FAIL); // UIA_E_ELEMENTNOTENABLED
+    }
+    winrt::check_hresult(requests.size() == beforeStaleRecovery ? S_OK : E_FAIL);
+    fixture.as<Border>().Child(nullptr);
+}
+
+winrt::Windows::Foundation::IAsyncAction TestQueueRowContinuityControls(FrameworkElement fixture, std::uint32_t &stage) {
+    stage = 261;
+    QueueView queue{[](auto const &, auto const &, auto const &) { return std::uint64_t{1}; }, [] {}};
+    const auto state = queue.m_impl;
+    const auto root = queue.Root().as<Grid>(); root.Width(360); root.Height(448); fixture.as<Border>().Child(root);
+    state->testAnimations = true;
+    const auto refresh = [&](int revision, wchar_t const *items, bool busy = false) {
+        JsonObject data; data.Insert(L"revision", JsonValue::CreateNumberValue(revision));
+        data.Insert(L"items", JsonArray::Parse(items)); data.Insert(L"busy", JsonValue::CreateBooleanValue(busy)); queue.SetState(data);
+    };
+    refresh(1, LR"([{"hash":"a"},{"hash":"b"},{"hash":"c"}])"); co_await NextNativeFrame();
+    const auto a = state->rowVisuals.at(L"a").surface, b = state->rowVisuals.at(L"b").surface;
+    winrt::check_hresult(!a.Resources().HasKey(winrt::box_value(FeedbackAnimationResource)) ? S_OK : E_FAIL);
+    refresh(2, LR"([{"hash":"a"},{"hash":"b"},{"hash":"c"}])", true);
+    winrt::check_hresult(state->rowVisuals.at(L"a").surface == a && !state->rowVisuals.at(L"a").paste.IsEnabled() ? S_OK : E_FAIL);
+    refresh(3, LR"([{"hash":"b"},{"hash":"a"},{"hash":"new"}])");
+    co_await NextNativeFrame();
+    winrt::check_hresult(state->rows.Children().GetAt(0) == b && state->rows.Children().GetAt(1) == a &&
+        state->exitingRows.Children().Size() == 1 && state->exitExpiry.IsRunning() &&
+        state->rowVisuals.at(L"new").surface.Resources().HasKey(winrt::box_value(FeedbackAnimationResource)) ? S_OK : E_FAIL);
+    refresh(3, LR"([{"hash":"b"},{"hash":"a"},{"hash":"new"}])");
+    winrt::check_hresult(state->exitingRows.Children().Size() == 1 && state->exitExpiry.IsRunning() ? S_OK : E_FAIL);
+    // Wait for the actual dispatcher completion, including release of old rows.
+    for (int frame = 0; frame < 90 && state->exitingRows.Children().Size(); ++frame) co_await NextNativeFrame();
+    winrt::check_hresult(state->exitingRows.Children().Size() == 0 && !state->exitExpiry.IsRunning() ? S_OK : E_FAIL);
+    state->testAnimations = false;
+    refresh(4, LR"([{"hash":"a"},{"hash":"reduced"}])"); co_await NextNativeFrame();
+    winrt::check_hresult(state->rowVisuals.at(L"a").surface == a && state->exitingRows.Children().Size() == 0 &&
+        !state->rowVisuals.at(L"reduced").surface.Resources().HasKey(winrt::box_value(FeedbackAnimationResource)) &&
+        state->rowVisuals.at(L"reduced").surface.Opacity() == 1 ? S_OK : E_FAIL);
+    stage = 262;
+    JsonObject full; JsonArray items;
+    for (int i = 0; i < 100; ++i) {
+        JsonObject item; item.Insert(L"hash", JsonValue::CreateStringValue(L"bench-" + std::to_wstring(i)));
+        item.Insert(L"previewText", JsonValue::CreateStringValue(L"Queue continuity benchmark")); items.Append(item);
+    }
+    full.Insert(L"items", items);
+    int revision = 10;
+    double rebuildMs = 0, retainedMs = 0;
+    // The same builder runs both modes: the Debug-only baseline deliberately
+    // clears all rows as the pre-change renderer did. Include loaded layout.
+    for (const bool rebuild : {true, false}) {
+        state->testRebuildRows = rebuild;
+        full.Insert(L"revision", JsonValue::CreateNumberValue(++revision)); queue.SetState(full);
+        co_await NextNativeFrame(); root.UpdateLayout();
+        double elapsed = 0;
+        for (int iteration = 0; iteration < 6; ++iteration) {
+            full.Insert(L"revision", JsonValue::CreateNumberValue(++revision));
+            const auto start = std::chrono::steady_clock::now(); queue.SetState(full); root.UpdateLayout();
+            elapsed += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        }
+        if (rebuild) rebuildMs = elapsed / 6; else retainedMs = elapsed / 6;
+    }
+    std::fprintf(stderr, "WinUI queue continuity benchmark: rows=100 rebuildMeanMs=%.3f retainedMeanMs=%.3f ratio=%.3f\n", rebuildMs, retainedMs, retainedMs / rebuildMs);
+    winrt::check_hresult(state->rows.Children().Size() == 100 && retainedMs <= rebuildMs * 1.10 ? S_OK : E_FAIL);
+    const auto retained = state->rowVisuals.at(L"bench-50").surface;
+    items.RemoveAt(0); items.Append(JsonObject::Parse(LR"({"hash":"capture","previewText":"Concurrent capture"})"));
+    full.Insert(L"revision", JsonValue::CreateNumberValue(++revision)); queue.SetState(full); co_await NextNativeFrame();
+    winrt::check_hresult(state->rows.Children().Size() == 100 && state->rowVisuals.at(L"bench-50").surface == retained ? S_OK : E_FAIL);
+    queue.Deactivate();
+    winrt::check_hresult(state->exitingRows.Children().Size() == 0 && !state->exitExpiry.IsRunning() ? S_OK : E_FAIL);
+    fixture.as<Border>().Child(nullptr);
+}
+
 winrt::Windows::Foundation::IAsyncAction TestQueueUndoExpiryControls(FrameworkElement fixture, std::uint32_t &stage) {
     std::size_t sent = 0;
     QueueView queue{[&](auto const &, auto const &, auto const &) { return ++sent; }, [] {}};
     const auto root = queue.Root().as<Grid>(); fixture.as<Border>().Child(root);
     const auto toolbar = root.Children().GetAt(0).as<Grid>().Children().GetAt(2).as<CommandBar>();
-    const auto undo = root.Children().GetAt(4).as<Border>().Child().as<StackPanel>().Children().GetAt(1).as<AppBarButton>();
+    const auto undo = root.Children().GetAt(4).as<Border>().Child().as<StackPanel>().Children().GetAt(1).as<Button>();
     auto state = JsonObject::Parse(LR"({"revision":1,"items":[],"undoHash":"consumed","undoExpiresAt":1})");
     stage = 107;
     queue.SetState(state); co_await NextNativeFrame();
@@ -1199,7 +1488,7 @@ winrt::Windows::Foundation::IAsyncAction TestQueueUndoExpiryControls(FrameworkEl
     state.Insert(L"items", JsonArray::Parse(LR"([{"hash":"a","previewText":"Keep this row"}])"));
     winrt::handle expired{CreateEventW(nullptr, false, false, nullptr)}; winrt::check_bool(static_cast<bool>(expired));
     const auto token = undo.RegisterPropertyChangedCallback(UIElement::VisibilityProperty(), [signal = expired.get()](auto const &sender, auto const &) {
-        if (sender.template as<AppBarButton>().Visibility() == Visibility::Collapsed) SetEvent(signal);
+        if (sender.template as<Button>().Visibility() == Visibility::Collapsed) SetEvent(signal);
     });
     queue.SetState(state);
     const auto rows = root.Children().GetAt(1).as<ScrollViewer>().Content().as<StackPanel>();
@@ -1261,9 +1550,13 @@ winrt::Windows::Foundation::IAsyncAction TestQueueFocusContinuityControls(Framew
         winrt::check_hresult(Input::FocusManager::GetFocusedElement(root.XamlRoot()) == newerChoice ? S_OK : E_FAIL);
     } else {
         std::fprintf(stderr, "WinUI queue focus continuity: foreground-dependent assertions skipped\n");
-        control(1, 1).Focus(FocusState::Keyboard);
+        const auto retained = control(1, 1);
+        retained.Focus(FocusState::Keyboard);
         refresh(2, LR"([{"hash":"capture"},{"hash":"a"},{"hash":"b"},{"hash":"c"}])"); co_await NextNativeFrame();
-        winrt::check_hresult(Input::FocusManager::GetFocusedElement(root.XamlRoot()) != control(2, 1) ? S_OK : E_FAIL);
+        // XAML may keep its logical focus on the retained control while the
+        // window stays inactive. Check identity and HWND activation separately.
+        winrt::check_hresult(control(2, 1) == retained &&
+            GetAncestor(owner, GA_ROOT) != GetForegroundWindow() ? S_OK : E_FAIL);
     }
     fixture.as<Border>().Child(nullptr);
 }

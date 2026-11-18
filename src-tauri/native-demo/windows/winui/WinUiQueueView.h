@@ -79,6 +79,10 @@ public:
 #endif
 
 private:
+#ifdef _DEBUG
+    friend winrt::Windows::Foundation::IAsyncAction TestQueueRowContinuityControls(
+        winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
+#endif
     struct Impl;
     std::shared_ptr<Impl> m_impl;
 };
@@ -89,6 +93,10 @@ winrt::Windows::Foundation::IAsyncAction TestQueueUndoExpiryControls(
 winrt::Windows::Foundation::IAsyncAction TestQueueFocusContinuityControls(
     winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
 winrt::Windows::Foundation::IAsyncAction TestQueueConsolidationControls(
+    winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
+winrt::Windows::Foundation::IAsyncAction TestQueueFailureRecoveryControls(
+    winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
+winrt::Windows::Foundation::IAsyncAction TestQueueRowContinuityControls(
     winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
 winrt::Windows::Foundation::IAsyncAction TestQueuePointerReorderControls(
     winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);

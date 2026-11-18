@@ -5,6 +5,11 @@
 #include <cstdio>
 
 namespace vpaste::winui {
+inline bool TraceCardMedia() {
+    // Local, opt-in profiling of synthetic data; never print paths or hashes.
+    static const bool enabled = GetEnvironmentVariableW(L"VPASTE_WINUI_MEDIA_PROBE", nullptr, 0) != 0;
+    return enabled;
+}
 // Component-harness counters, never a substitute for a full app/process-tree
 // comparison. No working-set trimming or forced collection is performed.
 inline void RecordNativeResources(char const *phase) {

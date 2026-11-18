@@ -156,7 +156,7 @@ Expected:
 - QQ's plain-text and immediately following rich-text phases produce one rich item per copy, in both the queue and history. Different text, source apps, queue sessions, or already-rich formatting variants remain distinct captures.
 - vPaste's clipboard restore must not re-enter the queue. A deliberate external re-copy is still captured; no time-based blanket suppression of external copies is used.
 
-Automated Windows coverage replays the plain/rich QQ phases through the buffered worker and database. The native concurrent read/restore test runs in a child process with an isolated window station, so it cannot overwrite the user's clipboard.
+Automated Windows coverage replays the plain/rich QQ phases through the buffered worker and database, including an ownerless plain phase followed by rich text from the confirmed QQ executable. An unconfirmed or mismatched foreground hint must not merge captures or relabel a standalone copy. The native concurrent read/restore test runs in a child process with an isolated window station, so it cannot overwrite the user's clipboard.
 
 ## Settings And Migration
 

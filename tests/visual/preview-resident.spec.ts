@@ -38,6 +38,10 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
                         if (command === "plugin:event|listen") { listeners.set(args.event as string, args.handler as number); return ++nextId; }
                         if (command === "commit_preview_window") return true;
                         if (command === "sync_preview_browser") return true;
+                        if (command === "file_preview_info" && String(args.content).includes("fixture.pdf")) return {
+                            kind: "pdf-preview", paths: ["C:\\synthetic\\fixture.pdf"], display_path: "C:\\synthetic\\fixture.pdf",
+                            extension: "PDF", exists: true, preview_path: "", contains_directories: false,
+                        };
                         if (command === "file_preview_info") return {
                             kind: "single-icon", paths: ["C:\\synthetic\\demo.doc"], display_path: "C:\\synthetic\\demo.doc",
                             extension: "DOC", exists: true, preview_path: "", contains_directories: false,
@@ -111,5 +115,39 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
         await expect.poll(() => page.evaluate(() => (window as PreviewWindow).__residentPreview.calls
             .filter(call => call.command === "preview_navigate_selection").at(-1)?.args)).toMatchObject({ direction: 1, key: "ArrowRight" });
         await page.screenshot({ path: testInfo.outputPath("resident-reopened.png"), animations: "disabled" });
+
+        await emit(page, { request_id: 8, item_type: "File", content: '["C:\\synthetic\\fixture.pdf"]', native_toolbar: true });
+        await expect.poll(() => committed(page, 8)).toBe(true);
+        const toolbar = page.locator("[data-preview-toolbar]");
+        const pdf = current(page).locator("iframe");
+        const toolbarPin = toolbar.locator("button[aria-pressed]");
+        await expect(toolbarPin).toBeVisible();
+        await expect(toolbar.getByRole("button")).toHaveCount(1);
+        const pinBounds = await toolbarPin.boundingBox();
+        expect(pinBounds).toMatchObject({ width: 32, height: 32 });
+        const toolbarBounds = await toolbar.boundingBox();
+        const pdfBounds = await pdf.boundingBox();
+        expect(toolbarBounds!.height).toBe(40);
+        expect(pdfBounds!.y).toBeGreaterThanOrEqual(toolbarBounds!.y + toolbarBounds!.height);
+        expect(pdfBounds!.height).toBeGreaterThan(100);
+        await toolbarPin.focus();
+        const beforeToolbarKeys = await page.evaluate(() => (window as PreviewWindow).__residentPreview.calls
+            .filter(call => call.command === "preview_navigate_selection").length);
+        await page.keyboard.press("ArrowRight");
+        expect(await page.evaluate(() => (window as PreviewWindow).__residentPreview.calls
+            .filter(call => call.command === "preview_navigate_selection").length)).toBe(beforeToolbarKeys);
+
+        await emit(page, { request_id: 9, item_type: "Link", content: "https://example.com/with-toolbar", native_toolbar: true });
+        await expect.poll(() => page.evaluate(() => (window as PreviewWindow).__residentPreview.calls
+            .filter(call => call.command === "sync_preview_browser" && call.args.requestId === 9).at(-1)?.args.bounds)).toMatchObject({
+            y: expect.any(Number), height: expect.any(Number),
+        });
+        const browserBounds = await page.evaluate(() => (window as PreviewWindow).__residentPreview.calls
+            .filter(call => call.command === "sync_preview_browser" && call.args.requestId === 9).at(-1)!.args.bounds as { y: number });
+        expect(browserBounds.y).toBeGreaterThanOrEqual(toolbarBounds!.y + toolbarBounds!.height);
+        await toolbarPin.press("Escape");
+        await expect.poll(() => page.evaluate(() => (window as PreviewWindow).__residentPreview.calls
+            .some(call => call.command === "hide_preview_window"))).toBe(true);
+        await page.screenshot({ path: testInfo.outputPath("resident-native-toolbar.png"), animations: "disabled" });
     });
 }

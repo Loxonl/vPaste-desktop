@@ -101,6 +101,8 @@ MainKeyResult ResolveMainKey(PanelBehavior const &behavior, MainKeyInput const &
         }
         return {};
     }
+    if (input.key == VK_RETURN && !input.control && !input.shift && !input.alt && !input.meta)
+        return {input.repeated ? Action::Ignore : Action::PasteCard};
     if (behavior.tabSelection && input.key == VK_TAB && !input.control && !input.alt && !input.meta)
         return {input.shift ? Action::PreviousCard : Action::NextCard};
     if (!input.control && !input.alt && !input.meta &&

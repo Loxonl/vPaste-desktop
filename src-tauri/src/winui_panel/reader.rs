@@ -88,7 +88,10 @@ pub(super) fn prepare(hash: &str, area: crate::ScreenBounds) -> Result<Option<Va
                 }
                 _ => json!({"kind":"files", "text":info.paths.join("\n"),
                     "caption":file_name, "missing":!info.exists,
-                    "count":info.paths.len(), "directory":info.contains_directories}),
+                    "count":info.paths.len(), "directory":info.contains_directories,
+                    "batch":info.kind == "multiple",
+                    "file":super::file_icons::presentation(&info,
+                        crate::config::get().multilingual.to_ascii_lowercase().starts_with("en"))}),
             }
         }
         _ => return Ok(None),
@@ -101,6 +104,14 @@ pub(super) fn prepare(hash: &str, area: crate::ScreenBounds) -> Result<Option<Va
         > 3 * 1024 * 1024
     {
         return Ok(None);
+    }
+    let asset = body["imagePath"].as_str().unwrap_or("");
+    if body["kind"] == "image" {
+        if let Ok((width, height)) = image::image_dimensions(asset) {
+            body["imageWidth"] = json!(width);
+            body["imageHeight"] = json!(height);
+        }
+        body["checkerboard"] = json!(true);
     }
     let asset = body["imagePath"].as_str().unwrap_or("");
     let size = crate::preview_window_size(
@@ -152,6 +163,7 @@ pub(super) fn show(
     *pending = None;
     if mode.takes_focus() {
         crate::PREVIEW_PINNED.store(false, Ordering::SeqCst);
+        crate::WINUI_IMAGE_TEXT_PREVIEW.store(false, Ordering::SeqCst);
         crate::begin_preview_focus_handoff();
     }
     NATIVE.store(request, Ordering::Release);
@@ -390,6 +402,29 @@ mod tests {
         assert_eq!(files["kind"], "files");
         assert_eq!(files["count"], 2);
         assert!(files["text"].as_str().unwrap().contains("图片 #100%.png"));
+        assert_eq!(files["file"]["label"], "2 个文件");
+        assert_eq!(files["file"]["multiple"], true);
+        assert_eq!(files["file"]["fullPath"], large_path.to_str().unwrap());
+        assert!(
+            files["file"]["path"]
+                .as_str()
+                .unwrap()
+                .encode_utf16()
+                .count()
+                <= 28
+        );
+        let folder_path = directory.path().join("素材文件夹");
+        std::fs::create_dir(&folder_path).unwrap();
+        let folder = store("File", &json!([folder_path]).to_string());
+        let folder_body = prepare(&folder, area).unwrap().unwrap();
+        assert_eq!(folder_body["file"]["light"]["name"], "yellow-folder");
+        assert_eq!(folder_body["caption"], "素材文件夹");
+        let missing_path = directory.path().join("missing-video.mp4");
+        let missing = store("File", &json!([missing_path]).to_string());
+        let missing_body = prepare(&missing, area).unwrap().unwrap();
+        assert_eq!(missing_body["kind"], "files");
+        assert_eq!(missing_body["file"]["exists"], false);
+        assert_eq!(missing_body["caption"], "missing-video.mp4");
         let pdf_path = directory.path().join("document.pdf");
         std::fs::write(&pdf_path, b"%PDF-1.4\n").unwrap();
         let pdf = store("File", &json!([pdf_path]).to_string());
@@ -397,6 +432,50 @@ mod tests {
         let link = store("Link", "https://example.com");
         assert!(prepare(&link, area).unwrap().is_none());
         assert!(prepare("missing-native-reader-fixture", area).is_err());
+    }
+
+    #[test]
+    fn image_reader_uses_bounded_asset_dimensions_for_the_transparency_matte() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let _cleanup = crate::auto_cleanup::pause();
+        let directory = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(directory.path().to_string_lossy().into_owned());
+        crate::config::save(crate::config::Config::default());
+        crate::clipboard::db::init();
+        let path = directory.path().join("transparent-image.png");
+        std::fs::write(
+            &path,
+            include_bytes!("../../../tests/fixtures/office/picture-a.png"),
+        )
+        .unwrap();
+        let area = crate::ScreenBounds {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 778.0,
+            scale_factor: 1.0,
+        };
+        for (kind, content) in [
+            ("Image", path.to_string_lossy().into_owned()),
+            ("File", json!([path]).to_string()),
+        ] {
+            let hash =
+                crate::clipboard::insert_text_from_app(content.clone(), "Reader image fixture", "")
+                    .unwrap();
+            crate::clipboard::db::db()
+                .execute(
+                    "update clipboard set item_type=?1, content=?2, source='' where hash=?3",
+                    rusqlite::params![kind, content, hash],
+                )
+                .unwrap();
+            let body = prepare(&hash, area).unwrap().unwrap();
+            let (width, height) =
+                image::image_dimensions(body["imagePath"].as_str().unwrap()).unwrap();
+            assert_eq!(body["imageWidth"], width);
+            assert_eq!(body["imageHeight"], height);
+            assert_eq!(body["checkerboard"], true);
+        }
     }
 
     #[test]

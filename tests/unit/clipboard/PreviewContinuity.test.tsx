@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import Preview from "../../../src/clipboard/Preview";
 import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
 import { motionDurationsMs, motionTokens } from "../../../src/ui/motion";
@@ -16,6 +16,8 @@ const emit = (name: string, payload?: unknown) => act(() => listeners.get(name)?
 const text = (id: number, content: string, direction = 0) => ({
     request_id: id, item_type: "Text", content, navigation_direction: direction,
 });
+
+beforeAll(async () => { await import("../../../src/clipboard/ImageTextView"); });
 
 beforeEach(() => {
     listeners = new Map();

@@ -1,10 +1,28 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { APP_SOURCE_NAME_KEYS, displayAppSource } from "../../../src/clipboard/appSource";
+import enUS from "../../../src/lang/locales/en-US";
+import zhCN from "../../../src/lang/locales/zh-CN";
 
 const read = (path: string) => readFileSync(path, "utf8");
 const native = "src-tauri/native-demo/windows/winui/";
 
 describe("WinUI custom filter architecture", () => {
+    it("keeps every native source-app label aligned with the shipping localizations", () => {
+        const editor = read(`${native}WinUiFilterEditor.cpp`);
+        const mapping = editor.match(/constexpr AppSourceName AppSourceNames\[\] = \{([\s\S]*?)\n\};/)?.[1] ?? "";
+        const labels = Array.from(mapping.matchAll(/\{L"([^"]+)", L"([^"]*)", L"([^"]*)"\}/g),
+            ([, source, zh, en]) => [source, { zh, en }]);
+        const expected = Object.fromEntries(Object.keys(APP_SOURCE_NAME_KEYS).map(source => [source, {
+            zh: displayAppSource(`${source}.exe`, key => zhCN.translations[key]),
+            en: displayAppSource(`${source}.exe`, key => enUS.translations[key]),
+        }]));
+        expect(labels).toHaveLength(Object.keys(APP_SOURCE_NAME_KEYS).length);
+        expect(Object.fromEntries(labels)).toEqual(expected);
+    });
+    it("retains a source summary automation target when app icons accompany the text", () => {
+        expect(read(`${native}WinUiFilterEditor.cpp`)).toContain('L"filter-source-summary"');
+    });
     it("uses a native unconstrained flyout without resizing the dock or creating a WebView", () => {
         const editor = read(`${native}WinUiFilterEditor.cpp`);
         expect(editor).toContain("ShouldConstrainToRootBounds(false)");

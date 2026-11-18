@@ -16,6 +16,7 @@
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #ifdef _DEBUG
+#include <cstdio>
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 winrt::Windows::Foundation::IAsyncAction NextNativeFrame();
@@ -44,16 +45,64 @@ TextBlock Label(const winrt::hstring &text, bool title = false) {
 }
 Button Action(const winrt::hstring &text) {
     Button button;
+    ApplyStyle(button, L"VPaste.CompactButton");
     button.Content(winrt::box_value(text));
     button.Height(32);
     button.MinWidth(64);
-    button.FontSize(13);
     return button;
 }
 std::wstring Lower(std::wstring value) {
     std::transform(value.begin(), value.end(), value.begin(), [](wchar_t c) { return std::towlower(c); });
     return value;
 }
+// Kept in parity with appSource.ts and the shipping language packs by a unit test.
+struct AppSourceName { const wchar_t *source; const wchar_t *chinese; const wchar_t *english; };
+constexpr AppSourceName AppSourceNames[] = {
+    {L"360chrome", L"360安全浏览器", L"360 Secure Browser"},
+    {L"360se", L"360安全浏览器", L"360 Secure Browser"},
+    {L"acrobat", L"Adobe Acrobat", L"Adobe Acrobat"},
+    {L"acrord32", L"Adobe Acrobat Reader", L"Adobe Acrobat Reader"},
+    {L"chrome", L"Google Chrome", L"Google Chrome"},
+    {L"cursor", L"Cursor", L"Cursor"},
+    {L"dingtalk", L"钉钉", L"DingTalk"},
+    {L"discord", L"Discord", L"Discord"},
+    {L"everything", L"Everything", L"Everything"},
+    {L"excel", L"Microsoft Excel", L"Microsoft Excel"},
+    {L"explorer", L"文件资源管理器", L"File Explorer"},
+    {L"feishu", L"飞书", L"Feishu"},
+    {L"firefox", L"Firefox", L"Firefox"},
+    {L"idea64", L"IntelliJ IDEA", L"IntelliJ IDEA"},
+    {L"lark", L"Lark", L"Lark"},
+    {L"listary", L"Listary", L"Listary"},
+    {L"msedge", L"Microsoft Edge", L"Microsoft Edge"},
+    {L"notepad3", L"Notepad3", L"Notepad3"},
+    {L"notion", L"Notion", L"Notion"},
+    {L"obs", L"OBS Studio", L"OBS Studio"},
+    {L"obs studio", L"OBS Studio", L"OBS Studio"},
+    {L"obs64", L"OBS Studio", L"OBS Studio"},
+    {L"obsidian", L"Obsidian", L"Obsidian"},
+    {L"onenote", L"Microsoft OneNote", L"Microsoft OneNote"},
+    {L"photoshop", L"Adobe Photoshop", L"Adobe Photoshop"},
+    {L"pixpin", L"PixPin", L"PixPin"},
+    {L"potplayer", L"PotPlayer", L"PotPlayer"},
+    {L"potplayermini64", L"PotPlayer", L"PotPlayer"},
+    {L"powerpnt", L"Microsoft PowerPoint", L"Microsoft PowerPoint"},
+    {L"pycharm64", L"PyCharm", L"PyCharm"},
+    {L"qq", L"QQ", L"QQ"},
+    {L"slack", L"Slack", L"Slack"},
+    {L"snipaste", L"Snipaste", L"Snipaste"},
+    {L"sumatrapdf", L"SumatraPDF", L"SumatraPDF"},
+    {L"tabby", L"Tabby", L"Tabby"},
+    {L"teams", L"Microsoft Teams", L"Microsoft Teams"},
+    {L"telegram", L"Telegram", L"Telegram"},
+    {L"ticktick", L"滴答清单", L"TickTick"},
+    {L"tim", L"TIM", L"TIM"},
+    {L"vpaste", L"vPaste", L"vPaste"},
+    {L"wechat", L"微信", L"WeChat"},
+    {L"weixin", L"微信", L"WeChat"},
+    {L"winword", L"Microsoft Word", L"Microsoft Word"},
+    {L"wxwork", L"企业微信", L"WeCom"},
+};
 }
 
 struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
@@ -121,15 +170,48 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
         Automation::AutomationProperties::SetName(input, header);
         return input;
     }
+    winrt::hstring SourceName(std::wstring const &source) const {
+        const auto first = source.find_first_not_of(L" \t\r\n\f\v\uFEFF");
+        if (first == std::wstring::npos) return L"";
+        auto name = source.substr(first, source.find_last_not_of(L" \t\r\n\f\v\uFEFF") - first + 1);
+        if (Lower(name).ends_with(L".exe")) name.resize(name.size() - 4);
+        const auto normalized = Lower(name);
+        for (const auto &app : AppSourceNames)
+            if (normalized == app.source) return english ? app.english : app.chinese;
+        return winrt::hstring{name};
+    }
+    Grid SourceIcon(std::wstring const &path) const {
+        Grid icon; icon.Width(20); icon.Height(20);
+        auto fallback = Glyph(L"\uE7F4"); fallback.FontSize(16); icon.Children().Append(fallback);
+        if (!path.empty()) {
+            try {
+                Image image; image.Width(20); image.Height(20); image.Stretch(Media::Stretch::Uniform);
+                Media::Imaging::BitmapImage bitmap; bitmap.DecodePixelWidth(40); bitmap.UriSource(LocalAssetUri(winrt::hstring{path}));
+                image.ImageOpened([fallback](auto const &, auto const &) { fallback.Visibility(Visibility::Collapsed); });
+                image.ImageFailed([](auto const &sender, auto const &) { sender.as<Image>().Visibility(Visibility::Collapsed); });
+                image.Source(bitmap); icon.Children().Append(image);
+            } catch (winrt::hresult_error const &) { /* Keep an unmasked native placeholder for missing icons. */ }
+        }
+        return icon;
+    }
     void SourceSummary() {
         sourceLabel.Text(Text(L"来源应用", L"Source app"));
         const auto summary = selectedSources.empty() ? Text(L"不限", L"Any")
-            : selectedSources.size() == 1 ? winrt::hstring{*selectedSources.begin()}
+            : selectedSources.size() == 1 ? SourceName(*selectedSources.begin())
             : english ? winrt::to_hstring(selectedSources.size()) + L" apps selected"
             : L"已选择 " + winrt::to_hstring(selectedSources.size()) + L" 个应用";
-        TextBlock label; label.Text(summary); label.FontSize(13);
-        label.TextTrimming(TextTrimming::CharacterEllipsis); label.MaxWidth(260);
-        sourceButton.Content(label);
+        StackPanel content; content.Orientation(Orientation::Horizontal); content.Spacing(6);
+        std::size_t icons = 0;
+        for (auto const &selected : selectedSources) {
+            if (icons++ == 2) break;
+            const auto app = std::find_if(apps.begin(), apps.end(), [&](auto const &option) { return option.source == selected; });
+            content.Children().Append(SourceIcon(app == apps.end() ? std::wstring{} : app->icon));
+        }
+        TextBlock label; label.Text(summary); label.FontSize(13); label.VerticalAlignment(VerticalAlignment::Center);
+        label.TextTrimming(TextTrimming::CharacterEllipsis); label.MaxWidth(260 - std::min<std::size_t>(2, selectedSources.size()) * 26);
+        Automation::AutomationProperties::SetAutomationId(label, L"filter-source-summary");
+        content.Children().Append(label); sourceButton.Content(content);
+        Automation::AutomationProperties::SetName(sourceButton, sourceLabel.Text() + L": " + summary);
         ToolTipService::SetToolTip(sourceButton, winrt::box_value(summary));
         if (sourceRows.Children().Size())
             sourceRows.Children().GetAt(0).as<CheckBox>().IsChecked(selectedSources.empty());
@@ -151,28 +233,21 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
         });
         sourceRows.Children().Append(any);
         for (const auto &app : apps) {
-            if (!search.empty() && Lower(app.source).find(search) == std::wstring::npos) continue;
+            const auto displayName = SourceName(app.source);
+            if (!search.empty() && Lower(app.source).find(search) == std::wstring::npos &&
+                Lower(std::wstring{displayName}).find(search) == std::wstring::npos) continue;
             CheckBox check;
             check.IsEnabled(!busy);
             check.MinHeight(36);
             check.HorizontalAlignment(HorizontalAlignment::Stretch);
             check.HorizontalContentAlignment(HorizontalAlignment::Stretch);
             check.IsChecked(selectedSources.count(app.source) > 0);
-            Automation::AutomationProperties::SetName(check, winrt::hstring{app.source});
+            Automation::AutomationProperties::SetName(check, displayName);
             StackPanel content;
             content.Orientation(Orientation::Horizontal);
             content.Spacing(8);
-            if (!app.icon.empty()) {
-                try {
-                    Image image;
-                    image.Width(20); image.Height(20);
-                    image.Source(Media::Imaging::BitmapImage{LocalAssetUri(winrt::hstring{app.icon})});
-                    content.Children().Append(image);
-                } catch (const winrt::hresult_error &) { /* Label remains usable for an invalid cached icon. */ }
-            }
-            const auto separator = app.source.find_last_of(L"/\\");
-            const auto display = separator == std::wstring::npos ? app.source : app.source.substr(separator + 1);
-            auto label = Label(winrt::hstring{display});
+            content.Children().Append(SourceIcon(app.icon));
+            auto label = Label(displayName);
             ApplyStyle(label, L"VPaste.Body"); label.FontSize(13);
             label.MaxWidth(228);
             label.TextWrapping(TextWrapping::NoWrap);
@@ -421,30 +496,166 @@ winrt::Windows::Foundation::IAsyncAction TestFilterEditorControls(FrameworkEleme
         else response.Insert(L"data", JsonObject::Parse(LR"({"items":[{"id":"saved","name":"Saved"}]})"));
         editor.Receive(response);
     };
+    const auto filterSources = [](TextBox search, StackPanel rows, winrt::hstring query,
+        std::uint32_t expectedCount, winrt::hstring expectedName) -> winrt::Windows::Foundation::IAsyncAction {
+        auto changed = std::make_shared<bool>(false);
+        const auto observer = search.TextChanged(winrt::auto_revoke,
+            [changed](auto const &, auto const &) { *changed = true; });
+        search.Text(query);
+        const auto matches = [&] {
+            return *changed && rows.Children().Size() == expectedCount &&
+                (expectedName.empty() || Automation::AutomationProperties::GetName(rows.Children().GetAt(1)) == expectedName);
+        };
+        for (int frame = 0; frame < 60 && !matches(); ++frame) co_await NextNativeFrame();
+        std::fprintf(stderr, "WinUI filter source search: query=%s loaded=%d changed=%d rows=%u\n",
+            winrt::to_string(query).c_str(), search.IsLoaded(), *changed, rows.Children().Size());
+        winrt::check_hresult(search.IsLoaded() && matches() ? S_OK : E_FAIL);
+    };
+    const auto openSources = [](DropDownButton source, TextBox search) -> winrt::Windows::Foundation::IAsyncAction {
+        auto opened = std::make_shared<bool>(false);
+        const auto popup = source.Flyout().as<Flyout>();
+        const auto observer = popup.Opened(winrt::auto_revoke,
+            [opened](auto const &, auto const &) { *opened = true; });
+        winrt::check_hresult(source.IsLoaded() && source.IsEnabled() ? S_OK : E_FAIL);
+        popup.ShowAt(source);
+        for (int frame = 0; frame < 60 && (!*opened || !search.IsLoaded()); ++frame) co_await NextNativeFrame();
+        std::fprintf(stderr, "WinUI filter source open: enabled=%d opened=%d loaded=%d\n",
+            source.IsEnabled(), *opened, search.IsLoaded());
+        winrt::check_hresult(*opened && search.IsLoaded() ? S_OK : E_FAIL);
+        search.Focus(FocusState::Programmatic);
+    };
+    const auto closeSources = [](DropDownButton source, TextBox search) -> winrt::Windows::Foundation::IAsyncAction {
+        auto closed = std::make_shared<bool>(false);
+        const auto popup = source.Flyout().as<Flyout>();
+        const auto observer = popup.Closed(winrt::auto_revoke,
+            [closed](auto const &, auto const &) { *closed = true; });
+        popup.Hide();
+        for (int frame = 0; frame < 60 && (!*closed || search.IsLoaded()); ++frame) co_await NextNativeFrame();
+        std::fprintf(stderr, "WinUI filter source close: closed=%d loaded=%d\n", *closed, search.IsLoaded());
+        winrt::check_hresult(*closed && !search.IsLoaded() ? S_OK : E_FAIL);
+        source.Focus(FocusState::Programmatic);
+        co_await NextNativeFrame();
+    };
 
     stage = 851;
     mount(); co_await NextNativeFrame();
+    stage = 85101;
     winrt::check_hresult(actions().Children().Size() == 2 ? S_OK : E_FAIL);
     const auto form = root.Children().GetAt(1).as<ScrollViewer>().Content().as<StackPanel>();
     const auto source = form.Children().GetAt(form.Children().Size() - 1).as<DropDownButton>();
+    const auto summary = [&] {
+        const auto content = source.Content().as<StackPanel>();
+        return content.Children().GetAt(content.Children().Size() - 1).as<TextBlock>().Text();
+    };
+    stage = 85102;
     winrt::check_hresult(source.IsEnabled() && source.Flyout() &&
-        source.Content().as<TextBlock>().Text() == L"Absent app" ? S_OK : E_FAIL);
+        summary() == L"Absent app" && source.Content().as<StackPanel>().Children().Size() == 2 ? S_OK : E_FAIL);
+    const auto placeholder = source.Content().as<StackPanel>().Children().GetAt(0).as<Grid>();
+    stage = 85103;
+    winrt::check_hresult(placeholder.Width() == 20 && placeholder.Height() == 20 &&
+        placeholder.Children().Size() == 1 && placeholder.Children().GetAt(0).as<FontIcon>().Visibility() == Visibility::Visible ? S_OK : E_FAIL);
     const auto emoji = form.Children().GetAt(0).as<StackPanel>().Children().GetAt(1).as<Grid>().Children().GetAt(0).as<Button>();
+    stage = 85104;
     winrt::check_hresult(emoji.IsEnabled() && emoji.Width() == 32 && emoji.Flyout() ? S_OK : E_FAIL);
     const auto popup = source.Flyout().as<Flyout>().Content().as<StackPanel>();
     const auto sources = popup.Children().GetAt(1).as<ScrollViewer>().Content().as<StackPanel>();
+    stage = 85105;
     sources.Children().GetAt(1).as<CheckBox>().IsChecked(false);
-    winrt::check_hresult(source.Content().as<TextBlock>().Text() == L"Any" &&
+    winrt::check_hresult(summary() == L"Any" && source.Content().as<StackPanel>().Children().Size() == 1 &&
         sources.Children().GetAt(0).as<CheckBox>().IsChecked().Value() ? S_OK : E_FAIL);
+    stage = 85106;
     sources.Children().GetAt(0).as<CheckBox>().IsChecked(false);
     winrt::check_hresult(sources.Children().GetAt(0).as<CheckBox>().IsChecked().Value() ? S_OK : E_FAIL);
+    stage = 85107;
     sources.Children().GetAt(1).as<CheckBox>().IsChecked(true);
-    winrt::check_hresult(source.Content().as<TextBlock>().Text() == L"Absent app" &&
+    winrt::check_hresult(summary() == L"Absent app" &&
         !sources.Children().GetAt(0).as<CheckBox>().IsChecked().Value() ? S_OK : E_FAIL);
+    stage = 85108;
     sources.Children().GetAt(0).as<CheckBox>().IsChecked(true);
-    winrt::check_hresult(source.Content().as<TextBlock>().Text() == L"Any" &&
+    winrt::check_hresult(summary() == L"Any" &&
         !sources.Children().GetAt(1).as<CheckBox>().IsChecked().Value() ? S_OK : E_FAIL);
+    stage = 85109;
     sources.Children().GetAt(1).as<CheckBox>().IsChecked(true);
+    auto sourceReply = JsonObject::Parse(LR"({"op":"filterSources","data":{"sources":[{"source":"chrome.exe","icon_path":"Z:\\missing-app-icon.png"},{"source":"Code.exe"}]}})");
+    sourceReply.Insert(L"id", requests.back().GetNamedValue(L"id")); editor.Receive(sourceReply);
+    stage = 85110;
+    winrt::check_hresult(sources.Children().Size() == 4 ? S_OK : E_FAIL);
+    stage = 85111;
+    sources.Children().GetAt(1).as<CheckBox>().IsChecked(true);
+    winrt::check_hresult(summary() == L"2 apps selected" && source.Content().as<StackPanel>().Children().Size() == 3 ? S_OK : E_FAIL);
+    stage = 85112;
+    sources.Children().GetAt(2).as<CheckBox>().IsChecked(true);
+    winrt::check_hresult(summary() == L"3 apps selected" && source.Content().as<StackPanel>().Children().Size() == 3 ? S_OK : E_FAIL);
+    stage = 85113;
+    const auto search = popup.Children().GetAt(0).as<TextBox>();
+    co_await openSources(source, search);
+    co_await filterSources(search, sources, L"google", 2, L"Google Chrome");
+    winrt::check_hresult(sources.Children().Size() == 2 &&
+        sources.Children().GetAt(1).as<CheckBox>().Content().as<StackPanel>().Children().GetAt(1).as<TextBlock>().Text() == L"Google Chrome" ? S_OK : E_FAIL);
+    stage = 85114;
+    co_await filterSources(search, sources, L"CHROME.EXE", 2, L"Google Chrome");
+    winrt::check_hresult(sources.Children().Size() == 2 &&
+        Automation::AutomationProperties::GetName(sources.Children().GetAt(1)) == L"Google Chrome" ? S_OK : E_FAIL);
+    stage = 85115;
+    sources.Children().GetAt(0).as<CheckBox>().IsChecked(true);
+    sources.Children().GetAt(1).as<CheckBox>().IsChecked(true);
+    winrt::check_hresult(summary() == L"Google Chrome" ? S_OK : E_FAIL);
+    stage = 85116;
+    // A user dismisses the source popup before activating the footer Save.
+    // Unloaded can precede Closed; wait for both before a later reopening.
+    co_await closeSources(source, search);
+    editor.TestSave();
+    const auto sourceSave = requests.back();
+    winrt::check_hresult(sourceSave.GetNamedObject(L"tab").GetNamedObject(L"filter").GetNamedArray(L"appSources").GetStringAt(0) == L"chrome.exe" ? S_OK : E_FAIL);
+    stage = 85117;
+    reply(sourceSave, L"filtersSave", L"Keep the selector open for regression coverage");
+    co_await NextNativeFrame();
+    co_await openSources(source, search);
+    co_await filterSources(search, sources, L"code", 2, L"Code");
+    sources.Children().GetAt(0).as<CheckBox>().IsChecked(true);
+    sources.Children().GetAt(1).as<CheckBox>().IsChecked(true);
+    winrt::check_hresult(summary() == L"Code" ? S_OK : E_FAIL);
+    stage = 85118;
+    co_await filterSources(search, sources, L"", 4, L"");
+    sources.Children().GetAt(0).as<CheckBox>().IsChecked(true);
+    winrt::check_hresult(summary() == L"Any" && source.Content().as<StackPanel>().Children().Size() == 1 ? S_OK : E_FAIL);
+    co_await closeSources(source, search);
+    stage = 852;
+    {
+        const auto localizedDraft = JsonObject::Parse(LR"({"name":"本地化","filter":{"appSources":["  WeIxIn.EXE  "]}})");
+        root = editor.TestLoad(localizedDraft, false).as<Grid>(); fixture.Child(root);
+        co_await NextNativeFrame();
+        const auto localizedForm = root.Children().GetAt(1).as<ScrollViewer>().Content().as<StackPanel>();
+        const auto localizedSource = localizedForm.Children().GetAt(localizedForm.Children().Size() - 1).as<DropDownButton>();
+        const auto localizedSummary = [&] {
+            const auto content = localizedSource.Content().as<StackPanel>();
+            return content.Children().GetAt(content.Children().Size() - 1).as<TextBlock>().Text();
+        };
+        stage = 85201;
+        winrt::check_hresult(localizedSummary() == L"微信" &&
+            Automation::AutomationProperties::GetName(localizedSource) == L"来源应用: 微信" ? S_OK : E_FAIL);
+        auto localizedReply = JsonObject::Parse(LR"({"op":"filterSources","data":{"sources":[{"source":"  WeIxIn.EXE  "},{"source":"EXPLORER.exe"}]}})");
+        localizedReply.Insert(L"id", requests.back().GetNamedValue(L"id")); editor.Receive(localizedReply);
+        const auto localizedPopup = localizedSource.Flyout().as<Flyout>().Content().as<StackPanel>();
+        const auto localizedSearch = localizedPopup.Children().GetAt(0).as<TextBox>();
+        const auto localizedSources = localizedPopup.Children().GetAt(1).as<ScrollViewer>().Content().as<StackPanel>();
+        stage = 85202;
+        co_await openSources(localizedSource, localizedSearch);
+        co_await filterSources(localizedSearch, localizedSources, L"文件资源", 2, L"文件资源管理器");
+        winrt::check_hresult(localizedSources.Children().Size() == 2 &&
+            Automation::AutomationProperties::GetName(localizedSources.Children().GetAt(1)) == L"文件资源管理器" ? S_OK : E_FAIL);
+        stage = 85203;
+        co_await filterSources(localizedSearch, localizedSources, L"explorer", 2, L"文件资源管理器");
+        winrt::check_hresult(localizedSources.Children().Size() == 2 ? S_OK : E_FAIL);
+        stage = 85204;
+        localizedSources.Children().GetAt(0).as<CheckBox>().IsChecked(true);
+        localizedSources.Children().GetAt(1).as<CheckBox>().IsChecked(true);
+        winrt::check_hresult(localizedSummary() == L"文件资源管理器" ? S_OK : E_FAIL);
+        stage = 85205;
+        co_await closeSources(localizedSource, localizedSearch);
+        editor.TestSave();
+        winrt::check_hresult(requests.back().GetNamedObject(L"tab").GetNamedObject(L"filter").GetNamedArray(L"appSources").GetStringAt(0) == L"EXPLORER.exe" ? S_OK : E_FAIL);
+    }
     stage = 85;
     const std::wstring legacy(32, L'x'); draft.Insert(L"name", JsonValue::CreateStringValue(legacy));
     mount(); co_await NextNativeFrame();

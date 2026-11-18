@@ -75,7 +75,7 @@ void UpdateTrigger(const Button &button, const TextBox &target) {
     if (selected.empty()) button.Content(Glyph(L"\uE76E"));
     else {
         TextBlock text;
-        text.Text(selected); text.FontSize(18); text.FontFamily(Media::FontFamily{L"Segoe UI Emoji"});
+        text.Text(selected); text.FontSize(16); text.FontFamily(Media::FontFamily{L"Segoe UI Emoji"});
         button.Content(text);
     }
     NameIconButton(button, winrt::hstring{English(button) ? L"Choose name emoji" : L"选择名称表情"} +
@@ -102,9 +102,9 @@ Button NameEmojiButton(const TextBox &target, bool english) {
     button.CornerRadius(UniformRadius(8));
     button.VerticalAlignment(VerticalAlignment::Bottom);
     button.Tag(winrt::box_value(english));
-    Grid root; root.Width(256); root.RowSpacing(8);
+    Grid root; root.Width(224); root.RowSpacing(8);
     for (int i = 0; i < 3; ++i) { RowDefinition row; row.Height(GridLength{1, GridUnitType::Auto}); root.RowDefinitions().Append(row); }
-    Button clear; clear.Height(32); clear.HorizontalAlignment(HorizontalAlignment::Stretch);
+    Button clear; ApplyStyle(clear, L"VPaste.CompactButton"); clear.Height(32); clear.HorizontalAlignment(HorizontalAlignment::Stretch);
     root.Children().Append(clear);
     GridView grid;
     grid.MaxHeight(224); grid.Padding(Thickness{0});
@@ -112,11 +112,11 @@ Button NameEmojiButton(const TextBox &target, bool english) {
     grid.IsItemClickEnabled(true);
     ScrollViewer::SetVerticalScrollBarVisibility(grid, ScrollBarVisibility::Auto);
     ScrollViewer::SetHorizontalScrollMode(grid, ScrollMode::Disabled);
-    grid.ItemsPanel(Markup::XamlReader::Load(LR"(<ItemsPanelTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><ItemsWrapGrid Orientation="Horizontal" MaximumRowsOrColumns="8" ItemWidth="32" ItemHeight="32"/></ItemsPanelTemplate>)").as<ItemsPanelTemplate>());
-    grid.ItemTemplate(Markup::XamlReader::Load(LR"(<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><TextBlock Text="{Binding}" FontFamily="Segoe UI Emoji" FontSize="20" IsColorFontEnabled="True" HorizontalAlignment="Center" VerticalAlignment="Center"/></DataTemplate>)").as<DataTemplate>());
+    grid.ItemsPanel(Markup::XamlReader::Load(LR"(<ItemsPanelTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><ItemsWrapGrid Orientation="Horizontal" MaximumRowsOrColumns="8" ItemWidth="28" ItemHeight="28"/></ItemsPanelTemplate>)").as<ItemsPanelTemplate>());
+    grid.ItemTemplate(Markup::XamlReader::Load(LR"(<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><TextBlock Text="{Binding}" FontFamily="Segoe UI Emoji" FontSize="16" IsColorFontEnabled="True" HorizontalAlignment="Center" VerticalAlignment="Center"/></DataTemplate>)").as<DataTemplate>());
     Style itemStyle{winrt::xaml_typename<GridViewItem>()};
-    itemStyle.Setters().Append(Setter{FrameworkElement::MinWidthProperty(), winrt::box_value(32.0)});
-    itemStyle.Setters().Append(Setter{FrameworkElement::MinHeightProperty(), winrt::box_value(32.0)});
+    itemStyle.Setters().Append(Setter{FrameworkElement::MinWidthProperty(), winrt::box_value(28.0)});
+    itemStyle.Setters().Append(Setter{FrameworkElement::MinHeightProperty(), winrt::box_value(28.0)});
     itemStyle.Setters().Append(Setter{Control::PaddingProperty(), winrt::box_value(Thickness{0})});
     itemStyle.Setters().Append(Setter{Control::HorizontalContentAlignmentProperty(), winrt::box_value(HorizontalAlignment::Center)});
     itemStyle.Setters().Append(Setter{Control::VerticalContentAlignmentProperty(), winrt::box_value(VerticalAlignment::Center)});

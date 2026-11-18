@@ -92,7 +92,11 @@ for (const theme of ["light", "dark"] as const) {
                 : [first];
         });
         await openFixture(page, theme, officeSamples);
-        for (const sample of officeSamples) {
+        for (const [sampleIndex, sample] of officeSamples.entries()) {
+            // These fixtures follow the color samples and are initially virtualized.
+            await page.locator('[class*="cards-container"]').evaluate((element, index) => {
+                element.scrollLeft = index * 236;
+            }, samples.length + sampleIndex);
             const card = page.locator(`[data-hash="${sample.id}"]`);
             await card.scrollIntoViewIfNeeded();
             const images = card.locator('[class*="card-preview-rich"] img');
@@ -123,8 +127,20 @@ for (const theme of ["light", "dark"] as const) {
                 const fixture = (window as unknown as { __richPreviewFixture: {
                     callbacks: Map<number, (event: unknown) => void>; listeners: Map<string, number>;
                 } }).__richPreviewFixture;
+                const document = new DOMParser().parseFromString(sample.html, "text/html");
+                const resources: Array<{ token: string; assetPath: string; revision: string }> = [];
+                document.querySelectorAll("img[src]").forEach((image, index) => {
+                    const source = image.getAttribute("src")!;
+                    const token = `vpaste-rich-image:preview-${sample.id}-${index}`;
+                    resources.push({ token, assetPath: source, revision: "fixture" });
+                    image.setAttribute("src", token);
+                });
                 fixture.callbacks.get(fixture.listeners.get("preview-item")!)?.({
-                    event: "preview-item", payload: { item_type: "Text", content: sample.text, rich_html: sample.html },
+                    event: "preview-item", payload: {
+                        item_type: "Text", content: sample.text,
+                        rich_html: `${document.body.innerHTML}<img src="vpaste-rich-image:unapproved">`,
+                        rich_resources: resources,
+                    },
                 });
             }, sample);
             const images = page.locator('[class*="preview-rich"] img');

@@ -9171,12 +9171,18 @@ winrt::fire_and_forget RunNativeShellRegression(
             categoryRequest.GetNamedString(L"filter") == L"favorite" &&
             categoryRequest.GetNamedString(L"query") == L"category before debounce" ? S_OK : E_FAIL);
         SelectBuiltinCategory(0, false);
-        SetSearchText(L""); g_searchTimer.Stop();
-        const auto clear = FindHistoryChild<Button>(editor);
         stage = 12;
+        // TextBox only exposes its clear button while it has a value.
+        editor.Focus(FocusState::Programmatic);
+        SetSearchText(L"Clear button fixture"); g_searchTimer.Stop();
+        co_await NextNativeFrame();
+        const auto clear = FindHistoryChild<Button>(editor);
         winrt::check_hresult(clear && NativeControlOwnsKeys(clear) ? S_OK : E_FAIL);
-        Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(clear)
-            .GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+        const auto peer = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(clear);
+        const auto clearAction = peer ? peer.GetPattern(Automation::Peers::PatternInterface::Invoke)
+            .try_as<Automation::Provider::IInvokeProvider>() : nullptr;
+        winrt::check_hresult(clearAction ? S_OK : E_NOINTERFACE);
+        clearAction.Invoke();
         co_await NextNativeFrame();
         winrt::check_hresult(SearchText().empty() && editor.Text().empty() &&
             g_searchSubmitRequestId == 0 && g_searchTimer.Interval() == std::chrono::milliseconds(40) ? S_OK : E_FAIL);

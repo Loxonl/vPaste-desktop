@@ -32,6 +32,34 @@ physical acceptance; it does not authorize further product changes.
 An implemented row is not an unconditional desktop pass. The last column names
 the remaining acceptance boundary. No physical-desktop row was auto-approved.
 
+## #389 closeout: main flows, windows and focus
+
+- **Main flows (U/X):** the capture worker replays the ownerless plain and
+  confirmed rich phases through a disposable database. Loaded XAML covers
+  zero-result editing, late replies/IME, clearing a nonempty search, and the
+  Enter and right-click routes. Queue tests cover sorting, preserving concurrent
+  captures, failure recovery, consume/undo and the selection of a paste target.
+  The actual isolated App verifies six inactive-queue mutation guards. It does
+  not activate the clipboard interceptor or send an external paste.
+- **Windows and focus (U/X/A):** the full native shell and history probes
+  reached stages 257 and 153, including synthetic DPI changes, remembered and
+  reset tab/search/position behavior, and native reader continuity. The actual
+  App's settings caption stays native without a second drag IPC; closing and
+  reopening recreates the WebView. The isolated App also verifies retained
+  fallback preview replacement, three close/reopen cycles, OCR topmost
+  false → true → false, and a nonoverlapping PDF toolbar.
+- **Browser:** five headless checks against the production bundle passed,
+  including both motion preferences, light/dark tray and popup surfaces. The
+  first cold Vite-dev preview run repeatedly remained in the lazy route's
+  loading UI past its readiness assertion; it is not used as a desktop
+  failure or as passing evidence. The packaged-assets run keeps the same
+  assertions. It does not measure physical tray-menu latency.
+- **M:** still validate real QQ capture and return-to-target paste; queue drag,
+  paste and Undo with another app; settings drag/release followed immediately
+  by a click outside; Escape inside the PDF viewer and OCR outside-click;
+  native-to-WebView transitions, physical mixed DPI and first/second tray
+  clicks. Do not require a data reset or a renderer change for these checks.
+
 ## 2026-11-18 approved single-card context menu
 
 - **S:** The Windows WinUI card still uses a native `ContextFlyout`. “复制并粘贴”

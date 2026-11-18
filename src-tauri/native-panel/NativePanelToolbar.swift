@@ -21,11 +21,12 @@ protocol PanelToolbarContent: AnyObject {
   func setInfoVisible(_ visible: Bool)
   func setQueueActive(_ active: Bool)
   func setNavigationLocked(_ locked: Bool)
+  func cancelInteraction()
   func releaseContent()
 }
 
 // Stable AppKit boundary: the controller keeps owning search/IME and window
-// behavior, while actual buttons, labels and filter content are SwiftUI views.
+// behavior, while SwiftUI hosts actions and AppKit owns the complete filter control.
 @MainActor
 final class PanelToolbar: NSView {
   var onFilter: ((Int) -> Void)?
@@ -77,6 +78,7 @@ final class PanelToolbar: NSView {
   func setInfoVisible(_ visible: Bool) { content?.setInfoVisible(visible) }
   func setQueueActive(_ active: Bool) { content?.setQueueActive(active) }
   func setNavigationLocked(_ locked: Bool) { content?.setNavigationLocked(locked) }
+  func cancelInteraction() { content?.cancelInteraction() }
   func releaseContent() {
     content?.releaseContent()
     content?.removeFromSuperview()
@@ -97,7 +99,7 @@ final class PanelToolbar: NSView {
 
 extension PanelLegacyToolbar: PanelToolbarContent {}
 
-struct PanelFilterChoice {
+struct PanelFilterChoice: Equatable {
   let title: String
   let emoji: String
   let symbol: String
@@ -107,6 +109,7 @@ struct PanelFilterChoice {
   var id = ""
   var isFixed: Bool { !symbol.isEmpty }
   var label: String { emoji.isEmpty ? title : "\(emoji) \(title)" }
+  // Only the macOS 11 button strip retains WebView-compatible sizing.
   func width(scale: CGFloat, selected: Bool = false) -> CGFloat {
     let text = (label as NSString).size(withAttributes: [
       .font: PanelToolbarTypography.tabFont(scale: scale, selected: selected)
@@ -133,34 +136,16 @@ enum PanelFilterQuery {
   }
 }
 
-// Shared selection underline for the SwiftUI filter strip. Mirrors the
-// WebView indicator's 10px inset and 3px height inside the tab bounds.
-enum PanelFilterIndicatorLayout {
-  static func extent(choices: [PanelFilterChoice], selected: Int, scale: CGFloat) -> CGFloat {
-    let widths = choices.enumerated().map { $0.element.width(scale: scale, selected: $0.offset == selected) }
-    return widths.reduce(0, +) + 8 * scale * CGFloat(max(0, widths.count - 1)) + 37 * scale
-  }
-  static func rect(choices: [PanelFilterChoice], selected: Int, scale: CGFloat) -> CGRect? {
-    guard choices.indices.contains(selected) else { return nil }
-    let gap = 8 * scale
-    var x: CGFloat = 0
-    for index in 0..<selected {
-      x += choices[index].width(scale: scale) + gap
-    }
-    let width = choices[selected].width(scale: scale, selected: true) - 20 * scale
-    return CGRect(x: x + 10 * scale, y: 0, width: max(0, width), height: 3 * scale)
-  }
-}
-
 @available(macOS 12.0, *)
 @MainActor
 final class PanelToolbarState: ObservableObject {
   @Published var selected = 0
-  @Published var draggingTabID = ""
+  @Published private(set) var draggingTabID = ""
+  var cancelTabDrag: (() -> Void)?
   var releaseTabDrag: (() -> Void)?
   @Published var infoVisible = false
   @Published var queueActive = false
-  @Published var navigationLocked = false
+  @Published private(set) var navigationLocked = false
   @Published private(set) var searchOpen = false
   let scale: CGFloat
   let chinese: Bool
@@ -204,18 +189,42 @@ final class PanelToolbarState: ObservableObject {
     search.focusRingType = .exterior
   }
   func local(_ en: String, _ zh: String) -> String { chinese ? zh : en }
+  var interactive: Bool { !closed && !navigationLocked && draggingTabID.isEmpty }
+  func dragging(_ id: String?) {
+    guard !closed else { return }
+    let next = id ?? ""
+    guard draggingTabID != next else { return }
+    draggingTabID = next
+    onTabDragging?(id != nil)
+  }
+  func cancelInteraction() { cancelTabDrag?(); dragging(nil) }
+  func setNavigationLocked(_ locked: Bool) {
+    guard navigationLocked != locked else { return }
+    navigationLocked = locked
+    search.isEnabled = !locked
+    if locked { cancelInteraction() }
+  }
+  func select(_ index: Int) {
+    guard !closed, choices.indices.contains(index) else { return }
+    if selected != index { selected = index }
+  }
+  func addTab() { if interactive { onAddTab?() } }
   func setTabs(_ tabs: [PanelTab]) {
+    cancelInteraction()
+    let id = choices.indices.contains(selected) ? choices[selected].id : ""
     choices = fixedChoices + tabs.map {
       PanelFilterChoice(title: $0.name, emoji: "", symbol: "", record: $0.record, id: $0.id)
     }
+    if !id.isEmpty { selected = choices.firstIndex { $0.id == id } ?? 0 }
+    else if !choices.indices.contains(selected) { selected = 0 }
   }
   func contextMenu(id: String, at point: NSPoint) {
-    guard !closed, !id.isEmpty, choices.contains(where: { $0.id == id }) else { return }
+    guard interactive, !id.isEmpty, choices.contains(where: { $0.id == id }) else { return }
     onTabContextMenu?(id, point)
   }
   func choose(_ index: Int) {
-    guard !closed, choices.indices.contains(index) else { return }
-    if selected != index { selected = index }
+    guard interactive, choices.indices.contains(index) else { return }
+    select(index)
     onFilter?(index)
   }
   func beginSearch() {
@@ -230,9 +239,10 @@ final class PanelToolbarState: ObservableObject {
   }
   func close() {
     guard !closed else { return }
+    closed = true
     releaseTabDrag?()
     releaseTabDrag = nil
-    closed = true
+    cancelTabDrag = nil
     developer.releaseContent()
     draggingTabID = ""
     onFilter = nil
@@ -251,7 +261,7 @@ final class PanelToolbarState: ObservableObject {
 }
 
 // Toolbar buttons use pointer actions and explicit window shortcuts. Keep both
-// hosting surfaces out of AppKit's key-view loop; the embedded NSSearchField
+// hosting and filter surfaces out of AppKit's key-view loop; the embedded NSSearchField
 // remains independently focusable for text input.
 @available(macOS 12.0, *)
 @MainActor
@@ -307,11 +317,12 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
   }
   func endEmptySearch() { state.endEmptySearch() }
   func setSelection(_ index: Int) {
-    if state.choices.indices.contains(index), state.selected != index { state.selected = index }
+    state.select(index)
   }
   func setInfoVisible(_ visible: Bool) { state.infoVisible = visible }
   func setQueueActive(_ active: Bool) { state.queueActive = active }
-  func setNavigationLocked(_ locked: Bool) { state.navigationLocked = locked }
+  func setNavigationLocked(_ locked: Bool) { state.setNavigationLocked(locked) }
+  func cancelInteraction() { state.cancelInteraction() }
   func setTabs(_ tabs: [PanelTab]) { state.setTabs(tabs) }
   func releaseContent() {
     focusRequest &+= 1
@@ -328,7 +339,8 @@ struct PanelToolbarView: View {
   @Environment(\.colorScheme) private var scheme
   var onSearch: (() -> Void)?
   private var dark: Bool { scheme == .dark }
-  var body: some View {
+  var body: some View { toolbar }
+  private var toolbar: some View {
     GeometryReader { geometry in
       let s = state.scale
       let button = 28 * s
@@ -343,15 +355,19 @@ struct PanelToolbarView: View {
         geometry.size.width - 2 * pad - developerWidth - 4 * button - 5 * gap - 68 * s))
       let left = pad + button + 15 * s + (state.searchOpen ? fieldWidth + 12 * s : 0)
       let tabsWidth = max(50 * s, developerX - developerWidth / 2 - left - 10 * s)
+      let liquidGlass = PanelToolbarMaterial.liquidGlass
+      let viewportWidth = max(6 * s, tabsWidth - 44 * s)
       ZStack(alignment: .topLeading) {
-        LinearGradient(
-          colors: [Color(PanelStyle.rgb(dark ? 0x252b33 : 0xffffff, dark ? 0.92 : 0.90)),
-            Color(PanelStyle.rgb(dark ? 0x161b22 : 0xf2f5f2, dark ? 0.86 : 0.82))],
-          startPoint: .top, endPoint: .bottom)
-        VStack(spacing: 0) {
-          (dark ? Color.white.opacity(0.08) : Color.white.opacity(0.58)).frame(height: s)
-          Spacer(minLength: 0)
-          Color(PanelStyle.rgb(dark ? 0xffffff : 0x747e7a, dark ? 0.08 : 0.14)).frame(height: s)
+        if !liquidGlass {
+          LinearGradient(
+            colors: [Color(PanelStyle.rgb(dark ? 0x252b33 : 0xffffff, dark ? 0.92 : 0.90)),
+              Color(PanelStyle.rgb(dark ? 0x161b22 : 0xf2f5f2, dark ? 0.86 : 0.82))],
+            startPoint: .top, endPoint: .bottom)
+          VStack(spacing: 0) {
+            (dark ? Color.white.opacity(0.08) : Color.white.opacity(0.58)).frame(height: s)
+            Spacer(minLength: 0)
+            Color(PanelStyle.rgb(dark ? 0xffffff : 0x747e7a, dark ? 0.08 : 0.14)).frame(height: s)
+          }
         }
         icon("magnifyingglass", state.local("Search", "搜索"), active: state.searchOpen) { onSearch?() }
           .disabled(state.navigationLocked)
@@ -362,11 +378,14 @@ struct PanelToolbarView: View {
           .allowsHitTesting(state.searchOpen && !state.navigationLocked)
           .accessibilityHidden(!state.searchOpen)
           .position(x: pad + button + 7 * s + fieldWidth / 2, y: geometry.size.height / 2)
-        PanelFilterViewport(state: state, width: tabsWidth, height: geometry.size.height)
+        PanelFilterViewport(state: state, width: viewportWidth, height: geometry.size.height)
           .disabled(state.navigationLocked)
           .allowsHitTesting(!state.navigationLocked)
-          .frame(width: tabsWidth, height: geometry.size.height)
-          .position(x: left + tabsWidth / 2, y: geometry.size.height / 2)
+          .frame(width: viewportWidth, height: geometry.size.height)
+          .position(x: left + viewportWidth / 2, y: geometry.size.height / 2)
+        icon("plus", state.local("Add tab", "添加标签")) { state.addTab() }
+          .disabled(!state.interactive)
+          .position(x: left + viewportWidth + 22 * s, y: geometry.size.height / 2)
         PanelDeveloperToolsView(tools: tools, infoVisible: state.infoVisible)
           .frame(width: developerWidth, height: 32 * s)
           .position(x: developerX, y: geometry.size.height / 2)
@@ -395,34 +414,6 @@ private struct PanelButtonCursor: NSViewRepresentable {
   func makeNSView(context: Context) -> PanelCursorRegion { PanelCursorRegion(cursor: .pointingHand) }
   func updateNSView(_ view: PanelCursorRegion, context: Context) { view.isEnabled = isEnabled }
   static func dismantleNSView(_ view: PanelCursorRegion, coordinator: ()) { view.isEnabled = false }
-}
-
-// Intercept only context clicks; regular clicks, hover and scrolling still
-// reach the existing SwiftUI button and scroll view.
-@MainActor
-final class PanelTabContextView: NSView {
-  var onContextMenu: ((NSPoint) -> Void)?
-  override var acceptsFirstResponder: Bool { false }
-  override func hitTest(_ point: NSPoint) -> NSView? {
-    guard onContextMenu != nil, let event = NSApp.currentEvent,
-      event.type == .rightMouseDown || (event.type == .leftMouseDown && event.modifierFlags.contains(.control)),
-      !isHidden, visibleRect.contains(convert(point, from: superview)) else { return nil }
-    return self
-  }
-  override func rightMouseDown(with event: NSEvent) { onContextMenu?(NSEvent.mouseLocation) }
-  override func mouseDown(with event: NSEvent) {
-    if event.modifierFlags.contains(.control) { rightMouseDown(with: event) }
-    else { super.mouseDown(with: event) }
-  }
-}
-
-@available(macOS 12.0, *)
-@MainActor
-private struct PanelTabContextTarget: NSViewRepresentable {
-  let onContextMenu: (NSPoint) -> Void
-  func makeNSView(context: Context) -> PanelTabContextView { PanelTabContextView() }
-  func updateNSView(_ view: PanelTabContextView, context: Context) { view.onContextMenu = onContextMenu }
-  static func dismantleNSView(_ view: PanelTabContextView, coordinator: ()) { view.onContextMenu = nil }
 }
 
 @available(macOS 12.0, *)
@@ -460,6 +451,7 @@ private struct PanelIconStyle: ButtonStyle {
   let dark: Bool
   let active: Bool
   @State private var hovering = false
+  @Environment(\.isEnabled) private var isEnabled
   func makeBody(configuration: Configuration) -> some View {
     let accent = Color(PanelStyle.rgb(dark ? 0x8ab7ff : 0x2466d8))
     let color = Color(PanelStyle.rgb(dark ? 0xdde2eb : 0x2a3230, dark ? 0.68 : 0.62))
@@ -467,12 +459,16 @@ private struct PanelIconStyle: ButtonStyle {
       : Color(PanelStyle.rgb(dark ? (hovering ? 0x2d333c : 0x21262d) : 0xffffff,
         dark ? (hovering ? 0.82 : 0.64) : (hovering ? 0.92 : 0.72)))
     return configuration.label.foregroundColor(active ? accent : color)
-      .background(Circle().fill(fill).padding(scale))
-      .overlay(Circle().stroke(Color(PanelStyle.rgb(dark ? 0xdde2eb : 0x2a3230, 0.08)), lineWidth: scale).padding(scale))
-      .shadow(color: .black.opacity(dark ? 0.24 : 0.09), radius: 3 * scale, x: 0, y: scale)
+      .background(Circle().fill(PanelToolbarMaterial.liquidGlass
+        ? (active ? accent.opacity(0.16) : Color.clear) : fill).padding(scale))
+      .modifier(PanelToolbarGlass(interactive: isEnabled, enabled: PanelToolbarMaterial.liquidGlass))
+      .overlay(Circle().stroke(Color(PanelStyle.rgb(dark ? 0xdde2eb : 0x2a3230, 0.08)),
+        lineWidth: scale).padding(scale).opacity(PanelToolbarMaterial.liquidGlass ? 0 : 1))
+      .shadow(color: .black.opacity(PanelToolbarMaterial.liquidGlass ? 0 : dark ? 0.24 : 0.09),
+        radius: 3 * scale, x: 0, y: scale)
       .opacity(configuration.isPressed ? 0.72 : 1)
       .background(PanelButtonCursor().accessibilityHidden(true))
-      .onHover { hovering = $0 }
+      .onHover { hovering = isEnabled && $0 }
   }
 }
 
@@ -484,8 +480,149 @@ private struct PanelNativeSearch: NSViewRepresentable {
   func updateNSView(_ view: NSSearchField, context: Context) { view.isHidden = !open }
 }
 
-// The scroll viewport retains the already-verified wheel-axis mapping. Its
-// document is a SwiftUI filter row, not a set of manually drawn AppKit buttons.
+// Each tab is a complete native button. The row only synchronizes selection
+// and adapts existing context-menu, drag and scroll callbacks.
+@available(macOS 12.0, *)
+@MainActor
+final class PanelFilterButton: PanelPointerButton {
+  var onContextMenu: ((NSPoint) -> Void)?
+  override var acceptsFirstResponder: Bool { false }
+  override var canBecomeKeyView: Bool { false }
+  override var visibleRect: NSRect {
+    let visible = bounds.intersection(super.visibleRect)
+    guard let scroll = enclosingScrollView, let document = scroll.documentView else { return visible }
+    return visible.intersection(convert(scroll.documentVisibleRect, from: document))
+  }
+  override func rightMouseDown(with event: NSEvent) { onContextMenu?(NSEvent.mouseLocation) }
+  override func mouseDown(with event: NSEvent) {
+    if event.modifierFlags.contains(.control) { rightMouseDown(with: event) }
+    else { super.mouseDown(with: event) }
+  }
+  func releaseContent() {
+    isEnabled = false
+    target = nil
+    action = nil
+    onContextMenu = nil
+  }
+}
+
+@available(macOS 12.0, *)
+@MainActor
+final class PanelFilterControl: NSView {
+  private weak var state: PanelToolbarState?
+  private var choices: [PanelFilterChoice] = []
+  private(set) var buttons: [PanelFilterButton] = []
+  private var revealRequest = 0
+  override var acceptsFirstResponder: Bool { false }
+  override var canBecomeKeyView: Bool { false }
+  override var isFlipped: Bool { true }
+
+  init(state: PanelToolbarState) {
+    self.state = state
+    super.init(frame: .zero)
+    setAccessibilityElement(true)
+    setAccessibilityRole(.radioGroup)
+    setAccessibilityLabel(state.local("History filters", "历史记录筛选"))
+    update()
+  }
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  func update() {
+    guard let state, !state.closed else { return }
+    if choices != state.choices {
+      buttons.forEach { $0.releaseContent(); $0.removeFromSuperview() }
+      choices = state.choices
+      buttons = choices.enumerated().map { index, choice in
+        let button = PanelFilterButton(frame: .zero)
+        button.title = choice.label
+        button.toolTip = choice.title
+        button.controlSize = .large
+        button.bezelStyle = .rounded
+        #if VPASTE_LIQUID_GLASS_SDK
+          if #available(macOS 26.0, *) {
+            button.bezelStyle = .glass
+            button.borderShape = .capsule
+          }
+        #endif
+        button.setButtonType(.pushOnPushOff)
+        button.refusesFirstResponder = true
+        button.focusRingType = .none
+        button.tag = index
+        button.target = self
+        button.action = #selector(chooseFilter(_:))
+        button.cell?.setAccessibilityRole(.radioButton)
+        button.cell?.setAccessibilityLabel(choice.title)
+        if !choice.isFixed {
+          button.onContextMenu = { [weak state] point in state?.contextMenu(id: choice.id, at: point) }
+        }
+        button.sizeToFit()
+        addSubview(button)
+        return button
+      }
+      var x: CGFloat = 4
+      for button in buttons {
+        button.setFrameOrigin(NSPoint(x: x, y: (PanelStyle.headerHeight - button.frame.height) / 2))
+        x = button.frame.maxX + 8
+      }
+      let size = NSSize(width: max(0, x - 8 + 4), height: PanelStyle.headerHeight)
+      setFrameSize(NSSize(width: size.width * state.scale, height: size.height * state.scale))
+      setBoundsSize(size)
+      setAccessibilityChildren(NSAccessibility.unignoredChildren(from: buttons))
+    }
+    for (index, button) in buttons.enumerated() {
+      let selected = index == state.selected
+      #if VPASTE_LIQUID_GLASS_SDK
+        if #available(macOS 26.0, *) {
+          button.tintProminence = selected ? .none : .automatic
+          button.bezelColor = selected ? NSColor(white: 0.5, alpha: 0.40) : nil
+        }
+      #endif
+      button.state = selected ? .on : .off
+      button.isEnabled = !state.navigationLocked
+    }
+  }
+
+  var buttonFrames: [NSRect] { buttons.map(\.frame) }
+  var dragFrames: [PanelTabDragFrame] {
+    buttons.indices.compactMap { index in
+      guard !choices[index].isFixed, let superview else { return nil }
+      return PanelTabDragFrame(id: choices[index].id, frame: convert(buttons[index].frame, to: superview))
+    }
+  }
+  func revealSelection() {
+    guard let state, !state.closed, buttons.indices.contains(state.selected) else { return }
+    let button = buttons[state.selected]
+    button.scrollToVisible(button.bounds.insetBy(dx: -2, dy: 0))
+  }
+  func requestReveal() {
+    revealRequest &+= 1
+    let request = revealRequest
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.revealRequest == request, self.state?.closed == false else { return }
+      self.revealSelection()
+    }
+  }
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    if window != nil { requestReveal() }
+  }
+  @objc private func chooseFilter(_ sender: PanelFilterButton) {
+    guard let state, !state.closed, buttons.indices.contains(sender.tag), buttons[sender.tag] === sender else { return }
+    state.choose(sender.tag)
+    // A selected toggle can turn itself off; the query state remains single-select.
+    update()
+  }
+  func releaseContent() {
+    revealRequest &+= 1
+    buttons.forEach { $0.releaseContent(); $0.removeFromSuperview() }
+    buttons.removeAll()
+    setAccessibilityChildren([])
+    state = nil
+  }
+}
+
+// Retain the existing wheel mapping and private tab-drag session around the
+// native control. This surface does not add another background or indicator.
 @available(macOS 12.0, *)
 @MainActor
 private struct PanelFilterViewport: NSViewRepresentable {
@@ -493,160 +630,105 @@ private struct PanelFilterViewport: NSViewRepresentable {
   let width: CGFloat
   let height: CGFloat
   final class Coordinator {
-    var host: PanelToolbarHostingView<PanelFilterStrip>?
+    var control: PanelFilterControl?
     var surface: PanelTabDragSurface?
     var selection: Int?
+    var choices: [PanelFilterChoice] = []
+    var width: CGFloat = 0
   }
   func makeCoordinator() -> Coordinator { Coordinator() }
   func makeNSView(context: Context) -> PanelScroll {
     let scroll = PanelScroll()
     scroll.drawsBackground = false
-    scroll.setAccessibilityLabel(state.local("History filters", "历史记录筛选"))
-    let host = PanelToolbarHostingView(rootView: PanelFilterStrip(state: state))
-    context.coordinator.host = host
+    if PanelToolbarMaterial.liquidGlass {
+      // The clip view cuts native glass shadows into a rectangle. Fade only the horizontal edges.
+      scroll.contentView.clipsToBounds = false
+      scroll.wantsLayer = true
+      let mask = CAGradientLayer()
+      mask.colors = [NSColor.clear, .white, .white, .clear].map(\.cgColor)
+      mask.startPoint = CGPoint(x: 0, y: 0.5)
+      mask.endPoint = CGPoint(x: 1, y: 0.5)
+      scroll.layer?.mask = mask
+    }
+    let control = PanelFilterControl(state: state)
     let surface = PanelTabDragSurface()
     surface.scale = state.scale
-    surface.addSubview(host)
-    surface.tabFrames = { [weak state] in
-      guard let state, !state.closed else { return [] }
-      var x: CGFloat = 0
-      return state.choices.enumerated().compactMap { index, choice in
-        let width = choice.width(scale: state.scale, selected: state.selected == index)
-        defer { x += width + 8 * state.scale }
-        return choice.isFixed ? nil : PanelTabDragFrame(id: choice.id,
-          frame: NSRect(x: x, y: 0, width: width, height: PanelStyle.headerHeight * state.scale))
-      }
-    }
+    surface.addSubview(control)
+    surface.tabFrames = { [weak control] in control?.dragFrames ?? [] }
     surface.onMove = { [weak state] source, target, before in
-      guard let state, !state.closed else { return }
+      guard let state, state.interactive else { return }
       state.onTabReorder?(source, target, before)
     }
-    surface.onDragChanged = { [weak state] id in
-      guard let state, !state.closed else { return }
-      state.draggingTabID = id ?? ""
-      state.onTabDragging?(id != nil)
+    surface.onDragChanged = { [weak state] id in state?.dragging(id) }
+    state.cancelTabDrag = { [weak surface] in surface?.cancelInteraction() }
+    state.releaseTabDrag = { [weak surface, weak control] in
+      surface?.releaseContent()
+      control?.releaseContent()
     }
-    state.releaseTabDrag = { [weak surface] in surface?.releaseContent() }
+    context.coordinator.control = control
     context.coordinator.surface = surface
     scroll.documentView = surface
     return scroll
   }
   func updateNSView(_ scroll: PanelScroll, context: Context) {
-    context.coordinator.surface?.interactionEnabled = !state.navigationLocked
-    let widths = state.choices.enumerated().map {
-      $0.element.width(scale: state.scale, selected: $0.offset == state.selected)
+    guard let control = context.coordinator.control, let surface = context.coordinator.surface else { return }
+    // SwiftUI applies its frame later. Reveal must use the new search viewport.
+    scroll.setFrameSize(NSSize(width: width, height: height))
+    if let mask = scroll.layer?.mask as? CAGradientLayer {
+      let frame = scroll.bounds.insetBy(dx: 0, dy: -height)
+      if mask.frame != frame {
+        let edge = min(10 * state.scale / width, 0.5)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        mask.frame = frame
+        mask.locations = [0, NSNumber(value: Double(edge)), NSNumber(value: Double(1 - edge)), 1]
+        CATransaction.commit()
+      }
     }
-    let gap = 8 * state.scale
-    let extent = PanelFilterIndicatorLayout.extent(
-      choices: state.choices, selected: state.selected, scale: state.scale)
-    let size = NSSize(width: max(width, extent), height: height)
-    if context.coordinator.host?.frame.size != size {
-      context.coordinator.surface?.setFrameSize(size)
-      context.coordinator.host?.frame = NSRect(origin: .zero, size: size)
-    }
-    if context.coordinator.selection != state.selected, widths.indices.contains(state.selected) {
+    surface.interactionEnabled = !state.navigationLocked && !state.closed
+    control.update()
+    surface.setFrameSize(NSSize(width: max(width, control.frame.width + 4 * state.scale), height: height))
+    control.setFrameOrigin(NSPoint(x: 2 * state.scale, y: (height - control.frame.height) / 2))
+    if context.coordinator.selection != state.selected || context.coordinator.choices != state.choices
+      || context.coordinator.width != width {
       context.coordinator.selection = state.selected
-      let x = widths.prefix(state.selected).reduce(0, +) + gap * CGFloat(state.selected)
-      let target = NSRect(x: x, y: 0, width: widths[state.selected], height: height)
-      context.coordinator.host?.scrollToVisible(target)
+      context.coordinator.choices = state.choices
+      context.coordinator.width = width
+      control.requestReveal()
     }
   }
   static func dismantleNSView(_ scroll: PanelScroll, coordinator: Coordinator) {
     coordinator.surface?.releaseContent()
+    coordinator.control?.releaseContent()
     scroll.documentView = nil
     coordinator.surface = nil
-    coordinator.host = nil
-    coordinator.selection = nil
+    coordinator.control = nil
   }
 }
 
+// The system owns the material, its edge lighting and interactive deformation.
+// Gate SDK symbols independently of runtime availability for older SDKs.
 @available(macOS 12.0, *)
-@MainActor
-private struct PanelFilterStrip: View {
-  @ObservedObject var state: PanelToolbarState
-  @Environment(\.colorScheme) private var scheme
-  private var gap: CGFloat { 8 * state.scale }
-  var body: some View {
-    ZStack(alignment: .bottomLeading) {
-      HStack(spacing: state.scale) {
-        HStack(spacing: gap) {
-          ForEach(state.choices.indices, id: \.self) { index in
-            let choice = state.choices[index]
-            let selected = state.selected == index
-            Button { state.choose(index) } label: {
-              HStack(spacing: 5 * state.scale) {
-                if choice.isFixed {
-                  // MUI's 24-unit SVG uses 16 units for the grid, 20 for the star.
-                  // Keep the 17pt layout box while matching its visible artwork.
-                  let extent: CGFloat = choice.symbol == "star" ? 20 : 16
-                  Image(systemName: choice.symbol).font(.system(size: 17 * extent / 24 * state.scale))
-                    .frame(width: 17 * state.scale, height: 17 * state.scale)
-                }
-                Text(choice.label)
-                  .font(Font(PanelToolbarTypography.tabFont(scale: state.scale, selected: selected)))
-                  .lineLimit(1).frame(height: PanelToolbarTypography.lineHeight * state.scale)
-              }
-              .padding(.leading, 10 * state.scale)
-              .padding(.trailing, (choice.isFixed ? 23 : 10) * state.scale)
-              .frame(width: choice.width(scale: state.scale, selected: selected), height: PanelStyle.headerHeight * state.scale)
-            }
-            .buttonStyle(PanelFilterStyle(scale: state.scale, selected: selected, dark: scheme == .dark))
-            .opacity(!choice.id.isEmpty && state.draggingTabID == choice.id ? 0.55 : 1)
-            .focusable(false)
-            .overlay(PanelTabContextTarget { point in
-              state.contextMenu(id: choice.id, at: point)
-            }.accessibilityHidden(true))
-            .accessibilityLabel(Text(choice.title))
-            .accessibilityValue(Text(selected ? state.local("Selected", "已选择") : ""))
-          }
-        }
-        Button { state.onAddTab?() } label: {
-          Image(systemName: "plus").font(.system(size: 18 * state.scale))
-            .frame(width: 36 * state.scale, height: 36 * state.scale)
-        }
-        .buttonStyle(PanelFilterStyle(scale: state.scale, selected: false, dark: scheme == .dark))
-        .focusable(false)
-        .accessibilityLabel(Text(state.local("Add tab", "添加标签")))
-      }
-      selectionIndicator
+private struct PanelToolbarGlass: ViewModifier {
+  let interactive: Bool
+  let enabled: Bool
+  @Environment(\.accessibilityReduceMotion) private var reducedMotion
+  @Environment(\.accessibilityReduceTransparency) private var reducedTransparency
+  @Environment(\.colorSchemeContrast) private var contrast
+  func body(content: Content) -> some View {
+    Group {
+      #if VPASTE_LIQUID_GLASS_SDK
+        if #available(macOS 26.0, *), enabled, !reducedTransparency {
+          content.glassEffect(.regular.interactive(interactive && !reducedMotion), in: Capsule())
+        } else { fallback(content) }
+      #else
+        fallback(content)
+      #endif
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    .overlay(Capsule().strokeBorder(Color.primary.opacity(enabled && contrast == .increased ? 0.7 : 0), lineWidth: 1)
+      .allowsHitTesting(false).accessibilityHidden(true))
   }
-  // Mirrors ClipboardTabBar's shared layoutId indicator: one accent underline
-  // glides between tabs instead of each tab drawing its own.
-  @ViewBuilder private var selectionIndicator: some View {
-    if let rect = indicatorRect {
-      Capsule()
-        .fill(Color(PanelStyle.rgb(scheme == .dark ? 0x8ab7ff : 0x2466d8)))
-        .frame(width: rect.width, height: rect.height)
-        .offset(x: rect.minX)
-        .animation(selectionAnimation, value: state.selected)
-        .accessibilityHidden(true)
-    }
-  }
-  private var indicatorRect: CGRect? {
-    PanelFilterIndicatorLayout.rect(choices: state.choices, selected: state.selected, scale: state.scale)
-  }
-  // Same layout spring as src/ui/motion/tokens.ts motionSprings.layout.
-  private var selectionAnimation: Animation? {
-    NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-      ? nil : .interpolatingSpring(mass: 0.9, stiffness: 320, damping: 34)
-  }
-}
-
-@available(macOS 12.0, *)
-private struct PanelFilterStyle: ButtonStyle {
-  let scale: CGFloat
-  let selected: Bool
-  let dark: Bool
-  @State private var hovering = false
-  func makeBody(configuration: Configuration) -> some View {
-    configuration.label
-      .foregroundColor(Color(PanelStyle.rgb(selected ? (dark ? 0x8ab7ff : 0x2466d8) : (dark ? 0xdde2eb : 0x2a3230),
-        selected ? 1 : (dark ? 0.68 : 0.62))))
-      .background(Color.white.opacity(hovering ? (dark ? 0.07 : 0.30) : 0))
-      .opacity(configuration.isPressed ? 0.72 : 1)
-      .background(PanelButtonCursor().accessibilityHidden(true))
-      .onHover { hovering = $0 }
+  private func fallback(_ content: Content) -> some View {
+    content.background { if enabled { Capsule().fill(Color(NSColor.controlBackgroundColor)) } }
   }
 }

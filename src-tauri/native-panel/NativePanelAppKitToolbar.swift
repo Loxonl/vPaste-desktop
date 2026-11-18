@@ -8,7 +8,8 @@ class PanelPointerButton: NSButton {
   }
   override func resetCursorRects() {
     super.resetCursorRects()
-    if isEnabled { addCursorRect(visibleRect, cursor: .pointingHand) }
+    let rect = bounds.intersection(visibleRect)
+    if isEnabled, !rect.isEmpty { addCursorRect(rect, cursor: .pointingHand) }
   }
 }
 
@@ -425,6 +426,7 @@ final class PanelLegacyToolbar: NSView {
     tabs.forEach { $0.isEnabled = !locked }
     tabStrip.interactionEnabled = !locked
   }
+  func cancelInteraction() { tabStrip.cancelInteraction() }
   func setInfoVisible(_ visible: Bool) { developer?.infoVisible = visible }
   func setQueueActive(_ active: Bool) {
     queueButton?.active = active

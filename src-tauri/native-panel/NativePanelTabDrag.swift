@@ -49,7 +49,9 @@ final class PanelTabDragSurface: NSView, NSDraggingSource, NSGestureRecognizerDe
   var onMove: ((String, String, Bool) -> Void)?
   var onDragChanged: ((String?) -> Void)?
   var scale: CGFloat = 1
-  var interactionEnabled = true { didSet { pan.isEnabled = interactionEnabled } }
+  var interactionEnabled = true {
+    didSet { if oldValue != interactionEnabled { pan.isEnabled = interactionEnabled } }
+  }
   private let pan = PanelTabPan()
   private let marker = CALayer()
   private var source: String?
@@ -59,6 +61,17 @@ final class PanelTabDragSurface: NSView, NSDraggingSource, NSGestureRecognizerDe
   override var acceptsFirstResponder: Bool { false }
   override var canBecomeKeyView: Bool { false }
   override var isFlipped: Bool { true }
+  // The glass mask affects drawing only. Input still ends at the scroll viewport.
+  override var visibleRect: NSRect {
+    let visible = super.visibleRect
+    guard let scroll = enclosingScrollView else { return visible }
+    return visible.intersection(scroll.documentVisibleRect)
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard visibleRect.contains(convert(point, from: superview)) else { return nil }
+    return super.hitTest(point)
+  }
 
   override init(frame: NSRect) {
     super.init(frame: frame)
@@ -80,13 +93,13 @@ final class PanelTabDragSurface: NSView, NSDraggingSource, NSGestureRecognizerDe
     otherGestureRecognizer.view?.isDescendant(of: self) == true
   }
   func gestureRecognizerShouldBegin(_ gestureRecognizer: NSGestureRecognizer) -> Bool {
-    guard !closed, source == nil, let down = pan.down, !down.modifierFlags.contains(.control),
+    guard interactionEnabled, !closed, source == nil, let down = pan.down, !down.modifierFlags.contains(.control),
       let tabs = tabFrames?(), tabs.count > 1 else { return false }
     let point = convert(down.locationInWindow, from: nil)
     return tabs.contains { $0.frame.contains(point) }
   }
   @objc private func startDrag(_ gesture: NSPanGestureRecognizer) {
-    guard gesture.state == .began, !closed, source == nil, let down = pan.down,
+    guard interactionEnabled, gesture.state == .began, !closed, source == nil, let down = pan.down,
       let tab = tabFrames?().first(where: { $0.frame.contains(convert(down.locationInWindow, from: nil)) })
     else { return }
     let image = NSImage(size: tab.frame.size)
@@ -172,6 +185,7 @@ final class PanelTabDragSurface: NSView, NSDraggingSource, NSGestureRecognizerDe
       NSCursor.pointingHand.set()
     }
   }
+  func cancelInteraction() { finish() }
   func releaseContent() {
     guard !closed else { return }
     closed = true

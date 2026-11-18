@@ -1,6 +1,15 @@
 import AppKit
 import CoreText
 
+enum PanelToolbarMaterial {
+  static var liquidGlass: Bool {
+    #if VPASTE_LIQUID_GLASS_SDK
+      if #available(macOS 26.0, *) { return true }
+    #endif
+    return false
+  }
+}
+
 // Match Clipboard.module.css typography in logical points, before panel zoom.
 // Apply the CSS variable-font weight directly: AppKit's named weights quantize
 // intermediate values (for example, 740 can otherwise become the heavy face).
@@ -51,9 +60,12 @@ class PanelCursorRegion: NSView {
   override func updateTrackingAreas() {
     super.updateTrackingAreas()
     if let cursorTracking { removeTrackingArea(cursorTracking) }
+    cursorTracking = nil
+    let rect = bounds.intersection(visibleRect)
+    guard !rect.isNull, !rect.isEmpty else { return }
     let tracking = NSTrackingArea(
-      rect: .zero,
-      options: [.cursorUpdate, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+      rect: rect,
+      options: [.cursorUpdate, .mouseEnteredAndExited, .activeInKeyWindow],
       owner: self)
     addTrackingArea(tracking)
     cursorTracking = tracking
@@ -72,7 +84,8 @@ class PanelCursorRegion: NSView {
   }
   override func resetCursorRects() {
     super.resetCursorRects()
-    if isEnabled { addCursorRect(visibleRect, cursor: cursor) }
+    let rect = bounds.intersection(visibleRect)
+    if isEnabled, !rect.isNull, !rect.isEmpty { addCursorRect(rect, cursor: cursor) }
   }
 }
 

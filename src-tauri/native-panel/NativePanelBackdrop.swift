@@ -19,6 +19,11 @@ final class PanelBackdrop: NSView {
 
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+  override func accessibilityChildren() -> [Any]? {
+    // Navigation is above the window material and should be read before history.
+    NSAccessibility.unignoredChildren(from: Array(subviews.reversed()))
+  }
+
   private func makeEffect(scale: CGFloat) -> NSView {
     // The build flag checks the selected SDK as well as this runtime guard, so
     // development with pre-26 Xcode/SDKs retains the existing frosted fallback.

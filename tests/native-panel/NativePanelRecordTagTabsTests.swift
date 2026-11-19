@@ -78,7 +78,7 @@ final class NativePanelRecordTagTabsTests: XCTestCase {
   }
 
   @available(macOS 12.0, *)
-  func testCreationActionNeverBecomesANativeFilterButton() {
+  func testCreationActionNeverBecomesANativeFilterTab() {
     let state = PanelToolbarState(scale: 1, chinese: false, search: NSSearchField())
     state.setTabs(tabs)
     let control = PanelFilterControl(state: state)
@@ -87,7 +87,7 @@ final class NativePanelRecordTagTabsTests: XCTestCase {
     state.onAddTab = { adds += 1 }
     state.addTab()
     XCTAssertEqual(adds, 1)
-    XCTAssertEqual(control.buttons.count, PanelFilterQuery.count(tabs: tabs))
+    XCTAssertEqual(control.tabFrames.count, PanelFilterQuery.count(tabs: tabs))
     XCTAssertEqual(control.buttons.map(\.state), [.on, .off, .off, .off])
     XCTAssertFalse(control.buttons.contains { $0.title == "+" })
   }

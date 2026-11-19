@@ -283,9 +283,14 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         self.synchronizeHistoryIfNeeded()
       }
     }
-    toolbar.onTabReorder = { [weak self] source, target, before in
-      self?.menuRun("tab-reorder", ["tabId": source, "targetId": target, "before": before],
-        success: nil, reload: false)
+    toolbar.onTabReorder = { [weak self] source, target, before, finish in
+      guard let self else { finish(); return }
+      self.menuRun("tab-reorder", ["tabId": source, "targetId": target, "before": before],
+        success: nil, reload: false, failed: finish) { [weak self] in
+          guard let self, !self.closed else { finish(); return }
+          self.finishTabReorder = finish
+          self.refreshTabs()
+        }
     }
     toolbar.onRefresh = { [weak self] in self?.reload() }
     toolbar.onClose = { [weak self] in
@@ -423,7 +428,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     toolbar.onFilter = { _ in blocked() }; toolbar.onAddTab = blocked
     toolbar.onTabContextMenu = { _, _ in blocked() }
-    toolbar.onTabReorder = { _, _, _ in blocked() }; toolbar.onTabDragging = nil
+    toolbar.onTabReorder = { _, _, _, finish in blocked(); finish() }; toolbar.onTabDragging = nil
     toolbar.onRefresh = blocked; toolbar.onPasteQueue = blocked
     toolbar.onSettings = blocked; toolbar.onDiagnostics = blocked
     intro.model.onAction = { [weak self] _, args in
@@ -623,6 +628,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     onboarding?.removeFromSuperview()
     onboarding = nil
     toolbar.releaseContent()
+    finishTabReorder = nil
     queueBar.releaseContent()
     search.delegate = nil
     for view in renderedViews.allObjects { view.releaseContent() }
@@ -1360,6 +1366,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   // The user's filter tabs and record tags, in their stored order.
   private var tabs: [PanelTab] = []
   private var tabsRequest = 0
+  private var finishTabReorder: (() -> Void)?
   private var pendingTabSelection: String?
 
   private func openAddTabMenu() {
@@ -1422,7 +1429,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     alert.beginSheetModal(for: window) { [weak self] response in
       guard let self, !self.closed, !self.hiding else { return }
       if response == .alertFirstButtonReturn {
-        self.menuRun("tab-delete", ["tabId": tab.id], success: nil) { [weak self] in self?.focus() }
+        self.menuRun("tab-delete", ["tabId": tab.id], success: nil, completed: { [weak self] in self?.focus() })
       } else { self.focus() }
     }
   }
@@ -1431,7 +1438,11 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     tabsRequest &+= 1
     let request = tabsRequest
     bridge.send("tabs") { [weak self] result in
-      guard let self, !self.closed, self.tabsRequest == request, case .success(let value) = result,
+      guard let self, !self.closed, self.tabsRequest == request else { return }
+      let finish = self.finishTabReorder
+      self.finishTabReorder = nil
+      defer { finish?() }
+      guard case .success(let value) = result,
         let tabs = try? panelDecode([PanelTab].self, value) else { return }
       let selection = self.pendingTabSelection
       self.pendingTabSelection = nil
@@ -1544,9 +1555,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         success: local("Removed all record tags", "已移除全部记录标签"))
     case .exportImage:
       PanelMenuSheets.chooseExportTarget(window: window) { [weak self] url in
-        self?.menuRun("export-image", ["hash": hash, "target": url.path], success: nil) {
+        self?.menuRun("export-image", ["hash": hash, "target": url.path], success: nil, completed: {
           PanelMenuSheets.rememberExportDirectory(of: url)
-        }
+        })
       }
     case .openFolder:
       menuRun("open-folder", ["hash": hash], success: nil, reload: false)
@@ -1560,13 +1571,13 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
 
   private func menuRun(
     _ op: String, _ args: [String: Any], success: String?, reload: Bool = true,
-    completed: (() -> Void)? = nil
+    failed: (() -> Void)? = nil, completed: (() -> Void)? = nil
   ) {
-    guard !busyAction else { return }
+    guard !busyAction else { failed?(); return }
     busyAction = true
     bridge.send(op, args) { [weak self] result in
       guard let self, !self.closed else {
-        if case .success = result { completed?() }
+        if case .success = result { completed?() } else { failed?() }
         return
       }
       self.busyAction = false
@@ -1576,6 +1587,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         self.showMessage(
           self.local("Action failed: \(error.localizedDescription)",
             "操作失败：\(error.localizedDescription)"))
+        failed?()
       case .success:
         completed?()
         if reload { self.requestHistorySync() }

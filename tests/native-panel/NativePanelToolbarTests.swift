@@ -134,7 +134,7 @@ final class NativePanelToolbarTests: XCTestCase {
     XCTAssertTrue(toolbar.subviews.isEmpty)
   }
 
-  func testFiltersUseNativeGlassButtons() throws {
+  func testFiltersUseNativeToggleButtonsOnOneSharedGlassSurface() throws {
     guard #available(macOS 12.0, *) else { throw XCTSkip("SwiftUI toolbar needs macOS 12") }
     let toolbar = PanelToolbar(frame: NSRect(x: 0, y: 0, width: 1000, height: 48))
     toolbar.configure(scale: 1, chinese: false, search: NSSearchField())
@@ -145,25 +145,38 @@ final class NativePanelToolbarTests: XCTestCase {
     defer { toolbar.releaseContent() }
     toolbar.layoutSubtreeIfNeeded()
     let control = try XCTUnwrap(descendants(of: toolbar).compactMap { $0 as? PanelFilterControl }.first)
-    let buttons = descendants(of: control).compactMap { $0 as? NSButton }
-    XCTAssertEqual(buttons.count, 4, "Each category must use a complete native button")
-    XCTAssertEqual(buttons.map(\.title), ["All", "Favorites", "📝 Text", "Home"])
-    XCTAssertEqual(buttons.map(\.state), [.on, .off, .off, .off])
+    XCTAssertEqual(tabTitles(in: control), ["All", "Favorites", "📝 Text", "Home"])
+    XCTAssertEqual(selectedIndices(in: control), [0])
     #if VPASTE_LIQUID_GLASS_SDK
       if #available(macOS 26.0, *) {
-        XCTAssertTrue(buttons.allSatisfy { $0.bezelStyle == .glass && $0.isBordered })
+        let glass = try XCTUnwrap(control.subviews.first as? NSGlassEffectView)
+        XCTAssertEqual(glass.style, .regular)
+        let row = try XCTUnwrap(glass.contentView)
+        XCTAssertEqual(control.buttons.count, 4)
+        for button in control.buttons {
+          XCTAssertTrue(button.superview === row)
+          XCTAssertEqual(button.bezelStyle, .accessoryBar)
+          XCTAssertTrue(button.showsBorderOnlyWhileMouseInside)
+          XCTAssertEqual(button.tintProminence, .none)
+        }
+        XCTAssertEqual(try XCTUnwrap(control.buttons.first).bezelColor, NSColor(white: 0.5, alpha: 0.4))
+        return
       }
     #endif
-
+    XCTAssertEqual(control.buttons.count, 4)
   }
 
   @available(macOS 12.0, *)
-  func testNativeButtonAccessibilityExposesOneRadioPerCategory() throws {
+  func testNativeAccessibilityExposesOneRadioPerCategory() throws {
     let state = PanelToolbarState(scale: 1, chinese: false, search: NSSearchField())
     state.setTabs([PanelTab(id: "a", name: "📝 Text", label: "Text", record: false)])
     let control = PanelFilterControl(state: state)
-    defer { control.releaseContent(); state.close() }
+    let window = NSWindow(contentRect: control.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.contentView = control
+    defer { control.releaseContent(); state.close(); window.contentView = nil }
     func checkSelection(_ selected: Int) throws {
+      XCTAssertEqual(control.accessibilityRole(), .radioGroup)
+      XCTAssertEqual(control.accessibilityLabel(), "History filters")
       let children = try XCTUnwrap(control.accessibilityChildren())
       XCTAssertEqual(children.count, 3)
       for (index, child) in children.enumerated() {
@@ -173,11 +186,11 @@ final class NativePanelToolbarTests: XCTestCase {
         XCTAssertEqual((element.accessibilityValue() as? NSNumber)?.intValue, index == selected ? 1 : 0)
         XCTAssertFalse((element.accessibilityChildren() ?? []).contains {
           ($0 as? NSAccessibilityProtocol)?.accessibilityRole() == .radioButton
-        }, "A button and its cell must not both be exposed as radios")
+        }, "Each category must be exposed only once")
       }
     }
     try checkSelection(0)
-    control.buttons[2].performClick(nil)
+    sendFilterAction(2, in: control)
     try checkSelection(2)
   }
 
@@ -252,21 +265,22 @@ final class NativePanelToolbarTests: XCTestCase {
     XCTAssertEqual(mask.frame.width, scroll.bounds.width)
     XCTAssertGreaterThan(mask.frame.height, scroll.bounds.height, "Leave room for native shadows above and below")
 
-    let button = control.buttons[2]
-    let buttonRect = button.convert(button.bounds, to: surface)
-    scroll.contentView.scroll(to: NSPoint(x: buttonRect.midX.rounded(), y: 0))
+    let clippedButton = control.buttons[2]
+    let tabRect = control.convert(control.tabFrames[2], to: surface)
+    scroll.contentView.scroll(to: NSPoint(x: tabRect.midX.rounded(), y: 0))
     scroll.reflectScrolledClipView(scroll.contentView)
     let viewport = scroll.documentVisibleRect
-    XCTAssertGreaterThan(viewport.minX, buttonRect.minX)
-    XCTAssertLessThan(viewport.minX, buttonRect.maxX)
+    XCTAssertGreaterThan(viewport.minX, tabRect.minX)
+    XCTAssertLessThan(viewport.minX, tabRect.maxX)
     XCTAssertEqual(surface.visibleRect, viewport, "Drag targets and edge scrolling must use the logical viewport")
-    XCTAssertTrue(control.buttons[0].visibleRect.isEmpty, "An offscreen button must not register a pointer region")
-    XCTAssertEqual(button.visibleRect, button.bounds.intersection(button.convert(viewport, from: surface)))
-    let outside = NSPoint(x: viewport.minX - 2, y: buttonRect.midY)
-    let inside = NSPoint(x: viewport.minX + 12, y: buttonRect.midY)
+    XCTAssertTrue(control.buttons[0].visibleRect.isEmpty)
+    XCTAssertEqual(clippedButton.visibleRect,
+      clippedButton.bounds.intersection(clippedButton.convert(viewport, from: surface)))
+    let outside = NSPoint(x: viewport.minX - 2, y: tabRect.midY)
+    let inside = NSPoint(x: viewport.minX + 12, y: tabRect.midY)
     XCTAssertNil(surface.hitTest(surface.convert(outside, to: scroll.contentView)))
     let hit = surface.hitTest(surface.convert(inside, to: scroll.contentView))
-    XCTAssertTrue(hit === button || hit?.isDescendant(of: button) == true)
+    XCTAssertEqual(hit, clippedButton)
   }
 
   func testBackdropReadsNavigationFirstAndIncludesNewHistoryAccessibilityChildren() {
@@ -311,9 +325,10 @@ final class NativePanelToolbarTests: XCTestCase {
     let event = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: .zero,
       modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
       eventNumber: 0, clickCount: 0, pressure: 0))
-    control.buttons[1].mouseEntered(with: event)
-    control.buttons[1].mouseMoved(with: event)
-    control.buttons[1].mouseExited(with: event)
+    let target = control.buttons[1]
+    target.mouseEntered(with: event)
+    target.mouseMoved(with: event)
+    target.mouseExited(with: event)
     XCTAssertEqual(state.selected, 0)
     XCTAssertEqual(selectedIndices(in: control), [0])
     XCTAssertTrue(calls.isEmpty)
@@ -329,26 +344,24 @@ final class NativePanelToolbarTests: XCTestCase {
     defer { control.releaseContent(); state.close() }
     var calls: [Int] = []
     state.onFilter = { calls.append($0) }
-    control.buttons[3].performClick(nil)
+    sendFilterAction(3, in: control)
     XCTAssertEqual(state.selected, 3)
     XCTAssertEqual(calls, [3])
     XCTAssertEqual(selectedIndices(in: control), [3])
-    control.buttons[3].performClick(nil)
+    sendFilterAction(3, in: control)
     XCTAssertEqual(selectedIndices(in: control), [3], "Clicking the selected toggle must not deselect it")
     XCTAssertEqual(calls, [3, 3])
     let stale = control.buttons[3]
     state.setTabs([b, a]); control.update()
-    XCTAssertNil(stale.target)
-    XCTAssertNil(stale.onContextMenu)
+    assertReleased(stale)
     XCTAssertEqual(selectedIndices(in: control), [2])
-    XCTAssertEqual(control.buttons[2].title, b.name)
-    XCTAssertEqual(control.buttons[2].tag, 2)
+    XCTAssertEqual(tabTitles(in: control)[2], b.name)
     XCTAssertEqual(state.choices[state.selected].id, b.id)
     state.select(1); control.update()
     XCTAssertEqual(selectedIndices(in: control), [1])
     XCTAssertEqual(calls, [3, 3], "Shortcut-driven state restoration must not issue a second query")
     state.select(2); state.setTabs([a]); control.update()
-    XCTAssertEqual(control.buttons.count, 3)
+    XCTAssertEqual(control.tabFrames.count, 3)
     XCTAssertEqual(selectedIndices(in: control), [0], "Removing the selected tag falls back to All")
   }
 
@@ -362,11 +375,10 @@ final class NativePanelToolbarTests: XCTestCase {
     state.onFilter = { _ in actions += 1 }
     state.onAddTab = { actions += 1 }
     state.onTabContextMenu = { _, _ in actions += 1 }
-    state.cancelTabDrag = { cancelled += 1 }
+    state.cancelTabDrag = { _ in cancelled += 1 }
     state.setNavigationLocked(true); control.update()
     XCTAssertTrue(control.buttons.allSatisfy { !$0.isEnabled })
-    control.buttons[1].state = .on
-    control.buttons[1].sendAction(control.buttons[1].action!, to: control.buttons[1].target)
+    sendFilterAction(1, in: control)
     state.addTab(); state.contextMenu(id: "custom", at: .zero)
     XCTAssertEqual(selectedIndices(in: control), [0])
     XCTAssertEqual(actions, 0)
@@ -374,23 +386,22 @@ final class NativePanelToolbarTests: XCTestCase {
     state.setNavigationLocked(false); control.update()
     XCTAssertTrue(control.buttons.allSatisfy(\.isEnabled))
     state.dragging("custom")
-    control.buttons[1].state = .on
-    control.buttons[1].sendAction(control.buttons[1].action!, to: control.buttons[1].target)
+    sendFilterAction(1, in: control)
     XCTAssertEqual(selectedIndices(in: control), [0])
     XCTAssertEqual(actions, 0)
     state.cancelInteraction()
     XCTAssertEqual(state.draggingTabID, "")
-    let releasedButtons = control.buttons
+    let released = control.buttons
     state.releaseTabDrag = { control.releaseContent() }
     state.close()
-    XCTAssertTrue(control.buttons.isEmpty)
-    XCTAssertTrue(releasedButtons.allSatisfy { !$0.isEnabled && $0.target == nil && $0.action == nil && $0.onContextMenu == nil })
+    XCTAssertTrue(control.tabFrames.isEmpty)
+    released.forEach { assertReleased($0) }
     state.choose(1); state.addTab()
     XCTAssertEqual(actions, 0)
   }
 
   @available(macOS 12.0, *)
-  func testNativeButtonBoundsDriveHitTestingDragAndScrollAtEveryScale() throws {
+  func testNativeTabBoundsDriveHitTestingDragAndScrollAtEveryScale() throws {
     for scale: CGFloat in [0.8, 0.9, 1] {
       let state = PanelToolbarState(scale: scale, chinese: false, search: NSSearchField())
       state.setTabs([
@@ -401,25 +412,35 @@ final class NativePanelToolbarTests: XCTestCase {
       let surface = PanelTabDragSurface()
       surface.frame = NSRect(x: 0, y: 0, width: control.frame.width + 4 * scale, height: 48 * scale)
       surface.addSubview(control)
+      surface.tabViews = { [weak control] in control?.draggableTabs ?? [] }
       control.setFrameOrigin(NSPoint(x: 2 * scale, y: (surface.bounds.height - control.frame.height) / 2))
       let scroll = PanelScroll(frame: NSRect(x: 0, y: 0, width: 240 * scale, height: 48 * scale))
       scroll.documentView = surface
       let window = NSWindow(contentRect: scroll.frame, styleMask: .borderless, backing: .buffered, defer: false)
       window.contentView = scroll
       defer { control.releaseContent(); surface.releaseContent(); state.close(); window.contentView = nil }
-      let frames = control.buttonFrames
+      control.layoutSubtreeIfNeeded()
+      let frames = control.tabFrames
       XCTAssertEqual(frames.count, state.choices.count)
+      let children = try XCTUnwrap(control.accessibilityChildren())
+      XCTAssertEqual(children.count, frames.count)
       for index in frames.indices {
         let point = control.convert(NSPoint(x: frames[index].midX, y: frames[index].midY), to: surface)
         let hit = control.hitTest(point)
-        XCTAssertTrue(hit === control.buttons[index] || hit?.isDescendant(of: control.buttons[index]) == true)
+        let target = control.buttons[index]
+        XCTAssertTrue(hit === target || hit?.isDescendant(of: target) == true)
+        let radio = try XCTUnwrap(children[index] as? NSAccessibilityProtocol)
+        let frame = window.convertToScreen(control.convert(frames[index], to: nil))
+        XCTAssertEqual(radio.accessibilityFrame().midX, frame.midX, accuracy: 1.5)
+        // AppKit can extend a button's accessibility frame by one point per side.
+        XCTAssertEqual(radio.accessibilityFrame().width, frame.width, accuracy: 2.1)
         XCTAssertTrue(control.bounds.contains(frames[index]))
       }
-      XCTAssertEqual(control.dragFrames.map(\.id), ["a", "record:2"])
-      XCTAssertEqual(control.dragFrames.map(\.frame), frames.dropFirst(2).map { control.convert($0, to: surface) })
+      XCTAssertEqual(surface.tabFrames.map(\.id), ["a", "record:2"])
+      XCTAssertEqual(surface.tabFrames.map(\.frame), frames.dropFirst(2).map { control.convert($0, to: surface) })
       XCTAssertGreaterThan(frames[2].width, frames[0].width, "Native sizing must accommodate the long label")
       state.select(3); control.update(); control.revealSelection()
-      let selected = control.convert(control.buttonFrames[3], to: surface)
+      let selected = control.convert(control.tabFrames[3], to: surface)
       XCTAssertTrue(scroll.documentVisibleRect.insetBy(dx: -1, dy: -1).contains(selected))
     }
   }
@@ -440,13 +461,14 @@ final class NativePanelToolbarTests: XCTestCase {
     state.onTabContextMenu = { id, _ in requests.append(id) }
     state.onFilter = { _ in queries += 1 }
     func contextClick(_ index: Int, controlClick: Bool = false) throws {
-      let rect = control.buttonFrames[index]
+      let rect = control.tabFrames[index]
       let point = control.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
       let event = try XCTUnwrap(NSEvent.mouseEvent(with: controlClick ? .leftMouseDown : .rightMouseDown,
         location: point, modifierFlags: controlClick ? .control : [], timestamp: 0,
         windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
-      if controlClick { control.buttons[index].mouseDown(with: event) }
-      else { control.buttons[index].rightMouseDown(with: event) }
+      let target = control.buttons[index]
+      if controlClick { target.mouseDown(with: event) }
+      else { target.rightMouseDown(with: event) }
     }
     try contextClick(0)
     try contextClick(3)
@@ -462,7 +484,7 @@ final class NativePanelToolbarTests: XCTestCase {
   }
 
   @available(macOS 12.0, *)
-  func testTabViewportFitsNativeButtonsUntilTheAddButtonReachesItsLimit() throws {
+  func testTabViewportFitsNativeTabsUntilTheAddButtonReachesItsLimit() throws {
     _ = NSApplication.shared
     for scale: CGFloat in [0.8, 0.9, 1] {
       for chinese in [false, true] {
@@ -486,7 +508,7 @@ final class NativePanelToolbarTests: XCTestCase {
             - scroll.convert(scroll.bounds, to: toolbar).minX - 54 * scale
         }
         XCTAssertEqual(scroll.frame.width, naturalWidth(), accuracy: 0.5,
-          "With few tabs, Add must follow the actual native button extent")
+          "With few tabs, Add must follow the actual native tab extent")
         let fixedWidth = scroll.frame.width
         toolbar.setTabs([PanelTab(id: "a", name: "📝 Text", label: "Text", record: false)])
         settle()
@@ -507,7 +529,7 @@ final class NativePanelToolbarTests: XCTestCase {
         toolbar.beginSearch()
         settle()
         XCTAssertEqual(scroll.frame.width, limit(), accuracy: 0.5, "Search must preserve the right limit")
-        let selected = control.convert(try XCTUnwrap(control.buttonFrames.last), to: scroll.documentView)
+        let selected = control.convert(try XCTUnwrap(control.tabFrames.last), to: scroll.documentView)
         XCTAssertTrue(scroll.documentVisibleRect.insetBy(dx: -1, dy: -1).contains(selected))
         toolbar.endEmptySearch()
         toolbar.setTabs([])
@@ -519,7 +541,7 @@ final class NativePanelToolbarTests: XCTestCase {
   }
 
   @available(macOS 12.0, *)
-  func testSearchResizeKeepsTheLastNativeButtonVisible() throws {
+  func testSearchResizeKeepsTheLastNativeTabVisible() throws {
     for scale: CGFloat in [0.8, 0.9, 1] {
       let state = PanelToolbarState(scale: scale, chinese: false, search: NSSearchField())
       state.setTabs((0..<22).map {
@@ -540,7 +562,7 @@ final class NativePanelToolbarTests: XCTestCase {
       let control = try XCTUnwrap(descendants(of: host).compactMap { $0 as? PanelFilterControl }.first)
       control.requestReveal()
       RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
-      let selected = control.convert(try XCTUnwrap(control.buttonFrames.last), to: scroll.documentView)
+      let selected = control.convert(try XCTUnwrap(control.tabFrames.last), to: scroll.documentView)
       XCTAssertTrue(scroll.documentVisibleRect.insetBy(dx: -1, dy: -1).contains(selected),
         "Search at scale \(scale): selected \(selected), viewport \(scroll.documentVisibleRect)")
     }
@@ -549,6 +571,26 @@ final class NativePanelToolbarTests: XCTestCase {
   @available(macOS 12.0, *)
   private func selectedIndices(in control: PanelFilterControl) -> [Int] {
     control.buttons.indices.filter { control.buttons[$0].state == .on }
+  }
+
+  @available(macOS 12.0, *)
+  private func tabTitles(in control: PanelFilterControl) -> [String] {
+    control.buttons.map(\.title)
+  }
+
+  @available(macOS 12.0, *)
+  private func sendFilterAction(_ index: Int, in control: PanelFilterControl) {
+    let button = control.buttons[index]
+    button.state = button.state == .on ? .off : .on
+    if let action = button.action { button.sendAction(action, to: button.target) }
+  }
+
+  @available(macOS 12.0, *)
+  private func assertReleased(_ target: PanelFilterButton, file: StaticString = #filePath, line: UInt = #line) {
+    XCTAssertFalse(target.isEnabled, file: file, line: line)
+    XCTAssertNil(target.target, file: file, line: line)
+    XCTAssertNil(target.action, file: file, line: line)
+    XCTAssertNil(target.onContextMenu, file: file, line: line)
   }
 
   private func filterScroll(in view: NSView) -> PanelScroll? {

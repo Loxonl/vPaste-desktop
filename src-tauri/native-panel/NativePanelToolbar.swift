@@ -6,7 +6,7 @@ protocol PanelToolbarContent: AnyObject {
   var onFilter: ((Int) -> Void)? { get set }
   var onAddTab: (() -> Void)? { get set }
   var onTabContextMenu: ((String, NSPoint) -> Void)? { get set }
-  var onTabReorder: ((String, String, Bool) -> Void)? { get set }
+  var onTabReorder: PanelTabMoveHandler? { get set }
   var onTabDragging: ((Bool) -> Void)? { get set }
   var onRefresh: (() -> Void)? { get set }
   var onClose: (() -> Void)? { get set }
@@ -32,7 +32,7 @@ final class PanelToolbar: NSView {
   var onFilter: ((Int) -> Void)?
   var onAddTab: (() -> Void)?
   var onTabContextMenu: ((String, NSPoint) -> Void)?
-  var onTabReorder: ((String, String, Bool) -> Void)?
+  var onTabReorder: PanelTabMoveHandler?
   var onTabDragging: ((Bool) -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
@@ -58,7 +58,10 @@ final class PanelToolbar: NSView {
     view.onFilter = { [weak self] in self?.onFilter?($0) }
     view.onAddTab = { [weak self] in self?.onAddTab?() }
     view.onTabContextMenu = { [weak self] in self?.onTabContextMenu?($0, $1) }
-    view.onTabReorder = { [weak self] in self?.onTabReorder?($0, $1, $2) }
+    view.onTabReorder = { [weak self] source, target, before, finish in
+      guard let move = self?.onTabReorder else { finish(); return }
+      move(source, target, before, finish)
+    }
     view.onTabDragging = { [weak self] in self?.onTabDragging?($0) }
     view.onRefresh = { [weak self] in self?.onRefresh?() }
     view.onClose = { [weak self] in self?.onClose?() }
@@ -141,7 +144,7 @@ enum PanelFilterQuery {
 final class PanelToolbarState: ObservableObject {
   @Published var selected = 0
   @Published private(set) var draggingTabID = ""
-  var cancelTabDrag: (() -> Void)?
+  var cancelTabDrag: ((Bool) -> Void)?
   var releaseTabDrag: (() -> Void)?
   @Published var infoVisible = false
   @Published var queueActive = false
@@ -157,7 +160,7 @@ final class PanelToolbarState: ObservableObject {
   var onFilter: ((Int) -> Void)?
   var onAddTab: (() -> Void)?
   var onTabContextMenu: ((String, NSPoint) -> Void)?
-  var onTabReorder: ((String, String, Bool) -> Void)?
+  var onTabReorder: PanelTabMoveHandler?
   var onTabDragging: ((Bool) -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
@@ -197,7 +200,7 @@ final class PanelToolbarState: ObservableObject {
     draggingTabID = next
     onTabDragging?(id != nil)
   }
-  func cancelInteraction() { cancelTabDrag?(); dragging(nil) }
+  func cancelInteraction() { cancelTabDrag?(false); dragging(nil) }
   func setNavigationLocked(_ locked: Bool) {
     guard navigationLocked != locked else { return }
     navigationLocked = locked
@@ -210,11 +213,13 @@ final class PanelToolbarState: ObservableObject {
   }
   func addTab() { if interactive { onAddTab?() } }
   func setTabs(_ tabs: [PanelTab]) {
-    cancelInteraction()
     let id = choices.indices.contains(selected) ? choices[selected].id : ""
-    choices = fixedChoices + tabs.map {
+    let next = fixedChoices + tabs.map {
       PanelFilterChoice(title: $0.name, emoji: "", symbol: "", record: $0.record, id: $0.id)
     }
+    cancelTabDrag?(next != choices)
+    dragging(nil)
+    choices = next
     if !id.isEmpty { selected = choices.firstIndex { $0.id == id } ?? 0 }
     else if !choices.indices.contains(selected) { selected = 0 }
   }
@@ -287,7 +292,7 @@ final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, 
   var onTabContextMenu: ((String, NSPoint) -> Void)? {
     get { state.onTabContextMenu } set { state.onTabContextMenu = newValue }
   }
-  var onTabReorder: ((String, String, Bool) -> Void)? {
+  var onTabReorder: PanelTabMoveHandler? {
     get { state.onTabReorder } set { state.onTabReorder = newValue }
   }
   var onTabDragging: ((Bool) -> Void)? { get { state.onTabDragging } set { state.onTabDragging = newValue } }
@@ -500,8 +505,7 @@ private struct PanelNativeSearch: NSViewRepresentable {
   func updateNSView(_ view: NSSearchField, context: Context) { view.isHidden = !open }
 }
 
-// Each tab is a complete native button. The row only synchronizes selection
-// and adapts existing context-menu, drag and scroll callbacks.
+// The buttons leave rendering and pointer feedback to AppKit.
 @available(macOS 12.0, *)
 @MainActor
 final class PanelFilterButton: PanelPointerButton {
@@ -513,7 +517,9 @@ final class PanelFilterButton: PanelPointerButton {
     guard let scroll = enclosingScrollView, let document = scroll.documentView else { return visible }
     return visible.intersection(convert(scroll.documentVisibleRect, from: document))
   }
-  override func rightMouseDown(with event: NSEvent) { onContextMenu?(NSEvent.mouseLocation) }
+  override func rightMouseDown(with event: NSEvent) {
+    if isEnabled { onContextMenu?(NSEvent.mouseLocation) }
+  }
   override func mouseDown(with event: NSEvent) {
     if event.modifierFlags.contains(.control) { rightMouseDown(with: event) }
     else { super.mouseDown(with: event) }
@@ -550,51 +556,17 @@ final class PanelFilterControl: NSView {
   func update() {
     guard let state, !state.closed else { return }
     if choices != state.choices {
-      buttons.forEach { $0.releaseContent(); $0.removeFromSuperview() }
+      removeTabs()
       choices = state.choices
-      buttons = choices.enumerated().map { index, choice in
-        let button = PanelFilterButton(frame: .zero)
-        button.title = choice.label
-        button.toolTip = choice.title
-        button.controlSize = .large
-        button.bezelStyle = .rounded
-        #if VPASTE_LIQUID_GLASS_SDK
-          if #available(macOS 26.0, *) {
-            button.bezelStyle = .glass
-            button.borderShape = .capsule
-          }
-        #endif
-        button.setButtonType(.pushOnPushOff)
-        button.refusesFirstResponder = true
-        button.focusRingType = .none
-        button.tag = index
-        button.target = self
-        button.action = #selector(chooseFilter(_:))
-        button.cell?.setAccessibilityRole(.radioButton)
-        button.cell?.setAccessibilityLabel(choice.title)
-        if !choice.isFixed {
-          button.onContextMenu = { [weak state] point in state?.contextMenu(id: choice.id, at: point) }
-        }
-        button.sizeToFit()
-        addSubview(button)
-        return button
-      }
-      var x: CGFloat = 4
-      for button in buttons {
-        button.setFrameOrigin(NSPoint(x: x, y: (PanelStyle.headerHeight - button.frame.height) / 2))
-        x = button.frame.maxX + 8
-      }
-      let size = NSSize(width: max(0, x - 8 + 4), height: PanelStyle.headerHeight)
+      let size = NSSize(width: buildTabs(state: state), height: PanelStyle.headerHeight)
       setFrameSize(NSSize(width: size.width * state.scale, height: size.height * state.scale))
       setBoundsSize(size)
-      setAccessibilityChildren(NSAccessibility.unignoredChildren(from: buttons))
     }
     for (index, button) in buttons.enumerated() {
       let selected = index == state.selected
       #if VPASTE_LIQUID_GLASS_SDK
         if #available(macOS 26.0, *) {
-          button.tintProminence = selected ? .none : .automatic
-          button.bezelColor = selected ? NSColor(white: 0.5, alpha: 0.40) : nil
+          button.bezelColor = selected ? NSColor(white: 0.5, alpha: 0.4) : nil
         }
       #endif
       button.state = selected ? .on : .off
@@ -602,17 +574,72 @@ final class PanelFilterControl: NSView {
     }
   }
 
-  var buttonFrames: [NSRect] { buttons.map(\.frame) }
-  var dragFrames: [PanelTabDragFrame] {
-    buttons.indices.compactMap { index in
-      guard !choices[index].isFixed, let superview else { return nil }
-      return PanelTabDragFrame(id: choices[index].id, frame: convert(buttons[index].frame, to: superview))
+  private func buildTabs(state: PanelToolbarState) -> CGFloat {
+    buttons = choices.enumerated().map { index, choice in
+      let button = PanelFilterButton(frame: .zero)
+      button.title = choice.label
+      button.toolTip = choice.title
+      button.controlSize = .large
+      button.bezelStyle = .rounded
+      #if VPASTE_LIQUID_GLASS_SDK
+        if #available(macOS 26.0, *) {
+          // Accessory buttons leave unselected tabs flat without the system segment dividers.
+          button.bezelStyle = .accessoryBar
+          button.borderShape = .capsule
+          button.showsBorderOnlyWhileMouseInside = true
+          button.tintProminence = .none
+        }
+      #endif
+      button.setButtonType(.pushOnPushOff)
+      button.refusesFirstResponder = true
+      button.focusRingType = .none
+      button.tag = index
+      button.target = self
+      button.action = #selector(chooseFilter(_:))
+      button.cell?.setAccessibilityRole(.radioButton)
+      button.cell?.setAccessibilityLabel(choice.title)
+      if !choice.isFixed {
+        button.onContextMenu = { [weak state] point in state?.contextMenu(id: choice.id, at: point) }
+      }
+      button.sizeToFit()
+      return button
     }
+    let usesGlass = PanelToolbarMaterial.liquidGlass
+    let row = usesGlass ? NSView() : self
+    let height = usesGlass ? (buttons.map(\.frame.height).max() ?? 0) : PanelStyle.headerHeight
+    let spacing: CGFloat = usesGlass ? 0 : 8
+    let inset: CGFloat = usesGlass ? 3 : 4
+    var x = inset
+    for button in buttons {
+      button.setFrameOrigin(NSPoint(x: x, y: (height - button.frame.height) / 2))
+      row.addSubview(button)
+      x = button.frame.maxX + spacing
+    }
+    let width = x - spacing + inset
+    #if VPASTE_LIQUID_GLASS_SDK
+      if #available(macOS 26.0, *) {
+        let glass = NSGlassEffectView(frame: NSRect(x: 4, y: (PanelStyle.headerHeight - height) / 2,
+          width: width, height: height))
+        glass.style = .regular
+        glass.cornerRadius = height / 2
+        row.frame = glass.bounds
+        glass.contentView = row
+        addSubview(glass)
+      }
+    #endif
+    setAccessibilityChildren(NSAccessibility.unignoredChildren(from: buttons))
+    return width + (usesGlass ? 8 : 0)
+  }
+
+  var tabFrames: [NSRect] { buttons.map { convert($0.bounds, from: $0) } }
+  var draggableTabs: [(id: String, view: NSView)] {
+    zip(choices, buttons).compactMap { choice, button in choice.isFixed ? nil : (choice.id, button) }
   }
   func revealSelection() {
-    guard let state, !state.closed, buttons.indices.contains(state.selected) else { return }
-    let button = buttons[state.selected]
-    button.scrollToVisible(button.bounds.insetBy(dx: -2, dy: 0))
+    guard let state, !state.closed else { return }
+    let frames = tabFrames
+    guard frames.indices.contains(state.selected) else { return }
+    scrollToVisible(frames[state.selected].insetBy(dx: -2, dy: 0))
   }
   func requestReveal() {
     revealRequest &+= 1
@@ -632,11 +659,15 @@ final class PanelFilterControl: NSView {
     // A selected toggle can turn itself off; the query state remains single-select.
     update()
   }
+  private func removeTabs() {
+    buttons.forEach { $0.releaseContent() }
+    buttons.removeAll()
+    subviews.forEach { $0.removeFromSuperview() }
+    setAccessibilityChildren([])
+  }
   func releaseContent() {
     revealRequest &+= 1
-    buttons.forEach { $0.releaseContent(); $0.removeFromSuperview() }
-    buttons.removeAll()
-    setAccessibilityChildren([])
+    removeTabs()
     state = nil
   }
 }
@@ -676,13 +707,16 @@ private struct PanelFilterViewport: NSViewRepresentable {
     let surface = PanelTabDragSurface()
     surface.scale = state.scale
     surface.addSubview(control)
-    surface.tabFrames = { [weak control] in control?.dragFrames ?? [] }
-    surface.onMove = { [weak state] source, target, before in
-      guard let state, state.interactive else { return }
-      state.onTabReorder?(source, target, before)
+    surface.tabViews = { [weak control] in control?.draggableTabs ?? [] }
+    surface.onMove = { [weak state] source, target, before, finish in
+      guard let state, !state.closed, !state.navigationLocked, let move = state.onTabReorder
+      else { finish(); return }
+      move(source, target, before, finish)
     }
     surface.onDragChanged = { [weak state] id in state?.dragging(id) }
-    state.cancelTabDrag = { [weak surface] in surface?.cancelInteraction() }
+    state.cancelTabDrag = { [weak surface] replacingTabs in
+      surface?.cancelInteraction(replacingTabs: replacingTabs)
+    }
     state.releaseTabDrag = { [weak surface, weak control] in
       surface?.releaseContent()
       control?.releaseContent()

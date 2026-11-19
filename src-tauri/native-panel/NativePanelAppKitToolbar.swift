@@ -198,7 +198,7 @@ final class PanelLegacyToolbar: NSView {
   var onFilter: ((Int) -> Void)?
   var onAddTab: (() -> Void)?
   var onTabContextMenu: ((String, NSPoint) -> Void)?
-  var onTabReorder: ((String, String, Bool) -> Void)?
+  var onTabReorder: PanelTabMoveHandler?
   var onTabDragging: ((Bool) -> Void)?
   var onRefresh: (() -> Void)?
   var onClose: (() -> Void)?
@@ -250,15 +250,14 @@ final class PanelLegacyToolbar: NSView {
     search.controlSize = .small
     search.focusRingType = .exterior
     tabStrip.scale = scale
-    tabStrip.tabFrames = { [weak self] in
-      self?.tabs.filter { !$0.tabID.isEmpty }.map { PanelTabDragFrame(id: $0.tabID, frame: $0.frame) } ?? []
+    tabStrip.tabViews = { [weak self] in
+      self?.tabs.filter { !$0.tabID.isEmpty }.map { ($0.tabID, $0) } ?? []
     }
-    tabStrip.onMove = { [weak self] in self?.onTabReorder?($0, $1, $2) }
-    tabStrip.onDragChanged = { [weak self] id in
-      guard let self else { return }
-      for tab in self.tabs { tab.alphaValue = !tab.tabID.isEmpty && tab.tabID == id ? 0.55 : 1 }
-      self.onTabDragging?(id != nil)
+    tabStrip.onMove = { [weak self] source, target, before, finish in
+      guard let move = self?.onTabReorder else { finish(); return }
+      move(source, target, before, finish)
     }
+    tabStrip.onDragChanged = { [weak self] id in self?.onTabDragging?(id != nil) }
     tabScroll.documentView = tabStrip
     tabScroll.drawsBackground = false
     tabScroll.hasHorizontalScroller = false
@@ -306,7 +305,9 @@ final class PanelLegacyToolbar: NSView {
     button.action = #selector(selectFilter(_:))
     button.setAccessibilityLabel(title)
     if !id.isEmpty {
-      button.onContextMenu = { [weak self] point in self?.onTabContextMenu?(id, point) }
+      button.onContextMenu = { [weak self] point in
+        if let self, !self.navigationLocked, !self.tabStrip.isReordering { self.onTabContextMenu?(id, point) }
+      }
     }
     button.isEnabled = !navigationLocked
     tabs.append(button)
@@ -315,11 +316,13 @@ final class PanelLegacyToolbar: NSView {
   // Dynamic tabs follow the fixed All and Favorites tabs.
   func setTabs(_ dynamic: [PanelTab]) {
     guard built else { return }
-    let selected = tabs.firstIndex { $0.selected }
+    let selectedID = tabs.first(where: { $0.selected })?.tabID
+    let fixedSelection = tabs.firstIndex(where: { $0.selected && $0.tabID.isEmpty })
+    tabStrip.cancelInteraction(replacingTabs: true)
     for button in tabs.dropFirst(PanelFilterQuery.fixed) { button.removeFromSuperview() }
     tabs.removeSubrange(min(PanelFilterQuery.fixed, tabs.count)...)
     for tab in dynamic { addTab(tab.name, id: tab.id) }
-    setSelection(selected ?? 0)
+    setSelection(fixedSelection ?? tabs.firstIndex { $0.tabID == selectedID } ?? 0)
   }
   var tabTitles: [String] { tabs.map(\.title) }
   func releaseContent() {
@@ -386,8 +389,11 @@ final class PanelLegacyToolbar: NSView {
       height: bounds.height)
     var x: CGFloat = 0
     for tab in tabs {
-      tab.frame = NSRect(x: x, y: 0, width: tab.preferredWidth, height: bounds.height)
-      x += tab.preferredWidth + 8 * scale
+      let width = tab.preferredWidth
+      if !tabStrip.isReordering || tab.tabID.isEmpty {
+        tab.frame = NSRect(x: x, y: 0, width: width, height: bounds.height)
+      }
+      x += width + 8 * scale
     }
     let addX = max(0, x - 8 * scale) + scale
     addButton.frame = NSRect(x: addX, y: (bounds.height - 36 * scale) / 2,
@@ -445,10 +451,13 @@ final class PanelLegacyToolbar: NSView {
     }
   }
   @objc private func selectFilter(_ sender: PanelTabButton) {
+    guard !navigationLocked, !tabStrip.isReordering else { return }
     setSelection(sender.tag)
     onFilter?(sender.tag)
   }
-  @objc private func requestAddTab() { onAddTab?() }
+  @objc private func requestAddTab() {
+    if !navigationLocked && !tabStrip.isReordering { onAddTab?() }
+  }
   @objc private func toggleQueue() { onPasteQueue?() }
   @objc private func settings() { onSettings?() }
   @objc private func closePanel() { onClose?() }

@@ -1,6 +1,6 @@
 # Windows WinUI current parity and desktop acceptance
 
-Audit date: 2026-11-15; latest desktop-report follow-up: 2026-11-18. Closeout base: `3153543` (PR 381), including the earlier
+Audit date: 2026-11-15; latest desktop-report follow-up: 2026-11-19. Closeout base: `3153543` (PR 381), including the earlier
 `c573d83` (PR 379) implementation. The follow-up is recorded below.
 This is the current acceptance index; [windows-winui-parity.md](windows-winui-parity.md)
 retains the chronological implementation and regression history.
@@ -31,6 +31,100 @@ physical acceptance; it does not authorize further product changes.
 
 An implemented row is not an unconditional desktop pass. The last column names
 the remaining acceptance boundary. No physical-desktop row was auto-approved.
+
+## 2026-11-19 queue controls and WebView inventory
+
+**S:** Remove only Copy as plain text from the WinUI card context menu. Paste
+as plain text, its shortcut, and other copy variants are unchanged. The queue
+keeps the WebView reference's centered title/count, row actions, and Rust
+operation/lifetime contract. The deliberate Windows differences are:
+
+- Reverse and Clear are two named WinUI icon Buttons, with 40-DIP targets and
+  no overflow. Clear still requires confirmation. An AppBarButton in the
+  intermediate design arranged at 40 DIP but failed the outer-edge hit test.
+- Compact themed rows and a left grip follow the visual examples in
+  [Files' Details layout](https://github.com/files-community/Files/blob/main/src/Files.App/Views/Layouts/DetailsLayoutPage.xaml)
+  and [PowerToys' Power Display profiles](https://github.com/microsoft/PowerToys/blob/main/src/settings-ui/Settings.UI/SettingsXAML/Views/PowerDisplayPage.xaml).
+  Keep vPaste's pointer capture and shared sort; use a non-intercepting insertion
+  line instead of shifting other rows during the drag. Releasing outside the
+  list cancels. Keyboard moves, edge scrolling, and concurrent updates stay.
+- The queue HWND has its own opaque, theme-aware canvas, independent of the main
+  panel's Acrylic. Suppress only the extra DWM frame border where supported,
+  preserving the shadow, corners, contrast-theme border, and control focus visuals.
+
+**U:** 24 Rust queue/bridge tests and 226 focused frontend tests passed. The
+separate release-upload fixture is excluded from the green rerun because WSL
+Bash cannot open its Windows-style synthetic asset paths. Style and native
+Debug asset checks passed.
+
+**X:** Isolated native shell stage 257 and history/queue stage 153 passed in
+separate processes. The real queue HWND had two 40×40-DIP controls with topmost
+XAML hits near the corners; the short work area and 80/90% density did not
+distort its layout. The drag replay checked an insertion marker, fixed neighbor
+positions, commit once, cancellation, concurrent deletion and 100 rows.
+The clear dialog retired on close/reopen without sending a clear operation.
+
+**A:** The Debug executable with the tested native DLL passed the marked
+fixture's settings recreation, guide release, visible preview reuse and three
+close/reopen cycles without creating a main WebView. Queue activation and
+external paste were deliberately excluded from this App probe.
+
+**M:** real mouse capture/edge scroll, Clear/cancel, and the intermittent frame
+outline when clicking the queue during Add mode. The synthetic suite does not
+verify physical focus, compositor output, or external paste.
+
+**S:** The Windows WinUI session uses these WebView surfaces. A legacy builder
+remaining in source is not evidence that WinUI creates its window.
+
+| Surface | Lifetime in WinUI mode |
+| --- | --- |
+| Tray menu | Native tray icon; the styled `trayMenu` WebView is warmed hidden and reused. |
+| Settings and text editor | `config` and `textEditor` are opened on demand and destroyed on close. |
+| First-run and Debug tutorials | `nativeOnboarding` and `devTutorial` are temporary WebView content layers owned by the native main panel. The ordinary Windows permission status does not require the separate permission guide. |
+| Rich, link, PDF, OCR, unsupported or oversized previews | `clipboardPreview` is lazy and reused while visible; closing retires it and the optional webpage renderer `previewBrowser`. Common text, image, file and color previews use the native reader. |
+| Debug tools | `devMemory` and `testRoom` are on demand. UI Lab opens in an external browser, not an in-app WebView. |
+
+The main panel, queue, tag editors, and their emoji picker are native in this
+mode. The React paste-fallback notice is not the native card error route.
+
+## 2026-11-19 queue interaction follow-up
+
+- **S — queue:** supersede the insertion-line experiment with the reference
+  [pointer-sort interaction](../../../src/clipboard/PasteQueue.tsx).
+  The source row follows the pointer, crossed rows move aside, and “Next” follows
+  the previewed first item. Drop displays the new order before the Rust reply;
+  failure restores the old order unless a newer authoritative snapshot arrived.
+  Keep the direct Reverse/Clear buttons, root pointer capture, keyboard moves,
+  edge scrolling and shared queue commands. Cancel outside still leaves the
+  order unchanged. Reduced motion keeps tracking but skips the neighbor easing.
+- **S — copy and visuals:** use the reference empty, selection, clear,
+  paste-success and restore text in Chinese and English. “Next” has been in the
+  WebView queue since `9069166`. Match the WebView toolbar's resting icon,
+  surface and subtle stroke colors without changing button/artwork dimensions or
+  overriding contrast-theme brushes, focus, active or update behavior.
+- **U — Ctrl+V:** check Windows modifiers at the V event, rather than using an
+  old modifier snapshot. Do not send a Ctrl release while the key is already
+  held. Simulated real presses, held/released Ctrl, tagged injected events and
+  five distinct ordered queue records pass. The same serial Rust queue and
+  copy/consume rules serve both renderers. 50 focused Rust tests, 227 frontend
+  tests and the style, format and native Debug asset checks passed.
+- **X:** on a separate desktop the full native history/queue suite passed at
+  stage 153. The loaded drag fixture shifted the source 132 DIP and both
+  crossed rows −66 DIP, maintained a single preview order, preserved the
+  immediate drop and rollback, and reset offsets on cancellation. The
+  reduced-motion fixture used direct offsets with no neighbor transition.
+  It also exercised 120 moves over 100 rows, clear/cancel and selection-bar
+  layout/text in Chinese and English. The shell and toolbar checks separately
+  verify 28-DIP command targets, centered 16-DIP glyphs and light/dark brushes.
+- **A — startup only:** the ordinary `winui-debug` App was gracefully restarted
+  with the matching rebuilt executable and native DLL. It loaded the updated
+  native panel and rendered the initial history query. No test keys or clipboard
+  payload were sent on the interactive desktop.
+- **M:** paste three distinct records into a normal external app, both by
+  tapping V with Ctrl held and with separate Ctrl+V presses. Verify the queue
+  advances each time. Also verify physical drag/drop, edge scroll and
+  cancellation with motion enabled and disabled, and the toolbar weight on
+  screen in both themes.
 
 ## #389 closeout: main flows, windows and focus
 

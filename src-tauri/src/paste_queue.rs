@@ -956,6 +956,7 @@ mod tests {
                     true,
                     0,
                     true,
+                    || true,
                 );
                 assert!(intercept && trigger);
                 sender
@@ -965,7 +966,7 @@ mod tests {
                         origin: crate::PasteQueueRequestOrigin::Shortcut,
                     })
                     .unwrap();
-                for input in crate::paste_shortcut_inputs() {
+                for input in crate::paste_shortcut_inputs(true) {
                     let key = unsafe { input.Anonymous.ki };
                     assert_eq!(
                         crate::handle_paste_queue_windows_key_event(
@@ -974,6 +975,7 @@ mod tests {
                             !key.dwFlags.contains(KEYEVENTF_KEYUP),
                             key.dwExtraInfo,
                             true,
+                            || panic!("owned input never samples modifier state"),
                         ),
                         (false, false)
                     );
@@ -985,6 +987,7 @@ mod tests {
                         false,
                         0,
                         true,
+                        || false,
                     ),
                     (true, false)
                 );

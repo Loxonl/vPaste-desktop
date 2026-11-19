@@ -91,12 +91,24 @@ inline void InstallAppearanceResources() {
           <ResourceDictionary.ThemeDictionaries>
             <ResourceDictionary x:Key="Light">
               <SolidColorBrush x:Key="SelectorBarItemForegroundSelected" Color="{ThemeResource SystemAccentColorDark1}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarForeground" Color="#B829302E"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarSurface" Color="#B8FFFFFF"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarStroke" Color="#0D1F2624"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarForeground" Color="#AD29302E"/>
             </ResourceDictionary>
             <ResourceDictionary x:Key="Dark">
               <SolidColorBrush x:Key="SelectorBarItemForegroundSelected" Color="{ThemeResource SystemAccentColorLight2}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarForeground" Color="#FFD7DCE5"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarSurface" Color="#A321262D"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarStroke" Color="#14FFFFFF"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarForeground" Color="#C2DDE2EB"/>
             </ResourceDictionary>
             <ResourceDictionary x:Key="HighContrast">
               <SolidColorBrush x:Key="SelectorBarItemForegroundSelected" Color="{ThemeResource SystemColorButtonTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarForeground" Color="{ThemeResource SystemColorButtonTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarSurface" Color="{ThemeResource SystemColorButtonFaceColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarStroke" Color="{ThemeResource SystemColorButtonTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarForeground" Color="{ThemeResource SystemColorButtonTextColor}"/>
             </ResourceDictionary>
           </ResourceDictionary.ThemeDictionaries>
           <Style x:Key="VPaste.Body" TargetType="TextBlock">
@@ -161,6 +173,14 @@ inline void InstallAppearanceResources() {
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="CornerRadius" Value="8"/>
           </Style>
+          <Style x:Key="VPaste.QueueRow" TargetType="Border" BasedOn="{StaticResource VPaste.Surface}">
+            <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}"/>
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
+            <Setter Property="CornerRadius" Value="4"/>
+          </Style>
+          <Style x:Key="VPaste.QueueCanvas" TargetType="Grid">
+            <Setter Property="Background" Value="{ThemeResource SolidBackgroundFillColorBaseBrush}"/>
+          </Style>
           <Style x:Key="VPaste.ReaderCanvas" TargetType="Grid">
             <Setter Property="Background" Value="{ThemeResource ApplicationPageBackgroundThemeBrush}"/>
           </Style>
@@ -211,6 +231,9 @@ inline void InstallAppearanceResources() {
             <Setter Property="HorizontalContentAlignment" Value="Center"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Foreground" Value="{ThemeResource VPaste.ToolbarForeground}"/>
+            <Setter Property="Background" Value="{ThemeResource VPaste.ToolbarSurface}"/>
+            <Setter Property="BorderBrush" Value="{ThemeResource VPaste.ToolbarStroke}"/>
           </Style>
           <Style x:Key="VPaste.RoundToolbarUpdate" TargetType="Button" BasedOn="{StaticResource VPaste.RoundToolbarCommand}">
             <Setter Property="Background" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
@@ -226,6 +249,7 @@ inline void InstallAppearanceResources() {
             <Setter Property="Height" Value="26"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{ThemeResource VPaste.DeveloperToolbarForeground}"/>
           </Style>
           <Style x:Key="VPaste.SelectionBar" TargetType="Border" BasedOn="{StaticResource VPaste.Surface}">
             <Setter Property="Background" Value="{ThemeResource SolidBackgroundFillColorSecondaryBrush}"/>

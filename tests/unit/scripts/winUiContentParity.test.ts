@@ -40,7 +40,7 @@ describe("WinUI content and compact management parity", () => {
         for (const op of ["queuePaste", "queueRemove", "queueReorder", "queueReverse", "queueClear", "queueUndo"]) {
             expect(queue).toContain(op);
         }
-        expect(queue.includes("container.Padding(Thickness{0})")).toBe(true);
+        expect(queue).toContain('ApplyStyle(container, L"VPaste.QueueRow")');
         expect(native("WinUiTagManager.cpp")).not.toContain("surface.MinHeight(56)");
     });
 });

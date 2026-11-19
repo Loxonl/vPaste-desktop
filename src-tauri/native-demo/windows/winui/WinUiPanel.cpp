@@ -2178,10 +2178,10 @@ void UpdateQueueSelectionControls() {
     g_panel.selectionBar.Visibility(g_queueSelectionMode
         ? winrt::Microsoft::UI::Xaml::Visibility::Visible
         : winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
-    g_panel.selectionTitle.Text(Text(L"选择加入队列", L"Select for queue"));
+    g_panel.selectionTitle.Text(Text(L"选择要加入队列的项目", L"Select items to add to the queue"));
     winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
         g_panel.selectionBar, g_panel.selectionTitle.Text());
-    const auto countText = winrt::hstring{std::to_wstring(g_queueSelectedHashes.size())} + L" " + Text(L"条已选择", L"selected");
+    const auto countText = winrt::hstring{std::to_wstring(g_queueSelectedHashes.size())};
     const bool countChanged = g_panel.selectionCount.Text() != countText;
     g_panel.selectionCount.Text(countText);
     using namespace winrt::Microsoft::UI::Xaml::Automation;
@@ -2192,14 +2192,13 @@ void UpdateQueueSelectionControls() {
         if (countChanged) if (const auto peer = Peers::FrameworkElementAutomationPeer::FromElement(g_panel.selectionCount))
             peer.RaiseAutomationEvent(Peers::AutomationEvents::LiveRegionChanged);
     }
-    g_panel.queueAdd.Content(winrt::box_value(g_queueSelectionAdding
-        ? Text(L"正在加入…", L"Adding…") : Text(L"加入队列", L"Add to queue")));
+    g_panel.queueAdd.Content(winrt::box_value(g_english ? L"Add " + countText + L" items" : L"加入 " + countText + L" 项"));
     g_panel.cancelSelection.Visibility(g_queueSelectionMode
         ? winrt::Microsoft::UI::Xaml::Visibility::Visible
         : winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
     if (g_panel.queueOpen) {
         vpaste::winui::NameIconButton(g_panel.queueOpen, g_queueViewActive
-            ? Text(L"关闭粘贴队列", L"Close paste queue") : Text(L"粘贴队列", L"Paste queue"));
+            ? Text(L"退出粘贴队列", L"Exit Paste Queue") : Text(L"粘贴队列", L"Paste Queue"));
         vpaste::winui::ApplyStyle(g_panel.queueOpen, g_queueViewActive
             ? L"VPaste.ActiveToolbarCommand" : L"VPaste.RoundToolbarCommand");
     }
@@ -4714,7 +4713,7 @@ HRESULT CreatePanel() noexcept {
         g_panel.cancelSelection.Click([](auto const &, auto const &) {
             if (g_queueSelectionMode) ToggleQueueSelectionMode();
         });
-        g_panel.selectionTitle = MakeText(Text(L"选择加入队列", L"Select for queue"), 13);
+        g_panel.selectionTitle = MakeText(L"", 13);
         g_panel.selectionCount = MakeText(L"0", 12);
         g_panel.selectionTitle.VerticalAlignment(VerticalAlignment::Center);
         g_panel.selectionCount.VerticalAlignment(VerticalAlignment::Center);
@@ -4733,11 +4732,10 @@ HRESULT CreatePanel() noexcept {
         g_panel.selectionBar.VerticalAlignment(VerticalAlignment::Bottom);
         g_panel.selectionBar.Margin(Thickness{16, 0, 16, 12});
         g_panel.selectionBar.Visibility(Visibility::Collapsed);
-        Automation::AutomationProperties::SetName(g_panel.selectionBar, Text(L"选择加入队列", L"Select for queue"));
         Grid::SetRow(g_panel.selectionBar, 1);
         root.Children().Append(g_panel.selectionBar);
         g_panel.queueOpen = vpaste::winui::NamedIconButton(
-            vpaste::winui::HeaderIcon(vpaste::winui::HeaderArtwork::PlaylistAddCheckRounded), Text(L"粘贴队列", L"Paste queue"));
+            vpaste::winui::HeaderIcon(vpaste::winui::HeaderArtwork::PlaylistAddCheckRounded), Text(L"粘贴队列", L"Paste Queue"));
         g_panel.queueOpen.Click([](auto const &, auto const &) {
             (void)SendRequest(g_queueViewActive ? L"queueClose" : L"queueOpen");
         });
@@ -5298,14 +5296,16 @@ extern "C" __declspec(dllexport) void vpaste_winui_shutdown() noexcept {
 #ifdef _DEBUG
 // Optional local render artifacts use synthetic content only. RenderTargetBitmap
 // captures XAML, not the desktop compositor's Acrylic or the native frame/shadow.
-bool OwnsNativePointer(winrt::Microsoft::UI::Xaml::FrameworkElement const &target, bool edges = false) {
+bool OwnsNativePointer(winrt::Microsoft::UI::Xaml::FrameworkElement const &target, bool edges = false,
+    winrt::Microsoft::UI::Xaml::UIElement const &searchRoot = nullptr) {
     using namespace winrt::Microsoft::UI::Xaml;
     const auto w = static_cast<float>(target.ActualWidth()), h = static_cast<float>(target.ActualHeight());
     std::vector<winrt::Windows::Foundation::Point> samples{{w * .25f, h / 2}, {w / 2, h / 2}, {w * .75f, h / 2}};
     if (edges) samples.insert(samples.end(), {{2, 2}, {w - 2, 2}, {2, h - 2}, {w - 2, h - 2}});
     for (const auto &sample : samples) {
         const auto point = target.TransformToVisual(nullptr).TransformPoint(sample);
-        const auto hits = Media::VisualTreeHelper::FindElementsInHostCoordinates(point, g_panel.root, false);
+        const auto hits = Media::VisualTreeHelper::FindElementsInHostCoordinates(point,
+            searchRoot ? searchRoot : g_panel.root, false);
         auto hit = hits.First();
         auto element = hit.HasCurrent() ? hit.Current().as<DependencyObject>() : nullptr;
         bool owned = false;
@@ -5671,19 +5671,19 @@ winrt::fire_and_forget RunNativePresentationRegression(
             ApplyResponse(R"({"id":600,"op":"query","data":{"items":[{"hash":"material-test","previewText":"Opaque content"}]}})");
             const auto selectedBeforeMaterialChange = g_selectedHash;
             winrt::check_hresult(!ConfigureAcrylicBackdrop(false) && !g_panel.xamlSource.SystemBackdrop() ? S_OK : E_FAIL);
-            const std::vector<winrt::Microsoft::UI::Xaml::FrameworkElement> views{
-                g_panel.root, g_panel.queueView->Root(), g_panel.tagManager->Root()};
+            const std::vector<winrt::Microsoft::UI::Xaml::FrameworkElement> dockViews{
+                g_panel.root, g_panel.tagManager->Root()};
             const auto canvasColor = [](const auto &view) {
                 return view.template as<winrt::Microsoft::UI::Xaml::Controls::Grid>().Background()
                     .template as<winrt::Microsoft::UI::Xaml::Media::SolidColorBrush>().Color();
             };
             WindowProc(g_panel.window, kSetTheme, 1, 0);
-            for (const auto &view : views) {
+            for (const auto &view : dockViews) {
                 const auto color = canvasColor(view);
                 winrt::check_hresult(color.A == 255 && color.R == 246 && color.G == 247 && color.B == 249 ? S_OK : E_FAIL);
             }
             WindowProc(g_panel.window, kSetTheme, 2, 0);
-            for (const auto &view : views) {
+            for (const auto &view : dockViews) {
                 const auto color = canvasColor(view);
                 winrt::check_hresult(color.A == 255 && color.R == 23 && color.G == 27 && color.B == 34 ? S_OK : E_FAIL);
             }
@@ -5691,9 +5691,11 @@ winrt::fire_and_forget RunNativePresentationRegression(
             winrt::check_hresult(ConfigureAcrylicBackdrop(true) == supported ? S_OK : E_FAIL);
             winrt::check_hresult(static_cast<bool>(g_panel.xamlSource.SystemBackdrop()
                 .try_as<winrt::Microsoft::UI::Xaml::Media::DesktopAcrylicBackdrop>()) == supported ? S_OK : E_FAIL);
-            for (const auto &view : views) {
+            for (const auto &view : dockViews) {
                 winrt::check_hresult(canvasColor(view).A == (supported ? 0 : 255) ? S_OK : E_FAIL);
             }
+            // The separate queue window must stay opaque regardless of dock Acrylic.
+            winrt::check_hresult(canvasColor(g_panel.queueView->Root()).A == 255 ? S_OK : E_FAIL);
             winrt::check_hresult(g_panel.rows[0].surface.Background()
                 .as<winrt::Microsoft::UI::Xaml::Media::SolidColorBrush>().Color().A == 255 ? S_OK : E_FAIL);
             winrt::check_hresult(g_selectedHash == selectedBeforeMaterialChange && g_panel.history.Items().Size() == 1 ? S_OK : E_FAIL);
@@ -5846,9 +5848,10 @@ winrt::fire_and_forget RunNativePresentationRegression(
             winrt::check_hresult(queueRoot.RowDefinitions().Size() == 4 &&
                 queueRoot.RowDefinitions().GetAt(1).Height().GridUnitType == GridUnitType::Star &&
                 queueRoot.RowDefinitions().GetAt(3).Height().GridUnitType == GridUnitType::Auto ? S_OK : E_FAIL);
-            auto queueCommands = queueRoot.Children().GetAt(0).as<Grid>().Children().GetAt(2).as<CommandBar>();
-            winrt::check_hresult(!queueCommands.IsDynamicOverflowEnabled() &&
-                queueCommands.SecondaryCommands().Size() == 1 && queueCommands.PrimaryCommands().Size() == 1 ? S_OK : E_FAIL);
+            const auto queueCommands = queueRoot.Children().GetAt(0).as<Grid>().Children().GetAt(2).as<StackPanel>().Children();
+            winrt::check_hresult(queueCommands.Size() == 2 &&
+                Automation::AutomationProperties::GetAutomationId(queueCommands.GetAt(0)) == L"queue-reverse" &&
+                Automation::AutomationProperties::GetAutomationId(queueCommands.GetAt(1)) == L"queue-clear" ? S_OK : E_FAIL);
             g_panel.queueView->SetState(winrt::Windows::Data::Json::JsonObject::Parse(
                 LR"({"revision":20,"busy":false,"capacity":100,"items":[{"hash":"layout-row","itemType":"Text","previewContent":"Long queue text should stay inside one surface","appSource":"Test"}],"undoHash":null})"));
             const auto queueCard = rows.Children().GetAt(0).as<Border>();
@@ -5858,11 +5861,8 @@ winrt::fire_and_forget RunNativePresentationRegression(
             winrt::check_hresult(Automation::AutomationProperties::GetAutomationId(paste) == L"queue-paste" &&
                 Grid::GetColumn(paste) == 1 && Automation::AutomationProperties::GetAutomationId(handle) == L"queue-handle" &&
                 Grid::GetColumn(handle) == 0 &&
-                queueCard.BorderThickness().Left == 0 && queueCard.BorderThickness().Bottom == 1 &&
-                queueCard.CornerRadius().TopLeft == 0 && queueCard.CornerRadius().TopRight == 0 &&
-                queueCard.CornerRadius().BottomRight == 0 && queueCard.CornerRadius().BottomLeft == 0 &&
-                queueCard.Padding().Top == 0 && queueCard.Padding().Right == 0 &&
-                queueCard.Padding().Bottom == 0 && queueCard.MinHeight() == 66 ? S_OK : E_FAIL);
+                queueCard.BorderThickness().Left > 0 && queueCard.BorderThickness().Bottom > 0 &&
+                queueCard.CornerRadius().TopLeft > 0 && queueCard.CornerRadius().BottomRight > 0 ? S_OK : E_FAIL);
             const auto rowActions = queueRow.Children().GetAt(1).as<StackPanel>();
             for (std::uint32_t index = 0; index < rowActions.Children().Size(); ++index) {
                 const auto action = rowActions.Children().GetAt(index).as<Button>();
@@ -6149,8 +6149,10 @@ winrt::fire_and_forget RunNativePresentationRegression(
             const std::vector<vpaste::winui::QueueRowMetric> metrics{{0, 66}, {66, 66}, {132, 66}, {198, 66}};
             winrt::check_hresult(vpaste::winui::QueuePointerOrder(order, metrics, L"a", 198) ==
                 std::vector<std::wstring>{L"b", L"c", L"d", L"a"} &&
-                vpaste::winui::QueuePointerOrder(order, metrics, L"d", -198) ==
+                vpaste::winui::QueuePointerOrder(order, metrics, L"d", -199) ==
                 std::vector<std::wstring>{L"d", L"a", L"b", L"c"} &&
+                vpaste::winui::QueuePointerOrder(order, metrics, L"d", -198) ==
+                std::vector<std::wstring>{L"a", L"d", L"b", L"c"} &&
                 vpaste::winui::QueuePointerOrder(order, metrics, L"b", 0) == order &&
                 vpaste::winui::QueuePointerOrder(order, {}, L"b", 100) == order ? S_OK : E_FAIL);
             winrt::check_hresult(g_panel.rows[0].surface.CanDrag() ? S_OK : E_FAIL);
@@ -6435,11 +6437,11 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 for (auto const *type : {L"Text", L"TextFile", L"Link"}) {
                     MenuFlyout menu;
                     AppendCardActions(menu, L"plain-fixture", type, true, SendCardAction);
-                    winrt::check_hresult(find(menu, L"Copy as plain text") && find(menu, L"Paste as plain text") &&
+                    winrt::check_hresult(!find(menu, L"Copy as plain text") && find(menu, L"Paste as plain text") &&
                         !find(menu, L"Export image…") ? S_OK : E_FAIL);
                     menu.ShowAt(g_panel.searchButton); co_await NextNativeFrame();
-                    invoke(find(menu, L"Copy as plain text")); co_await NextNativeFrame();
-                    winrt::check_hresult(requestAt(previewRequests.size() - 1).GetNamedString(L"op") == L"copyPlain" &&
+                    invoke(find(menu, L"Paste as plain text")); co_await NextNativeFrame();
+                    winrt::check_hresult(requestAt(previewRequests.size() - 1).GetNamedString(L"op") == L"pastePlain" &&
                         requestAt(previewRequests.size() - 1).GetNamedString(L"hash") == L"plain-fixture" ? S_OK : E_FAIL);
                     menu.Hide();
                 }
@@ -7486,7 +7488,9 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 for (int frame = 0; frame < 30 && menu.IsOpen(); ++frame) co_await NextNativeFrame();
                 winrt::check_hresult(!menu.IsOpen() ? S_OK : E_FAIL);
                 const auto clear = queueRoot.Children().GetAt(0).as<Grid>().Children().GetAt(2)
-                    .as<CommandBar>().SecondaryCommands().GetAt(0).as<AppBarButton>();
+                    .as<StackPanel>().Children().GetAt(1).as<Button>();
+                winrt::check_hresult(Automation::AutomationProperties::GetAutomationId(clear) == L"queue-clear" ? S_OK : E_FAIL);
+                const auto beforeClear = previewRequests.size();
                 Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(clear)
                     .GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
                 co_await NextNativeFrame();
@@ -7494,7 +7498,9 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 SetQueueViewActive(false);
                 SetQueueViewActive(true);
                 co_await NextNativeFrame();
-                winrt::check_hresult(clear.IsEnabled() ? S_OK : E_FAIL);
+                winrt::check_hresult(clear.IsEnabled() && rows.Children().Size() == 1 ? S_OK : E_FAIL);
+                for (auto index = beforeClear; index < previewRequests.size(); ++index)
+                    winrt::check_hresult(requestAt(index).GetNamedString(L"op") != L"queueClear" ? S_OK : E_FAIL);
                 SetQueueViewActive(false);
             }
             currentStage = 96;
@@ -7665,8 +7671,9 @@ winrt::fire_and_forget RunNativePresentationRegression(
                             g_panel.selectionBar.ActualWidth() + margin.Left + margin.Right <= width &&
                             bounds.Y >= kHeaderHeight &&
                             bounds.Y + bounds.Height <= g_panel.root.ActualHeight() && g_panel.queueAdd.ActualWidth() >= 32 &&
-                            g_panel.cancelSelection.ActualWidth() >= 32 && g_panel.selectionCount.Text() ==
-                                (english ? L"0 selected" : L"0 条已选择");
+                            g_panel.cancelSelection.ActualWidth() >= 32 && g_panel.selectionCount.Text() == L"0" &&
+                            g_panel.selectionTitle.Text() == Text(L"选择要加入队列的项目", L"Select items to add to the queue") &&
+                            winrt::unbox_value<winrt::hstring>(g_panel.queueAdd.Content()) == Text(L"加入 0 项", L"Add 0 items");
                         if (!fits) std::fprintf(stderr,
                             "WinUI selection-bar bounds: english=%d width=%.1f root=%.1fx%.1f bounds=%.1f,%.1f %.1fx%.1f buttons=%.1f/%.1f count=%ls\n",
                             english, width, g_panel.root.ActualWidth(), g_panel.root.ActualHeight(),
@@ -8786,6 +8793,20 @@ winrt::Windows::Foundation::IAsyncAction CheckDesktopFollowup(std::uint32_t &sta
         winrt::check_hresult(withinDip(button.ActualWidth(), 28) && withinDip(button.ActualHeight(), 28) &&
             withinDip(icon.Width, 16) && withinDip(icon.Height, 16) && withinDip(icon.X, 6) && withinDip(icon.Y, 6) ? S_OK : E_FAIL);
     }
+    if (!vpaste::winui::HighContrastEnabled()) {
+        const auto originalTheme = g_panel.root.RequestedTheme();
+        for (const auto theme : {ElementTheme::Light, ElementTheme::Dark}) {
+            g_panel.root.RequestedTheme(theme);
+            co_await NextNativeFrame();
+            const bool dark = theme == ElementTheme::Dark;
+            const auto ink = g_panel.settings.Foreground().as<Media::SolidColorBrush>().Color();
+            const auto edge = g_panel.settings.BorderBrush().as<Media::SolidColorBrush>().Color();
+            const auto expectedInk = dark ? winrt::Windows::UI::Color{255, 215, 220, 229}
+                                          : winrt::Windows::UI::Color{184, 41, 48, 46};
+            winrt::check_hresult(ink == expectedInk && edge.A == (dark ? 20 : 13) ? S_OK : E_FAIL);
+        }
+        g_panel.root.RequestedTheme(originalTheme);
+    }
     stage = 263;
     ShowSearch();
     const auto editor = g_panel.search;
@@ -8910,14 +8931,15 @@ winrt::Windows::Foundation::IAsyncAction CheckCardContextMenu(
         const auto preview = find(items, L"Preview").try_as<MenuFlyoutItem>();
         winrt::check_hresult(paste.Text() == L"Copy and paste" && paste.KeyboardAcceleratorTextOverride() == L"Enter" &&
             preview && preview.KeyboardAcceleratorTextOverride() == L"Space" &&
-            !find(items, L"Copy") && !find(items, L"Add to paste queue") && find(items, L"Delete record") ? S_OK : E_FAIL);
+            !find(items, L"Copy") && !find(items, L"Copy as plain text") && !find(items, L"Add to paste queue") &&
+            find(items, L"Delete record") ? S_OK : E_FAIL);
     }
     const auto textItems = menuFor(0).Items();
     const auto imageItems = menuFor(1).Items();
     const auto ocr = imageItems.GetAt(1).as<MenuFlyoutItem>();
     winrt::check_hresult(textItems.GetAt(1).as<MenuFlyoutItem>().Text() == L"Edit text" &&
         ocr.Text() == L"Recognize text in image" && ocr.Icon().try_as<PathIcon>() &&
-        find(textItems, L"Copy as plain text") && find(textItems, L"Paste as plain text") &&
+        find(textItems, L"Paste as plain text") &&
         find(menuFor(2).Items(), L"Open containing folder") && find(menuFor(2).Items(), L"Copy containing folder") &&
         find(menuFor(3).Items(), L"Paste as plain text") && find(menuFor(4).Items(), L"Copy color as") &&
         find(menuFor(5).Items(), L"Edit text") ? S_OK : E_FAIL);
@@ -9586,6 +9608,13 @@ winrt::fire_and_forget RunNativeShellRegression(
         winrt::check_hresult(!IsWindowVisible(g_panel.window) ? S_OK : E_FAIL);
         stage = 21;
         std::fprintf(stderr, "WinUI shell: queue geometry\n");
+        COLORREF borderColor{};
+        if (SUCCEEDED(DwmGetWindowAttribute(queueHandle, DWMWA_BORDER_COLOR, &borderColor, sizeof(borderColor))) &&
+            !vpaste::winui::HighContrastEnabled()) {
+            winrt::check_hresult(borderColor == DWMWA_COLOR_NONE ? S_OK : E_FAIL);
+        }
+        winrt::check_hresult(SendMessageW(queueHandle, WM_MOUSEACTIVATE,
+            reinterpret_cast<WPARAM>(queueHandle), MAKELPARAM(HTCLIENT, WM_LBUTTONDOWN)) == MA_NOACTIVATE ? S_OK : E_FAIL);
         JsonArray queueItems;
         for (int index = 0; index < 8; ++index) {
             JsonObject item;
@@ -9601,6 +9630,24 @@ winrt::fire_and_forget RunNativeShellRegression(
         co_await NextNativeFrame(); co_await NextNativeFrame();
         const auto queueRoot = g_panel.queueView->Root().as<Grid>();
         const auto queueList = queueRoot.Children().GetAt(1).as<ScrollViewer>();
+        const auto queueHeader = queueRoot.Children().GetAt(0).as<Grid>();
+        const auto queueToolbar = queueHeader.Children().GetAt(2).as<StackPanel>();
+        stage = 211;
+        const auto queueBackground = queueRoot.Background().try_as<Media::SolidColorBrush>();
+        winrt::check_hresult(queueToolbar.Children().Size() == 2 && queueBackground &&
+            queueBackground.Color().A == 255 ? S_OK : E_FAIL);
+        for (const auto &command : queueToolbar.Children()) {
+            const auto button = command.as<Button>();
+            const auto area = button.TransformToVisual(queueHeader).TransformBounds({0, 0,
+                static_cast<float>(button.ActualWidth()), static_cast<float>(button.ActualHeight())});
+            std::fprintf(stderr, "WinUI queue command: bounds=(%.1f,%.1f %.1fx%.1f) header=%.1f\n",
+                area.X, area.Y, area.Width, area.Height, queueHeader.ActualWidth());
+            winrt::check_hresult(button.IsEnabled() && button.Visibility() == Visibility::Visible &&
+                area.Width >= 39 && area.Height >= 39 && area.X >= 0 &&
+                area.X + area.Width <= queueHeader.ActualWidth() + 0.5 &&
+                OwnsNativePointer(button, true, queueRoot.XamlRoot().Content()) ? S_OK : E_FAIL);
+        }
+        stage = 21;
         const auto originalListHeight = queueList.ActualHeight();
         RECT fullQueue{};
         winrt::check_bool(GetWindowRect(queueHandle, &fullQueue));

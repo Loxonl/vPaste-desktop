@@ -11780,7 +11780,9 @@ fn simulate_paste_shortcut() -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn paste_shortcut_inputs() -> [windows::Win32::UI::Input::KeyboardAndMouse::INPUT; 4] {
+fn paste_shortcut_inputs(
+    control_held: bool,
+) -> Vec<windows::Win32::UI::Input::KeyboardAndMouse::INPUT> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
         VIRTUAL_KEY, VK_CONTROL, VK_V,
@@ -11801,19 +11803,27 @@ fn paste_shortcut_inputs() -> [windows::Win32::UI::Input::KeyboardAndMouse::INPU
         }
     }
 
-    [
-        keyboard_input(VK_CONTROL, KEYBD_EVENT_FLAGS(0)),
+    let mut inputs = Vec::with_capacity(4);
+    if !control_held {
+        inputs.push(keyboard_input(VK_CONTROL, KEYBD_EVENT_FLAGS(0)));
+    }
+    inputs.extend([
         keyboard_input(VK_V, KEYBD_EVENT_FLAGS(0)),
         keyboard_input(VK_V, KEYEVENTF_KEYUP),
-        keyboard_input(VK_CONTROL, KEYEVENTF_KEYUP),
-    ]
+    ]);
+    if !control_held {
+        inputs.push(keyboard_input(VK_CONTROL, KEYEVENTF_KEYUP));
+    }
+    inputs
 }
 
 #[cfg(target_os = "windows")]
 fn simulate_paste_shortcut() -> Result<(), String> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT};
 
-    let inputs = paste_shortcut_inputs();
+    let inputs = paste_shortcut_inputs(virtual_key_pressed(
+        windows::Win32::UI::Input::KeyboardAndMouse::VK_CONTROL.0 as i32,
+    ));
     let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
     if sent != inputs.len() as u32 {
         return Err(format!(
@@ -12035,15 +12045,19 @@ fn enqueue_paste_queue_request(
 #[cfg(any(not(target_os = "macos"), test))]
 #[derive(Default)]
 struct PasteQueueInputState {
+    #[cfg(any(test, not(target_os = "windows")))]
     control: bool,
+    #[cfg(any(test, not(target_os = "windows")))]
     meta: bool,
+    #[cfg(any(test, not(target_os = "windows")))]
     shift: bool,
+    #[cfg(any(test, not(target_os = "windows")))]
     alt: bool,
     v_down: bool,
     swallow_v: bool,
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(test, not(any(target_os = "windows", target_os = "macos"))))]
 fn update_paste_queue_modifier(state: &mut PasteQueueInputState, key: rdev::Key, down: bool) {
     match key {
         rdev::Key::ControlLeft | rdev::Key::ControlRight => state.control = down,
@@ -12054,7 +12068,7 @@ fn update_paste_queue_modifier(state: &mut PasteQueueInputState, key: rdev::Key,
     }
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(test, not(any(target_os = "windows", target_os = "macos"))))]
 fn exact_paste_queue_modifier(state: &PasteQueueInputState) -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -12066,7 +12080,7 @@ fn exact_paste_queue_modifier(state: &PasteQueueInputState) -> bool {
     }
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(test, not(any(target_os = "windows", target_os = "macos"))))]
 fn exact_paste_queue_modifier_for_platform(state: &PasteQueueInputState, macos: bool) -> bool {
     if macos {
         state.meta && !state.control && !state.shift && !state.alt
@@ -12076,8 +12090,7 @@ fn exact_paste_queue_modifier_for_platform(state: &PasteQueueInputState, macos: 
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
-fn begin_paste_queue_v_press(state: &mut PasteQueueInputState, active: bool) -> (bool, bool) {
-    let intercept = active && exact_paste_queue_modifier(state);
+fn begin_paste_queue_v_press(state: &mut PasteQueueInputState, intercept: bool) -> (bool, bool) {
     let trigger = intercept && !state.v_down;
     state.v_down = true;
     if intercept {
@@ -12086,7 +12099,7 @@ fn begin_paste_queue_v_press(state: &mut PasteQueueInputState, active: bool) -> 
     (intercept, trigger)
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(test)]
 fn handle_paste_queue_key_event(
     state: &mut PasteQueueInputState,
     key: rdev::Key,
@@ -12100,7 +12113,8 @@ fn handle_paste_queue_key_event(
     if down {
         update_paste_queue_modifier(state, key, true);
         if key == rdev::Key::KeyV {
-            return begin_paste_queue_v_press(state, active);
+            let intercept = active && exact_paste_queue_modifier(state);
+            return begin_paste_queue_v_press(state, intercept);
         }
     } else {
         if key == rdev::Key::KeyV {
@@ -12120,13 +12134,50 @@ mod paste_queue_keyboard_regression_tests {
 
     #[test]
     fn internal_paste_input_builder_tags_every_key() {
-        for input in paste_shortcut_inputs() {
-            assert_eq!(
-                unsafe { input.Anonymous.ki.dwExtraInfo },
-                PASTE_QUEUE_WINDOWS_EVENT_MARKER,
-                "the actual SendInput payload must identify every internal key event"
-            );
+        for held in [false, true] {
+            for input in paste_shortcut_inputs(held) {
+                assert_eq!(
+                    unsafe { input.Anonymous.ki.dwExtraInfo },
+                    PASTE_QUEUE_WINDOWS_EVENT_MARKER,
+                    "the actual SendInput payload must identify every internal key event"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn internal_paste_does_not_inject_or_release_a_held_ctrl() {
+        let held = paste_shortcut_inputs(true);
+        assert_eq!(held.len(), 2);
+        assert_eq!(unsafe { held[0].Anonymous.ki.wVk }, VK_V);
+        assert_eq!(unsafe { held[1].Anonymous.ki.wVk }, VK_V);
+        assert!(unsafe { held[1].Anonymous.ki.dwFlags }.contains(KEYEVENTF_KEYUP));
+        let released = paste_shortcut_inputs(false);
+        assert_eq!(released.len(), 4);
+        assert_eq!(unsafe { released[0].Anonymous.ki.wVk }, VK_CONTROL);
+        assert_eq!(unsafe { released[3].Anonymous.ki.wVk }, VK_CONTROL);
+        assert!(unsafe { released[3].Anonymous.ki.dwFlags }.contains(KEYEVENTF_KEYUP));
+    }
+
+    #[test]
+    fn v_press_uses_current_modifiers_instead_of_a_stale_toggle_snapshot() {
+        let mut state = PasteQueueInputState {
+            control: false,
+            shift: true,
+            alt: true,
+            ..Default::default()
+        };
+        let handle_v = |state: &mut PasteQueueInputState, down, exact_ctrl_v, active| {
+            handle_paste_queue_windows_key_event(state, VK_V.0 as u32, down, 0, active, || {
+                exact_ctrl_v
+            })
+        };
+        assert_eq!(handle_v(&mut state, true, true, true), (true, true));
+        assert_eq!(handle_v(&mut state, true, true, true), (true, false));
+        assert_eq!(handle_v(&mut state, false, false, true), (true, false));
+        assert_eq!(handle_v(&mut state, true, false, true), (false, false));
+        assert_eq!(handle_v(&mut state, false, false, true), (false, false));
+        assert_eq!(handle_v(&mut state, true, true, false), (false, false));
     }
 
     #[test]
@@ -12142,12 +12193,13 @@ mod paste_queue_keyboard_regression_tests {
                 true,
                 PASTE_QUEUE_WINDOWS_EVENT_MARKER,
                 true,
+                || panic!("owned input never samples modifier state"),
             ),
             (false, false)
         );
 
         assert_eq!(
-            handle_paste_queue_windows_key_event(&mut state, VK_V.0 as u32, true, 0, true),
+            handle_paste_queue_windows_key_event(&mut state, VK_V.0 as u32, true, 0, true, || true),
             (true, true),
             "a real press must not bypass the serial paste worker during injection"
         );
@@ -12160,10 +12212,10 @@ mod paste_queue_keyboard_regression_tests {
             ..Default::default()
         };
         assert_eq!(
-            handle_paste_queue_windows_key_event(&mut state, VK_V.0 as u32, true, 0, true),
+            handle_paste_queue_windows_key_event(&mut state, VK_V.0 as u32, true, 0, true, || true),
             (true, true)
         );
-        for input in paste_shortcut_inputs() {
+        for input in paste_shortcut_inputs(true) {
             let key = unsafe { input.Anonymous.ki };
             assert_eq!(
                 handle_paste_queue_windows_key_event(
@@ -12172,6 +12224,7 @@ mod paste_queue_keyboard_regression_tests {
                     !key.dwFlags.contains(KEYEVENTF_KEYUP),
                     key.dwExtraInfo,
                     true,
+                    || panic!("owned input never samples modifier state"),
                 ),
                 (false, false)
             );
@@ -12180,16 +12233,18 @@ mod paste_queue_keyboard_regression_tests {
         assert!(state.v_down);
         assert!(state.swallow_v);
         assert_eq!(
-            handle_paste_queue_windows_key_event(&mut state, VK_V.0 as u32, true, 0, true),
+            handle_paste_queue_windows_key_event(&mut state, VK_V.0 as u32, true, 0, true, || true),
             (true, false),
             "holding V must still enqueue only one request"
         );
         assert_eq!(
-            handle_paste_queue_windows_key_event(&mut state, VK_V.0 as u32, false, 0, true),
+            handle_paste_queue_windows_key_event(&mut state, VK_V.0 as u32, false, 0, true, || {
+                true
+            }),
             (true, false)
         );
         assert_eq!(
-            handle_paste_queue_windows_key_event(&mut state, VK_V.0 as u32, true, 0, true),
+            handle_paste_queue_windows_key_event(&mut state, VK_V.0 as u32, true, 0, true, || true),
             (true, true),
             "the next real V press must enqueue the next item while Ctrl stays held"
         );
@@ -12399,9 +12454,13 @@ fn run_paste_queue_interceptor() -> Result<(), String> {
 #[cfg(target_os = "windows")]
 static PASTE_QUEUE_WINDOWS_INPUT_STATE: Mutex<PasteQueueInputState> =
     Mutex::new(PasteQueueInputState {
+        #[cfg(test)]
         control: false,
+        #[cfg(test)]
         meta: false,
+        #[cfg(test)]
         shift: false,
+        #[cfg(test)]
         alt: false,
         v_down: false,
         swallow_v: false,
@@ -12414,28 +12473,18 @@ fn handle_paste_queue_windows_key_event(
     down: bool,
     extra_info: usize,
     active: bool,
+    exact_ctrl_v: impl FnOnce() -> bool,
 ) -> (bool, bool) {
-    use rdev::Key;
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        VIRTUAL_KEY, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL,
-        VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_V,
-    };
-
-    let key = match VIRTUAL_KEY(virtual_key as u16) {
-        VK_CONTROL | VK_LCONTROL | VK_RCONTROL => Key::ControlLeft,
-        VK_LWIN | VK_RWIN => Key::MetaLeft,
-        VK_SHIFT | VK_LSHIFT | VK_RSHIFT => Key::ShiftLeft,
-        VK_MENU | VK_LMENU | VK_RMENU => Key::Alt,
-        VK_V => Key::KeyV,
-        _ => return (false, false),
-    };
-    handle_paste_queue_key_event(
-        state,
-        key,
-        down,
-        active,
-        extra_info == PASTE_QUEUE_WINDOWS_EVENT_MARKER,
-    )
+    use windows::Win32::UI::Input::KeyboardAndMouse::VK_V;
+    if extra_info == PASTE_QUEUE_WINDOWS_EVENT_MARKER || virtual_key != u32::from(VK_V.0) {
+        return (false, false);
+    }
+    if down {
+        begin_paste_queue_v_press(state, active && exact_ctrl_v())
+    } else {
+        state.v_down = false;
+        (std::mem::take(&mut state.swallow_v), false)
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -12445,6 +12494,9 @@ unsafe extern "system" fn paste_queue_windows_keyboard_callback(
     data: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
     use windows::Win32::Foundation::LRESULT;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, HC_ACTION, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
         WM_SYSKEYUP,
@@ -12458,6 +12510,11 @@ unsafe extern "system" fn paste_queue_windows_keyboard_callback(
         };
         if let Some(down) = down {
             let event = &*(data.0 as *const KBDLLHOOKSTRUCT);
+            if event.vkCode != u32::from(VK_V.0)
+                || event.dwExtraInfo == PASTE_QUEUE_WINDOWS_EVENT_MARKER
+            {
+                return CallNextHookEx(None, code, message, data);
+            }
             let mut state = PASTE_QUEUE_WINDOWS_INPUT_STATE
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -12470,6 +12527,15 @@ unsafe extern "system" fn paste_queue_windows_keyboard_callback(
                     paste_queue::is_active(),
                     TEXT_EDITOR_FOCUSED.load(Ordering::SeqCst),
                 ),
+                || {
+                    // The current V event has not updated async state yet.
+                    // Sample only the other keys; do not carry Alt/Shift state
+                    // over from before the queue hook started.
+                    virtual_key_pressed(i32::from(VK_CONTROL.0))
+                        && ![VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN]
+                            .into_iter()
+                            .any(|key| virtual_key_pressed(i32::from(key.0)))
+                },
             );
             if trigger {
                 let _ = enqueue_paste_queue_request(None, PasteQueueRequestOrigin::Shortcut);
@@ -12484,9 +12550,6 @@ unsafe extern "system" fn paste_queue_windows_keyboard_callback(
 
 #[cfg(target_os = "windows")]
 fn run_paste_queue_interceptor() -> Result<(), String> {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
-    };
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
         MSG, WH_KEYBOARD_LL,
@@ -12495,13 +12558,7 @@ fn run_paste_queue_interceptor() -> Result<(), String> {
     unsafe {
         *PASTE_QUEUE_WINDOWS_INPUT_STATE
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = PasteQueueInputState {
-            control: GetAsyncKeyState(VK_CONTROL.0 as i32) < 0,
-            meta: GetAsyncKeyState(VK_LWIN.0 as i32) < 0 || GetAsyncKeyState(VK_RWIN.0 as i32) < 0,
-            shift: GetAsyncKeyState(VK_SHIFT.0 as i32) < 0,
-            alt: GetAsyncKeyState(VK_MENU.0 as i32) < 0,
-            ..Default::default()
-        };
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = PasteQueueInputState::default();
         let hook = SetWindowsHookExW(
             WH_KEYBOARD_LL,
             Some(paste_queue_windows_keyboard_callback),
@@ -12540,13 +12597,13 @@ fn run_paste_queue_interceptor() -> Result<(), String> {
             rdev::EventType::KeyPress(key) => {
                 update_paste_queue_modifier(&mut state, key, true);
                 if key == rdev::Key::KeyV {
-                    let (intercept, trigger) = begin_paste_queue_v_press(
-                        &mut state,
-                        paste_queue_shortcut_allowed(
+                    let intercept = exact_paste_queue_modifier(&state)
+                        && paste_queue_shortcut_allowed(
                             paste_queue::is_active(),
                             TEXT_EDITOR_FOCUSED.load(Ordering::SeqCst),
-                        ) && !PASTE_QUEUE_INTERNAL_PASTE.load(Ordering::SeqCst),
-                    );
+                        )
+                        && !PASTE_QUEUE_INTERNAL_PASTE.load(Ordering::SeqCst);
+                    let (intercept, trigger) = begin_paste_queue_v_press(&mut state, intercept);
                     if intercept {
                         if trigger {
                             let _ = enqueue_paste_queue_request(

@@ -42,7 +42,6 @@ CardMenuExtras AppendCardActions(MenuFlyout const &menu, std::wstring const &has
     if (text || type == L"Image" || type == L"File" || type == L"Color")
         menu.Items().Append(MenuFlyoutSeparator{});
     if (text) {
-        add(L"复制为纯文本", L"Copy as plain text", L"\uE8A5", L"copyPlain");
         extras.pastePlain = add(L"粘贴为纯文本", L"Paste as plain text", L"\uE77F", L"pastePlain");
     }
     if (type == L"File") {

@@ -36,7 +36,7 @@ describe("queue input and category shortcut contracts", () => {
         const source = native("WinUiQueueView.cpp");
         expect(source).toContain("TestQueuePointerReorderControls");
         expect(source).toContain("paste.ActualWidth()");
-        expect(source).toContain("QueuePointerOrder(");
+        expect(source).toContain("QueuePointerSlot(");
     });
 
     it("allows a fresh pointer press to paste after sorting while guarding the drag release", () => {

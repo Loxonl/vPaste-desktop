@@ -26,20 +26,23 @@ inline std::vector<std::wstring> QueueDropOrder(const std::vector<std::wstring> 
 
 struct QueueRowMetric { double top, height; };
 
+inline std::size_t QueuePointerSlot(const std::vector<QueueRowMetric> &metrics, std::size_t from, double offset) {
+    const auto center = metrics[from].top + metrics[from].height / 2 + offset;
+    std::size_t to = 0;
+    for (std::size_t index = 0; index < metrics.size(); ++index) {
+        if (index != from && center >= metrics[index].top + metrics[index].height / 2) ++to;
+    }
+    return to;
+}
+
 inline std::vector<std::wstring> QueuePointerOrder(const std::vector<std::wstring> &current,
     const std::vector<QueueRowMetric> &metrics, const std::wstring &source, double offset) {
     const auto found = std::find(current.begin(), current.end(), source);
     if (found == current.end() || current.size() != metrics.size()) return current;
     const auto from = static_cast<std::size_t>(found - current.begin());
-    const auto center = metrics[from].top + metrics[from].height / 2 + offset;
     auto order = current;
     order.erase(order.begin() + from);
-    std::size_t to = 0;
-    for (std::size_t i = 0; i < current.size(); ++i) {
-        const auto targetCenter = metrics[i].top + metrics[i].height / 2;
-        if (i != from && (offset > 0 ? center >= targetCenter : center > targetCenter)) ++to;
-    }
-    order.insert(order.begin() + to, source);
+    order.insert(order.begin() + QueuePointerSlot(metrics, from, offset), source);
     return order;
 }
 
@@ -81,6 +84,8 @@ public:
 private:
 #ifdef _DEBUG
     friend winrt::Windows::Foundation::IAsyncAction TestQueueRowContinuityControls(
+        winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
+    friend winrt::Windows::Foundation::IAsyncAction TestQueuePointerReorderControls(
         winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
 #endif
     struct Impl;

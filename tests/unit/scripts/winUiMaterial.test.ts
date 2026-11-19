@@ -11,10 +11,13 @@ describe("WinUI window material ownership", () => {
         expect(panel.includes("g_panel.xamlSource.SystemBackdrop(DesktopAcrylicBackdrop{});")).toBe(true);
     });
 
-    it("shares the window canvas across history, queue and tag views", () => {
-        for (const file of ["WinUiPanel.cpp", "WinUiQueueView.cpp", "WinUiTagManager.cpp"]) {
+    it("shares the Acrylic canvas only within the dock and gives the separate queue a themed canvas", () => {
+        for (const file of ["WinUiPanel.cpp", "WinUiTagManager.cpp"]) {
             expect(nativeFile(file).includes("WindowCanvasBackground()")).toBe(true);
         }
+        const queue = nativeFile("WinUiQueueView.cpp");
+        expect(queue).toContain('ApplyStyle(root, L"VPaste.QueueCanvas")');
+        expect(queue).not.toContain("WindowCanvasBackground()");
     });
 
     it("keeps an explicit opaque fallback and the native caption in the app theme", () => {

@@ -18,10 +18,11 @@ describe("WinUI management surfaces", () => {
         }
     });
 
-    it("keeps queue commands in a native command bar and uses one row boundary", () => {
+    it("keeps queue actions in named native buttons and uses a themed row surface", () => {
         const queue = native("WinUiQueueView.cpp");
-        expect(queue.includes("toolbar = CommandBar{}")).toBe(true);
-        expect(queue.includes("container.BorderThickness(Thickness{0, 0, 0, 1})")).toBe(true);
+        expect(queue).toContain("reverse = NamedIconButton(");
+        expect(queue).toContain("clear = NamedIconButton(");
+        expect(native("WinUiAppearance.h")).toContain('x:Key="VPaste.QueueRow" TargetType="Border"');
         expect(queue.includes("surface.BorderThickness(")).toBe(false);
         expect(queue.includes("ContentDialogResult::Primary")).toBe(true);
     });

@@ -16,11 +16,41 @@ describe("card, queue and developer reference parity", () => {
         expect(actions).not.toContain("tools.Flyout(toolsMenu)");
         expect(actions).toContain("developer && toolsVisible");
     });
-    it("exposes reverse directly and uses the reference queue list hierarchy", () => {
+    it("exposes both queue commands without overflow and previews the actual sorted rows", () => {
         const queue = native("WinUiQueueView.cpp");
-        expect(queue).toContain("toolbar.PrimaryCommands().Append(reverse)");
+        expect(queue).toContain("toolbar.Children().Append(command)");
+        expect(queue).toContain("{reverse, clear}");
+        expect(queue).not.toContain("CommandBar");
+        expect(queue).toContain('ApplyStyle(root, L"VPaste.QueueCanvas")');
         expect(queue).not.toContain("position.Children().Append(ordinal)");
-        expect(queue).toContain("container.BorderThickness(Thickness{0, 0, 0, 1})");
+        expect(queue).toContain('L"VPaste.QueueRow"');
+        expect(queue).not.toContain('L"VPaste.QueueInsertionMark"');
+        expect(queue).toContain('QueuePointerSlot(dragMetrics, dragFrom, offset)');
+        expect(queue).toContain("visual.surface.Translation({0, shift, 0})");
+    });
+    it("uses the shipping queue wording in both languages", () => {
+        const queue = native("WinUiQueueView.cpp");
+        for (const [locale, shortcut] of [["zh-CN", "Ctrl + V"], ["en-US", "Ctrl + V"]]) {
+            const translations = readFileSync(resolve("src/lang/locales", locale + ".ts"), "utf8");
+            for (const key of ["reverse", "clear", "clearConfirm", "emptyIntercepting", "next", "keep", "pasted", "undo", "close"]) {
+                const label = translations.match(new RegExp(`"pasteQueue\\.${key}": "([^"]+)"`))?.[1];
+                expect(label, key).toBeTruthy();
+                expect(queue).toContain(`L"${label?.replace("{shortcut}", shortcut)}"`);
+            }
+        }
+    });
+    it("removes only Copy as plain text from the native card menu", () => {
+        const actions = native("WinUiCardActions.cpp");
+        expect(actions).not.toContain('L"copyPlain"');
+        expect(actions).toContain('L"pastePlain"');
+        expect(actions).toContain('L"copyFolder"');
+    });
+    it("keeps the queue nonactivating and suppresses the extra native frame border", () => {
+        const window = native("WinUiQueueWindow.cpp");
+        expect(window).toContain("DWMWA_BORDER_COLOR");
+        expect(window).toContain("DWMWA_COLOR_NONE");
+        expect(window).toContain("case WM_MOUSEACTIVATE: return MA_NOACTIVATE;");
+        expect(window).toContain("DwmExtendFrameIntoClientArea");
     });
     it("automatically scrolls card text without changing reader scroll behavior", () => {
         const panel = native("WinUiPanel.cpp");

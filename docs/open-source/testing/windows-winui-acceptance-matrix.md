@@ -78,7 +78,7 @@ remaining in source is not evidence that WinUI creates its window.
 
 | Surface | Lifetime in WinUI mode |
 | --- | --- |
-| Tray menu | Native tray icon; the styled `trayMenu` WebView is warmed hidden and reused. |
+| Tray menu | Native tray icon and lazy WinUI popup. Only the legacy renderer warms and reuses the styled `trayMenu` WebView. |
 | Settings and text editor | `config` and `textEditor` are opened on demand and destroyed on close. |
 | First-run and Debug tutorials | `nativeOnboarding` and `devTutorial` are temporary WebView content layers owned by the native main panel. The ordinary Windows permission status does not require the separate permission guide. |
 | Rich, link, PDF, OCR, unsupported or oversized previews | `clipboardPreview` is lazy and reused while visible; closing retires it and the optional webpage renderer `previewBrowser`. Common text, image, file and color previews use the native reader. |
@@ -1014,6 +1014,40 @@ Earlier stage-2/3 evidence is under ignored
   Their unchanged successful style, frontend build, formatting and XAML checks
   are reused. No hosted check
   was manually dispatched and no visual snapshot was reapproved.
+
+### Native Windows tray menu
+
+**S:** Windows WinUI mode opens a lazy popup on the existing WinUI STA,
+without showing the main panel or warming a tray WebView. The tray icon, its
+paused indicator, existing Rust commands, captions and order are unchanged.
+The base surface is 200 × 154 DIP (8-DIP fit margin, 36-DIP state row and
+34-DIP actions); a ready update adds one row. Settings uses the popup's
+monitor. The legacy Windows renderer and macOS retain their WebView paths.
+The popup uses WinUI buttons and system acrylic with a solid themed fallback;
+DWM supplies the outer frame. Opening and closing do not add app-authored
+animation.
+
+**U:** `tray_restart_row_matches_webview_readiness` covers ready,
+installing, portable and Store results. Source and React tests cover the WinUI
+route, no WinUI prewarm, shared command dispatch and unchanged legacy menu.
+
+**X:** The isolated `VPASTE_WINUI_TRAY_CHECK=1` shell case passed at stage
+27810. It checks the independent popup while the dock is hidden, row sizes and
+fonts, both languages and pause states, one extra update row, negative-origin
+placement at 100/125/150% simulated DPI, pending action guards, Settings
+coordinates, and Escape/deactivation/outside-press dismissal. Ordinary shell
+(257) and history/queue (153) passed in separate processes. Windows did not
+grant foreground for the posted-Space assertion.
+
+**A:** A marked, empty Debug profile ran `--memory-profile-tray-check` on an
+isolated desktop. The normal app route reported `webview_created=false` and
+the DLL showed the cold native popup. This bypasses the Explorer icon and
+does not use the user's history or clipboard.
+
+**M:** Check left/right click on the Windows tray icon, live pause/resume and
+the icon's pause mark, Settings and Show Main, Escape/outside dismissal, and
+the frame/shadow on actual light/dark, high-contrast and mixed-DPI monitors.
+The visual preview was the design reference, not compositor capture.
 
 ## One consolidated manual desktop pass
 

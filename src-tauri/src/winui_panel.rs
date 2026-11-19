@@ -27,6 +27,7 @@ pub(crate) mod preview;
 mod reader;
 mod search;
 mod tab_order;
+pub(crate) mod tray;
 // This projection has no AppKit dependency. Keep the macOS importer unchanged.
 #[path = "native_panel/rich_text.rs"]
 mod rich_text;
@@ -398,6 +399,14 @@ pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
         if let Ok(state) = serde_json::from_str::<serde_json::Value>(event.payload()) {
             send_response(0, "updateStateChanged", Ok(state));
         }
+        if let Some(app) = APP.get() {
+            tray::refresh(app);
+        }
+    });
+    app.listen("clipboard-history-pause-changed", move |_| {
+        if let Some(app) = APP.get() {
+            tray::refresh(app);
+        }
     });
     app.listen("clipboard-capture-rejected", move |_| {
         send_response(0, "captureRejected", Ok(json!({})));
@@ -414,6 +423,7 @@ pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
             log::debug!("WinUI click-mode update deferred: {error}");
         }
         if let Some(app) = APP.get() {
+            tray::refresh(app);
             let owned = app.clone();
             if let Err(error) = app.run_on_main_thread(move || {
                 if let Err(error) = layout::refresh(&owned) {
@@ -429,6 +439,9 @@ pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
         app_actions::reset_preview();
         if let Err(error) = apply_language() {
             log::debug!("WinUI language update deferred: {error}");
+        }
+        if let Some(app) = APP.get() {
+            tray::refresh(app);
         }
     });
     let language = crate::config::get().multilingual;
@@ -773,6 +786,7 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
     };
     tauri::async_runtime::spawn(async move {
         let result = match request.op.as_str() {
+            "nativeTrayAction" => tray::dispatch(app.clone(), &request.argument, &payload).await,
             "appState" => app_actions::snapshot(app.clone()),
             "appTool" => app_actions::open_tool(app.clone(), &request.argument).await,
             "updateInstall" => app_actions::install(app.clone(), &request.argument).await,
@@ -1492,7 +1506,9 @@ mod tests {
             })?;
             // SAFETY: the native exports marshal show and synthetic control
             // assertions to the owning STA. No AppHandle or user data is used.
-            super::check_hresult("show", unsafe { (panel.show)() })?;
+            if std::env::var_os("VPASTE_WINUI_TRAY_CHECK").is_none() {
+                super::check_hresult("show", unsafe { (panel.show)() })?;
+            }
             let test = unsafe {
                 super::GetProcAddress(
                     panel._module as *mut std::ffi::c_void,

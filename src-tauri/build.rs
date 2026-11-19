@@ -233,6 +233,8 @@ fn build_winui_panel() {
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiHoverPreview.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiReader.cpp");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiReader.h");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiTrayWindow.cpp");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiTrayWindow.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiMotion.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiDockMotion.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiTabIndicator.h");

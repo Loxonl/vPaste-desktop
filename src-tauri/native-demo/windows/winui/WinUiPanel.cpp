@@ -71,6 +71,7 @@ winrt::Windows::Foundation::IAsyncAction NextNativeFrame() {
 
 #include "WinUiQueueView.h"
 #include "WinUiQueueWindow.h"
+#include "WinUiTrayWindow.h"
 #include "WinUiTagManager.h"
 #include "WinUiFilterEditor.h"
 #include "WinUiNameEmoji.h"
@@ -282,6 +283,7 @@ struct Panel {
     winrt::Microsoft::UI::Xaml::Controls::Button more{nullptr};
     std::unique_ptr<vpaste::winui::QueueView> queueView;
     std::unique_ptr<vpaste::winui::QueueWindow> queueWindow;
+    std::unique_ptr<vpaste::winui::TrayWindow> trayWindow;
     std::unique_ptr<vpaste::winui::Reader> reader;
     std::unique_ptr<vpaste::winui::TagManager> tagManager;
     std::unique_ptr<vpaste::winui::CardDragSource> cardDrag;
@@ -2372,6 +2374,33 @@ void ApplyResponse(const std::string &bytes) {
         const auto response = JsonObject::Parse(winrt::to_hstring(bytes));
         const auto id = static_cast<std::uint64_t>(response.GetNamedNumber(L"id", 0));
         const auto operation = response.GetNamedString(L"op", L"");
+        if (operation == L"nativeTrayShow") {
+            const auto data = response.GetNamedObject(L"data");
+            if (g_panel.trayWindow) {
+                g_panel.trayWindow->Show(data);
+            } else {
+                auto tray = std::make_unique<vpaste::winui::TrayWindow>([](const wchar_t *action, POINT point) {
+                    JsonObject payload;
+                    payload.Insert(L"argument", JsonValue::CreateStringValue(action));
+                    payload.Insert(L"x", JsonValue::CreateNumberValue(point.x));
+                    payload.Insert(L"y", JsonValue::CreateNumberValue(point.y));
+                    return SendEditorRequest(L"nativeTrayAction", payload);
+                });
+                tray->Show(data);
+                g_panel.trayWindow = std::move(tray);
+            }
+            return;
+        }
+        if (operation == L"nativeTrayState" || operation == L"nativeTrayAction") {
+            if (!g_panel.trayWindow) return;
+            if (operation == L"nativeTrayState") g_panel.trayWindow->Update(response.GetNamedObject(L"data"));
+            else {
+                const auto error = response.GetNamedString(L"error", L"");
+                if (!error.empty()) std::fprintf(stderr, "WinUI tray action failed: %s\n", winrt::to_string(error).c_str());
+                g_panel.trayWindow->Complete(id, error.empty());
+            }
+            return;
+        }
         if (operation == L"tutorialPreviewFilters") {
             if (g_tutorialWindow && g_tutorialPreviewSession && !response.HasKey(L"error")) {
                 const auto data = response.GetNamedObject(L"data");
@@ -3857,6 +3886,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         if (g_panel.dockMotion) g_panel.dockMotion->Suspend();
         g_panel.tabIndicator.reset();
         if (g_panel.imageExport) g_panel.imageExport->Cancel();
+        g_panel.trayWindow.reset();
         g_panel.queueWindow.reset();
         // Detach while the island and its HWND are still alive.
         if (g_panel.xamlSource) g_panel.xamlSource.SystemBackdrop(nullptr);
@@ -5029,6 +5059,7 @@ void RunUiThread() noexcept {
     g_panel.root = nullptr;
     g_tutorialWindow = nullptr;
     g_tutorialPreviewSession = 0;
+    g_panel.trayWindow.reset();
     g_panel.queueWindow.reset();
     g_panel.queueView.reset();
     g_queueViewActive = false;
@@ -9073,6 +9104,77 @@ winrt::Windows::Foundation::IAsyncAction CheckCardContextMenu(
     stage = 276;
 }
 
+winrt::Windows::Foundation::IAsyncAction CheckNativeTray(
+    const std::vector<std::string> &requests, std::uint32_t &stage) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace winrt::Microsoft::UI::Xaml::Controls;
+    using namespace winrt::Windows::Data::Json;
+    const auto require = [](bool condition) { winrt::check_hresult(condition ? S_OK : E_FAIL); };
+    const std::string show = R"({"op":"nativeTrayShow","data":{"anchor":{"x":390,"y":360,"cursor":true},
+        "workArea":{"left":0,"top":0,"right":640,"bottom":480},"dpiScale":1,
+        "english":false,"paused":false,"theme":"light","textScale":1,"updateReady":false}})";
+    stage = 27801;
+    require(!g_panel.trayWindow && !IsWindowVisible(g_panel.window));
+    ApplyResponse(show);
+    require(g_panel.trayWindow && !IsWindowVisible(g_panel.window));
+    co_await vpaste::winui::TestTrayWindow(*g_panel.trayWindow, stage);
+    stage = 27808;
+    auto &tray = *g_panel.trayWindow;
+    const auto popup = tray.Handle();
+    ApplyResponse(show);
+    auto list = tray.TestRoot().as<Grid>().Children().GetAt(0).as<Viewbox>().Child().as<StackPanel>().Children();
+    const auto invoke = [&](std::uint32_t index) {
+        Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(list.GetAt(index).as<Button>())
+            .GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+    };
+    const auto checkRequest = [&](std::size_t sizeBefore, const wchar_t *name) {
+        require(requests.size() == sizeBefore + 1);
+        const auto event = JsonObject::Parse(winrt::to_hstring(requests.back()));
+        require(event.GetNamedString(L"op") == L"nativeTrayAction" && event.GetNamedString(L"argument") == name);
+        return static_cast<std::uint64_t>(event.GetNamedNumber(L"id"));
+    };
+    auto before = requests.size();
+    invoke(0);
+    co_await NextNativeFrame();
+    const auto pause = checkRequest(before, L"pause");
+    require(IsWindowVisible(popup) && list.GetAt(0).as<Button>().Opacity() < 1);
+    before = requests.size();
+    ApplyResponse(show);
+    invoke(0);
+    co_await NextNativeFrame();
+    require(requests.size() == before && IsWindowVisible(popup));
+    ApplyResponse(R"({"op":"nativeTrayState","data":{"english":false,"paused":true,"theme":"light","textScale":1,"updateReady":false}})");
+    const auto finish = [](std::uint64_t id, bool ok) {
+        ApplyResponse("{\"op\":\"nativeTrayAction\",\"id\":" + std::to_string(id) +
+            (ok ? ",\"data\":{}}" : ",\"error\":\"fixture\"}"));
+    };
+    finish(pause, true);
+    require(IsWindowVisible(popup) && list.GetAt(0).as<Button>().Opacity() == 1 &&
+        Automation::AutomationProperties::GetName(list.GetAt(0)) == L"恢复记录, 已暂停");
+    stage = 27809;
+    before = requests.size(); invoke(3); co_await NextNativeFrame();
+    const auto settings = checkRequest(before, L"settings");
+    const auto position = JsonObject::Parse(winrt::to_hstring(requests.back()));
+    RECT bounds{};
+    require(GetWindowRect(popup, &bounds) &&
+        position.GetNamedNumber(L"x") == (bounds.left + bounds.right) / 2 &&
+        position.GetNamedNumber(L"y") == (bounds.top + bounds.bottom) / 2);
+    finish(settings, false);
+    require(IsWindowVisible(popup));
+    before = requests.size(); invoke(2); co_await NextNativeFrame();
+    finish(checkRequest(before, L"showMain"), true);
+    require(!IsWindowVisible(popup));
+    stage = 27810;
+    ApplyResponse(show);
+    SendMessageW(popup, WM_KEYDOWN, VK_ESCAPE, 0);
+    require(!IsWindowVisible(popup));
+    ApplyResponse(show);
+    // The opening callback can belong to the shell, not the dock window.
+    SendMessageW(popup, WM_ACTIVATE, WA_INACTIVE, 0);
+    require(!IsWindowVisible(popup) && !IsWindowVisible(g_panel.window) && tray.Handle() == popup);
+    g_panel.trayWindow.reset();
+}
+
 winrt::fire_and_forget RunNativeShellRegression(
     std::shared_ptr<std::promise<std::pair<HRESULT, std::uint32_t>>> completion) {
     std::uint32_t stage = 1;
@@ -9090,6 +9192,10 @@ winrt::fire_and_forget RunNativeShellRegression(
         g_request = +[](const std::uint8_t *data, std::size_t length) {
             requests.emplace_back(reinterpret_cast<const char *>(data), length);
         };
+        if (GetEnvironmentVariableW(L"VPASTE_WINUI_TRAY_CHECK", nullptr, 0)) {
+            co_await CheckNativeTray(requests, stage);
+            completion->set_value({S_OK, stage}); co_return;
+        }
         if (GetEnvironmentVariableW(L"VPASTE_WINUI_CARD_MENU_CHECK", nullptr, 0)) {
             co_await CheckCardContextMenu(requests, stage);
             completion->set_value({S_OK, stage}); co_return;

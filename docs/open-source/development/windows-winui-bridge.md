@@ -9,7 +9,7 @@ The shipping WebView remains the default unless `--main-ui=winui` is supplied.
 ## Initialization and messages
 
 Rust loads the adjacent DLL and checks `vpaste_winui_protocol_version` before
-initialization. Version 3 is defined by `winui_panel/bridge.rs` and `WinUiBridge.h`.
+initialization. Version 7 is defined by `winui_panel/bridge.rs` and `WinUiBridge.h`.
 A missing or incompatible version is a startup error with a rebuild instruction;
 an old DLL must not silently run against a new Rust host.
 
@@ -26,6 +26,12 @@ tag rules. WinUI owns native controls, focus/geometry, interaction drafts and
 presentation. Windows-only helpers must not be moved into shared business code
 merely to reuse UI types. Keep the existing request IDs, query/reader generations
 and queue revisions authoritative over late responses.
+
+The WinUI tray popup is independent of the dock HWND. Rust projects the same
+capture, update and preference state as the legacy menu using
+`nativeTrayShow`/`nativeTrayState`; `nativeTrayAction` returns to the existing
+commands. No tray WebView is prewarmed in this renderer. The popup is created
+on first use, and its outside-click timer runs only while visible.
 
 Callbacks on the WinUI STA may enqueue Tauri main-thread work; they must not
 synchronously wait for that event loop when it may already be waiting for WinUI.

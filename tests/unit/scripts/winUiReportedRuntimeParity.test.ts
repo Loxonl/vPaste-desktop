@@ -39,7 +39,8 @@ it("scopes the shared preview toolbar to Windows WinUI fallback windows", () => 
 
 it("gives image recognition its own text scan icon without changing its command", () => {
     expect(panel).toMatch(/else if \(type == L"Image"\) \{\s*flyout\.Items\(\)\.Append\(vpaste::winui::MakeImageTextAction/);
-    expect(cardActions).toContain("item.Icon(HeaderIcon(ScanText));");
+    expect(cardActions).toContain("MakeImageTextIcon() { return HeaderIcon(ScanText); }");
+    expect(cardActions).toContain("item.Icon(MakeImageTextIcon());");
     expect(cardActions).toContain('request(L"imageText", hash, {})');
 });
 

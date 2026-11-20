@@ -83,7 +83,8 @@ describe("card, queue and developer reference parity", () => {
         expect(tutorial).not.toContain("hide_on_ui_thread");
         expect(tutorial).not.toContain("center_window_on_monitor");
         const onboarding = rust("winui_panel/onboarding.rs");
-        expect(onboarding.includes("set_tutorial_active(Some(&window), session)")).toBe(true);
+        expect(onboarding).toContain('"nativeTutorialOpen"');
+        expect(onboarding).not.toContain("WindowKind::DevTutorial");
         expect(onboarding).toContain("pub(crate) fn close_preview");
     });
 });

@@ -1,0 +1,5 @@
+VPASTE_TUTORIAL_LOGO RCDATA "../../../icons/128x128@2x.png"
+VPASTE_TUTORIAL_SHORTCUT RCDATA "../../../../src/assets/tutorial/shortcut-popover.svg"
+VPASTE_TUTORIAL_BACKGROUND RCDATA "../../../../src/assets/tutorial/permission-background.svg"
+VPASTE_TUTORIAL_PASTE RCDATA "../../../../src/assets/tutorial/permission-paste.svg"
+VPASTE_TUTORIAL_STYLES RCDATA "WinUiOnboardingStyles.xaml"

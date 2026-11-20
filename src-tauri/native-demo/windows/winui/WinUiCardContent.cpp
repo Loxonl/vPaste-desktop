@@ -25,36 +25,52 @@ namespace vpaste::winui {
 using namespace winrt::Microsoft::UI::Xaml::Documents;
 
 namespace {
-winrt::fire_and_forget LoadFileSvg(winrt::Microsoft::UI::Xaml::Media::Imaging::SvgImageSource source,
-    winrt::hstring svg) {
+using winrt::Microsoft::UI::Xaml::Media::Imaging::BitmapImage;
+
+winrt::fire_and_forget LoadFileBitmap(BitmapImage source, winrt::hstring asset) {
     try {
+        std::wstring resourceName = L"VPASTE_FILE_ICON_";
+        for (const auto c : asset) {
+            if (c >= L'a' && c <= L'z') resourceName.push_back(static_cast<wchar_t>(c - L'a' + L'A'));
+            else resourceName.push_back((c >= L'A' && c <= L'Z') || (c >= L'0' && c <= L'9') ? c : L'_');
+        }
+        const auto module = GetModuleHandleW(L"VPasteWinUiPanel.dll");
+        winrt::check_bool(module != nullptr);
+        const auto resource = FindResourceW(module, resourceName.c_str(), RT_RCDATA);
+        winrt::check_bool(resource != nullptr);
+        const auto size = SizeofResource(module, resource);
+        winrt::check_bool(size != 0);
+        const auto loaded = LoadResource(module, resource);
+        winrt::check_bool(loaded != nullptr);
+        const auto bytes = static_cast<const std::uint8_t *>(LockResource(loaded));
+        winrt::check_bool(bytes != nullptr);
         winrt::Windows::Storage::Streams::InMemoryRandomAccessStream stream;
         winrt::Windows::Storage::Streams::DataWriter writer{stream};
-        writer.WriteString(svg); co_await writer.StoreAsync(); writer.DetachStream(); stream.Seek(0);
-        const auto result = co_await source.SetSourceAsync(stream);
+        writer.WriteBytes(winrt::array_view<const std::uint8_t>{bytes, bytes + size});
+        co_await writer.StoreAsync();
+        writer.DetachStream();
+        stream.Seek(0);
+        co_await source.SetSourceAsync(stream);
 #ifdef _DEBUG
-        if (TraceCardMedia()) std::fprintf(stderr, "WinUI media probe: file SVG status=%d\n", static_cast<int>(result));
+        if (TraceCardMedia()) std::fprintf(stderr, "WinUI media probe: file bitmap=%dx%d\n", source.PixelWidth(), source.PixelHeight());
 #endif
-        winrt::check_hresult(result == winrt::Microsoft::UI::Xaml::Media::Imaging::SvgImageSourceLoadStatus::Success ? S_OK : E_FAIL);
     } catch (winrt::hresult_error const &error) { OutputDebugStringW(error.message().c_str()); }
 }
 
-winrt::Microsoft::UI::Xaml::Media::Imaging::SvgImageSource SharedFileIcon(
-    winrt::Windows::Data::Json::JsonObject const &icon) {
-    using winrt::Microsoft::UI::Xaml::Media::Imaging::SvgImageSource;
-    struct Entry { winrt::hstring name; winrt::weak_ref<SvgImageSource> source; };
-    // A file type names one immutable asset (including light variants). Share
-    // it on the owning XAML thread without keeping unloaded images alive.
+BitmapImage SharedFileIcon(winrt::Windows::Data::Json::JsonObject const &icon) {
+    struct Entry { winrt::hstring asset; winrt::weak_ref<BitmapImage> source; };
+    // Aliases share an immutable asset on the owning XAML thread without
+    // keeping unloaded images alive. Theme variants have distinct asset IDs.
     static thread_local std::vector<Entry> icons;
-    const auto name = icon.GetNamedString(L"name");
+    const auto asset = icon.GetNamedString(L"asset");
     std::erase_if(icons, [](auto const &entry) { return !entry.source.get(); });
-    for (auto const &entry : icons) if (entry.name == name) {
+    for (auto const &entry : icons) if (entry.asset == asset) {
         if (auto source = entry.source.get()) return source;
     }
-    SvgImageSource source;
+    BitmapImage source;
     if (icons.size() == 32) icons.erase(icons.begin());
-    icons.push_back({name, winrt::make_weak(source)});
-    LoadFileSvg(source, icon.GetNamedString(L"svg"));
+    icons.push_back({asset, winrt::make_weak(source)});
+    LoadFileBitmap(source, asset);
     return source;
 }
 
@@ -286,14 +302,17 @@ winrt::Windows::Foundation::IAsyncAction TestCardContentControls(
         }
     }
     stage = 172;
-    // Use the real Rust-resolved, embedded library SVGs rather than testing a
+    // Use the real Rust-resolved, embedded bitmaps rather than testing a
     // replacement font glyph or treating a nonempty source string as a decode.
     for (const bool dark : {false, true}) for (auto const &value : files) {
         const auto file = value.GetObject();
         const auto presentation = FileTypePresentation(file, dark);
         fixture.Child(presentation);
         const auto image = presentation.Children().GetAt(0).as<Image>();
-        const auto sameFile = FileTypePresentation(file, dark);
+        const auto theme = dark ? L"dark" : L"light";
+        const auto alias = winrt::Windows::Data::Json::JsonObject::Parse(file.Stringify());
+        alias.GetNamedObject(theme).SetNamedValue(L"name", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"test alias"));
+        const auto sameFile = FileTypePresentation(alias, dark);
         winrt::check_hresult(image.Source() == sameFile.Children().GetAt(0).as<Image>().Source() ? S_OK : E_FAIL);
         unsigned opaque = 0;
         for (int frame = 0; frame < 20 && opaque < 100; ++frame) {
@@ -306,9 +325,11 @@ winrt::Windows::Foundation::IAsyncAction TestCardContentControls(
             opaque = 0;
             for (std::size_t i = 3; i < pixels.size(); i += 4) if (pixels[i] > 128) ++opaque;
         }
-        std::fprintf(stderr, "WinUI file SVG: dark=%d name=%ls opaque=%u\n", dark,
-            file.GetNamedObject(dark ? L"dark" : L"light").GetNamedString(L"name").c_str(), opaque);
-        winrt::check_hresult(opaque >= 100 && presentation.Width() == 88 && presentation.Height() == 64 ? S_OK : E_FAIL);
+        const auto source = image.Source().as<BitmapImage>();
+        std::fprintf(stderr, "WinUI file bitmap: dark=%d name=%ls opaque=%u\n", dark,
+            file.GetNamedObject(theme).GetNamedString(L"name").c_str(), opaque);
+        winrt::check_hresult(opaque >= 100 && source.PixelWidth() > 0 && source.PixelHeight() > 0 &&
+            presentation.Width() == 88 && presentation.Height() == 64 ? S_OK : E_FAIL);
     }
     fixture.Child(nullptr);
 }

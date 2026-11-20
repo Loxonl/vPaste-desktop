@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 describe("WinUI card action wiring", () => {
     const native = "src-tauri/native-demo/windows/winui/";
-    it("builds the native menu/picker and preserves shared auxiliary editors", () => {
+    it("builds the native menu/picker and preserves native auxiliary actions and rich editing", () => {
         const project = readFileSync(`${native}WinUiPanel.vcxproj`, "utf8");
         const build = readFileSync("src-tauri/build.rs", "utf8");
         for (const file of ["WinUiCardActions.cpp", "WinUiCardActions.h"]) {
@@ -11,8 +11,11 @@ describe("WinUI card action wiring", () => {
             expect(build).toContain(file);
         }
         const bridge = readFileSync("src-tauri/src/winui_panel.rs", "utf8");
-        expect(bridge).toContain("crate::open_text_editor_window(");
-        expect(bridge).toContain("crate::show_image_text_window(");
+        expect(bridge).toContain('"edit" => editor::open(');
+        expect(bridge).toContain('"imageText" => ocr::open(');
+        const editor = readFileSync("src-tauri/src/winui_panel/editor.rs", "utf8");
+        expect(editor).toContain('"editor.richUnavailable"');
+        expect(editor).toContain("crate::open_text_editor_window(");
         expect(bridge).toContain("search::resolve(&query, label)");
         expect(bridge).toContain("hash.clone(), plain_text");
     });

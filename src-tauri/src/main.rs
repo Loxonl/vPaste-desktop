@@ -2766,12 +2766,8 @@ fn update_dev_tutorial_filters(
     tabs: serde_json::Value,
     preview_session: u64,
 ) -> Result<(), String> {
-    #[cfg(all(debug_assertions, target_os = "windows", feature = "winui"))]
-    if get_developer_mode() && main_panel_mode::winui() {
-        return winui_panel::onboarding::project_preview_filters(&window, tabs, preview_session);
-    }
     let _ = (window, tabs, preview_session);
-    Err("Tutorial filter projection requires WinUI Debug".into())
+    Err("This tutorial renderer does not host WinUI filter drafts".into())
 }
 
 #[tauri::command]
@@ -3494,30 +3490,45 @@ fn prewarm_preview_window(app: tauri::AppHandle) {
 }
 
 fn build_preview_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
-    let builder =
-        WebviewWindowBuilder::new(app, "clipboardPreview", App("clipboard/preview".into()))
-            .title("vPaste Preview")
-            .visible(false)
-            .focused(false)
-            .decorations(false)
-            .transparent(true)
-            .background_color(tauri::window::Color(0, 0, 0, 0))
-            .skip_taskbar(true)
-            .always_on_top(true)
-            .visible_on_all_workspaces(true)
-            .resizable(false)
-            .shadow(false)
-            .inner_size(PREVIEW_WINDOW_WIDTH, PREVIEW_WINDOW_HEIGHT);
+    let system_frame =
+        cfg!(all(target_os = "windows", feature = "winui")) && main_panel_mode::winui();
+    let route = if system_frame {
+        "clipboard/preview?chrome=winui"
+    } else {
+        "clipboard/preview"
+    };
+    let builder = WebviewWindowBuilder::new(app, "clipboardPreview", App(route.into()))
+        .title("vPaste Preview")
+        .visible(false)
+        .focused(false)
+        .decorations(false)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .visible_on_all_workspaces(true)
+        .resizable(false)
+        .shadow(system_frame)
+        .inner_size(PREVIEW_WINDOW_WIDTH, PREVIEW_WINDOW_HEIGHT);
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    let builder = if system_frame {
+        builder.theme(winui_auxiliary_theme(&config::get().theme_mode))
+    } else {
+        builder
+    };
     #[cfg(target_os = "macos")]
     let builder = builder
         .hidden_title(true)
         .title_bar_style(TitleBarStyle::Overlay);
     builder.build().inspect(|window| {
-        let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
-        let _ = window.set_shadow(false);
+        if !system_frame {
+            let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+            let _ = window.set_shadow(false);
+        }
         apply_vpaste_window_icon(window);
         #[cfg(all(target_os = "windows", feature = "winui"))]
-        if main_panel_mode::winui() {
+        if system_frame {
+            apply_winui_auxiliary_frame(window);
             winui_panel::preview::install_escape_handler(window);
         }
         #[cfg(target_os = "macos")]
@@ -3527,6 +3538,106 @@ fn build_preview_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewW
         }
         browser_preview::prewarm(window.app_handle());
     })
+}
+
+#[cfg(all(target_os = "windows", feature = "winui"))]
+fn winui_auxiliary_theme(mode: &str) -> Option<tauri::Theme> {
+    match mode {
+        "dark" => Some(tauri::Theme::Dark),
+        "light" => Some(tauri::Theme::Light),
+        _ => None,
+    }
+}
+
+#[cfg(all(target_os = "windows", feature = "winui"))]
+fn apply_winui_auxiliary_frame(window: &tauri::WebviewWindow) {
+    use std::mem::size_of_val;
+    use std::ptr::{from_mut, from_ref};
+    use tauri::window::Color;
+    use windows::Win32::{
+        Foundation::{BOOL, HWND},
+        Graphics::{
+            Dwm::{
+                DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMSBT_NONE,
+                DWMSBT_TRANSIENTWINDOW, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+            },
+            Gdi::{GetSysColor, COLOR_WINDOW},
+        },
+        UI::{
+            Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
+            Controls::MARGINS,
+            WindowsAndMessaging::{
+                SystemParametersInfoW, SPI_GETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+            },
+        },
+    };
+    let Ok(handle) = window.hwnd() else { return };
+    let handle = HWND(handle.0 as _);
+    let dark = window.theme().ok() == Some(tauri::Theme::Dark);
+    let dark_mode = BOOL::from(dark);
+    let mut contrast = HIGHCONTRASTW::default();
+    contrast.cbSize = size_of_val(&contrast) as u32;
+    // SAFETY: the borrowed HWND and the Win32 attribute buffers are live
+    // for these synchronous calls. The OS owns the frame and its shadow.
+    let color = unsafe {
+        let high_contrast = SystemParametersInfoW(
+            SPI_GETHIGHCONTRAST,
+            contrast.cbSize,
+            Some(from_mut(&mut contrast).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+        .is_ok()
+            && contrast.dwFlags.contains(HCF_HIGHCONTRASTON);
+        let backdrop = if high_contrast {
+            DWMSBT_NONE
+        } else {
+            DWMSBT_TRANSIENTWINDOW
+        };
+        let _ = DwmSetWindowAttribute(
+            handle,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            from_ref(&dark_mode).cast(),
+            size_of_val(&dark_mode) as u32,
+        );
+        let _ = DwmSetWindowAttribute(
+            handle,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            from_ref(&DWMWCP_ROUND).cast(),
+            size_of_val(&DWMWCP_ROUND) as u32,
+        );
+        let material = DwmSetWindowAttribute(
+            handle,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            from_ref(&backdrop).cast(),
+            size_of_val(&backdrop) as u32,
+        )
+        .is_ok();
+        // Extend across the client so the compositor can see through the
+        // transparent WebView2 surface, not just its one-pixel outer edge.
+        let margin = if material && !high_contrast { -1 } else { 1 };
+        let extended = DwmExtendFrameIntoClientArea(
+            handle,
+            &MARGINS {
+                cxLeftWidth: margin,
+                cxRightWidth: margin,
+                cyTopHeight: margin,
+                cyBottomHeight: margin,
+            },
+        )
+        .is_ok();
+        if high_contrast {
+            let rgba = GetSysColor(COLOR_WINDOW);
+            Color(rgba as u8, (rgba >> 8) as u8, (rgba >> 16) as u8, 255)
+        } else if material && extended {
+            Color(0, 0, 0, 0)
+        } else if dark {
+            Color(32, 32, 32, 255)
+        } else {
+            Color(243, 243, 243, 255)
+        }
+    };
+    let _ = window.set_background_color(Some(color));
 }
 
 fn preview_window_active(app: &tauri::AppHandle) -> bool {
@@ -3705,6 +3816,10 @@ fn tab_editor_window_active(app: &tauri::AppHandle) -> bool {
 }
 
 fn text_editor_window_active(app: &tauri::AppHandle) -> bool {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() && winui_panel::text_editor_focused() {
+        return true;
+    }
     app.get_webview_window("textEditor")
         .map(|window| {
             window.is_visible().unwrap_or(false)
@@ -4731,12 +4846,23 @@ fn set_preview_rect(
     // SetWindowPos sizes the outer frame; our target sizes the WebView client area.
     let outer = window.outer_size().map_err(|err| err.to_string())?;
     let inner = window.inner_size().map_err(|err| err.to_string())?;
+    let position = tauri::PhysicalPosition::new(
+        (rect.x * scale).round() as i32,
+        (rect.y * scale).round() as i32,
+    );
+    // The WinUI fallback now has a system frame. Keep its client attached to
+    // the same anchor instead of introducing a jump by the frame inset.
+    let position = if main_panel_mode::winui() {
+        clipboard_window_outer_position(window, position)?
+    } else {
+        position
+    };
     unsafe {
         SetWindowPos(
             HWND(handle.0 as _),
             HWND::default(),
-            (rect.x * scale).round() as i32,
-            (rect.y * scale).round() as i32,
+            position.x,
+            position.y,
             (rect.width * scale).round() as i32 + outer.width.saturating_sub(inner.width) as i32,
             (rect.height * scale).round() as i32 + outer.height.saturating_sub(inner.height) as i32,
             SWP_NOACTIVATE | SWP_NOZORDER,
@@ -4788,8 +4914,15 @@ fn set_preview_rect(
 }
 
 fn current_preview_rect(window: &tauri::WebviewWindow, scale: f64) -> Result<PreviewRect, String> {
-    let position = window
-        .outer_position()
+    #[cfg(target_os = "windows")]
+    let position = if main_panel_mode::winui() {
+        window.inner_position()
+    } else {
+        window.outer_position()
+    };
+    #[cfg(not(target_os = "windows"))]
+    let position = window.outer_position();
+    let position = position
         .map_err(|err| err.to_string())?
         .to_logical::<f64>(scale);
     let size = window
@@ -6878,6 +7011,14 @@ async fn save_clipboard_text(
     update: clipboard::editor::TextUpdate,
 ) -> Result<clipboard::item::Item, String> {
     let previous_hash = TEXT_EDITOR_TARGET.lock().unwrap().clone();
+    save_clipboard_text_for_hash(app, previous_hash, update).await
+}
+
+async fn save_clipboard_text_for_hash(
+    app: tauri::AppHandle,
+    previous_hash: Option<String>,
+    update: clipboard::editor::TextUpdate,
+) -> Result<clipboard::item::Item, String> {
     let item = tauri::async_runtime::spawn_blocking(move || clipboard::editor::save(update))
         .await
         .map_err(|err| err.to_string())??;
@@ -6918,7 +7059,16 @@ fn hide_text_editor_window(app: tauri::AppHandle) -> Result<(), String> {
 
 fn build_text_editor_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     let text_scale = ui_text_scale::current();
-    let window = WebviewWindowBuilder::new(app, "textEditor", App("text-editor".into()))
+    // Keep the same document/IPC route while matching the native editor's
+    // chrome for the Windows WinUI renderer's formatting-preserving fallback.
+    let system_frame =
+        cfg!(all(target_os = "windows", feature = "winui")) && main_panel_mode::winui();
+    let route = if system_frame {
+        "text-editor?chrome=winui"
+    } else {
+        "text-editor"
+    };
+    let builder = WebviewWindowBuilder::new(app, "textEditor", App(route.into()))
         .title("vPaste")
         .visible(false)
         .focused(false)
@@ -6928,9 +7078,19 @@ fn build_text_editor_window(app: &tauri::AppHandle) -> tauri::Result<tauri::Webv
         .skip_taskbar(true)
         .always_on_top(true)
         .resizable(false)
-        .shadow(false)
-        .inner_size(596.0 * text_scale, 476.0 * text_scale)
-        .build()?;
+        .shadow(system_frame)
+        .inner_size(596.0 * text_scale, 476.0 * text_scale);
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    let builder = if system_frame {
+        builder.theme(winui_auxiliary_theme(&config::get().theme_mode))
+    } else {
+        builder
+    };
+    let window = builder.build()?;
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if system_frame {
+        apply_winui_auxiliary_frame(&window);
+    }
     ui_text_scale::remember(&window, text_scale);
     apply_vpaste_window_icon(&window);
     #[cfg(target_os = "macos")]
@@ -9995,6 +10155,15 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<SettingsSaveInfo
     })?;
     app_updater::set_automatic_updates_enabled(automatic_updates_enabled);
     sync_tray_theme_for_mode(&app, &next_theme_mode);
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() && previous_config.theme_mode != next_theme_mode {
+        for label in ["textEditor", "clipboardPreview"] {
+            if let Some(window) = app.get_webview_window(label) {
+                let _ = window.set_theme(winui_auxiliary_theme(&next_theme_mode));
+                apply_winui_auxiliary_frame(&window);
+            }
+        }
+    }
     let _ = app.emit("language-changed", next_language);
     let _ = app.emit("theme-changed", next_theme_mode);
     let _ = app.emit("clipboard-behavior-config-changed", saved_config);
@@ -14358,6 +14527,15 @@ fn main() {
                 .build(),
         )
         .on_window_event(|window, event| {
+            #[cfg(all(target_os = "windows", feature = "winui"))]
+            if main_panel_mode::winui()
+                && matches!(event, tauri::WindowEvent::ThemeChanged(_))
+                && matches!(window.label(), "textEditor" | "clipboardPreview")
+            {
+                if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
+                    apply_winui_auxiliary_frame(&webview);
+                }
+            }
             if window.label() == "clipboardPreview"
                 && matches!(event, tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_))
             {

@@ -118,6 +118,7 @@ struct TagManager::Impl : std::enable_shared_from_this<TagManager::Impl> {
         root.RowDefinitions().GetAt(4).Height(GridLength{1, GridUnitType::Auto});
 
         header = Grid{};
+        ApplyStyle(header, L"VPaste.AuxiliaryCaption");
         header.ColumnDefinitions().Append(ColumnDefinition{});
         header.ColumnDefinitions().Append(ColumnDefinition{});
         header.ColumnDefinitions().Append(ColumnDefinition{});
@@ -127,7 +128,7 @@ struct TagManager::Impl : std::enable_shared_from_this<TagManager::Impl> {
         header.ColumnSpacing(8);
         header.MinHeight(40);
         title = MakeText(Text(L"管理标签", L"Manage tags"), 14, true);
-        ApplyStyle(title, L"VPaste.CompactTitle");
+        ApplyStyle(title, L"VPaste.AuxiliaryTitle");
         Grid::SetColumn(title, 1);
         header.Children().Append(title);
         closeButton = NamedIconButton(SymbolIcon{Symbol::Back}, Text(L"返回剪贴板", L"Back to clipboard"));
@@ -201,8 +202,10 @@ struct TagManager::Impl : std::enable_shared_from_this<TagManager::Impl> {
         rows = StackPanel{};
         rows.Spacing(4);
         list.Content(rows);
-        Grid::SetRow(list, 2);
-        root.Children().Append(list);
+        const auto group = AuxiliaryGroup(list);
+        group.Padding(UniformThickness(AuxiliaryGap));
+        Grid::SetRow(group, 2);
+        root.Children().Append(group);
 
         status = MakeText(L"", 12);
         feedback = InfoBar{};

@@ -21,6 +21,9 @@ inline constexpr double TagContentHeight = 420;
 inline constexpr double ManagementMinHeight = 320;
 inline constexpr double CompactActionSize = 32;
 inline constexpr double CompactIconSize = 16;
+inline constexpr double AuxiliaryInset = 16;
+inline constexpr double AuxiliaryGap = 8;
+inline constexpr double AuxiliaryActionHeight = 36;
 inline constexpr double TabFontSize = 14;
 inline constexpr double TabMaxWidth = 128;
 inline constexpr double ManagementRowRadius = 8;
@@ -183,6 +186,34 @@ inline void InstallAppearanceResources() {
           </Style>
           <Style x:Key="VPaste.ReaderCanvas" TargetType="Grid">
             <Setter Property="Background" Value="{ThemeResource ApplicationPageBackgroundThemeBrush}"/>
+          </Style>
+        )" LR"(
+          <Style x:Key="VPaste.AuxiliaryReadingSurface" TargetType="Grid">
+            <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}"/>
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="12"/>
+          </Style>
+          <Style x:Key="VPaste.AuxiliaryGroup" TargetType="Border">
+            <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}"/>
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="12"/>
+          </Style>
+          <Style x:Key="VPaste.AuxiliaryFooter" TargetType="Border">
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
+            <Setter Property="BorderThickness" Value="0,1,0,0"/>
+            <Setter Property="Padding" Value="0,12,0,0"/>
+          </Style>
+          <Style x:Key="VPaste.AuxiliaryCaption" TargetType="Grid">
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+          </Style>
+          <Style x:Key="VPaste.AuxiliaryTitle" TargetType="TextBlock" BasedOn="{StaticResource VPaste.CompactTitle}">
+            <Setter Property="FontSize" Value="16"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
           </Style>
           <Style x:Key="VPaste.SelectedSurface" TargetType="Border" BasedOn="{StaticResource VPaste.Surface}">
             <Setter Property="BorderBrush" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
@@ -366,6 +397,70 @@ inline winrt::Microsoft::UI::Xaml::Controls::ContentDialog MakeConfirmationDialo
     dialog.CloseButtonText(cancel);
     dialog.DefaultButton(ContentDialogButton::Close);
     return dialog;
+}
+
+inline winrt::Microsoft::UI::Xaml::Controls::Button AuxiliaryClose(const winrt::hstring &label) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace winrt::Microsoft::UI::Xaml::Controls;
+    auto button = NamedIconButton(SymbolIcon{Symbol::Cancel}, label);
+    ApplyStyle(button, L"SubtleButtonStyle");
+    button.CornerRadius(UniformRadius(6));
+    Automation::AutomationProperties::SetAutomationId(button, L"AuxiliaryClose");
+    return button;
+}
+
+inline winrt::Microsoft::UI::Xaml::Controls::Grid AuxiliaryCaption(
+    const winrt::Microsoft::UI::Xaml::Controls::TextBlock &title,
+    const winrt::Microsoft::UI::Xaml::FrameworkElement &commands,
+    const winrt::Microsoft::UI::Xaml::Controls::IconElement &icon = nullptr) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace winrt::Microsoft::UI::Xaml::Controls;
+    Grid caption;
+    ApplyStyle(caption, L"VPaste.AuxiliaryCaption");
+    caption.MinHeight(AuxiliaryActionHeight); caption.ColumnSpacing(AuxiliaryGap);
+    if (icon) {
+        ColumnDefinition lead;
+        lead.Width(GridLength{1, GridUnitType::Auto});
+        caption.ColumnDefinitions().Append(lead);
+        icon.VerticalAlignment(VerticalAlignment::Center);
+        Automation::AutomationProperties::SetAccessibilityView(icon, Automation::Peers::AccessibilityView::Raw);
+        caption.Children().Append(icon);
+    }
+    ColumnDefinition end;
+    end.Width(GridLength{1, GridUnitType::Auto});
+    caption.ColumnDefinitions().Append(ColumnDefinition{});
+    caption.ColumnDefinitions().Append(end);
+    ApplyStyle(title, L"VPaste.AuxiliaryTitle");
+    title.TextWrapping(TextWrapping::NoWrap);
+    Automation::AutomationProperties::SetAutomationId(title, L"AuxiliaryTitle");
+    Grid::SetColumn(title, icon ? 1 : 0); caption.Children().Append(title);
+    commands.VerticalAlignment(VerticalAlignment::Center);
+    Grid::SetColumn(commands, icon ? 2 : 1); caption.Children().Append(commands);
+    return caption;
+}
+
+inline winrt::Microsoft::UI::Xaml::Controls::Border AuxiliaryGroup(
+    const winrt::Microsoft::UI::Xaml::UIElement &content) {
+    winrt::Microsoft::UI::Xaml::Controls::Border group;
+    ApplyStyle(group, L"VPaste.AuxiliaryGroup");
+    group.Child(content);
+    return group;
+}
+
+inline void StyleAuxiliaryAction(const winrt::Microsoft::UI::Xaml::Controls::Button &button, bool primary = false) {
+    if (primary) ApplyStyle(button, L"AccentButtonStyle");
+    button.MinHeight(AuxiliaryActionHeight); button.MinWidth(76);
+}
+
+inline winrt::Microsoft::UI::Xaml::Controls::Border AuxiliaryFooter(
+    const winrt::Microsoft::UI::Xaml::Controls::StackPanel &actions) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace winrt::Microsoft::UI::Xaml::Controls;
+    actions.Orientation(Orientation::Horizontal);
+    actions.Spacing(AuxiliaryGap);
+    actions.HorizontalAlignment(HorizontalAlignment::Right);
+    Controls::Border footer; ApplyStyle(footer, L"VPaste.AuxiliaryFooter"); footer.Child(actions);
+    return footer;
 }
 
 // The native host owns this shared brush. Transparent paint preserves hit

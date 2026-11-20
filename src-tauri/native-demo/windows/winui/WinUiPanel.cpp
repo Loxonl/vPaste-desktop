@@ -88,6 +88,7 @@ winrt::Windows::Foundation::IAsyncAction NextNativeFrame() {
 #include "WinUiCardPreview.h"
 #include "WinUiHoverPreview.h"
 #include "WinUiReader.h"
+#include "WinUiOnboarding.h"
 #include "WinUiMotion.h"
 #include "WinUiDockMotion.h"
 #include "WinUiGeometry.h"
@@ -285,6 +286,8 @@ struct Panel {
     std::unique_ptr<vpaste::winui::QueueWindow> queueWindow;
     std::unique_ptr<vpaste::winui::TrayWindow> trayWindow;
     std::unique_ptr<vpaste::winui::Reader> reader;
+    std::unique_ptr<vpaste::winui::Reader> textEditor;
+    std::unique_ptr<vpaste::winui::OnboardingView> onboarding;
     std::unique_ptr<vpaste::winui::TagManager> tagManager;
     std::unique_ptr<vpaste::winui::CardDragSource> cardDrag;
     std::unique_ptr<vpaste::winui::FilterEditor> filterEditor;
@@ -367,9 +370,6 @@ std::uint64_t g_tabOrderSaveRequest = 0, g_editorGeneration = 0;
 std::uint64_t g_tabDeleteRequest = 0;
 std::wstring g_tabDeleteOperation;
 winrt::hstring g_renderedDynamicTabs;
-HWND g_tutorialWindow = nullptr;
-std::uint64_t g_tutorialPreviewSession = 0;
-bool g_syncingTutorialBounds = false;
 struct TabDropPreview {
     std::wstring source, target;
     bool before = false;
@@ -529,8 +529,8 @@ void ApplyActiveLayout();
 void ResizeIsland() noexcept;
 void UpdateHistoryState();
 void SetVisible(bool visible, bool freshShow, bool animate = true) noexcept;
-void SetTutorialHost(HWND window, std::uint64_t previewSession = 0);
-void SyncTutorialBounds();
+void SetTutorialInteraction(bool active);
+void RemoveTutorial();
 std::optional<winrt::Windows::Foundation::Point> g_hoverPosition;
 std::wstring g_hoverHash;
 void CancelHoverPreview() {
@@ -687,7 +687,7 @@ void ApplyFormatBadgeColors(HistoryRowVisual const &row, bool contrast) {
 }
 
 void UpdateCardPreviewMotion(bool visible = true) {
-    const bool shown = visible && PanelVisible() && !g_queueViewActive && !g_tutorialWindow;
+    const bool shown = visible && PanelVisible() && !g_queueViewActive && !g_panel.onboarding;
     const bool animations = shown && vpaste::winui::NativeAnimationsEnabled();
     for (std::size_t index = 0; index < g_panel.rows.size(); ++index) {
         auto &row = g_panel.rows[index];
@@ -947,9 +947,6 @@ void UpdateShortcutLabels() {
 
 void ApplyBehavior(std::string const &bytes) {
     const auto data = winrt::Windows::Data::Json::JsonObject::Parse(winrt::to_hstring(bytes));
-    if (data.HasKey(L"tutorialWindow")) SetTutorialHost(reinterpret_cast<HWND>(
-        static_cast<std::uintptr_t>(data.GetNamedNumber(L"tutorialWindow"))),
-        static_cast<std::uint64_t>(data.GetNamedNumber(L"tutorialPreviewSession", 0)));
     if (data.HasKey(L"dockMotion") && g_panel.dockMotion)
         g_panel.dockMotion->Configure(data.GetNamedObject(L"dockMotion"));
     vpaste::winui::PanelBehavior next;
@@ -1073,6 +1070,25 @@ std::uint64_t SendRequest(const wchar_t *operation, const std::wstring &hash = {
     // Escape lets Rust close a preview before deciding whether to hide the dock.
     // Cancelling hover first would make that preview appear already closed.
     if (wcscmp(operation, L"dismiss") == 0) CancelHoverPreview();
+    return id;
+}
+
+std::uint64_t SendDocumentRequest(const wchar_t *operation, std::uint64_t generation, winrt::hstring const &document) {
+    if (!g_request) return 0;
+    if (wcscmp(operation, L"nativeEditorSave") != 0 && wcscmp(operation, L"nativeOcrCopy") != 0)
+        return SendRequest(operation, {}, false, 0, {}, {}, 0, std::to_wstring(generation));
+    if (document.size() > vpaste::winui::TextDocumentBytes || winrt::to_string(document).size() > vpaste::winui::TextDocumentBytes)
+        return 0;
+    using namespace winrt::Windows::Data::Json;
+    JsonObject request;
+    const auto id = ++g_requestId;
+    request.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(id)));
+    request.Insert(L"op", JsonValue::CreateStringValue(operation));
+    request.Insert(L"argument", JsonValue::CreateStringValue(std::to_wstring(generation)));
+    request.Insert(L"documentText", JsonValue::CreateStringValue(document));
+    const auto bytes = winrt::to_string(request.Stringify());
+    if (bytes.size() > vpaste::winui::MaxDocumentBytes) return 0;
+    g_request(reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size());
     return id;
 }
 
@@ -2401,14 +2417,35 @@ void ApplyResponse(const std::string &bytes) {
             }
             return;
         }
-        if (operation == L"tutorialPreviewFilters") {
-            if (g_tutorialWindow && g_tutorialPreviewSession && !response.HasKey(L"error")) {
-                const auto data = response.GetNamedObject(L"data");
-                if (data.GetNamedNumber(L"session", 0) == static_cast<double>(g_tutorialPreviewSession)) {
-                    g_tutorialPreviewFilters = FilterObjects(data.GetNamedArray(L"items"));
-                    RebuildDynamicTabs();
-                }
+        if (operation == L"nativeTutorialOpen" || operation == L"nativeTutorialState" || operation == L"nativeTutorialClose") {
+            const auto data = response.GetNamedObject(L"data");
+            const auto session = static_cast<std::uint64_t>(data.GetNamedNumber(L"session"));
+            if (operation == L"nativeTutorialOpen") {
+                auto view = std::make_unique<vpaste::winui::OnboardingView>(data,
+                    [](auto operation, auto const &payload) { return SendEditorRequest(operation, payload); });
+                RemoveTutorial();
+                CancelHoverPreview(); DismissFeedback(); ShowAltHints(false);
+                winrt::Microsoft::UI::Xaml::Controls::Grid::SetRow(view->Root(), 1);
+                g_panel.root.Children().Append(view->Root());
+                g_panel.onboarding = std::move(view);
+                SetTutorialInteraction(true);
+            } else if (!g_panel.onboarding || session != g_panel.onboarding->Session()) {
+                return;
             }
+            if (operation == L"nativeTutorialClose") {
+                RemoveTutorial();
+                SetVisible(true, false);
+                PostMessageW(g_panel.window, kFocusHistory, 0, 0);
+                RefreshTags(); RequestHistory();
+                return;
+            }
+            const auto items = data.GetNamedArray(L"items");
+            if (g_panel.onboarding->Preview()) {
+                g_tutorialPreviewFilters = FilterObjects(items);
+                RebuildDynamicTabs();
+            } else if (data.GetNamedBoolean(L"ready")) ApplyFilters(items);
+            if (operation == L"nativeTutorialOpen") SetVisible(true, false);
+            else g_panel.onboarding->Update(data, id);
             return;
         }
         if (operation == L"historyReset") {
@@ -2450,8 +2487,40 @@ void ApplyResponse(const std::string &bytes) {
             return;
         }
         if (operation == L"nativeReaderBegin" || operation == L"nativeReader" ||
-            operation == L"nativeReaderHide" || operation == L"nativeReaderFocus") {
+            operation == L"nativeReaderHide" || operation == L"nativeReaderFocus" ||
+            operation == L"nativeOcrState" || operation == L"nativeOcrImage" || operation == L"nativeOcrCopy") {
             if (g_panel.reader) g_panel.reader->Receive(response);
+            return;
+        }
+        if (operation == L"nativeEditorOpen") {
+            if (!g_panel.textEditor && !response.HasKey(L"error")) {
+                auto editor = std::make_unique<vpaste::winui::Reader>(
+                    [](auto const &op, auto generation, auto const &document) {
+                        return SendDocumentRequest(op.c_str(), generation, document);
+                    }, g_panel.window, true);
+                editor->SetAppearance(g_english, g_panel.root.RequestedTheme());
+                try {
+                    editor->Receive(response);
+                    g_panel.textEditor = std::move(editor);
+                } catch (...) {
+                    const auto generation = static_cast<std::uint64_t>(response.GetNamedObject(L"data").GetNamedNumber(L"generation"));
+                    (void)SendDocumentRequest(L"nativeEditorClose", generation, {});
+                    throw;
+                }
+            }
+            return;
+        }
+        if (operation == L"nativeEditorSave" || operation == L"nativeEditorRaise") {
+            if (g_panel.textEditor) g_panel.textEditor->Receive(response);
+            return;
+        }
+        if (operation == L"nativeEditorClosed") {
+            const auto generation = static_cast<std::uint64_t>(response.GetNamedObject(L"data").GetNamedNumber(L"generation"));
+            if (g_panel.textEditor && g_panel.textEditor->Generation() != generation) return;
+            g_panel.textEditor.reset();
+            // Same dock/focus decision as the shipping text editor.
+            SetVisible(true, false);
+            PostMessageW(g_panel.window, kFocusHistory, 0, 0);
             return;
         }
         if (operation == L"previewHover") {
@@ -3552,52 +3621,33 @@ void PrepareMainShow() {
     if (!g_behavior.retainCategory) SelectBuiltinCategory(0, false);
 }
 
-void SyncTutorialBounds() {
-    if (g_syncingTutorialBounds || !g_tutorialWindow || !IsWindow(g_tutorialWindow) || !g_panel.history.IsLoaded()) return;
-    const auto bounds = g_panel.history.TransformToVisual(g_panel.viewport).TransformBounds(
-        {0, 0, static_cast<float>(g_panel.history.ActualWidth()), static_cast<float>(g_panel.history.ActualHeight())});
-    const auto scale = GetDpiForWindow(g_panel.window) / 96.0;
-    POINT origin{}; winrt::check_bool(ClientToScreen(g_panel.window, &origin));
-    const int x = origin.x + static_cast<int>(std::lround(bounds.X * scale));
-    const int y = origin.y + static_cast<int>(std::lround(bounds.Y * scale));
-    const int width = std::max(1, static_cast<int>(std::lround(bounds.Width * scale)));
-    const int height = std::max(1, static_cast<int>(std::lround(bounds.Height * scale)));
-    RECT current{}; winrt::check_bool(GetWindowRect(g_tutorialWindow, &current));
-    const RECT target{x, y, x + width, y + height};
-    if (EqualRect(&current, &target)) return;
-    g_syncingTutorialBounds = true;
-    const auto placed = SetWindowPos(g_tutorialWindow, HWND_TOPMOST, x, y, width, height,
-        SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
-    g_syncingTutorialBounds = false;
-    winrt::check_bool(placed);
+void SetTutorialInteraction(bool active) {
+    g_panel.history.Opacity(active ? 0 : 1);
+    g_panel.emptyState.Opacity(active ? 0 : 1);
+    g_panel.selectionBar.Opacity(active ? 0 : 1);
+    g_panel.loading.Opacity(active ? 0 : 1);
+    g_panel.history.IsHitTestVisible(!active);
+    g_panel.emptyState.IsHitTestVisible(!active);
+    g_panel.selectionBar.IsHitTestVisible(!active);
+    g_panel.header.IsHitTestVisible(!active);
 }
 
-void SetTutorialHost(HWND window, std::uint64_t previewSession) {
-    if (window && !IsWindow(window)) winrt::throw_hresult(E_INVALIDARG);
-    g_tutorialWindow = window;
-    g_tutorialPreviewSession = window ? previewSession : 0;
+void RemoveTutorial() {
+    if (g_panel.onboarding) {
+        std::uint32_t index = 0;
+        if (g_panel.root.Children().IndexOf(g_panel.onboarding->Root(), index)) g_panel.root.Children().RemoveAt(index);
+        g_panel.onboarding.reset();
+        SetTutorialInteraction(false);
+    }
     if (g_tutorialPreviewFilters) {
         g_tutorialPreviewFilters.reset();
         RebuildDynamicTabs();
     }
-    if (window) {
-        // An owned transparent content layer, never a separate floating guide.
-        // Keep the native dock/header alive; no resident main-history WebView.
-        SetLastError(0);
-        const auto previous = SetWindowLongPtrW(window, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(g_panel.window));
-        if (!previous && GetLastError()) winrt::throw_last_error();
-        DismissFeedback(); CancelHoverPreview();
-        g_panel.root.UpdateLayout(); SyncTutorialBounds();
-    }
-    g_panel.history.Opacity(window ? 0 : 1);
-    g_panel.emptyState.Opacity(window ? 0 : 1);
-    g_panel.selectionBar.Opacity(window ? 0 : 1);
-    g_panel.root.IsHitTestVisible(!window && g_panel.dockMotion->Visible());
 }
 
 void SetVisible(bool visible, bool freshShow = true, bool animate) noexcept {
     if (!visible) UpdateCardPreviewMotion(false);
-    if (g_panel.root) g_panel.root.IsHitTestVisible(visible && !g_tutorialWindow);
+    if (g_panel.root) g_panel.root.IsHitTestVisible(visible);
     if (!visible) CancelHoverPreview();
     if (!visible && !g_panel.tagManagerViewActive) g_historyView.parkedOffset = HistoryOffset();
     if (!visible) ShowAltHints(false);
@@ -3615,7 +3665,7 @@ void SetVisible(bool visible, bool freshShow = true, bool animate) noexcept {
     if (!visible) DismissFeedback();
     if (g_panel.window != nullptr) {
         const bool entering = visible && (!g_panel.dockMotion->Visible() || IsIconic(g_panel.window));
-        if (entering && freshShow && !g_panel.tagManagerViewActive && !g_tutorialWindow) PrepareMainShow();
+        if (entering && freshShow && !g_panel.tagManagerViewActive && !g_panel.onboarding) PrepareMainShow();
         if (entering) g_panel.root.UpdateLayout();
         try { g_panel.dockMotion->SetVisible(visible, animate && !g_panel.tagManagerViewActive); }
         catch (winrt::hresult_error const &error) {
@@ -3623,12 +3673,12 @@ void SetVisible(bool visible, bool freshShow = true, bool animate) noexcept {
             ShowWindow(g_panel.window, visible ? SW_SHOW : SW_HIDE);
         }
         if (visible) {
-            if (g_tutorialWindow) { SyncTutorialBounds(); ShowWindowAsync(g_tutorialWindow, SW_SHOWNOACTIVATE); }
-            SetForegroundWindow(g_tutorialWindow ? g_tutorialWindow : g_panel.window);
+            SetForegroundWindow(g_panel.window);
+            if (g_panel.onboarding) g_panel.onboarding->Shown();
             if (entering && !g_panel.tagManagerViewActive)
                 ShowAltHints((GetAsyncKeyState(VK_MENU) & 0x8000) != 0 &&
                     ((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) == 0);
-            if (entering && !g_tutorialWindow) PostMessageW(g_panel.window, kFocusHistory, 0, 0);
+            if (entering && !g_panel.onboarding) PostMessageW(g_panel.window, kFocusHistory, 0, 0);
             UpdateCardPreviewMotion();
         }
     }
@@ -3914,7 +3964,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         ShowQueueWithoutActivation();
         return S_OK;
     case kFocusHistory: {
-        if (PanelVisible() && !g_tutorialWindow && !IsIconic(window) &&
+        if (PanelVisible() && !g_panel.onboarding && !g_panel.textEditor && !IsIconic(window) &&
             !g_panel.tagManagerViewActive && !g_deleteConfirmationOpen &&
             !NativeEditorOpen() && g_panel.history && g_panel.history.IsLoaded() &&
             g_panel.root && g_panel.root.IsLoaded()) {
@@ -3956,7 +4006,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
                                    ? winrt::Microsoft::UI::Xaml::ElementTheme::Dark
                                    : winrt::Microsoft::UI::Xaml::ElementTheme::Default;
             // Summon applies preferences on every show. An unchanged theme
-            // must not rebuild every card, file SVG and auxiliary surface.
+            // must not rebuild every card, file artwork and auxiliary surface.
             if (g_themeMode == static_cast<std::uint32_t>(wparam) && g_panel.root.RequestedTheme() == theme) return S_OK;
             g_themeMode = static_cast<std::uint32_t>(wparam);
             g_panel.root.RequestedTheme(theme);
@@ -3969,6 +4019,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
             if (g_panel.filterEditor) g_panel.filterEditor->SetTheme(theme);
             if (g_panel.recordTagEditor) g_panel.recordTagEditor->SetTheme(theme);
             if (g_panel.reader) g_panel.reader->SetAppearance(g_english, theme);
+            if (g_panel.textEditor) g_panel.textEditor->SetAppearance(g_english, theme);
         }
         return 0;
     }
@@ -4039,6 +4090,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         if (g_panel.queueWindow) g_panel.queueWindow->SetAppearance(g_english, g_panel.root.RequestedTheme());
         if (g_panel.tagManager) g_panel.tagManager->SetLanguage(g_english);
         if (g_panel.reader) g_panel.reader->SetAppearance(g_english, g_panel.root.RequestedTheme());
+        if (g_panel.textEditor) g_panel.textEditor->SetAppearance(g_english, g_panel.root.RequestedTheme());
         if (g_panel.customTabs) {
             winrt::Windows::Data::Json::JsonArray filters;
             for (const auto &draft : g_customFilters) filters.Append(draft);
@@ -4079,15 +4131,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
     }
     case WM_SIZE:
         ResizeIsland();
-        if (g_tutorialWindow) { g_panel.root.UpdateLayout(); SyncTutorialBounds(); }
         if (wparam == SIZE_MINIMIZED) (void)SendRequest(L"previewDismiss");
         return 0;
-    case WM_WINDOWPOSCHANGED:
-        SyncTutorialBounds();
-        return DefWindowProcW(window, message, wparam, lparam);
-    case WM_SHOWWINDOW:
-        if (g_tutorialWindow) ShowWindowAsync(g_tutorialWindow, wparam ? SW_SHOWNOACTIVATE : SW_HIDE);
-        return DefWindowProcW(window, message, wparam, lparam);
     case WM_SETFOCUS:
         if (g_panel.xamlSource && g_panel.history &&
             !g_panel.tagManagerViewActive && !g_deleteConfirmationOpen) {
@@ -4327,7 +4372,11 @@ HRESULT CreatePanel() noexcept {
         g_panel.searchCompositionEnded = g_panel.search.TextCompositionEnded(winrt::auto_revoke,
             [](auto const &sender, auto const &) { SearchCompositionChanged(false, sender.Text()); });
         root.PreviewKeyDown([](auto const &, auto const &args) {
-            if (g_tutorialWindow) { args.Handled(true); return; }
+            if (g_panel.onboarding) {
+                if (args.Key() == winrt::Windows::System::VirtualKey::Escape && g_panel.onboarding->CancelPreview())
+                    args.Handled(true);
+                return;
+            }
             if (!PanelVisible()) { args.Handled(true); return; }
             if (args.Key() != winrt::Windows::System::VirtualKey::Escape) CancelHoverPreview();
             vpaste::winui::MainKeyInput input;
@@ -4899,20 +4948,19 @@ HRESULT CreatePanel() noexcept {
             });
 
         phase = "create native reader";
-        g_panel.reader = std::make_unique<vpaste::winui::Reader>([](auto const &operation, auto generation) {
+        g_panel.reader = std::make_unique<vpaste::winui::Reader>([](auto const &operation, auto generation, auto const &document) -> std::uint64_t {
             if (operation == L"nativeReaderClose") {
                 // The shared command cancels hover first, then reserves the
                 // explicit close so its focus return cannot be superseded.
-                (void)SendRequest(L"previewClose");
-                return;
+                return SendRequest(L"previewClose");
             }
             if (operation == L"readerNext" || operation == L"readerPrevious" ||
                 operation == L"readerNextCategory" || operation == L"readerPreviousCategory") {
                 NavigatePreview(operation == L"readerPrevious" || operation == L"readerPreviousCategory" ? -1 : 1,
                     operation == L"readerNextCategory" || operation == L"readerPreviousCategory");
-                return;
+                return 0;
             }
-            (void)SendRequest(operation.c_str(), {}, false, 0, {}, {}, 0, std::to_wstring(generation));
+            return SendDocumentRequest(operation.c_str(), generation, document);
         }, g_panel.window);
         g_panel.reader->SetAppearance(g_english, root.RequestedTheme());
         phase = "attach panel controls";
@@ -4996,6 +5044,8 @@ void RunUiThread() noexcept {
     g_historyView = {};
     g_panel.imageExport.reset();
     g_panel.reader.reset();
+    g_panel.textEditor.reset();
+    g_panel.onboarding.reset();
     g_panel.filterEditor.reset();
     g_panel.recordTagEditor.reset();
     g_customFilters.clear();
@@ -5057,8 +5107,6 @@ void RunUiThread() noexcept {
     g_panel.header = nullptr;
     g_panel.shadowReceiver = nullptr;
     g_panel.root = nullptr;
-    g_tutorialWindow = nullptr;
-    g_tutorialPreviewSession = 0;
     g_panel.trayWindow.reset();
     g_panel.queueWindow.reset();
     g_panel.queueView.reset();
@@ -5296,7 +5344,7 @@ extern "C" __declspec(dllexport) int32_t vpaste_winui_show_queue_no_activate() n
 
 extern "C" __declspec(dllexport) void vpaste_winui_receive(
     const std::uint8_t *bytes, std::size_t length) noexcept {
-    if (bytes == nullptr || length == 0 || length > vpaste::winui::MaxResponseBytes) {
+    if (bytes == nullptr || length == 0 || length > vpaste::winui::MaxDocumentBytes) {
         return;
     }
     HWND window = nullptr;
@@ -5520,11 +5568,14 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 LR"([{"id":1,"name":"工作"},{"id":2,"name":"Notes"}])"));
             auto tagRoot = g_panel.tagManager->Root()
                 .as<winrt::Microsoft::UI::Xaml::Controls::Grid>();
-            auto tagList = tagRoot.Children().GetAt(2)
-                .as<winrt::Microsoft::UI::Xaml::Controls::ScrollViewer>();
+            const auto tagGroup = tagRoot.Children().GetAt(2)
+                .as<winrt::Microsoft::UI::Xaml::Controls::Border>();
+            auto tagList = tagGroup.Child().as<winrt::Microsoft::UI::Xaml::Controls::ScrollViewer>();
             auto tagRows = tagList.Content()
                 .as<winrt::Microsoft::UI::Xaml::Controls::StackPanel>();
-            winrt::check_hresult(tagRows.Children().Size() == 2 ? S_OK : E_FAIL);
+            winrt::check_hresult(tagGroup.CornerRadius() == vpaste::winui::UniformRadius(8) &&
+                tagGroup.BorderThickness() == vpaste::winui::UniformThickness(1) &&
+                tagRows.Children().Size() == 2 ? S_OK : E_FAIL);
             const auto tagNameAt = [&](std::uint32_t index) {
                 return tagRows.Children().GetAt(index)
                     .as<winrt::Microsoft::UI::Xaml::Controls::Border>().Child()
@@ -7945,7 +7996,8 @@ winrt::fire_and_forget RunNativePresentationRegression(
                     ResizeIsland();
                     co_await CaptureNativeView(editorHost, folder, winrt::hstring{L"custom-filter"} + suffix);
                     const auto filterForm = filterRoot.as<Grid>().Children().GetAt(1).as<ScrollViewer>().Content().as<StackPanel>();
-                    const auto sourceButton = filterForm.Children().GetAt(filterForm.Children().Size() - 1).as<DropDownButton>();
+                    const auto criteria = filterForm.Children().GetAt(1).as<Border>().Child().as<StackPanel>();
+                    const auto sourceButton = criteria.Children().GetAt(criteria.Children().Size() - 1).as<DropDownButton>();
                     const auto sourceFlyout = sourceButton.Flyout().as<Flyout>();
                     sourceFlyout.ShowAt(sourceButton);
                     co_await NextNativeFrame(); co_await NextNativeFrame();
@@ -7974,7 +8026,7 @@ winrt::fire_and_forget RunNativePresentationRegression(
                     emojiFixture.Children().Append(emojiName); emojiFixture.Children().Append(emojiTrigger); emojiFixture.Children().Append(emojiPlate);
                     g_panel.xamlSource.Content(emojiFixture); ResizeIsland();
                     co_await CaptureNativeView(emojiPlate, folder, winrt::hstring{L"name-emoji"} + suffix);
-                    vpaste::winui::Reader sampleReader([](auto const &, auto) {});
+                    vpaste::winui::Reader sampleReader([](auto const &, auto, auto const &) { return 0u; });
                     sampleReader.SetAppearance(english, english ? ElementTheme::Dark : ElementTheme::Light);
                     auto readerSample = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"op":"nativeReader","data":{
                         "generation":1,"kind":"text","text":"会议备忘 / Meeting notes\n\n确认原生界面布局\n整理本周设计参考\n同步交互与键盘操作\n\nA native reader that stays open while you browse.",
@@ -8852,17 +8904,16 @@ winrt::Windows::Foundation::IAsyncAction CheckDesktopFollowup(std::uint32_t &sta
     winrt::check_hresult(SearchText().empty() && g_searchTimer.Interval() == std::chrono::milliseconds(40) ? S_OK : E_FAIL);
     g_searchTimer.Stop();
     stage = 264;
-    const auto tutorial = CreateWindowExW(WS_EX_TOOLWINDOW, L"STATIC", L"Synthetic tutorial content",
-        WS_POPUP, 0, 0, 100, 100, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
-    winrt::check_bool(tutorial != nullptr);
-    struct Fixture { HWND window; ~Fixture() { SetTutorialHost(nullptr); DestroyWindow(window); } } fixture{tutorial};
-    SetTutorialHost(tutorial, 2);
+    struct Fixture { ~Fixture() { RemoveTutorial(); } } fixture;
     const auto savedTabs = g_customFilters.size();
-    ApplyResponse(R"({"op":"tutorialPreviewFilters","data":{"session":1,"items":[]}})");
-    winrt::check_hresult(!g_tutorialPreviewFilters ? S_OK : E_FAIL);
-    ApplyResponse(R"({"op":"tutorialPreviewFilters","data":{"session":2,"items":[{"id":"guide-test","name":"Guide","emoji":"🖼️"}]}})");
+    ApplyResponse(R"({"op":"nativeTutorialOpen","data":{"session":2,"preview":true,"mac":false,"english":true,
+        "ready":true,"shortcut":"Alt + V","filters":[],"items":[],"error":""}})");
+    ApplyResponse(R"({"op":"nativeTutorialState","data":{"session":1,"items":[{"id":"guide-test","name":"Stale"}]}})");
+    winrt::check_hresult(!DynamicTab(L"guide-test") ? S_OK : E_FAIL);
+    ApplyResponse(R"({"op":"nativeTutorialState","data":{"session":2,"ready":true,"filters":[],
+        "items":[{"id":"guide-test","name":"Guide","emoji":"🖼️"}]}})");
     winrt::check_hresult(DynamicTab(L"guide-test") && g_customFilters.size() == savedTabs ? S_OK : E_FAIL);
-    SetTutorialHost(nullptr);
+    RemoveTutorial();
     winrt::check_hresult(!DynamicTab(L"guide-test") && !g_tutorialPreviewFilters ? S_OK : E_FAIL);
     stage = 265;
 }
@@ -10045,7 +10096,7 @@ winrt::fire_and_forget RunNativeShellRegression(
             files.Append(fileCard);
         }
         result(files); co_await NextNativeFrame();
-        const auto file = JsonObject::Parse(LR"({"exists":true,"path":"report.pdf","secondary":"","fullPath":"C:/synthetic/report.pdf","label":"PDF","light":{"name":"pdf-light","svg":"<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><path d='M0 0h64v64H0z' fill='#eee'/></svg>"},"dark":{"name":"pdf-dark","svg":"<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><path d='M0 0h64v64H0z' fill='#333'/></svg>"}})");
+        const auto file = JsonObject::Parse(LR"({"exists":true,"path":"report.pdf","secondary":"","fullPath":"C:/synthetic/report.pdf","label":"PDF","light":{"name":"pdf-light","asset":"pdf"},"dark":{"name":"pdf-dark","asset":"pdf"}})");
         WindowProc(g_panel.window, kSetTheme, 1, 0);
         // Load through the viewport/detail route before measuring loaded-card
         // focus changes. An unvisited container legitimately requests details
@@ -10219,37 +10270,171 @@ winrt::fire_and_forget RunNativeShellRegression(
         }
 
         stage = 25;
-        std::fprintf(stderr, "WinUI continuity: integrated tutorial host\n");
+        std::fprintf(stderr, "WinUI continuity: native tutorial in the dock\n");
         {
-        const auto tutorial = CreateWindowExW(WS_EX_TOOLWINDOW, L"STATIC", L"Synthetic tutorial content",
-            WS_POPUP, 0, 0, 1000, 360, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
-        winrt::check_bool(tutorial != nullptr);
-        struct TutorialFixture { HWND window; ~TutorialFixture() { SetTutorialHost(nullptr); DestroyWindow(window); } } tutorialFixture{tutorial};
-        SetTutorialHost(tutorial); g_panel.root.UpdateLayout(); SyncTutorialBounds();
-        RECT initial{}; winrt::check_bool(GetWindowRect(tutorial, &initial));
+        using namespace winrt::Microsoft::UI::Xaml::Controls;
+        winrt::Windows::Storage::StorageFolder guideArtifacts{nullptr};
+        wchar_t guidePath[MAX_PATH]{};
+        const auto guidePathLength = GetEnvironmentVariableW(L"VPASTE_WINUI_AUXILIARY_ARTIFACT_DIR", guidePath, MAX_PATH);
+        if (guidePathLength > 0 && guidePathLength < MAX_PATH)
+            guideArtifacts = co_await winrt::Windows::Storage::StorageFolder::GetFolderFromPathAsync(guidePath);
+        ApplyResponse(R"({"op":"nativeTutorialOpen","data":{"session":105,"ready":true,"preview":true,"mac":false,"english":true,
+            "shortcut":"Alt + V","items":[{"id":"tutorial-filter-text","name":"Text","filter":{"itemType":"Text"}}],
+            "filters":[{"id":"text","name":"Text","enabled":true},{"id":"image","name":"Image","enabled":false},
+                       {"id":"link","name":"Link","enabled":true},{"id":"file","name":"File","enabled":true},{"id":"color","name":"Color","enabled":false}],"error":""}})");
         stage = 251;
-        winrt::check_hresult(IsWindowVisible(g_panel.window) && GetWindow(tutorial, GW_OWNER) == g_panel.window &&
-            initial.right - initial.left > 0 && initial.bottom - initial.top > 0 &&
-            g_panel.history.Opacity() == 0 && !g_panel.root.IsHitTestVisible() ? S_OK : E_FAIL);
-        RECT dock{}; winrt::check_bool(GetWindowRect(g_panel.window, &dock));
-        winrt::check_bool(SetWindowPos(g_panel.window, nullptr, dock.left, dock.top + 10, 0, 0,
-            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER));
-        RECT moved{}; winrt::check_bool(GetWindowRect(tutorial, &moved));
+        winrt::check_hresult(g_panel.onboarding && g_panel.onboarding->Session() == 105 ? S_OK : E_FAIL);
+        const auto guide = g_panel.onboarding->Root();
+        co_await AwaitNativeLoaded(guide);
+        winrt::check_hresult(guide.XamlRoot() == g_panel.history.XamlRoot() &&
+            g_panel.history.Opacity() == 0 && !g_panel.header.IsHitTestVisible() && g_panel.root.IsHitTestVisible() ? S_OK : E_FAIL);
         stage = 252;
-        std::fprintf(stderr, "WinUI guide follows: initial=(%ld,%ld)-(%ld,%ld) moved=(%ld,%ld)-(%ld,%ld)\n",
-            initial.left, initial.top, initial.right, initial.bottom, moved.left, moved.top, moved.right, moved.bottom);
-        winrt::check_hresult(moved.top == initial.top + 10 && moved.bottom == initial.bottom + 10 ? S_OK : E_FAIL);
+        g_panel.root.UpdateLayout();
+        co_await NextNativeFrame();
+        const auto bounds = guide.TransformToVisual(g_panel.root).TransformBounds({0, 0,
+            static_cast<float>(guide.ActualWidth()), static_cast<float>(guide.ActualHeight())});
+        const auto history = g_panel.history.TransformToVisual(g_panel.root).TransformPoint({0, 0});
+        std::fprintf(stderr, "WinUI tutorial layout: guide=(%.1f,%.1f %.1fx%.1f) history=(%.1f,%.1f)\n",
+            bounds.X, bounds.Y, bounds.Width, bounds.Height, history.X, history.Y);
+        winrt::check_hresult(std::abs(bounds.Y - history.Y) < 2 && bounds.Width > 0 && bounds.Height > 0 ? S_OK : E_FAIL);
+        const auto tutorialPage = [&] {
+            return guide.as<ContentControl>().Content().as<ScrollViewer>().Content().as<Grid>();
+        };
+        const auto welcome = tutorialPage().Children().GetAt(0).as<StackPanel>();
+        const auto wide = guide.ActualWidth() > 900;
+        winrt::check_hresult(welcome.Orientation() == (wide ? Orientation::Horizontal : Orientation::Vertical) &&
+            welcome.Children().GetAt(0).as<Grid>().Children().GetAt(0).as<Image>().Height() == 118 &&
+            welcome.Children().GetAt(1).as<StackPanel>().Children().GetAt(2).as<Border>().Width() == 86 ? S_OK : E_FAIL);
+        if (guideArtifacts) co_await CaptureNativeView(guide, guideArtifacts, L"guide-welcome.png");
+        stage = 2521;
+        ApplyResponse(R"({"op":"nativeTutorialClose","data":{"session":104}})");
+        winrt::check_hresult(g_panel.onboarding && g_panel.onboarding->Root() == guide ? S_OK : E_FAIL);
         SetVisible(false, false, false);
         stage = 253;
         co_await NextNativeFrame();
-        winrt::check_hresult(!IsWindowVisible(tutorial) ? S_OK : E_FAIL);
+        winrt::check_hresult(!IsWindowVisible(g_panel.window) && g_panel.onboarding->Root() == guide ? S_OK : E_FAIL);
         SetVisible(true, false, false);
         stage = 254;
         co_await NextNativeFrame();
-        winrt::check_hresult(IsWindowVisible(tutorial) && !g_panel.root.IsHitTestVisible() ? S_OK : E_FAIL);
-        SetTutorialHost(nullptr);
+        winrt::check_hresult(IsWindowVisible(g_panel.window) && g_panel.onboarding->Root() == guide &&
+            !g_panel.history.IsHitTestVisible() ? S_OK : E_FAIL);
+        stage = 2541;
+        auto filter = FindHistoryChild<ToggleSwitch>(guide);
+        const auto filtersDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!filter && std::chrono::steady_clock::now() < filtersDeadline) {
+            co_await NextNativeFrame();
+            filter = FindHistoryChild<ToggleSwitch>(guide);
+        }
+        winrt::check_hresult(filter ? S_OK : HRESULT_FROM_WIN32(ERROR_TIMEOUT));
+        const auto choices = tutorialPage().Children().GetAt(1).as<Grid>();
+        const auto centeredGuide = [&] {
+            const auto page = tutorialPage();
+            const auto left = page.TransformToVisual(guide).TransformPoint({0, 0}).X;
+            return std::abs(2 * left + page.ActualWidth() - guide.ActualWidth()) < 2;
+        };
+        const auto switchesFit = [&] {
+            constexpr bool enabled[]{true, false, true, true, false};
+            for (std::uint32_t i = 0; i < choices.Children().Size(); ++i) {
+                const auto tile = choices.Children().GetAt(i).as<Border>();
+                const auto control = FindHistoryChild<ToggleSwitch>(tile);
+                if (!control || control.IsOn() != enabled[i] ||
+                    control.ReadLocalValue(FrameworkElement::StyleProperty()) != DependencyProperty::UnsetValue() ||
+                    control.ActualWidth() < 40 ||
+                    control.ActualWidth() > tile.ActualWidth() || !control.IsHitTestVisible() || !control.IsTabStop()) return false;
+            }
+            return true;
+        };
+        // Rendering event counts are refresh-rate dependent. Observe the
+        // settled geometry and the loaded switch templates before measuring.
+        while ((!centeredGuide() || !switchesFit()) && std::chrono::steady_clock::now() < filtersDeadline)
+            co_await NextNativeFrame();
+        winrt::check_hresult(filter && filter.IsOn() && choices.Children().Size() == 5 &&
+            choices.ColumnDefinitions().Size() == (wide ? 5u : 0u) &&
+            Grid::GetColumn(choices) == (wide ? 1 : 0) && centeredGuide() && switchesFit() ? S_OK : E_FAIL);
+        if (wide) {
+            stage = 25414;
+            guide.Width(640); guide.UpdateLayout(); co_await NextNativeFrame();
+            winrt::check_hresult(choices.RowDefinitions().Size() == 5 &&
+                Grid::GetColumn(choices) == 0 && filter.IsOn() && centeredGuide() && switchesFit() ? S_OK : E_FAIL);
+            stage = 25415;
+            guide.Width(1320); guide.UpdateLayout(); co_await NextNativeFrame();
+            winrt::check_hresult(choices.ColumnDefinitions().Size() == 5 &&
+                std::abs(tutorialPage().ActualWidth() - 1080) < 2 && centeredGuide() ? S_OK : E_FAIL);
+            guide.ClearValue(FrameworkElement::WidthProperty()); guide.UpdateLayout(); co_await NextNativeFrame();
+            winrt::check_hresult(choices.ColumnDefinitions().Size() == 5 && Grid::GetColumn(choices) == 1 ? S_OK : E_FAIL);
+        }
+        if (guideArtifacts) co_await CaptureNativeView(guide, guideArtifacts, L"guide-filters.png");
+        stage = 25411;
+        winrt::Microsoft::UI::Xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(filter)
+            .GetPattern(winrt::Microsoft::UI::Xaml::Automation::Peers::PatternInterface::Toggle)
+            .as<winrt::Microsoft::UI::Xaml::Automation::Provider::IToggleProvider>().Toggle();
+        co_await NextNativeFrame();
+        const auto lastPayload = [&](std::wstring_view op) {
+            for (auto message = requests.rbegin(); message != requests.rend(); ++message) {
+                auto value = JsonObject::Parse(winrt::to_hstring(*message));
+                if (value.GetNamedString(L"op") == op) return value;
+            }
+            return JsonObject{nullptr};
+        };
+        const auto toggle = lastPayload(L"tutorialToggle");
+        winrt::check_hresult(toggle && toggle.GetNamedString(L"filter") == L"text" &&
+            !toggle.GetNamedBoolean(L"enabled") && toggle.GetNamedNumber(L"session") == 105 ? S_OK : E_FAIL);
+        stage = 25412;
+        const auto invokeGuideAction = [&](wchar_t const *label) {
+            const auto content = tutorialPage();
+            const auto action = content.Children().GetAt(content.Children().Size() - 1).as<Button>();
+            winrt::check_hresult(Grid::GetColumn(action) == (wide ? 2 : 0) && action.MinHeight() == 44 ? S_OK : E_FAIL);
+            winrt::check_hresult(winrt::unbox_value<winrt::hstring>(action.Content()) == label ? S_OK : E_FAIL);
+            winrt::Microsoft::UI::Xaml::Automation::Peers::ButtonAutomationPeer(action)
+                .GetPattern(winrt::Microsoft::UI::Xaml::Automation::Peers::PatternInterface::Invoke)
+                .as<winrt::Microsoft::UI::Xaml::Automation::Provider::IInvokeProvider>().Invoke();
+        };
+        invokeGuideAction(L"Next");
+        auto practice = lastPayload(L"tutorialDemo");
+        for (int frame = 0; frame < 15 && (!practice || !practice.GetNamedBoolean(L"enabled")); ++frame) {
+            co_await NextNativeFrame();
+            practice = lastPayload(L"tutorialDemo");
+        }
+        winrt::check_hresult(practice && practice.GetNamedBoolean(L"enabled") ? S_OK : E_FAIL);
+        stage = 25413;
+        co_await NextNativeFrame();
+        // The shipped shortcut SVG already owns the illustrated surface.
+        const auto shortcutStage = tutorialPage().Children().GetAt(1).as<Grid>();
+        const auto illustration = shortcutStage.Children().GetAt(0).try_as<Image>();
+        winrt::check_hresult(illustration && illustration.Source() && illustration.Height() == 162 &&
+            shortcutStage.Children().GetAt(1).try_as<Grid>() ? S_OK : E_FAIL);
+        if (guideArtifacts) co_await CaptureNativeView(guide, guideArtifacts, L"guide-shortcut.png");
+        invokeGuideAction(L"Finish");
+        for (int frame = 0; frame < 15 && !lastPayload(L"tutorialFinish"); ++frame) co_await NextNativeFrame();
+        winrt::check_hresult(lastPayload(L"tutorialFinish") && !guide.as<ContentControl>().Content() ? S_OK : E_FAIL);
+        ApplyResponse(R"({"op":"nativeTutorialClose","data":{"session":105}})");
         stage = 255;
-        winrt::check_hresult(g_panel.root.IsHitTestVisible() && g_panel.history.Opacity() == 1 ? S_OK : E_FAIL);
+        winrt::check_hresult(!g_panel.onboarding && !g_tutorialPreviewFilters &&
+            g_panel.header.IsHitTestVisible() && g_panel.history.IsHitTestVisible() && g_panel.history.Opacity() == 1 ? S_OK : E_FAIL);
+
+        stage = 256;
+        ApplyResponse(R"({"op":"nativeTutorialOpen","data":{"session":106,"ready":true,"preview":true,"mac":true,
+            "english":true,"shortcut":"Option + V","items":[],"filters":[],"error":"",
+            "permissions":{"background":{"done":true},"paste":{"done":true}}}})");
+        winrt::check_hresult(g_panel.onboarding && g_panel.onboarding->Session() == 106 ? S_OK : E_FAIL);
+        const auto macGuide = g_panel.onboarding->Root();
+        Grid permissionPage{nullptr};
+        const auto permissionsDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        do {
+            const auto page = macGuide.as<ContentControl>().Content().as<ScrollViewer>().Content().as<Grid>();
+            if (page.Children().Size() >= 4) { permissionPage = page; break; }
+            co_await NextNativeFrame();
+        } while (std::chrono::steady_clock::now() < permissionsDeadline);
+        winrt::check_hresult(permissionPage && permissionPage.Children().GetAt(1).as<Grid>().Children().Size() == 2 ?
+            S_OK : E_FAIL);
+        const auto permissions = permissionPage.Children().GetAt(1).as<Grid>();
+        for (auto const &element : permissions.Children()) {
+            const auto image = element.as<Border>().Child().as<Grid>().Children().GetAt(0).as<Border>()
+                .Child().as<Grid>().Children().GetAt(0).as<Image>();
+            winrt::check_hresult(image.Source() && image.Height() == 92 ? S_OK : E_FAIL);
+        }
+        if (guideArtifacts) co_await CaptureNativeView(macGuide, guideArtifacts, L"guide-permissions.png");
+        ApplyResponse(R"({"op":"nativeTutorialClose","data":{"session":106}})");
         }
         co_await vpaste::winui::TestCardPreviewControls(g_panel.root, stage);
         completion->set_value({S_OK, stage});
@@ -10266,7 +10451,8 @@ extern "C" __declspec(dllexport) int32_t vpaste_winui_test_shell_parity(std::uin
     if (!g_dispatcher.DispatcherQueue().TryEnqueue([completion] { RunNativeShellRegression(completion); })) return E_FAIL;
     // Artifact captures deliberately settle 400 ms each before saving. Keep
     // the ordinary regression deadline; allow its optional screenshot batch.
-    const auto timeout = GetEnvironmentVariableW(L"VPASTE_WINUI_ARTIFACT_DIR", nullptr, 0)
+    const auto timeout = (GetEnvironmentVariableW(L"VPASTE_WINUI_ARTIFACT_DIR", nullptr, 0) ||
+        GetEnvironmentVariableW(L"VPASTE_WINUI_AUXILIARY_ARTIFACT_DIR", nullptr, 0))
         ? std::chrono::seconds(60) : std::chrono::seconds(15);
     if (result.wait_for(timeout) != std::future_status::ready) return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
     const auto [status, completedStage] = result.get(); *stage = completedStage;

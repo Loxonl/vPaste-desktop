@@ -1,6 +1,6 @@
 # Windows WinUI current parity and desktop acceptance
 
-Audit date: 2026-11-15; latest desktop-report follow-up: 2026-11-19. Closeout base: `3153543` (PR 381), including the earlier
+Audit date: 2026-11-15; latest desktop-report follow-up: 2026-11-20. Closeout base: `3153543` (PR 381), including the earlier
 `c573d83` (PR 379) implementation. The follow-up is recorded below.
 This is the current acceptance index; [windows-winui-parity.md](windows-winui-parity.md)
 retains the chronological implementation and regression history.
@@ -8,7 +8,8 @@ retains the chronological implementation and regression history.
 The reference UI is the shipping **React WebView**, not Vue. Preserve its
 layout, operations and Rust behavior; use actual WinUI controls for native
 input, menus and dialogs. This audit does not switch the default renderer,
-remove the WebView implementation, change distribution or benchmark Release.
+remove the WebView implementation or change distribution. The later local
+Release memory comparison is recorded separately below.
 
 For D1–D8 results and later acceptance work, see the
 [concrete differences and decision list](windows-winui-next-decisions.md).
@@ -125,6 +126,104 @@ mode. The React paste-fallback notice is not the native card error route.
   advances each time. Also verify physical drag/drop, edge scroll and
   cancellation with motion enabled and disabled, and the toolbar weight on
   screen in both themes.
+
+## 2026-11-19 Release memory comparison
+
+**A:** Built optimized x64 from `c4d8a6d` with the production frontend and the
+local-only `winui-acceptance` feature. On Windows 11 build 26300, used the same
+executable, WinUI DLL and 500-record fixture for both backends, in separate
+marked portable profiles on a non-input desktop. Clipboard capture, hotkeys,
+startup reconciliation and updater activity were excluded. Tray and preview
+warmup policies were left intact; neither backend was trimmed or reset during
+a run. The ordinary Debug session was left running.
+
+The fixture includes Text, image, file, link, rich-text, GIF and large-text
+records. Each cloned profile includes the hash-named internal thumbnails;
+without those, the shared materializer can legitimately display an existing
+original as a File instead of an Image. That setup error invalidated the first
+trial as a mixed-image benchmark. The corrected pair (`winui-media3`,
+`webview-media3`) verified the first mixed result, 12 category changes,
+two identical horizontal-scroll sequences and two Settings/PDF open-close
+cycles per renderer. Category tests temporarily used the App's existing blur
+suppression in both modes; physical focus and motion were not assessed.
+
+| Private commit in MiB, matched pair | WinUI | WebView |
+| --- | ---: | ---: |
+| Settled first page, main process | 239.6 | 27.9 |
+| Settled first page, complete process tree | 410.6 | 510.3 |
+| 8–15 seconds after the second close, main process | 335.1 | 45.1 |
+| 8–15 seconds after the second close, complete process tree | 562.8 | 650.9 |
+| Highest observed sample with PDF open, complete process tree | 1,110.0 | 979.4 |
+
+Use medians for settled windows. First-page tree medians across three corrected
+starts per renderer were **410–414 MiB WinUI vs 508–516 MiB WebView**. WinUI
+starts with a smaller tree, not a smaller main process: XAML/media live inside
+that process, whereas WebView keeps much of the footprint in descendants.
+With PDF open, both trees approached or passed 1 GiB across the corrected runs.
+Settings was destroyed in both modes. WinUI destroyed the PDF fallback while
+WebView hid and retained its reader; WinUI's WebView2 environment and warmed
+tray could still have resident children after closing. The two cycles do not
+prove a leak or its absence, and the historical ~600 MiB Debug main-process
+report was not reproduced as a Release host plateau. The peak WinUI host
+sample in the matched pair was 356.7 MiB.
+
+**A/M — category latency:** Off-desktop WinUI UI Automation selection includes
+a repeatable ~2-second wait before its selection observation. It verifies the
+result and scroll, but cannot stand in for physical click latency. The
+WebView's programmatic click-to-result DOM samples were about 150–181 ms in
+the matched pair; its DOM and WinUI automation endpoints are not a frame
+timing comparison. A separate run of the current Debug binary, on the same
+marked fixture, logged 18 category switches over three batches. The last
+batch started more than two minutes after launch. Native request dispatch
+to response took **8.3–14.4 ms**; applying 36 card rows took **46.3–79.3 ms**.
+One cold-start response took 331.6 ms during concurrent fixture startup work;
+it is not a warm-tab sample or a proven database stall. No reproduced warm
+half-second delay justified changing query/cache/animation behavior. Capture
+physical selection and first presented frame with the real history if it
+recurs; these tests do not certify desktop motion or long-run memory.
+
+Raw fixtures, inputs, logs and samples are under ignored
+`.codex/tmp/winui-phase3-release/`. The read-only memory observer timestamps
+samples and discards a complete interval if a descendant disappears mid-read;
+it does not count a partial tree or silently accept a lost root. Its isolated
+regression reproduced the old failure and verified the new sample/exit rules.
+Working-set sums remain diagnostic and can count shared pages more than once.
+Some cold fixture starts logged a search-index publication error; the category
+results above did not depend on keyword search. Do not treat this as search-index
+or installed-package acceptance.
+
+### 2026-11-19 follow-up: pre-rasterized native file icons
+
+**S/U/X:** WinUI card and file-reader artwork uses the original manifest,
+theme association and product glyphs, rasterized to PNG at build time and
+embedded in the existing DLL. The v4 bridge sends the logical name and asset
+ID, not SVG markup. WebView and opened file/image/PDF content are unchanged.
+All 635 resource IDs were looked up against the built DLL and matched the
+generated PNG bytes. The native regression rendered eight representative
+assets in both themes, checked sharing across aliases, and retained the
+card/reader layout and missing-file behavior. Physical DPI and focus remain
+**M**; Windows did not grant physical foreground focus to the test desktop.
+
+**A:** On the same machine, compared optimized x64 builds from `c4d8a6d`
+and this change with cloned 500-record profiles (18 File items interleaved
+in the first page; 14 extension variants). Both arms used the existing blur
+suppression on isolated desktops and confirmed the same first File card by
+UI Automation before three settled samples. Orders were new–old, then
+old–new. The figures below are medians in MiB for the main process, **not**
+total process-tree memory. The workload is deliberately file-heavy.
+
+| Metric | Pair 1: old → new | Pair 2: old → new |
+| --- | ---: | ---: |
+| Private commit | 539.1 → 131.8 | 536.0 → 129.8 |
+| Working set | 563.6 → 174.9 | 576.6 → 172.9 |
+
+**X:** Two separate Release DLL component pairs independently measured
+254.2–254.6 → 122.9–123.5 MiB private commit after realizing the same nine
+file types by horizontal scrolling. This separates icon rendering from the
+database and WebView2 children; it is not an estimate of savings for every
+history or proof of a leak. The uncompressed Release EXE + DLL grew by about
+1.6 MiB. Raw samples are under ignored `.codex/tmp/winui-memory-attribution/`;
+the initial resource-name and visibility attempts were excluded.
 
 ## #389 closeout: main flows, windows and focus
 
@@ -598,11 +697,11 @@ pass. Reuse this matrix instead of repeatedly declaring generic phases done.
 | --- | --- | --- | --- |
 | Common native reader and continuous navigation | [Shared preview][main], [reader routing][reader-route], [native reader][reader] | S, U, X: real history payloads, reused reader HWND, stale generations, sizing, content release and toolbar/glyph key ownership | M: hold Space, rapidly navigate across differently sized content, close and continue keyboard input. The synthetic posted-Space path explicitly skipped when Windows denied foreground activation. |
 | Hover preview, pin and close races | [Shared preview][main], [preview adapter][preview], [reader route][reader-route] | S, U, X; A verifies WebView fallback pin protection and three cold close/reopen cycles | M: cross between the real card/reader, pin/unpin, switch apps and ensure no stale reopen. A fallback-window test does not establish native pointer hover. |
-| Rich HTML, links, PDF, OCR and oversized content | [Shared preview][main], [native fallback decision][reader-route] | S, U; A: visible rich-preview replacement reuses its renderer, close retires it | On-demand WebView is intentional for fidelity. M: both native-to-WebView and WebView-to-native handoff with real files and links. |
+| Rich HTML, links, PDF and oversized content | [Shared preview][main], [native fallback decision][reader-route] | S, U; A: visible rich-preview replacement reuses its renderer, close retires it | On-demand WebView is intentional for fidelity. M: both native-to-WebView and WebView-to-native handoff with real files and links. OCR is now separate and native. |
 | External text/link/image/multi-file drag | [WebView drag][web-drag], [native drag][drag], [Rust payload][drag-route] | S, U, X: original paths/full text, multi-file payloads, native data-package/deferral ownership and cancellation | M: Explorer/Directory Opus, OneNote and browser targets; cancel mid-drag and verify ordinary Windows file dragging still works. A cursor or accepted drop effect does not prove insertion. |
 | Auto-hide and internal focus | [Shared focus/hide][main], [native blur policy][focus], [panel][panel] | S, U, X: generation, suppression, drag/modal/internal-window and protected-preview guards | M: outside click, app switching, taskbar/tray activation and auxiliary close. The isolated fixture suppresses blur hiding, so its lifecycle pass is not auto-hide acceptance. |
 | React settings lifetime | [Settings window][main], [Config][config] | S, A: close destroys the window and reopening creates a new instance | Keep current React/MUI settings. No native settings migration or resident settings/main WebView. |
-| Onboarding and shortcut practice | [Existing tutorial host][guide], [native positioning/shortcut route][guide-route] | S, U; native content-host regression covers ownership, bounds, movement, hide/restore and input restoration | The shipping tutorial is a temporary transparent owned content layer over the retained native dock, without a separate guide card or taskbar entry. Completion destroys that layer. M: actual tutorial layout, Alt+V practice and positioning on real monitors. |
+| Onboarding and shortcut practice | [WebView behavior reference][guide], [native shortcut/config adapter][guide-route] | S, U, X: shared settings schema, first-run defaults, safe Debug draft, same XAML root and restored history input | No guide HWND/WebView in WinUI mode. M: actual tutorial layout, Alt+V practice, motion and positioning on real monitors. |
 
 ## Settings propagation and platform contracts
 
@@ -988,6 +1087,21 @@ Follow-up evidence is under ignored
   DWM/backdrop and mixed-DPI acceptance still belong to the manual pass below.
   No GitHub Actions were added, modified or dispatched.
 
+### Native text editing, onboarding and OCR (2026-11-19)
+
+| Scenario | Evidence and remaining checks |
+| --- | --- |
+| Edit and save a plain-text record | **S/U:** the native editor loads the same document revision and calls the same save transaction/event as WebView. Existing rich-format, duplicate and changed-record tests pass. **X:** the native editor opens separately, blocks save for an unchanged draft, shows the discard dialog, and retains text on a stale-revision response. Rich documents still open in the existing HTML/RTF editor by design. **M:** F2/menu entry, Chinese IME, real save/focus return and rich-format round trip. |
+| Open and complete the guide | **S/U:** the native guide keeps the existing tab schema, first-run defaults and saved empty choice, and isolates Debug drafts. **X:** shared XAML root and history bounds, same instance across hide/restore, saved-tab projection, stale-session rejection, and native switch, Next and Finish events. **A:** a marked Debug App passed preference completion, settings destruction/recreation and no main/tutorial WebView target in the lifecycle check. **M:** real Alt+V or configured shortcut, Windows/Mac Debug steps, DPI and welcome/finish motion. |
+| Edit and copy the OCR result | **S/U:** same original image/preview resource, OCR recognition queue, 500 ms polling interval and explicit copy/history operation. **X:** OCR reuses the native reader, starts unpinned, lets the text field own navigation, preserves an edited draft across updates, and handles a copy failure and late post-close response. **M:** actual recognized language, copying selection/all into another app and history, pin and focus behavior. The synthetic XAML case does not access the user's clipboard. |
+
+The Debug App test used an isolated desktop and synthetic history. No results
+from automated checks are claimed as physical input, DWM motion or DPI passes.
+Validation: 510 focused frontend/WebView tests and 98 focused Rust tests;
+the complete native shell (stage 257) and history/queue (stage 153) suites
+passed on separate desktops. The OS-dependent posted-Space check was skipped
+without foreground activation.
+
 Earlier stage-2/3 evidence is under ignored
 `src-tauri/tmp/winui-parity-stages123-20261115/`:
 
@@ -1017,15 +1131,15 @@ Earlier stage-2/3 evidence is under ignored
 
 ### Native Windows tray menu
 
-**S:** Windows WinUI mode opens a lazy popup on the existing WinUI STA,
+**S:** Windows WinUI mode now opens a lazy popup on the existing WinUI STA,
 without showing the main panel or warming a tray WebView. The tray icon, its
 paused indicator, existing Rust commands, captions and order are unchanged.
 The base surface is 200 × 154 DIP (8-DIP fit margin, 36-DIP state row and
 34-DIP actions); a ready update adds one row. Settings uses the popup's
 monitor. The legacy Windows renderer and macOS retain their WebView paths.
 The popup uses WinUI buttons and system acrylic with a solid themed fallback;
-DWM supplies the outer frame. Opening and closing do not add app-authored
-animation.
+DWM supplies the outer frame. There is no product-authored opacity/slide
+animation for opening or closing.
 
 **U:** `tray_restart_row_matches_webview_readiness` covers ready,
 installing, portable and Store results. Source and React tests cover the WinUI
@@ -1036,8 +1150,10 @@ route, no WinUI prewarm, shared command dispatch and unchanged legacy menu.
 fonts, both languages and pause states, one extra update row, negative-origin
 placement at 100/125/150% simulated DPI, pending action guards, Settings
 coordinates, and Escape/deactivation/outside-press dismissal. Ordinary shell
-(257) and history/queue (153) passed in separate processes. Windows did not
-grant foreground for the posted-Space assertion.
+(257) and history/queue (153) also passed in separate processes; the history
+suite passed when rerun alone after an existing editor frame assertion failed
+during parallel build. Windows did not grant foreground for the posted-Space
+assertion.
 
 **A:** A marked, empty Debug profile ran `--memory-profile-tray-check` on an
 isolated desktop. The normal app route reported `webview_created=false` and
@@ -1048,6 +1164,117 @@ does not use the user's history or clipboard.
 the icon's pause mark, Settings and Show Main, Escape/outside dismissal, and
 the frame/shadow on actual light/dark, high-contrast and mixed-DPI monitors.
 The visual preview was the design reference, not compositor capture.
+
+### Properties-style auxiliary windows and WebView guide design (2026-11-20)
+
+- **S:** Native preview, plain-text editor, OCR, both tag forms and tag management
+  share the [auxiliary window standard](../development/windows-winui-bridge.md#properties-style-auxiliary-surfaces).
+  Forms keep their existing save, cancel, copy and pin commands. The native
+  guide separately uses the React reference's welcome, step layout, artwork,
+  filter tiles and motion; the native controls keep the same Rust session and
+  preference route. Rich-text editing and browser-based preview fallbacks are
+  unchanged.
+- **U:** 720 focused frontend/source checks and 72 WinUI Rust checks passed.
+  The unrelated release-script mocks were excluded from the focused pass; the
+  full run needs local `jq` for those mocks.
+- **X:** The reader-specific regression (12475), full history/queue (153), and
+  native shell (257) passed on separate desktops. Reader checks cover the
+  editing/reading surfaces, copy/save/close, a poll arriving before the OCR
+  edit notification, and in-place preview geometry. Tag checks retain source
+  filtering and save/cancel. Guide checks cover welcome, five filter toggles,
+  640/980-DIP reflow, permission artwork, shortcut practice and returning to
+  the panel, including reduced motion. Light/dark captures render XAML only;
+  they do not capture the DWM backdrop or shadow.
+- **A:** The marked isolated Debug App completed and persisted onboarding,
+  verified Settings close/reopen and the existing preview fallback lifecycle,
+  and reported no main-panel or guide WebView. It did not read the user's
+  history or capture/paste to another app.
+- **M:** Confirm actual acrylic, shadow and motion on the desktop, mixed DPI,
+  physical Alt+V and IME, and live copy/focus return. The isolated desktop did
+  not get foreground, so posted Space is not a physical keyboard pass.
+
+### Caption, guide alignment and Chrome duplicate-capture follow-up
+
+| Evidence | Observed result |
+| --- | --- |
+| **S** — Window chrome | The shared native caption uses a themed bottom separator. Preview titles and pin-only chrome agree between the native reader and WinUI's browser fallback, without covering PDF content. OCR uses its existing scan icon, aligned section headings and equal-height panes. Plain-text editing uses stock Cancel and accent Save; formatting-preserving editing and the shipping WebView toolbar stay on their existing paths. |
+| **S** — Guide and capture | Center the branded guide in its viewport, use five stock `ToggleSwitch` controls, and keep only the icon on the Windows Debug entry. Preserve tutorial drafts and actions. Both Windows renderers use [one capture worker](../../../src-tauri/src/clipboard/windows/listen.rs); the older QQ fix matched exact text within 50 ms. A Chrome-only 100-ms grace additionally checks the complete HTML selection when the plain formats differ, with existing source and queue-epoch guards. No old records are removed. |
+| **U** — Regression tests | 55 focused frontend/source and 72 WinUI Rust tests passed. Clipboard capture passed 35 tests, including two-stage linked selections up to 86 ms apart, one rich record/queue insertion, and rejection of partial text or a different owner. Seven system-clipboard tests stopped at isolated window-station creation before exercising capture. Style, formatting, native Debug build and asset checks passed. |
+| **X** — Loaded XAML | Reader and full shell passed on isolated desktops, including the reduced-motion shell. Checked caption stroke, OCR pane geometry, editor button styles, and five guide tiles through 640-DIP reflow and the centered 1,080-DIP content cap at 1,320 DIPs. Inspected light/dark and guide captures; XAML PNGs omit the DWM material. |
+| **A** — Isolated App | A marked, empty Debug profile verified the fallback title and single pin, visible replacement, close/reopen, Settings recreation, and saved guide completion with no main-panel or guide WebView. Focused browser visuals passed (21 directly and one existing first-run case on retry), including PDF/link toolbar and Escape with normal/reduced motion. |
+| **M** — Physical desktop | Repeat the reported Chrome linked selection once: expect one rich card with the link retained; then copy a different selection to check it stays separate. Also check OCR light/dark alignment, editor Save/Cancel, preview title/pin, and the guide switches at the real DPI. Live Chrome, compositor material, physical keyboard and focus are not established by the fixtures. |
+
+### Consistent preview/editor spacing and tray opening focus
+
+- **S:** Native previews leave an 8-DIP gutter below the caption and plain
+  reading text uses the rich preview's text insets. OCR and the native text
+  editor separate their field labels from the caption and body. Only the
+  Windows WinUI rich-editor fallback uses the matching caption, edit glyph
+  and footer; the document transaction, rich formatting and other platform
+  routes are unchanged. The Win/Mac Debug labels sit beside, not on top of,
+  their icons. The original shortcut SVG supplies its own surface.
+- **U:** 160 focused frontend/source checks and 72 WinUI Rust unit checks
+  passed. Style governance, formatting, native Debug frontend and asset checks
+  passed; 10 browser cases against the built frontend passed, including rich
+  save/undo/discard and preview switching with and without reduced motion.
+- **X:** The old DLL reproduced the missing reader gutter. The new reader
+  checks cover text insets, file/image spacing, themed file icons, aligned
+  OCR panels and the native editor heading/field. The shell passed in normal
+  and reduced-motion modes, including the equal Win/Mac button geometry and
+  shortcut SVG without an extra wrapper. The tray case first reproduced a
+  keyboard focus cue persisting on mouse open, then verified pointer focus
+  on open/reopen, system focus on arrow navigation and Escape dismissal.
+  Wait for observable theme/layout state rather than counting a fixed number
+  of rendering callbacks. The inspected XAML captures do not include DWM.
+  The broader history/queue suite stopped at the update-confirmation assertion
+  (stage 102) with both the old and new DLLs on this isolated desktop; it is
+  not counted as a pass.
+- **A:** On an isolated desktop with marked synthetic history, the actual
+  Debug app displayed the new rich-editor chrome and saved updated HTML and
+  an RTF hyperlink. A separate empty-profile run verified the fallback
+  preview and Settings lifetimes and native guide completion. Neither run
+  accessed the live clipboard or the user's history.
+- **M:** Compare plain text, rich text, link, image, color and file previews
+  on the physical desktop. Check the plain/rich fields and OCR alignment in
+  both themes. From Explorer, right-click the tray icon, navigate by keyboard
+  and close; reopen by mouse after using another app and verify only the
+  keyboard navigation shows a focus ring. Physical focus, transparency and
+  high-DPI acceptance remain pending.
+
+### Editor and preview frame, caption drag, and developer glyphs
+
+- **S:** In WinUI mode Windows owns the frame and corners. The reader and
+  native editor use their XAML Island's Acrylic slot; the browser fallback uses
+  the equivalent DWM backdrop and removes its CSS shadow, blur and outer radius.
+  Keep the preview client anchored when translating to the new frame bounds.
+  The rich editor matches the native heading and action styling without
+  replacing the HTML/RTF editor. WebView2 owns the rich-editor drag region,
+  like Settings. OCR/plain-text captions use one pointer capture and no
+  synthetic title-bar message. Normal previews retain their existing anchor
+  and pin behavior. Win and Mac each have a separate icon and label; the
+  developer toolbar draws glyphs once in a 16-DIP viewport.
+- **U:** 35 focused frontend/source checks, style governance and the native
+  Debug asset check passed. Against the built frontend, the new editor frame
+  assertion failed first at the old CSS radius (12 px); both themes now pass.
+  Ten browser cases cover editor formatting, discard, action styles and
+  PDF/link preview and pin/close behavior with normal and reduced motion.
+- **X:** Off-desktop Reader tests check the non-client inset, material
+  selection, OCR and editor move/release state, plus pin, continuity and the
+  editor draft flow. Native history/queue checks include pixel assertions for
+  the four separated Windows panes and the visible span of the Memory glyph.
+  The full shell passed with normal and reduced motion. XAML renders do not
+  capture the DWM shadow.
+- **A:** A marked isolated Debug profile checks the rich-editor caption,
+  formatting-preserving save, preview replacement and renderer retirement.
+  The rich editor and preview HWNDs reported transient backdrop and rounded
+  corner attributes at 120 DPI. The cold-close fixture now waits for Rust
+  to accept the open before sending the close. These runs do not use live
+  clipboard capture or paste.
+- **M:** Compare the plain/rich editor frames and preview frames on the
+  desktop in both themes. Drag the blank title area of OCR, plain text and
+  rich text, release over another app, and immediately click or type outside.
+  Repeat across monitors. Physical capture, rounding and acrylic are not
+  proven by the fixtures.
 
 ## One consolidated manual desktop pass
 

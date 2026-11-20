@@ -287,11 +287,18 @@ struct TrayWindow::Impl : std::enable_shared_from_this<Impl> {
         ResizeIsland();
     }
 
+    void FocusOpeningRow() const {
+        // The shell opens the custom popup from a tray click. Programmatic
+        // focus can inherit a keyboard cue from the previous activation.
+        // Pointer focus is still eligible for Tab/arrow/Enter navigation.
+        (void)buttons[Status].Focus(FocusState::Pointer);
+    }
+
     void FocusFirst() const {
         if (!Visible() || !root.IsLoaded() || GetForegroundWindow() != window) return;
         const auto island = winrt::Microsoft::UI::GetWindowFromWindowId(source.SiteBridge().WindowId());
         if (island && GetFocus() != island && !IsChild(island, GetFocus())) SetFocus(island);
-        buttons[Status].Focus(FocusState::Programmatic);
+        FocusOpeningRow();
     }
 
     bool HandleKey(unsigned key) {
@@ -464,6 +471,22 @@ winrt::Windows::Foundation::IAsyncAction TestTrayWindow(TrayWindow &tray, std::u
     popup.ObservePress(false, outside);
     popup.ObservePress(true, outside);
     require(!popup.Visible());
+    stage = 27811;
+    // Check the opening focus transition in the real controls even when the
+    // isolated desktop cannot take physical foreground from Explorer.
+    ShowWindow(popup.window, SW_SHOWNOACTIVATE);
+    const auto &first = popup.buttons[Status];
+    (void)first.Focus(FocusState::Keyboard);
+    popup.FocusOpeningRow();
+    require(Input::FocusManager::GetFocusedElement(popup.root.XamlRoot()) == first &&
+        first.FocusState() == FocusState::Pointer && first.UseSystemFocusVisuals());
+    require(popup.HandleKey(VK_DOWN) && popup.buttons[UpdateRow].FocusState() == FocusState::Keyboard);
+    require(popup.HandleKey(VK_HOME) && first.FocusState() == FocusState::Keyboard);
+    popup.Hide();
+    ShowWindow(popup.window, SW_SHOWNOACTIVATE);
+    popup.FocusOpeningRow();
+    require(first.FocusState() == FocusState::Pointer);
+    require(popup.HandleKey(VK_ESCAPE) && !popup.Visible());
 }
 #endif
 }

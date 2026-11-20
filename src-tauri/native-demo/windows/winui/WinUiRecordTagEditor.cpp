@@ -27,10 +27,6 @@ TextBlock Label(winrt::hstring const &text, bool title = false) {
     ApplyStyle(label, title ? L"VPaste.CompactTitle" : L"VPaste.Secondary");
     return label;
 }
-Button Action() {
-    Button button; button.Height(CompactActionSize); button.MinWidth(64); button.FontSize(13);
-    return button;
-}
 }
 
 struct RecordTagEditor::Impl : std::enable_shared_from_this<RecordTagEditor::Impl> {
@@ -41,7 +37,7 @@ struct RecordTagEditor::Impl : std::enable_shared_from_this<RecordTagEditor::Imp
     StackPanel root{nullptr}, form{nullptr}, actions{nullptr};
     TextBlock title{nullptr}, guidance{nullptr};
     TextBox name{nullptr};
-    Button emoji{nullptr}, save{nullptr}, cancel{nullptr};
+    Button emoji{nullptr}, save{nullptr}, cancel{nullptr}, close{nullptr};
     InfoBar error{nullptr};
     std::int64_t tagId = 0;
     std::wstring originalName, hash, operation;
@@ -60,12 +56,13 @@ struct RecordTagEditor::Impl : std::enable_shared_from_this<RecordTagEditor::Imp
         SetNameEmojiLanguage(emoji, english);
         save.Content(winrt::box_value(createdForItem ? Text(L"重试添加", L"Retry assignment") : Text(L"保存", L"Save")));
         cancel.Content(winrt::box_value(Text(L"取消", L"Cancel")));
+        NameIconButton(close, Text(L"关闭", L"Close"));
     }
     void Enabled() {
         name.IsEnabled(!busy && !createdForItem);
         name.IsReadOnly(busy || createdForItem);
         emoji.IsEnabled(!busy && !createdForItem);
-        save.IsEnabled(!busy); cancel.IsEnabled(!busy);
+        save.IsEnabled(!busy); cancel.IsEnabled(!busy); close.IsEnabled(!busy);
     }
     void Error(winrt::hstring const &message) {
         error.Message(message); error.IsOpen(!message.empty());
@@ -105,7 +102,9 @@ struct RecordTagEditor::Impl : std::enable_shared_from_this<RecordTagEditor::Imp
         tagId = id; originalName = text; hash = itemHash; english = useEnglish;
         pending = 0; busy = false; createdForItem = false; active = true;
         root = StackPanel{}; root.Width(300); root.Spacing(12);
-        title = Label(L"", true); root.Children().Append(title);
+        title = Label(L"", true);
+        close = AuxiliaryClose(Text(L"关闭", L"Close"));
+        root.Children().Append(AuxiliaryCaption(title, close));
         form = StackPanel{}; form.Spacing(8);
         Grid nameRow; nameRow.ColumnSpacing(8);
         ColumnDefinition emojiColumn; emojiColumn.Width(GridLength{1, GridUnitType::Auto});
@@ -116,18 +115,20 @@ struct RecordTagEditor::Impl : std::enable_shared_from_this<RecordTagEditor::Imp
         name.MaxLength(static_cast<int>(std::max<std::size_t>(20, text.size()))); name.Text(text);
         emoji = NameEmojiButton(name, english); nameRow.Children().Append(emoji);
         Grid::SetColumn(name, 1); nameRow.Children().Append(name); form.Children().Append(nameRow);
-        guidance = Label(L""); form.Children().Append(guidance); root.Children().Append(form);
+        guidance = Label(L""); form.Children().Append(guidance); root.Children().Append(AuxiliaryGroup(form));
         error = InfoBar{}; error.IsOpen(false); error.IsClosable(false); error.Severity(InfoBarSeverity::Error);
         root.Children().Append(error);
-        actions = StackPanel{}; actions.Orientation(Orientation::Horizontal); actions.Spacing(8);
-        actions.HorizontalAlignment(HorizontalAlignment::Right);
-        cancel = Action(); save = Action();
-        save.Style(Application::Current().Resources().Lookup(winrt::box_value(L"AccentButtonStyle")).as<Style>());
+        actions = StackPanel{};
+        cancel = Button{}; save = Button{};
+        StyleAuxiliaryAction(cancel); StyleAuxiliaryAction(save, true);
         actions.Children().Append(cancel); actions.Children().Append(save);
-        root.Children().Append(actions);
+        root.Children().Append(AuxiliaryFooter(actions));
         const auto weak = weak_from_this();
         save.Click([weak](auto const &sender, auto const &) { if (auto self = weak.lock(); self && sender == self->save) self->Save(); });
         cancel.Click([weak](auto const &sender, auto const &) { if (auto self = weak.lock(); self && sender == self->cancel) self->Hide(); });
+        close.Click([weak](auto const &sender, auto const &) {
+            if (auto self = weak.lock(); self && !self->busy && sender == self->close) self->Hide();
+        });
         name.KeyDown([weak](auto const &sender, auto const &args) {
             if (static_cast<std::uint32_t>(args.OriginalKey()) == VK_PROCESSKEY) return;
             if (args.Key() == winrt::Windows::System::VirtualKey::Enter && !args.KeyStatus().WasKeyDown) {
@@ -236,8 +237,8 @@ winrt::Windows::Foundation::IAsyncAction TestRecordTagEditorControls(FrameworkEl
     const auto mount = [&](std::int64_t id, std::wstring const &name, std::wstring const &hash, bool english = true) {
         root = editor.TestLoad(id, name, hash, english).as<StackPanel>(); fixture.Child(root);
     };
-    const auto input = [&] { return root.Children().GetAt(1).as<StackPanel>().Children().GetAt(0).as<Grid>().Children().GetAt(1).as<TextBox>(); };
-    const auto actions = [&] { return root.Children().GetAt(3).as<StackPanel>(); };
+    const auto input = [&] { return root.Children().GetAt(1).as<Border>().Child().as<StackPanel>().Children().GetAt(0).as<Grid>().Children().GetAt(1).as<TextBox>(); };
+    const auto actions = [&] { return root.Children().GetAt(3).as<Border>().Child().as<StackPanel>(); };
     const auto button = [&](int index) { return actions().Children().GetAt(index).as<Button>(); };
     const auto error = [&] { return root.Children().GetAt(2).as<InfoBar>(); };
     const auto invoke = [](FrameworkElement const &element) {
@@ -299,7 +300,8 @@ winrt::Windows::Foundation::IAsyncAction TestRecordTagEditorControls(FrameworkEl
     reply(rename, JsonObject{}, L"Synthetic rename failure");
     editor.SetLanguage(false); editor.SetTheme(ElementTheme::Dark); editor.SetLanguage(true);
     winrt::check_hresult(input().Text() == L"Edited name" && error().IsOpen() &&
-        root.RequestedTheme() == ElementTheme::Dark && root.Children().GetAt(0).as<TextBlock>().Text() == L"Edit Record Tag" ? S_OK : E_FAIL);
+        root.RequestedTheme() == ElementTheme::Dark &&
+        root.Children().GetAt(0).as<Grid>().Children().GetAt(0).as<TextBlock>().Text() == L"Edit Record Tag" ? S_OK : E_FAIL);
     invoke(button(0)); co_await NextNativeFrame();
     const auto beforeLegacy = requests.size(); const std::wstring legacy(32, L'x');
     mount(9, legacy, L""); co_await NextNativeFrame();

@@ -252,9 +252,15 @@ for (const label of ["clipboardPreview", "trayMenu", "emojiPicker", "tabEditor"]
     const builder = mainRust.match(
         new RegExp(`WebviewWindowBuilder::new\\([\\s\\S]{0,300}?"${label}"[\\s\\S]{0,3000}?\\.build\\(`),
     )?.[0];
-    if (!builder?.includes(".transparent(true)") || !builder.includes(".shadow(false)")) {
+    // Only the Windows WinUI fallback replaces the CSS shell with a DWM
+    // frame. Keep the unshadowed legacy preview and other transparent windows.
+    const validShadow = label === "clipboardPreview"
+        ? builder?.includes(".shadow(system_frame)")
+            && /let system_frame =\s*cfg!\(all\(target_os = "windows", feature = "winui"\)\) && main_panel_mode::winui\(\);/.test(mainRust)
+        : builder?.includes(".shadow(false)");
+    if (!builder?.includes(".transparent(true)") || !validShadow) {
         errors.push(
-            `src-tauri/src/main.rs: transparent auxiliary window "${label}" must disable the native shadow`,
+            `src-tauri/src/main.rs: transparent auxiliary window "${label}" must use the approved shadow policy`,
         );
     }
 }

@@ -498,7 +498,8 @@ export default function Preview() {
         setPinned(next);
         void invoke("set_preview_pinned", { pinned: next }).catch(e => error(`Failed to set preview pinned: ${e}`));
     };
-    const nativeToolbar = layers.some(layer => layer.phase !== "exiting" && layer.payload.native_toolbar === true);
+    const nativeToolbar = new URLSearchParams(window.location.search).get("chrome") === "winui"
+        || layers.some(layer => layer.phase !== "exiting" && layer.payload.native_toolbar === true);
     const pinButton = <ToolbarIconButton
         size="medium"
         className={[styles[nativeToolbar ? "preview-native-action" : "preview-pin"], pinned ? styles.pinned : ""].join(" ")}
@@ -514,13 +515,14 @@ export default function Preview() {
     </ToolbarIconButton>;
 
     return (
-        <div className={styles["preview-shell"]}
+        <div className={styles["preview-shell"]} data-chrome={nativeToolbar ? "winui" : undefined}
             onMouseEnter={() => { if (hoverRef.current) void invoke("preview_pointer_changed", { inside: true }).catch(e => error(`Failed to retain hover preview: ${e}`)); }}
             onMouseLeave={() => { if (hoverRef.current) void invoke("preview_pointer_changed", { inside: false }).catch(e => error(`Failed to leave hover preview: ${e}`)); }}
         >
-            {nativeToolbar ? <div className={styles["preview-native-toolbar"]} data-preview-toolbar="native">
+            {nativeToolbar ? <header className={styles["preview-native-toolbar"]} data-preview-toolbar="native">
+                <h1 className={styles["preview-native-title"]}>{t("preview.title")}</h1>
                 {pinButton}
-            </div> : pinButton}
+            </header> : pinButton}
             <div className={styles["preview-content"]}>
                 {layers.length === 0 && <div className={styles["preview-empty"]}>{t("preview.waiting")}</div>}
                 {layers.map(layer => (

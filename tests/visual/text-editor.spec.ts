@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => { await page.addInitScript(installHistoryMoc
 type Update = { id: number; revision: string; text: string; html: string; rtf: string };
 type Probe = Window & { __editorProbe: { saves: Update[]; opened: string[]; hidden: number; searches: number; text: string; emit: (event: string, payload?: unknown) => void } };
 
-async function openEditor(page: Page, rich = false, rejectSave = false, clipboard = false) {
+async function openEditor(page: Page, rich = false, rejectSave = false, clipboard = false, winui = false) {
     await page.setViewportSize({ width: 596, height: 476 });
     await page.addInitScript(({ rich, rejectSave }) => {
         Object.defineProperty(navigator, "platform", { value: "Win32", configurable: true });
@@ -49,11 +49,63 @@ async function openEditor(page: Page, rich = false, rejectSave = false, clipboar
             },
         });
     }, { rich, rejectSave });
-    await page.goto(clipboard ? "/clipboard" : "/text-editor");
+    await page.goto(clipboard ? "/clipboard" : winui ? "/text-editor?chrome=winui" : "/text-editor");
     if (!clipboard) await expect(page.getByRole("textbox", { name: "文字内容" })).toBeEnabled();
 }
 
 const state = (page: Page) => page.evaluate(() => ({ saves: (window as Probe).__editorProbe.saves, hidden: (window as Probe).__editorProbe.hidden, opened: (window as Probe).__editorProbe.opened }));
+
+for (const colorScheme of ["light", "dark"] as const) {
+    test("WinUI rich editor matches native chrome without changing rich editing (" + colorScheme + ")", async ({ page }, testInfo) => {
+        await page.emulateMedia({ colorScheme, reducedMotion: colorScheme === "dark" ? "reduce" : "no-preference" });
+        await openEditor(page, true, false, false, true);
+        const header = page.locator("header");
+        const heading = header.getByRole("heading", { name: "编辑文本" });
+        await expect(heading).toBeVisible();
+        const shell = page.getByRole("region", { name: "编辑文本" });
+        await expect(shell).toHaveCSS("border-radius", "0px");
+        await expect(shell).toHaveCSS("box-shadow", "none");
+        expect(await header.evaluate(element => getComputedStyle(element).getPropertyValue("app-region"))).toBe("drag");
+        expect(await header.getByRole("button", { name: "关闭" }).evaluate(element =>
+            getComputedStyle(element).getPropertyValue("app-region"))).toBe("no-drag");
+        await expect(heading.locator('span[aria-hidden="true"]')).toHaveText("\uE70F");
+        expect(await header.evaluate(element => getComputedStyle(element).borderBottomWidth)).toBe("1px");
+        const headerBox = (await header.boundingBox())!;
+        const label = page.getByText("文字内容", { exact: true });
+        await expect(label).toHaveCSS("font-size", "14px");
+        await expect(label).toHaveCSS("font-weight", "600");
+        const field = page.getByRole("textbox", { name: "文字内容" });
+        const labelBox = (await label.boundingBox())!;
+        const fieldBox = (await field.boundingBox())!;
+        expect(headerBox.height).toBe(40);
+        expect(labelBox.y - headerBox.y - headerBox.height).toBeGreaterThanOrEqual(11);
+        expect(fieldBox.y - labelBox.y - labelBox.height).toBeGreaterThanOrEqual(7);
+        expect(fieldBox.x).toBeCloseTo(headerBox.x, 0);
+        await expect(field.locator("strong")).toHaveCSS("color", "rgb(255, 0, 0)");
+        await expect(field.getByRole("link")).toHaveAttribute("href", "https://example.com/");
+        const save = page.getByRole("button", { name: "保存", exact: true });
+        const cancel = page.getByRole("button", { name: "取消", exact: true });
+        await expect(save).toBeDisabled();
+        for (const action of [cancel, save]) {
+            await expect(action).toHaveCSS("font-size", "14px");
+            await expect(action).toHaveCSS("font-weight", "400");
+            await expect(action).toHaveCSS("border-radius", "4px");
+        }
+        await field.press("Control+End");
+        await page.keyboard.insertText(" updated");
+        await expect(save).toBeEnabled();
+        const cancelBox = (await page.getByRole("button", { name: "取消", exact: true }).boundingBox())!;
+        const saveBox = (await save.boundingBox())!;
+        expect(cancelBox.height).toBe(36);
+        expect(saveBox.height).toBe(36);
+        expect(cancelBox.y).toBeCloseTo(saveBox.y, 0);
+        await page.screenshot({ path: testInfo.outputPath("winui-rich-editor.png") });
+        await save.click();
+        await expect.poll(async () => (await state(page)).saves.length).toBe(1);
+        expect((await state(page)).saves[0].html).toContain('href="https://example.com/"');
+        expect((await state(page)).saves[0].rtf).toContain("HYPERLINK");
+    });
+}
 
 test("loads complete long text and saves only by explicitly activating Save", async ({ page }) => {
     await openEditor(page);

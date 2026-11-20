@@ -32,6 +32,9 @@ const MAX_RETRY_DELAY_MS: u64 = 40;
 // QQ can publish Unicode text first, then HTML for the same copy 10–22ms later.
 // Keep both raw captures; only delay finalizing a plain-text candidate briefly.
 const TEXT_FORMAT_COMPLETION_GRACE: Duration = Duration::from_millis(50);
+// Linked Chrome selections have been observed to publish HTML as late as 86 ms
+// after the plain update. Keep the existing shorter deadline for other apps.
+const CHROME_TEXT_FORMAT_COMPLETION_GRACE: Duration = Duration::from_millis(100);
 const MAX_BUFFERED_CAPTURE_BYTES: usize = crate::clipboard_budget::BUFFERED_BYTES;
 const MAX_BUFFERED_CAPTURES: usize = 128;
 pub(crate) const VPASTE_INTERNAL_CLIPBOARD_FORMAT: &str = "vPaste Internal Clipboard";
@@ -155,6 +158,19 @@ struct ClipboardSnapshot {
 }
 
 impl ClipboardSnapshot {
+    fn text_completion_grace(&self) -> Duration {
+        if is_chrome_source(&self.app_source.exe_path)
+            || self
+                .ownerless_foreground_exe
+                .as_deref()
+                .is_some_and(is_chrome_source)
+        {
+            CHROME_TEXT_FORMAT_COMPLETION_GRACE
+        } else {
+            TEXT_FORMAT_COMPLETION_GRACE
+        }
+    }
+
     fn is_plain_text_candidate(&self) -> bool {
         self.text.as_ref().is_some_and(|text| !text.is_empty())
             && self.html.is_none()
@@ -178,7 +194,6 @@ impl ClipboardSnapshot {
             && earlier.ownerless_foreground_exe.as_deref()
                 == Some(self.app_source.exe_path.as_path());
         earlier.is_plain_text_candidate()
-            && self.text == earlier.text
             && (self.html.is_some() || self.rtf.is_some())
             && self.gif.is_none()
             && self.files.is_none()
@@ -188,7 +203,14 @@ impl ClipboardSnapshot {
             && current
                 .time
                 .checked_sub(previous.time)
-                .is_some_and(|gap| gap <= TEXT_FORMAT_COMPLETION_GRACE.as_millis() as u64)
+                .is_some_and(|gap| gap <= earlier.text_completion_grace().as_millis() as u64)
+            && (self.text == earlier.text
+                || (is_chrome_source(&self.app_source.exe_path)
+                    && earlier
+                        .text
+                        .as_deref()
+                        .zip(self.html.as_deref())
+                        .is_some_and(|(plain, html)| chrome_html_selection_matches(plain, html))))
     }
 
     fn byte_size(&self) -> usize {
@@ -212,6 +234,33 @@ impl ClipboardSnapshot {
                 .unwrap_or(0),
         )
     }
+}
+
+fn is_chrome_source(executable: &Path) -> bool {
+    executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("chrome.exe"))
+}
+
+fn chrome_html_selection_matches(plain: &str, html: &[u8]) -> bool {
+    // Chrome may serialize the plain and HTML representations differently
+    // (e.g. block separators or added text in CF_UNICODETEXT). Require the
+    // entire first update to match the HTML fragment without erasing word
+    // boundaries inside a text node. Inline formatting can split one word.
+    if clipboard::is_semantically_blank_text(plain) {
+        return false;
+    }
+    let selection = scraper::Html::parse_fragment(&cf_html_fragment(html));
+    let root = selection.root_element();
+    root.text()
+        .flat_map(str::split_whitespace)
+        .eq(plain.split_whitespace())
+        || root
+            .text()
+            .collect::<String>()
+            .split_whitespace()
+            .eq(plain.split_whitespace())
 }
 
 struct BufferedSnapshot {
@@ -259,7 +308,10 @@ fn next_buffered_snapshot(
     }
     // An already-buffered follow-up must still be inspected after a slow earlier
     // item. The deadline only limits waiting for an event that has not arrived.
-    let remaining = TEXT_FORMAT_COMPLETION_GRACE.saturating_sub(first.captured_at.elapsed());
+    let remaining = first
+        .snapshot
+        .text_completion_grace()
+        .saturating_sub(first.captured_at.elapsed());
     let Ok(mut next) = receiver.recv_timeout(remaining) else {
         return Some(first);
     };
@@ -3350,6 +3402,111 @@ mod tests {
             item.app_source.is_empty(),
             "a hint alone must not label a record"
         );
+    }
+
+    #[test]
+    fn chrome_linked_selection_buffers_one_rich_record_for_history_and_queue() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().to_string());
+        crate::config::save(crate::config::Config::default());
+        clipboard::db::init();
+        crate::paste_queue::set_active(true);
+        let epoch = crate::paste_queue::activation_epoch();
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let bytes = Arc::new(Mutex::new(0));
+        for (sequence, gap, selection, fallback, markup) in [
+            (
+                1,
+                28,
+                "\nRelease notes\n",
+                "Release notes\r\n[Open article]",
+                "<div><a href='https://example.com/notes'>Release notes</a><br></div>",
+            ),
+            (
+                3,
+                86,
+                "Build\ncommands",
+                "Build\r\ncommands\r\nReference",
+                "<div><strong>Build</strong><br><a href='https://example.com/build'>commands</a></div>",
+            ),
+        ] {
+            let time = 1000 + 1000 * u64::from(sequence);
+            for (offset, text) in [(0, selection), (1, fallback)] {
+                let mut snapshot = qq_text_snapshot(sequence + offset, text, false);
+                snapshot.app_source.name = "chrome".into();
+                snapshot.app_source.exe_path = PathBuf::from("Chrome.exe");
+                snapshot.context = Some(clipboard::CaptureContext {
+                    time: time + u64::from(offset) * gap,
+                    queue_epoch: Some(epoch),
+                });
+                if offset == 1 {
+                    let header = |start, end| {
+                        format!("Version:1.0\r\nStartFragment:{start:010}\r\nEndFragment:{end:010}\r\nSourceURL:https://example.com/\r\n")
+                    };
+                    let start = header(0, 0).len();
+                    snapshot.html = Some(format!("{}{markup}", header(start, start + markup.len())).into_bytes());
+                }
+                buffer_snapshot(snapshot, &sender, &bytes).unwrap();
+            }
+        }
+        drop(sender);
+        let mut pending = None;
+        let mut processed = Vec::new();
+        while let Some(mut buffered) = next_buffered_snapshot(&receiver, &mut pending) {
+            processed.push(parse_snapshot(&mut buffered.snapshot).unwrap().unwrap());
+        }
+        let queue = crate::paste_queue::ordered_hashes().unwrap();
+        crate::paste_queue::set_active(false);
+        assert_eq!(processed.len(), 2, "one record per linked selection");
+        assert_eq!(queue, processed);
+        assert_eq!(*bytes.lock().unwrap(), 0);
+        for (hash, time, fallback) in [
+            (&processed[0], 2000, "Release notes\r\n[Open article]"),
+            (&processed[1], 4000, "Build\r\ncommands\r\nReference"),
+        ] {
+            let item = clipboard::try_get_by_hash(hash).unwrap();
+            assert_eq!((item.time, item.content.as_str()), (time, fallback));
+            assert!(clipboard::rich_clipboard_meta(hash).is_some());
+        }
+        let history: usize = clipboard::db::db()
+            .query_row("SELECT COUNT(*) FROM clipboard", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(history, 2);
+    }
+
+    #[test]
+    fn chrome_format_completion_does_not_merge_a_distinct_selection_or_owner() {
+        let mut plain = qq_text_snapshot(1, "Release notes", false);
+        let mut rich = qq_text_snapshot(2, "Release notes with links", true);
+        rich.html = Some(b"<a href='https://example.com'>Release notes</a>".to_vec());
+        assert!(
+            !rich.is_rich_completion_of(&plain),
+            "the HTML fallback is Chrome-only"
+        );
+        for snapshot in [&mut plain, &mut rich] {
+            snapshot.app_source.name = "chrome".into();
+            snapshot.app_source.exe_path = PathBuf::from("chrome.exe");
+        }
+        assert!(rich.is_rich_completion_of(&plain));
+        rich.context.as_mut().unwrap().time += 100;
+        assert!(!rich.is_rich_completion_of(&plain));
+        rich.context.as_mut().unwrap().time -= 100;
+        rich.html = Some(b"<a href='https://example.com'>Release notes for May</a>".to_vec());
+        assert!(
+            !rich.is_rich_completion_of(&plain),
+            "a prefix match is not enough"
+        );
+        rich.html = Some(b"<a href='https://example.com'>Releasenotes</a>".to_vec());
+        assert!(
+            !rich.is_rich_completion_of(&plain),
+            "a missing word boundary changes the selection"
+        );
+        rich.html = Some(b"<a href='https://example.com'>Release notes</a>".to_vec());
+        plain.app_source = AppSource::default();
+        plain.ownerless_foreground_exe = Some(PathBuf::from("other.exe"));
+        assert!(!rich.is_rich_completion_of(&plain));
     }
 
     #[test]

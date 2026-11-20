@@ -2848,6 +2848,15 @@ async fn open_config_window_from_source(
     source_window: Option<tauri::WebviewWindow>,
     target: Option<String>,
 ) -> Result<(), String> {
+    open_config_window_from_source_monitor(app, source_window, target, None).await
+}
+
+async fn open_config_window_from_source_monitor(
+    app: tauri::AppHandle,
+    source_window: Option<tauri::WebviewWindow>,
+    target: Option<String>,
+    monitor: Option<tauri::Monitor>,
+) -> Result<(), String> {
     info!("Opening config window");
     let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::Config).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
@@ -2859,7 +2868,7 @@ async fn open_config_window_from_source(
         if let Some(source) = source_window.as_ref() {
             center_window_on_source_monitor(&window, source)?;
         } else {
-            center_window_on_monitor(&window, main_panel_monitor(&app))?;
+            center_window_on_monitor(&window, monitor.or_else(|| main_panel_monitor(&app)))?;
         }
         if let Some(clipboard_window) = app.get_webview_window("clipboard") {
             let _ = finish_hide_window(&clipboard_window);
@@ -13421,6 +13430,13 @@ fn toggle_clipboard_history_paused(app: tauri::AppHandle) -> Result<bool, String
 async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
     let started = Instant::now();
     let cursor = cursor_physical_position();
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() {
+        if let Err(err) = winui_panel::tray::open(app, rect, cursor).await {
+            error!("Failed to show the WinUI tray menu: {err}");
+        }
+        return;
+    }
     match auxiliary_windows::ensure(app, auxiliary_windows::WindowKind::TrayMenu).await {
         Err(err) => error!("Failed to open tray menu: {err}"),
         Ok(window) => {
@@ -14571,7 +14587,7 @@ fn main() {
             }
             install_vpaste_tray(app.handle())?;
             #[cfg(target_os = "windows")]
-            if !memory_profile_active() {
+            if !memory_profile_active() && !main_panel_mode::winui() {
                 let tray_owner = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     // Readiness includes the first measured content resize.

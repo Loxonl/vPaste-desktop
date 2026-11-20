@@ -2,7 +2,7 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-pub(super) const PROTOCOL_VERSION: u32 = 3;
+pub(super) const PROTOCOL_VERSION: u32 = 7;
 pub(super) const MAX_REQUEST_BYTES: usize = 16 * 1024;
 pub(super) const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 

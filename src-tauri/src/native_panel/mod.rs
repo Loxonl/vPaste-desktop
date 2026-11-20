@@ -6,6 +6,7 @@ pub(crate) mod onboarding;
 pub(crate) mod preview;
 pub(crate) mod queue_selection;
 mod rich_text;
+mod tab_editor;
 
 use crate::{
     clipboard::{self, item::ItemType},
@@ -446,6 +447,8 @@ struct Request {
     #[serde(default)]
     tab_id: String,
     #[serde(default)]
+    draft: Value,
+    #[serde(default)]
     target_id: String,
     #[serde(default)]
     before: bool,
@@ -762,8 +765,17 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
                 .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
+        "tab-editor-data" => {
+            let (kind, id) = (r.kind.clone(), r.tab_id.clone());
+            blocking(move || tab_editor::load(&kind, &id)).await
+        }
+        "tab-editor-save" => {
+            let (session, kind, id, draft) =
+                (r.session, r.kind.clone(), r.tab_id.clone(), r.draft.clone());
+            blocking(move || tab_editor::save(session, &kind, &id, draft)).await
+        }
         "tab-editor" => {
-            // The WebView tab editor window owns both tag forms and saves them.
+            // The legacy card-menu create-and-assign flow still uses the WebView.
             let record = r.kind == "record";
             let tab_id = r.tab_id.clone();
             let payload = blocking(move || {

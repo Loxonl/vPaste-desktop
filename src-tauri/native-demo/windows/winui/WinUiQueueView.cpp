@@ -228,6 +228,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         });
 
         header = Grid{};
+        ApplyStyle(header, L"VPaste.AuxiliaryCaption");
         header.ColumnDefinitions().Append(ColumnDefinition{});
         header.ColumnDefinitions().Append(ColumnDefinition{});
         header.ColumnDefinitions().Append(ColumnDefinition{});

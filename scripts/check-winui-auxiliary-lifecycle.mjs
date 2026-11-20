@@ -12,6 +12,15 @@ const normalized = value => path.toNamespacedPath(path.resolve(value)).toLowerCa
 const browser = await chromium.connectOverCDP(endpoint);
 const pages = () => browser.contexts().flatMap(context => context.pages());
 const route = page => new URL(page.url()).pathname;
+const seenRoutes = new Set(pages().map(route));
+for (const context of browser.contexts()) {
+    context.on("page", page => {
+        seenRoutes.add(route(page));
+        page.on("framenavigated", frame => {
+            if (frame === page.mainFrame()) seenRoutes.add(route(page));
+        });
+    });
+}
 const until = async (read, name) => {
     const deadline = Date.now() + 15000;
     while (Date.now() < deadline) {
@@ -54,6 +63,9 @@ try {
     const shell = await until(() => pages().find(page => route(page) === "/clipboard/preview"), "preview shell");
     const visibleText = (page, text) => page.getByText(text, { exact: true }).isVisible().catch(() => false);
     await until(() => visibleText(shell, "Auxiliary lifecycle fixture"), "preview committed");
+    const toolbar = shell.locator('[data-preview-toolbar="native"]');
+    await toolbar.getByRole("heading", { name: /^(预览|Preview)$/ }).waitFor();
+    assert.equal(await toolbar.getByRole("button").count(), 1, "Fallback preview should expose just the pin");
     await invoke("show_preview_window", preview("Continuous replacement", "selection"));
     await until(() => visibleText(shell, "Continuous replacement"), "visible replacement");
     assert.equal(pages().find(page => route(page) === "/clipboard/preview"), shell, "Visible switch replaced renderer");
@@ -65,7 +77,12 @@ try {
     await until(() => pages().every(page => page === control), "browser renderer retired");
 
     for (let iteration = 0; iteration < 3; iteration++) {
-        await Promise.all([invoke("show_preview_window", preview("Reopened fixture")), invoke("hide_preview_window")]);
+        const opening = invoke("show_preview_window", preview("Reopened fixture"));
+        // This predicate includes in-flight requests. Wait for Rust to accept
+        // the open so independent async IPC calls cannot test close-then-open.
+        await until(() => invoke("is_preview_window_visible"), "cold open request accepted");
+        await invoke("hide_preview_window");
+        await opening;
         await until(() => !pages().some(page => route(page) === "/clipboard/preview"), "canceled cold creation retired");
         await invoke("show_preview_window", preview("Reopened fixture"));
         const reopened = await until(() => pages().find(page => route(page) === "/clipboard/preview"), "reopened shell");
@@ -74,24 +91,44 @@ try {
         await until(() => reopened.isClosed(), "reopened shell retired");
     }
 
-    await invoke("open_onboarding_window");
-    const guide = await until(() => pages().find(page => route(page) === "/native-onboarding"), "temporary guide");
-    const guideInvoke = invokeOn(guide);
-    await until(() => guide.getByRole("checkbox").count().then(count => count === 5), "guide initialized");
-    await guideInvoke("show_main_panel");
-    assert(!pages().some(page => route(page) === "/clipboard"), "Guide restore created a main WebView");
-    await guideInvoke("close_config_window");
+    // A second existing auxiliary surface provides IPC after closing Settings.
+    // Pin this control before the focus change; an ordinary preview would
+    // correctly close. The native guide itself has no Chromium target.
+    await invoke("show_preview_window", preview("Settings lifecycle fixture"));
+    const settingsControl = await until(() => pages().find(page => route(page) === "/clipboard/preview"), "settings lifecycle control");
+    await until(() => visibleText(settingsControl, "Settings lifecycle fixture"), "settings lifecycle content");
+    await invoke("set_preview_pinned", { pinned: true });
+    await invokeOn(settingsControl)("close_config_window");
     await until(() => control.isClosed(), "settings released");
-    await guideInvoke("open_config_window");
+    await invokeOn(settingsControl)("open_config_window");
     const newSettings = await until(() => pages().find(page => route(page) === "/config"), "settings recreated");
     assert.notEqual(newSettings, control);
     await newSettings.waitForFunction(() => !!window.__TAURI_INTERNALS__);
-    await invokeOn(newSettings)("complete_onboarding");
-    await until(() => guide.isClosed(), "completed guide released");
+    const invokeNewSettings = invokeOn(newSettings);
+    await invokeNewSettings("hide_preview_window");
+    await until(() => settingsControl.isClosed(), "settings lifecycle renderer retired");
+    const { onboarding_completed: wasCompleted } = JSON.parse(await invokeNewSettings("get_config", { skipAutostartRefresh: true }));
+    const storedTabs = await invokeNewSettings("get_custom_tabs");
+    await invokeNewSettings("open_onboarding_window");
+    await invokeNewSettings("show_main_panel");
+    if (!wasCompleted && !storedTabs.length) {
+        const initialized = await until(async () => {
+            const tabs = await invokeNewSettings("get_custom_tabs");
+            return tabs.length ? tabs : null;
+        }, "first-run tutorial defaults");
+        assert.deepEqual(initialized.map(tab => tab.id), [
+            "tutorial-filter-text", "tutorial-filter-image", "tutorial-filter-link", "tutorial-filter-file",
+        ]);
+    }
+    await invokeNewSettings("complete_onboarding");
+    assert.equal(JSON.parse(await invokeNewSettings("get_config", { skipAutostartRefresh: true })).onboarding_completed, true);
+    for (const unexpected of ["/clipboard", "/native-onboarding", "/__dev-tutorial"]) {
+        assert(!seenRoutes.has(unexpected), `Native session created a WebView for ${unexpected}`);
+    }
     console.log(JSON.stringify({ inactiveQueueMutationGuards: 6,
         queueActivated: false, externalPasteTested: false,
-        visibleReuse: true, pinPreserved: true, coldCloseReopen: 3,
-        settingsRecreated: true, guideReleased: true, mainWebViewCreated: false }));
+        visibleReuse: true, pinPreserved: true, fallbackPreviewTitle: true, coldCloseReopen: 3,
+        settingsRecreated: true, guideCompletionSaved: true, guideWebViewCreated: false, mainWebViewCreated: false }));
 } finally {
     await browser.close();
 }

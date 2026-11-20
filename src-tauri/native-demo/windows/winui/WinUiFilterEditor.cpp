@@ -43,12 +43,10 @@ TextBlock Label(const winrt::hstring &text, bool title = false) {
     ApplyStyle(label, title ? L"VPaste.CompactTitle" : L"VPaste.Secondary");
     return label;
 }
-Button Action(const winrt::hstring &text) {
+Button Action(const winrt::hstring &text, bool primary = false) {
     Button button;
-    ApplyStyle(button, L"VPaste.CompactButton");
+    StyleAuxiliaryAction(button, primary);
     button.Content(winrt::box_value(text));
-    button.Height(32);
-    button.MinWidth(64);
     return button;
 }
 std::wstring Lower(std::wstring value) {
@@ -116,7 +114,7 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
     TextBox name{nullptr}, amount{nullptr}, sourceSearch{nullptr};
     ComboBox type{nullptr}, favorite{nullptr}, unit{nullptr};
     TextBlock sourceLabel{nullptr}, error{nullptr};
-    Button save{nullptr}, cancel{nullptr};
+    Button save{nullptr}, cancel{nullptr}, close{nullptr};
     DropDownButton sourceButton{nullptr};
     JsonObject draft;
     std::wstring originalName, operation;
@@ -149,7 +147,7 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
     void SetBusy(bool value) {
         busy = value;
         SetFormEnabled(!value);
-        for (const auto &button : {save, cancel}) button.IsEnabled(!value);
+        for (const auto &button : {save, cancel, close}) button.IsEnabled(!value);
     }
     ComboBox Choice(const winrt::hstring &header, const std::vector<winrt::hstring> &labels, int selected) {
         ComboBox control;
@@ -317,7 +315,12 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
         root = Grid{}; root.Width(320); root.MaxHeight(508); root.RowSpacing(8);
         for (int i = 0; i < 4; ++i) { RowDefinition row; row.Height(GridLength{1, i == 1 ? GridUnitType::Star : GridUnitType::Auto}); root.RowDefinitions().Append(row); }
         auto title = Label(String(draft, L"id").empty() ? Text(L"添加标签", L"Add Tab") : Text(L"编辑标签", L"Edit Tab"), true);
-        root.Children().Append(title);
+        const auto weak = weak_from_this();
+        close = AuxiliaryClose(Text(L"关闭", L"Close"));
+        close.Click([weak](auto const &sender, auto const &) {
+            if (auto self = weak.lock(); self && !self->busy && sender == self->close) self->Hide();
+        });
+        root.Children().Append(AuxiliaryCaption(title, close));
         form = StackPanel{}; form.Spacing(12);
         name = Input(Text(L"名称", L"Name"));
         name.MaxLength(static_cast<int>(std::max<std::size_t>(20, originalName.size()))); name.Text(originalName);
@@ -329,7 +332,9 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
         ColumnDefinition emojiColumn; emojiColumn.Width(GridLength{1, GridUnitType::Auto});
         nameRow.ColumnDefinitions().Append(emojiColumn); nameRow.ColumnDefinitions().Append(ColumnDefinition{});
         nameRow.Children().Append(NameEmojiButton(name, english));
-        Grid::SetColumn(name, 1); nameRow.Children().Append(name); nameGroup.Children().Append(nameRow); form.Children().Append(nameGroup);
+        Grid::SetColumn(name, 1); nameRow.Children().Append(name); nameGroup.Children().Append(nameRow);
+        form.Children().Append(AuxiliaryGroup(nameGroup));
+        StackPanel criteria; criteria.Spacing(AuxiliaryGap);
         Grid conditions; conditions.ColumnSpacing(12);
         for (int i = 0; i < 2; ++i) conditions.ColumnDefinitions().Append(ColumnDefinition{});
         int typeIndex = 0, unitIndex = 2;
@@ -339,15 +344,15 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
         const auto fav = String(filter, L"favorite");
         favorite = Choice(Text(L"收藏状态", L"Favorite State"), {Text(L"不限", L"Any"), Text(L"仅收藏", L"Favorites only"), Text(L"未收藏", L"Not favorite")}, fav == L"yes" ? 1 : fav == L"no" ? 2 : 0);
         conditions.Children().Append(type); Grid::SetColumn(favorite, 1); conditions.Children().Append(favorite);
-        form.Children().Append(conditions);
+        criteria.Children().Append(conditions);
         Grid time; time.ColumnSpacing(12);
         for (int i = 0; i < 2; ++i) time.ColumnDefinitions().Append(ColumnDefinition{});
         amount = Input(Text(L"最近", L"Recent")); amount.MaxLength(20);
         amount.PlaceholderText(Text(L"不限", L"Any time")); amount.Text(String(filter, L"relativeAmount"));
         unit = Choice(Text(L"单位", L"Unit"), {Text(L"分钟", L"Minutes"), Text(L"小时", L"Hours"), Text(L"天", L"Days"), Text(L"周", L"Weeks"), Text(L"月", L"Months")}, unitIndex);
-        time.Children().Append(amount); Grid::SetColumn(unit, 1); time.Children().Append(unit); form.Children().Append(time);
+        time.Children().Append(amount); Grid::SetColumn(unit, 1); time.Children().Append(unit); criteria.Children().Append(time);
         sourceLabel = Label(L""); ApplyStyle(sourceLabel, L"VPaste.Body"); sourceLabel.FontSize(13);
-        form.Children().Append(sourceLabel);
+        criteria.Children().Append(sourceLabel);
         sourceButton = DropDownButton{}; sourceButton.MinHeight(32);
         sourceButton.HorizontalAlignment(HorizontalAlignment::Stretch);
         sourceButton.HorizontalContentAlignment(HorizontalAlignment::Stretch);
@@ -356,7 +361,6 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
         sourceSearch = TextBox{}; sourceSearch.MinHeight(32); sourceSearch.FontSize(13);
         sourceSearch.PlaceholderText(Text(L"筛选近 7 天的来源应用", L"Find source apps from the last 7 days"));
         Automation::AutomationProperties::SetName(sourceSearch, Text(L"筛选来源应用", L"Find source apps"));
-        auto weak = weak_from_this();
         sourceSearch.TextChanged([weak](auto const &sender, auto const &) {
             if (auto self = weak.lock(); self && self->active && sender == self->sourceSearch) self->RenderSources();
         });
@@ -369,24 +373,25 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
         Flyout sourceFlyout; sourceFlyout.Content(sourcePopup);
         sourceFlyout.ShouldConstrainToRootBounds(false);
         sourceFlyout.Placement(Controls::Primitives::FlyoutPlacementMode::TopEdgeAlignedLeft);
-        sourceButton.Flyout(sourceFlyout); form.Children().Append(sourceButton);
+        sourceButton.Flyout(sourceFlyout); criteria.Children().Append(sourceButton);
+        form.Children().Append(AuxiliaryGroup(criteria));
         ScrollViewer scroll; scroll.MaxHeight(400); scroll.HorizontalScrollMode(ScrollMode::Disabled);
         scroll.VerticalScrollMode(ScrollMode::Enabled); scroll.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
         scroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled); scroll.Content(form);
         scroll.Padding(Thickness{0, 0, 12, 0});
         Grid::SetRow(scroll, 1); root.Children().Append(scroll);
         error = Label(L""); error.Visibility(Visibility::Collapsed); Grid::SetRow(error, 2); root.Children().Append(error);
-        actions = StackPanel{}; actions.Orientation(Orientation::Horizontal); actions.Spacing(8); actions.HorizontalAlignment(HorizontalAlignment::Right);
+        actions = StackPanel{};
         cancel = Action(Text(L"取消", L"Cancel"));
         cancel.Click([weak](auto const &sender, auto const &) {
             if (auto self = weak.lock(); self && !self->busy && sender == self->cancel) self->Hide();
         }); actions.Children().Append(cancel);
-        save = Action(Text(L"保存", L"Save"));
-        save.Style(Application::Current().Resources().Lookup(winrt::box_value(L"AccentButtonStyle")).as<Style>());
+        save = Action(Text(L"保存", L"Save"), true);
         save.Click([weak](auto const &sender, auto const &) {
             if (auto self = weak.lock(); self && sender == self->save) self->Save();
         }); actions.Children().Append(save);
-        Grid::SetRow(actions, 3); root.Children().Append(actions);
+        const auto footer = AuxiliaryFooter(actions);
+        Grid::SetRow(footer, 3); root.Children().Append(footer);
         root.Unloaded([weak](auto const &sender, auto const &) {
             if (auto self = weak.lock(); self && sender == self->root) self->Hide();
         });
@@ -484,7 +489,12 @@ winrt::Windows::Foundation::IAsyncAction TestFilterEditorControls(FrameworkEleme
     auto draft = JsonObject::Parse(LR"({"id":"saved","name":"Work","filter":{"appSources":["Absent app"]}})");
     Grid root{nullptr};
     const auto mount = [&] { root = editor.TestLoad(draft, true).as<Grid>(); fixture.Child(root); };
-    const auto actions = [&] { return root.Children().GetAt(3).as<StackPanel>(); };
+    const auto actions = [&] { return root.Children().GetAt(3).as<Border>().Child().as<StackPanel>(); };
+    const auto form = [&] { return root.Children().GetAt(1).as<ScrollViewer>().Content().as<StackPanel>(); };
+    const auto sourceButton = [&] {
+        const auto criteria = form().Children().GetAt(1).as<Border>().Child().as<StackPanel>();
+        return criteria.Children().GetAt(criteria.Children().Size() - 1).as<DropDownButton>();
+    };
     const auto invoke = [](FrameworkElement const &element) {
         Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(element)
             .GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
@@ -541,8 +551,7 @@ winrt::Windows::Foundation::IAsyncAction TestFilterEditorControls(FrameworkEleme
     mount(); co_await NextNativeFrame();
     stage = 85101;
     winrt::check_hresult(actions().Children().Size() == 2 ? S_OK : E_FAIL);
-    const auto form = root.Children().GetAt(1).as<ScrollViewer>().Content().as<StackPanel>();
-    const auto source = form.Children().GetAt(form.Children().Size() - 1).as<DropDownButton>();
+    const auto source = sourceButton();
     const auto summary = [&] {
         const auto content = source.Content().as<StackPanel>();
         return content.Children().GetAt(content.Children().Size() - 1).as<TextBlock>().Text();
@@ -554,7 +563,8 @@ winrt::Windows::Foundation::IAsyncAction TestFilterEditorControls(FrameworkEleme
     stage = 85103;
     winrt::check_hresult(placeholder.Width() == 20 && placeholder.Height() == 20 &&
         placeholder.Children().Size() == 1 && placeholder.Children().GetAt(0).as<FontIcon>().Visibility() == Visibility::Visible ? S_OK : E_FAIL);
-    const auto emoji = form.Children().GetAt(0).as<StackPanel>().Children().GetAt(1).as<Grid>().Children().GetAt(0).as<Button>();
+    const auto nameGroup = form().Children().GetAt(0).as<Border>().Child().as<StackPanel>();
+    const auto emoji = nameGroup.Children().GetAt(1).as<Grid>().Children().GetAt(0).as<Button>();
     stage = 85104;
     winrt::check_hresult(emoji.IsEnabled() && emoji.Width() == 32 && emoji.Flyout() ? S_OK : E_FAIL);
     const auto popup = source.Flyout().as<Flyout>().Content().as<StackPanel>();
@@ -625,8 +635,7 @@ winrt::Windows::Foundation::IAsyncAction TestFilterEditorControls(FrameworkEleme
         const auto localizedDraft = JsonObject::Parse(LR"({"name":"本地化","filter":{"appSources":["  WeIxIn.EXE  "]}})");
         root = editor.TestLoad(localizedDraft, false).as<Grid>(); fixture.Child(root);
         co_await NextNativeFrame();
-        const auto localizedForm = root.Children().GetAt(1).as<ScrollViewer>().Content().as<StackPanel>();
-        const auto localizedSource = localizedForm.Children().GetAt(localizedForm.Children().Size() - 1).as<DropDownButton>();
+        const auto localizedSource = sourceButton();
         const auto localizedSummary = [&] {
             const auto content = localizedSource.Content().as<StackPanel>();
             return content.Children().GetAt(content.Children().Size() - 1).as<TextBlock>().Text();

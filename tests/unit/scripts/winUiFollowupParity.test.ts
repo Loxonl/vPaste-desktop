@@ -49,9 +49,9 @@ describe("reviewed reference artwork and native window contracts", () => {
         const file = read("src-tauri/src/winui_panel/file_icons.rs");
         expect(file).toContain("node_modules/material-icon-theme/dist/material-icons.json");
         const web = read("src/clipboard/FileTypePresentation.tsx");
-        for (const glyph of ["DOCUMENT_GLYPH_PATH", "FOLDER_GLYPH_PATH"]) {
+        for (const [glyph, asset] of [["DOCUMENT_GLYPH_PATH", "document-stack"], ["FOLDER_GLYPH_PATH", "yellow-folder"]]) {
             const path = web.match(new RegExp(`const ${glyph} = "([^"]+)"`))![1];
-            expect(file).toContain(path);
+            expect(read(`src-tauri/native-demo/windows/winui/file-icons/vpaste-${asset}.svg`)).toContain(path);
         }
         expect(panel).toContain("row.dimensionsFrame.Visibility(row.dimensions.Visibility())");
         expect(panel).not.toContain("GetParent(row.dimensions)");

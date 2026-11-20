@@ -90,9 +90,12 @@
     <ClCompile Include="WinUiAppActions.cpp" />
     <ClCompile Include="WinUiHoverPreview.cpp" />
     <ClCompile Include="WinUiReader.cpp" />
+    <ClCompile Include="WinUiOnboarding.cpp" />
     <ClCompile Include="WinUiTrayWindow.cpp" />
     <ResourceCompile Include="WinUiNameEmoji.rc" />
     <ResourceCompile Include="WinUiMotion.rc" />
+    <ResourceCompile Include="WinUiOnboarding.rc" />
+    <ResourceCompile Include="$(VPasteFileIconResources)" Condition="'$(VPasteFileIconResources)' != ''" />
     <ClInclude Include="WinUiMotion.h" />
     <ClInclude Include="WinUiDockMotion.h" />
     <ClInclude Include="WinUiTabIndicator.h" />

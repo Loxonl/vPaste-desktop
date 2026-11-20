@@ -24,6 +24,7 @@ $identity = [pscustomobject]@{
     commandLine = $rootProcess.CommandLine
 }
 $samples = [System.Collections.Generic.List[object]]::new()
+$skippedChildChurn = 0
 $watch = [System.Diagnostics.Stopwatch]::StartNew()
 while ($watch.Elapsed.TotalSeconds -lt $DurationSeconds) {
     $processes = @(Get-CimInstance Win32_Process)
@@ -42,9 +43,10 @@ while ($watch.Elapsed.TotalSeconds -lt $DurationSeconds) {
         }
     } while ($added)
     $rows = @()
+    $childChanged = $false
     foreach ($processKey in $ids) {
         try {
-            $process = Get-Process -Id $processKey
+            $process = Get-Process -Id $processKey -ErrorAction Stop
             $rows += [pscustomobject]@{
                 processId = $processKey
                 name = $process.ProcessName
@@ -54,20 +56,31 @@ while ($watch.Elapsed.TotalSeconds -lt $DurationSeconds) {
             }
             $process.Dispose()
         } catch {
-            throw "Process $processKey changed during sampling; retry this interval."
+            if ($processKey -eq $TargetProcessId -or (Get-Process -Id $processKey -ErrorAction SilentlyContinue)) {
+                throw "Could not read process $processKey; measurement is incomplete: $($_.Exception.Message)"
+            }
+            # Closing a WebView can remove a child between the tree snapshot and
+            # its counters. Discard the whole interval, never report a partial sum.
+            $childChanged = $true
+            $skippedChildChurn++
+            break
         }
     }
-    $samples.Add([pscustomobject]@{
-        elapsedMs = [math]::Round($watch.Elapsed.TotalMilliseconds)
-        privateCommitBytes = ($rows | Measure-Object privateCommitBytes -Sum).Sum
-        workingSetBytes = ($rows | Measure-Object workingSetBytes -Sum).Sum
-        handles = ($rows | Measure-Object handles -Sum).Sum
-        processCount = $rows.Count
-        processes = $rows
-    })
+    if (!$childChanged) {
+        $samples.Add([pscustomobject]@{
+            timestampUtc = [DateTime]::UtcNow.ToString('o')
+            elapsedMs = [math]::Round($watch.Elapsed.TotalMilliseconds)
+            privateCommitBytes = ($rows | Measure-Object privateCommitBytes -Sum).Sum
+            workingSetBytes = ($rows | Measure-Object workingSetBytes -Sum).Sum
+            handles = ($rows | Measure-Object handles -Sum).Sum
+            processCount = $rows.Count
+            processes = $rows
+        })
+    }
     $remaining = [int](($DurationSeconds * 1000) - $watch.Elapsed.TotalMilliseconds)
     if ($remaining -gt 0) { Start-Sleep -Milliseconds ([math]::Min($IntervalMilliseconds, $remaining)) }
 }
+if (!$samples.Count) { throw 'No complete process-tree samples were recorded.' }
 $ordered = @($samples | ForEach-Object { $_.privateCommitBytes } | Sort-Object)
 $report = [pscustomobject]@{
     label = $Label
@@ -77,6 +90,7 @@ $report = [pscustomobject]@{
     samples = $samples
     summary = [pscustomobject]@{
         sampleCount = $ordered.Count
+        skippedChildChurn = $skippedChildChurn
         privateCommitMedianBytes = $ordered[[math]::Floor(($ordered.Count - 1) / 2)]
         privateCommitP95Bytes = $ordered[[math]::Ceiling($ordered.Count * 0.95) - 1]
         privateCommitMinBytes = $ordered[0]

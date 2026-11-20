@@ -2,7 +2,7 @@
 use serde_json::{json, Value};
 use std::sync::Mutex;
 
-static STORE_ACCESS: Mutex<()> = Mutex::new(());
+pub(super) static STORE_ACCESS: Mutex<()> = Mutex::new(());
 
 fn label_for_tab(tab: &Value, tag_name: &str) -> Result<String, String> {
     let filter = &tab["filter"];

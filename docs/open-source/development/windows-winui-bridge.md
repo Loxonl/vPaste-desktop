@@ -9,7 +9,7 @@ The shipping WebView remains the default unless `--main-ui=winui` is supplied.
 ## Initialization and messages
 
 Rust loads the adjacent DLL and checks `vpaste_winui_protocol_version` before
-initialization. Version 7 is defined by `winui_panel/bridge.rs` and `WinUiBridge.h`.
+initialization. Version 8 is defined by `winui_panel/bridge.rs` and `WinUiBridge.h`.
 A missing or incompatible version is a startup error with a rebuild instruction;
 an old DLL must not silently run against a new Rust host.
 
@@ -20,6 +20,9 @@ fields while changing the common envelope. Unknown operations retain an explicit
 error response. Results are bounded to 4 MiB and preserve `id`/`op` when replacing
 oversized data with a recoverable error. Native bytes are copied before callback
 return; asynchronous work never retains a borrowed FFI buffer.
+Only plain-text editor open/save and OCR copy use the larger document wire
+envelope, so JSON escaping cannot lower the existing 8 MiB text limit. Neither
+the normal history nor reader payload budget increases.
 
 Rust owns history, configuration, queries, capture, paste, files, OCR, queue and
 tag rules. WinUI owns native controls, focus/geometry, interaction drafts and
@@ -32,6 +35,8 @@ capture, update and preference state as the legacy menu using
 `nativeTrayShow`/`nativeTrayState`; `nativeTrayAction` returns to the existing
 commands. No tray WebView is prewarmed in this renderer. The popup is created
 on first use, and its outside-click timer runs only while visible.
+The tray click enters the first row with pointer focus, not a remembered
+keyboard cue. Subsequent Tab and arrow navigation keep system focus visuals.
 
 Callbacks on the WinUI STA may enqueue Tauri main-thread work; they must not
 synchronously wait for that event loop when it may already be waiting for WinUI.
@@ -94,7 +99,8 @@ and accessibility rather than a different file-manager layout.
 | Auto-hide | External deactivation schedules a delayed recheck. Reopening, internal focus, editors, dialogs, drag, preview pinning and existing hide suppression protect the panel from stale blur events. |
 | Queue | The existing Rust queue remains authoritative; the separate non-activating native window keeps paste focus on the target app. Its toolbar toggle and multi-selection actions remain separate. Centered title/count, Reverse/More, separator rows and bottom Undo follow the reference hierarchy. Native OLE sorting with an insertion line, always-visible Remove and InfoBar errors remain documented differences from WebView. |
 | Settings | The existing WebView settings page remains in use and is destroyed on close. It is not part of this native UI migration. |
-| First run | A temporary transparent `/native-onboarding` content host reuses the shipping tutorial over the native panel's actual history area, without its own guide card or taskbar entry and without mounting the main clipboard WebView. The retained dock owns its position and visibility. Saved filters, completion and shortcut practice remain shared; completion or cancellation destroys the host and restores native input. Cancellation does not mark onboarding complete. |
+| First run and replay | The native XAML tutorial replaces the dock's history content, with no auxiliary window or WebView. It retains the welcome, filters, shortcut practice and completion sequence; Debug Windows/Mac reads saved tabs but only projects a temporary draft. The configured shortcut resumes the same view, and Finish releases it before returning to the history. |
+| Edit and OCR | Plain text, links, colors and text-file entries use a native multiline editor and the shared revision-checked save transaction; rich HTML/RTF editing keeps the shipping WebView. OCR reuses the native reader and the shared recognizer and clipboard/history commands, preserving draft edits, selection/copy-all, and pinning. |
 
 The shell parity regression runs real controls on the WinUI STA with synthetic
 records and no user database. Native rendering snapshots cannot prove DWM
@@ -167,6 +173,81 @@ card/tab/creation-menu dismissal on hide/reopen is retained.
 
 ## Auxiliary renderer lifecycle
 
+### Properties-style auxiliary surfaces
+
+For native inspector and editor surfaces, reuse the `AuxiliaryCaption`,
+`AuxiliaryGroup`, `StyleAuxiliaryAction`, and `AuxiliaryFooter` patterns in
+`WinUiAppearance.h`. In WinUI mode, use one Desktop Acrylic material:
+`DesktopWindowXamlSource.SystemBackdrop` on the native island and the DWM
+transient backdrop behind the transparent browser renderer. Do not depend on
+a transparent XAML root to expose a host HWND backdrop. Windows owns the outer
+corners and shadow; the WinUI-mode browser content does not draw another
+blurred, rounded window. When the corresponding material is
+unavailable or Windows contrast mode is on, use the corresponding solid
+theme/system color. The editor form itself does not draw an opaque canvas: the input
+fills its working region, and content such as the original OCR image sits in
+its own softly outlined group. Native tag editors retain their anchored
+Flyout and its system presenter; the inner form uses the same group and
+header/footer rules. Tag management uses the same grouped surface for its list.
+
+Use a compact title aligned left and named 32-DIP caption controls aligned
+right, with 16-DIP reader insets and 8-DIP group/control gaps. Separate the
+entire caption (title and actions) from its contents with a single themed
+bottom stroke. Use the feature's existing glyph before the title when it aids
+recognition; it is not a separate control. Custom headers such as tag
+management and the queue reuse the stroke without changing their layout.
+Give content groups an 8-DIP radius, one theme-resource outline and no
+separate shadow. Put OCR's image and result labels on the same heading row,
+the two working surfaces on the same fill row, and feedback below both.
+Use a 12-DIP gap below the divider before the first form label, then 8 DIPs
+between the label and its content. Use that same heading treatment for editing.
+When a form has commit actions, place 36-DIP buttons on the right after a
+single, subtle top separator. Use the stock WinUI Button for secondary
+actions and `AccentButtonStyle` for a commit such as Save, without overriding
+the template's colors, typography, padding, or corners. Preserve native focus
+visuals and visible error text. The ordinary reader keeps its single pin rather than a
+form footer; OCR uses pin and Close in the title row and Copy all in the
+footer. WinUI's browser-based preview fallbacks mirror the reader's localized
+title, 40-DIP caption and single pin above their content. Leave an 8-DIP
+content gutter under the caption and use the same 12-DIP preview corners.
+Plain reading text has the rich preview's 24-DIP horizontal and 22-DIP
+vertical document insets; media retains its own aspect ratio and fit rules.
+The Windows WinUI rich editor matches the native 14-DIP field labels,
+36-DIP buttons and 4-DIP control corners with scoped Fluent colors. The
+WebView still owns HTML/RTF formatting, undo and save. Drag its header via
+WebView2's native app region (excluding Close), as in Settings. The WinUI
+OCR and plain-text editor move from their caption with pointer capture,
+resetting capture on release, cancellation, loss of capture or close. They
+never post a synthetic mouse press or start a system modal move loop.
+Ordinary previews remain positioned by the reader's anchor logic. Legacy
+platform routes retain their appearance. Close, Escape and
+unsaved-change confirmation retain their existing command owners. Use WinUI's existing MenuFlyout, ComboBox and ContentDialog
+templates for short system interactions rather than nesting another window.
+
+The layering reference is [Files' properties page](https://github.com/files-community/Files/blob/48d3136967534ea00b58e6fa00339cc3681e9351/src/Files.App/Views/Properties/MainPropertiesPage.xaml).
+Its material settings are independent of this layout pattern. Do not reduce
+whole-window opacity or add a second opaque page fill to imitate the material.
+
+### Branded guide exception
+
+The in-panel native tutorial follows `TutorialOverlay.tsx`,
+`TutorialOverlay.module.css`, and the tutorial palette in `src/ui/tokens.css`,
+not the properties-window style. Keep the horizontal logo/wordmark/underline
+welcome, numbered left rail, center illustrations or five filter tiles, and
+the right-side pill action; fold to the single-column scrolling layout at
+900 DIPs. Center the constrained step inside the actual viewport in both
+layouts. Keep the original SVG illustrations and shortcut press/pulse.
+The shortcut SVG already includes its surface; do not wrap it in another
+border. The Debug Windows and Mac entries put their icon and short label in
+the same horizontal row.
+`WinUiOnboardingStyles.xaml` owns the guide's visual styles and high-contrast
+resources; the filter tiles contain stock, named WinUI `ToggleSwitch` controls.
+Use shared motion timings, remove decorative motion when Windows animations are disabled, and
+leave the welcome hold, existing draft/save policy, and real shortcut practice
+under their current owners.
+
+### Reader and editor lifetime
+
 The native reader leaves activation and focus-navigation keys to toolbar
 buttons, including events originating from their glyphs. Escape still closes
 the reader; content-origin Space/arrows/Tab and Ctrl+Tab keep their preview
@@ -175,8 +256,10 @@ handling those shortcuts. A requested native focus handoff targets a named,
 focusable content host, not the pin button; the content layout and the Rust
 decision about whether to activate the reader remain unchanged.
 
-Native Text/Image/Link readers remain native where supported. HTML, PDF and OCR
-can create the shared auxiliary reader without creating the main WebView.
+Supported text, image, color and file readers are native. OCR uses the same
+native reader window with a form whose text controls own navigation and IME.
+HTML, links and PDF can create the shared auxiliary reader without creating the
+main WebView.
 While visible, that reader retains the existing continuous content/geometry
 transitions. In a WinUI session, closing it hides and clears the session, then
 queues destruction of the shell and browser renderer on the Tauri main thread.
@@ -257,13 +340,21 @@ formal release workflow. Testing this package is not publication authorization.
 ## Resource measurement
 
 Selection/focus changes update selection chrome only. They must not reapply the
-whole panel theme or reconstruct unrelated file SVGs. Keep file presentation
+whole panel theme or reconstruct unrelated file artwork. Keep file presentation
 identity while its data and effective theme are unchanged; explicit new detail
 responses and real theme changes still update it. An unchanged `set_theme`
 message on summon is a no-op, not a second initial-render pass. The native shell
 regression checks child identity, card-request counts, real theme changes and
 explicit detail replacement. Its replay of the former 36-card focus restyle is
 a component benchmark, not an end-to-end summon or Release-memory result.
+
+Both the card and the native file reader receive
+`light`/`dark` file artwork as `{name, asset}`. `name` remains the logical
+icon identity; `asset` selects a PNG resource embedded in the WinUI DLL. The
+build rasterizes the same installed Material icon manifest and the three
+product glyphs, with a maximum edge of 256 pixels. The XAML thread weakly
+shares live `BitmapImage` sources by asset. The WebView artwork, file path
+and badge rules, and images/PDFs opened as preview content are unchanged.
 
 Batch visible local verification. Run source/unit checks, builds and read-only
 resource sampling silently during implementation. Announce one final interval
@@ -345,7 +436,8 @@ node scripts/check-winui-auxiliary-lifecycle.mjs <marked-memory-fixture-director
 
 The check verifies the exact process data directory before invoking commands.
 It exercises six inactive-queue mutation guards, visible reuse, pin protection,
-canceled cold creation, reopening, settings recreation and guide release. It
+canceled cold creation, reopening, settings recreation, guide completion and
+absence of guide/main WebView targets. It
 does not activate the queue/input interceptor or paste to another App. Successful
 queue mutations are covered separately by the Rust database and actual-XAML
 regressions. It neither starts nor stops vPaste and does not substitute for
@@ -354,9 +446,10 @@ physical keyboard, external-app focus or DPI checks.
 Native migration regressions must exercise the real projection and presentation
 boundary. Lightweight card payloads omit drag HTML even when stored rich content
 exists. Determine the native Rich badge from render/stored-format presence; do
-not enable drag expansion just to populate a chip. Tutorial readiness registers
-its visibility listener; the owned host emits `native-onboarding-shown` after
-mapping, so hidden initialization cannot consume the welcome animation.
+not enable drag expansion just to populate a chip. The native tutorial starts
+its welcome timer after the dock is shown, independently of data initialization.
+Its controls remain in the same XAML root when shortcut practice hides and
+restores the dock.
 
 Reader handoff preserves the current physical rectangle across native/shared
 renderers, then interpolates to the accepted content's size. Keep the old
@@ -387,8 +480,8 @@ MP4 remain type-icon presentations and no longer invoke Shell thumbnail/codecs.
 Image, text, PDF and multi-file paths retain their existing behavior. A single
 image File has the Image *visual header* while retaining File identity, category
 queries and native file drag semantics. The native reader exposes a system
-material around its opaque content canvas, with an opaque system-theme fallback;
-rich WebView rendering is preserved. A source icon without a dominant color
+material around a thin theme-resource content layer and keeps an opaque
+system-theme window fallback; rich WebView rendering is preserved. A source icon without a dominant color
 uses the reference neutral gray header; an empty replacement clears any prior
 decoded source artwork. Do not infer an application identity from that generic
 fallback. See the scenario matrix for the separate

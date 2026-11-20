@@ -115,7 +115,7 @@ describe("preview window outer shell", () => {
         expect(auxiliarySource).toContain("page_ready_ms");
     });
 
-    it("uses one CSS-owned rounded surface without a competing Win32 region", () => {
+    it("uses one outer frame: CSS for the legacy preview and DWM only for the Windows WinUI fallback", () => {
         const creation = sourceBetween(
             "fn build_preview_window",
             "fn preview_window_active",
@@ -129,10 +129,15 @@ describe("preview window outer shell", () => {
             "if let tauri::WindowEvent::CloseRequested",
         );
         const shellRule = previewStyles.match(/\.preview-shell\s*\{([^}]*)\}/)?.[1];
+        const systemShellRule = previewStyles.match(/\.preview-shell\[data-chrome="winui"\]\s*\{([^}]*)\}/)?.[1];
 
         expect(creation).toContain(".transparent(true)");
         expect(creation).toContain(".background_color(tauri::window::Color(0, 0, 0, 0))");
-        expect(creation).toContain(".shadow(false)");
+        expect(creation).toMatch(/let system_frame =\s*cfg!\(all\(target_os = "windows", feature = "winui"\)\) && main_panel_mode::winui\(\);/);
+        expect(creation).toContain(".shadow(system_frame)");
+        expect(creation).toMatch(/if !system_frame \{[^}]*window\.set_shadow\(false\)/);
+        expect(creation).toMatch(/if system_frame \{\s*apply_winui_auxiliary_frame\(window\)/);
+        expect(creation).toContain("DWMWA_WINDOW_CORNER_PREFERENCE");
         expect(creation).not.toContain("apply_windows_rounded_window_region");
         expect(showing).not.toContain("apply_windows_rounded_window_region");
         expect(preCloseWindowEvents).not.toContain("apply_windows_rounded_window_region");
@@ -140,5 +145,8 @@ describe("preview window outer shell", () => {
         expect(shellRule).toContain("border-radius: var(--ui-radius-window)");
         expect(uiTokens).toContain("--ui-radius-window: 12px");
         expect(shellRule).toContain("overflow: hidden");
+        expect(systemShellRule).toContain("border-radius: 0");
+        expect(systemShellRule).toContain("background: transparent");
+        expect(systemShellRule).toContain("backdrop-filter: none");
     });
 });

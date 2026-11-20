@@ -38,13 +38,14 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("WinUI fallback preview toolbar", () => {
-    it("reserves a separate row for only the pin above PDF content", async () => {
+    it("places the shared Preview title and single pin above the PDF toolbar", async () => {
         const { container } = open();
         emit({ request_id: 1, item_type: "File", content: '["C:/fixture.pdf"]', native_toolbar: true });
         const pdf = await screen.findByTitle("fixture.pdf");
         await waitFor(() => expect(pdf.closest("[data-preview-phase]")).toHaveAttribute("data-preview-phase", "current"));
         const toolbar = container.querySelector("[data-preview-toolbar]");
         expect(toolbar).not.toBeNull();
+        expect(toolbar).toContainElement(screen.getByRole("heading", { name: "preview.title" }));
         expect(toolbar).not.toContainElement(pdf);
         expect(toolbar?.nextElementSibling).toContainElement(pdf);
         const pin = screen.getByRole("button", { name: "preview.pin" });
@@ -82,6 +83,7 @@ describe("WinUI fallback preview toolbar", () => {
         emit({ request_id: 1, item_type: "Text", content: "Shipping WebView", native_toolbar: false });
         await screen.findByText("Shipping WebView");
         expect(container.querySelector("[data-preview-toolbar]")).toBeNull();
+        expect(screen.queryByRole("heading", { name: "preview.title" })).not.toBeInTheDocument();
         expect(screen.queryByRole("button", { name: "common.close" })).not.toBeInTheDocument();
         expect(screen.getByRole("button", { name: "preview.pin" })).toBeInTheDocument();
     });

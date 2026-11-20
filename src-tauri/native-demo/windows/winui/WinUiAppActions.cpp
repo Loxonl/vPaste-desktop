@@ -12,6 +12,8 @@
 #ifdef _DEBUG
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
+#include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
+#include <winrt/Windows.Storage.Streams.h>
 winrt::Windows::Foundation::IAsyncAction NextNativeFrame();
 #endif
 
@@ -19,6 +21,25 @@ namespace vpaste::winui {
 using namespace winrt::Microsoft::UI::Xaml;
 using namespace winrt::Microsoft::UI::Xaml::Controls;
 using namespace winrt::Windows::Data::Json;
+
+namespace {
+constexpr double DeveloperIconSize = 16;
+
+Viewbox DeveloperIcon(const wchar_t *path) {
+    // Preserve the original 24-unit viewport, with only one scale to fit it.
+    const auto xaml = std::wstring{LR"(<Viewbox xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+        <Path Width="24" Height="24" Stretch="None" Fill="{ThemeResource VPaste.DeveloperToolbarForeground}" Data="F1 )"}
+        + path + LR"("/></Viewbox>)";
+    auto icon = Markup::XamlReader::Load(winrt::hstring{xaml}).as<Viewbox>();
+    icon.Width(DeveloperIconSize);
+    icon.Height(DeveloperIconSize);
+    Automation::AutomationProperties::SetAccessibilityView(icon, Automation::Peers::AccessibilityView::Raw);
+    return icon;
+}
+
+// Four independent panes, with a clear cross-shaped gap at toolbar scale.
+constexpr wchar_t WindowsGuideMark[] = LR"(M3,3 H11 V11 H3 Z M13,3 H21 V11 H13 Z M3,13 H11 V21 H3 Z M13,13 H21 V21 H13 Z)";
+}
 
 struct AppActions::Impl : std::enable_shared_from_this<Impl> {
     FrameworkElement owner{nullptr};
@@ -118,19 +139,19 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
             if (caption) {
                 StackPanel content;
                 content.Orientation(Orientation::Horizontal); content.Spacing(3);
-                content.Children().Append(HeaderIcon(path, 13));
+                content.Children().Append(DeveloperIcon(path));
                 TextBlock text; text.Text(caption); text.FontSize(10); text.FontWeight({720});
                 text.VerticalAlignment(VerticalAlignment::Center);
                 content.Children().Append(text);
-                button.Width(42);
+                button.Width(46);
                 button.Content(content);
-            } else if (path) button.Content(HeaderIcon(path, 13));
+            } else if (path) button.Content(DeveloperIcon(path));
             else {
                 TextBlock text; text.Text(english ? L"EN" : L"中"); text.FontSize(10); text.FontWeight({720});
                 button.Content(text);
             }
         };
-        set(L"Windows 使用引导", L"Windows tutorial", HeaderArtwork::WindowOutlined, L"Win");
+        set(L"Windows 使用引导", L"Windows tutorial", WindowsGuideMark, L"Win");
         set(L"Mac 使用引导", L"Mac tutorial", HeaderArtwork::Apple, L"Mac");
         set(L"切换预览语言", L"Switch preview language", nullptr);
         set(L"切换预览主题", L"Switch preview theme", darkPreview ? HeaderArtwork::DarkModeRounded : HeaderArtwork::LightModeRounded);
@@ -311,8 +332,47 @@ winrt::Windows::Foundation::IAsyncAction TestAppActionsControls(FrameworkElement
     runtime(true); update(1, L"ready"); co_await NextNativeFrame();
     winrt::check_hresult(actions.ToolsButton().Visibility() == Visibility::Visible && actions.UpdateButton().IsEnabled() ? S_OK : E_FAIL);
     const auto tools = actions.DeveloperButtons();
+    const auto guideFits = [](const Button &button, const wchar_t *label) {
+        const auto row = button.Content().try_as<StackPanel>();
+        if (!row || row.Orientation() != Orientation::Horizontal || row.Children().Size() != 2) return false;
+        const auto icon = row.Children().GetAt(0).try_as<Viewbox>();
+        const auto caption = row.Children().GetAt(1).try_as<TextBlock>();
+        return button.ActualWidth() >= 42 && button.ActualHeight() == 26 && icon && caption &&
+            caption.Text() == label && row.Spacing() >= 3 && icon.ActualWidth() == DeveloperIconSize &&
+            caption.TransformToVisual(row).TransformPoint({0, 0}).X >= icon.ActualWidth() + 2;
+    };
     winrt::check_hresult(tools.size() == 7 && !actions.ToolsButton().Flyout() &&
+        guideFits(tools[0], L"Win") && guideFits(tools[1], L"Mac") &&
+        Automation::AutomationProperties::GetName(tools[0]) == L"Windows 使用引导" &&
         Automation::AutomationProperties::GetName(tools[5]) == L"内存监视器" ? S_OK : E_FAIL);
+    stage = 981;
+    // Check the painted glyph, not only its declared layout width.
+    {
+        const auto mark = tools[0].Content().as<StackPanel>().Children().GetAt(0).as<Viewbox>();
+        Media::Imaging::RenderTargetBitmap bitmap;
+        co_await bitmap.RenderAsync(mark, 24, 24);
+        auto buffer = co_await bitmap.GetPixelsAsync();
+        std::vector<std::uint8_t> pixels(buffer.Length());
+        winrt::Windows::Storage::Streams::DataReader::FromBuffer(buffer).ReadBytes(pixels);
+        winrt::check_hresult(bitmap.PixelWidth() == 24 && bitmap.PixelHeight() == 24 ? S_OK : E_FAIL);
+        const auto alpha = [&](int x, int y) { return pixels[(y * 24 + x) * 4 + 3]; };
+        for (const auto y : {7, 17}) {
+            winrt::check_hresult(alpha(7, y) > 100 && alpha(17, y) > 100 && alpha(12, y) < 16 ? S_OK : E_FAIL);
+        }
+        winrt::check_hresult(alpha(7, 12) < 16 && alpha(17, 12) < 16 ? S_OK : E_FAIL);
+        const auto memory = tools[5].Content().as<Viewbox>();
+        winrt::check_hresult(memory.ActualWidth() == DeveloperIconSize ? S_OK : E_FAIL);
+        co_await bitmap.RenderAsync(memory, 24, 24);
+        buffer = co_await bitmap.GetPixelsAsync();
+        pixels.resize(buffer.Length());
+        winrt::Windows::Storage::Streams::DataReader::FromBuffer(buffer).ReadBytes(pixels);
+        winrt::check_hresult(bitmap.PixelWidth() == 24 && bitmap.PixelHeight() == 24 ? S_OK : E_FAIL);
+        int first = 24, last = -1;
+        for (int y = 0; y < 24; ++y) for (int x = 0; x < 24; ++x) {
+            if (alpha(x, y) > 100) { first = std::min(first, x); last = std::max(last, x); }
+        }
+        winrt::check_hresult(last - first >= 16 ? S_OK : E_FAIL);
+    }
     for (const auto &button : tools) winrt::check_hresult(button.Visibility() == Visibility::Visible ? S_OK : E_FAIL);
     Invoke(actions.ToolsButton()); co_await NextNativeFrame();
     for (const auto &button : tools) winrt::check_hresult(button.Visibility() == Visibility::Collapsed ? S_OK : E_FAIL);

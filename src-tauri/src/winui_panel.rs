@@ -17,10 +17,12 @@ mod behavior;
 mod bridge;
 use bridge::response as response_bytes;
 mod drag;
+mod editor;
 mod file_icons;
 mod filters;
 mod focus;
 mod layout;
+mod ocr;
 pub(crate) mod onboarding;
 mod presentation;
 pub(crate) mod preview;
@@ -519,6 +521,10 @@ pub(crate) fn restore_after_editor() -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn text_editor_focused() -> bool {
+    editor::focused()
+}
+
 pub(crate) fn set_queue_view(active: bool) -> Result<(), String> {
     let panel = api()?;
     // SAFETY: the DLL marshals the view switch to its dedicated WinUI thread.
@@ -696,7 +702,7 @@ fn send_response(id: u64, op: &str, result: Result<serde_json::Value, String>) {
 }
 
 unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
-    if input.is_null() || length == 0 || length > bridge::MAX_REQUEST_BYTES {
+    if input.is_null() || length == 0 || length > bridge::MAX_DOCUMENT_BYTES {
         return;
     }
     // SAFETY: the C++ caller keeps the JSON buffer alive for this callback.
@@ -719,6 +725,12 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
         return;
     }
     if reader::handle(&app, &op, &request.argument) {
+        return;
+    }
+    if editor::focus_changed(&op, &request.argument) {
+        return;
+    }
+    if onboarding::handle(&app, id, &op, &payload) {
         return;
     }
     if matches!(op.as_str(), "dragBegin" | "dragEnd") {
@@ -764,7 +776,9 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
         send_response(id, &op, Ok(serde_json::Value::Null));
         return;
     }
-    let preview_request = if matches!(
+    let preview_request = if op == "imageText" {
+        Some(preview::reserve(request.id, crate::PreviewMode::Manual))
+    } else if matches!(
         op.as_str(),
         "previewToggle" | "previewSelect" | "hoverPreview"
     ) {
@@ -886,18 +900,17 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
                     Err("Invalid quick-input key / 无效的快速粘贴按键".into())
                 }
             }
-            "imageText" => crate::show_image_text_window(app.clone(), request.hash)
-                .await
-                .map(|_| json!({})),
+            "imageText" => ocr::open(app.clone(), request.hash, preview_request.unwrap()).await,
+            "nativeOcrCopy" => ocr::copy(app.clone(), payload).await,
             "openFolder" | "copyFolder" | "copyColor" | "clearTags" | "exportPrepare"
             | "exportImage" => {
                 actions::dispatch(app.clone(), op.clone(), request.hash, request.argument).await
             }
             "favorite" => update_favorite(app.clone(), request.hash, request.favorite).await,
             "delete" => delete_history_item(app.clone(), request.hash).await,
-            "edit" => crate::open_text_editor_window(app.clone(), request.hash)
-                .await
-                .map(|_| json!({})),
+            "edit" => editor::open(app.clone(), request.hash).await,
+            "nativeEditorSave" => editor::save(app.clone(), payload).await,
+            "nativeEditorClose" => editor::close(&request.argument).await,
             "assignTag" | "recordTagAssign" => {
                 update_item_tag(request.hash, request.tag_id, true).await
             }
@@ -1559,6 +1572,7 @@ mod tests {
                 ("C:/docs/report.pdf", "single-icon", false),
                 ("C:/notes.txt", "single-icon", false),
                 ("C:/project/package.json", "single-icon", false),
+                ("C:/project/example.toml", "single-icon", false),
                 ("C:/unknown.something-vpaste", "single-icon", false),
                 ("C:/documents", "single-folder", false),
                 ("C:/notes.txt", "multiple", true),

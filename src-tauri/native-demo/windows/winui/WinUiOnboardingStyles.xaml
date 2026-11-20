@@ -1,0 +1,135 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- The guide is branded, independently of properties-window chrome.
+         Values correspond to src/ui/tokens.css's tutorial palette. -->
+    <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+            <SolidColorBrush x:Key="GuideText" Color="#FF1F242B"/>
+            <SolidColorBrush x:Key="GuideMuted" Color="#A81F242B"/>
+            <SolidColorBrush x:Key="GuideEdge" Color="#141F242B"/>
+            <SolidColorBrush x:Key="GuideSoft" Color="#9EFFFFFF"/>
+            <SolidColorBrush x:Key="GuideSelectedEdge" Color="#3D1E92EE"/>
+            <SolidColorBrush x:Key="GuideAccent" Color="#FF1E92EE"/>
+            <SolidColorBrush x:Key="GuideSecondary" Color="#131F242B"/>
+            <SolidColorBrush x:Key="GuideReady" Color="#E0157CE0"/>
+            <LinearGradientBrush x:Key="GuideTile" StartPoint="0,0" EndPoint="0,1">
+                <GradientStop Color="#EBFFFFFF" Offset="0"/>
+                <GradientStop Color="#D7FFFFFF" Offset="1"/>
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="GuideSelected" StartPoint="0,0" EndPoint="0,1">
+                <GradientStop Color="#F7F8FCFF" Offset="0"/>
+                <GradientStop Color="#EAF0F8FF" Offset="1"/>
+            </LinearGradientBrush>
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark">
+            <SolidColorBrush x:Key="GuideText" Color="#FFEEF2F8"/>
+            <SolidColorBrush x:Key="GuideMuted" Color="#A8EEF2F8"/>
+            <SolidColorBrush x:Key="GuideEdge" Color="#14FFFFFF"/>
+            <SolidColorBrush x:Key="GuideSoft" Color="#C71F232A"/>
+            <SolidColorBrush x:Key="GuideSelectedEdge" Color="#384EA6FF"/>
+            <SolidColorBrush x:Key="GuideAccent" Color="#FF4AA8FF"/>
+            <SolidColorBrush x:Key="GuideSecondary" Color="#1CFFFFFF"/>
+            <SolidColorBrush x:Key="GuideReady" Color="#DB2284E2"/>
+            <SolidColorBrush x:Key="GuideTile" Color="#C71F232A"/>
+            <SolidColorBrush x:Key="GuideSelected" Color="#D1222A36"/>
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="HighContrast">
+            <SolidColorBrush x:Key="GuideText" Color="{ThemeResource SystemColorWindowTextColor}"/>
+            <SolidColorBrush x:Key="GuideMuted" Color="{ThemeResource SystemColorWindowTextColor}"/>
+            <SolidColorBrush x:Key="GuideEdge" Color="{ThemeResource SystemColorWindowTextColor}"/>
+            <SolidColorBrush x:Key="GuideSoft" Color="{ThemeResource SystemColorWindowColor}"/>
+            <SolidColorBrush x:Key="GuideSelectedEdge" Color="{ThemeResource SystemColorHighlightColor}"/>
+            <SolidColorBrush x:Key="GuideAccent" Color="{ThemeResource SystemColorHighlightColor}"/>
+            <SolidColorBrush x:Key="GuideSecondary" Color="{ThemeResource SystemColorButtonFaceColor}"/>
+            <SolidColorBrush x:Key="GuideReady" Color="{ThemeResource SystemColorWindowColor}"/>
+            <SolidColorBrush x:Key="GuideStatusForeground" Color="{ThemeResource SystemColorWindowTextColor}"/>
+            <SolidColorBrush x:Key="GuideActionForeground" Color="{ThemeResource SystemColorHighlightTextColor}"/>
+            <SolidColorBrush x:Key="GuideBlueAction" Color="{ThemeResource SystemColorHighlightColor}"/>
+            <SolidColorBrush x:Key="GuideBlueUnderline" Color="{ThemeResource SystemColorHighlightColor}"/>
+            <SolidColorBrush x:Key="GuideTile" Color="{ThemeResource SystemColorWindowColor}"/>
+            <SolidColorBrush x:Key="GuideSelected" Color="{ThemeResource SystemColorWindowColor}"/>
+        </ResourceDictionary>
+    </ResourceDictionary.ThemeDictionaries>
+    <LinearGradientBrush x:Key="GuideBlueUnderline" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Color="#FF2F8CFF" Offset="0"/>
+        <GradientStop Color="#FF55C2FF" Offset="1"/>
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="GuideBlueAction" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#FF2F8CFF" Offset="0"/>
+        <GradientStop Color="#FF1269DF" Offset="1"/>
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="GuideStatusForeground" Color="White"/>
+    <SolidColorBrush x:Key="GuideActionForeground" Color="White"/>
+    <Style x:Key="VPaste.GuideText" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{ThemeResource GuideText}"/>
+        <Setter Property="TextWrapping" Value="Wrap"/>
+    </Style>
+    <Style x:Key="VPaste.GuideMuted" TargetType="TextBlock" BasedOn="{StaticResource VPaste.GuideText}">
+        <Setter Property="Foreground" Value="{ThemeResource GuideMuted}"/>
+    </Style>
+    <Style x:Key="VPaste.GuideSection" TargetType="Border">
+        <Setter Property="BorderBrush" Value="{ThemeResource GuideEdge}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Background" Value="{ThemeResource GuideTile}"/>
+        <Setter Property="CornerRadius" Value="14"/>
+    </Style>
+    <Style x:Key="VPaste.GuideSelectedSection" TargetType="Border" BasedOn="{StaticResource VPaste.GuideSection}">
+        <Setter Property="BorderBrush" Value="{ThemeResource GuideSelectedEdge}"/>
+        <Setter Property="Background" Value="{ThemeResource GuideSelected}"/>
+    </Style>
+    <Style x:Key="VPaste.GuideIndex" TargetType="Border" BasedOn="{StaticResource VPaste.GuideSection}">
+        <Setter Property="Background" Value="{ThemeResource GuideSoft}"/>
+        <Setter Property="CornerRadius" Value="12"/>
+    </Style>
+    <Style x:Key="VPaste.GuideUnderline" TargetType="Border">
+        <Setter Property="CornerRadius" Value="2"/>
+        <Setter Property="Background" Value="{ThemeResource GuideBlueUnderline}"/>
+    </Style>
+    <Style x:Key="VPaste.GuidePulse" TargetType="Border">
+        <Setter Property="CornerRadius" Value="20"/>
+        <Setter Property="BorderThickness" Value="2"/>
+        <Setter Property="BorderBrush" Value="{ThemeResource GuideAccent}"/>
+    </Style>
+    <Style x:Key="VPaste.GuideStatus" TargetType="Border" BasedOn="{StaticResource VPaste.GuideSection}">
+        <Setter Property="Background" Value="{ThemeResource GuideReady}"/>
+        <Setter Property="CornerRadius" Value="12"/>
+    </Style>
+    <Style x:Key="VPaste.GuideStatusText" TargetType="TextBlock" BasedOn="{StaticResource VPaste.GuideText}">
+        <Setter Property="Foreground" Value="{ThemeResource GuideStatusForeground}"/>
+    </Style>
+    <Style x:Key="VPaste.GuideNav" TargetType="Button">
+        <Setter Property="UseSystemFocusVisuals" Value="True"/>
+        <Setter Property="MinHeight" Value="44"/>
+        <Setter Property="Padding" Value="14,0"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="Foreground" Value="{ThemeResource GuideText}"/>
+        <Setter Property="Background" Value="{ThemeResource GuideSecondary}"/>
+        <Setter Property="CornerRadius" Value="22"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal"/>
+                                <VisualState x:Name="PointerOver"><VisualState.Setters><Setter Target="Chrome.Opacity" Value="0.88"/></VisualState.Setters></VisualState>
+                                <VisualState x:Name="Pressed"><VisualState.Setters><Setter Target="Chrome.Opacity" Value="0.76"/></VisualState.Setters></VisualState>
+                                <VisualState x:Name="Disabled"><VisualState.Setters><Setter Target="Chrome.Opacity" Value="0.5"/></VisualState.Setters></VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <Border x:Name="Chrome" Background="{TemplateBinding Background}" CornerRadius="{TemplateBinding CornerRadius}" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter Content="{TemplateBinding Content}" Foreground="{TemplateBinding Foreground}"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style x:Key="VPaste.GuidePrimary" TargetType="Button" BasedOn="{StaticResource VPaste.GuideNav}">
+        <Setter Property="Background" Value="{ThemeResource GuideBlueAction}"/>
+        <Setter Property="Foreground" Value="{ThemeResource GuideActionForeground}"/>
+    </Style>
+</ResourceDictionary>

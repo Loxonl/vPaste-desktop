@@ -18,7 +18,7 @@ fn native_body(item_type: &str, rich_html: &str, text_bytes: usize) -> bool {
         && (item_type != "Text" || text_bytes <= 2 * 1024 * 1024)
 }
 
-fn geometry(size: crate::PreviewWindowSize, area: crate::ScreenBounds) -> Value {
+pub(super) fn geometry(size: crate::PreviewWindowSize, area: crate::ScreenBounds) -> Value {
     let fit = (area.width / size.width)
         .min(area.height / size.height)
         .min(1.0);
@@ -163,7 +163,7 @@ pub(super) fn show(
     *pending = None;
     if mode.takes_focus() {
         crate::PREVIEW_PINNED.store(false, Ordering::SeqCst);
-        crate::WINUI_IMAGE_TEXT_PREVIEW.store(false, Ordering::SeqCst);
+        crate::WINUI_IMAGE_TEXT_PREVIEW.store(body["kind"] == "ocr", Ordering::SeqCst);
         crate::begin_preview_focus_handoff();
     }
     NATIVE.store(request, Ordering::Release);
@@ -181,7 +181,11 @@ pub(super) fn show(
             && x < left + rect["width"].as_f64().unwrap_or(0.0)
             && y < top + rect["height"].as_f64().unwrap_or(0.0)
     });
-    let focus = crate::preview_focus::commit_focus_target(mode.takes_focus(), cursor_inside, false);
+    let focus = crate::preview_focus::commit_focus_target(
+        mode.takes_focus(),
+        cursor_inside,
+        body["kind"] == "ocr",
+    );
     FOCUS_MAIN.store(
         if focus == Some(crate::preview_focus::FocusTarget::Clipboard) {
             request
@@ -193,6 +197,10 @@ pub(super) fn show(
     body["takesFocus"] = json!(focus == Some(crate::preview_focus::FocusTarget::Preview));
     body["hover"] = json!(mode == crate::PreviewMode::Hover);
     super::send_response(0, "nativeReader", Ok(body));
+}
+
+pub(super) fn current(generation: u64) -> bool {
+    generation != 0 && NATIVE.load(Ordering::Acquire) == generation
 }
 
 pub(super) fn hide(request: u64) {

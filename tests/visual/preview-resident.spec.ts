@@ -121,6 +121,11 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
         const toolbar = page.locator("[data-preview-toolbar]");
         const pdf = current(page).locator("iframe");
         const toolbarPin = toolbar.locator("button[aria-pressed]");
+        const shell = page.locator('[data-chrome="winui"]');
+        await expect(shell).toHaveCSS("border-radius", "0px");
+        await expect(shell).toHaveCSS("backdrop-filter", "none");
+        await expect(toolbar.getByRole("heading", { name: "Preview", exact: true })).toBeVisible();
+        await expect(toolbar).toHaveCSS("border-bottom-width", "1px");
         await expect(toolbarPin).toBeVisible();
         await expect(toolbar.getByRole("button")).toHaveCount(1);
         const pinBounds = await toolbarPin.boundingBox();
@@ -144,6 +149,7 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
         });
         const browserBounds = await page.evaluate(() => (window as PreviewWindow).__residentPreview.calls
             .filter(call => call.command === "sync_preview_browser" && call.args.requestId === 9).at(-1)!.args.bounds as { y: number });
+        await expect(toolbar.getByRole("heading", { name: "Preview", exact: true })).toBeVisible();
         expect(browserBounds.y).toBeGreaterThanOrEqual(toolbarBounds!.y + toolbarBounds!.height);
         await toolbarPin.press("Escape");
         await expect.poll(() => page.evaluate(() => (window as PreviewWindow).__residentPreview.calls

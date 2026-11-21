@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #undef GetCurrentTime
+#include <string>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Microsoft.UI.Xaml.h>
@@ -87,33 +88,104 @@ inline void ApplyFileStage(winrt::Microsoft::UI::Xaml::Controls::Border const &s
 // an explicit app theme and Windows contrast themes. Do not cache resolved brushes.
 inline void InstallAppearanceResources() {
     using namespace winrt::Microsoft::UI::Xaml;
-    Application::Current().Resources().MergedDictionaries().Append(
-        Markup::XamlReader::Load(LR"(<ResourceDictionary
+    // 分段追加 XAML 文本，确保每个宽原始字面量远小于 MSVC 16380 字节上限。
+    std::wstring xaml;
+    xaml.reserve(28000);
+    xaml += LR"(<ResourceDictionary
             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
           <ResourceDictionary.ThemeDictionaries>
             <ResourceDictionary x:Key="Light">
               <SolidColorBrush x:Key="SelectorBarItemForegroundSelected" Color="{ThemeResource SystemAccentColorDark1}"/>
-              <SolidColorBrush x:Key="VPaste.ToolbarForeground" Color="#B829302E"/>
-              <SolidColorBrush x:Key="VPaste.ToolbarSurface" Color="#B8FFFFFF"/>
-              <SolidColorBrush x:Key="VPaste.ToolbarStroke" Color="#0D1F2624"/>
-              <SolidColorBrush x:Key="VPaste.DeveloperToolbarForeground" Color="#AD29302E"/>
-            </ResourceDictionary>
+              <SolidColorBrush x:Key="VPaste.ToolbarForeground" Color="#D9202624"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarForegroundHover" Color="#FF111615"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarForegroundPressed" Color="#BA111615"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarForegroundDisabled" Color="#61202624"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarSurface" Color="#E0FFFFFF"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarSurfaceHover" Color="#FFFFFFFF"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarSurfacePressed" Color="#CCF0F3F6"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarSurfaceDisabled" Color="#8FFFFFFF"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarStroke" Color="#241C2321"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarStrokeHover" Color="#381C2321"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarStrokeDisabled" Color="#141C2321"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveForeground" Color="#FF155EC4"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveForegroundHover" Color="#FF0D4EA8"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveSurface" Color="#241976D2"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveSurfaceHover" Color="#361976D2"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveSurfacePressed" Color="#4A1976D2"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveStroke" Color="#7A1976D2"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveStrokeHover" Color="#A31976D2"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarForeground" Color="#BD202624"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarForegroundHover" Color="#FF111615"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarSurface" Color="#A3FFFFFF"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarStroke" Color="#1C1C2321"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarBadgeForeground" Color="#E01864D2"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarDivider" Color="#241C2321"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarButtonHover" Color="#DBFFFFFF"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarButtonPressed" Color="#B8E6EAEF"/>
+            </ResourceDictionary>)";
+    xaml += LR"(
             <ResourceDictionary x:Key="Dark">
               <SolidColorBrush x:Key="SelectorBarItemForegroundSelected" Color="{ThemeResource SystemAccentColorLight2}"/>
-              <SolidColorBrush x:Key="VPaste.ToolbarForeground" Color="#FFD7DCE5"/>
-              <SolidColorBrush x:Key="VPaste.ToolbarSurface" Color="#A321262D"/>
-              <SolidColorBrush x:Key="VPaste.ToolbarStroke" Color="#14FFFFFF"/>
-              <SolidColorBrush x:Key="VPaste.DeveloperToolbarForeground" Color="#C2DDE2EB"/>
-            </ResourceDictionary>
+              <SolidColorBrush x:Key="VPaste.ToolbarForeground" Color="#FFE4E9F1"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarForegroundHover" Color="#FFFFFFFF"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarForegroundPressed" Color="#CCFFFFFF"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarForegroundDisabled" Color="#66E4E9F1"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarSurface" Color="#B829303A"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarSurfaceHover" Color="#D9353D49"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarSurfacePressed" Color="#9E20262F"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarSurfaceDisabled" Color="#6629303A"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarStroke" Color="#26FFFFFF"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarStrokeHover" Color="#3DFFFFFF"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarStrokeDisabled" Color="#12FFFFFF"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveForeground" Color="#FF7AC8FF"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveForegroundHover" Color="#FFA3DAFF"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveSurface" Color="#2E4AA8FF"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveSurfaceHover" Color="#424AA8FF"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveSurfacePressed" Color="#574AA8FF"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveStroke" Color="#8F60CDFF"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveStrokeHover" Color="#B860CDFF"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarForeground" Color="#CFDDE2EB"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarForegroundHover" Color="#FFFFFFFF"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarSurface" Color="#9E1A1F26"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarStroke" Color="#1EFFFFFF"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarBadgeForeground" Color="#EB70A6FF"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarDivider" Color="#33FFFFFF"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarButtonHover" Color="#CC373F4A"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarButtonPressed" Color="#99262C34"/>
+            </ResourceDictionary>)";
+    xaml += LR"(
             <ResourceDictionary x:Key="HighContrast">
               <SolidColorBrush x:Key="SelectorBarItemForegroundSelected" Color="{ThemeResource SystemColorButtonTextColor}"/>
               <SolidColorBrush x:Key="VPaste.ToolbarForeground" Color="{ThemeResource SystemColorButtonTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarForegroundHover" Color="{ThemeResource SystemColorHighlightTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarForegroundPressed" Color="{ThemeResource SystemColorHighlightTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarForegroundDisabled" Color="{ThemeResource SystemColorGrayTextColor}"/>
               <SolidColorBrush x:Key="VPaste.ToolbarSurface" Color="{ThemeResource SystemColorButtonFaceColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarSurfaceHover" Color="{ThemeResource SystemColorHighlightColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarSurfacePressed" Color="{ThemeResource SystemColorHighlightColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarSurfaceDisabled" Color="{ThemeResource SystemColorButtonFaceColor}"/>
               <SolidColorBrush x:Key="VPaste.ToolbarStroke" Color="{ThemeResource SystemColorButtonTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarStrokeHover" Color="{ThemeResource SystemColorHighlightTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarStrokeDisabled" Color="{ThemeResource SystemColorGrayTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveForeground" Color="{ThemeResource SystemColorHighlightTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveForegroundHover" Color="{ThemeResource SystemColorHighlightTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveSurface" Color="{ThemeResource SystemColorHighlightColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveSurfaceHover" Color="{ThemeResource SystemColorHighlightColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveSurfacePressed" Color="{ThemeResource SystemColorHighlightColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveStroke" Color="{ThemeResource SystemColorButtonTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.ToolbarActiveStrokeHover" Color="{ThemeResource SystemColorHighlightTextColor}"/>
               <SolidColorBrush x:Key="VPaste.DeveloperToolbarForeground" Color="{ThemeResource SystemColorButtonTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarForegroundHover" Color="{ThemeResource SystemColorHighlightTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarSurface" Color="{ThemeResource SystemColorButtonFaceColor}"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarStroke" Color="{ThemeResource SystemColorButtonTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarBadgeForeground" Color="{ThemeResource SystemColorButtonTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarDivider" Color="{ThemeResource SystemColorButtonTextColor}"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarButtonHover" Color="{ThemeResource SystemColorHighlightColor}"/>
+              <SolidColorBrush x:Key="VPaste.DeveloperToolbarButtonPressed" Color="{ThemeResource SystemColorHighlightColor}"/>
             </ResourceDictionary>
-          </ResourceDictionary.ThemeDictionaries>
+          </ResourceDictionary.ThemeDictionaries>)";
+    xaml += LR"(
           <Style x:Key="VPaste.Body" TargetType="TextBlock">
             <Setter Property="FontSize" Value="14"/>
             <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}"/>
@@ -164,7 +236,8 @@ inline void InstallAppearanceResources() {
           </Style>
           <Style x:Key="VPaste.ContrastCardHeader" TargetType="Border">
             <Setter Property="Background" Value="{ThemeResource ControlFillColorDefaultBrush}"/>
-          </Style>
+          </Style>)";
+    xaml += LR"(
           <Style x:Key="VPaste.ClipboardItem" TargetType="ListViewItem">
             <Setter Property="FocusVisualPrimaryBrush" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
             <Setter Property="FocusVisualPrimaryThickness" Value="2"/>
@@ -187,7 +260,6 @@ inline void InstallAppearanceResources() {
           <Style x:Key="VPaste.ReaderCanvas" TargetType="Grid">
             <Setter Property="Background" Value="{ThemeResource ApplicationPageBackgroundThemeBrush}"/>
           </Style>
-        )" LR"(
           <Style x:Key="VPaste.AuxiliaryReadingSurface" TargetType="Grid">
             <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}"/>
             <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
@@ -214,7 +286,8 @@ inline void InstallAppearanceResources() {
             <Setter Property="FontSize" Value="16"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
-          </Style>
+          </Style>)";
+    xaml += LR"(
           <Style x:Key="VPaste.SelectedSurface" TargetType="Border" BasedOn="{StaticResource VPaste.Surface}">
             <Setter Property="BorderBrush" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
             <Setter Property="BorderThickness" Value="2"/>
@@ -227,7 +300,6 @@ inline void InstallAppearanceResources() {
             <Setter Property="Background" Value="{ThemeResource SolidBackgroundFillColorSecondaryBrush}"/>
             <Setter Property="CornerRadius" Value="10"/>
           </Style>
-        )" LR"(
           <Style x:Key="VPaste.Inset" TargetType="Border">
             <Setter Property="Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
             <Setter Property="CornerRadius" Value="4"/>
@@ -250,37 +322,363 @@ inline void InstallAppearanceResources() {
           <Style x:Key="VPaste.RoundToolbarButton" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
             <Setter Property="Width" Value="28"/>
             <Setter Property="Height" Value="28"/>
-            <Setter Property="Padding" Value="0"/>
-            <Setter Property="CornerRadius" Value="14"/>
-            <Setter Property="Background" Value="{ThemeResource ControlFillColorDefaultBrush}"/>
-            <Setter Property="BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}"/>
-          </Style>
-          <Style x:Key="VPaste.RoundToolbarCommand" TargetType="Button" BasedOn="{StaticResource VPaste.RoundToolbarButton}">
             <Setter Property="MinWidth" Value="0"/>
             <Setter Property="MinHeight" Value="0"/>
-            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="CornerRadius" Value="14"/>
             <Setter Property="HorizontalContentAlignment" Value="Center"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Background" Value="{ThemeResource ControlFillColorDefaultBrush}"/>
+            <Setter Property="BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}"/>
+          </Style>)";
+    xaml += LR"(
+          <Style x:Key="VPaste.RoundToolbarCommand" TargetType="Button" BasedOn="{StaticResource VPaste.RoundToolbarButton}">
+            <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="UseSystemFocusVisuals" Value="True"/>
+            <Setter Property="FocusVisualMargin" Value="-2"/>
+            <Setter Property="FocusVisualPrimaryThickness" Value="2"/>
+            <Setter Property="FocusVisualSecondaryThickness" Value="1"/>
             <Setter Property="Foreground" Value="{ThemeResource VPaste.ToolbarForeground}"/>
             <Setter Property="Background" Value="{ThemeResource VPaste.ToolbarSurface}"/>
             <Setter Property="BorderBrush" Value="{ThemeResource VPaste.ToolbarStroke}"/>
-          </Style>
+            <Setter Property="Template">
+              <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                  <Grid x:Name="RootGrid" Background="Transparent" RenderTransformOrigin="0.5,0.5">
+                    <Grid.RenderTransform>
+                      <ScaleTransform x:Name="PressScale" ScaleX="1" ScaleY="1"/>
+                    </Grid.RenderTransform>
+                    <VisualStateManager.VisualStateGroups>
+                      <VisualStateGroup x:Name="CommonStates">
+                        <VisualState x:Name="Normal">
+                          <Storyboard>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.08"/>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.08"/>
+                          </Storyboard>
+                        </VisualState>
+                        <VisualState x:Name="PointerOver">
+                          <Storyboard>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="Background">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarSurfaceHover}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="BorderBrush">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarStrokeHover}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarForegroundHover}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.08"/>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.08"/>
+                          </Storyboard>
+                        </VisualState>
+                        <VisualState x:Name="Pressed">
+                          <Storyboard>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="Background">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarSurfacePressed}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="BorderBrush">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarStrokeHover}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarForegroundPressed}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleX" To="0.95" Duration="0:0:0.05"/>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleY" To="0.95" Duration="0:0:0.05"/>
+                          </Storyboard>
+                        </VisualState>
+                        <VisualState x:Name="Disabled">
+                          <Storyboard>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="Background">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarSurfaceDisabled}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="BorderBrush">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarStrokeDisabled}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarForegroundDisabled}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                          </Storyboard>
+                        </VisualState>
+                      </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Border x:Name="SurfaceBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}"/>
+                    <ContentPresenter x:Name="ContentPresenter"
+                                      Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                      ContentTransitions="{TemplateBinding ContentTransitions}"
+                                      HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                      Padding="{TemplateBinding Padding}"
+                                      Foreground="{TemplateBinding Foreground}"/>
+                  </Grid>
+                </ControlTemplate>
+              </Setter.Value>
+            </Setter>
+          </Style>)";
+    xaml += LR"(
           <Style x:Key="VPaste.RoundToolbarUpdate" TargetType="Button" BasedOn="{StaticResource VPaste.RoundToolbarCommand}">
             <Setter Property="Background" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
             <Setter Property="BorderBrush" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
             <Setter Property="Foreground" Value="{ThemeResource TextOnAccentFillColorPrimaryBrush}"/>
-          </Style>
+            <Setter Property="Template">
+              <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                  <Grid x:Name="RootGrid" Background="Transparent" RenderTransformOrigin="0.5,0.5">
+                    <Grid.RenderTransform>
+                      <ScaleTransform x:Name="PressScale" ScaleX="1" ScaleY="1"/>
+                    </Grid.RenderTransform>
+                    <VisualStateManager.VisualStateGroups>
+                      <VisualStateGroup x:Name="CommonStates">
+                        <VisualState x:Name="Normal">
+                          <Storyboard>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.08"/>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.08"/>
+                          </Storyboard>
+                        </VisualState>
+                        <VisualState x:Name="PointerOver">
+                          <Storyboard>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="Background">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource AccentFillColorSecondaryBrush}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="BorderBrush">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource AccentFillColorSecondaryBrush}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource TextOnAccentFillColorPrimaryBrush}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.08"/>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.08"/>
+                          </Storyboard>
+                        </VisualState>
+                        <VisualState x:Name="Pressed">
+                          <Storyboard>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="Background">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource AccentFillColorTertiaryBrush}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="BorderBrush">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource AccentFillColorTertiaryBrush}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource TextOnAccentFillColorPrimaryBrush}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleX" To="0.95" Duration="0:0:0.05"/>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleY" To="0.95" Duration="0:0:0.05"/>
+                          </Storyboard>
+                        </VisualState>
+                        <VisualState x:Name="Disabled">
+                          <Storyboard>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="Background">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource AccentFillColorDisabledBrush}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="BorderBrush">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource AccentFillColorDisabledBrush}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource TextOnAccentFillColorDisabledBrush}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                          </Storyboard>
+                        </VisualState>
+                      </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Border x:Name="SurfaceBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}"/>
+                    <ContentPresenter x:Name="ContentPresenter"
+                                      Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                      ContentTransitions="{TemplateBinding ContentTransitions}"
+                                      HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                      Padding="{TemplateBinding Padding}"
+                                      Foreground="{TemplateBinding Foreground}"/>
+                  </Grid>
+                </ControlTemplate>
+              </Setter.Value>
+            </Setter>
+          </Style>)";
+    xaml += LR"(
           <Style x:Key="VPaste.ActiveToolbarCommand" TargetType="Button" BasedOn="{StaticResource VPaste.RoundToolbarCommand}">
-            <Setter Property="BorderBrush" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
-            <Setter Property="Foreground" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
+            <Setter Property="Background" Value="{ThemeResource VPaste.ToolbarActiveSurface}"/>
+            <Setter Property="BorderBrush" Value="{ThemeResource VPaste.ToolbarActiveStroke}"/>
+            <Setter Property="Foreground" Value="{ThemeResource VPaste.ToolbarActiveForeground}"/>
+            <Setter Property="Template">
+              <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                  <Grid x:Name="RootGrid" Background="Transparent" RenderTransformOrigin="0.5,0.5">
+                    <Grid.RenderTransform>
+                      <ScaleTransform x:Name="PressScale" ScaleX="1" ScaleY="1"/>
+                    </Grid.RenderTransform>
+                    <VisualStateManager.VisualStateGroups>
+                      <VisualStateGroup x:Name="CommonStates">
+                        <VisualState x:Name="Normal">
+                          <Storyboard>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.08"/>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.08"/>
+                          </Storyboard>
+                        </VisualState>
+                        <VisualState x:Name="PointerOver">
+                          <Storyboard>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="Background">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarActiveSurfaceHover}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="BorderBrush">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarActiveStrokeHover}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarActiveForegroundHover}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.08"/>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.08"/>
+                          </Storyboard>
+                        </VisualState>
+                        <VisualState x:Name="Pressed">
+                          <Storyboard>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="Background">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarActiveSurfacePressed}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="BorderBrush">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarActiveStrokeHover}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarActiveForegroundHover}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleX" To="0.95" Duration="0:0:0.05"/>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleY" To="0.95" Duration="0:0:0.05"/>
+                          </Storyboard>
+                        </VisualState>
+                        <VisualState x:Name="Disabled">
+                          <Storyboard>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="Background">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarSurfaceDisabled}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="BorderBrush">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarStrokeDisabled}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarForegroundDisabled}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                          </Storyboard>
+                        </VisualState>
+                      </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Border x:Name="SurfaceBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}"/>
+                    <ContentPresenter x:Name="ContentPresenter"
+                                      Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                      ContentTransitions="{TemplateBinding ContentTransitions}"
+                                      HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                      Padding="{TemplateBinding Padding}"
+                                      Foreground="{TemplateBinding Foreground}"/>
+                  </Grid>
+                </ControlTemplate>
+              </Setter.Value>
+            </Setter>
+          </Style>)";
+    xaml += LR"(
+          <Style x:Key="VPaste.DeveloperGroupSurface" TargetType="Border">
+            <Setter Property="Background" Value="{ThemeResource VPaste.DeveloperToolbarSurface}"/>
+            <Setter Property="BorderBrush" Value="{ThemeResource VPaste.DeveloperToolbarStroke}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="16"/>
+            <Setter Property="Padding" Value="2"/>
+          </Style>
+          <Style x:Key="VPaste.DeveloperBadge" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="9"/>
+            <Setter Property="FontWeight" Value="ExtraBold"/>
+            <Setter Property="Foreground" Value="{ThemeResource VPaste.DeveloperToolbarBadgeForeground}"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+          </Style>
+          <Style x:Key="VPaste.DeveloperDivider" TargetType="Border">
+            <Setter Property="Background" Value="{ThemeResource VPaste.DeveloperToolbarDivider}"/>
+            <Setter Property="Width" Value="1"/>
+            <Setter Property="Height" Value="14"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
           </Style>
           <Style x:Key="VPaste.DeveloperToolbarButton" TargetType="Button" BasedOn="{StaticResource VPaste.RoundToolbarCommand}">
             <Setter Property="Width" Value="30"/>
             <Setter Property="Height" Value="26"/>
+            <Setter Property="CornerRadius" Value="13"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
             <Setter Property="Foreground" Value="{ThemeResource VPaste.DeveloperToolbarForeground}"/>
+            <Setter Property="Template">
+              <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                  <Grid x:Name="RootGrid" Background="Transparent" RenderTransformOrigin="0.5,0.5">
+                    <Grid.RenderTransform>
+                      <ScaleTransform x:Name="PressScale" ScaleX="1" ScaleY="1"/>
+                    </Grid.RenderTransform>
+                    <VisualStateManager.VisualStateGroups>
+                      <VisualStateGroup x:Name="CommonStates">
+                        <VisualState x:Name="Normal">
+                          <Storyboard>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.08"/>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.08"/>
+                          </Storyboard>
+                        </VisualState>
+                        <VisualState x:Name="PointerOver">
+                          <Storyboard>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="Background">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.DeveloperToolbarButtonHover}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.DeveloperToolbarForegroundHover}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.08"/>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.08"/>
+                          </Storyboard>
+                        </VisualState>
+                        <VisualState x:Name="Pressed">
+                          <Storyboard>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SurfaceBorder" Storyboard.TargetProperty="Background">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.DeveloperToolbarButtonPressed}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.DeveloperToolbarForegroundHover}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleX" To="0.96" Duration="0:0:0.05"/>
+                            <DoubleAnimation Storyboard.TargetName="PressScale" Storyboard.TargetProperty="ScaleY" To="0.96" Duration="0:0:0.05"/>
+                          </Storyboard>
+                        </VisualState>
+                        <VisualState x:Name="Disabled">
+                          <Storyboard>
+                            <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
+                              <DiscreteObjectKeyFrame KeyTime="0" Value="{ThemeResource VPaste.ToolbarForegroundDisabled}"/>
+                            </ObjectAnimationUsingKeyFrames>
+                          </Storyboard>
+                        </VisualState>
+                      </VisualStateGroup>
+                    </VisualStateManager.VisualStateGroups>
+                    <Border x:Name="SurfaceBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}"/>
+                    <ContentPresenter x:Name="ContentPresenter"
+                                      Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                      ContentTransitions="{TemplateBinding ContentTransitions}"
+                                      HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                      Padding="{TemplateBinding Padding}"
+                                      Foreground="{TemplateBinding Foreground}"/>
+                  </Grid>
+                </ControlTemplate>
+              </Setter.Value>
+            </Setter>
           </Style>
           <Style x:Key="VPaste.SelectionBar" TargetType="Border" BasedOn="{StaticResource VPaste.Surface}">
             <Setter Property="Background" Value="{ThemeResource SolidBackgroundFillColorSecondaryBrush}"/>
@@ -292,7 +690,9 @@ inline void InstallAppearanceResources() {
             <Setter Property="BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}"/>
             <Setter Property="BorderThickness" Value="0,0,0,1"/>
           </Style>
-        </ResourceDictionary>)").as<ResourceDictionary>());
+        </ResourceDictionary>)";
+    Application::Current().Resources().MergedDictionaries().Append(
+        Markup::XamlReader::Load(winrt::hstring{xaml}).as<ResourceDictionary>());
 }
 
 inline void ApplyStyle(const winrt::Microsoft::UI::Xaml::FrameworkElement &element,

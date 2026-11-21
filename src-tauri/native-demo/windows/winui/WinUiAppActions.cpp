@@ -23,13 +23,15 @@ using namespace winrt::Microsoft::UI::Xaml::Controls;
 using namespace winrt::Windows::Data::Json;
 
 namespace {
-constexpr double DeveloperIconSize = 16;
+constexpr double DeveloperIconSize = 13;
 
 Viewbox DeveloperIcon(const wchar_t *path) {
-    // Preserve the original 24-unit viewport, with only one scale to fit it.
+    // 规范化 SVG 路径以消除 Z+m 偏移歧义；将 PathIcon 置于 24x24 画布内由 Viewbox 缩放，
+    // 既保留 24 单位参考系，又自动继承按钮各交互态（Hover/Pressed/Disabled/高对比）的 Foreground。
+    const auto normalized = NormalizeSvgPathForXaml(path);
     const auto xaml = std::wstring{LR"(<Viewbox xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
-        <Path Width="24" Height="24" Stretch="None" Fill="{ThemeResource VPaste.DeveloperToolbarForeground}" Data="F1 )"}
-        + path + LR"("/></Viewbox>)";
+        <Grid Width="24" Height="24"><PathIcon Width="24" Height="24" Data="F1 )"}
+        + normalized + LR"("/></Grid></Viewbox>)";
     auto icon = Markup::XamlReader::Load(winrt::hstring{xaml}).as<Viewbox>();
     icon.Width(DeveloperIconSize);
     icon.Height(DeveloperIconSize);
@@ -47,12 +49,15 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
     Report report;
     std::function<void()> restoreFocus;
     Border developerGroup;
+    TextBlock developerBadge{nullptr};
+    std::vector<TextBlock> guideCaptions;
+    std::vector<Border> developerDividers;
     Button tools, update;
     std::vector<Button> developerButtons;
     ContentDialog confirmation{nullptr};
     std::int64_t revision = -1;
     std::uint64_t generation = 0, pendingTool = 0, pendingInstall = 0;
-    bool english = false, developer = false, toolsVisible = true, darkPreview = false;
+    bool english = false, developer = false, toolsVisible = true, darkPreview = false, compact = false;
     bool ready = false, installing = false, confirming = false, closing = false;
     winrt::hstring version;
 
@@ -65,20 +70,21 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
 
     void Initialize() {
         const auto weak = weak_from_this();
-        ApplyStyle(developerGroup, L"VPaste.Surface");
-        developerGroup.CornerRadius(UniformRadius(16));
-        developerGroup.Padding(UniformThickness(2));
+        ApplyStyle(developerGroup, L"VPaste.DeveloperGroupSurface");
         developerGroup.VerticalAlignment(VerticalAlignment::Center);
         StackPanel developerActions;
         developerActions.Orientation(Orientation::Horizontal);
         developerActions.Spacing(2);
         developerGroup.Child(developerActions);
         TextBlock badge;
-        badge.Text(L"DEV"); badge.FontSize(9); badge.FontWeight({800});
-        badge.Margin({7, 0, 7, 0}); badge.VerticalAlignment(VerticalAlignment::Center);
+        badge.Text(L"DEV");
+        ApplyStyle(badge, L"VPaste.DeveloperBadge");
+        badge.Margin({7, 0, 5, 0});
+        developerBadge = badge;
         developerActions.Children().Append(badge);
         ApplyStyle(tools, L"VPaste.RoundToolbarCommand");
-        tools.Content(HeaderIcon(HeaderArtwork::VisibilityOutlined));
+        // 光学居中及收敛宽度，使眼睛图标在 28x28 圆中与队列/设置保持协调。
+        tools.Content(HeaderIcon(HeaderArtwork::VisibilityOutlined, HeaderIconMetrics{CompactIconSize, 0.97, 0.0, 0.45}));
         tools.Click([weak](auto const &, auto const &) {
             if (const auto self = weak.lock(); self && self->developer) {
                 self->toolsVisible = !self->toolsVisible; self->Refresh();
@@ -95,13 +101,15 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
             developerButtons.push_back(button);
             developerActions.Children().Append(button);
             if (developerButtons.size() == 2 || developerButtons.size() == 4) {
-                Border divider; ApplyStyle(divider, L"VPaste.Surface");
-                divider.Width(1); divider.Height(14);
-                divider.Margin({2, 0, 2, 0}); divider.VerticalAlignment(VerticalAlignment::Center);
+                Border divider;
+                ApplyStyle(divider, L"VPaste.DeveloperDivider");
+                divider.Margin({2, 0, 2, 0});
+                developerDividers.push_back(divider);
                 developerActions.Children().Append(divider);
             }
         }
-        update.Content(HeaderIcon(HeaderArtwork::SyncRounded));
+        // 更新箭头适当留白，保证在 100% 和 150% DPI 下上下尖角均不贴边裁剪。
+        update.Content(HeaderIcon(HeaderArtwork::SyncRounded, HeaderIconMetrics{CompactIconSize, 0.98, 0.0, 0.0}));
         ApplyStyle(update, L"VPaste.RoundToolbarUpdate");
         update.Click([weak](auto const &, auto const &) { if (const auto self = weak.lock()) self->Confirm(); });
         Localize();
@@ -111,6 +119,12 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
         tools.Visibility(developer ? Visibility::Visible : Visibility::Collapsed);
         NameIconButton(tools, toolsVisible ? Text(L"隐藏开发工具", L"Hide developer tools") : Text(L"显示开发工具", L"Show developer tools"));
         developerGroup.Visibility(developer && toolsVisible ? Visibility::Visible : Visibility::Collapsed);
+        // 窄屏下隐藏非必需 DEV 文本标识及引导字样，避免挤压中间标签栏和右侧主操作按钮。
+        if (developerBadge) developerBadge.Visibility(compact ? Visibility::Collapsed : Visibility::Visible);
+        for (std::size_t i = 0; i < guideCaptions.size(); ++i) {
+            guideCaptions[i].Visibility(compact ? Visibility::Collapsed : Visibility::Visible);
+            if (i < developerButtons.size()) developerButtons[i].Width(compact ? 30 : 42);
+        }
         for (const auto &button : developerButtons) {
             button.Visibility(developer && toolsVisible ? Visibility::Visible : Visibility::Collapsed);
             button.IsEnabled(!pendingTool);
@@ -133,6 +147,7 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
 
     void Localize() {
         std::size_t index = 0;
+        guideCaptions.clear();
         const auto set = [&](const wchar_t *zh, const wchar_t *en, const wchar_t *path, const wchar_t *caption = nullptr) {
             const auto button = developerButtons[index++];
             NameIconButton(button, Text(zh, en));
@@ -143,7 +158,8 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
                 TextBlock text; text.Text(caption); text.FontSize(10); text.FontWeight({720});
                 text.VerticalAlignment(VerticalAlignment::Center);
                 content.Children().Append(text);
-                button.Width(46);
+                guideCaptions.push_back(text);
+                button.Width(compact ? 30 : 42);
                 button.Content(content);
             } else if (path) button.Content(DeveloperIcon(path));
             else {
@@ -255,6 +271,11 @@ bool AppActions::Receive(JsonObject const &response) { return impl_->Receive(res
 bool AppActions::ModalOpen() const { return impl_->confirming || impl_->closing; }
 void AppActions::SetLanguage(bool english) { impl_->english = english; impl_->Localize(); }
 void AppActions::SetTheme(ElementTheme theme) { if (impl_->confirmation) impl_->confirmation.RequestedTheme(theme); }
+void AppActions::SetCompact(bool compact) {
+    if (impl_->compact == compact) return;
+    impl_->compact = compact;
+    impl_->Refresh();
+}
 void AppActions::Deactivate() { impl_->CancelConfirmation(); }
 #ifdef _DEBUG
 std::vector<Button> AppActions::DeveloperButtons() const { return impl_->developerButtons; }

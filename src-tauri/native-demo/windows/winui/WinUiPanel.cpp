@@ -571,10 +571,31 @@ void ApplyCardPresenterChrome(winrt::Microsoft::UI::Xaml::DependencyObject const
                               bool contrast);
 void UpdateSearchWidth() {
     if (g_panel.searchField && g_panel.root) {
-        const bool narrow = g_panel.root.Width() < 900;
+        const double width = g_panel.root.Width();
+        const bool narrow = width < 900;
+        const bool ultraNarrow = width > 0 && width < 560;
         g_panel.searchField.Width(narrow ? 120 : 276);
         if (g_panel.status) g_panel.status.Visibility(winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
         if (g_panel.tagFilter) g_panel.tagFilter.Width(narrow ? 112 : 144);
+        // 窄屏下同步收敛开发者工具胶囊与极端窄窗边距，保护标签栏与右上角主操作按钮不被裁剪挤压。
+        if (g_panel.appActions) g_panel.appActions->SetCompact(width > 0 && width < 860);
+        if (g_panel.header) {
+            const double inset = ultraNarrow ? 16.0 : kHeaderInset;
+            const auto currentPadding = g_panel.header.Padding();
+            if (currentPadding.Left != inset || currentPadding.Right != inset) {
+                g_panel.header.Padding(winrt::Microsoft::UI::Xaml::Thickness{inset, 0, inset, 0});
+            }
+            const double nextColumnSpacing = ultraNarrow ? 6.0 : 10.0;
+            if (g_panel.header.ColumnSpacing() != nextColumnSpacing) {
+                g_panel.header.ColumnSpacing(nextColumnSpacing);
+            }
+        }
+        if (g_panel.commands) {
+            const double nextCommandSpacing = ultraNarrow ? 6.0 : 8.0;
+            if (g_panel.commands.Spacing() != nextCommandSpacing) {
+                g_panel.commands.Spacing(nextCommandSpacing);
+            }
+        }
     }
 }
 
@@ -2215,10 +2236,19 @@ void UpdateQueueSelectionControls() {
         ? winrt::Microsoft::UI::Xaml::Visibility::Visible
         : winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
     if (g_panel.queueOpen) {
+        const auto targetStyleKey = g_queueViewActive ? L"VPaste.ActiveToolbarCommand" : L"VPaste.RoundToolbarCommand";
         vpaste::winui::NameIconButton(g_panel.queueOpen, g_queueViewActive
             ? Text(L"退出粘贴队列", L"Exit Paste Queue") : Text(L"粘贴队列", L"Paste Queue"));
-        vpaste::winui::ApplyStyle(g_panel.queueOpen, g_queueViewActive
-            ? L"VPaste.ActiveToolbarCommand" : L"VPaste.RoundToolbarCommand");
+        const auto expected = winrt::Microsoft::UI::Xaml::Application::Current().Resources()
+            .Lookup(winrt::box_value(targetStyleKey)).as<winrt::Microsoft::UI::Xaml::Style>();
+        if (g_panel.queueOpen.Style() != expected) {
+            g_panel.queueOpen.Style(expected);
+            // Style 切换会重建 Button 的 ControlTemplate；重挂 Content 使内部 PathIcon 立即重新继承新前景色，防止退出队列后残留激活态色调。
+            if (const auto content = g_panel.queueOpen.Content()) {
+                g_panel.queueOpen.Content(nullptr);
+                g_panel.queueOpen.Content(content);
+            }
+        }
     }
 }
 
@@ -4813,8 +4843,11 @@ HRESULT CreatePanel() noexcept {
         g_panel.selectionBar.Visibility(Visibility::Collapsed);
         Grid::SetRow(g_panel.selectionBar, 1);
         root.Children().Append(g_panel.selectionBar);
+        // 光学微调队列图标，使其三条横线与对勾居中对齐并拥有均衡视觉重心。
         g_panel.queueOpen = vpaste::winui::NamedIconButton(
-            vpaste::winui::HeaderIcon(vpaste::winui::HeaderArtwork::PlaylistAddCheckRounded), Text(L"粘贴队列", L"Paste Queue"));
+            vpaste::winui::HeaderIcon(vpaste::winui::HeaderArtwork::PlaylistAddCheckRounded,
+                vpaste::winui::HeaderIconMetrics{vpaste::winui::CompactIconSize, 1.06, -0.10, -0.75}),
+            Text(L"粘贴队列", L"Paste Queue"));
         g_panel.queueOpen.Click([](auto const &, auto const &) {
             (void)SendRequest(g_queueViewActive ? L"queueClose" : L"queueOpen");
         });
@@ -8884,9 +8917,9 @@ winrt::Windows::Foundation::IAsyncAction CheckDesktopFollowup(std::uint32_t &sta
             const bool dark = theme == ElementTheme::Dark;
             const auto ink = g_panel.settings.Foreground().as<Media::SolidColorBrush>().Color();
             const auto edge = g_panel.settings.BorderBrush().as<Media::SolidColorBrush>().Color();
-            const auto expectedInk = dark ? winrt::Windows::UI::Color{255, 215, 220, 229}
-                                          : winrt::Windows::UI::Color{184, 41, 48, 46};
-            winrt::check_hresult(ink == expectedInk && edge.A == (dark ? 20 : 13) ? S_OK : E_FAIL);
+            const auto expectedInk = dark ? winrt::Windows::UI::Color{255, 228, 233, 241}
+                                          : winrt::Windows::UI::Color{217, 32, 38, 36};
+            winrt::check_hresult(ink == expectedInk && edge.A == (dark ? 0x26 : 0x24) ? S_OK : E_FAIL);
         }
         g_panel.root.RequestedTheme(originalTheme);
     }

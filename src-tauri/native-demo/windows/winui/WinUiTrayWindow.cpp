@@ -245,7 +245,7 @@ struct TrayWindow::Impl : std::enable_shared_from_this<Impl> {
     void ApplyAppearance() {
         if (!root || !source || !dot || !badge) return;
         const bool contrast = HighContrastEnabled();
-        const BOOL dark = root.ActualTheme() == ElementTheme::Dark;
+        const BOOL dark = ResolveDarkTheme(theme, root.ActualTheme());
         (void)DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
         const bool acrylic = !contrast && winrt::Microsoft::UI::Composition::SystemBackdrops::DesktopAcrylicController::IsSupported();
         if (acrylic && !source.SystemBackdrop()) {
@@ -400,7 +400,7 @@ struct TrayWindow::Impl : std::enable_shared_from_this<Impl> {
         Update(data); Place(); root.UpdateLayout();
         mouseWasDown = MousePressed();
         ShowWindow(window, SW_SHOWNOACTIVATE);
-        (void)SetForegroundWindow(window);
+        (void)ActivateWindowFromBackground(window);
         FocusFirst();
         if (Visible()) SetTimer(window, OutsideClickTimer, OutsideClickIntervalMs, nullptr);
         std::fprintf(stderr, "WinUI tray shown: cold=%d elapsed_ui_ms=%llu\n", cold,

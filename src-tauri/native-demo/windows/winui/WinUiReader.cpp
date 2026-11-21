@@ -387,7 +387,7 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
     void ApplyAppearance() {
         if (!root) return;
         root.RequestedTheme(theme);
-        const BOOL dark = root.ActualTheme() == ElementTheme::Dark;
+        const BOOL dark = ResolveDarkTheme(theme, root.ActualTheme());
         (void)DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
         // A lifted XAML Island is not guaranteed to expose its parent's
         // backdrop. Use the supported island backdrop slot here and the
@@ -601,7 +601,7 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         }
         MoveToTarget(NativeAnimationsEnabled());
         if (takesFocus) {
-            SetForegroundWindow(window);
+            (void)ActivateWindowFromBackground(window);
             FocusContent();
         }
         if (!editorWindow) Send(L"nativeReaderReady");
@@ -1016,11 +1016,36 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
             stage.SizeChanged([fit](auto const &sender, auto const &) { fit(sender.as<Grid>()); });
             pending = content; pending.Opacity(0); pending.IsHitTestVisible(false);
             body.Children().Append(pending);
+            const auto assetPath = data.GetNamedString(L"imagePath");
             const auto weak = weak_from_this();
+            if (IsSvgImagePath(assetPath)) {
+                try {
+                    Imaging::SvgImageSource svg;
+                    const double targetSide = std::clamp<double>(
+                        static_cast<double>(std::max<LONG>(width, height)), 64.0, 2048.0);
+                    svg.RasterizePixelWidth(targetSide);
+                    svg.RasterizePixelHeight(targetSide);
+                    svg.Opened([weak, generation, natural, fit, weakStage = winrt::make_weak(stage)](auto const &, auto const &) {
+                        if (const auto area = weakStage.get()) {
+                            if (natural->Width <= 0 || natural->Height <= 0) *natural = {256.0f, 256.0f};
+                            fit(area);
+                        }
+                        if (auto self = weak.lock()) self->Commit(generation);
+                    });
+                    svg.OpenFailed([weak, generation](auto const &, auto const &) {
+                        if (auto self = weak.lock()) self->ImageError(generation);
+                    });
+                    svg.UriSource(LocalAssetUri(assetPath));
+                    image.Source(svg); loadTimeout.Start();
+                } catch (winrt::hresult_error const &) { ImageError(generation); }
+                return;
+            }
             image.ImageOpened([weak, generation, natural, fit, weakStage = winrt::make_weak(stage)](auto const &sender, auto const &) {
                 if (const auto area = weakStage.get()) {
-                    const auto bitmap = sender.as<Image>().Source().as<Imaging::BitmapImage>();
-                    if (natural->Width <= 0 || natural->Height <= 0) *natural = {static_cast<float>(bitmap.PixelWidth()), static_cast<float>(bitmap.PixelHeight())};
+                    if (const auto bitmap = sender.as<Image>().Source().try_as<Imaging::BitmapImage>()) {
+                        if (natural->Width <= 0 || natural->Height <= 0)
+                            *natural = {static_cast<float>(bitmap.PixelWidth()), static_cast<float>(bitmap.PixelHeight())};
+                    }
                     fit(area);
                 }
                 if (auto self = weak.lock()) self->Commit(generation);
@@ -1028,8 +1053,11 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
             image.ImageFailed([weak, generation](auto const &, auto const &) { if (auto self = weak.lock()) self->ImageError(generation); });
             try {
                 Imaging::BitmapImage bitmap;
-                bitmap.DecodePixelWidth(std::max<LONG>(1, width));
-                bitmap.UriSource(LocalAssetUri(data.GetNamedString(L"imagePath")));
+                bitmap.DecodePixelWidth(ComputeBoundedDecodePixelWidth(
+                    static_cast<LONG>(std::lround(natural->Width)),
+                    static_cast<LONG>(std::lround(natural->Height)),
+                    width));
+                bitmap.UriSource(LocalAssetUri(assetPath));
                 image.Source(bitmap); loadTimeout.Start();
             } catch (winrt::hresult_error const &) { ImageError(generation); }
             return;
@@ -1124,8 +1152,103 @@ std::uint64_t Reader::Generation() const noexcept { return impl_->committed; }
 std::uintptr_t ReaderWindowHandle() noexcept {
     return reinterpret_cast<std::uintptr_t>(publishedWindow.load(std::memory_order_acquire));
 }
+LONG ComputeBoundedDecodePixelWidth(LONG naturalWidth, LONG naturalHeight, LONG targetWidth) noexcept {
+    constexpr LONG kMaxD3DTextureEdge = 16384;
+    LONG desired = std::clamp<LONG>(targetWidth, 1, kMaxD3DTextureEdge);
+    if (naturalWidth > 0) {
+        // 小图/图标不放大，避免双线性糊化和不必要的显存开销。
+        desired = std::min<LONG>(desired, naturalWidth);
+    }
+    if (naturalWidth > 0 && naturalHeight > 0) {
+        // 细长图片若按目标宽解码会导致高度突破 Direct3D 16384 纹理上限，按高度等比限幅。
+        const auto projectedHeight = (static_cast<std::int64_t>(desired) * naturalHeight) / naturalWidth;
+        if (projectedHeight > kMaxD3DTextureEdge) {
+            desired = static_cast<LONG>((static_cast<std::int64_t>(kMaxD3DTextureEdge) * naturalWidth) / naturalHeight);
+        }
+    }
+    return std::max<LONG>(1, desired);
+}
+bool IsSvgImagePath(std::wstring_view path) noexcept {
+    const auto queryPos = path.find_first_of(L"?#");
+    const auto clean = queryPos == std::wstring_view::npos ? path : path.substr(0, queryPos);
+    auto endsWithInsensitive = [&](std::wstring_view suffix) {
+        if (clean.size() < suffix.size()) return false;
+        const auto tail = clean.substr(clean.size() - suffix.size());
+        return _wcsnicmp(tail.data(), suffix.data(), suffix.size()) == 0;
+    };
+    return endsWithInsensitive(L".svg") || endsWithInsensitive(L".svgz");
+}
 #ifdef _DEBUG
 FrameworkElement Reader::TestRoot() const { return impl_->root; }
+
+winrt::Windows::Foundation::IAsyncAction TestBatch2ReaderControls(std::vector<std::string> &failures) {
+    // 验证图片解码宽度的防放大与 D3D 16384px 安全限制。
+    if (ComputeBoundedDecodePixelWidth(32, 32, 600) > 32) {
+        failures.push_back("reader_upscaled_small_icon");
+    }
+    const auto longDecode = ComputeBoundedDecodePixelWidth(200, 8000, 600);
+    if ((static_cast<std::int64_t>(longDecode) * 8000) / 200 > 16384) {
+        failures.push_back("reader_tall_image_exceeds_texture_limit");
+    }
+    if (!IsSvgImagePath(L"C:\\icons\\vector.SVG?v=2") || IsSvgImagePath(L"C:\\icons\\raster.png")) {
+        failures.push_back("reader_svg_path_detection");
+    }
+
+    // 写入临时合法 SVG 并通过 Reader 加载，验证不会因仅使用 BitmapImage 而触发“暂时无法预览此内容”。
+    wchar_t tempDir[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tempDir);
+    const std::wstring svgPath = std::wstring{tempDir} + L"vpaste_batch2_reader_test.svg";
+    const char svgBytes[] = R"(<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#0078d4"/></svg>)";
+    if (const auto handle = CreateFileW(svgPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        handle != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        WriteFile(handle, svgBytes, sizeof(svgBytes) - 1, &written, nullptr);
+        CloseHandle(handle);
+    }
+
+    Reader reader([](auto const &, auto, auto const &) -> std::uint64_t { return 1; });
+    auto openSvg = JsonObject::Parse(LR"({"op":"nativeReader","data":{"generation":1,"kind":"image","imageWidth":64,"imageHeight":64,"rect":{"x":120,"y":120,"width":400,"height":320},"durationMs":0,"easing":[0.22,1,0.36,1]}})");
+    openSvg.GetNamedObject(L"data").Insert(L"imagePath", JsonValue::CreateStringValue(svgPath));
+    reader.Receive(openSvg);
+    for (int frame = 0; frame < 30 && reader.Generation() == 0; ++frame) co_await NextNativeFrame();
+
+    const auto state = reader.impl_;
+    bool svgLoaded = false;
+    if (state->displayed) {
+        if (const auto stageGrid = state->displayed.try_as<Grid>()) {
+            // 寻找内层 Image 并确认源为 SvgImageSource 而非 ImageError 退化文本。
+            for (auto const &child : stageGrid.Children()) {
+                if (const auto innerStage = child.try_as<Grid>(); innerStage && innerStage.Children().Size() > 0) {
+                    if (const auto frame = innerStage.Children().GetAt(0).try_as<Grid>(); frame && frame.Children().Size() > 0) {
+                        for (auto const &item : frame.Children()) {
+                            if (const auto img = item.try_as<Image>(); img && img.Source().try_as<Imaging::SvgImageSource>()) {
+                                svgLoaded = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (!svgLoaded) {
+        failures.push_back("reader_svg_preview_failed");
+    }
+
+    // 验证 SetAppearance(Dark <-> Light) 后无需等待下一个布局帧就能同步刷新 DWM 暗色标题栏标志。
+    reader.SetAppearance(false, ElementTheme::Dark);
+    co_await NextNativeFrame();
+    reader.SetAppearance(false, ElementTheme::Light);
+    BOOL lightModeDarkAttr = TRUE;
+    if (!state->window || FAILED(DwmGetWindowAttribute(state->window, DWMWA_USE_IMMERSIVE_DARK_MODE, &lightModeDarkAttr, sizeof(lightModeDarkAttr))) || lightModeDarkAttr) {
+        failures.push_back("reader_theme_dwm_sync_stale_to_light");
+    }
+    reader.SetAppearance(false, ElementTheme::Dark);
+    BOOL darkAttr = FALSE;
+    if (!state->window || FAILED(DwmGetWindowAttribute(state->window, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkAttr, sizeof(darkAttr))) || !darkAttr) {
+        failures.push_back("reader_theme_dwm_sync_stale");
+    }
+    DeleteFileW(svgPath.c_str());
+}
 
 winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage) {
     using namespace Automation;

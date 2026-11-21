@@ -165,6 +165,7 @@ static LAST_CLIPBOARD_MONITOR_CENTER: Mutex<Option<(f64, f64)>> = Mutex::new(Non
 static CLIPBOARD_RESTORE_FOCUS_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_PINNED: AtomicBool = AtomicBool::new(false);
 static WINUI_IMAGE_TEXT_PREVIEW: AtomicBool = AtomicBool::new(false);
+static WINUI_PDF_PREVIEW: AtomicBool = AtomicBool::new(false);
 static PREVIEW_HOVER: AtomicBool = AtomicBool::new(false);
 static PREVIEW_HOVER_REQUEST: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_WINDOW_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -913,6 +914,10 @@ fn fit_content_window_to_monitor(
     Ok(())
 }
 
+fn should_refresh_winui_layout_on_ui_scale_change(is_winui: bool) -> bool {
+    is_winui
+}
+
 #[cfg(target_os = "windows")]
 fn apply_ui_text_scale_change(app: &tauri::AppHandle, scale: f64) {
     if scale != ui_text_scale::current() {
@@ -979,6 +984,12 @@ fn apply_ui_text_scale_change(app: &tauri::AppHandle, scale: f64) {
         })();
         if let Err(error) = result {
             error!("Failed to update text scaling for {label}: {error}");
+        }
+    }
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if should_refresh_winui_layout_on_ui_scale_change(main_panel_mode::winui()) {
+        if let Err(error) = winui_panel::refresh_layout(app) {
+            error!("Failed to update WinUI layout after UI text scaling: {error}");
         }
     }
 }
@@ -2824,6 +2835,8 @@ fn close_dev_memory_window(app: tauri::AppHandle) -> Result<(), String> {
     if !get_developer_mode() {
         return Err("Memory monitor requires Debug + --dev-mode".into());
     }
+    #[cfg(debug_assertions)]
+    dev_memory::stop_monitoring_sync(&app);
     if let Some(window) = app.get_webview_window("devMemory") {
         auxiliary_windows::destroy(&window)?;
     }
@@ -2883,6 +2896,13 @@ async fn open_config_window_from_source_monitor(
     .await
 }
 
+fn should_restore_winui_onboarding_on_config_close(
+    is_winui: bool,
+    onboarding_active: bool,
+) -> bool {
+    is_winui && onboarding_active
+}
+
 #[tauri::command]
 fn close_config_window(app: tauri::AppHandle) -> Result<(), String> {
     panel_size::cancel(&app);
@@ -2892,6 +2912,15 @@ fn close_config_window(app: tauri::AppHandle) -> Result<(), String> {
     }
     if let Some(window) = app.get_webview_window("config") {
         auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
+    }
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if should_restore_winui_onboarding_on_config_close(
+        main_panel_mode::winui(),
+        ONBOARDING_ACTIVE.load(Ordering::SeqCst),
+    ) {
+        if let Some(result) = winui_panel::onboarding::show_if_active(&app) {
+            let _ = result;
+        }
     }
     Ok(())
 }
@@ -3271,6 +3300,10 @@ fn open_onboarding_window(app: tauri::AppHandle) -> Result<(), String> {
     show_onboarding_window(&app)
 }
 
+fn should_restore_winui_after_permission_guide(is_winui: bool) -> bool {
+    is_winui
+}
+
 fn restore_parent_after_permission_guide(app: &tauri::AppHandle) {
     #[cfg(all(debug_assertions, target_os = "macos"))]
     if PERMISSION_GUIDE_RETURN_TO_NATIVE_PANEL.swap(false, Ordering::SeqCst) {
@@ -3298,6 +3331,11 @@ fn restore_parent_after_permission_guide(app: &tauri::AppHandle) {
     #[cfg(all(debug_assertions, target_os = "macos"))]
     if main_panel_mode::native() {
         let _ = native_panel::show_default(app.clone());
+        return;
+    }
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if should_restore_winui_after_permission_guide(main_panel_mode::winui()) {
+        let _ = show_main_panel_for_app(app);
         return;
     }
     if let Some(window) = app.get_webview_window("clipboard") {
@@ -3701,6 +3739,7 @@ fn retain_preview_window(app: &tauri::AppHandle) -> Result<(), String> {
     PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
     WINUI_IMAGE_TEXT_PREVIEW.store(false, Ordering::SeqCst);
+    WINUI_PDF_PREVIEW.store(false, Ordering::SeqCst);
     if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
         let _closed = clear_preview_content(&preview_window);
         if auxiliary_windows::is_open(&preview_window) {
@@ -4108,6 +4147,10 @@ fn should_track_paste_queue_foreground_target(active: bool, clipboard_visible: b
     active && !clipboard_visible
 }
 
+fn should_capture_paste_queue_uia_focus(origin: PasteQueueRequestOrigin) -> bool {
+    origin == PasteQueueRequestOrigin::QueueWindow
+}
+
 #[cfg(test)]
 mod paste_queue_menu_tests {
     use super::{
@@ -4213,6 +4256,46 @@ mod paste_queue_menu_tests {
         assert!(!should_track_paste_queue_foreground_target(false, false));
         assert!(!should_track_paste_queue_foreground_target(true, true));
     }
+
+    #[test]
+    fn winui_regression_restores_onboarding_and_main_panel_after_config_or_permission_guide() {
+        assert!(super::should_restore_winui_after_permission_guide(true));
+        assert!(!super::should_restore_winui_after_permission_guide(false));
+        assert!(super::should_restore_winui_onboarding_on_config_close(
+            true, true
+        ));
+        assert!(!super::should_restore_winui_onboarding_on_config_close(
+            true, false
+        ));
+        assert!(!super::should_restore_winui_onboarding_on_config_close(
+            false, true
+        ));
+    }
+
+    #[test]
+    fn winui_regression_paste_queue_click_captures_windows_uia_child_focus_before_paste() {
+        assert!(super::should_capture_paste_queue_uia_focus(
+            super::PasteQueueRequestOrigin::QueueWindow,
+        ));
+    }
+
+    #[test]
+    fn winui_regression_toggle_prioritizes_open_native_editor_and_syncs_scale_and_cleanup() {
+        assert_eq!(
+            super::resolve_toggle_editor_action(false, true),
+            super::ToggleEditorAction::WinUiEditor
+        );
+        assert_eq!(
+            super::resolve_toggle_editor_action(true, true),
+            super::ToggleEditorAction::WebviewEditor
+        );
+        assert!(super::should_refresh_winui_layout_on_ui_scale_change(true));
+        assert!(!super::should_refresh_winui_layout_on_ui_scale_change(
+            false
+        ));
+        assert!(super::should_emit_history_reset_after_storage_cleanup(3));
+        assert!(!super::should_emit_history_reset_after_storage_cleanup(0));
+    }
 }
 
 fn preview_blur_state(app: &tauri::AppHandle) -> preview_focus::State {
@@ -4306,6 +4389,10 @@ fn cursor_focus_region(app: &tauri::AppHandle) -> Option<preview_focus::FocusTar
 /// Another vPaste window (tag editor, text editor, settings, emoji picker...) is
 /// in use; moving the cursor across the clipboard must not pull focus from it.
 fn other_vpaste_window_focused(app: &tauri::AppHandle) -> bool {
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if main_panel_mode::winui() && winui_panel::other_native_window_foreground() {
+        return true;
+    }
     app.webview_windows().iter().any(|(label, window)| {
         label != "clipboard"
             && label != "clipboardPreview"
@@ -5327,8 +5414,7 @@ async fn prepare_preview_window(
     if native_layout && (preview_bounds.width <= 0.0 || preview_bounds.height <= 0.0) {
         return Err("No screen space is available above the main panel".into());
     }
-    // File materialization and thumbnail reads must not block the native event loop.
-    let (payload, size) = tauri::async_runtime::spawn_blocking(move || {
+    let (payload, size, is_pdf_preview) = tauri::async_runtime::spawn_blocking(move || {
         let (
             item_type,
             content,
@@ -5400,6 +5486,9 @@ async fn prepare_preview_window(
             size.width *= fit;
             size.height *= fit;
         }
+        let is_pdf_preview = item_type == "File"
+            && build_file_preview_info(content.clone())
+                .is_ok_and(|info| info.kind == "pdf-preview");
         Ok::<_, String>((
             PreviewPayload {
                 text_truncated,
@@ -5417,6 +5506,7 @@ async fn prepare_preview_window(
                 app_source,
             },
             size,
+            is_pdf_preview,
         ))
     })
     .await
@@ -5461,6 +5551,7 @@ async fn prepare_preview_window(
             if !PREVIEW_REQUESTS.current(request_id) || !preview_origin_current(native_request) {
                 return Ok(());
             }
+            WINUI_PDF_PREVIEW.store(is_pdf_preview, Ordering::SeqCst);
             *pending = Some(PreparedPreview {
                 payload: payload.clone(),
                 mode,
@@ -7419,13 +7510,49 @@ async fn wait_for_clipboard_capture() -> Result<Option<String>, String> {
     Ok(None)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToggleEditorAction {
+    WebviewEditor,
+    WinUiEditor,
+    TogglePanel,
+}
+
+fn resolve_toggle_editor_action(
+    has_visible_webview_editor: bool,
+    has_open_winui_editor: bool,
+) -> ToggleEditorAction {
+    if has_visible_webview_editor {
+        ToggleEditorAction::WebviewEditor
+    } else if has_open_winui_editor {
+        ToggleEditorAction::WinUiEditor
+    } else {
+        ToggleEditorAction::TogglePanel
+    }
+}
+
 fn toggle_clipboard_window(app: &tauri::AppHandle) {
-    if let Some(editor) = app.get_webview_window("textEditor") {
-        if editor.is_visible().unwrap_or(false) {
-            activate_native_window(&editor, "text editor shortcut focus");
-            let _ = editor.set_focus();
+    let webview_editor = app
+        .get_webview_window("textEditor")
+        .filter(|editor| editor.is_visible().unwrap_or(false));
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    let winui_editor_open = main_panel_mode::winui() && winui_panel::editor_open();
+    #[cfg(not(all(target_os = "windows", feature = "winui")))]
+    let winui_editor_open = false;
+
+    match resolve_toggle_editor_action(webview_editor.is_some(), winui_editor_open) {
+        ToggleEditorAction::WebviewEditor => {
+            if let Some(editor) = webview_editor {
+                activate_native_window(&editor, "text editor shortcut focus");
+                let _ = editor.set_focus();
+            }
             return;
         }
+        ToggleEditorAction::WinUiEditor => {
+            #[cfg(all(target_os = "windows", feature = "winui"))]
+            winui_panel::raise_editor_if_open();
+            return;
+        }
+        ToggleEditorAction::TogglePanel => {}
     }
     #[cfg(all(debug_assertions, target_os = "macos"))]
     if main_panel_mode::native() || native_panel::onboarding::active() {
@@ -9149,17 +9276,28 @@ async fn estimate_auto_cleanup(
     .map_err(|err| err.to_string())?
 }
 
+fn should_emit_history_reset_after_storage_cleanup(cleaned_items: usize) -> bool {
+    cleaned_items > 0
+}
+
 #[tauri::command]
-async fn cleanup_storage_history(days: u64) -> Result<StorageCleanupInfo, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+async fn cleanup_storage_history(
+    app: tauri::AppHandle,
+    days: u64,
+) -> Result<StorageCleanupInfo, String> {
+    let info = tauri::async_runtime::spawn_blocking(move || {
         let estimate = clipboard::cleanup_older_than(days)?;
-        Ok(StorageCleanupInfo {
+        Ok::<_, String>(StorageCleanupInfo {
             bytes: estimate.bytes,
             items: estimate.items,
         })
     })
     .await
-    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())??;
+    if should_emit_history_reset_after_storage_cleanup(info.items) {
+        let _ = app.emit("history-reset", ());
+    }
+    Ok(info)
 }
 
 #[tauri::command]
@@ -12064,6 +12202,9 @@ fn prepare_paste_queue_click_target(
     if winui_queue_ui_enabled() {
         #[cfg(all(target_os = "windows", feature = "winui"))]
         {
+            if should_capture_paste_queue_uia_focus(origin) {
+                windows_paste_focus::capture_foreground();
+            }
             // Capture an external app if it is currently foreground; the helper
             // ignores vPaste itself, preserving the previously captured target.
             record_foreground_app_before_clipboard();
@@ -12079,6 +12220,12 @@ fn prepare_paste_queue_click_target(
         }
         restore_foreground_app_before_paste();
         std::thread::sleep(std::time::Duration::from_millis(40));
+        #[cfg(target_os = "windows")]
+        if should_capture_paste_queue_uia_focus(origin) {
+            windows_paste_focus::restore_before_paste(
+                LAST_FOREGROUND_HWND_BEFORE_CLIPBOARD.load(Ordering::SeqCst) as usize,
+            )?;
+        }
         return Ok(());
     }
 
@@ -12997,21 +13144,34 @@ async fn apply_paste_queue_activation_inner(
             ensure_paste_queue_interceptor(app)?;
         }
         if winui_queue_ui_enabled() {
-            if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
-                record_foreground_app_before_clipboard();
-            }
-            paste_queue::set_active(true);
-            paste_queue::clear_error();
-            #[cfg(all(target_os = "windows", feature = "winui"))]
-            winui_panel::set_queue_view(true)?;
-            let mut requests = PASTE_QUEUE_ACTIVATION.lock().unwrap();
-            if !requests.current(request) {
-                let _ = deactivate_paste_queue_window_inner(app);
-                return Ok(());
-            }
-            requests.finish(request);
-            paste_queue::emit_state(app);
-            return Ok(());
+            let app_for_main = app.clone();
+            return auxiliary_windows::on_main_thread(app.clone(), move || {
+                {
+                    let requests = PASTE_QUEUE_ACTIVATION.lock().unwrap();
+                    if !requests.current(request) {
+                        return Ok(());
+                    }
+                }
+                if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+                    #[cfg(target_os = "windows")]
+                    windows_paste_focus::capture_foreground();
+                    record_foreground_app_before_clipboard();
+                }
+                #[cfg(all(target_os = "windows", feature = "winui"))]
+                winui_panel::set_queue_view(true)?;
+                let mut requests = PASTE_QUEUE_ACTIVATION.lock().unwrap();
+                if !requests.current(request) {
+                    drop(requests);
+                    let _ = deactivate_paste_queue_window_inner(&app_for_main);
+                    return Ok(());
+                }
+                paste_queue::set_active(true);
+                paste_queue::clear_error();
+                requests.finish(request);
+                paste_queue::emit_state(&app_for_main);
+                Ok(())
+            })
+            .await;
         }
         let window =
             auxiliary_windows::ensure(app, auxiliary_windows::WindowKind::PasteQueue).await?;
@@ -13138,6 +13298,8 @@ fn paste_queue_item(app: tauri::AppHandle, hash: Option<String>) -> Result<(), S
         PasteQueueRequestOrigin::QueueWindow,
         main_surface_visible(),
     ) {
+        #[cfg(target_os = "windows")]
+        windows_paste_focus::capture_foreground();
         record_foreground_app_before_clipboard();
     }
     enqueue_paste_queue_request(hash, PasteQueueRequestOrigin::QueueWindow)?;
@@ -14596,6 +14758,10 @@ fn main() {
                     if window.label() == "devTutorial" && main_panel_mode::winui() {
                         let _ = close_dev_tutorial_window(window.app_handle().clone());
                         return;
+                    }
+                    #[cfg(debug_assertions)]
+                    if window.label() == "devMemory" {
+                        dev_memory::stop_monitoring_sync(window.app_handle());
                     }
                     let _ = auxiliary_windows::destroy_native(window);
                 }

@@ -87,6 +87,8 @@ private:
         winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
     friend winrt::Windows::Foundation::IAsyncAction TestQueuePointerReorderControls(
         winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
+    friend winrt::Windows::Foundation::IAsyncAction TestBatch2QueueControls(
+        winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::vector<std::string> &failures);
 #endif
     struct Impl;
     std::shared_ptr<Impl> m_impl;
@@ -105,6 +107,8 @@ winrt::Windows::Foundation::IAsyncAction TestQueueRowContinuityControls(
     winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
 winrt::Windows::Foundation::IAsyncAction TestQueuePointerReorderControls(
     winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
+winrt::Windows::Foundation::IAsyncAction TestBatch2QueueControls(
+    winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::vector<std::string> &failures);
 #endif
 
 } // namespace vpaste::winui

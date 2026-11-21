@@ -167,6 +167,41 @@ pub(crate) fn cached_text(hash: &str) -> String {
     }
 }
 
+pub(crate) fn completed_hashes<'a>(
+    hashes: impl IntoIterator<Item = &'a str>,
+) -> std::collections::HashSet<String> {
+    let list: Vec<&str> = hashes.into_iter().collect();
+    let mut completed = std::collections::HashSet::new();
+    if list.is_empty() {
+        return completed;
+    }
+    let conn = clipboard::db::db();
+    for chunk in list.chunks(200) {
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT o.hash FROM image_ocr o \
+             JOIN clipboard c ON c.id=o.clipboard_id AND c.hash=o.hash \
+             WHERE o.status='complete' AND COALESCE(TRIM(o.text), '') != '' \
+             AND c.item_type='Image' AND o.hash IN ({placeholders})"
+        );
+        if let Ok(mut stmt) = conn.prepare(&sql) {
+            if let Ok(rows) = stmt
+                .query_map(rusqlite::params_from_iter(chunk.iter().copied()), |row| {
+                    row.get::<_, String>(0)
+                })
+            {
+                for hash in rows.flatten() {
+                    completed.insert(hash);
+                }
+            }
+        }
+    }
+    completed
+}
+
 pub(crate) fn wake() {
     if let Some(sender) = WAKE.get() {
         let _ = sender.try_send(());

@@ -472,4 +472,28 @@ inline winrt::Microsoft::UI::Xaml::Media::Brush WindowCanvasBackground() {
     return brush.as<winrt::Microsoft::UI::Xaml::Media::Brush>();
 }
 
+// 后台唤起面板/托盘弹窗/编辑器时，借助前台窗口输入队列附加突破 Windows 前台激活锁定。
+inline bool ActivateWindowFromBackground(HWND window) noexcept {
+    if (!window || !IsWindow(window)) return false;
+    const auto foreground = GetForegroundWindow();
+    if (foreground == window) return true;
+    const auto foregroundThread = foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+    const auto currentThread = GetCurrentThreadId();
+    const bool attached = foregroundThread && foregroundThread != currentThread &&
+        AttachThreadInput(currentThread, foregroundThread, TRUE) != FALSE;
+    BringWindowToTop(window);
+    const bool focused = SetForegroundWindow(window) != FALSE || GetForegroundWindow() == window;
+    if (attached) AttachThreadInput(currentThread, foregroundThread, FALSE);
+    return focused;
+}
+
+// RequestedTheme 赋值后同一 UI 帧内 ActualTheme 尚未刷新，显式浅色/深色主题应立即使用请求值。
+inline bool ResolveDarkTheme(winrt::Microsoft::UI::Xaml::ElementTheme requested,
+                             winrt::Microsoft::UI::Xaml::ElementTheme actual) noexcept {
+    using winrt::Microsoft::UI::Xaml::ElementTheme;
+    if (requested == ElementTheme::Dark) return true;
+    if (requested == ElementTheme::Light) return false;
+    return actual == ElementTheme::Dark;
+}
+
 } // namespace vpaste::winui

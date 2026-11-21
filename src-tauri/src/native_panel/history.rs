@@ -909,6 +909,9 @@ mod tests {
             source_metadata: Default::default(),
             title_color: String::new(),
             preview_text: String::new(),
+            is_rich_text: false,
+            link_resource: String::new(),
+            has_ocr_text: false,
         }
     }
 }

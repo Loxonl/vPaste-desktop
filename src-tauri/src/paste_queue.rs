@@ -11,7 +11,6 @@ use crate::clipboard;
 use crate::clipboard::db::db;
 use crate::clipboard::item::Item;
 use crate::clipboard::{RichClipboardMeta, StoredItem};
-use crate::history_store;
 
 pub const CAPACITY: usize = 100;
 pub const UNDO_WINDOW_MS: u64 = 5_000;
@@ -728,6 +727,127 @@ pub fn state() -> Result<PasteQueueState, String> {
     })
 }
 
+fn truncate_queue_preview(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let collected: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{collected}…")
+    } else {
+        collected
+    }
+}
+
+/// 仅供 WinUI 桥接协议使用的轻量队列状态视图，避免把大体积富文本/正文塞入 4 MiB 响应信道。
+#[cfg(all(target_os = "windows", feature = "winui"))]
+pub(crate) fn winui_state_value() -> Result<serde_json::Value, String> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct WinUiQueueItem<'a> {
+        hash: &'a str,
+        item_type: &'a str,
+        preview_text: String,
+        content: String,
+        preview_content: String,
+        app_source: &'a str,
+        time: u64,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct WinUiQueueState<'a> {
+        active: bool,
+        busy: bool,
+        capacity: usize,
+        items: Vec<WinUiQueueItem<'a>>,
+        error: Option<PasteQueueError>,
+        undo_hash: Option<String>,
+        undo_expires_at: Option<u64>,
+        revision: u64,
+    }
+
+    let records = ordered_records_with_conn(&db())?;
+    let items = records
+        .iter()
+        .map(|record| {
+            let stored = &record.stored;
+            let raw_preview = if !stored.preview_content.is_empty() {
+                stored.preview_content.as_str()
+            } else {
+                stored.content.as_str()
+            };
+            let preview_text = match stored.item_type.as_str() {
+                "Image" => String::new(),
+                "Link" => {
+                    let parts = stored.content.split("|||").collect::<Vec<_>>();
+                    truncate_queue_preview(
+                        parts
+                            .get(2)
+                            .filter(|title| !title.is_empty())
+                            .copied()
+                            .or_else(|| parts.first().copied())
+                            .unwrap_or_default(),
+                        512,
+                    )
+                }
+                _ => truncate_queue_preview(raw_preview, 512),
+            };
+            let content = match stored.item_type.as_str() {
+                "Link" => {
+                    let url = stored.content.split("|||").next().unwrap_or_default();
+                    truncate_queue_preview(url, 2048)
+                }
+                "File" => {
+                    // WinUiQueueView 仅解析首个路径文件名与总文件数量（+N）。
+                    if let Ok(paths) = serde_json::from_str::<Vec<String>>(&stored.content) {
+                        if let Some(first) = paths.first() {
+                            let mut slim = vec![truncate_queue_preview(first, 512)];
+                            if paths.len() > 1 {
+                                slim.resize(paths.len(), String::new());
+                            }
+                            serde_json::to_string(&slim).unwrap_or_else(|_| "[]".into())
+                        } else {
+                            "[]".into()
+                        }
+                    } else {
+                        String::new()
+                    }
+                }
+                "TextFile" => truncate_queue_preview(&stored.content, 512),
+                _ => String::new(),
+            };
+            let preview_content = if stored.item_type == "Image" {
+                stored.preview_content.clone()
+            } else {
+                String::new()
+            };
+            WinUiQueueItem {
+                hash: &stored.hash,
+                item_type: &stored.item_type,
+                preview_text,
+                content,
+                preview_content,
+                app_source: &stored.app_source,
+                time: stored.time,
+            }
+        })
+        .collect();
+    let undo = live_undo();
+    serde_json::to_value(WinUiQueueState {
+        active: is_active(),
+        busy: BUSY.load(Ordering::SeqCst),
+        capacity: CAPACITY,
+        items,
+        error: LAST_ERROR
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone(),
+        undo_hash: undo.as_ref().map(|entry| entry.record.stored.hash.clone()),
+        undo_expires_at: undo.map(|entry| entry.expires_at),
+        revision: REVISION.load(Ordering::SeqCst),
+    })
+    .map_err(|err| err.to_string())
+}
+
 pub fn emit_state(app: &AppHandle) {
     match state() {
         Ok(state) => {
@@ -1367,6 +1487,54 @@ mod tests {
 
             remove_item(&hash).unwrap();
             assert!(!image_path.exists());
+        });
+    }
+
+    #[test]
+    fn winui_regression_queue_state_stays_under_4mib_bridge_budget() {
+        with_test_database(|| {
+            set_active(true);
+            let large_html = format!("<p>{}</p>", "x".repeat(220 * 1024)).into_bytes();
+            let mut hashes = Vec::new();
+            for index in 0..22 {
+                let hash = clipboard::capture_rich_text_from_app(
+                    format!("rich summary item {index}"),
+                    Some(large_html.clone()),
+                    None,
+                    None,
+                    "Browser",
+                    "",
+                    true,
+                )
+                .unwrap();
+                hashes.push(hash);
+            }
+            assert_eq!(ordered_hashes().unwrap().len(), 22);
+
+            #[cfg(all(target_os = "windows", feature = "winui"))]
+            {
+                let payload = winui_state_value().unwrap();
+                let encoded = crate::winui_panel::bridge::response(1, "queueState", Ok(payload))
+                    .expect("bridge::response should serialize even error envelopes");
+                assert!(
+                    encoded.len() <= crate::winui_panel::bridge::MAX_RESPONSE_BYTES,
+                    "encoded WinUI queue response exceeded 4 MiB bridge budget: {} bytes",
+                    encoded.len()
+                );
+                let parsed: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+                assert!(
+                    parsed.get("error").is_none(),
+                    "WinUI queueState failed bridge response: {}",
+                    parsed["error"]
+                );
+                let items = parsed["data"]["items"].as_array().unwrap();
+                assert_eq!(items.len(), 22);
+                assert_eq!(items[0]["hash"], hashes[0]);
+                assert_eq!(items[0]["itemType"], "Text");
+                assert!(items[0]["previewText"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("rich summary item 0")));
+            }
         });
     }
 }

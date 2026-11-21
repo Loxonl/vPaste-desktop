@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 pub(super) const PROTOCOL_VERSION: u32 = 8;
 pub(super) const MAX_REQUEST_BYTES: usize = 16 * 1024;
-pub(super) const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 // An editor document can use the full clipboard text budget. A JSON control
 // character can occupy six bytes; leave room for its command envelope.
 pub(super) const MAX_DOCUMENT_BYTES: usize =
@@ -66,7 +66,7 @@ pub(super) fn request(bytes: &[u8]) -> Result<(Request, Value), String> {
     Ok((request, value))
 }
 
-pub(super) fn response(id: u64, op: &str, result: Result<Value, String>) -> Option<Vec<u8>> {
+pub(crate) fn response(id: u64, op: &str, result: Result<Value, String>) -> Option<Vec<u8>> {
     let value = match result {
         Ok(data) => json!({"id":id, "op":op, "data":data}),
         Err(error) => json!({"id":id, "op":op, "error":error}),

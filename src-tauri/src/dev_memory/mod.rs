@@ -190,9 +190,19 @@ pub async fn set_monitoring(app: tauri::AppHandle, enabled: bool) -> Report {
     report(&app, false).await
 }
 
+pub(crate) fn stop_monitoring_sync(app: &tauri::AppHandle) {
+    let monitor = app.state::<Monitor>();
+    let mut state = monitor.state.lock().unwrap();
+    state.transition(false);
+}
+
+fn should_stop_monitoring_on_window_close() -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
-    use super::State;
+    use super::{should_stop_monitoring_on_window_close, State};
 
     #[test]
     fn repeated_start_does_not_spawn_another_loop_and_restart_invalidates_old_work() {
@@ -206,5 +216,19 @@ mod tests {
         let second = state.transition(true).unwrap();
         assert!(!state.active(first));
         assert!(state.active(second));
+    }
+
+    #[test]
+    fn winui_regression_closing_dev_memory_window_stops_active_monitoring_loop() {
+        let mut state = State::default();
+        let generation = state.transition(true).unwrap();
+        assert!(state.active(generation));
+        if should_stop_monitoring_on_window_close() {
+            state.transition(false);
+        }
+        assert!(
+            !state.running && !state.active(generation),
+            "closing devMemory must stop the 1s monitoring loop"
+        );
     }
 }

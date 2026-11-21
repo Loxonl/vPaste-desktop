@@ -29,10 +29,14 @@ public:
     void Hide();
     bool IsOpen() const;
     void SetTheme(winrt::Microsoft::UI::Xaml::ElementTheme theme);
+    void SetLanguage(bool english);
 #ifdef _DEBUG
     winrt::Microsoft::UI::Xaml::FrameworkElement TestLoad(winrt::Windows::Data::Json::JsonObject draft, bool english);
     void TestName(const winrt::hstring &name);
     winrt::hstring TestName() const;
+    void TestTypeIndex(int index);
+    winrt::hstring TestError() const;
+    winrt::hstring TestTitle() const;
     winrt::Microsoft::UI::Xaml::FrameworkElement TestRoot() const;
     void TestSave();
 #endif

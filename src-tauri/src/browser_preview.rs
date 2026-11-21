@@ -327,6 +327,26 @@ pub(crate) fn follow_parent(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClipboardFocusReturnTarget {
+    Webview,
+    WinUi,
+    None,
+}
+
+fn clipboard_focus_return_target(
+    is_winui: bool,
+    has_clipboard_webview: bool,
+) -> ClipboardFocusReturnTarget {
+    if has_clipboard_webview {
+        ClipboardFocusReturnTarget::Webview
+    } else if is_winui {
+        ClipboardFocusReturnTarget::WinUi
+    } else {
+        ClipboardFocusReturnTarget::None
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn sync_preview_browser(
     webview: tauri::Webview,
@@ -414,8 +434,21 @@ pub(crate) async fn sync_preview_browser(
                 if should_focus {
                     focus_window_content(&browser)?;
                 } else if clipboard_had_focus {
-                    if let Some(clipboard) = handle.get_webview_window("clipboard") {
-                        focus_window_content(&clipboard)?;
+                    let clipboard = handle.get_webview_window("clipboard");
+                    #[cfg(all(target_os = "windows", feature = "winui"))]
+                    let is_winui = crate::main_panel_mode::winui();
+                    #[cfg(not(all(target_os = "windows", feature = "winui")))]
+                    let is_winui = false;
+                    match clipboard_focus_return_target(is_winui, clipboard.is_some()) {
+                        ClipboardFocusReturnTarget::Webview => {
+                            if let Some(clipboard) = clipboard {
+                                focus_window_content(&clipboard)?;
+                            }
+                        }
+                        ClipboardFocusReturnTarget::WinUi => {
+                            crate::move_focus_to_clipboard(&handle, "webpage focus handoff");
+                        }
+                        ClipboardFocusReturnTarget::None => {}
                     }
                 }
             }
@@ -522,5 +555,17 @@ mod tests {
         ] {
             assert!(page_url(url).is_none());
         }
+    }
+
+    #[test]
+    fn winui_regression_webpage_preview_returns_focus_to_winui_host_without_clipboard_webview() {
+        assert_eq!(
+            clipboard_focus_return_target(false, true),
+            ClipboardFocusReturnTarget::Webview
+        );
+        assert_eq!(
+            clipboard_focus_return_target(true, false),
+            ClipboardFocusReturnTarget::WinUi
+        );
     }
 }

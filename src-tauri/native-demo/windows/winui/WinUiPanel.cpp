@@ -4488,6 +4488,8 @@ HRESULT CreatePanel() noexcept {
             DismissFeedback();
         });
         root.ActualThemeChanged([](auto const &, auto const &) {
+            // 销毁流程清空 g_panel.root 后，XAML 关闭期间仍可能派发挂起的主题变更回调。
+            if (!g_panel.root) return;
             ApplyRowTheme();
             const auto requested = g_panel.root.RequestedTheme();
             const auto effective = EffectivePanelTheme(requested);

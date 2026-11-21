@@ -353,12 +353,11 @@ struct PanelToolbarView: View {
       let pad = 28 * s
       let gap = 8 * s
       let developerWidth = tools.width(toolbarWidth: geometry.size.width, searching: state.searchOpen)
-      let closeX = geometry.size.width - pad - button / 2
-      let settingsX = closeX - button - gap
+      let settingsX = geometry.size.width - pad - button / 2
       let queueX = settingsX - button - gap
       let developerX = queueX - button / 2 - gap - developerWidth / 2
       let fieldWidth = min(276 * s, max(100 * s,
-        geometry.size.width - 2 * pad - developerWidth - 4 * button - 5 * gap - 68 * s))
+        geometry.size.width - 2 * pad - developerWidth - 3 * button - 4 * gap - 68 * s))
       let left = pad + button + 15 * s + (state.searchOpen ? fieldWidth + 12 * s : 0)
       let tabsWidth = max(50 * s, developerX - developerWidth / 2 - left - 10 * s)
       let liquidGlass = PanelToolbarMaterial.liquidGlass
@@ -402,8 +401,6 @@ struct PanelToolbarView: View {
           .position(x: queueX, y: geometry.size.height / 2)
         icon("gearshape", state.local("Settings", "设置")) { state.onSettings?() }
           .position(x: settingsX, y: geometry.size.height / 2)
-        icon("xmark", state.local("Close native panel", "关闭原生主界面")) { state.onClose?() }
-          .position(x: closeX, y: geometry.size.height / 2)
       }
     }
   }

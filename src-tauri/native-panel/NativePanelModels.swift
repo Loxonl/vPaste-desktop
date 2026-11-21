@@ -239,6 +239,14 @@ final class PanelBridge {
     request["session"] = session
     request["op"] = op
     guard let data = try? JSONSerialization.data(withJSONObject: request) else { return }
+    // Rust drops requests beyond the bridge limit. Don't leave the editor
+    // waiting for a save reply if a legacy draft exceeds it.
+    if op == "tab-editor-save", data.count > 64 * 1024 {
+      completion?(.failure(NSError(domain: "vPaste", code: 1, userInfo: [
+        NSLocalizedDescriptionKey: "Tab draft is too large / 标签内容过长"
+      ])))
+      return
+    }
     if let completion { pending[next] = completion }
     data.withUnsafeBytes { bytes in
       callbacks.request(bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count)

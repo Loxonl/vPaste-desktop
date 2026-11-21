@@ -1477,7 +1477,8 @@ fn apply_filter_clauses(filter: &SearchFilter, clauses: &mut Vec<String>, params
     if let (Some(amount), Some(unit)) = (filter.relative_amount, filter.relative_unit.as_deref()) {
         if amount > 0 {
             if let Some(unit_ms) = relative_unit_millis(unit) {
-                let cutoff = Utc::now().timestamp_millis() as u64 - amount.saturating_mul(unit_ms);
+                let cutoff = (Utc::now().timestamp_millis() as u64)
+                    .saturating_sub(amount.saturating_mul(unit_ms));
                 clauses.push("time >= ?".to_string());
                 params.push(Value::Integer(cutoff as i64));
             }
@@ -1542,7 +1543,8 @@ fn item_matches_filter(item: &Item, filter: &SearchFilter) -> bool {
     if let (Some(amount), Some(unit)) = (filter.relative_amount, filter.relative_unit.as_deref()) {
         if amount > 0 {
             if let Some(unit_ms) = relative_unit_millis(unit) {
-                let cutoff = Utc::now().timestamp_millis() as u64 - amount.saturating_mul(unit_ms);
+                let cutoff = (Utc::now().timestamp_millis() as u64)
+                    .saturating_sub(amount.saturating_mul(unit_ms));
                 if item.time < cutoff {
                     return false;
                 }
@@ -4376,6 +4378,15 @@ mod link_preview_tests;
 mod tests {
     use super::*;
     use rusqlite::params;
+
+    #[test]
+    fn long_relative_ranges_include_history_without_underflow() {
+        let filter = parse_search_filter(
+            r#"__filter:{"mode":"custom","relative_amount":1000,"relative_unit":"month"}"#,
+        );
+        let (_, params) = build_filter_query(&filter, 0, 0, 10);
+        assert_eq!(params[3], Value::Integer(0));
+    }
 
     #[test]
     fn native_history_previews_use_bounded_copy_content_and_human_readable_titles() {

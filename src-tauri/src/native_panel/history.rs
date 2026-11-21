@@ -149,6 +149,11 @@ static WATCHING: AtomicBool = AtomicBool::new(false);
 static RESETS: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
+pub(super) fn invalidate_record_tags() {
+    CHANGES.fetch_add(1, Ordering::AcqRel);
+    schedule();
+}
+
 pub(super) fn watch(app: &AppHandle) {
     if WATCHING.swap(true, Ordering::AcqRel) {
         return;
@@ -650,6 +655,44 @@ mod tests {
         checkpoint.offset = 0.0;
         checkpoint.anchor_index = 1;
         assert!(!checkpoint.at_head());
+    }
+
+    #[test]
+    fn native_record_rename_invalidates_a_cached_card_without_changing_filter() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(root.path().to_string_lossy().into());
+        crate::config::save(crate::config::Config {
+            storage_dir: root.path().to_string_lossy().into(),
+            ..Default::default()
+        });
+        clipboard::db::init();
+        clipboard::db::db().execute("insert into clipboard(hash,time,content,preview_content,item_type,search_index,source,app_source,app_icon_path,title_color,icon,label) values('tagged',1000,'body','body','Text',1,'','','','','',0)", []).unwrap();
+        let tag = clipboard::create_tag("Before").unwrap();
+        clipboard::assign_tag("tagged", tag.id).unwrap();
+        let opened = open(
+            HistoryQuery {
+                keywords: String::new(),
+                label: String::new(),
+            },
+            "all".into(),
+            history_views::reserve_native_open(),
+        )
+        .unwrap();
+        let id = opened["token"]["viewId"].as_str().unwrap();
+        let revision = opened["token"]["revision"].as_u64().unwrap();
+        assert_eq!(opened["items"][0]["tags"][0]["name"], "Before");
+        super::super::tab_editor::store_record(&format!("record:{}", tag.id), "After", &[tag])
+            .unwrap();
+        let delta = synchronize(id, revision, &["tagged".into()]).unwrap();
+        assert_eq!(delta["token"]["viewId"], id);
+        assert_eq!(delta["refs"][0]["tags"][0]["name"], "After");
+        assert_eq!(delta["invalidated"], json!(["tagged"]));
+        history_views::close(id);
+        let mut state = STATE.lock().unwrap();
+        state.token = None;
+        state.sent.clear();
+        state.checkpoint = Checkpoint::default();
     }
 
     #[test]

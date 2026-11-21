@@ -138,7 +138,8 @@ struct OnboardingView::Impl : std::enable_shared_from_this<Impl> {
     Request request;
     JsonObject snapshot;
     const std::uint64_t session;
-    const bool preview, mac, english;
+    const bool preview, mac;
+    bool english;
     bool ready, shown = false, leavingWelcome = false, finished = false, syncing = false;
     Step step = Step::Welcome;
     std::uint64_t latestRequest = 0;
@@ -588,10 +589,18 @@ void OnboardingView::Shown() { impl_->shown = true; impl_->StartWelcome(); impl_
 void OnboardingView::Update(JsonObject const &data, std::uint64_t request) {
     if (impl_->finished || request < impl_->latestRequest) return;
     const bool loaded = data.GetNamedBoolean(L"ready");
-    const bool changed = impl_->ready != loaded;
+    const bool nextEnglish = data.GetNamedBoolean(L"english", impl_->english);
+    const bool changed = impl_->ready != loaded || impl_->english != nextEnglish;
     impl_->snapshot = data;
     impl_->ready = loaded;
+    impl_->english = nextEnglish;
     if (changed) impl_->Render();
     else impl_->UpdateControls();
 }
+
+#ifdef _DEBUG
+winrt::hstring OnboardingView::TestWelcomeTitle() const {
+    return impl_->welcomeSlogan ? impl_->welcomeSlogan.Text() : L"";
+}
+#endif
 }

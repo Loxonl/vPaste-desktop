@@ -10,6 +10,62 @@ static REQUESTS: crate::preview_motion::PreviewRequests =
     crate::preview_motion::PreviewRequests::new();
 static NAVIGATION_SOURCE: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewAccelerator {
+    Dismiss,
+    Navigate {
+        direction: i8,
+        key: &'static str,
+        ctrl_key: bool,
+    },
+}
+
+fn preview_accelerator_route(
+    key: u32,
+    control: bool,
+    shift: bool,
+    alt: bool,
+    repeated: bool,
+    image_text_preview: bool,
+    pdf_preview: bool,
+) -> Option<PreviewAccelerator> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        VK_ESCAPE, VK_LEFT, VK_RIGHT, VK_SPACE, VK_TAB,
+    };
+    if image_text_preview || alt {
+        return None;
+    }
+    if key == u32::from(VK_ESCAPE.0) && !control && !shift {
+        return (!repeated).then_some(PreviewAccelerator::Dismiss);
+    }
+    // 仅 PDF 内嵌阅读器不会向 React 外壳冒泡键盘事件；网页、HTML 与文本预览由自身逻辑处理。
+    if !pdf_preview {
+        return None;
+    }
+    if key == u32::from(VK_SPACE.0) && !control && !shift {
+        return (!repeated).then_some(PreviewAccelerator::Dismiss);
+    }
+    if !control && !shift && (key == u32::from(VK_LEFT.0) || key == u32::from(VK_RIGHT.0)) {
+        return Some(PreviewAccelerator::Navigate {
+            direction: if key == u32::from(VK_LEFT.0) { -1 } else { 1 },
+            key: if key == u32::from(VK_LEFT.0) {
+                "ArrowLeft"
+            } else {
+                "ArrowRight"
+            },
+            ctrl_key: false,
+        });
+    }
+    if key == u32::from(VK_TAB.0) {
+        return Some(PreviewAccelerator::Navigate {
+            direction: if shift { -1 } else { 1 },
+            key: "Tab",
+            ctrl_key: control,
+        });
+    }
+    None
+}
+
 pub(crate) fn install_escape_handler(window: &tauri::WebviewWindow) {
     use tauri::Manager;
     use webview2_com::{
@@ -20,54 +76,109 @@ pub(crate) fn install_escape_handler(window: &tauri::WebviewWindow) {
         },
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetKeyState, VK_CONTROL, VK_ESCAPE, VK_LWIN, VK_RWIN, VK_SHIFT,
+        GetKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
     };
 
     let app = window.app_handle().clone();
     let result = window.with_webview(move |view| {
+        let app_for_handler = app.clone();
         let handler = AcceleratorKeyPressedEventHandler::create(Box::new(move |_, args| {
             let Some(args) = args else { return Ok(()) };
-            if crate::WINUI_IMAGE_TEXT_PREVIEW.load(Ordering::SeqCst) {
-                return Ok(()); // The OCR editor owns its own input and IME.
-            }
-            // SAFETY: these event args are live and used on the controller's STA.
-            unsafe {
+            let image_text_preview = crate::WINUI_IMAGE_TEXT_PREVIEW.load(Ordering::SeqCst);
+            let pdf_preview = crate::WINUI_PDF_PREVIEW.load(Ordering::SeqCst);
+            let route = unsafe {
                 let mut kind = COREWEBVIEW2_KEY_EVENT_KIND::default();
                 let mut key = 0;
                 args.KeyEventKind(&mut kind)?;
                 args.VirtualKey(&mut key)?;
-                if kind != COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN
-                    || key != u32::from(VK_ESCAPE.0)
-                    || [VK_CONTROL, VK_SHIFT, VK_LWIN, VK_RWIN]
-                        .into_iter()
-                        .any(|modifier| GetKeyState(modifier.0.into()) < 0)
-                {
+                if kind != COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN {
                     return Ok(());
                 }
-                args.SetHandled(true)?;
                 let mut status = COREWEBVIEW2_PHYSICAL_KEY_STATUS::default();
                 args.PhysicalKeyStatus(&mut status)?;
-                if status.WasKeyDown.as_bool() {
-                    return Ok(());
+                let control = GetKeyState(VK_CONTROL.0.into()) < 0;
+                let shift = GetKeyState(VK_SHIFT.0.into()) < 0;
+                let alt = GetKeyState(VK_MENU.0.into()) < 0;
+                let win = GetKeyState(VK_LWIN.0.into()) < 0 || GetKeyState(VK_RWIN.0.into()) < 0;
+                if win {
+                    None
+                } else {
+                    preview_accelerator_route(
+                        key,
+                        control,
+                        shift,
+                        alt,
+                        status.WasKeyDown.as_bool(),
+                        image_text_preview,
+                        pdf_preview,
+                    )
                 }
+            };
+            let Some(route) = route else {
+                return Ok(());
+            };
+            if route != PreviewAccelerator::Dismiss
+                && crate::browser_preview::foreground(&app_for_handler, "preview accelerator")
+            {
+                return Ok(());
+            }
+            unsafe {
+                args.SetHandled(true)?;
             }
             // PDF's embedded viewer does not bubble keydown to the React shell.
-            // Leave WebView2's synchronous accelerator callback before closing it.
+            // Leave WebView2's synchronous accelerator callback before acting.
             let generation = crate::PREVIEW_WINDOW_GENERATION.load(Ordering::SeqCst);
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(error) =
-                    crate::auxiliary_windows::on_main_thread(app.clone(), move || {
-                        if crate::PREVIEW_WINDOW_GENERATION.load(Ordering::SeqCst) == generation {
-                            crate::hide_preview_window(app)?;
+            let app = app_for_handler.clone();
+            match route {
+                PreviewAccelerator::Dismiss => {
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) =
+                            crate::auxiliary_windows::on_main_thread(app.clone(), move || {
+                                if crate::PREVIEW_WINDOW_GENERATION.load(Ordering::SeqCst)
+                                    == generation
+                                {
+                                    crate::hide_preview_window(app)?;
+                                }
+                                Ok(())
+                            })
+                            .await
+                        {
+                            log::warn!(
+                                "Failed to close WinUI preview with key accelerator: {error}"
+                            );
                         }
-                        Ok(())
-                    })
-                    .await
-                {
-                    log::warn!("Failed to close WinUI preview with Escape: {error}");
+                    });
                 }
-            });
+                PreviewAccelerator::Navigate {
+                    direction,
+                    key,
+                    ctrl_key,
+                } => {
+                    let key_owned = key.to_string();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) =
+                            crate::auxiliary_windows::on_main_thread(app.clone(), move || {
+                                if crate::PREVIEW_WINDOW_GENERATION.load(Ordering::SeqCst)
+                                    == generation
+                                {
+                                    crate::preview_navigate_selection(
+                                        app,
+                                        direction,
+                                        key_owned,
+                                        Some(ctrl_key),
+                                    )?;
+                                }
+                                Ok(())
+                            })
+                            .await
+                        {
+                            log::warn!(
+                                "Failed to navigate WinUI preview with key accelerator: {error}"
+                            );
+                        }
+                    });
+                }
+            }
             Ok(())
         }));
         // SAFETY: with_webview runs on the owning STA; the controller owns the
@@ -630,5 +741,159 @@ mod tests {
             assert_eq!((area.x, area.y, area.width), (-1920.0, -200.0, 1920.0));
             assert_eq!(area.y + area.height, surface.rect.y - 16.0);
         }
+    }
+
+    #[test]
+    fn winui_regression_pdf_preview_forwards_space_and_arrows_outside_ocr_input() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            VK_ESCAPE, VK_LEFT, VK_RIGHT, VK_SPACE, VK_TAB,
+        };
+        // PDF 预览内嵌 viewer 不冒泡按键：仅在 PDF 状态下转发 Space 关闭与左右/Tab 切换。
+        assert_eq!(
+            super::preview_accelerator_route(
+                u32::from(VK_SPACE.0),
+                false,
+                false,
+                false,
+                false,
+                false,
+                true
+            ),
+            Some(super::PreviewAccelerator::Dismiss)
+        );
+        assert_eq!(
+            super::preview_accelerator_route(
+                u32::from(VK_LEFT.0),
+                false,
+                false,
+                false,
+                false,
+                false,
+                true
+            ),
+            Some(super::PreviewAccelerator::Navigate {
+                direction: -1,
+                key: "ArrowLeft",
+                ctrl_key: false,
+            })
+        );
+        assert_eq!(
+            super::preview_accelerator_route(
+                u32::from(VK_RIGHT.0),
+                false,
+                false,
+                false,
+                false,
+                false,
+                true
+            ),
+            Some(super::PreviewAccelerator::Navigate {
+                direction: 1,
+                key: "ArrowRight",
+                ctrl_key: false,
+            })
+        );
+        assert_eq!(
+            super::preview_accelerator_route(
+                u32::from(VK_TAB.0),
+                true,
+                true,
+                false,
+                false,
+                false,
+                true
+            ),
+            Some(super::PreviewAccelerator::Navigate {
+                direction: -1,
+                key: "Tab",
+                ctrl_key: true,
+            })
+        );
+        // 网页 / HTML / 普通非 PDF 预览不得在 WebView2 加速器阶段拦截空格或方向键，避免网页输入框无法输入空格。
+        assert_eq!(
+            super::preview_accelerator_route(
+                u32::from(VK_SPACE.0),
+                false,
+                false,
+                false,
+                false,
+                false,
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            super::preview_accelerator_route(
+                u32::from(VK_LEFT.0),
+                false,
+                false,
+                false,
+                false,
+                false,
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            super::preview_accelerator_route(
+                u32::from(VK_TAB.0),
+                false,
+                false,
+                false,
+                false,
+                false,
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            super::preview_accelerator_route(
+                u32::from(VK_ESCAPE.0),
+                false,
+                false,
+                false,
+                false,
+                false,
+                false
+            ),
+            Some(super::PreviewAccelerator::Dismiss)
+        );
+        // OCR 图片文本输入状态下保持全量放行（含 Escape/IME 与空格/左右箭头），交由 OCR 自身处理。
+        assert_eq!(
+            super::preview_accelerator_route(
+                u32::from(VK_SPACE.0),
+                false,
+                false,
+                false,
+                false,
+                true,
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            super::preview_accelerator_route(
+                u32::from(VK_LEFT.0),
+                false,
+                false,
+                false,
+                false,
+                true,
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            super::preview_accelerator_route(
+                u32::from(VK_ESCAPE.0),
+                false,
+                false,
+                false,
+                false,
+                true,
+                false
+            ),
+            None
+        );
     }
 }

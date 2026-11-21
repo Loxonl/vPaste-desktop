@@ -160,6 +160,7 @@ pub(super) fn show(
         return;
     }
     crate::PREVIEW_REQUESTS.cancel();
+    crate::WINUI_PDF_PREVIEW.store(false, Ordering::SeqCst);
     *pending = None;
     if mode.takes_focus() {
         crate::PREVIEW_PINNED.store(false, Ordering::SeqCst);

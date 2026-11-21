@@ -17,6 +17,9 @@ public:
     void Update(winrt::Windows::Data::Json::JsonObject const &data, std::uint64_t request);
     void Shown();
     bool CancelPreview();
+#ifdef _DEBUG
+    winrt::hstring TestWelcomeTitle() const;
+#endif
 private:
     struct Impl;
     std::shared_ptr<Impl> impl_;

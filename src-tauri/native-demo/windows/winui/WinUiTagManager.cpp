@@ -516,7 +516,14 @@ struct TagManager::Impl : std::enable_shared_from_this<TagManager::Impl> {
         RenderTags();
     }
 
-    void Refresh() {
+    void Refresh(bool force = false) {
+        if (force) {
+            busy = false;
+            pendingOperation.clear();
+            editingId.reset();
+            editingName.clear();
+            if (const auto dialog = std::exchange(confirmation, nullptr)) dialog.Hide();
+        }
         Send(L"tagsList");
     }
 
@@ -555,8 +562,8 @@ FrameworkElement TagManager::Root() const {
     return m_impl ? m_impl->root : FrameworkElement{nullptr};
 }
 
-void TagManager::Refresh() {
-    if (m_impl) m_impl->Refresh();
+void TagManager::Refresh(bool force) {
+    if (m_impl) m_impl->Refresh(force);
 }
 
 void TagManager::SetTags(JsonArray const &tags) {

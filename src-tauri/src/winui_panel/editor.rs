@@ -26,6 +26,21 @@ pub(super) fn focused() -> bool {
     CURRENT.load(Ordering::Acquire) != 0 && crate::TEXT_EDITOR_FOCUSED.load(Ordering::Acquire)
 }
 
+pub(super) fn is_open() -> bool {
+    CURRENT.load(Ordering::Acquire) != 0
+}
+
+pub(super) fn raise_if_open() {
+    let generation = CURRENT.load(Ordering::Acquire);
+    if generation != 0 {
+        super::send_response(
+            0,
+            "nativeEditorRaise",
+            Ok(json!({ "generation": generation })),
+        );
+    }
+}
+
 pub(super) fn focus_changed(op: &str, argument: &str) -> bool {
     if !matches!(op, "nativeEditorFocusIn" | "nativeEditorFocusOut") {
         return false;

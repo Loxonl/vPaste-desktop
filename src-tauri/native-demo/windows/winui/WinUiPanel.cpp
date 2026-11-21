@@ -232,6 +232,7 @@ struct HistoryRowVisual {
     winrt::hstring visualType;
     std::shared_ptr<vpaste::winui::AutoScrollCardPreview> autoPreview, richAutoPreview;
     std::shared_ptr<vpaste::winui::CardRecordTags> recordTags;
+    bool isRichText = false;
 };
 
 struct Panel {
@@ -311,8 +312,11 @@ bool NativeEditorOpen() {
         (g_panel.appActions && g_panel.appActions->ModalOpen());
 }
 std::uint64_t g_searchSubmitRequestId = 0;
-winrt::hstring g_searchText;
+winrt::hstring g_searchText, g_committedSearchText;
 bool g_searchComposing = false;
+void ScheduleHistoryFocus(WPARAM wparam = 0);
+winrt::Microsoft::UI::Xaml::ElementTheme EffectivePanelTheme(
+    winrt::Microsoft::UI::Xaml::ElementTheme requested) noexcept;
 std::uint64_t g_latestHoverRequestId = 0;
 int g_searchSubmitIndex = 0;
 bool g_searchSubmitPlain = false, g_searchSubmitQuick = false;
@@ -525,6 +529,7 @@ bool RebuildTagFilter();
 void RequestHistory(bool preserveSearchSubmit = false);
 void RefreshFilters();
 void SetTagManagerActive(bool active);
+void SetQueueViewActive(bool active);
 void ApplyActiveLayout();
 void ResizeIsland() noexcept;
 void UpdateHistoryState();
@@ -539,6 +544,7 @@ void CancelHoverPreview() {
 }
 template<typename T> T FindHistoryChild(winrt::Microsoft::UI::Xaml::DependencyObject const &element);
 winrt::hstring SearchText() { return g_searchText; }
+winrt::hstring CommittedSearchQuery() { return g_searchComposing ? g_committedSearchText : g_searchText; }
 
 void ScheduleSearch() {
     if (!g_searchTimer) return;
@@ -552,19 +558,23 @@ void ScheduleSearch() {
 
 void SearchCompositionChanged(bool composing, winrt::hstring const &text) {
     g_searchComposing = composing;
-    g_searchText = text; g_searchSubmitRequestId = 0; CancelHoverPreview();
+    g_searchText = text;
+    if (!composing) g_committedSearchText = text;
+    g_searchSubmitRequestId = 0; CancelHoverPreview();
     ScheduleSearch();
 }
 
 void SearchChanged(winrt::hstring const &text) {
     if (g_searchText == text) return;
     g_searchText = text;
+    if (!g_searchComposing) g_committedSearchText = text;
     CancelHoverPreview();
     g_searchSubmitRequestId = 0;
     ScheduleSearch();
 }
 
 void SetSearchText(winrt::hstring const &text) {
+    if (!g_searchComposing || text.empty()) g_committedSearchText = text;
     g_panel.search.Text(text);
 }
 void ApplyCardPresenterChrome(winrt::Microsoft::UI::Xaml::DependencyObject const &container,
@@ -612,6 +622,20 @@ bool IsDarkTheme() {
     return g_themeMode == 2 ||
            (g_themeMode == 0 && g_panel.root &&
             g_panel.root.ActualTheme() == winrt::Microsoft::UI::Xaml::ElementTheme::Dark);
+}
+
+void ScheduleHistoryFocus(WPARAM wparam) {
+    if (g_panel.window) PostMessageW(g_panel.window, kFocusHistory, wparam, 0);
+}
+
+winrt::Microsoft::UI::Xaml::ElementTheme EffectivePanelTheme(
+    winrt::Microsoft::UI::Xaml::ElementTheme requested) noexcept {
+    const auto actual = g_panel.root
+        ? g_panel.root.ActualTheme()
+        : winrt::Microsoft::UI::Xaml::ElementTheme::Default;
+    return vpaste::winui::ResolveDarkTheme(requested, actual)
+        ? winrt::Microsoft::UI::Xaml::ElementTheme::Dark
+        : winrt::Microsoft::UI::Xaml::ElementTheme::Light;
 }
 
 winrt::Microsoft::UI::Xaml::Media::Brush CardHeaderBrush(HistoryRowVisual const &row) {
@@ -751,7 +775,7 @@ void ApplyRowTheme(bool contrast = vpaste::winui::HighContrastEnabled()) {
         vpaste::winui::ApplyElevation(g_panel.appActions->UpdateButton(), vpaste::winui::ControlElevation, contrast, g_panel.shadowReceiver);
     }
     vpaste::winui::ApplyElevation(g_panel.selectionBar, vpaste::winui::HoveredCardElevation, contrast, g_panel.shadowReceiver);
-    if (g_panel.deletionDialog) g_panel.deletionDialog.RequestedTheme(g_panel.root.ActualTheme());
+    if (g_panel.deletionDialog) g_panel.deletionDialog.RequestedTheme(EffectivePanelTheme(g_panel.root.RequestedTheme()));
     if (g_panel.history) g_panel.history.Background(nullptr);
     if (g_panel.status) vpaste::winui::ApplyStyle(g_panel.status, L"VPaste.Secondary");
     for (std::size_t index = 0; index < g_panel.rows.size(); ++index) {
@@ -774,7 +798,7 @@ void ApplyRowTheme(bool contrast = vpaste::winui::HighContrastEnabled()) {
         vpaste::winui::ApplyStyle(row.preview, L"VPaste.Body");
         row.preview.FontSize(13);
         if (row.imageMatte && row.itemType == L"Image") row.imageMatte.Background(contrast
-            ? nullptr : vpaste::winui::TransparencyBrush(g_panel.root.ActualTheme() == winrt::Microsoft::UI::Xaml::ElementTheme::Dark));
+            ? nullptr : vpaste::winui::TransparencyBrush(EffectivePanelTheme(g_panel.root.RequestedTheme()) == winrt::Microsoft::UI::Xaml::ElementTheme::Dark));
         row.preview.ClearValue(winrt::Microsoft::UI::Xaml::Controls::TextBlock::ForegroundProperty());
         if (!contrast && row.itemType == L"Color") row.preview.Foreground(Brush(40, 40, 40));
         const auto favoriteGlyph = row.favoriteButton.Content().as<winrt::Microsoft::UI::Xaml::Controls::FontIcon>();
@@ -1022,7 +1046,7 @@ std::uint64_t SendRequest(const wchar_t *operation, const std::wstring &hash = {
         g_latestPreviewRequestId = 0;
     if (wcscmp(operation, L"query") == 0) {
         request.Insert(L"query", JsonValue::CreateStringValue(
-                                      SearchText()));
+                                      CommittedSearchQuery()));
         request.Insert(L"filter", JsonValue::CreateStringValue(
                                         g_selectedFilterId.empty() ? std::wstring{FilterValue(FilterIndex())} : L"custom:" + g_selectedFilterId));
         request.Insert(L"tagName", JsonValue::CreateStringValue(g_selectedTagName));
@@ -1030,7 +1054,7 @@ std::uint64_t SendRequest(const wchar_t *operation, const std::wstring &hash = {
         request.Insert(L"limit", JsonValue::CreateNumberValue(static_cast<double>(std::max<std::size_t>(36, sameRange ? g_hashes.size() : 0))));
     } else if (wcscmp(operation, L"queryMore") == 0) {
         request.Insert(L"query", JsonValue::CreateStringValue(
-                                      SearchText()));
+                                      CommittedSearchQuery()));
         request.Insert(L"filter", JsonValue::CreateStringValue(
                                         g_selectedFilterId.empty() ? std::wstring{FilterValue(FilterIndex())} : L"custom:" + g_selectedFilterId));
         request.Insert(L"tagName", JsonValue::CreateStringValue(g_selectedTagName));
@@ -1637,18 +1661,37 @@ std::vector<winrt::Windows::Data::Json::JsonObject> FilterObjects(
 }
 
 void ApplyFilters(const winrt::Windows::Data::Json::JsonArray &items) {
+    winrt::hstring previousActiveFilter;
+    if (!g_selectedFilterId.empty()) {
+        const auto oldFound = std::find_if(g_customFilters.begin(), g_customFilters.end(),
+            [](auto const &draft) { return std::wstring{draft.GetNamedString(L"id")} == g_selectedFilterId; });
+        if (oldFound != g_customFilters.end()) {
+            const auto filterObj = oldFound->GetNamedValue(L"filter", nullptr);
+            previousActiveFilter = filterObj ? filterObj.Stringify() : L"";
+        }
+    }
     g_customFilters = FilterObjects(items);
-    if (!g_selectedFilterId.empty() && std::none_of(g_customFilters.begin(), g_customFilters.end(),
-        [](auto const &draft) { return std::wstring{draft.GetNamedString(L"id")} == g_selectedFilterId; })) {
-        g_selectedFilterId.clear();
-        if (!g_selectedTagId) {
-            const auto updatingLanguage = g_updatingLanguage; g_updatingLanguage = true;
-            g_panel.filter.SelectedItem(g_panel.filter.Items().GetAt(0));
-            g_updatingLanguage = updatingLanguage;
+    bool selectionImpacted = false;
+    if (!g_selectedFilterId.empty()) {
+        const auto newFound = std::find_if(g_customFilters.begin(), g_customFilters.end(),
+            [](auto const &draft) { return std::wstring{draft.GetNamedString(L"id")} == g_selectedFilterId; });
+        if (newFound == g_customFilters.end()) {
+            g_selectedFilterId.clear();
+            selectionImpacted = true;
+            if (!g_selectedTagId) {
+                const auto updatingLanguage = g_updatingLanguage; g_updatingLanguage = true;
+                g_panel.filter.SelectedItem(g_panel.filter.Items().GetAt(0));
+                g_updatingLanguage = updatingLanguage;
+            }
+        } else {
+            const auto filterObj = newFound->GetNamedValue(L"filter", nullptr);
+            const auto nextActiveFilter = filterObj ? filterObj.Stringify() : winrt::hstring{};
+            selectionImpacted = nextActiveFilter != previousActiveFilter;
         }
     }
     RebuildDynamicTabs();
-    RequestHistory();
+    // 仅当当前激活筛选条件变更/被删除，或尚未拉取首次历史数据时才请求查询，避免启动连发重复 query。
+    if (selectionImpacted || g_latestQueryId == 0) RequestHistory();
 }
 
 bool RebuildTagFilter() {
@@ -1696,16 +1739,28 @@ void RequestHistory(bool preserveSearchSubmit) {
     // This request already includes the current text, even when a tab click
     // arrives before its search debounce. Do not query the same view twice.
     if (g_searchTimer && g_searchTimer.IsRunning()) g_searchTimer.Stop();
-    g_historyLoading = true;
-    g_historyFailed = false;
-    g_historyView.pageFailed = false;
-    g_historyView.lastAutoCursor.reset();
-    g_historyView.requestedQuery = {std::wstring{SearchText()},
+    const auto previousRequested = g_historyView.requestedQuery;
+    g_historyView.requestedQuery = {std::wstring{CommittedSearchQuery()},
         g_selectedFilterId.empty() ? FilterValue(FilterIndex()) : L"custom:" + g_selectedFilterId, g_selectedTagName};
 #ifdef _DEBUG
     g_queryStarted = std::chrono::steady_clock::now();
 #endif
-    g_latestQueryId = SendRequest(L"query");
+    const auto sent = SendRequest(L"query");
+    if (!sent) {
+        // 请求未能发出（例如搜索串超过 Bridge 16 KiB 限制或通道未就绪）时不得锁死加载状态并破坏 latest-wins 令牌。
+        g_historyView.requestedQuery = previousRequested;
+        g_historyLoading = false;
+        g_historyFailed = g_hashes.empty();
+        if (preserveSearchSubmit) g_searchSubmitRequestId = 0;
+        UpdateHistoryState();
+        ShowFeedback(Text(L"查询请求过长或无法发送，请精简后重试", L"Query request could not be sent"), true);
+        return;
+    }
+    g_historyLoading = true;
+    g_historyFailed = false;
+    g_historyView.pageFailed = false;
+    g_historyView.lastAutoCursor.reset();
+    g_latestQueryId = sent;
     if (preserveSearchSubmit && g_searchSubmitRequestId != 0)
         g_searchSubmitRequestId = g_latestQueryId;
 #ifdef _DEBUG
@@ -1747,9 +1802,19 @@ void RequestMoreHistory(bool automatic = false) {
         if (automatic && (g_historyView.pageFailed || g_historyView.lastAutoCursor == cursor)) return;
         if (automatic) g_historyView.lastAutoCursor = cursor;
         else { g_historyView.pageFailed = false; g_historyView.lastAutoCursor.reset(); }
+        const auto sent = SendRequest(L"queryMore");
+        if (!sent) {
+            g_historyLoading = false;
+            g_historyView.pageFailed = true;
+            g_historyView.lastAutoCursor.reset();
+            g_panel.more.IsEnabled(g_hasMore);
+            UpdateHistoryState();
+            ShowFeedback(Text(L"加载更多失败，请重试", L"Could not load more items; try again"), true);
+            return;
+        }
         g_historyLoading = true;
         g_panel.more.IsEnabled(false);
-        g_latestHistoryRequestId = SendRequest(L"queryMore");
+        g_latestHistoryRequestId = sent;
         UpdateHistoryState();
     }
 }
@@ -2040,7 +2105,10 @@ void SelectBuiltinCategory(std::uint32_t index, bool refresh = true) {
     g_panel.tagFilter.SelectedIndex(0);
     g_panel.filter.SelectedItem(g_panel.filter.Items().GetAt(index));
     g_updatingLanguage = languageGuard; g_updatingTagFilter = tagGuard;
-    if (refresh) RequestHistory();
+    if (refresh) {
+        RequestHistory();
+        ScheduleHistoryFocus();
+    }
 }
 
 bool HandleMainKey(vpaste::winui::MainKeyInput input,
@@ -2351,6 +2419,7 @@ winrt::fire_and_forget ConfirmDeleteItem(std::wstring hash) {
         if (result == ContentDialogResult::Primary && g_panel.root.IsLoaded()) {
             (void)SendRequest(L"delete", hash);
         }
+        ScheduleHistoryFocus();
     } catch (...) {
         if (g_panel.deletionDialog != dialog) co_return;
         g_panel.deletionDialog = nullptr;
@@ -2358,6 +2427,7 @@ winrt::fire_and_forget ConfirmDeleteItem(std::wstring hash) {
         if (g_panel.status) {
             g_panel.status.Text(Text(L"无法打开删除确认窗口", L"Could not open delete confirmation"));
         }
+        ScheduleHistoryFocus();
     }
 }
 
@@ -2421,6 +2491,14 @@ void ApplyResponse(const std::string &bytes) {
             const auto data = response.GetNamedObject(L"data");
             const auto session = static_cast<std::uint64_t>(data.GetNamedNumber(L"session"));
             if (operation == L"nativeTutorialOpen") {
+                SetTagManagerActive(false);
+                if (g_queueViewActive) SetQueueViewActive(false);
+                if (g_queueSelectionMode) ToggleQueueSelectionMode();
+                if (g_panel.filterEditor) g_panel.filterEditor->Hide();
+                if (g_panel.recordTagEditor) g_panel.recordTagEditor->Hide();
+                g_deleteConfirmationOpen = false;
+                if (const auto dialog = std::exchange(g_panel.deletionDialog, nullptr)) dialog.Hide();
+                (void)SendRequest(L"previewDismiss");
                 auto view = std::make_unique<vpaste::winui::OnboardingView>(data,
                     [](auto operation, auto const &payload) { return SendEditorRequest(operation, payload); });
                 RemoveTutorial();
@@ -2471,9 +2549,44 @@ void ApplyResponse(const std::string &bytes) {
             if (g_queueSelectionMode) g_panel.history.SelectedItems().Clear();
             UpdateQueueSelectionControls();
             g_historyView.resetOnShow = true;
+            if (g_panel.tagManagerViewActive && g_panel.tagManager) g_panel.tagManager->Refresh(true);
             RefreshTags();
             RefreshFilters();
             RequestHistory();
+            return;
+        }
+        if (operation == L"clipboardItemEdited") {
+            const auto data = response.GetNamedObject(L"data");
+            const auto prevHash = std::wstring(data.GetNamedString(L"previousHash", L""));
+            const auto newHash = std::wstring(data.GetNamedString(L"hash", L""));
+            if (!prevHash.empty()) {
+                if (g_selectedHash == prevHash && !newHash.empty()) g_selectedHash = newHash;
+                if (g_queueReturnHash == prevHash && !newHash.empty()) g_queueReturnHash = newHash;
+                for (auto &itemHash : g_hashes) {
+                    if (itemHash == prevHash && !newHash.empty()) itemHash = newHash;
+                }
+                bool touched = false;
+                for (auto it = g_queueSelectedHashes.begin(); it != g_queueSelectedHashes.end();) {
+                    if (*it == prevHash) {
+                        touched = true;
+                        if (newHash.empty() || std::find(g_queueSelectedHashes.begin(), g_queueSelectedHashes.end(), newHash) != g_queueSelectedHashes.end()) {
+                            it = g_queueSelectedHashes.erase(it);
+                        } else {
+                            *it = newHash;
+                            ++it;
+                        }
+                    } else {
+                        ++it;
+                    }
+                }
+                if (touched) {
+                    if (g_queueSelectionMode) {
+                        g_panel.status.Text(std::to_wstring(g_queueSelectedHashes.size()) + L" " + Text(L"条已选择", L"selected"));
+                    }
+                    UpdateQueueSelectionControls();
+                    ApplyRowTheme();
+                }
+            }
             return;
         }
         if (operation == L"imageOcrUpdated") {
@@ -2670,6 +2783,13 @@ void ApplyResponse(const std::string &bytes) {
             if (!queueHandled && g_panel.queueView && operation != L"queueOpen" && operation != L"queueClose") {
                 g_panel.queueView->SetState(response.GetNamedObject(L"data"));
             }
+            if (operation == L"queueStateUpdate") {
+                const auto stateData = response.GetNamedObject(L"data");
+                if (stateData.HasKey(L"active") && !stateData.GetNamedBoolean(L"active") && g_queueViewActive) {
+                    SetQueueViewActive(false);
+                    return;
+                }
+            }
             if (operation == L"queueAdd") {
                 g_panel.status.Text(Text(L"已加入粘贴队列", L"Added to paste queue"));
                 if (selectionAdd && g_queueSelectionMode) {
@@ -2704,9 +2824,15 @@ void ApplyResponse(const std::string &bytes) {
                 ShowFeedback(g_panel.status.Text(), true);
             }
             if (operation == L"query") {
-                g_historyView.restore.reset(); g_historyView.parkedOffset = 0;
                 g_searchSubmitRequestId = 0;
                 g_historyLoading = false;
+                if (g_historyView.requestedQuery == g_historyView.visibleQuery && !g_hashes.empty()) {
+                    // 后台同条件刷新失败时保留已展示的历史列表并提示错误，避免界面突然变空。
+                    UpdateHistoryState();
+                    ShowFeedback(g_panel.status.Text(), true);
+                    return;
+                }
+                g_historyView.restore.reset(); g_historyView.parkedOffset = 0;
                 g_historyFailed = true;
                 g_updatingHistorySelection = true;
                 g_panel.history.Items().Clear();
@@ -2721,11 +2847,13 @@ void ApplyResponse(const std::string &bytes) {
                 UpdateQueueSelectionControls();
                 ApplyRowTheme();
                 UpdateHistoryState();
+                ShowFeedback(g_panel.status.Text(), true);
             } else if (operation == L"queryMore") {
                 g_historyView.pageFailed = true;
                 g_historyLoading = false;
                 g_panel.more.IsEnabled(g_hasMore);
                 UpdateHistoryState();
+                ShowFeedback(g_panel.status.Text(), true);
             }
             return;
         }
@@ -2744,7 +2872,8 @@ void ApplyResponse(const std::string &bytes) {
                 }
             }
             g_recordTagsLoaded = true;
-            if (!RebuildTagFilter()) RequestHistory();
+            const bool selectionChanged = RebuildTagFilter();
+            if (!selectionChanged && g_latestQueryId == 0) RequestHistory();
             return;
         }
         if (operation == L"card") {
@@ -2799,7 +2928,9 @@ void ApplyResponse(const std::string &bytes) {
             row.richAutoPreview.reset();
             row.richFrame.Child(nullptr);
             row.richFrame.Visibility(winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
-            SetFormatBadge(row.richBadgeFrame, data.GetNamedBoolean(L"isRichText", false));
+            const bool richText = data.GetNamedBoolean(L"isRichText", false);
+            row.isRichText = richText;
+            SetFormatBadge(row.richBadgeFrame, richText);
             row.preview.Visibility(winrt::Microsoft::UI::Xaml::Visibility::Visible);
             UpdateCardContent(row, detail.empty() ? row.preview.Text() : detail);
             if (row.itemType == L"File" || row.itemType == L"Link") {
@@ -2992,6 +3123,7 @@ void ApplyResponse(const std::string &bytes) {
         }
         std::wstring selectionToRestore;
         std::uint64_t recordToRestore = 0;
+        int previousSelectedIndex = -1;
         g_historyLoading = false;
         g_historyFailed = false;
         g_nextId = static_cast<std::uint64_t>(data.GetNamedNumber(L"nextId", 0));
@@ -3005,7 +3137,8 @@ void ApplyResponse(const std::string &bytes) {
             for (std::uint32_t index = 0; index < items.Size(); ++index)
                 g_panel.rows[index].time.Text(FormatCardTime(
                     static_cast<std::uint64_t>(items.GetObjectAt(index).GetNamedNumber(L"time", 0)), now));
-            if (resetSelection && !g_queueSelectionMode) {
+            const bool selectionChanged = resetSelection && !g_queueSelectionMode && !g_hashes.empty() && g_selectedHash != g_hashes.front();
+            if (resetSelection && !g_queueSelectionMode && !g_hashes.empty()) {
                 g_updatingHistorySelection = true;
                 g_panel.history.SelectedIndex(0); g_selectedHash = g_hashes.front();
                 g_updatingHistorySelection = false;
@@ -3020,7 +3153,7 @@ void ApplyResponse(const std::string &bytes) {
                 g_searchSubmitRequestId = 0;
                 ActivateHistoryIndex(g_searchSubmitIndex, g_searchSubmitPlain, g_searchSubmitQuick);
             }
-            RequestSelectedPreview(L"previewSelect");
+            if (PanelVisible() && (selectionChanged || resetViewport)) RequestSelectedPreview(L"previewSelect");
             return;
         }
         g_historyView.renderedItems = operation == L"query" ? items.Stringify() : L"";
@@ -3029,6 +3162,10 @@ void ApplyResponse(const std::string &bytes) {
         if (operation == L"query") {
             if (!g_queueSelectionMode && !resetSelection) {
                 selectionToRestore = g_selectedHash;
+                if (!selectionToRestore.empty()) {
+                    const auto prevIt = std::find(g_hashes.begin(), g_hashes.end(), selectionToRestore);
+                    if (prevIt != g_hashes.end()) previousSelectedIndex = static_cast<int>(std::distance(g_hashes.begin(), prevIt));
+                }
                 if (const auto selected = FindCard(selectionToRestore)) recordToRestore = selected->recordId;
             }
             // A copied item can prepend a query while the dock is opening.
@@ -3384,7 +3521,7 @@ void ApplyResponse(const std::string &bytes) {
                 const auto current = FindCard(rowHash);
                 if (!current) { args.Cancel(true); return; }
                 g_panel.cardDrag->Start(sender.as<UIElement>(), args, rowHash, std::wstring{current->itemType},
-                    current->richBadgeFrame.Visibility() == Visibility::Visible);
+                    current->isRichText || current->richBadgeFrame.Visibility() == Visibility::Visible);
             });
             surface.DropCompleted([](auto const &sender, auto const &args) {
                 if (g_panel.cardDrag) g_panel.cardDrag->Finish(sender.as<UIElement>(), args.DropResult());
@@ -3515,6 +3652,7 @@ void ApplyResponse(const std::string &bytes) {
             visual.fileInvalidBadge = fileInvalidBadge;
             visual.outline = outline; visual.tagChip = tagChip;
             visual.autoPreview = std::move(autoPreview); visual.recordTags = recordTags;
+            visual.isRichText = item.GetNamedBoolean(L"isRichText", false);
             visual.recordId = static_cast<std::uint64_t>(item.GetNamedNumber(L"id", 0));
             visual.detailFeedback = detailFeedback; visual.detailStatus = detailStatus; visual.retryDetails = retryDetails;
             HighlightCard(visual);
@@ -3523,6 +3661,19 @@ void ApplyResponse(const std::string &bytes) {
                 std::find(g_queueSelectedHashes.begin(), g_queueSelectedHashes.end(), rowHash) !=
                     g_queueSelectedHashes.end()) {
                 g_panel.history.SelectedItems().Append(cardFrame);
+            }
+        }
+        bool hadHistoryFocus = false;
+        if (operation == L"query" && g_panel.root && g_panel.root.XamlRoot() && PanelVisible()) {
+            if (const auto focused = winrt::Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(g_panel.root.XamlRoot())) {
+                auto dep = focused.try_as<winrt::Microsoft::UI::Xaml::DependencyObject>();
+                while (dep) {
+                    if (dep == g_panel.history) {
+                        hadHistoryFocus = true;
+                        break;
+                    }
+                    dep = winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper::GetParent(dep);
+                }
             }
         }
         if (operation == L"query") {
@@ -3565,12 +3716,18 @@ void ApplyResponse(const std::string &bytes) {
                 }
             } else if (!g_hashes.empty()) {
                 const auto found = std::find(g_hashes.begin(), g_hashes.end(), selectionToRestore);
-                auto selectedIndex = found != g_hashes.end()
-                    ? static_cast<int>(std::distance(g_hashes.begin(), found)) : 0;
-                if (found == g_hashes.end() && recordToRestore) {
+                int selectedIndex = 0;
+                if (found != g_hashes.end()) {
+                    selectedIndex = static_cast<int>(std::distance(g_hashes.begin(), found));
+                } else if (recordToRestore) {
                     const auto record = std::find_if(g_panel.rows.begin(), g_panel.rows.end(),
                         [&](auto const &row) { return row.recordId == recordToRestore; });
                     if (record != g_panel.rows.end()) selectedIndex = static_cast<int>(std::distance(g_panel.rows.begin(), record));
+                    else if (sameQuery && previousSelectedIndex >= 0)
+                        selectedIndex = std::min(previousSelectedIndex, static_cast<int>(g_hashes.size()) - 1);
+                } else if (sameQuery && previousSelectedIndex >= 0) {
+                    // 当前选中的记录被删除且同条件刷新后，将焦点回落到相邻下标而非无条件跳回首条。
+                    selectedIndex = std::min(previousSelectedIndex, static_cast<int>(g_hashes.size()) - 1);
                 }
                 g_selectedHash = g_hashes[static_cast<std::size_t>(selectedIndex)];
                 g_panel.history.SelectedIndex(selectedIndex);
@@ -3581,13 +3738,23 @@ void ApplyResponse(const std::string &bytes) {
         UpdateHistoryState();
         ApplyRowTheme();
         UpdateCardPreviewMotion();
+        if (hadHistoryFocus && PanelVisible() && g_panel.history && g_panel.history.IsLoaded()) {
+            // 旧卡片容器刚被 RemoveAt 从树中移除时，WinUI 会把焦点回落到顶栏首控件；
+            // 立即将焦点锚定回历史列表并在下一帧精确定位新选中卡片。
+            if (g_panel.historyScroll) g_panel.historyScroll.BringIntoViewOnFocusChange(false);
+            g_panel.history.Focus(winrt::Microsoft::UI::Xaml::FocusState::Programmatic);
+            if (!g_hashes.empty()) ScheduleHistoryFocus();
+        }
 #ifdef _DEBUG
         if (operation == L"query") std::fprintf(stderr, "WinUI query render: id=%llu rows=%zu applyMs=%.2f\n",
             static_cast<unsigned long long>(id), g_panel.rows.size(),
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - responseStarted).count());
 #endif
         if (!g_queueSelectionMode && g_selectedHash.empty()) (void)SendRequest(L"previewDismiss");
-        else RequestSelectedPreview(L"previewSelect");
+        else if (operation == L"query" && PanelVisible() &&
+                 (resetSelection || resetViewport || g_selectedHash != selectionToRestore)) {
+            RequestSelectedPreview(L"previewSelect");
+        }
         if (g_searchSubmitRequestId == id && operation == L"query") {
             g_searchSubmitRequestId = 0;
             ActivateHistoryIndex(g_searchSubmitIndex, g_searchSubmitPlain, g_searchSubmitQuick);
@@ -3608,6 +3775,7 @@ void ApplyResponse(const std::string &bytes) {
 
 void PrepareMainShow() {
     g_searchComposing = false;
+    g_committedSearchText = g_searchText;
     if (!g_behavior.retainPosition) {
         g_historyView.resetOnShow = true;
         QueueHistoryOffset(0, g_latestHistoryRequestId);
@@ -3673,12 +3841,12 @@ void SetVisible(bool visible, bool freshShow = true, bool animate) noexcept {
             ShowWindow(g_panel.window, visible ? SW_SHOW : SW_HIDE);
         }
         if (visible) {
-            SetForegroundWindow(g_panel.window);
+            (void)vpaste::winui::ActivateWindowFromBackground(g_panel.window);
             if (g_panel.onboarding) g_panel.onboarding->Shown();
             if (entering && !g_panel.tagManagerViewActive)
                 ShowAltHints((GetAsyncKeyState(VK_MENU) & 0x8000) != 0 &&
                     ((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) == 0);
-            if (entering && !g_panel.onboarding) PostMessageW(g_panel.window, kFocusHistory, 0, 0);
+            if (entering && !g_panel.onboarding) ScheduleHistoryFocus();
             UpdateCardPreviewMotion();
         }
     }
@@ -3978,7 +4146,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
                 if (MainInputArea(focused) == vpaste::winui::InputArea::Search || focused == g_panel.searchSubmit)
                     return S_OK;
             }
-            if (GetForegroundWindow() != window) SetForegroundWindow(window);
+            if (GetForegroundWindow() != window) (void)vpaste::winui::ActivateWindowFromBackground(window);
             SetFocus(island);
             const auto selected = g_panel.history.SelectedIndex();
             const auto container = selected >= 0
@@ -4011,7 +4179,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
             g_themeMode = static_cast<std::uint32_t>(wparam);
             g_panel.root.RequestedTheme(theme);
             g_panel.viewport.RequestedTheme(theme);
-            if (g_panel.appActions) g_panel.appActions->SetTheme(g_panel.root.ActualTheme());
+            const auto effectiveTheme = EffectivePanelTheme(theme);
+            if (g_panel.appActions) g_panel.appActions->SetTheme(effectiveTheme);
             ApplyRowTheme();
             if (g_panel.queueView) g_panel.queueView->SetTheme(theme);
             if (g_panel.queueWindow) g_panel.queueWindow->SetAppearance(g_english, theme);
@@ -4071,6 +4240,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
             menu.Items().GetAt(1).as<winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutItem>().Text(Text(L"记录型标签", L"Record Tag"));
         }
         if (g_panel.recordTagEditor) g_panel.recordTagEditor->SetLanguage(g_english);
+        if (g_panel.filterEditor) g_panel.filterEditor->SetLanguage(g_english);
         if (g_panel.customTabs) winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
             g_panel.customTabs, Text(L"自定义筛选标签", L"Custom filter tabs"));
         UpdateShortcutLabels();
@@ -4099,6 +4269,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         RebuildTagFilter();
         g_panel.status.Text(Text(L"正在读取剪贴板历史…", L"Loading clipboard history…"));
         g_updatingLanguage = false;
+        g_historyView.renderedItems.clear();
+        for (std::size_t index = 0; index < g_panel.rows.size(); ++index) {
+            auto &row = g_panel.rows[index];
+            row.summary = L"";
+            if (row.type) row.type.Text(ItemTypeLabel(row.visualType.empty() ? row.itemType : row.visualType));
+            if (row.richBadge) row.richBadge.Text(Text(L"富文本", L"Rich"));
+            const bool favorite = index < g_favorites.size() && g_favorites[index];
+            if (row.favoriteButton) {
+                vpaste::winui::NameIconButton(row.favoriteButton,
+                    favorite ? Text(L"取消收藏", L"Remove favorite") : Text(L"收藏", L"Add favorite"));
+            }
+        }
         RequestHistory();
         UpdateHistoryState();
         UpdateQueueSelectionControls();
@@ -4277,13 +4459,16 @@ HRESULT CreatePanel() noexcept {
         });
         root.ActualThemeChanged([](auto const &, auto const &) {
             ApplyRowTheme();
-            if (g_panel.appActions) g_panel.appActions->SetTheme(g_panel.root.ActualTheme());
-            if (g_panel.queueView) {
-                g_panel.queueView->SetTheme(g_panel.root.RequestedTheme());
-            }
-            if (g_panel.tagManager) {
-                g_panel.tagManager->SetTheme(g_panel.root.RequestedTheme());
-            }
+            const auto requested = g_panel.root.RequestedTheme();
+            const auto effective = EffectivePanelTheme(requested);
+            if (g_panel.appActions) g_panel.appActions->SetTheme(effective);
+            if (g_panel.queueView) g_panel.queueView->SetTheme(requested);
+            if (g_panel.queueWindow) g_panel.queueWindow->SetAppearance(g_english, requested);
+            if (g_panel.tagManager) g_panel.tagManager->SetTheme(requested);
+            if (g_panel.filterEditor) g_panel.filterEditor->SetTheme(requested);
+            if (g_panel.recordTagEditor) g_panel.recordTagEditor->SetTheme(requested);
+            if (g_panel.reader) g_panel.reader->SetAppearance(g_english, requested);
+            if (g_panel.textEditor) g_panel.textEditor->SetAppearance(g_english, requested);
         });
         phase = "create panel controls";
         Grid header;
@@ -4304,7 +4489,6 @@ HRESULT CreatePanel() noexcept {
         g_panel.commands.HorizontalAlignment(HorizontalAlignment::Right);
         g_panel.commands.VerticalAlignment(VerticalAlignment::Center);
         Grid::SetColumn(g_panel.commands, 2);
-        header.Children().Append(g_panel.commands);
         Grid searchGroup;
         searchGroup.VerticalAlignment(VerticalAlignment::Center);
         g_panel.searchButton = vpaste::winui::NamedIconButton(SymbolIcon{Symbol::Find}, Text(L"搜索", L"Search"));
@@ -4528,6 +4712,8 @@ HRESULT CreatePanel() noexcept {
         g_panel.tabDropMarker.Background(g_panel.tabIndicatorHost.BorderBrush());
         g_panel.tabDropMarker.IsHitTestVisible(false); g_panel.tabDropMarker.Visibility(Visibility::Collapsed);
         Grid::SetColumn(g_panel.tabDropMarker, 1); header.Children().Append(g_panel.tabDropMarker);
+        // 按左到右视觉列序追加命令区，避免失焦回落优先击中右上角工具栏按钮。
+        header.Children().Append(g_panel.commands);
         g_panel.tabIndicatorHost.SizeChanged([](auto const &, auto const &) {
             Media::RectangleGeometry clip;
             clip.Rect({0, 0, static_cast<float>(g_panel.tabIndicatorHost.ActualWidth()), static_cast<float>(kHeaderHeight)});
@@ -4563,6 +4749,7 @@ HRESULT CreatePanel() noexcept {
             else if (index == 0 && !g_panel.filter.SelectedItem() && g_selectedFilterId.empty()) g_panel.filter.SelectedItem(g_panel.filter.Items().GetAt(0));
             g_updatingLanguage = wasUpdating;
             RequestHistory();
+            ScheduleHistoryFocus();
         });
 
         g_panel.history = ListView();
@@ -10557,6 +10744,456 @@ extern "C" __declspec(dllexport) int32_t vpaste_winui_test_preview_key_route(
         }
     })) return E_FAIL;
     if (result.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
+        return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+    }
+    const auto [status, completedStage] = result.get();
+    *stage = completedStage;
+    return status;
+}
+
+winrt::Windows::Foundation::IAsyncAction RunBatch2RegressionTests(
+    std::shared_ptr<std::promise<std::pair<HRESULT, std::uint32_t>>> completion) {
+    using namespace vpaste::winui;
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace winrt::Microsoft::UI::Xaml::Controls;
+    using namespace winrt::Windows::Data::Json;
+    std::uint32_t stage = 2000;
+    std::vector<std::string> failures;
+    const auto previousRequest = g_request;
+    static std::vector<std::string> requests;
+    requests.clear();
+
+    try {
+        g_request = +[](const std::uint8_t *bytes, std::size_t size) {
+            requests.emplace_back(reinterpret_cast<const char *>(bytes), size);
+        };
+        // 注意：SendRequest 在 g_request == nullptr 时返回 0，因此在 stage=2007 暂时置空 g_request 验证防卡死逻辑。
+
+        // 2001: FilterEditor 保持空白名称必填拦截，且 SetLanguage 支持热更新不丢失草稿。
+        stage = 2001;
+        {
+            Border host;
+            host.Width(360); host.Height(480);
+            std::vector<JsonObject> editorReqs;
+            FilterEditor editor{
+                [&](std::wstring const &op, JsonObject payload) {
+                    payload.Insert(L"op", JsonValue::CreateStringValue(op));
+                    payload.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(editorReqs.size() + 1)));
+                    editorReqs.push_back(payload);
+                    return static_cast<std::uint64_t>(editorReqs.size());
+                },
+                [](JsonArray const &) {}};
+            auto root = editor.TestLoad(JsonObject::Parse(LR"({"id":"","name":"","filter":{"itemType":"Image"}})"), true);
+            g_panel.root.Children().Append(host);
+            host.Child(root);
+            co_await NextNativeFrame();
+            editor.TestName(L"   ");
+            editor.TestSave();
+            const bool sentSave = std::any_of(editorReqs.begin(), editorReqs.end(), [](auto const &req) {
+                return req.GetNamedString(L"op") == L"filtersSave";
+            });
+            if (sentSave || editor.TestError().empty()) {
+                failures.push_back("filter_editor_blank_name_should_reject");
+            }
+            editor.SetLanguage(false);
+            if (editor.TestTitle() != L"添加标签" && editor.TestTitle() != L"编辑标签") {
+                failures.push_back("filter_editor_set_language_no_effect");
+            }
+            host.Child(nullptr);
+            std::uint32_t hostIndex = 0;
+            if (g_panel.root.Children().IndexOf(host, hostIndex)) g_panel.root.Children().RemoveAt(hostIndex);
+        }
+
+        // 2002: 超长文本写入搜索框应正常保留并发送完整查询请求，不得截断或静默丢弃。
+        stage = 2002;
+        {
+            SetVisible(true, false);
+            g_panel.search.Visibility(Visibility::Visible);
+            std::wstring long500;
+            long500.reserve(520);
+            for (int i = 0; i < 10; ++i) long500 += L"abcdefghijklmnopqrstuvwxyz0123456789_ABCDEFGHIJKLM";
+            g_panel.search.Text(winrt::hstring{long500});
+            co_await NextNativeFrame();
+            const auto reqBefore = requests.size();
+            RequestHistory();
+            if (requests.size() != reqBefore + 1 || SearchText().size() != long500.size()) {
+                failures.push_back("long_search_query_truncated_or_dropped");
+            }
+            SetSearchText(L"");
+            if (g_searchTimer) g_searchTimer.Stop();
+            g_panel.search.Visibility(Visibility::Collapsed);
+            co_await NextNativeFrame();
+        }
+
+        // 2003: QueueView 内联清空确认条。
+        stage = 2003;
+        {
+            Border queueHost; queueHost.Padding(vpaste::winui::UniformThickness(12));
+            g_panel.xamlSource.Content(queueHost); ResizeIsland();
+            co_await TestBatch2QueueControls(queueHost, failures);
+            g_panel.xamlSource.Content(g_panel.viewport); ResizeIsland();
+            co_await NextNativeFrame();
+        }
+
+        // 2004: Reader SVG 加载、图像像素宽度防放大/限高、以及 SetAppearance 同步刷新 DWM 暗色标志。
+        stage = 2004;
+        co_await TestBatch2ReaderControls(failures);
+
+        // 2005: OnboardingView::Update 语言切换应触发重绘 + nativeTutorialOpen 应自动退出现有标签管理器和弹框。
+        stage = 2005;
+        {
+            SetTagManagerActive(true);
+            co_await NextNativeFrame();
+            ApplyResponse(R"({"op":"nativeTutorialOpen","data":{"session":77,"ready":true,"preview":true,"mac":false,"english":false,"shortcut":"Alt+V","items":[],"filters":[{"id":"text","name":"📝 文本","enabled":false},{"id":"image","name":"🖼️ 图片","enabled":false},{"id":"link","name":"🔗 链接","enabled":false},{"id":"file","name":"📁 文件","enabled":false},{"id":"color","name":"🎨 颜色","enabled":false}]}})");
+            co_await NextNativeFrame();
+            if (g_panel.tagManagerViewActive) {
+                failures.push_back("tutorial_open_left_tag_manager_covering_screen");
+            }
+            const auto zhTitle = g_panel.onboarding ? g_panel.onboarding->TestWelcomeTitle() : winrt::hstring{};
+            ApplyResponse(R"({"op":"nativeTutorialState","data":{"session":77,"ready":true,"preview":true,"mac":false,"english":true,"shortcut":"Alt+V","items":[],"filters":[{"id":"text","name":"📝 Text","enabled":false},{"id":"image","name":"🖼️ Image","enabled":false},{"id":"link","name":"🔗 Link","enabled":false},{"id":"file","name":"📁 File","enabled":false},{"id":"color","name":"🎨 Color","enabled":false}]}})");
+            co_await NextNativeFrame();
+            const auto enTitle = g_panel.onboarding ? g_panel.onboarding->TestWelcomeTitle() : winrt::hstring{};
+            if (zhTitle == enTitle || enTitle.empty()) {
+                failures.push_back("onboarding_update_ignored_language_change");
+            }
+            if (g_panel.onboarding) (void)g_panel.onboarding->CancelPreview();
+            RemoveTutorial();
+            SetTagManagerActive(false);
+        }
+
+        // 2006: TrayWindow Update 深色模式应同步刷新 DWM 暗色标题栏属性。
+        stage = 2006;
+        {
+            ApplyResponse(R"({"op":"nativeTrayShow","data":{"anchor":{"x":300,"y":300,"cursor":true},"workArea":{"left":0,"top":0,"right":640,"bottom":480},"dpiScale":1,"english":false,"paused":false,"theme":"light","textScale":1,"updateReady":false}})");
+            co_await NextNativeFrame();
+            ApplyResponse(R"({"op":"nativeTrayState","data":{"english":false,"paused":false,"theme":"dark","textScale":1,"updateReady":false}})");
+            BOOL trayDark = FALSE;
+            if (!g_panel.trayWindow || !g_panel.trayWindow->Handle() ||
+                FAILED(DwmGetWindowAttribute(g_panel.trayWindow->Handle(), DWMWA_USE_IMMERSIVE_DARK_MODE, &trayDark, sizeof(trayDark))) || !trayDark) {
+                failures.push_back("tray_theme_dwm_sync_stale");
+            }
+            ApplyResponse(R"({"op":"nativeTrayState","data":{"english":false,"paused":false,"theme":"light","textScale":1,"updateReady":false}})");
+            BOOL trayLightDarkAttr = TRUE;
+            if (!g_panel.trayWindow || !g_panel.trayWindow->Handle() ||
+                FAILED(DwmGetWindowAttribute(g_panel.trayWindow->Handle(), DWMWA_USE_IMMERSIVE_DARK_MODE, &trayLightDarkAttr, sizeof(trayLightDarkAttr))) || trayLightDarkAttr) {
+                failures.push_back("tray_theme_dwm_sync_stale_to_light");
+            }
+            if (g_panel.trayWindow) ShowWindow(g_panel.trayWindow->Handle(), SW_HIDE);
+        }
+
+        // 2007: SendRequest 返回 0 时不可永久卡死 g_historyLoading 且不可抹零 g_latestHistoryRequestId；
+        // 且已有卡片同条件刷新失败时不清空可见历史。
+        stage = 2007;
+        {
+            SetVisible(true, false);
+            ApplyResponse(R"({"id":9002,"op":"query","data":{"items":[{"hash":"keep-on-err","itemType":"Text","previewText":"Stay visible"}],"hasMore":true,"nextId":5,"nextTime":500}})");
+            co_await NextNativeFrame();
+            const auto savedLatestReq = g_latestHistoryRequestId;
+            const auto savedCallback = g_request;
+            g_request = nullptr;
+            RequestHistory();
+            const bool stuckLoading = g_historyLoading;
+            const bool clobberedId = g_latestHistoryRequestId == 0 && savedLatestReq != 0;
+            g_historyLoading = false;
+            g_latestHistoryRequestId = savedLatestReq;
+            RequestMoreHistory(false);
+            const bool stuckMore = g_historyLoading;
+            g_historyLoading = false;
+            g_request = savedCallback;
+            if (stuckLoading || clobberedId || stuckMore) {
+                failures.push_back("send_request_zero_locks_loading_or_clobbers_id");
+            }
+
+            // 同条件下后台刷新失败应保留已有卡片。
+            RequestHistory();
+            JsonObject refreshErr;
+            refreshErr.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+            refreshErr.Insert(L"op", JsonValue::CreateStringValue(L"query"));
+            refreshErr.Insert(L"error", JsonValue::CreateStringValue(L"Transient query error"));
+            ApplyResponse(winrt::to_string(refreshErr.Stringify()));
+            if (g_hashes.empty() || g_hashes.front() != L"keep-on-err") {
+                failures.push_back("refresh_error_wiped_existing_history");
+            }
+        }
+
+        // 2008: SearchCompositionChanged(true) IME 组合输入期间切换 Tab，发出的 query 不应含未提交拼音草稿。
+        stage = 2008;
+        {
+            g_panel.search.Text(L"committed");
+            SearchCompositionChanged(false, L"committed");
+            if (g_searchTimer) g_searchTimer.Stop();
+            SearchCompositionChanged(true, L"committed nihao");
+            g_panel.search.Text(L"committed nihao");
+            const auto before = requests.size();
+            RequestHistory();
+            if (requests.size() > before) {
+                const auto req = JsonObject::Parse(winrt::to_hstring(requests.back()));
+                if (req.GetNamedString(L"query") == L"committed nihao" || SearchText() != L"committed nihao") {
+                    failures.push_back("ime_composing_text_leaked_to_query");
+                }
+            }
+            SearchCompositionChanged(false, L"");
+            g_panel.search.Text(L"");
+            if (g_searchTimer) g_searchTimer.Stop();
+        }
+
+        // 2009: tags 回复若未影响当前选中标签，且已有历史请求，不应额外重复发出 RequestHistory()。
+        stage = 2009;
+        {
+            SelectBuiltinCategory(0, false);
+            g_tagIds = {10}; g_tagNames = {L"Alpha"};
+            RebuildTagFilter();
+            RequestHistory();
+            const auto before = requests.size();
+            ApplyResponse(R"({"id":9003,"op":"tags","data":{"items":[{"id":10,"name":"Alpha"},{"id":11,"name":"Beta"}]}})");
+            const auto queryCount = std::count_if(requests.begin() + before, requests.end(), [](auto const &bytes) {
+                return JsonObject::Parse(winrt::to_hstring(bytes)).GetNamedString(L"op") == L"query";
+            });
+            if (queryCount > 0) {
+                failures.push_back("unchanged_tags_triggered_redundant_query");
+            }
+        }
+
+        // 2010: 删除中间第 2 项或最后一项后刷新，未找到原 hash 时应停在 min(deletedIndex, size - 1)。
+        stage = 2010;
+        {
+            ApplyResponse(R"({"id":9004,"op":"query","data":{"items":[{"hash":"d0","itemType":"Text"},{"hash":"d1","itemType":"Text"},{"hash":"d2","itemType":"Text"}]}})");
+            co_await NextNativeFrame();
+            g_panel.history.SelectedIndex(2);
+            g_selectedHash = L"d2";
+            RequestHistory();
+            JsonObject afterDelete;
+            afterDelete.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+            afterDelete.Insert(L"op", JsonValue::CreateStringValue(L"query"));
+            afterDelete.Insert(L"data", JsonObject::Parse(LR"({"items":[{"hash":"d0","itemType":"Text"},{"hash":"d1","itemType":"Text"}]})"));
+            ApplyResponse(winrt::to_string(afterDelete.Stringify()));
+            if (g_selectedHash != L"d1" || g_panel.history.SelectedIndex() != 1) {
+                failures.push_back("delete_last_card_jumped_to_zero");
+            }
+        }
+
+        // 2011: clipboardItemEdited 把多选和单选归位状态从 previousHash 迁移到新 hash。
+        stage = 2011;
+        {
+            ApplyResponse(R"({"id":9005,"op":"query","data":{"items":[{"hash":"edit-old","itemType":"Text"}]}})");
+            co_await NextNativeFrame();
+            g_selectedHash = L"edit-old";
+            if (!g_queueSelectionMode) ToggleQueueSelectionMode();
+            g_queueSelectedHashes = {L"edit-old"};
+            ApplyResponse(R"({"id":0,"op":"clipboardItemEdited","data":{"previousHash":"edit-old","hash":"edit-new"}})");
+            if (g_queueSelectedHashes != std::vector<std::wstring>{L"edit-new"}) {
+                failures.push_back("clipboard_item_edited_left_stale_hash");
+            }
+            if (g_queueSelectionMode) ToggleQueueSelectionMode();
+            if (g_selectedHash != L"edit-new") {
+                failures.push_back("clipboard_item_edited_left_stale_return_hash");
+            }
+        }
+
+        // 2012: queueStateUpdate 带 active=false 时应关闭队列管理视图。
+        stage = 2012;
+        {
+            SetQueueViewActive(true);
+            co_await NextNativeFrame();
+            ApplyResponse(R"({"id":0,"op":"queueStateUpdate","data":{"active":false,"busy":false,"capacity":100,"revision":99,"items":[],"error":null,"undoHash":null}})");
+            co_await NextNativeFrame();
+            if (g_queueViewActive) {
+                failures.push_back("queue_inactive_update_did_not_close_view");
+                SetQueueViewActive(false);
+            }
+        }
+
+        // 2013: query 摘要自带 isRichText=true 时，rows[0].isRichText 应在细节加载前即为 true。
+        stage = 2013;
+        {
+            ApplyResponse(R"({"id":9006,"op":"query","data":{"items":[{"hash":"rich-summary","itemType":"Text","isRichText":true,"previewText":"Rich"}]}})");
+            co_await NextNativeFrame();
+            if (g_panel.rows.empty() || !g_panel.rows.front().isRichText) {
+                failures.push_back("history_row_missing_is_rich_text_flag");
+            }
+        }
+
+        // 2014: queryMore 翻页与隐藏状态刷新不可覆写置顶预览令牌 g_latestPreviewRequestId。
+        stage = 2014;
+        {
+            SetVisible(true, false);
+            ApplyResponse(R"({"id":9007,"op":"query","data":{"items":[{"hash":"pv-0","itemType":"Text"}],"hasMore":true,"nextId":1,"nextTime":100}})");
+            co_await NextNativeFrame();
+            (void)SendRequest(L"previewToggle", L"pv-0");
+            const auto pinnedToken = g_latestPreviewRequestId;
+            RequestMoreHistory(false);
+            JsonObject moreResp;
+            moreResp.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+            moreResp.Insert(L"op", JsonValue::CreateStringValue(L"queryMore"));
+            moreResp.Insert(L"data", JsonObject::Parse(LR"({"items":[{"hash":"pv-1","itemType":"Text"}],"hasMore":false})"));
+            ApplyResponse(winrt::to_string(moreResp.Stringify()));
+            if (g_latestPreviewRequestId != pinnedToken) {
+                failures.push_back("query_more_clobbered_pinned_preview_token");
+            }
+            SetVisible(false, false);
+            g_latestPreviewRequestId = pinnedToken;
+            RequestHistory();
+            JsonObject bgResp;
+            bgResp.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+            bgResp.Insert(L"op", JsonValue::CreateStringValue(L"query"));
+            bgResp.Insert(L"data", JsonObject::Parse(LR"({"items":[{"hash":"pv-bg","itemType":"Text"},{"hash":"pv-0","itemType":"Text"}]})"));
+            ApplyResponse(winrt::to_string(bgResp.Stringify()));
+            if (g_latestPreviewRequestId != pinnedToken) {
+                failures.push_back("hidden_background_query_clobbered_pinned_preview_token");
+            }
+            SetVisible(true, false);
+        }
+
+        // 2015: kSetLanguage 应同步清理 renderedItems/更新卡片类型文本，kSetTheme/ActualThemeChanged 传播到弹窗，
+        // historyReset 应刷新开启着的 TagManager，分类/标签切换后记录聚焦恢复。
+        stage = 2015;
+        {
+            ApplyResponse(R"({"id":9008,"op":"query","data":{"items":[{"hash":"lang-1","itemType":"Text","previewText":"Lang check"}]}})");
+            co_await NextNativeFrame();
+            WindowProc(g_panel.window, kSetLanguage, 1, 0);
+            if (g_panel.rows.empty() || g_panel.rows.front().type.Text() != L"Text") {
+                failures.push_back("language_switch_did_not_update_existing_cards");
+            }
+            WindowProc(g_panel.window, kSetLanguage, 0, 0);
+            if (g_panel.rows.empty() || g_panel.rows.front().type.Text() != L"文本") {
+                failures.push_back("language_switch_back_zh_did_not_update_existing_cards");
+            }
+            // 测试 kSetTheme 对 reader 标题栏和打开的 filterEditor 语言/主题同步生效。
+            if (g_panel.filterEditor) {
+                g_panel.filterEditor->Show(g_panel.addTag, JsonObject::Parse(LR"({"id":"","name":"","filter":{}})"),
+                    g_english, g_panel.root.RequestedTheme(), g_panel.root);
+                co_await NextNativeFrame();
+                WindowProc(g_panel.window, kSetLanguage, 1, 0);
+                if (g_panel.filterEditor->TestTitle() != L"Add Tab" && g_panel.filterEditor->TestTitle() != L"Edit Tab") {
+                    failures.push_back("kset_language_did_not_update_open_filter_editor");
+                }
+                WindowProc(g_panel.window, kSetTheme, 1, 0);
+                co_await NextNativeFrame();
+                WindowProc(g_panel.window, kSetTheme, 2, 0);
+                if (g_panel.filterEditor->TestRoot().RequestedTheme() != ElementTheme::Dark) {
+                    failures.push_back("panel_kset_theme_filter_editor_stale");
+                }
+                g_panel.filterEditor->Hide();
+            } else {
+                WindowProc(g_panel.window, kSetTheme, 1, 0);
+                co_await NextNativeFrame();
+                WindowProc(g_panel.window, kSetTheme, 2, 0);
+            }
+            if (g_panel.reader) {
+                auto readerOpen = JsonObject::Parse(LR"({"op":"nativeReader","data":{"generation":91,"kind":"text","text":"Theme sync check","rect":{"x":80,"y":80,"width":400,"height":240},"durationMs":0,"easing":[0.22,1,0.36,1]}})");
+                g_panel.reader->Receive(readerOpen);
+                co_await NextNativeFrame();
+                BOOL readerDark = FALSE;
+                const auto readerHwnd = reinterpret_cast<HWND>(vpaste::winui::ReaderWindowHandle());
+                if (!readerHwnd || FAILED(DwmGetWindowAttribute(readerHwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &readerDark, sizeof(readerDark))) || !readerDark) {
+                    failures.push_back("panel_kset_theme_reader_dwm_stale");
+                }
+                g_panel.reader->Receive(JsonObject::Parse(LR"({"op":"nativeReaderHide","data":{"generation":92}})"));
+            }
+            WindowProc(g_panel.window, kSetTheme, 0, 0);
+            WindowProc(g_panel.window, kSetLanguage, 0, 0);
+
+            // historyReset 应自动刷新打开着的 tagManager。
+            SetTagManagerActive(true);
+            co_await NextNativeFrame();
+            const auto beforeResetReq = requests.size();
+            ApplyResponse(R"({"op":"historyReset","data":{}})");
+            const bool refreshedTagManager = std::any_of(requests.begin() + beforeResetReq, requests.end(), [](auto const &bytes) {
+                return JsonObject::Parse(winrt::to_hstring(bytes)).GetNamedString(L"op") == L"tagsList";
+            });
+            if (!refreshedTagManager) {
+                failures.push_back("history_reset_did_not_refresh_active_tag_manager");
+            }
+            SetTagManagerActive(false);
+
+            // SelectBuiltinCategory(1, true) 应调度 kFocusHistory。
+            MSG msg{};
+            while (PeekMessageW(&msg, g_panel.window, kFocusHistory, kFocusHistory, PM_REMOVE)) {}
+            SelectBuiltinCategory(1, true);
+            const bool posted = PeekMessageW(&msg, g_panel.window, kFocusHistory, kFocusHistory, PM_NOREMOVE) != FALSE;
+            if (!posted) {
+                failures.push_back("select_category_did_not_return_focus_to_history");
+            }
+            while (PeekMessageW(&msg, g_panel.window, kFocusHistory, kFocusHistory, PM_REMOVE)) {}
+            SelectBuiltinCategory(0, false);
+
+            // 2016: 点击分类筛选导致旧聚焦卡片被 ApplyResponse 移除后，焦点不得回落到“Windows 使用引导”等顶栏按钮。
+            stage = 2016;
+            if (g_panel.appActions) {
+                ApplyResponse(R"({"id":0,"op":"appState","data":{"developerMode":true,"update":{"revision":0,"status":"disabled","portable":false,"availableVersion":null}}})");
+            }
+            SetVisible(true, false, false);
+            co_await NextNativeFrame();
+            SelectBuiltinCategory(0, false);
+            RequestHistory();
+            {
+                auto r1 = JsonObject::Parse(LR"({"op":"query","data":{"items":[{"hash":"cat-a-1","itemType":"Text","previewText":"Cat A"}],"hasMore":false}})");
+                r1.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+                ApplyResponse(winrt::to_string(r1.Stringify()));
+            }
+            co_await NextNativeFrame();
+            WindowProc(g_panel.window, kFocusHistory, 1, 0);
+            co_await NextNativeFrame();
+            // 模拟鼠标切换分类触发 SelectionChanged -> 期间 kFocusHistory 先落到旧卡 -> 随后 query 替换旧卡（包含非空与空结果场景）
+            g_panel.filter.SelectedItem(g_panel.filter.Items().GetAt(1));
+            co_await NextNativeFrame();
+            {
+                auto r2 = JsonObject::Parse(LR"({"op":"query","data":{"items":[{"hash":"cat-b-1","itemType":"Text","previewText":"Cat B"}],"hasMore":false}})");
+                r2.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+                ApplyResponse(winrt::to_string(r2.Stringify()));
+            }
+            co_await NextNativeFrame();
+            const auto focusedAfterReplace = Input::FocusManager::GetFocusedElement(g_panel.root.XamlRoot());
+            const auto focusedDep = focusedAfterReplace.try_as<DependencyObject>();
+            const auto focusedName = focusedDep ? Automation::AutomationProperties::GetName(focusedDep) : L"";
+            if (!focusedAfterReplace || MainInputArea(focusedAfterReplace) != InputArea::History) {
+                std::fprintf(stderr, "BATCH2_FOCUS_DIAG: replace focusedName=%ls area=%d\n",
+                    focusedName.c_str(), static_cast<int>(MainInputArea(focusedAfterReplace)));
+                failures.push_back("category_click_lost_history_focus_to_header");
+            }
+            // 再切回全部分类且返回空结果，确认焦点也不应滑进顶栏按钮（如 Windows 使用引导）
+            g_panel.filter.SelectedItem(g_panel.filter.Items().GetAt(0));
+            co_await NextNativeFrame();
+            {
+                auto r3 = JsonObject::Parse(LR"({"op":"query","data":{"items":[],"hasMore":false}})");
+                r3.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+                ApplyResponse(winrt::to_string(r3.Stringify()));
+            }
+            co_await NextNativeFrame();
+            const auto focusedAfterEmpty = Input::FocusManager::GetFocusedElement(g_panel.root.XamlRoot());
+            const auto emptyDep = focusedAfterEmpty.try_as<DependencyObject>();
+            const auto emptyName = emptyDep ? Automation::AutomationProperties::GetName(emptyDep) : L"";
+            if (!focusedAfterEmpty || MainInputArea(focusedAfterEmpty) != InputArea::History) {
+                std::fprintf(stderr, "BATCH2_FOCUS_DIAG: empty focusedName=%ls area=%d\n",
+                    emptyName.c_str(), static_cast<int>(MainInputArea(focusedAfterEmpty)));
+                failures.push_back("empty_category_lost_history_focus_to_header");
+            }
+            SetVisible(false, false, false);
+        }
+    } catch (winrt::hresult_error const &err) {
+        failures.push_back("exception_hr_" + std::to_string(static_cast<unsigned>(err.code())) + "_stage_" + std::to_string(stage));
+    } catch (...) {
+        failures.push_back("unknown_exception_stage_" + std::to_string(stage));
+    }
+
+    g_request = previousRequest;
+    for (auto const &item : failures) {
+        std::fprintf(stderr, "BATCH2_REGRESSION_FAILURE: %s\n", item.c_str());
+    }
+    std::fprintf(stderr, "BATCH2_REGRESSION_SUMMARY: total_failures=%zu\n", failures.size());
+    completion->set_value({failures.empty() ? S_OK : E_FAIL, failures.empty() ? stage : 2999});
+}
+
+extern "C" __declspec(dllexport) int32_t vpaste_winui_test_batch2_regressions(std::uint32_t *stage) noexcept {
+    if (!stage || !g_dispatcher) return E_INVALIDARG;
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    auto completion = std::make_shared<std::promise<std::pair<HRESULT, std::uint32_t>>>();
+    auto result = completion->get_future();
+    if (!g_dispatcher.DispatcherQueue().TryEnqueue([completion] {
+        RunBatch2RegressionTests(completion);
+    })) return E_FAIL;
+    if (result.wait_for(std::chrono::seconds(30)) != std::future_status::ready) {
         return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
     }
     const auto [status, completedStage] = result.get();

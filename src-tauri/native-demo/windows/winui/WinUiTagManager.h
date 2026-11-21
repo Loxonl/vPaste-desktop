@@ -25,7 +25,7 @@ public:
     TagManager &operator=(TagManager &&) noexcept;
 
     winrt::Microsoft::UI::Xaml::FrameworkElement Root() const;
-    void Refresh();
+    void Refresh(bool force = false);
     void SetTags(winrt::Windows::Data::Json::JsonArray const &tags);
     void SetError(const std::wstring &message);
     void SetLanguage(bool english);

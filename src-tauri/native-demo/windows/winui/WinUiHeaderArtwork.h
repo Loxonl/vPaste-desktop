@@ -1,6 +1,11 @@
 #pragma once
 #include "WinUiAppearance.h"
+#include <algorithm>
+#include <cctype>
+#include <charconv>
+#include <cmath>
 #include <string>
+#include <string_view>
 
 namespace vpaste::winui {
 namespace HeaderArtwork {
@@ -17,17 +22,308 @@ inline constexpr wchar_t DarkModeRounded[] = LR"(M11.01 3.05C6.51 3.54 3 7.36 3 
 inline constexpr wchar_t LightModeRounded[] = LR"(M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5M2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1m18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1M11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1m0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1M5.99 4.58c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41zm12.37 12.37c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0 .39-.39.39-1.03 0-1.41zm1.06-10.96c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0zM7.05 18.36c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0z)";
 }
 
-inline winrt::Microsoft::UI::Xaml::Controls::PathIcon HeaderIcon(const wchar_t *path, double size = CompactIconSize) {
+// 24 单位 SVG 画布的光学对齐与缩放参数，确保与槽位大小解耦且不发生裁剪。
+struct HeaderIconMetrics {
+    double slotSize = CompactIconSize;
+    double opticalScale = 1.0;
+    double offsetX = 0.0;
+    double offsetY = 0.0;
+};
+
+namespace detail {
+inline void SkipSvgSeparators(std::string_view input, std::size_t &pos) {
+    while (pos < input.size() &&
+           (input[pos] == ' ' || input[pos] == '\t' || input[pos] == '\r' ||
+            input[pos] == '\n' || input[pos] == ',')) {
+        ++pos;
+    }
+}
+
+inline bool HasSvgNumber(std::string_view input, std::size_t pos) {
+    SkipSvgSeparators(input, pos);
+    if (pos >= input.size()) return false;
+    const char c = input[pos];
+    return (c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.';
+}
+
+inline double ReadSvgNumber(std::string_view input, std::size_t &pos) {
+    SkipSvgSeparators(input, pos);
+    const std::size_t start = pos;
+    if (pos < input.size() && (input[pos] == '+' || input[pos] == '-')) ++pos;
+    while (pos < input.size() && input[pos] >= '0' && input[pos] <= '9') ++pos;
+    if (pos < input.size() && input[pos] == '.') {
+        ++pos;
+        while (pos < input.size() && input[pos] >= '0' && input[pos] <= '9') ++pos;
+    }
+    if (pos < input.size() && (input[pos] == 'e' || input[pos] == 'E')) {
+        ++pos;
+        if (pos < input.size() && (input[pos] == '+' || input[pos] == '-')) ++pos;
+        while (pos < input.size() && input[pos] >= '0' && input[pos] <= '9') ++pos;
+    }
+    double value = 0.0;
+    if (pos > start) {
+        std::from_chars(input.data() + start, input.data() + pos, value);
+    }
+    return value;
+}
+
+inline int ReadSvgFlag(std::string_view input, std::size_t &pos) {
+    SkipSvgSeparators(input, pos);
+    if (pos < input.size() && (input[pos] == '0' || input[pos] == '1')) {
+        return input[pos++] == '1' ? 1 : 0;
+    }
+    return 0;
+}
+
+inline void AppendNumber(std::string &out, double value) {
+    if (std::abs(value) < 1e-6) value = 0.0;
+    char buffer[32]{};
+    const auto [ptr, ec] = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::fixed, 4);
+    if (ec != std::errc{}) return;
+    std::string_view formatted{buffer, static_cast<std::size_t>(ptr - buffer)};
+    if (formatted.find('.') != std::string_view::npos) {
+        while (!formatted.empty() && formatted.back() == '0') formatted.remove_suffix(1);
+        if (!formatted.empty() && formatted.back() == '.') formatted.remove_suffix(1);
+    }
+    if (formatted == "-0") formatted = "0";
+    out.append(formatted);
+}
+} // namespace detail
+
+// 将 SVG Path 数据转换为 XAML Geometry 绝对路径：
+// 1. 按 SVG 规范在 Z/z 后重置当前点至子路径起点，彻底修复相对 m 在 XAML 中的错位。
+// 2. 将所有相对指令及平滑反射指令（S/s/T/t）展开为显式绝对指令，同时支持中心光学缩放与平移。
+inline std::wstring NormalizeSvgPathForXaml(std::wstring_view svgPath,
+    double opticalScale = 1.0, double offsetX = 0.0, double offsetY = 0.0) {
+    std::string input;
+    input.reserve(svgPath.size());
+    for (wchar_t ch : svgPath) {
+        input.push_back(static_cast<char>(ch));
+    }
+    const auto mapX = [&](double x) { return (x - 12.0 + offsetX) * opticalScale + 12.0; };
+    const auto mapY = [&](double y) { return (y - 12.0 + offsetY) * opticalScale + 12.0; };
+
+    std::string out;
+    out.reserve(input.size() * 2);
+    std::size_t pos = 0;
+    char cmd = 0;
+    char prevCmd = 0;
+    double cx = 0.0, cy = 0.0;
+    double sx = 0.0, sy = 0.0;
+    double lastCpX = 0.0, lastCpY = 0.0;
+
+    while (true) {
+        detail::SkipSvgSeparators(input, pos);
+        if (pos >= input.size()) break;
+        if (std::isalpha(static_cast<unsigned char>(input[pos]))) {
+            cmd = input[pos++];
+        } else if (cmd == 'M') {
+            cmd = 'L';
+        } else if (cmd == 'm') {
+            cmd = 'l';
+        }
+
+        const auto emitSpace = [&]() {
+            if (!out.empty() && out.back() != ' ') out.push_back(' ');
+        };
+
+        if (cmd == 'M' || cmd == 'm') {
+            bool first = true;
+            while (detail::HasSvgNumber(input, pos)) {
+                double x = detail::ReadSvgNumber(input, pos);
+                double y = detail::ReadSvgNumber(input, pos);
+                if (cmd == 'm') { x += cx; y += cy; }
+                cx = x; cy = y;
+                if (first) {
+                    sx = cx; sy = cy;
+                    out.push_back('M');
+                    first = false;
+                } else {
+                    emitSpace();
+                    out.push_back('L');
+                }
+                detail::AppendNumber(out, mapX(cx));
+                out.push_back(',');
+                detail::AppendNumber(out, mapY(cy));
+            }
+            cmd = (cmd == 'm') ? 'l' : 'L';
+            lastCpX = cx; lastCpY = cy;
+            prevCmd = 'M';
+        } else if (cmd == 'L' || cmd == 'l') {
+            while (detail::HasSvgNumber(input, pos)) {
+                double x = detail::ReadSvgNumber(input, pos);
+                double y = detail::ReadSvgNumber(input, pos);
+                if (cmd == 'l') { x += cx; y += cy; }
+                cx = x; cy = y;
+                emitSpace();
+                out.push_back('L');
+                detail::AppendNumber(out, mapX(cx));
+                out.push_back(',');
+                detail::AppendNumber(out, mapY(cy));
+            }
+            lastCpX = cx; lastCpY = cy;
+            prevCmd = 'L';
+        } else if (cmd == 'H' || cmd == 'h') {
+            while (detail::HasSvgNumber(input, pos)) {
+                double x = detail::ReadSvgNumber(input, pos);
+                if (cmd == 'h') x += cx;
+                cx = x;
+                emitSpace();
+                out.push_back('L');
+                detail::AppendNumber(out, mapX(cx));
+                out.push_back(',');
+                detail::AppendNumber(out, mapY(cy));
+            }
+            lastCpX = cx; lastCpY = cy;
+            prevCmd = 'L';
+        } else if (cmd == 'V' || cmd == 'v') {
+            while (detail::HasSvgNumber(input, pos)) {
+                double y = detail::ReadSvgNumber(input, pos);
+                if (cmd == 'v') y += cy;
+                cy = y;
+                emitSpace();
+                out.push_back('L');
+                detail::AppendNumber(out, mapX(cx));
+                out.push_back(',');
+                detail::AppendNumber(out, mapY(cy));
+            }
+            lastCpX = cx; lastCpY = cy;
+            prevCmd = 'L';
+        } else if (cmd == 'C' || cmd == 'c') {
+            while (detail::HasSvgNumber(input, pos)) {
+                double x1 = detail::ReadSvgNumber(input, pos);
+                double y1 = detail::ReadSvgNumber(input, pos);
+                double x2 = detail::ReadSvgNumber(input, pos);
+                double y2 = detail::ReadSvgNumber(input, pos);
+                double x = detail::ReadSvgNumber(input, pos);
+                double y = detail::ReadSvgNumber(input, pos);
+                if (cmd == 'c') {
+                    x1 += cx; y1 += cy; x2 += cx; y2 += cy; x += cx; y += cy;
+                }
+                lastCpX = x2; lastCpY = y2;
+                cx = x; cy = y;
+                emitSpace();
+                out.push_back('C');
+                detail::AppendNumber(out, mapX(x1)); out.push_back(','); detail::AppendNumber(out, mapY(y1));
+                out.push_back(' ');
+                detail::AppendNumber(out, mapX(x2)); out.push_back(','); detail::AppendNumber(out, mapY(y2));
+                out.push_back(' ');
+                detail::AppendNumber(out, mapX(cx)); out.push_back(','); detail::AppendNumber(out, mapY(cy));
+            }
+            prevCmd = 'C';
+        } else if (cmd == 'S' || cmd == 's') {
+            while (detail::HasSvgNumber(input, pos)) {
+                double x1 = (prevCmd == 'C') ? (2.0 * cx - lastCpX) : cx;
+                double y1 = (prevCmd == 'C') ? (2.0 * cy - lastCpY) : cy;
+                double x2 = detail::ReadSvgNumber(input, pos);
+                double y2 = detail::ReadSvgNumber(input, pos);
+                double x = detail::ReadSvgNumber(input, pos);
+                double y = detail::ReadSvgNumber(input, pos);
+                if (cmd == 's') {
+                    x2 += cx; y2 += cy; x += cx; y += cy;
+                }
+                lastCpX = x2; lastCpY = y2;
+                cx = x; cy = y;
+                emitSpace();
+                out.push_back('C');
+                detail::AppendNumber(out, mapX(x1)); out.push_back(','); detail::AppendNumber(out, mapY(y1));
+                out.push_back(' ');
+                detail::AppendNumber(out, mapX(x2)); out.push_back(','); detail::AppendNumber(out, mapY(y2));
+                out.push_back(' ');
+                detail::AppendNumber(out, mapX(cx)); out.push_back(','); detail::AppendNumber(out, mapY(cy));
+                prevCmd = 'C';
+            }
+        } else if (cmd == 'Q' || cmd == 'q') {
+            while (detail::HasSvgNumber(input, pos)) {
+                double x1 = detail::ReadSvgNumber(input, pos);
+                double y1 = detail::ReadSvgNumber(input, pos);
+                double x = detail::ReadSvgNumber(input, pos);
+                double y = detail::ReadSvgNumber(input, pos);
+                if (cmd == 'q') { x1 += cx; y1 += cy; x += cx; y += cy; }
+                lastCpX = x1; lastCpY = y1;
+                cx = x; cy = y;
+                emitSpace();
+                out.push_back('Q');
+                detail::AppendNumber(out, mapX(x1)); out.push_back(','); detail::AppendNumber(out, mapY(y1));
+                out.push_back(' ');
+                detail::AppendNumber(out, mapX(cx)); out.push_back(','); detail::AppendNumber(out, mapY(cy));
+                prevCmd = 'Q';
+            }
+        } else if (cmd == 'T' || cmd == 't') {
+            while (detail::HasSvgNumber(input, pos)) {
+                double x1 = (prevCmd == 'Q') ? (2.0 * cx - lastCpX) : cx;
+                double y1 = (prevCmd == 'Q') ? (2.0 * cy - lastCpY) : cy;
+                double x = detail::ReadSvgNumber(input, pos);
+                double y = detail::ReadSvgNumber(input, pos);
+                if (cmd == 't') { x += cx; y += cy; }
+                lastCpX = x1; lastCpY = y1;
+                cx = x; cy = y;
+                emitSpace();
+                out.push_back('Q');
+                detail::AppendNumber(out, mapX(x1)); out.push_back(','); detail::AppendNumber(out, mapY(y1));
+                out.push_back(' ');
+                detail::AppendNumber(out, mapX(cx)); out.push_back(','); detail::AppendNumber(out, mapY(cy));
+                prevCmd = 'Q';
+            }
+        } else if (cmd == 'A' || cmd == 'a') {
+            while (detail::HasSvgNumber(input, pos)) {
+                double rx = detail::ReadSvgNumber(input, pos) * opticalScale;
+                double ry = detail::ReadSvgNumber(input, pos) * opticalScale;
+                double rot = detail::ReadSvgNumber(input, pos);
+                int largeArc = detail::ReadSvgFlag(input, pos);
+                int sweep = detail::ReadSvgFlag(input, pos);
+                double x = detail::ReadSvgNumber(input, pos);
+                double y = detail::ReadSvgNumber(input, pos);
+                if (cmd == 'a') { x += cx; y += cy; }
+                cx = x; cy = y;
+                emitSpace();
+                out.push_back('A');
+                detail::AppendNumber(out, rx); out.push_back(','); detail::AppendNumber(out, ry);
+                out.push_back(' ');
+                detail::AppendNumber(out, rot);
+                out.push_back(' ');
+                out.push_back(largeArc ? '1' : '0');
+                out.push_back(' ');
+                out.push_back(sweep ? '1' : '0');
+                out.push_back(' ');
+                detail::AppendNumber(out, mapX(cx)); out.push_back(','); detail::AppendNumber(out, mapY(cy));
+                lastCpX = cx; lastCpY = cy;
+                prevCmd = 'A';
+            }
+        } else if (cmd == 'Z' || cmd == 'z') {
+            out.push_back('Z');
+            cx = sx; cy = sy;
+            lastCpX = cx; lastCpY = cy;
+            prevCmd = 'Z';
+        } else {
+            ++pos;
+        }
+    }
+
+    std::wstring result;
+    result.reserve(out.size());
+    for (char ch : out) result.push_back(static_cast<wchar_t>(ch));
+    return result;
+}
+
+inline winrt::Microsoft::UI::Xaml::Controls::PathIcon HeaderIcon(
+    const wchar_t *path, HeaderIconMetrics metrics) {
     using namespace winrt::Microsoft::UI::Xaml;
     using namespace winrt::Microsoft::UI::Xaml::Controls;
     // Preserve the source viewBox, winding rule and padding instead of sizing
     // a symbol-font glyph or fitting the tight bounds of the individual path.
-    const auto xaml = std::wstring{LR"(<PathIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Data="F1 )"} + path + LR"("/>)";
+    const auto normalized = NormalizeSvgPathForXaml(path, metrics.opticalScale, metrics.offsetX, metrics.offsetY);
+    const auto xaml = std::wstring{LR"(<PathIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Data="F1 )"} + normalized + LR"("/>)";
     auto icon = Markup::XamlReader::Load(winrt::hstring{xaml}).as<PathIcon>();
+    const double size = metrics.slotSize;
     Media::ScaleTransform scale;
     scale.ScaleX(size / 24.0); scale.ScaleY(size / 24.0);
     icon.Data().Transform(scale);
     icon.Width(size); icon.Height(size);
     return icon;
+}
+
+inline winrt::Microsoft::UI::Xaml::Controls::PathIcon HeaderIcon(const wchar_t *path, double size = CompactIconSize) {
+    return HeaderIcon(path, HeaderIconMetrics{size, 1.0, 0.0, 0.0});
 }
 }

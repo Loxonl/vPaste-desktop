@@ -63,6 +63,21 @@ describe("loading rich clipboard text", () => {
 });
 
 describe("text editor target lifecycle", () => {
+    it("waits for the WinUI opening event and reads the document exactly once", async () => {
+        const originalUrl = window.location.href;
+        window.history.replaceState(null, "", "/text-editor.html?chrome=winui");
+        try {
+            open({ text: "Formatted", html: "<strong>Formatted</strong>" });
+            await act(async () => {});
+            expect(invoke).not.toHaveBeenCalledWith("get_text_editor_document");
+            act(() => events.get("text-editor-open")?.());
+            expect(await screen.findByText("Formatted", { selector: "strong" })).toBeInTheDocument();
+            expect(invoke.mock.calls.filter(([command]) => command === "get_text_editor_document")).toHaveLength(1);
+        } finally {
+            window.history.replaceState(null, "", originalUrl);
+        }
+    });
+
     it("ignores an older load that finishes after the current target", async () => {
         open({ text: "Original text", html: "" });
         await waitFor(() => expect(screen.getByRole("textbox")).toHaveValue("Original text"));

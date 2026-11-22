@@ -107,6 +107,7 @@
     <ClInclude Include="WinUiTrayWindow.h" />
     <ClInclude Include="WinUiTagManager.h" />
     <ClInclude Include="WinUiAppearance.h" />
+    <ClInclude Include="WinUiMenuFocus.h" />
     <ClInclude Include="WinUiRichContent.h" />
     <ClInclude Include="WinUiDrag.h" />
     <ClInclude Include="WinUiFilterEditor.h" />

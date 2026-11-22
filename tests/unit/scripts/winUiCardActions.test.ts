@@ -3,6 +3,16 @@ import { describe, expect, it } from "vitest";
 
 describe("WinUI card action wiring", () => {
     const native = "src-tauri/native-demo/windows/winui/";
+    it("shows Delete in the card menu and dispatches immediate single-record deletion from either entry", () => {
+        const panel = readFileSync(`${native}WinUiPanel.cpp`, "utf8");
+        const menu = panel.slice(panel.indexOf("MenuFlyoutItem deleteItem;"), panel.indexOf("flyout.Items().Append(deleteItem);"));
+        const keyboard = panel.slice(panel.indexOf("args.Key() == winrt::Windows::System::VirtualKey::Delete"), panel.indexOf("EditSelectedItem();"));
+        expect(menu).toContain('deleteItem.KeyboardAcceleratorTextOverride(L"Delete")');
+        expect(menu).toContain("DeleteCard(rowHash)");
+        expect(keyboard).toContain("DeleteCard(g_selectedHash)");
+        expect(keyboard).toContain("!args.KeyStatus().WasKeyDown");
+        expect(panel).not.toContain("ConfirmDeleteItem(");
+    });
     it("builds the native menu/picker and preserves native auxiliary actions and rich editing", () => {
         const project = readFileSync(`${native}WinUiPanel.vcxproj`, "utf8");
         const build = readFileSync("src-tauri/build.rs", "utf8");

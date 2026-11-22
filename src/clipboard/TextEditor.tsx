@@ -23,7 +23,7 @@ export default function TextEditor() {
     const [entry, setEntry] = useState<TextDocument | null>(null);
     const [draft, setDraft] = useState("");
     const [initial, setInitial] = useState("");
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState(winuiChrome);
     const [saving, setSaving] = useState(false);
     const [composing, setComposing] = useState(false);
     const [failure, setFailure] = useState("");
@@ -85,9 +85,12 @@ export default function TextEditor() {
         const unlistenOpen = listen("text-editor-open", () => { void load(); });
         const unlistenClose = listen("text-editor-close-requested", () => closeRef.current());
         const cancelReady = notifyAuxiliaryWindowReady([unlistenOpen, unlistenClose]);
-        void Promise.all([unlistenOpen, unlistenClose]).then(() => {
-            if (!disposed) void load();
-        });
+        // The WinUI host publishes the target only after this page reports ready.
+        if (!winuiChrome) {
+            void Promise.all([unlistenOpen, unlistenClose]).then(() => {
+                if (!disposed) void load();
+            });
+        }
         const keyDown = (event: KeyboardEvent) => {
             if (event.isComposing || event.keyCode === 229) return;
             if (event.key === "F2") event.preventDefault();
@@ -105,7 +108,7 @@ export default function TextEditor() {
             void unlistenOpen.then(unlisten => unlisten());
             void unlistenClose.then(unlisten => unlisten());
         };
-    }, []);
+    }, [winuiChrome]);
 
     useEffect(() => {
         if (!entry) return;

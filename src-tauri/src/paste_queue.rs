@@ -1084,6 +1084,7 @@ mod tests {
                         hash: None,
                         activation_epoch: activation_epoch(),
                         origin: crate::PasteQueueRequestOrigin::Shortcut,
+                        target: None,
                     })
                     .unwrap();
                 for input in crate::paste_shortcut_inputs(true) {

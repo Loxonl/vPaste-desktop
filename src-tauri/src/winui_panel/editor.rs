@@ -81,7 +81,7 @@ pub(super) async fn open(app: tauri::AppHandle, hash: String) -> Result<Value, S
             .as_ref()
             .is_err_and(|error| error == "editor.richUnavailable")
     {
-        crate::open_text_editor_window(app, hash).await?;
+        crate::show_text_editor_window(app, hash, Some(document)).await?;
         return Ok(json!({}));
     }
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;

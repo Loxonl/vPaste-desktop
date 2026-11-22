@@ -1815,7 +1815,11 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
         co_await NextNativeFrame();
         winrt::check_hresult(edit->form->discard ? S_OK : E_FAIL);
         edit->form->discard.Hide();
-        for (int frame = 0; frame < 30 && edit->form->discard; ++frame) co_await NextNativeFrame();
+        // Island frame callbacks can run faster than the system dialog's exit
+        // transition. Wait for the dismissal, with a wall-clock deadline.
+        const auto dismissalDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (edit->form->discard && std::chrono::steady_clock::now() < dismissalDeadline) co_await NextNativeFrame();
+        stage = 12476;
         winrt::check_hresult(!edit->form->discard && NormalizedLines(draft.Text()) == L"新文本\n第二行" ? S_OK : E_FAIL);
         stage = 12473;
         Peers::ButtonAutomationPeer(edit->form->primary).GetPattern(Peers::PatternInterface::Invoke).as<Provider::IInvokeProvider>().Invoke();

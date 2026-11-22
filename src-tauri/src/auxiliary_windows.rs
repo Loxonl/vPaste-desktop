@@ -233,6 +233,14 @@ async fn ensure_open(
                             page_started.elapsed().as_millis()
                         );
                     }
+                    if cfg!(debug_assertions) && matches!(kind, WindowKind::TextEditor) {
+                        log::info!(
+                            "text editor window ready: created={} native_create_ms={} page_ready_ms={}",
+                            created,
+                            native_create_ms,
+                            page_started.elapsed().as_millis()
+                        );
+                    }
                     return Ok(window);
                 }
                 continue;

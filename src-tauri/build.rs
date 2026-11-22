@@ -293,6 +293,7 @@ fn build_winui_panel() {
     println!("cargo:rerun-if-changed={TAG_MANAGER_SOURCE}");
     println!("cargo:rerun-if-changed={TAG_MANAGER_HEADER}");
     println!("cargo:rerun-if-changed={APPEARANCE_HEADER}");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiMenuFocus.h");
     println!("cargo:rerun-if-changed={RICH_SOURCE}");
     println!("cargo:rerun-if-changed={RICH_HEADER}");
     println!("cargo:rerun-if-changed={DRAG_SOURCE}");

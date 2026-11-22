@@ -63,6 +63,8 @@ try {
     const shell = await until(() => pages().find(page => route(page) === "/clipboard/preview"), "preview shell");
     const visibleText = (page, text) => page.getByText(text, { exact: true }).isVisible().catch(() => false);
     await until(() => visibleText(shell, "Auxiliary lifecycle fixture"), "preview committed");
+    assert.deepEqual(pages().map(route).sort(), ["/clipboard/preview", "/config"],
+        "A rich-text preview must not prewarm the webpage renderer in WinUI mode");
     const toolbar = shell.locator('[data-preview-toolbar="native"]');
     await toolbar.getByRole("heading", { name: /^(预览|Preview)$/ }).waitFor();
     assert.equal(await toolbar.getByRole("button").count(), 1, "Fallback preview should expose just the pin");
@@ -89,6 +91,28 @@ try {
         await until(() => visibleText(reopened, "Reopened fixture"), "reopened content");
         await invoke("hide_preview_window");
         await until(() => reopened.isClosed(), "reopened shell retired");
+    }
+
+    // Use a deterministic page on a URL allowed by the production link policy.
+    const url = "https://example.com/vpaste-preview-fixture";
+    const context = control.context();
+    await context.route(url, request => request.fulfill({ contentType: "text/html", body: "<h1>Webpage fixture</h1>" }));
+    try {
+        const openLink = () => invoke("show_preview_window", { ...preview(url), itemType: "Link", richHtml: "" });
+        await openLink();
+        const linkShell = await until(() => pages().find(page => route(page) === "/clipboard/preview"), "cold link shell");
+        const webpage = await until(() => pages().find(page => page.url() === url), "on-demand webpage renderer");
+        await webpage.getByRole("heading", { name: "Webpage fixture" }).waitFor({ timeout: 10000 });
+        await invoke("show_preview_window", preview("Back from link", "selection"));
+        await until(() => visibleText(linkShell, "Back from link"), "rich text after link");
+        await until(() => webpage.url() === "about:blank", "webpage renderer parked");
+        await openLink();
+        await until(() => webpage.url() === url, "webpage renderer reused");
+        await webpage.getByRole("heading", { name: "Webpage fixture" }).waitFor({ timeout: 10000 });
+        await invoke("hide_preview_window");
+        await until(() => linkShell.isClosed() && webpage.isClosed(), "both link preview renderers retired");
+    } finally {
+        await context.unroute(url);
     }
 
     // A second existing auxiliary surface provides IPC after closing Settings.
@@ -128,6 +152,7 @@ try {
     console.log(JSON.stringify({ inactiveQueueMutationGuards: 6,
         queueActivated: false, externalPasteTested: false,
         visibleReuse: true, pinPreserved: true, fallbackPreviewTitle: true, coldCloseReopen: 3,
+        richPreviewWithoutWebpage: true, webpageOpenedOnDemand: true, webpageReusedAndReleased: true,
         settingsRecreated: true, guideCompletionSaved: true, guideWebViewCreated: false, mainWebViewCreated: false }));
 } finally {
     await browser.close();

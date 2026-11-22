@@ -136,6 +136,8 @@ struct PasteQueueRequest {
     hash: Option<String>,
     activation_epoch: u64,
     origin: PasteQueueRequestOrigin,
+    #[cfg(target_os = "windows")]
+    target: Option<windows_paste_focus::Target>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -233,7 +235,12 @@ const TRAY_MENU_WIDTH: i32 = 216;
 const TRAY_MENU_HEIGHT: i32 = 184;
 const TAB_EDITOR_CONTENT_WIDTH: f64 = 286.0;
 const TAB_EDITOR_DEFAULT_CONTENT_HEIGHT: f64 = 400.0;
-static TEXT_EDITOR_TARGET: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+struct TextEditorTarget {
+    hash: String,
+    prepared: Option<Result<clipboard::editor::TextDocument, String>>,
+}
+
+static TEXT_EDITOR_TARGET: std::sync::Mutex<Option<TextEditorTarget>> = std::sync::Mutex::new(None);
 static TEXT_EDITOR_FOCUSED: AtomicBool = AtomicBool::new(false);
 const EMOJI_PICKER_CONTENT_WIDTH: f64 = 262.0;
 const EMOJI_PICKER_CONTENT_HEIGHT: f64 = 148.0;
@@ -3541,13 +3548,17 @@ fn build_preview_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewW
         .focused(false)
         .decorations(false)
         .transparent(true)
-        .background_color(tauri::window::Color(0, 0, 0, 0))
         .skip_taskbar(true)
         .always_on_top(true)
         .visible_on_all_workspaces(true)
         .resizable(false)
         .shadow(system_frame)
         .inner_size(PREVIEW_WINDOW_WIDTH, PREVIEW_WINDOW_HEIGHT);
+    let builder = if system_frame {
+        builder
+    } else {
+        builder.background_color(tauri::window::Color(0, 0, 0, 0))
+    };
     #[cfg(all(target_os = "windows", feature = "winui"))]
     let builder = if system_frame {
         builder.theme(winui_auxiliary_theme(&config::get().theme_mode))
@@ -3574,7 +3585,11 @@ fn build_preview_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewW
             set_macos_window_level(window, 102); // Above NSPopUpMenuWindowLevel
             configure_macos_overlay_window(window);
         }
-        browser_preview::prewarm(window.app_handle());
+        // In WinUI mode only a committed link needs the separate webpage
+        // renderer. sync_preview_browser creates it on demand.
+        if !main_panel_mode::winui() {
+            browser_preview::prewarm(window.app_handle());
+        }
     })
 }
 
@@ -3618,7 +3633,7 @@ fn apply_winui_auxiliary_frame(window: &tauri::WebviewWindow) {
     contrast.cbSize = size_of_val(&contrast) as u32;
     // SAFETY: the borrowed HWND and the Win32 attribute buffers are live
     // for these synchronous calls. The OS owns the frame and its shadow.
-    let color = unsafe {
+    let host_fill = unsafe {
         let high_contrast = SystemParametersInfoW(
             SPI_GETHIGHCONTRAST,
             contrast.cbSize,
@@ -3666,16 +3681,26 @@ fn apply_winui_auxiliary_frame(window: &tauri::WebviewWindow) {
         .is_ok();
         if high_contrast {
             let rgba = GetSysColor(COLOR_WINDOW);
-            Color(rgba as u8, (rgba >> 8) as u8, (rgba >> 16) as u8, 255)
+            Some(Color(
+                rgba as u8,
+                (rgba >> 8) as u8,
+                (rgba >> 16) as u8,
+                255,
+            ))
         } else if material && extended {
-            Color(0, 0, 0, 0)
+            None
         } else if dark {
-            Color(32, 32, 32, 255)
+            Some(Color(32, 32, 32, 255))
         } else {
-            Color(243, 243, 243, 255)
+            Some(Color(243, 243, 243, 255))
         }
     };
-    let _ = window.set_background_color(Some(color));
+    // Tauri's combined setter applies the color to both layers. Tao's
+    // Win32 WM_ERASEBKGND ignores alpha, so passing transparent black to
+    // the host still installs a black erase brush over the DWM backdrop.
+    let webview = AsRef::<tauri::Webview>::as_ref(window);
+    let _ = webview.window().set_background_color(host_fill);
+    let _ = webview.set_background_color(Some(host_fill.unwrap_or(Color(0, 0, 0, 0))));
 }
 
 fn preview_window_active(app: &tauri::AppHandle) -> bool {
@@ -7070,10 +7095,18 @@ fn plain_text_preview(hash: String) -> Result<clipboard_budget::TextPreview, Str
 
 #[tauri::command]
 async fn open_text_editor_window(app: tauri::AppHandle, hash: String) -> Result<(), String> {
+    show_text_editor_window(app, hash, None).await
+}
+
+async fn show_text_editor_window(
+    app: tauri::AppHandle,
+    hash: String,
+    prepared: Option<Result<clipboard::editor::TextDocument, String>>,
+) -> Result<(), String> {
     let window = auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::TextEditor).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
         if !window.is_visible().map_err(|err| err.to_string())? {
-            *TEXT_EDITOR_TARGET.lock().unwrap() = Some(hash);
+            *TEXT_EDITOR_TARGET.lock().unwrap() = Some(TextEditorTarget { hash, prepared });
             window.center().map_err(|err| err.to_string())?;
             window.show().map_err(|err| err.to_string())?;
             window
@@ -7088,12 +7121,20 @@ async fn open_text_editor_window(app: tauri::AppHandle, hash: String) -> Result<
 
 #[tauri::command]
 async fn get_text_editor_document() -> Result<Option<clipboard::editor::TextDocument>, String> {
-    let hash = TEXT_EDITOR_TARGET.lock().unwrap().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        hash.map(|hash| clipboard::editor::load(&hash)).transpose()
-    })
-    .await
-    .map_err(|err| err.to_string())?
+    let hash = {
+        let mut target = TEXT_EDITOR_TARGET.lock().unwrap();
+        let Some(target) = target.as_mut() else {
+            return Ok(None);
+        };
+        // WinUI already loaded this revision to select the format-preserving editor.
+        if let Some(document) = target.prepared.take() {
+            return document.map(Some);
+        }
+        target.hash.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || clipboard::editor::load(&hash).map(Some))
+        .await
+        .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
@@ -7101,7 +7142,11 @@ async fn save_clipboard_text(
     app: tauri::AppHandle,
     update: clipboard::editor::TextUpdate,
 ) -> Result<clipboard::item::Item, String> {
-    let previous_hash = TEXT_EDITOR_TARGET.lock().unwrap().clone();
+    let previous_hash = TEXT_EDITOR_TARGET
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|target| target.hash.clone());
     save_clipboard_text_for_hash(app, previous_hash, update).await
 }
 
@@ -7155,7 +7200,7 @@ fn build_text_editor_window(app: &tauri::AppHandle) -> tauri::Result<tauri::Webv
     let system_frame =
         cfg!(all(target_os = "windows", feature = "winui")) && main_panel_mode::winui();
     let route = if system_frame {
-        "text-editor?chrome=winui"
+        "text-editor.html?chrome=winui"
     } else {
         "text-editor"
     };
@@ -7165,12 +7210,16 @@ fn build_text_editor_window(app: &tauri::AppHandle) -> tauri::Result<tauri::Webv
         .focused(false)
         .decorations(false)
         .transparent(true)
-        .background_color(tauri::window::Color(0, 0, 0, 0))
         .skip_taskbar(true)
         .always_on_top(true)
         .resizable(false)
         .shadow(system_frame)
         .inner_size(596.0 * text_scale, 476.0 * text_scale);
+    let builder = if system_frame {
+        builder
+    } else {
+        builder.background_color(tauri::window::Color(0, 0, 0, 0))
+    };
     #[cfg(all(target_os = "windows", feature = "winui"))]
     let builder = if system_frame {
         builder.theme(winui_auxiliary_theme(&config::get().theme_mode))
@@ -12195,6 +12244,7 @@ fn should_refresh_paste_queue_click_target(
 fn prepare_paste_queue_click_target(
     app: &tauri::AppHandle,
     origin: PasteQueueRequestOrigin,
+    #[cfg(target_os = "windows")] target: windows_paste_focus::Target,
 ) -> Result<(), String> {
     if !should_prepare_paste_queue_click_target(origin, main_surface_visible()) {
         return Ok(());
@@ -12202,12 +12252,6 @@ fn prepare_paste_queue_click_target(
     if winui_queue_ui_enabled() {
         #[cfg(all(target_os = "windows", feature = "winui"))]
         {
-            if should_capture_paste_queue_uia_focus(origin) {
-                windows_paste_focus::capture_foreground();
-            }
-            // Capture an external app if it is currently foreground; the helper
-            // ignores vPaste itself, preserving the previously captured target.
-            record_foreground_app_before_clipboard();
             if CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
                 winui_panel::hide_for_queue_paste()?;
                 let started = Instant::now();
@@ -12222,9 +12266,7 @@ fn prepare_paste_queue_click_target(
         std::thread::sleep(std::time::Duration::from_millis(40));
         #[cfg(target_os = "windows")]
         if should_capture_paste_queue_uia_focus(origin) {
-            windows_paste_focus::restore_before_paste(
-                LAST_FOREGROUND_HWND_BEFORE_CLIPBOARD.load(Ordering::SeqCst) as usize,
-            )?;
+            windows_paste_focus::restore_before_paste(target)?;
         }
         return Ok(());
     }
@@ -12282,8 +12324,31 @@ fn process_paste_queue_request_inner(app: &tauri::AppHandle, request: PasteQueue
     paste_queue::clear_error();
     paste_queue::set_busy(true);
     paste_queue::emit_state(app);
-    let result = restore_paste_queue_item(app.clone(), &hash).and_then(|_| {
+    let result = (|| {
+        #[cfg(target_os = "windows")]
+        let target = {
+            use windows_paste_focus::{Target, PASTE_TARGET_LOST};
+            let target = request
+                .target
+                .ok_or_else(|| PASTE_TARGET_LOST.to_string())?;
+            if request.origin == PasteQueueRequestOrigin::QueueWindow {
+                if Target::recorded() != Some(target)
+                    || Target::external_foreground().is_some_and(|current| current != target)
+                {
+                    return Err(PASTE_TARGET_LOST.into());
+                }
+                prepare_paste_queue_click_target(app, request.origin, target)?;
+            }
+            target.require_foreground()?;
+            target
+        };
+        restore_paste_queue_item(app.clone(), &hash)?;
+        #[cfg(not(target_os = "windows"))]
         prepare_paste_queue_click_target(app, request.origin)?;
+        // Restoring a rich payload or a file can take time. A focus change in
+        // that interval must not deliver the paste to another application.
+        #[cfg(target_os = "windows")]
+        target.require_foreground()?;
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         PASTE_QUEUE_INTERNAL_PASTE.store(true, Ordering::SeqCst);
         let result = simulate_paste_shortcut();
@@ -12292,7 +12357,7 @@ fn process_paste_queue_request_inner(app: &tauri::AppHandle, request: PasteQueue
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         PASTE_QUEUE_INTERNAL_PASTE.store(false, Ordering::SeqCst);
         result
-    });
+    })();
     match result {
         Ok(()) => {
             if let Err(err) = paste_queue::touch(&hash) {
@@ -12352,6 +12417,7 @@ fn initialize_paste_queue_worker(app: &tauri::AppHandle) {
 fn enqueue_paste_queue_request(
     hash: Option<String>,
     origin: PasteQueueRequestOrigin,
+    #[cfg(target_os = "windows")] target: Option<windows_paste_focus::Target>,
 ) -> Result<(), String> {
     let sender = PASTE_QUEUE_REQUEST_SENDER
         .lock()
@@ -12363,6 +12429,8 @@ fn enqueue_paste_queue_request(
             hash,
             activation_epoch: paste_queue::activation_epoch(),
             origin,
+            #[cfg(target_os = "windows")]
+            target,
         })
         .map_err(|err| err.to_string())
 }
@@ -12843,15 +12911,21 @@ unsafe extern "system" fn paste_queue_windows_keyboard_callback(
             let mut state = PASTE_QUEUE_WINDOWS_INPUT_STATE
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let target = if down
+                && paste_queue_shortcut_allowed(
+                    paste_queue::is_active(),
+                    TEXT_EDITOR_FOCUSED.load(Ordering::SeqCst),
+                ) {
+                windows_paste_focus::Target::external_foreground()
+            } else {
+                None
+            };
             let (intercept, trigger) = handle_paste_queue_windows_key_event(
                 &mut state,
                 event.vkCode,
                 down,
                 event.dwExtraInfo,
-                paste_queue_shortcut_allowed(
-                    paste_queue::is_active(),
-                    TEXT_EDITOR_FOCUSED.load(Ordering::SeqCst),
-                ),
+                target.is_some(),
                 || {
                     // The current V event has not updated async state yet.
                     // Sample only the other keys; do not carry Alt/Shift state
@@ -12863,7 +12937,8 @@ unsafe extern "system" fn paste_queue_windows_keyboard_callback(
                 },
             );
             if trigger {
-                let _ = enqueue_paste_queue_request(None, PasteQueueRequestOrigin::Shortcut);
+                let _ =
+                    enqueue_paste_queue_request(None, PasteQueueRequestOrigin::Shortcut, target);
             }
             if intercept {
                 return LRESULT(1);
@@ -13297,12 +13372,20 @@ fn paste_queue_item(app: tauri::AppHandle, hash: Option<String>) -> Result<(), S
     if should_refresh_paste_queue_click_target(
         PasteQueueRequestOrigin::QueueWindow,
         main_surface_visible(),
-    ) {
+    ) || winui_queue_ui_enabled()
+    {
+        // Bind editable focus to the click before the serial worker starts.
+        // Both capture helpers ignore foreground windows that vPaste owns.
         #[cfg(target_os = "windows")]
         windows_paste_focus::capture_foreground();
         record_foreground_app_before_clipboard();
     }
-    enqueue_paste_queue_request(hash, PasteQueueRequestOrigin::QueueWindow)?;
+    enqueue_paste_queue_request(
+        hash,
+        PasteQueueRequestOrigin::QueueWindow,
+        #[cfg(target_os = "windows")]
+        windows_paste_focus::Target::recorded(),
+    )?;
     paste_queue::emit_state(&app);
     Ok(())
 }
@@ -13321,6 +13404,9 @@ fn paste(
     trigger_key: Option<String>,
 ) -> Result<(), String> {
     let _cleanup = auto_cleanup::pause();
+    #[cfg(target_os = "windows")]
+    let target =
+        windows_paste_focus::Target::recorded().ok_or(windows_paste_focus::PASTE_TARGET_LOST)?;
     let restore_alt = restore_alt.unwrap_or(false);
     let trigger_key = trigger_key.as_deref();
     if !_hash.is_empty() {
@@ -13346,6 +13432,10 @@ fn paste(
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
 
+    #[cfg(target_os = "windows")]
+    if windows_paste_focus::Target::recorded() != Some(target) {
+        return Err(windows_paste_focus::PASTE_TARGET_LOST.into());
+    }
     restore_foreground_app_before_paste();
     if restore_alt {
         release_quick_input_keys(trigger_key);
@@ -13354,9 +13444,10 @@ fn paste(
     std::thread::sleep(std::time::Duration::from_millis(40));
 
     #[cfg(target_os = "windows")]
-    windows_paste_focus::restore_before_paste(
-        LAST_FOREGROUND_HWND_BEFORE_CLIPBOARD.load(Ordering::SeqCst) as usize,
-    )?;
+    {
+        windows_paste_focus::restore_before_paste(target)?;
+        target.require_foreground()?;
+    }
 
     if let Err(err) = simulate_paste_shortcut() {
         error!("Failed to simulate paste shortcut: {}", err);

@@ -59,6 +59,16 @@ describe("card, queue and developer reference parity", () => {
         expect(panel).toContain("SetCardRichContent(");
         expect(native("WinUiRichContent.cpp")).toContain("viewport.VerticalScrollMode(ScrollMode::Enabled)");
     });
+    it("animates native card scroll offsets within the fixed viewport and ignores retired operations", () => {
+        const preview = native("WinUiCardPreview.h").split("class CardRecordTags")[0];
+        expect(preview).toContain("self->viewport.Clip(clip)");
+        expect(preview).toContain("const auto size = args.NewSize()");
+        expect(preview).toContain("clip.Rect({0, 0, size.Width, size.Height})");
+        expect(preview).toContain("viewport.ScrollTo(");
+        expect(preview).toContain("ScrollCompleted(");
+        expect(preview).toContain("args.CorrelationId()");
+        expect(preview).not.toContain("content_.StartAnimation(");
+    });
     it("renders individual record-tag pills in a non-interactive clipped track", () => {
         const panel = native("WinUiPanel.cpp");
         expect(panel).toContain("CardRecordTags");

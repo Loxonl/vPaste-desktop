@@ -167,9 +167,18 @@ Canceling that overlay must not rearm the old action: a late query may refresh
 history but cannot paste. A fresh
 explicit search submission still supports ordinary, plain-text and quick paste.
 This does not cancel a paste or Rust operation that has already been sent.
-Hiding the panel dismisses an unconfirmed item-delete dialog through its existing
-cancellation path, so it cannot reappear over a later show. Native automatic
-card/tab/creation-menu dismissal on hide/reopen is retained.
+On Windows, ordinary paste verifies the saved external HWND and process before
+sending keys, even when an editable UI Automation element could not be saved.
+The queue shortcut only intercepts Ctrl+V in an external window. It keeps that
+window's identity with the request. Row clicks save the external window and
+editable focus before enqueueing, or reuse the previous external target if
+vPaste owns the current foreground.
+The worker checks the target before the clipboard write and again before key
+injection. A missing or changed target produces the existing retry state without
+consuming the queue item. This is not an acknowledgement from the receiving app.
+Hiding the panel cancels an unconfirmed tab deletion so its dialog cannot
+reappear over a later show. Single-card deletion does not open a dialog.
+Native automatic card/tab/creation-menu dismissal on hide/reopen is retained.
 
 ## Auxiliary renderer lifecycle
 
@@ -182,9 +191,14 @@ For native inspector and editor surfaces, reuse the `AuxiliaryCaption`,
 transient backdrop behind the transparent browser renderer. Do not depend on
 a transparent XAML root to expose a host HWND backdrop. Windows owns the outer
 corners and shadow; the WinUI-mode browser content does not draw another
-blurred, rounded window. When the corresponding material is
-unavailable or Windows contrast mode is on, use the corresponding solid
-theme/system color. The editor form itself does not draw an opaque canvas: the input
+blurred, rounded window. When DWM supplies the browser fallback's backdrop,
+leave the HWND's background brush unset and make only the WebView2 controller
+transparent. The combined Tauri setter would give Tao a background brush that
+ignores alpha on Windows. When the material is unavailable or Windows contrast
+mode is on, use a solid theme/system color. Match the native reading layer at
+the WebView preview's neutral inset; preserve an adaptive document canvas for
+explicit rich-text ink and let PDFs and websites draw their own media colors.
+The editor form itself does not draw an opaque canvas: the input
 fills its working region, and content such as the original OCR image sits in
 its own softly outlined group. Native tag editors retain their anchored
 Flyout and its system presenter; the inner form uses the same group and

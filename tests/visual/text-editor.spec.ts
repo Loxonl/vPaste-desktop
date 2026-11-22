@@ -24,6 +24,7 @@ async function openEditor(page: Page, rich = false, rejectSave = false, clipboar
             __TAURI_INTERNALS__: {
                 invoke: async (command: string, args: Record<string, unknown> = {}) => {
                     if (command === "get_config") return JSON.stringify({ multilingual: "Chinese", onboarding_completed: true });
+                    if (command === "auxiliary_window_ready" && location.pathname === "/text-editor.html") probe.emit("text-editor-open");
                     if (command === "get_text_editor_document") return { id: 1, hash: "original", revision: "version-1", text: rich ? "原文 link" : probe.text,
                         html: rich ? '<p><strong style="color:rgb(255,0,0)">原文</strong> <a href="https://example.com/">link</a></p>' : "" };
                     if (command === "save_clipboard_text") {
@@ -49,7 +50,7 @@ async function openEditor(page: Page, rich = false, rejectSave = false, clipboar
             },
         });
     }, { rich, rejectSave });
-    await page.goto(clipboard ? "/clipboard" : winui ? "/text-editor?chrome=winui" : "/text-editor");
+    await page.goto(clipboard ? "/clipboard" : winui ? "/text-editor.html?chrome=winui" : "/text-editor");
     if (!clipboard) await expect(page.getByRole("textbox", { name: "文字内容" })).toBeEnabled();
 }
 
@@ -65,6 +66,13 @@ for (const colorScheme of ["light", "dark"] as const) {
         const shell = page.getByRole("region", { name: "编辑文本" });
         await expect(shell).toHaveCSS("border-radius", "0px");
         await expect(shell).toHaveCSS("box-shadow", "none");
+        await expect(shell).toHaveCSS("background-color", colorScheme === "light"
+            ? "rgba(252, 252, 252, 0.92)" : "rgba(32, 32, 32, 0.92)");
+        await expect(heading).toHaveCSS("font-size", "16px");
+        await expect(heading).toHaveCSS("font-weight", "600");
+        await expect(heading).toHaveCSS("line-height", "22px");
+        await expect(heading).toHaveCSS("color", colorScheme === "light"
+            ? "rgba(0, 0, 0, 0.894)" : "rgb(255, 255, 255)");
         expect(await header.evaluate(element => getComputedStyle(element).getPropertyValue("app-region"))).toBe("drag");
         expect(await header.getByRole("button", { name: "关闭" }).evaluate(element =>
             getComputedStyle(element).getPropertyValue("app-region"))).toBe("no-drag");
@@ -74,7 +82,11 @@ for (const colorScheme of ["light", "dark"] as const) {
         const label = page.getByText("文字内容", { exact: true });
         await expect(label).toHaveCSS("font-size", "14px");
         await expect(label).toHaveCSS("font-weight", "600");
+        await expect(label).toHaveCSS("line-height", "20px");
         const field = page.getByRole("textbox", { name: "文字内容" });
+        await expect(field).toHaveCSS("font-size", "14px");
+        await expect(field).toHaveCSS("line-height", "20px");
+        await expect(field).toHaveCSS("color", "rgba(0, 0, 0, 0.894)");
         const labelBox = (await label.boundingBox())!;
         const fieldBox = (await field.boundingBox())!;
         expect(headerBox.height).toBe(40);

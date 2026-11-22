@@ -76,6 +76,7 @@ winrt::Windows::Foundation::IAsyncAction NextNativeFrame() {
 #include "WinUiFilterEditor.h"
 #include "WinUiNameEmoji.h"
 #include "WinUiAppearance.h"
+#include "WinUiMenuFocus.h"
 #include "WinUiRichContent.h"
 #include "WinUiDrag.h"
 #include "WinUiCardActions.h"
@@ -239,6 +240,7 @@ struct Panel {
     HWND window = nullptr;
     std::unique_ptr<vpaste::winui::DockMotion> dockMotion;
     winrt::Microsoft::UI::Xaml::Controls::Grid root{nullptr};
+    std::shared_ptr<vpaste::winui::MenuOpeningInput> menuInput;
     winrt::Microsoft::UI::Xaml::Controls::Grid header{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Grid shadowReceiver{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Viewbox viewport{nullptr};
@@ -1647,6 +1649,7 @@ void RebuildDynamicTabs() {
             tab.DoubleTapped([tagId](auto const &, auto const &args) { ShowRecordTagEditor(tagId); args.Handled(true); });
         }
         menu.Items().Append(edit); menu.Items().Append(remove);
+        vpaste::winui::BindMenuOpeningFocus(menu, g_panel.menuInput);
         tab.ContextFlyout(menu);
         tab.CanDrag(true);
         tab.DragStarting([id](auto const &, auto const &args) {
@@ -2428,45 +2431,12 @@ winrt::fire_and_forget ConfirmDeleteTab(std::wstring id) {
     }
 }
 
-winrt::fire_and_forget ConfirmDeleteItem(std::wstring hash) {
-    if (g_deleteConfirmationOpen || !g_panel.root) co_return;
+void DeleteCard(std::wstring hash) {
+    if (g_queueSelectionMode || g_panel.tagManagerViewActive || g_deleteConfirmationOpen ||
+        NativeEditorOpen() || !FindCard(hash)) return;
     g_searchSubmitRequestId = 0;
-    g_deleteConfirmationOpen = true;
     (void)SendRequest(L"previewDismiss");
-    winrt::Microsoft::UI::Xaml::Controls::ContentDialog dialog{nullptr};
-    try {
-        using namespace winrt::Microsoft::UI::Xaml::Controls;
-        dialog = vpaste::winui::MakeConfirmationDialog(g_panel.root,
-            Text(L"删除剪贴板记录", L"Delete clipboard record"), Text(
-            L"此操作无法撤销。确定要删除这条记录吗？",
-            L"This action cannot be undone. Delete this record?"),
-            Text(L"删除", L"Delete"), Text(L"取消", L"Cancel"));
-        g_panel.deletionDialog = dialog;
-        const auto result = co_await dialog.ShowAsync();
-        if (g_panel.deletionDialog != dialog) co_return;
-        g_panel.deletionDialog = nullptr;
-        g_deleteConfirmationOpen = false;
-        if (result == ContentDialogResult::Primary && g_panel.root.IsLoaded()) {
-            (void)SendRequest(L"delete", hash);
-        }
-        ScheduleHistoryFocus();
-    } catch (...) {
-        if (g_panel.deletionDialog != dialog) co_return;
-        g_panel.deletionDialog = nullptr;
-        g_deleteConfirmationOpen = false;
-        if (g_panel.status) {
-            g_panel.status.Text(Text(L"无法打开删除确认窗口", L"Could not open delete confirmation"));
-        }
-        ScheduleHistoryFocus();
-    }
-}
-
-void ConfirmDeleteSelectedItem() {
-    if (g_queueSelectionMode || g_selectedHash.empty() ||
-        std::find(g_hashes.begin(), g_hashes.end(), g_selectedHash) == g_hashes.end()) {
-        return;
-    }
-    (void)ConfirmDeleteItem(g_selectedHash);
+    (void)SendRequest(L"delete", hash);
 }
 
 void EditSelectedItem() {
@@ -3610,10 +3580,9 @@ void ApplyResponse(const std::string &bytes) {
             MenuFlyoutItem deleteItem;
             deleteItem.Text(Text(L"删除记录", L"Delete record"));
             deleteItem.Icon(SymbolIcon{Symbol::Delete});
+            deleteItem.KeyboardAcceleratorTextOverride(L"Delete");
             deleteItem.Click([rowHash](auto const &, auto const &) {
-                if (g_queueSelectionMode || g_deleteConfirmationOpen || NativeEditorOpen() || !FindCard(rowHash)) return;
-                (void)SendRequest(L"previewDismiss");
-                (void)SendRequest(L"delete", rowHash);
+                DeleteCard(rowHash);
             });
             flyout.Items().Append(deleteItem);
             const auto tagSlot = flyout.Items().Size();
@@ -3644,6 +3613,7 @@ void ApplyResponse(const std::string &bytes) {
                 flyout, rowHash, type, g_english, SendCardAction);
             if (menuExtras.pastePlain) menuExtras.pastePlain.KeyboardAcceleratorTextOverride(
                 g_behavior.plainBinding.key ? vpaste::winui::ShortcutLabel(g_behavior.plainShortcut) : L"");
+            vpaste::winui::BindMenuOpeningFocus(flyout, g_panel.menuInput);
             surface.ContextFlyout(flyout);
             // Child actions must not bubble into the configured card paste gesture.
             favoriteButton.Tapped([](auto const &, auto const &args) { args.Handled(true); });
@@ -4463,6 +4433,7 @@ HRESULT CreatePanel() noexcept {
         root.RowDefinitions().GetAt(1).Height(GridLength{1, GridUnitType::Star});
         root.Background(vpaste::winui::WindowCanvasBackground());
         g_panel.root = root;
+        g_panel.menuInput = vpaste::winui::TrackMenuOpeningInput(root);
         // A sibling background receives inline shadows on Windows 10; it must
         // not be an ancestor of any caster. Keep existing child indices stable.
         g_panel.shadowReceiver = Grid();
@@ -4718,6 +4689,7 @@ HRESULT CreatePanel() noexcept {
         addRecordTag.Text(Text(L"记录型标签", L"Record Tag")); addRecordTag.Icon(SymbolIcon{Symbol::Add});
         addRecordTag.Click([](auto const &, auto const &) { ShowRecordTagEditor(); });
         addMenu.Items().Append(addRecordTag);
+        vpaste::winui::BindMenuOpeningFocus(addMenu, g_panel.menuInput);
         g_panel.addTag.Flyout(addMenu);
         g_panel.filterStrip.Children().Append(g_panel.addTag);
         g_panel.filterScroll = ScrollViewer();
@@ -4892,7 +4864,7 @@ HRESULT CreatePanel() noexcept {
                        (GetKeyState(VK_CONTROL) & 0x8000) == 0 &&
                        (GetKeyState(VK_SHIFT) & 0x8000) == 0 &&
                        (GetKeyState(VK_MENU) & 0x8000) == 0) {
-                ConfirmDeleteSelectedItem();
+                DeleteCard(g_selectedHash);
                 args.Handled(true);
             } else if (args.Key() == winrt::Windows::System::VirtualKey::F2 &&
                        !args.KeyStatus().WasKeyDown &&
@@ -5329,6 +5301,7 @@ void RunUiThread() noexcept {
     g_panel.header = nullptr;
     g_panel.shadowReceiver = nullptr;
     g_panel.root = nullptr;
+    g_panel.menuInput.reset();
     g_panel.trayWindow.reset();
     g_panel.queueWindow.reset();
     g_panel.queueView.reset();
@@ -8515,13 +8488,17 @@ winrt::fire_and_forget RunNativePresentationRegression(
             }
             currentStage = 136;
             {
+                using namespace winrt::Windows::Data::Json;
+                const auto savedFilters = g_customFilters;
+                g_customFilters.push_back(JsonObject::Parse(LR"({"id":"reset-confirmation","name":"Test filter"})"));
+                const auto tab = L"reset-confirmation";
                 const auto deletes = [&] {
                     return std::count_if(previewRequests.begin(), previewRequests.end(), [](auto const &bytes) {
-                        return winrt::Windows::Data::Json::JsonObject::Parse(winrt::to_hstring(bytes)).GetNamedString(L"op") == L"delete";
+                        return JsonObject::Parse(winrt::to_hstring(bytes)).GetNamedString(L"op") == L"filtersDelete";
                     });
                 };
                 const auto before = deletes();
-                (void)ConfirmDeleteItem(L"reselected");
+                (void)ConfirmDeleteTab(tab);
                 winrt::check_hresult(g_panel.deletionDialog && g_deleteConfirmationOpen ? S_OK : E_FAIL);
                 const auto previous = g_panel.deletionDialog;
                 co_await AwaitNativeLoaded(previous);
@@ -8543,7 +8520,7 @@ winrt::fire_and_forget RunNativePresentationRegression(
                         if (const auto button = self(self, Media::VisualTreeHelper::GetChild(element, index))) return button;
                     return nullptr;
                 };
-                (void)ConfirmDeleteItem(L"reselected");
+                (void)ConfirmDeleteTab(tab);
                 const auto closing = g_panel.deletionDialog;
                 co_await AwaitNativeLoaded(closing);
                 bool resetAtClose = false;
@@ -8562,15 +8539,20 @@ winrt::fire_and_forget RunNativePresentationRegression(
                     !g_deleteConfirmationOpen && deletes() == before ? S_OK : E_FAIL);
 
                 currentStage = 138;
-                (void)ConfirmDeleteItem(L"current-dataset");
+                (void)ConfirmDeleteTab(tab);
                 const auto current = g_panel.deletionDialog;
-                (void)ConfirmDeleteItem(L"duplicate");
+                (void)ConfirmDeleteTab(tab);
                 winrt::check_hresult(current && g_panel.deletionDialog == current ? S_OK : E_FAIL);
                 co_await AwaitNativeLoaded(current);
                 invoke(primaryButton(primaryButton, current));
                 for (int frame = 0; frame < 90 && g_deleteConfirmationOpen; ++frame) co_await NextNativeFrame();
-                winrt::check_hresult(!g_deleteConfirmationOpen && deletes() == before + 1 &&
-                    requestAt(previewRequests.size() - 1).GetNamedString(L"hash") == L"current-dataset" ? S_OK : E_FAIL);
+                winrt::check_hresult(!g_deleteConfirmationOpen && deletes() == before + 1 && g_tabDeleteRequest &&
+                    requestAt(previewRequests.size() - 1).GetNamedString(L"tabId") == tab ? S_OK : E_FAIL);
+                JsonObject deleted;
+                deleted.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_tabDeleteRequest)));
+                deleted.Insert(L"op", JsonValue::CreateStringValue(L"filtersDelete"));
+                ApplyResponse(winrt::to_string(deleted.Stringify()));
+                g_customFilters = savedFilters;
             }
             currentStage = 139;
             {
@@ -8856,7 +8838,7 @@ winrt::fire_and_forget RunNativePresentationRegression(
                         ShowFilterEditor(JsonObject{});
                         co_await AwaitNativeLoaded(g_panel.filterEditor->TestRoot());
                     } else if (overlay == 1) {
-                        (void)ConfirmDeleteItem(L"deferred-result");
+                        (void)ConfirmDeleteTab(L"fresh-filter");
                         co_await AwaitNativeLoaded(g_panel.deletionDialog);
                     } else {
                         Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(g_panel.appActions->UpdateButton())
@@ -8925,11 +8907,11 @@ winrt::fire_and_forget RunNativePresentationRegression(
             {
                 const auto deletes = [&] {
                     return std::count_if(previewRequests.begin(), previewRequests.end(), [](auto const &bytes) {
-                        return winrt::Windows::Data::Json::JsonObject::Parse(winrt::to_hstring(bytes)).GetNamedString(L"op") == L"delete";
+                        return winrt::Windows::Data::Json::JsonObject::Parse(winrt::to_hstring(bytes)).GetNamedString(L"op") == L"filtersDelete";
                     });
                 };
                 const auto before = deletes();
-                (void)ConfirmDeleteItem(L"deferred-result");
+                (void)ConfirmDeleteTab(L"fresh-filter");
                 const auto dialog = g_panel.deletionDialog;
                 co_await AwaitNativeLoaded(dialog);
                 SetVisible(false, true, false); SetVisible(true, false, false);
@@ -8939,7 +8921,7 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 dialog.Hide();
                 for (int frame = 0; frame < 90 && g_deleteConfirmationOpen; ++frame) co_await NextNativeFrame();
                 winrt::check_hresult(!g_deleteConfirmationOpen && deletes() == before ? S_OK : E_FAIL);
-                (void)ConfirmDeleteItem(L"fresh-confirmation");
+                (void)ConfirmDeleteTab(L"fresh-filter");
                 winrt::check_hresult(g_deleteConfirmationOpen && g_panel.deletionDialog != dialog ? S_OK : E_FAIL);
                 co_await AwaitNativeLoaded(g_panel.deletionDialog);
                 g_panel.deletionDialog.Hide();
@@ -9177,6 +9159,127 @@ void CheckEmptySearchFocus(std::vector<std::string> const &requests, std::uint32
     stage = 268;
 }
 
+winrt::Windows::Foundation::IAsyncAction CheckCardHoverScroll(std::uint32_t &stage) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace winrt::Microsoft::UI::Xaml::Controls;
+    using namespace winrt::Windows::Data::Json;
+    stage = 258;
+    RequestHistory();
+    JsonArray items;
+    for (const auto *hash : {L"scroll-a", L"scroll-b"}) {
+        JsonObject item;
+        std::wstring text;
+        for (int line = 1; line <= 16; ++line) {
+            text += std::wstring{hash} + L" text line " + std::to_wstring(line) + L"\n";
+        }
+        item.Insert(L"hash", JsonValue::CreateStringValue(hash));
+        item.Insert(L"itemType", JsonValue::CreateStringValue(L"Text"));
+        item.Insert(L"previewText", JsonValue::CreateStringValue(text));
+        items.Append(item);
+    }
+    JsonObject data; data.Insert(L"items", items);
+    JsonObject response; response.Insert(L"op", JsonValue::CreateStringValue(L"query"));
+    response.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+    response.Insert(L"data", data);
+    ApplyResponse(winrt::to_string(response.Stringify()));
+    winrt::check_hresult(g_panel.rows.size() == 2 ? S_OK : E_FAIL);
+    for (auto &row : g_panel.rows) {
+        co_await AwaitNativeLoaded(row.autoPreview->viewport);
+        row.preview.Foreground(Brush(255, 0, 255));
+    }
+    const auto a = g_panel.rows[0].autoPreview;
+    const auto b = g_panel.rows[1].autoPreview;
+    const auto move = [](int hover, int selected) {
+        g_panel.history.SelectedIndex(selected);
+        g_panel.rows[0].pointerOver = hover == 0;
+        g_panel.rows[1].pointerOver = hover == 1;
+        UpdateCardPreviewMotion();
+    };
+    const auto moving = [](std::shared_ptr<vpaste::winui::AutoScrollCardPreview> preview)
+        -> winrt::Windows::Foundation::IAsyncOperation<bool> {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        do {
+            co_await NextNativeFrame();
+            if (preview->viewport.VerticalOffset() >= 32) co_return true;
+        } while (std::chrono::steady_clock::now() < deadline);
+        co_return false;
+    };
+    move(0, 0);
+    stage = 2581;
+    const bool firstMoves = co_await moving(a);
+    move(1, 0); // The selected card can still be active when a neighbor is hovered.
+    stage = 2582;
+    const bool neighborMoves = co_await moving(b);
+    const bool overlap = a->viewport.VerticalOffset() > 0 && a->Animating();
+    move(1, 1);
+    for (int frame = 0; frame < 12 && a->viewport.VerticalOffset() > 0.5; ++frame) co_await NextNativeFrame();
+    const bool firstRetired = !a->Animating() && a->viewport.VerticalOffset() <= 0.5;
+    move(0, 1);
+    stage = 2583;
+    const bool returnMoves = co_await moving(a);
+    std::fprintf(stderr, "WinUI card scroll switch: first=%d neighbor=%d overlap=%d retired=%d return=%d\n",
+        firstMoves, neighborMoves, overlap, firstRetired, returnMoves);
+    winrt::check_hresult(firstMoves && neighborMoves && overlap && firstRetired && returnMoves ? S_OK : E_FAIL);
+    stage = 2584;
+    Media::Imaging::RenderTargetBitmap bitmap;
+    co_await bitmap.RenderAsync(g_panel.root);
+    const auto pixels = co_await bitmap.GetPixelsAsync();
+    std::vector<std::uint8_t> bytes(pixels.Length());
+    winrt::Windows::Storage::Streams::DataReader::FromBuffer(pixels).ReadBytes(bytes);
+    const auto width = bitmap.PixelWidth(), height = bitmap.PixelHeight();
+    winrt::check_hresult(width > 0 && height > 0 ? S_OK : E_FAIL);
+    const auto scaleX = width / g_panel.root.ActualWidth();
+    const auto scaleY = height / g_panel.root.ActualHeight();
+    const auto bounds = [](FrameworkElement const &element) {
+        return element.TransformToVisual(g_panel.root).TransformBounds({0, 0,
+            static_cast<float>(element.ActualWidth()), static_cast<float>(element.ActualHeight())});
+    };
+    for (const auto &row : g_panel.rows) {
+        const auto viewport = row.autoPreview->viewport;
+        const auto body = bounds(viewport), header = bounds(row.header), card = bounds(row.frame);
+        const auto top = static_cast<int>(body.Y * scaleY);
+        const auto bottom = static_cast<int>((body.Y + body.Height) * scaleY);
+        const auto left = std::max(0, static_cast<int>(card.X * scaleX));
+        const auto right = std::min(width, static_cast<int>((card.X + card.Width) * scaleX));
+        int inside = 0, outside = 0;
+        for (int y = 0; y < height; ++y) for (int x = left; x < right; ++x) {
+            const auto i = static_cast<std::size_t>((y * width + x) * 4);
+            if (bytes[i] < 190 || bytes[i + 1] > 100 || bytes[i + 2] < 190 || bytes[i + 3] < 200) continue;
+            if (y >= top && y < bottom) ++inside;
+            else if (y < top - 1 || y > bottom) ++outside;
+        }
+        std::fprintf(stderr, "WinUI moving card pixels: offset=%.1f body=(%.1f,%.1f) header=(%.1f,%.1f) inside=%d outside=%d\n",
+            viewport.VerticalOffset(), body.Y, body.Height, header.Y, header.Height, inside, outside);
+        winrt::check_hresult(body.Y + 0.5 >= header.Y + header.Height && inside > 0 && outside == 0 ? S_OK : E_FAIL);
+    }
+    for (int index = 0; index < 6; ++index) {
+        move(index % 2, index % 2);
+        co_await NextNativeFrame();
+    }
+    move(-1, -1);
+    stage = 2585;
+    const auto quietUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(450);
+    do { co_await NextNativeFrame(); } while (std::chrono::steady_clock::now() < quietUntil);
+    winrt::check_hresult(!a->Animating() && !b->Animating() &&
+        a->viewport.VerticalOffset() <= 0.5 && b->viewport.VerticalOffset() <= 0.5 ? S_OK : E_FAIL);
+
+    move(0, 0);
+    stage = 2586;
+    const auto bottom = a->viewport.ScrollableHeight();
+    const auto loopUntil = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+    bool reachedBottom = false, returnedToTop = false, restarted = false;
+    do {
+        co_await NextNativeFrame();
+        const auto offset = a->viewport.VerticalOffset();
+        reachedBottom |= offset >= bottom - 1;
+        returnedToTop |= reachedBottom && offset <= 0.5;
+        restarted = returnedToTop && offset > 8;
+    } while (!restarted && std::chrono::steady_clock::now() < loopUntil);
+    std::fprintf(stderr, "WinUI card scroll loop: bottom=%d top=%d restarted=%d\n", reachedBottom, returnedToTop, restarted);
+    winrt::check_hresult(restarted && !b->Animating() && b->viewport.VerticalOffset() <= 0.5 ? S_OK : E_FAIL);
+    move(-1, -1);
+}
+
 winrt::Windows::Foundation::IAsyncAction CheckCardContextMenu(
     std::vector<std::string> const &requests, std::uint32_t &stage) {
     using namespace winrt::Microsoft::UI::Xaml;
@@ -9233,10 +9336,11 @@ winrt::Windows::Foundation::IAsyncAction CheckCardContextMenu(
         const auto items = menuFor(i).Items();
         const auto paste = items.GetAt(0).as<MenuFlyoutItem>();
         const auto preview = find(items, L"Preview").try_as<MenuFlyoutItem>();
+        const auto deletion = find(items, L"Delete record").try_as<MenuFlyoutItem>();
         winrt::check_hresult(paste.Text() == L"Copy and paste" && paste.KeyboardAcceleratorTextOverride() == L"Enter" &&
             preview && preview.KeyboardAcceleratorTextOverride() == L"Space" &&
             !find(items, L"Copy") && !find(items, L"Copy as plain text") && !find(items, L"Add to paste queue") &&
-            find(items, L"Delete record") ? S_OK : E_FAIL);
+            deletion && deletion.KeyboardAcceleratorTextOverride() == L"Delete" ? S_OK : E_FAIL);
     }
     const auto textItems = menuFor(0).Items();
     const auto imageItems = menuFor(1).Items();
@@ -9327,17 +9431,18 @@ winrt::Windows::Foundation::IAsyncAction CheckCardContextMenu(
     co_await CloseNativeFlyout(menu);
     stage = 275;
     before = requests.size();
-    ConfirmDeleteSelectedItem();
-    const auto confirmation = g_panel.deletionDialog;
-    winrt::check_hresult(confirmation && !sent(before, L"delete", L"menu-image") ? S_OK : E_FAIL);
-    confirmation.Hide();
-    co_await NextNativeFrame();
-    winrt::check_hresult(!g_deleteConfirmationOpen ? S_OK : E_FAIL);
+    DeleteCard(g_selectedHash);
+    DeleteCard(L"missing-row");
+    winrt::check_hresult(sent(before, L"delete", L"menu-image") == 1 &&
+        !sent(before, L"delete", L"menu-text") && !sent(before, L"delete", L"missing-row") &&
+        !g_deleteConfirmationOpen && !g_panel.deletionDialog ? S_OK : E_FAIL);
     SetQueueViewActive(true);
     g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(0));
     g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(1));
     winrt::check_hresult(g_panel.queueOpen && g_queueViewActive && g_panel.queueAdd.IsEnabled() ? S_OK : E_FAIL);
     before = requests.size();
+    DeleteCard(L"menu-text");
+    winrt::check_hresult(!sent(before, L"delete", L"menu-text") ? S_OK : E_FAIL);
     invoke(g_panel.queueAdd); co_await NextNativeFrame();
     const auto add = std::find_if(requests.begin() + before, requests.end(), [](auto const &bytes) {
         return JsonObject::Parse(winrt::to_hstring(bytes)).GetNamedString(L"op") == L"queueAdd";
@@ -9448,6 +9553,93 @@ winrt::Windows::Foundation::IAsyncAction CheckNativeTray(
     g_panel.trayWindow.reset();
 }
 
+winrt::Windows::Foundation::IAsyncAction CheckMenuOpeningFocus(std::uint32_t &stage) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace winrt::Microsoft::UI::Xaml::Controls;
+    using namespace winrt::Windows::Data::Json;
+    stage = 27900;
+    SetVisible(true, true, false);
+    g_tagIds = {7}; g_tagNames = {L"Focus fixture"}; RebuildTagFilter();
+    ApplyFilters(JsonArray::Parse(LR"([{"id":"focus-fixture","name":"Focus filter","filter":{}}])"));
+    auto response = JsonObject::Parse(LR"({"op":"query","data":{"items":[{"hash":"focus-record","itemType":"Text","previewText":"Synthetic"}],"hasMore":false}})");
+    response.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+    ApplyResponse(winrt::to_string(response.Stringify()));
+    winrt::check_hresult(g_panel.rows.size() == 1 ? S_OK : E_FAIL);
+    const auto invisible = [](Media::Brush const &brush) {
+        const auto solid = brush.try_as<Media::SolidColorBrush>();
+        return solid && solid.Color().A == 0;
+    };
+    const auto postKey = [](UINT key) {
+        // Post only to the test panel's own input site, never to the desktop.
+        HWND target = GetFocus();
+        if (!target) EnumChildWindows(g_panel.window, [](HWND child, LPARAM result) -> BOOL {
+            wchar_t kind[64]{};
+            if (!GetClassNameW(child, kind, 64) || std::wstring_view{kind} != L"InputSiteWindowClass") return TRUE;
+            *reinterpret_cast<HWND *>(result) = child;
+            return FALSE;
+        }, reinterpret_cast<LPARAM>(&target));
+        winrt::check_hresult(target && GetWindowThreadProcessId(target, nullptr) == GetCurrentThreadId() ? S_OK : E_FAIL);
+        const auto bits = 1 | (MapVirtualKeyW(key, MAPVK_VK_TO_VSC) << 16) | (key == VK_DOWN ? (1u << 24) : 0);
+        winrt::check_bool(PostMessageW(target, WM_KEYDOWN, key, bits));
+        winrt::check_bool(PostMessageW(target, WM_KEYUP, key, bits | (3u << 30)));
+    };
+    const std::array<FrameworkElement, 4> origins{g_panel.addTag, g_panel.rows[0].surface,
+        DynamicTab(L"focus-fixture"), DynamicTab(L"record:7")};
+    for (const auto &origin : origins) {
+        ++stage;
+        co_await AwaitNativeLoaded(origin);
+        const bool add = origin == g_panel.addTag;
+        const auto menu = (add ? g_panel.addTag.Flyout() : origin.ContextFlyout()).as<MenuFlyout>();
+        const auto first = menu.Items().GetAt(0);
+        if (add) {
+            Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(origin)
+                .GetPattern(Automation::Peers::PatternInterface::Invoke)
+                .as<Automation::Provider::IInvokeProvider>().Invoke();
+        } else menu.ShowAt(origin, {8, 8});
+        co_await NextNativeFrame();
+        co_await AwaitNativeLoaded(first);
+        const bool hidden = invisible(first.FocusVisualPrimaryBrush()) && invisible(first.FocusVisualSecondaryBrush());
+        std::fprintf(stderr, "WinUI command focus: stage=%u open=%d focus=%d hidden=%d\n", stage, menu.IsOpen(),
+            static_cast<int>(first.FocusState()), hidden);
+        winrt::check_hresult(menu.IsOpen() && first.UseSystemFocusVisuals() && hidden ? S_OK : E_FAIL);
+        if (add) {
+            // Deliberately request late keyboard focus once the real popup is
+            // loaded. The visual stays hidden until a real navigation event.
+            winrt::check_hresult(first.Focus(FocusState::Keyboard) ? S_OK : E_FAIL);
+            co_await NextNativeFrame();
+            winrt::check_hresult(first.FocusState() == FocusState::Keyboard &&
+                invisible(first.FocusVisualPrimaryBrush()) ? S_OK : E_FAIL);
+            postKey(VK_DOWN);
+            const auto second = menu.Items().GetAt(1);
+            for (int frame = 0; frame < 30 && second.FocusState() != FocusState::Keyboard; ++frame) co_await NextNativeFrame();
+            std::fprintf(stderr, "WinUI command focus after Down: second=%d visible=%d\n",
+                static_cast<int>(second.FocusState()), !invisible(second.FocusVisualPrimaryBrush()));
+            winrt::check_hresult(menu.IsOpen() && second.FocusState() == FocusState::Keyboard &&
+                !invisible(second.FocusVisualPrimaryBrush()) && !invisible(second.FocusVisualSecondaryBrush()) ? S_OK : E_FAIL);
+            postKey(VK_ESCAPE);
+            for (int frame = 0; frame < 30 && menu.IsOpen(); ++frame) co_await NextNativeFrame();
+            winrt::check_hresult(!menu.IsOpen() ? S_OK : E_FAIL);
+        }
+        co_await CloseNativeFlyout(menu);
+        winrt::check_hresult(!invisible(first.FocusVisualPrimaryBrush()) && !invisible(first.FocusVisualSecondaryBrush()) ? S_OK : E_FAIL);
+    }
+    ++stage;
+    const auto add = g_panel.addTag;
+    const auto menu = add.Flyout().as<MenuFlyout>();
+    winrt::check_hresult(add.Focus(FocusState::Keyboard) ? S_OK : E_FAIL);
+    postKey(VK_SPACE);
+    for (int frame = 0; frame < 30 && !menu.IsOpen(); ++frame) co_await NextNativeFrame();
+    const auto first = menu.Items().GetAt(0);
+    co_await AwaitNativeLoaded(first);
+    std::fprintf(stderr, "WinUI keyboard open: state=%d visible=%d\n",
+        static_cast<int>(first.FocusState()), !invisible(first.FocusVisualPrimaryBrush()));
+    // An inactive test island may not assign initial focus. This test checks
+    // whether the actual keyboard opening preserves the system brushes.
+    winrt::check_hresult(menu.IsOpen() && first.UseSystemFocusVisuals() &&
+        !invisible(first.FocusVisualPrimaryBrush()) && !invisible(first.FocusVisualSecondaryBrush()) ? S_OK : E_FAIL);
+    co_await CloseNativeFlyout(menu);
+}
+
 winrt::fire_and_forget RunNativeShellRegression(
     std::shared_ptr<std::promise<std::pair<HRESULT, std::uint32_t>>> completion) {
     std::uint32_t stage = 1;
@@ -9465,12 +9657,21 @@ winrt::fire_and_forget RunNativeShellRegression(
         g_request = +[](const std::uint8_t *data, std::size_t length) {
             requests.emplace_back(reinterpret_cast<const char *>(data), length);
         };
+        if (GetEnvironmentVariableW(L"VPASTE_WINUI_MENU_FOCUS_CHECK", nullptr, 0)) {
+            co_await CheckMenuOpeningFocus(stage);
+            completion->set_value({S_OK, stage}); co_return;
+        }
         if (GetEnvironmentVariableW(L"VPASTE_WINUI_TRAY_CHECK", nullptr, 0)) {
             co_await CheckNativeTray(requests, stage);
             completion->set_value({S_OK, stage}); co_return;
         }
         if (GetEnvironmentVariableW(L"VPASTE_WINUI_CARD_MENU_CHECK", nullptr, 0)) {
             co_await CheckCardContextMenu(requests, stage);
+            completion->set_value({S_OK, stage}); co_return;
+        }
+        if (GetEnvironmentVariableW(L"VPASTE_WINUI_CARD_PREVIEW_CHECK", nullptr, 0)) {
+            co_await vpaste::winui::TestCardPreviewControls(g_panel.root, stage);
+            co_await CheckCardHoverScroll(stage);
             completion->set_value({S_OK, stage}); co_return;
         }
         if (GetEnvironmentVariableW(L"VPASTE_WINUI_PREVIEW_TOOLBAR_CHECK", nullptr, 0)) {

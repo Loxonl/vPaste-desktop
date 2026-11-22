@@ -2,6 +2,7 @@
 #undef GetCurrentTime
 #include "WinUiQueueView.h"
 #include "WinUiAppearance.h"
+#include "WinUiMenuFocus.h"
 #include "WinUiRichContent.h"
 #include "WinUiMotion.h"
 
@@ -84,6 +85,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
     RequestCallback request;
     CloseCallback close;
     Grid root{nullptr};
+    std::shared_ptr<MenuOpeningInput> menuInput;
     Grid header{nullptr};
     StackPanel rows{nullptr};
     Canvas exitingRows{nullptr};
@@ -172,6 +174,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
 
     void Build() {
         root = Grid{};
+        menuInput = TrackMenuOpeningInput(root);
         // The queue has its own HWND, not the main panel's Acrylic backdrop.
         ApplyStyle(root, L"VPaste.QueueCanvas");
         root.Padding(UniformThickness(ManagementInset));
@@ -846,6 +849,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
                 if (auto self = weak.lock()) self->MoveItem(hash, 1);
             });
             rowMenu.Items().Append(down);
+            BindMenuOpeningFocus(rowMenu, menuInput);
             paste.ContextFlyout(rowMenu);
 
             Button remove = NamedIconButton(SymbolIcon{Symbol::Remove}, Text(L"从队列移除", L"Remove from queue"));

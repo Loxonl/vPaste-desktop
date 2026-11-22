@@ -146,7 +146,15 @@ describe("preview window outer shell", () => {
         expect(uiTokens).toContain("--ui-radius-window: 12px");
         expect(shellRule).toContain("overflow: hidden");
         expect(systemShellRule).toContain("border-radius: 0");
-        expect(systemShellRule).toContain("background: transparent");
+        expect(systemShellRule).toContain("background: var(--ui-winui-aux-window-surface)");
         expect(systemShellRule).toContain("backdrop-filter: none");
+    });
+
+    it("leaves the HWND unpainted when the WinUI fallback uses Acrylic", () => {
+        const material = sourceBetween("fn apply_winui_auxiliary_frame", "fn preview_window_active");
+        expect(material).toMatch(/else if material && extended \{\s*None/);
+        expect(material).toContain("webview.window().set_background_color(host_fill)");
+        expect(material).toContain("webview.set_background_color(Some(");
+        expect(material).not.toContain("window.set_background_color(Some(");
     });
 });

@@ -33,6 +33,23 @@ physical acceptance; it does not authorize further product changes.
 An implemented row is not an unconditional desktop pass. The last column names
 the remaining acceptance boundary. No physical-desktop row was auto-approved.
 
+## 2026-11-23 Windows native search S01–S08
+
+Base `a453767`. Native checks use a Debug x64 panel on a separate Windows desktop with synthetic rows and a recording bridge. The search probe runs through the shell parity export with `VPASTE_WINUI_SEARCH_CHECK=1`.
+
+| Rule | Evidence |
+| --- | --- |
+| S01 | **S/X**. The shell checks the loaded command order: conditional developer controls, tools, queue, settings, conditional update. |
+| S02 | **X/A**. Expanded search contains one TextBox and hides the trigger. The shell invokes the built-in clear button, types again, submits, collapses and reopens search. The actual App exposed the search field and neither magnifier after expansion. |
+| S03 | **X**. Simulated composition suspends the timer and ignores Enter and Escape. Composition end schedules the final text. An earlier reply is discarded even when the final text equals the earlier request. |
+| S04 | **X**. On the baseline an oversized B query caused a second recorded paste of A. The fixed probe covers late A, successful B, zero matches, failed dispatch with zero rows, canceled Enter, a selected row disappearing during refresh and queue selection. Stage 312 replays an OCR notification followed by the ordinary refresh and verifies that only the latest reply pastes B. |
+| S05 | **X/A**. Escape clears, then collapses, including from toolbar focus. Repeat leaves the field open. Stages 311–312 cancel a pending Enter when an empty field collapses, a populated field loses focus, or the panel receives native deactivation. In the actual App, two posted Escape keys cleared the query then collapsed the field. |
+| S06 | **X/A**. Retained rows show progress. The recording bridge blocks stale paste, plain paste, quick paste and deletion. Retry reissues the same query and filter. In the actual App, Delete on retained B after a failed send left B in SQLite. The same key removed a fresh control row C. |
+| S07 | **X/A**. The actual App showed copying guidance in a fresh empty database, Clear filters for a successful empty query, Retry for failure with zero rows, and a warning with Retry when a failed query retained rows. The native probe invoked the recovery controls. |
+| S08 | **S/U/X/A**. Three Rust adapter tests cover literal tag text, prior whitespace normalization and UTF-16 highlights. In the actual App, an explicit FixtureTag excluded untagged A and returned B for the literal query `tag:PhaseOchreB`. A multi-space query still matched single-space fixture text. |
+
+**Actual App and remaining manual checks.** The Debug acceptance executable used two marked synthetic profiles and inactive desktops. External paste was excluded because creating a separate window station failed with Windows error 5. Its clipboard and an interactive target must be isolated before external-delivery and physical IME testing. The broader history/queue regression stops at its rich-card stage 32 on both baseline and the phase-one build (`E_NOINTERFACE`). Its fixture casts the card viewport to `ScrollViewer`; the card uses `ScrollView`.
+
 ## 2026-11-19 queue controls and WebView inventory
 
 **S:** Remove only Copy as plain text from the WinUI card context menu. Paste
@@ -671,8 +688,8 @@ pass. Reuse this matrix instead of repeatedly declaring generic phases done.
 | Tab text, icons, selected state and trailing `+` | [Header][web-header], [appearance][appearance], [panel][panel], [indicator][indicator] | S, X: Chinese/English, light/dark, 640/960-DIP headers; accent foreground, faster bounded spring and the two reference creation choices | The added Manage tags choice is removed; existing tags keep double-click/context-menu editing and deletion. Native `SelectorBar` feedback is retained. M: motion feel, font rendering and Windows contrast-theme appearance. |
 | Custom filter creation/editing | [WebView filters][web-tabs], [native editor][filter-editor], [shared adapter][filters] | S, U, X: editor requests, replies, cancellation and stale-session checks | M: pointer anchor and IME entry on the displays in use. Existing filter file and field meanings are retained. |
 | Record tags and mixed tab order | [WebView tabs][web-tabs], [record editor][record-editor], [tag adapter][tags], [atomic tab moves][tab-order] | S, U, X: create/assign, refresh, failed requests and editor lifetime; shared database order wins over legacy native order | M: actual tab drag/drop and emoji picker placement. No separate Windows tab-order store is introduced. |
-| Search, category, favorite, source and `tag:` filters | [WebView search][web-search], [native search grammar][search], [query bridge][bridge] | S, U: quoted tag names, combined filters, UTF-16 highlight terms and existing Rust query | M: real data containing the user's source names and languages. |
-| Search submission and stale results | [WebView keyboard][web-keys], [native keyboard][keys], [panel][panel] | S, X: synchronized search text, pending query/refresh guards and Enter handling | M: IME composition and quick Enter in the actual foreground App. Native `AutoSuggestBox` replaces the DOM search shell. |
+| Search, category, favorite, source and explicit tag filters | [WebView search][web-search], [native search adapter][search], [query bridge][bridge] | S, U, X: literal query text, independent filters and UTF-16 highlights; see S08 above. | M: real data containing the user's source names and languages. |
+| Search submission and stale results | [WebView keyboard][web-keys], [native keyboard][keys], [panel][panel] | S, X: native TextBox, pending query/refresh guards and Enter handling; see S02–S07 above. | M: IME composition and quick Enter in the actual foreground App. |
 | Pagination, fresh captures and retained position | [WebView lifecycle][web-lifecycle], [panel][panel], [viewport policy][viewport] | S, U, X: refresh loaded pages, retain/reset offsets and selection, stale replies and 36-card replacement | M: live capture while the panel is open/hidden. The isolated fixture intentionally has no capture listener. |
 | Card content and media | [WebView card][web-card], [Rust projection][presentation], [native content][content] | S, U, X: text/emphasis/tables/colors, source metadata, image loading and card detail replacement | Native bounded card projection does not promise arbitrary HTML/CSS pixel parity. Full rich content remains available through the reader fallback. |
 | Loading, empty and failure states | [Panel][panel], [queue][queue] | S, X: real control state, retry, cleared filters and stale/error responses | M: transient failures with real external resources. Failed requests must not delete history. |

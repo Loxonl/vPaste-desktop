@@ -97,7 +97,8 @@ MainKeyResult ResolveMainKey(PanelBehavior const &behavior, MainKeyInput const &
     if (input.area == InputArea::Search) {
         if (input.key == VK_RETURN) return {input.repeated ? Action::Ignore : Action::SearchPaste};
         if (!input.control && !input.shift && !input.alt && !input.meta) {
-            if (input.key == VK_ESCAPE) return {input.searchHasText ? Action::ClearSearch : Action::CloseSearch};
+            if (input.key == VK_ESCAPE) return {input.repeated ? Action::Ignore :
+                input.searchHasText ? Action::ClearSearch : Action::CloseSearch};
         }
         return {};
     }

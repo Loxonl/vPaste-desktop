@@ -190,7 +190,24 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private var closed = false
   private var dragging = false
   private var heldHash: String?
+  private struct Query: Equatable {
+    let keywords: String
+    let label: String
+    let tabId: String
+  }
   private var debounce: DispatchWorkItem?
+  private var queryTimeout: DispatchWorkItem?
+  private var queryRequestId: UInt64?
+  private var loadingQuery: Query?
+  private var readyQuery: Query?
+  private var searchEnter: Query?
+  private var searchEditor: NSTextView? { search.currentEditor() as? NSTextView }
+  private var currentQuery: Query {
+    Query(keywords: searchEditor?.string ?? search.stringValue, label: filter, tabId: activeTabId)
+  }
+  private var hasCurrentResults: Bool {
+    !closed && !hiding && searchEditor?.hasMarkedText() != true && readyQuery == currentQuery
+  }
   private var boundsObserver: NSObjectProtocol?
   private var applicationFocus: PanelApplicationFocus?
   private var mainRoleObserver: NSObjectProtocol?
@@ -240,7 +257,10 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     applicationFocus = PanelApplicationFocus { [weak self] active in
       guard let self, !self.closed, !self.config.sizePreview else { return }
       self.bridge.setKey(active && self.window.isKeyWindow)
-      if !active { self.scheduleFocusLoss() }
+      if !active {
+        self.searchEnter = nil
+        self.scheduleFocusLoss()
+      }
     }
     mainRoleObserver = NotificationCenter.default.addObserver(
       forName: NSWindow.didBecomeMainNotification, object: nil, queue: .main
@@ -598,6 +618,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   func dismiss(animated: Bool = true) {
     guard !closed else { return }
+    searchEnter = nil
     toolbar.cancelInteraction()
     if animated {
       guard !hiding else { return }
@@ -613,8 +634,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     saveCheckpoint(force: true)
     closed = true
     generation &+= 1
-    debounce?.cancel()
-    debounce = nil
+    abandonQuery()
     if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
     boundsObserver = nil
     applicationFocus?.close()
@@ -659,6 +679,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   func windowDidResignKey(_ notification: Notification) {
     bridge.setKey(false)
+    searchEnter = nil
     scheduleFocusLoss()
   }
   private func retainMainAppearanceForPreview(windowNumber number: Int) {
@@ -714,28 +735,79 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     setInfoVisible(true)
     if count == 0 { emptyState.show(title: message, detail: "") }
   }
-  func controlTextDidEndEditing(_ obj: Notification) { toolbar.endEmptySearch() }
+  func controlTextDidEndEditing(_ obj: Notification) {
+    searchEnter = nil
+    toolbar.endEmptySearch()
+  }
   func controlTextDidChange(_ obj: Notification) {
-    if (search.currentEditor() as? NSTextView)?.hasMarkedText() == true { return }
+    abandonQuery()
+    generation &+= 1
+    readyQuery = nil
     previews.clear()
     pendingPreviewSelection = nil
-    scheduleReload()
+    showQueryLoading()
+    if searchEditor?.hasMarkedText() != true { scheduleReload() }
   }
   func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
     if textView.hasMarkedText() { return false }
     if selector == #selector(NSResponder.insertNewline(_:)) {
-      action("paste", at: selected)
+      searchFirstResult()
       return true
     }
     if selector == #selector(NSResponder.cancelOperation(_:)) {
-      dismiss()
+      escapeSearch()
       return true
     }
     if selector == #selector(NSResponder.moveDown(_:)) {
+      searchEnter = nil
       window.makeFirstResponder(list)
       return true
     }
     return false
+  }
+  private func escapeSearch() {
+    searchEnter = nil
+    if !currentQuery.keywords.isEmpty {
+      searchEditor?.string = ""
+      search.stringValue = ""
+      reload()
+    } else if !search.isHidden {
+      toolbar.endEmptySearch()
+      window.makeFirstResponder(list)
+    } else { dismiss() }
+  }
+  private func abandonQuery() {
+    debounce?.cancel()
+    debounce = nil
+    queryTimeout?.cancel()
+    queryTimeout = nil
+    if let queryRequestId { bridge.abandon(queryRequestId) }
+    queryRequestId = nil
+    loadingQuery = nil
+    searchEnter = nil
+  }
+  private func searchFirstResult() {
+    guard !busyAction, !hiding, !dragging, searchEditor?.hasMarkedText() != true,
+      NSApp.currentEvent?.isARepeat != true else { return }
+    if hasCurrentResults { action("paste", at: 0); return }
+    let query = currentQuery
+    if loadingQuery != query { reload() }
+    if loadingQuery == query { searchEnter = query }
+  }
+  private func showQueryLoading() {
+    let title = local("Loading history…", "正在加载历史记录…")
+    let detail = count > 0 ? local("Previous results are unavailable while searching", "正在查询，暂不可操作旧结果") : ""
+    emptyState.show(title: title, detail: detail, loading: true)
+    footer.stringValue = title
+  }
+  private func queryFailed(_ message: String) {
+    abandonQuery()
+    readyQuery = nil
+    let title = local("Could not load history", "无法加载历史记录")
+    footer.stringValue = title
+    emptyState.show(title: title, detail: message, actionTitle: local("Retry", "重试")) { [weak self] in
+      self?.reload()
+    }
   }
   private func scheduleReload() {
     debounce?.cancel()
@@ -744,7 +816,11 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
   }
   private func reload() {
-    guard !closed, onboarding == nil else { return }
+    guard !closed, !hiding, onboarding == nil, searchEditor?.hasMarkedText() != true else { return }
+    abandonQuery()
+    readyQuery = nil
+    let query = currentQuery
+    loadingQuery = query
     refreshTabs()
     filterEntryPending = false
     filterEntryPreviousHashes = []
@@ -775,21 +851,38 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     list.reloadData()
     syncListSize()
     scroll.contentView.scroll(to: .zero)
-    emptyState.show(title: local("Loading history…", "正在加载历史记录…"), detail: "", loading: true)
-    footer.stringValue = local("Loading history…", "正在加载历史记录…")
-    bridge.send("open", ["keywords": search.stringValue, "label": filter, "tabId": activeTabId]) { [weak self] result in
-      guard let self, self.generation == epoch, !self.closed else { return }
+    showQueryLoading()
+    queryRequestId = bridge.send("open", ["keywords": query.keywords, "label": query.label, "tabId": query.tabId]) { [weak self] result in
+      guard let self, self.generation == epoch, !self.closed, !self.hiding,
+        self.currentQuery == query, self.searchEditor?.hasMarkedText() != true else { return }
+      let enter = self.searchEnter == query
+      self.abandonQuery()
       do {
         let page = try panelDecode(PanelPage.self, result.get())
+        self.readyQuery = query
         self.token = page.token
         self.accept(page)
         self.scheduleViewport()
+        // Resigning the window, app deactivation and ending field editing all
+        // clear the intent; only the still-active field can consume the reply.
+        if enter, let editor = self.searchEditor,
+          self.window.firstResponder === editor { self.action("paste", at: 0) }
         self.synchronizeHistoryIfNeeded()
       } catch {
         self.filterEntryPending = false
-        self.showMessage(error.localizedDescription)
+        self.queryFailed(error.localizedDescription)
       }
     }
+    guard queryRequestId != nil else {
+      queryFailed(local("The search request could not be sent.", "无法发送查询请求。"))
+      return
+    }
+    let timeout = DispatchWorkItem { [weak self] in
+      guard let self, self.generation == epoch, self.loadingQuery == query, !self.hiding else { return }
+      self.queryFailed(self.local("The history request timed out.", "查询历史记录超时。"))
+    }
+    queryTimeout = timeout
+    DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: timeout)
   }
   private var activeTabId: String {
     if filterIndex == 0 { return "all" }
@@ -802,7 +895,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     let index = min(max(0, count - 1), Int(floor(x / stride)))
     let desired = range()
     var value: [String: Any] = [
-      "tabId": activeTabId, "keywords": search.stringValue, "viewRevision": token?.revision ?? 1,
+      "tabId": activeTabId, "keywords": currentQuery.keywords, "viewRevision": token?.revision ?? 1,
       "anchorHash": ref(index)?.hash ?? "", "anchorIndex": index,
       "offset": Double(min(0.999999, max(0, (x - CGFloat(index) * stride) / stride))),
       "selectedHash": ref(selected)?.hash ?? "", "start": desired.lowerBound, "end": desired.upperBound,
@@ -817,7 +910,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     return value
   }
   private func saveCheckpoint(force: Bool = false) {
-    guard !closed, !applyingHistory, let token else { return }
+    guard !closed, readyQuery == currentQuery, searchEditor?.hasMarkedText() != true,
+      !applyingHistory, let token else { return }
     let previous = viewportRevision
     let value = historyCheckpoint()
     if force || previous != viewportRevision {
@@ -846,8 +940,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
           }
         }
         try self.applyHistoryDelta(value.delta)
+        self.readyQuery = self.currentQuery
         self.synchronizeHistoryIfNeeded()
-      } catch { self.showMessage(error.localizedDescription) }
+      } catch { self.queryFailed(error.localizedDescription) }
     }
   }
   private func requestHistorySync() {
@@ -856,7 +951,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     synchronizeHistoryIfNeeded()
   }
   private func synchronizeHistoryIfNeeded() {
-    guard onboarding == nil, historyDirty, !historySyncing, !closed, !hiding, !dragging, !busyAction,
+    guard onboarding == nil, hasCurrentResults, historyDirty, !historySyncing, !dragging, !busyAction,
       window.attachedSheet == nil, let token else { return }
     historyDirty = false
     historySyncing = true
@@ -943,10 +1038,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     for path in list.indexPathsForVisibleItems() {
       if let item = list.item(at: path) as? PanelCardItem { configure(item, index: path.item) }
     }
-    if count == 0 {
-      emptyState.show(title: local("No matching history", "没有匹配的历史记录"),
-        detail: local("Try another search or filter", "试试其他关键词或筛选条件"))
-    } else { emptyState.hide() }
+    showResultState()
     lastViewport = ""
     lastCheckpointKey = ""
     viewportRevision = max(viewportRevision, delta.viewportRevision)
@@ -986,15 +1078,25 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     for path in list.indexPathsForVisibleItems() {
       if let item = list.item(at: path) as? PanelCardItem { configure(item, index: path.item) }
     }
-    if count == 0 {
-      emptyState.show(
-        title: local("No matching history", "没有匹配的历史记录"),
-        detail: local("Try another search or filter", "试试其他关键词或筛选条件"))
-    } else {
-      emptyState.hide()
-    }
+    showResultState()
     refreshSelectedPreview()
     status()
+  }
+  private func showResultState() {
+    guard count == 0 else { emptyState.hide(); return }
+    if currentQuery.keywords.isEmpty && activeTabId == "all" {
+      emptyState.show(title: local("No clipboard history yet", "还没有剪贴板历史"),
+        detail: local("Copy something in another app to get started.", "到另一个应用复制内容，即可开始。"))
+      return
+    }
+    emptyState.show(title: local("No matching history", "没有匹配的历史记录"),
+      detail: local("Try another search or filter.", "试试其他关键词或筛选条件。"),
+      actionTitle: local("Clear search and filters", "清除搜索与筛选")) { [weak self] in
+        guard let self else { return }
+        self.searchEditor?.string = ""
+        self.search.stringValue = ""
+        self.changeFilter(0)
+      }
   }
   private func syncListSize() {
     let viewport = scroll.contentView.bounds.size
@@ -1106,7 +1208,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     return start..<max(start, end)
   }
   private func updateViewport() {
-    guard !closed, !applyingHistory, let token, count > 0 else { return }
+    guard hasCurrentResults, !applyingHistory, let token, count > 0 else { return }
     if layout.viewportSize != scroll.contentView.bounds.size { syncListSize() }
     let desired = range()
     let epoch = generation
@@ -1290,7 +1392,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     switch event.keyCode {
     case 53:
-      dismiss()
+      escapeSearch()
       return true
     case 123:
       select(max(0, selected - 1), scroll: true)
@@ -1320,6 +1422,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   private func action(_ operation: String, at index: Int) {
     guard !busyAction, let entry = ref(index) else { return }
+    if ["paste", "paste-plain", "delete"].contains(operation), !hasCurrentResults { return }
     let hash = entry.hash
     if operation == "paste" && pasteQueue.active {
       toggleQueueSelection(at: index)

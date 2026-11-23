@@ -309,6 +309,7 @@ fn build_winui_panel() {
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiHistoryViewport.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiRecordTagEditor.cpp");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiRecordTagEditor.h");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiEditorKeys.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiCardContent.cpp");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiCardPreview.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiCardContent.h");

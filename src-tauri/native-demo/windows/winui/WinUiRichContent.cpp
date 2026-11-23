@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <cwctype>
+#include <string>
+#include <string_view>
 #include <vector>
 #include <winrt/Microsoft.UI.Xaml.Documents.h>
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
@@ -107,11 +109,20 @@ RichTextBlock RichParagraph(const JsonArray &runs, bool darkCanvas, SearchTerms 
 }
 } // namespace
 
-winrt::Windows::Foundation::Uri LocalAssetUri(const winrt::hstring &path) {
-    const bool drive = path.size() >= 3 && std::iswalpha(path[0]) && path[1] == L':' &&
-        (path[2] == L'\\' || path[2] == L'/');
+winrt::Windows::Foundation::Uri LocalAssetUri(const winrt::hstring &assetPath) {
+    const auto isDrivePath = [](std::wstring_view path) {
+        return path.size() >= 3 && std::iswalpha(path[0]) && path[1] == L':' &&
+            (path[2] == L'\\' || path[2] == L'/');
+    };
+    std::wstring path{assetPath};
+    // Canonical Windows paths use a verbatim prefix. A file URI needs the
+    // corresponding DOS or UNC path, or the prefix becomes part of its host.
+    constexpr std::wstring_view verbatim = LR"(\\?\)", verbatimUnc = LR"(\\?\UNC\)";
+    if (path.starts_with(verbatimUnc)) path.replace(0, verbatimUnc.size(), LR"(\\)");
+    else if (path.starts_with(verbatim) && isDrivePath(std::wstring_view{path}.substr(verbatim.size())))
+        path.erase(0, verbatim.size());
     const bool unc = path.size() > 2 && path[0] == L'\\' && path[1] == L'\\';
-    winrt::check_hresult(drive || unc ? S_OK : E_INVALIDARG);
+    winrt::check_hresult(isDrivePath(path) || unc ? S_OK : E_INVALIDARG);
     std::vector<wchar_t> buffer(std::max<std::size_t>(2084, path.size() * 3 + 32));
     auto length = static_cast<DWORD>(buffer.size());
     winrt::check_hresult(UrlCreateFromPathW(path.c_str(), buffer.data(), &length, 0));

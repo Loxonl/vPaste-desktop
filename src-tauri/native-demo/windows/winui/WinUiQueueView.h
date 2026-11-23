@@ -62,7 +62,7 @@ public:
     QueueView &operator=(QueueView &&) noexcept;
 
     winrt::Microsoft::UI::Xaml::FrameworkElement Root() const;
-    void SetState(winrt::Windows::Data::Json::JsonObject const &state);
+    void SetState(winrt::Windows::Data::Json::JsonObject const &state, bool preserveFeedback = false);
     bool Receive(winrt::Windows::Data::Json::JsonObject const &response);
     void SetError(const std::wstring &message);
     void SetLanguage(bool english);

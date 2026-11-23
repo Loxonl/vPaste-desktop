@@ -172,6 +172,15 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         return request ? request(op, latest, text) : 0;
     }
 
+    bool HasOcrDraft() const {
+        return !editorWindow && form && (form->composing || NormalizedLines(form->field.Text()) != form->original);
+    }
+
+    HWND ZOrder() const {
+        return !editorWindow && form && !(pin.IsChecked() && pin.IsChecked().Value())
+            ? HWND_NOTOPMOST : HWND_TOPMOST;
+    }
+
     bool HandleKey(unsigned key, bool repeated, bool control, bool shift, bool alt, bool composing,
         winrt::Windows::Foundation::IInspectable const &origin = nullptr) {
         if (composing || alt || (form && form->composing)) return false;
@@ -240,7 +249,8 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
                 if (LOWORD(wparam) == WA_INACTIVE) self->EndCaptionDrag();
                 if (self->editorWindow && self->committed && !self->retired)
                     self->Send(LOWORD(wparam) == WA_INACTIVE ? L"nativeEditorFocusOut" : L"nativeEditorFocusIn");
-                else if (LOWORD(wparam) == WA_INACTIVE && self->committed && !self->retired)
+                else if (LOWORD(wparam) == WA_INACTIVE && self->committed && !self->retired &&
+                         !self->HasOcrDraft())
                     self->Send(L"nativeReaderBlur");
                 break;
             case WM_DPICHANGED: {
@@ -271,13 +281,13 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         return DefWindowProcW(handle, message, wparam, lparam);
     }
 
-    void Build() {
+    void Build(bool ocr) {
         if (window) return;
         WNDCLASSEXW type{sizeof(WNDCLASSEXW)};
         type.lpfnWndProc = WindowProc; type.hInstance = GetModuleHandleW(nullptr);
         type.hCursor = LoadCursorW(nullptr, IDC_ARROW); type.lpszClassName = ReaderClass;
         if (!RegisterClassExW(&type) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) winrt::throw_last_error();
-        window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, ReaderClass, L"vPaste",
+        window = CreateWindowExW(WS_EX_TOOLWINDOW | (ocr ? 0 : WS_EX_TOPMOST), ReaderClass, L"vPaste",
             WS_POPUP | WS_THICKFRAME | WS_SYSMENU, 0, 0, 760, 560,
             nullptr, nullptr, GetModuleHandleW(nullptr), this);
         winrt::check_bool(window != nullptr);
@@ -353,6 +363,8 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         pin.Click([weak](auto const &, auto const &) {
             if (auto self = weak.lock(); self && self->committed == self->latest) {
                 self->Send(self->pin.IsChecked() && self->pin.IsChecked().Value() ? L"nativeReaderPin" : L"nativeReaderUnpin");
+                if (self->form && !self->editorWindow)
+                    SetWindowPos(self->window, self->ZOrder(), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
                 self->ApplyAppearance();
             }
         });
@@ -472,7 +484,7 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
 
     void Place(RECT const &rect) {
         const auto previous = std::exchange(placing, true);
-        const auto moved = SetWindowPos(window, HWND_TOPMOST, rect.left, rect.top,
+        const auto moved = SetWindowPos(window, ZOrder(), rect.left, rect.top,
             rect.right - rect.left, rect.bottom - rect.top, SWP_NOACTIVATE);
         placing = previous;
         winrt::check_bool(moved);
@@ -636,6 +648,7 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         FinishContentTransition();
         if (contentFocus) ResetFeedbackOpacity(contentFocus);
         pending = nullptr; displayed = nullptr;
+        if (form && form->discard) std::exchange(form->discard, nullptr).Hide();
         form.reset();
         if (body) body.Children().Clear();
         if (pin) { pin.IsChecked(false); pin.IsEnabled(false); }
@@ -737,14 +750,17 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         }
     }
 
-    static winrt::fire_and_forget WaitForDiscard(std::weak_ptr<Impl> owner, ContentDialog dialog) {
+    static winrt::fire_and_forget WaitForDiscard(std::weak_ptr<Impl> owner, ContentDialog dialog,
+                                                std::function<void()> discardAction) {
         try {
             const auto result = co_await dialog.ShowAsync();
             const auto self = owner.lock();
             if (!self || !self->form || self->form->discard != dialog) co_return;
             self->form->discard = nullptr;
-            if (result == ContentDialogResult::Primary) self->Send(L"nativeEditorClose");
-            else self->FocusContent();
+            if (result == ContentDialogResult::Primary) {
+                if (discardAction) discardAction();
+                else self->Send(self->editorWindow ? L"nativeEditorClose" : L"nativeReaderClose");
+            } else self->FocusContent();
         } catch (winrt::hresult_error const &error) {
             if (const auto self = owner.lock(); self && self->form && self->form->discard == dialog) {
                 self->form->discard = nullptr;
@@ -754,20 +770,20 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         }
     }
 
-    void ConfirmDiscard() {
+    void ConfirmDiscard(std::function<void()> discardAction) {
         form->discard = MakeConfirmationDialog(root, Text(L"放弃修改？", L"Discard changes?"),
             Text(L"尚未保存的修改将丢失。", L"Your unsaved changes will be lost."),
             Text(L"放弃修改", L"Discard changes"), Text(L"继续编辑", L"Keep editing"));
-        WaitForDiscard(weak_from_this(), form->discard);
+        WaitForDiscard(weak_from_this(), form->discard, std::move(discardAction));
     }
 
-    void CloseForm() {
+    void CloseForm(std::function<void()> discardAction = {}) {
         if (!form || !committed || latest != committed || form->discard || form->composing) return;
         EndCaptionDrag();
-        if (!editorWindow) { Send(L"nativeReaderClose"); return; }
-        if (form->action) return;
-        if (NormalizedLines(form->field.Text()) != form->original) ConfirmDiscard();
-        else Send(L"nativeEditorClose");
+        if (editorWindow && form->action) return;
+        if (NormalizedLines(form->field.Text()) != form->original) ConfirmDiscard(std::move(discardAction));
+        else if (discardAction) discardAction();
+        else Send(editorWindow ? L"nativeEditorClose" : L"nativeReaderClose");
     }
 
     Grid BuildForm(JsonObject const &data, std::uint64_t generation) {
@@ -949,7 +965,8 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
     void Show(JsonObject const &data) {
         const auto generation = static_cast<std::uint64_t>(data.GetNamedNumber(L"generation"));
         if (generation < latest || generation == committed || (generation == latest && retired)) return;
-        Begin(generation); Build();
+        const auto kind = data.GetNamedString(L"kind");
+        Begin(generation); Build(kind == L"ocr");
         const auto rect = data.GetNamedObject(L"rect");
         const auto number = [&](wchar_t const *key) {
             const auto value = rect.GetNamedNumber(key);
@@ -967,7 +984,6 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         takesFocus = data.GetNamedBoolean(L"takesFocus", false);
         hover = data.GetNamedBoolean(L"hover", false);
         handoffWindow = reinterpret_cast<HWND>(static_cast<std::uintptr_t>(data.GetNamedNumber(L"handoffWindow", 0)));
-        const auto kind = data.GetNamedString(L"kind");
         Grid content;
         const auto caption = data.GetNamedString(L"caption", L"");
         if (!caption.empty() && kind != L"files") {
@@ -1149,6 +1165,12 @@ void Reader::SetAppearance(bool english, ElementTheme theme) {
     impl_->english = english; impl_->theme = theme; impl_->ApplyAppearance();
 }
 std::uint64_t Reader::Generation() const noexcept { return impl_->committed; }
+bool Reader::HasOcrDraft() const { return impl_->HasOcrDraft(); }
+void Reader::CloseOcrDraft(std::function<void()> discardAction) {
+    if (!impl_->HasOcrDraft()) return;
+    if (GetForegroundWindow() != impl_->window) (void)ActivateWindowFromBackground(impl_->window);
+    impl_->CloseForm(std::move(discardAction));
+}
 std::uintptr_t ReaderWindowHandle() noexcept {
     return reinterpret_cast<std::uintptr_t>(publishedWindow.load(std::memory_order_acquire));
 }
@@ -1180,6 +1202,9 @@ bool IsSvgImagePath(std::wstring_view path) noexcept {
 }
 #ifdef _DEBUG
 FrameworkElement Reader::TestRoot() const { return impl_->root; }
+FrameworkElement Reader::TestDiscardDialog() const {
+    return impl_->form && impl_->form->discard ? impl_->form->discard.as<FrameworkElement>() : nullptr;
+}
 
 winrt::Windows::Foundation::IAsyncAction TestBatch2ReaderControls(std::vector<std::string> &failures) {
     // 验证图片解码宽度的防放大与 D3D 16384px 安全限制。
@@ -1475,6 +1500,8 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
     reader.Receive(message(L"nativeReaderHide", 10));
 
     stage = 121;
+    winrt::check_hresult(LocalAssetUri(LR"(\\?\UNC\fixture.invalid\sample #.png)").AbsoluteUri() ==
+        LocalAssetUri(LR"(\\fixture.invalid\sample #.png)").AbsoluteUri() ? S_OK : E_FAIL);
     struct ImageFixture {
         std::wstring path;
         ~ImageFixture() { if (!path.empty()) DeleteFileW(path.c_str()); }
@@ -1497,7 +1524,7 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
     }
     auto image = text(11, L""); auto imageData = image.GetNamedObject(L"data");
     imageData.Insert(L"kind", JsonValue::CreateStringValue(L"image"));
-    imageData.Insert(L"imagePath", JsonValue::CreateStringValue(fixture.path));
+    imageData.Insert(L"imagePath", JsonValue::CreateStringValue(LR"(\\?\)" + fixture.path));
     imageData.Insert(L"caption", JsonValue::CreateStringValue(L"图片 #100%.bmp"));
     imageData.Insert(L"detail", JsonValue::CreateStringValue(fixture.path));
     reader.Receive(image);
@@ -1755,6 +1782,24 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
     // Deliver a poll without allowing a queued TextChanged event to run first.
     reader.Receive(JsonObject::Parse(LR"({"op":"nativeOcrState","data":{"generation":205,"record":{"status":"complete","text":"晚到的识别结果","error":null}}})"));
     winrt::check_hresult(field.Text() == L"改过的文本" && state->form->edited && !state->form->work.IsActive() ? S_OK : E_FAIL);
+    stage = 12453;
+    winrt::check_hresult(!state->pin.IsChecked().Value() &&
+        !(GetWindowLongPtrW(handle, GWL_EXSTYLE) & WS_EX_TOPMOST) ? S_OK : E_FAIL);
+    const auto beforeBlur = events.size();
+    SendMessageW(handle, WM_ACTIVATE, WA_INACTIVE, 0);
+    winrt::check_hresult(events.size() == beforeBlur && IsWindowVisible(handle) && field.Text() == L"改过的文本" ? S_OK : E_FAIL);
+    stage = 12454;
+    state->CloseForm();
+    const auto keep = state->form->discard;
+    winrt::check_hresult(keep && keep.CloseButtonText() == L"继续编辑" && keep.PrimaryButtonText() == L"放弃修改" ? S_OK : E_FAIL);
+    keep.Hide();
+    const auto waitForClose = [&]() -> winrt::Windows::Foundation::IAsyncAction {
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (state->form->discard && std::chrono::steady_clock::now() < until) co_await NextNativeFrame();
+        winrt::check_hresult(!state->form->discard ? S_OK : E_FAIL);
+    };
+    co_await waitForClose();
+    winrt::check_hresult(IsWindowVisible(handle) && reader.HasOcrDraft() && field.Text() == L"改过的文本" ? S_OK : E_FAIL);
     stage = 1246;
     Peers::ButtonAutomationPeer(state->form->primary).GetPattern(Peers::PatternInterface::Invoke).as<Provider::IInvokeProvider>().Invoke();
     co_await NextNativeFrame();
@@ -1766,6 +1811,25 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
     winrt::check_hresult(state->form->copyError.IsOpen() && state->form->primary.IsEnabled() ? S_OK : E_FAIL);
     co_await NextNativeFrame();
     winrt::check_hresult(alignedOcrPanes() ? S_OK : E_FAIL);
+    stage = 12455;
+    SendMessageW(handle, WM_CLOSE, 0, 0);
+    const auto discard = state->form->discard;
+    winrt::check_hresult(discard ? S_OK : E_FAIL);
+    const auto primary = [&](auto const &self, DependencyObject const &element) -> Button {
+        if (const auto button = element.try_as<Button>(); button && button.Name() == L"PrimaryButton") return button;
+        for (int i = 0; i < VisualTreeHelper::GetChildrenCount(element); ++i)
+            if (const auto button = self(self, VisualTreeHelper::GetChild(element, i))) return button;
+        return nullptr;
+    };
+    Button discardButton{nullptr};
+    for (int frame = 0; frame < 30 && !discardButton; ++frame) {
+        co_await NextNativeFrame();
+        discardButton = primary(primary, discard);
+    }
+    winrt::check_hresult(discardButton && discardButton.IsLoaded() ? S_OK : E_FAIL);
+    Peers::ButtonAutomationPeer(discardButton).GetPattern(Peers::PatternInterface::Invoke).as<Provider::IInvokeProvider>().Invoke();
+    co_await waitForClose();
+    winrt::check_hresult(events.back() == std::pair<std::wstring, std::uint64_t>{L"nativeReaderClose", 205} ? S_OK : E_FAIL);
     reader.Receive(message(L"nativeReaderHide", 206));
     reader.Receive(JsonObject::Parse(LR"({"op":"nativeOcrState","data":{"generation":205,"record":{"status":"complete","text":"after close","error":null}}})"));
     winrt::check_hresult(!state->form && !IsWindowVisible(handle) ? S_OK : E_FAIL);
@@ -1835,6 +1899,25 @@ winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage
     }
     stage = 12475;
     winrt::check_hresult(ReaderWindowHandle() == reinterpret_cast<std::uintptr_t>(handle) ? S_OK : E_FAIL);
+    if (const auto length = GetEnvironmentVariableW(L"VPASTE_WINUI_READER_GIF", nullptr, 0)) {
+        stage = 12477;
+        std::wstring path(length, L'\0');
+        const auto size = GetEnvironmentVariableW(L"VPASTE_WINUI_READER_GIF", path.data(), length);
+        winrt::check_hresult(size && size < length ? S_OK : E_FAIL);
+        path.resize(size);
+        auto gif = text(207, L"");
+        const auto data = gif.GetNamedObject(L"data");
+        data.Insert(L"kind", JsonValue::CreateStringValue(L"image"));
+        data.Insert(L"imagePath", JsonValue::CreateStringValue(path));
+        reader.Receive(gif);
+        for (int frame = 0; frame < 180 && state->committed != 207; ++frame) co_await NextNativeFrame();
+        winrt::check_hresult(state->committed == 207 ? S_OK : E_FAIL);
+        const auto control = state->displayed.as<Grid>().Children().GetAt(0).as<Grid>().Children().GetAt(0)
+            .as<Grid>().Children().GetAt(1).as<Image>();
+        const auto bitmap = control.Source().as<Imaging::BitmapImage>();
+        winrt::check_hresult(bitmap.IsAnimatedBitmap() && (!NativeAnimationsEnabled() || bitmap.IsPlaying()) ? S_OK : E_FAIL);
+        reader.Receive(message(L"nativeReaderHide", 208));
+    }
 }
 #endif
 }

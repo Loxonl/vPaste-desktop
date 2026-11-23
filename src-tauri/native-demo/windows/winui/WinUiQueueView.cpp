@@ -147,6 +147,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
     bool showError = false;
     std::wstring draggingHash;
     JsonObject pendingDragState{nullptr};
+    bool pendingDragStatePreservesFeedback = false;
     bool suppressDragPaste = false;
     winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer dragScroll{nullptr};
     winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer undoExpiry{nullptr};
@@ -566,10 +567,11 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         }
         dragMetrics.clear(); dragSourceOrder.clear(); dragTransition = nullptr;
         const auto latest = std::exchange(pendingDragState, nullptr);
+        const bool preserveFeedback = std::exchange(pendingDragStatePreservesFeedback, false);
         pointerId = 0;
         if (auto owner = std::exchange(pointerOwner, nullptr)) owner.ReleasePointerCaptures();
         if (!source.empty() && request) request(L"dragEnd", {}, {});
-        if (latest) SetState(latest);
+        if (latest) SetState(latest, preserveFeedback);
     }
 
     bool BeginReorder(const std::wstring &hash) {
@@ -996,16 +998,18 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         RestoreRowFocus();
     }
 
-    bool SetState(JsonObject const &nextState) {
+    bool SetState(JsonObject const &nextState, bool preserveFeedback = false) {
+        const auto nextRevision = static_cast<std::uint64_t>(nextState.GetNamedNumber(L"revision", 0));
+        if (hasRevision && (nextRevision < lastRevision || (preserveFeedback && nextRevision == lastRevision))) return false;
         if (!draggingHash.empty()) {
-            if (!pendingDragState || nextState.GetNamedNumber(L"revision", 0) >= pendingDragState.GetNamedNumber(L"revision", 0)) {
+            const auto deferredRevision = pendingDragState
+                ? static_cast<std::uint64_t>(pendingDragState.GetNamedNumber(L"revision", 0)) : 0;
+            if (!pendingDragState || nextRevision > deferredRevision || (nextRevision == deferredRevision && !preserveFeedback)) {
                 pendingDragState = nextState;
+                pendingDragStatePreservesFeedback = preserveFeedback;
             }
             return false;
         }
-        const auto nextRevision = static_cast<std::uint64_t>(
-            nextState.GetNamedNumber(L"revision", 0));
-        if (hasRevision && nextRevision < lastRevision) return false;
         if (!orderBeforePointerDrop.empty() && pendingRequest && nextRevision == lastRevision) return false;
         lastRevision = nextRevision;
         hasRevision = true;
@@ -1050,19 +1054,17 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
             }
         }
 
-        winrt::hstring error;
-        failedHash.clear();
-        if (state.HasKey(L"error") && state.GetNamedValue(L"error").ValueType() == JsonValueType::Object) {
-            const auto failure = state.GetNamedObject(L"error");
-            error = failure.GetNamedString(L"message", L"");
-            const auto hash = failure.GetNamedValue(L"hash", nullptr);
-            if (hash && hash.ValueType() == JsonValueType::String) failedHash = hash.GetString();
-        }
-        showError = !error.empty();
-        if (showError) {
+        if (!preserveFeedback) {
+            winrt::hstring error;
+            failedHash.clear();
+            if (state.HasKey(L"error") && state.GetNamedValue(L"error").ValueType() == JsonValueType::Object) {
+                const auto failure = state.GetNamedObject(L"error");
+                error = failure.GetNamedString(L"message", L"");
+                const auto hash = failure.GetNamedValue(L"hash", nullptr);
+                if (hash && hash.ValueType() == JsonValueType::String) failedHash = hash.GetString();
+            }
+            showError = !error.empty();
             status.Text(error);
-        } else {
-            status.Text(L"");
         }
         RenderItems();
         return true;
@@ -1091,7 +1093,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         retryFailed.Content(winrt::box_value(Text(L"重试", L"Retry")));
         removeFailed.Content(winrt::box_value(Text(L"删除", L"Delete")));
         Automation::AutomationProperties::SetName(removeFailed, Text(L"删除失败项", L"Delete failed item"));
-        NameIconButton(closeButton, Text(L"退出粘贴队列", L"Exit Paste Queue"));
+        NameIconButton(closeButton, Text(L"退出并清空粘贴队列", L"Exit Paste Queue and clear items"));
         LocalizeConfirmation();
         const auto emptyTitle = emptyState.Children().GetAt(1).try_as<TextBlock>();
         const auto emptyDescription = emptyState.Children().GetAt(2).try_as<TextBlock>();
@@ -1153,8 +1155,8 @@ FrameworkElement QueueView::Root() const {
     return m_impl ? m_impl->root : FrameworkElement{nullptr};
 }
 
-void QueueView::SetState(JsonObject const &state) {
-    if (m_impl) m_impl->SetState(state);
+void QueueView::SetState(JsonObject const &state, bool preserveFeedback) {
+    if (m_impl) m_impl->SetState(state, preserveFeedback);
 }
 
 bool QueueView::Receive(JsonObject const &response) {

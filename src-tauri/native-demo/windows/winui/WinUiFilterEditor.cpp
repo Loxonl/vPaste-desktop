@@ -3,6 +3,7 @@
 #include "WinUiFilterEditor.h"
 #include "WinUiAppearance.h"
 #include "WinUiNameEmoji.h"
+#include "WinUiEditorKeys.h"
 #include "WinUiRichContent.h"
 
 #include <algorithm>
@@ -129,8 +130,7 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
     void Hide() {
         active = false; pending = 0; sourcesRequest = 0; busy = false;
         if (sourceButton && sourceButton.Flyout()) sourceButton.Flyout().Hide();
-        if (const auto previous = std::exchange(flyout, nullptr)) previous.Hide();
-        if (const auto callback = std::exchange(returnFocus, {})) callback();
+        CloseEditorFlyout(std::exchange(flyout, nullptr), std::exchange(returnFocus, {}));
     }
 
     winrt::hstring Text(const wchar_t *zh, const wchar_t *en) const { return english ? en : zh; }
@@ -272,7 +272,10 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
         this->operation = operation;
         try {
             pending = request(operation, payload);
-            if (!pending) winrt::throw_hresult(E_UNEXPECTED);
+            if (!pending) {
+                SetBusy(false);
+                SetError(Text(L"保存请求未发送，请重试", L"Could not send the save request. Try again."));
+            }
         } catch (const winrt::hresult_error &failure) {
             pending = 0; SetBusy(false); SetError(failure.message());
         }
@@ -320,8 +323,8 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
     void Save() {
         if (!active || busy) return;
         const auto text = std::wstring{name.Text()};
-        // 保持原有空白名称拦截规则：避免用户漏填名称直接创建空白筛选。
-        if (text.find_first_not_of(L" \t\r\n") == std::wstring::npos || (text.size() > 20 && text != originalName)) {
+        if (text.find_first_not_of(L" \t\r\n") == std::wstring::npos) name.Text(Text(L"新筛选", L"New filter"));
+        else if (text.size() > 20 && text != originalName) {
             SetError(Text(L"请输入 1–20 个字符的筛选名称", L"Use a filter name of 1–20 characters")); name.Focus(FocusState::Programmatic); return;
         }
         // Clone rather than mutate the active tab before persistence succeeds.
@@ -432,6 +435,14 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
         save.Click([weak](auto const &sender, auto const &) {
             if (auto self = weak.lock(); self && sender == self->save) self->Save();
         }); actions.Children().Append(save);
+        for (const auto &field : {name, amount}) {
+            BindSingleLineEditorKeys(field, [weak](auto const &sender, bool submit) {
+                if (const auto self = weak.lock(); self && self->active && !self->busy &&
+                    (sender == self->name || sender == self->amount)) {
+                    if (submit) self->Save(); else self->Hide();
+                }
+            });
+        }
         const auto footer = AuxiliaryFooter(actions);
         Grid::SetRow(footer, 3); root.Children().Append(footer);
         root.Unloaded([weak](auto const &sender, auto const &) {
@@ -754,7 +765,20 @@ winrt::Windows::Foundation::IAsyncAction TestFilterEditorControls(FrameworkEleme
     winrt::check_hresult(!root.IsLoaded() && !editor.IsOpen() ? S_OK : E_FAIL);
     reply(unloaded, L"filtersSave");
     winrt::check_hresult(saved == 1 ? S_OK : E_FAIL);
+
+    stage = 872;
+    draft = JsonObject::Parse(LR"({"name":"","filter":{}})");
+    mount(); co_await NextNativeFrame(); editor.TestName(L"  "); editor.TestSave();
+    const auto defaultSave = requests.back();
+    winrt::check_hresult(editor.IsOpen() && editor.TestName() == L"New filter" &&
+        defaultSave.GetNamedObject(L"tab").GetNamedString(L"name") == editor.TestName() ? S_OK : E_FAIL);
+    reply(defaultSave, L"filtersSave", L"Synthetic default save failure");
+    winrt::check_hresult(editor.IsOpen() && editor.TestName() == L"New filter" &&
+        root.Children().GetAt(2).as<TextBlock>().Text() == L"Synthetic default save failure" ? S_OK : E_FAIL);
+    editor.TestSave(); reply(requests.back(), L"filtersSave");
+    winrt::check_hresult(!editor.IsOpen() && saved == 2 ? S_OK : E_FAIL);
     editor.Hide();
+    fixture.Child(nullptr);
 }
 #endif
 } // namespace vpaste::winui

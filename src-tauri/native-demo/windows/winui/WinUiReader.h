@@ -22,8 +22,11 @@ public:
     void Receive(winrt::Windows::Data::Json::JsonObject const &response);
     void SetAppearance(bool english, winrt::Microsoft::UI::Xaml::ElementTheme theme);
     std::uint64_t Generation() const noexcept;
+    bool HasOcrDraft() const;
+    void CloseOcrDraft(std::function<void()> discardAction = {});
 #ifdef _DEBUG
     winrt::Microsoft::UI::Xaml::FrameworkElement TestRoot() const;
+    winrt::Microsoft::UI::Xaml::FrameworkElement TestDiscardDialog() const;
     friend winrt::Windows::Foundation::IAsyncAction TestReaderControls(std::uint32_t &stage);
     friend winrt::Windows::Foundation::IAsyncAction TestBatch2ReaderControls(std::vector<std::string> &failures);
 #endif

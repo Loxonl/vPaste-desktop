@@ -116,6 +116,7 @@
     <ClInclude Include="WinUiKeyboard.h" />
     <ClInclude Include="WinUiHistoryViewport.h" />
     <ClInclude Include="WinUiRecordTagEditor.h" />
+    <ClInclude Include="WinUiEditorKeys.h" />
     <ClInclude Include="WinUiCardContent.h" />
     <ClInclude Include="WinUiAppActions.h" />
     <ClInclude Include="WinUiHeaderArtwork.h" />

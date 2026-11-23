@@ -3,6 +3,7 @@
 #include "WinUiRecordTagEditor.h"
 #include "WinUiAppearance.h"
 #include "WinUiNameEmoji.h"
+#include "WinUiEditorKeys.h"
 #include <algorithm>
 #include <utility>
 #include <vector>
@@ -67,6 +68,10 @@ struct RecordTagEditor::Impl : std::enable_shared_from_this<RecordTagEditor::Imp
     void Error(winrt::hstring const &message) {
         error.Message(message); error.IsOpen(!message.empty());
     }
+    void SaveError(winrt::hstring const &message) {
+        Error((createdForItem ? Text(L"标签已创建，但添加失败。重试不会重复创建。\n",
+            L"Tag created, but assignment failed. Retry will not create another tag.\n") : winrt::hstring{}) + message);
+    }
     void Send(wchar_t const *op) {
         if (!active || busy || !root.IsLoaded() || !request) return;
         Error(L"");
@@ -78,16 +83,20 @@ struct RecordTagEditor::Impl : std::enable_shared_from_this<RecordTagEditor::Imp
         operation = op; busy = true; Enabled();
         try {
             pending = request(op, payload);
-            if (!pending) winrt::throw_hresult(E_UNEXPECTED);
+            if (!pending) {
+                busy = false; Enabled();
+                SaveError(Text(L"保存请求未发送，请重试", L"Could not send the save request. Try again."));
+            }
         } catch (winrt::hresult_error const &failure) {
-            busy = false; pending = 0; Enabled(); Error(failure.message());
+            busy = false; pending = 0; Enabled(); SaveError(failure.message());
         }
     }
     void Save() {
         if (!active || busy) return;
         if (createdForItem) { Send(L"recordTagAssign"); return; }
         const std::wstring value{name.Text()};
-        if (value.find_first_not_of(L" \t\r\n") == value.npos || (value.size() > 20 && value != originalName)) {
+        if (value.find_first_not_of(L" \t\r\n") == value.npos) name.Text(Text(L"新标签", L"New tag"));
+        else if (value.size() > 20 && value != originalName) {
             Error(Text(L"请输入 1–20 个字符的标签名称", L"Use a tag name of 1–20 characters"));
             name.Focus(FocusState::Programmatic); return;
         }
@@ -95,8 +104,7 @@ struct RecordTagEditor::Impl : std::enable_shared_from_this<RecordTagEditor::Imp
     }
     void Hide() {
         active = false; pending = 0; busy = false;
-        if (const auto previous = std::exchange(flyout, nullptr)) previous.Hide();
-        if (const auto callback = std::exchange(returnFocus, {})) callback();
+        CloseEditorFlyout(std::exchange(flyout, nullptr), std::exchange(returnFocus, {}));
     }
     void Build(std::int64_t id, std::wstring const &text, std::wstring const &itemHash, bool useEnglish) {
         tagId = id; originalName = text; hash = itemHash; english = useEnglish;
@@ -129,12 +137,9 @@ struct RecordTagEditor::Impl : std::enable_shared_from_this<RecordTagEditor::Imp
         close.Click([weak](auto const &sender, auto const &) {
             if (auto self = weak.lock(); self && !self->busy && sender == self->close) self->Hide();
         });
-        name.KeyDown([weak](auto const &sender, auto const &args) {
-            if (static_cast<std::uint32_t>(args.OriginalKey()) == VK_PROCESSKEY) return;
-            if (args.Key() == winrt::Windows::System::VirtualKey::Enter && !args.KeyStatus().WasKeyDown) {
-                if (auto self = weak.lock(); self && sender == self->name) {
-                    self->Save(); args.Handled(true);
-                }
+        BindSingleLineEditorKeys(name, [weak](auto const &sender, bool submit) {
+            if (const auto self = weak.lock(); self && self->active && !self->busy && sender == self->name) {
+                if (submit) self->Save(); else self->Hide();
             }
         });
         root.Unloaded([weak](auto const &sender, auto const &) {
@@ -188,8 +193,7 @@ void RecordTagEditor::Receive(JsonObject const &response) {
     m_impl->pending = 0; m_impl->busy = false;
     if (response.HasKey(L"error")) {
         m_impl->Enabled();
-        m_impl->Error((m_impl->createdForItem ? m_impl->Text(L"标签已创建，但添加失败。重试不会重复创建。\n",
-            L"Tag created, but assignment failed. Retry will not create another tag.\n") : winrt::hstring{}) + response.GetNamedString(L"error"));
+        m_impl->SaveError(response.GetNamedString(L"error"));
         return;
     }
     if (m_impl->operation == L"recordTagCreate" || m_impl->operation == L"recordTagRename") {
@@ -255,9 +259,11 @@ winrt::Windows::Foundation::IAsyncAction TestRecordTagEditorControls(FrameworkEl
     mount(0, L"", L"", false); co_await NextNativeFrame();
     winrt::check_hresult(editor.IsOpen() && input().IsLoaded() && input().MaxLength() == 20 ? S_OK : E_FAIL);
     invoke(button(1)); co_await NextNativeFrame();
-    winrt::check_hresult(requests.empty() && error().IsOpen() ? S_OK : E_FAIL);
+    winrt::check_hresult(requests.size() == 1 && requests.back().GetNamedString(L"name") == input().Text() && !input().Text().empty() ? S_OK : E_FAIL);
+    reply(requests.back(), JsonObject{}, L"Default name already exists");
+    winrt::check_hresult(error().IsOpen() && button(1).IsEnabled() ? S_OK : E_FAIL);
     input().Text(L"Keep this draft"); invoke(button(1)); co_await NextNativeFrame(); editor.TestSave();
-    winrt::check_hresult(requests.size() == 1 && !button(1).IsEnabled() &&
+    winrt::check_hresult(requests.size() == 2 && !button(1).IsEnabled() &&
         requests.back().GetNamedString(L"op") == L"recordTagCreate" && requests.back().GetNamedString(L"name") == L"Keep this draft" ? S_OK : E_FAIL);
     const auto firstRequest = requests.back();
     editor.Receive(JsonObject::Parse(LR"({"id":999,"op":"recordTagCreate","data":{"tag":{"id":9,"name":"Wrong"}}})"));
@@ -267,21 +273,22 @@ winrt::Windows::Foundation::IAsyncAction TestRecordTagEditorControls(FrameworkEl
     reply(firstRequest, JsonObject{}, L"Synthetic storage failure");
     winrt::check_hresult(error().IsOpen() && button(1).IsEnabled() && input().Text() == L"Keep this draft" ? S_OK : E_FAIL);
     invoke(button(0)); co_await NextNativeFrame();
-    winrt::check_hresult(!editor.IsOpen() && requests.size() == 1 && saved.empty() ? S_OK : E_FAIL);
+    winrt::check_hresult(!editor.IsOpen() && requests.size() == 2 && saved.empty() ? S_OK : E_FAIL);
 
     stage = 64;
     mount(0, L"Work", L"captured-card"); co_await NextNativeFrame();
+    const auto beforeCreate = requests.size();
     invoke(button(1)); co_await NextNativeFrame();
     const auto create = requests.back();
     reply(create, JsonObject::Parse(LR"({"tag":{"id":9,"name":"Work"},"items":[{"id":9,"name":"Work"}]})"));
     const auto assignment = requests.back();
-    winrt::check_hresult(requests.size() == 3 && assignment.GetNamedString(L"op") == L"recordTagAssign" &&
+    winrt::check_hresult(requests.size() == beforeCreate + 2 && assignment.GetNamedString(L"op") == L"recordTagAssign" &&
         assignment.GetNamedNumber(L"tagId") == 9 && assignment.GetNamedString(L"hash") == L"captured-card" && saved.empty() ? S_OK : E_FAIL);
     reply(assignment, JsonObject{}, L"Synthetic missing card");
     winrt::check_hresult(error().IsOpen() && input().IsReadOnly() && button(1).IsEnabled() &&
         !TryApplyNameEmoji(input(), L"📌") && std::wstring{error().Message()}.find(L"Tag created") != std::wstring::npos ? S_OK : E_FAIL);
     editor.TestSave(); editor.TestSave();
-    winrt::check_hresult(requests.size() == 4 && requests.back().GetNamedString(L"op") == L"recordTagAssign" &&
+    winrt::check_hresult(requests.size() == beforeCreate + 3 && requests.back().GetNamedString(L"op") == L"recordTagAssign" &&
         requests.back().GetNamedNumber(L"tagId") == 9 && requests.back().GetNamedString(L"hash") == L"captured-card" ? S_OK : E_FAIL);
     reply(requests.back(), JsonObject{});
     winrt::check_hresult(!editor.IsOpen() && saved.size() == 1 && saved.back() == std::pair<std::wstring, std::int64_t>{L"recordTagAssign", 9} ? S_OK : E_FAIL);
@@ -308,6 +315,24 @@ winrt::Windows::Foundation::IAsyncAction TestRecordTagEditorControls(FrameworkEl
     winrt::check_hresult(input().Text() == legacy && input().MaxLength() == 32 ? S_OK : E_FAIL);
     invoke(button(0)); co_await NextNativeFrame();
     winrt::check_hresult(requests.size() == beforeLegacy ? S_OK : E_FAIL);
+
+    stage = 66;
+    mount(0, L"  ", L""); co_await NextNativeFrame();
+    editor.TestSave();
+    const auto defaultSave = requests.back();
+    winrt::check_hresult(editor.IsOpen() && input().Text() == L"New tag" &&
+        defaultSave.GetNamedString(L"name") == input().Text() ? S_OK : E_FAIL);
+    reply(defaultSave, JsonObject::Parse(LR"({"tag":{"id":11,"name":"New tag"}})"));
+    winrt::check_hresult(!editor.IsOpen() && saved.back() == std::pair<std::wstring, std::int64_t>{L"recordTagCreate", 11} ? S_OK : E_FAIL);
+
+    stage = 67;
+    mount(0, L"Discard assignment", L"captured-card"); co_await NextNativeFrame();
+    editor.TestSave();
+    const auto abandonedCreate = requests.back();
+    const auto abandonedCount = requests.size();
+    editor.Hide();
+    reply(abandonedCreate, JsonObject::Parse(LR"({"tag":{"id":12,"name":"Discard assignment"}})"));
+    winrt::check_hresult(!editor.IsOpen() && requests.size() == abandonedCount && saved.size() == 2 ? S_OK : E_FAIL);
 
     fixture.Child(nullptr);
 }

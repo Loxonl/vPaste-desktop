@@ -243,11 +243,34 @@ final class NativePanelSearchTests: XCTestCase {
     }
   }
 
+  func testRemovingActiveTabRevalidatesPreviewWithoutClearingItFirst() throws {
+    let review: [String: Any] = ["id": "record:7", "name": "Review", "label": "review", "record": true]
+    try withPanel(tab: review, keywords: "result") { controller, search, editor in
+      let window = try XCTUnwrap(search.window as? NativeHistoryPanel)
+      _ = controller.control(search, textView: editor, doCommandBy: #selector(NSResponder.moveDown(_:)))
+      _ = window.keyHandler?(try key(49, characters: " ", window: window))
+      XCTAssertEqual(searchRequests.last { $0["op"] as? String == "preview-toggle" }?["hash"] as? String, "A")
+      searchRequests.removeAll()
+
+      controller.bridge.receive(["session": 42, "event": "tabs-changed"])
+      let tabs = try XCTUnwrap(searchRequests.last { $0["op"] as? String == "tabs" })
+      reply(controller, tabs, data: [[String: Any]]())
+      let open = try XCTUnwrap(searchRequests.last { $0["op"] as? String == "open" })
+      XCTAssertEqual(open["tabId"] as? String, "all")
+      XCTAssertEqual(open["keywords"] as? String, "result")
+      XCTAssertEqual(open["revalidatePreview"] as? Bool, true)
+      XCTAssertFalse(searchRequests.contains { $0["op"] as? String == "preview-close" })
+
+      reply(controller, open, data: page(nil), error: "fixture query failure")
+      XCTAssertEqual(searchRequests.filter { $0["op"] as? String == "preview-close" }.count, 1)
+    }
+  }
+
   private var actions: [[String: Any]] {
     searchRequests.filter { ["paste", "delete"].contains($0["op"] as? String ?? "") }
   }
 
-  private func withPanel(hashes: [String] = ["A"],
+  private func withPanel(hashes: [String] = ["A"], tab: [String: Any]? = nil, keywords: String = "",
     _ body: (NativePanelController, NSSearchField, NSTextView) throws -> Void
   ) throws {
     _ = NSApplication.shared
@@ -267,7 +290,8 @@ final class NativePanelSearchTests: XCTestCase {
     defer { controller.dismiss(animated: false) }
     controller.present()
     let initial = try XCTUnwrap(searchRequests.first { $0["op"] as? String == "history-resume" })
-    reply(controller, initial, data: ["tabs": [], "tabId": "all", "keywords": "", "label": "", "delta": [
+    reply(controller, initial, data: ["tabs": tab.map { [$0] } ?? [], "tabId": tab?["id"] as? String ?? "all",
+      "keywords": keywords, "label": tab?["label"] as? String ?? "", "delta": [
       "token": ["viewId": "old", "revision": 1], "baseRevision": 0, "full": true,
       "pages": [["pageIndex": 0, "hashes": hashes]], "refs": hashes.map(ref), "knownCount": hashes.count,
       "hasMore": false, "anchorIndex": 0, "selectedIndex": 0, "offset": 0,
@@ -289,7 +313,7 @@ final class NativePanelSearchTests: XCTestCase {
   private func enter(_ controller: NativePanelController, _ search: NSSearchField, _ editor: NSTextView) {
     _ = controller.control(search, textView: editor, doCommandBy: #selector(NSResponder.insertNewline(_:)))
   }
-  private func reply(_ controller: NativePanelController, _ request: [String: Any], data: [String: Any], error: String? = nil) {
+  private func reply(_ controller: NativePanelController, _ request: [String: Any], data: Any, error: String? = nil) {
     var response: [String: Any] = ["session": 42, "data": data]
     response["id"] = request["id"]
     response["error"] = error

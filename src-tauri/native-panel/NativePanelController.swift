@@ -715,16 +715,16 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       self.bridge.send("blur")
     }
   }
-  private func changeFilter(_ index: Int) {
+  private func changeFilter(_ index: Int, revalidatePreview: Bool = false) {
     guard let label = PanelFilterQuery.label(index: index, tabs: tabs) else { return }
     pendingTabSelection = nil
-    previews.clear()
+    if !revalidatePreview { previews.clear() }
     pendingPreviewSelection = nil
     filterIndex = index
     filter = label
     let previousHashes = (0..<min(count, 36)).compactMap { ref($0)?.hash }
     toolbar.setSelection(index)
-    reload()
+    reload(revalidatePreview: revalidatePreview)
     // WebView animates the new result cards when the filter actually changes
     // them; compare against the first page captured before this reload.
     filterEntryPreviousHashes = previousHashes
@@ -829,7 +829,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     debounce = work
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
   }
-  private func reload() {
+  private func reload(revalidatePreview: Bool = false) {
     guard !closed, !hiding, onboarding == nil, searchEditor?.hasMarkedText() != true else { return }
     abandonQuery()
     tagActionError = nil
@@ -867,7 +867,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     syncListSize()
     scroll.contentView.scroll(to: .zero)
     showQueryLoading()
-    queryRequestId = bridge.send("open", ["keywords": query.keywords, "label": query.label, "tabId": query.tabId]) { [weak self] result in
+    queryRequestId = bridge.send("open", ["keywords": query.keywords, "label": query.label, "tabId": query.tabId,
+      "revalidatePreview": revalidatePreview]) { [weak self] result in
       guard let self, self.generation == epoch, !self.closed, !self.hiding,
         self.currentQuery == query, self.searchEditor?.hasMarkedText() != true else { return }
       let enter = self.searchEnter == query
@@ -885,15 +886,18 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         self.synchronizeHistoryIfNeeded()
       } catch {
         self.filterEntryPending = false
+        if revalidatePreview { self.previews.clear() }
         self.queryFailed(error.localizedDescription)
       }
     }
     guard queryRequestId != nil else {
+      if revalidatePreview { previews.clear() }
       queryFailed(local("The search request could not be sent.", "无法发送查询请求。"))
       return
     }
     let timeout = DispatchWorkItem { [weak self] in
       guard let self, self.generation == epoch, self.loadingQuery == query, !self.hiding else { return }
+      if revalidatePreview { self.previews.clear() }
       self.queryFailed(self.local("The history request timed out.", "查询历史记录超时。"))
     }
     queryTimeout = timeout
@@ -1597,6 +1601,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     guard next != tabs || id != nil else { return }
     let fixed = PanelFilterQuery.fixed
     let active = tabs.indices.contains(filterIndex - fixed) ? tabs[filterIndex - fixed] : nil
+    let revalidatePreview = hasCurrentResults
     tabs = next
     toolbar.setTabs(next)
     if let id, let index = PanelFilterQuery.index(id: id, tabs: next) {
@@ -1611,7 +1616,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       if next[position].label != active.label { changeFilter(filterIndex) }
     } else {
       // Like the WebView, fall back to All when the active tab is gone.
-      changeFilter(0)
+      changeFilter(0, revalidatePreview: revalidatePreview)
     }
   }
   private var menuRequest = 0

@@ -1740,6 +1740,15 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       defer { self.synchronizeHistoryIfNeeded() }
       switch result {
       case .failure(let error):
+        if op == "edit", !self.hiding, self.window.attachedSheet == nil {
+          let alert = NSAlert()
+          alert.messageText = self.local("Could not open the text editor", "无法打开文本编辑器")
+          alert.informativeText = error.localizedDescription
+          alert.addButton(withTitle: self.local("OK", "确定"))
+          alert.beginSheetModal(for: self.window)
+          failed?()
+          return
+        }
         let message = self.local("Action failed: \(error.localizedDescription)",
           "操作失败：\(error.localizedDescription)")
         if reloadAfterFailure, self.hasCurrentResults {

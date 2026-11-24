@@ -148,6 +148,22 @@ final class NativePanelSearchTests: XCTestCase {
     }
   }
 
+  func testTextEditorOpenFailureStaysOnTheNativePanel() throws {
+    try withPanel { controller, search, _ in
+      let window = try XCTUnwrap(search.window as? NativeHistoryPanel)
+      controller.performMenu(.editText, card: try panelDecode(PanelCard.self, card("A")))
+      let request = try XCTUnwrap(searchRequests.last { $0["op"] as? String == "edit" })
+      reply(controller, request, data: [:], error: "fixture text source missing")
+
+      let sheet = try XCTUnwrap(window.attachedSheet)
+      XCTAssertTrue(allViews(try XCTUnwrap(sheet.contentView)).compactMap { $0 as? NSTextField }.contains {
+        $0.stringValue.contains("fixture text source missing")
+      })
+      window.endSheet(sheet)
+      XCTAssertTrue(window.isVisible)
+    }
+  }
+
   func testQueueListEnterRequiresAnExplicitCardInTheCurrentActivation() throws {
     try withPanel(hashes: ["A", "B"]) { controller, search, editor in
       let window = try XCTUnwrap(search.window as? NativeHistoryPanel)

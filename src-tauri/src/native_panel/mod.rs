@@ -1021,8 +1021,13 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
             Ok(Value::Null)
         }
         "edit" => {
+            let target = hash.clone();
+            let document = blocking(move || clipboard::editor::load(&target)).await?;
+            if !current(r.session) {
+                return Ok(Value::Null);
+            }
             close_for_action(app).await?;
-            crate::open_text_editor_window(app.clone(), hash).await?;
+            crate::show_text_editor_window(app.clone(), hash, Some(Ok(document))).await?;
             Ok(Value::Null)
         }
         "ocr" => {

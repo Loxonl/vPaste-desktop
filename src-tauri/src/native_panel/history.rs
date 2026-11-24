@@ -2,8 +2,9 @@
 use super::{current, deliver, PanelTab};
 use crate::{
     clipboard,
-    history_views::{self, HistoryQuery, HistoryRef, ViewToken},
+    history_views::{self, HistoryQuery, HistoryRef, HistoryViewPage, ViewToken},
 };
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -258,7 +259,11 @@ pub(super) fn suspend() {
     // Swift releases the card payloads, media, observers and window on close.
 }
 
-pub(super) fn open(query: HistoryQuery, tab_id: String, request: u64) -> Result<Value, String> {
+pub(super) fn open(
+    query: &HistoryQuery,
+    tab_id: String,
+    request: u64,
+) -> Result<HistoryViewPage, String> {
     let _operation = OPERATIONS.lock().unwrap_or_else(|err| err.into_inner());
     let seq = CHANGES.load(Ordering::Acquire);
     let page = history_views::open_for_owner(
@@ -273,7 +278,7 @@ pub(super) fn open(query: HistoryQuery, tab_id: String, request: u64) -> Result<
     state.token = Some(page.token.clone());
     state.checkpoint = Checkpoint {
         tab_id,
-        keywords: query.keywords,
+        keywords: query.keywords.clone(),
         ..Default::default()
     };
     state.sent = sent;
@@ -285,7 +290,47 @@ pub(super) fn open(query: HistoryQuery, tab_id: String, request: u64) -> Result<
     log::debug!("native history open view={} revision=1", page.token.view_id);
     drop(state);
     DEADLINE_WAKE.notify_one();
-    serde_json::to_value(page).map_err(|err| err.to_string())
+    Ok(page)
+}
+
+pub(super) fn contains_preview(
+    query: &HistoryQuery,
+    page: &HistoryViewPage,
+    hash: &str,
+    is_current: impl Fn() -> bool,
+) -> Result<bool, String> {
+    if page.items.iter().any(|item| item.hash == hash) {
+        return Ok(true);
+    }
+    if !page.has_more || !is_current() {
+        return Ok(false);
+    }
+    let key: Option<(i64, u64)> = clipboard::db::db()
+        .query_row(
+            "select id,time from clipboard where hash = ?1",
+            [hash],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some((id, time)) = key else {
+        return Ok(false);
+    };
+    let Some(before) = id.checked_add(1).and_then(|id| u64::try_from(id).ok()) else {
+        return Ok(false);
+    };
+    // Seek directly to this record when it isn't among the first page's refs.
+    let result = clipboard::native_history_ref_page(
+        &query.keywords,
+        before,
+        time,
+        1,
+        &query.label,
+        is_current,
+    )?;
+    Ok(result
+        .and_then(|page| page.list.into_iter().next())
+        .is_some_and(|item| item.hash == hash))
 }
 
 pub(super) fn resume(tabs: Vec<PanelTab>, request: u64, preserve: bool) -> Result<Value, String> {
@@ -675,16 +720,17 @@ mod tests {
         conn.execute("insert into clipboard(hash,time,content,preview_content,item_type,search_index,source,app_source,app_icon_path,title_color,icon,label) values('legacy-null',5000,NULL,NULL,'Text',1,NULL,'','','','',0)", []).unwrap();
         conn.execute("update clipboard set source=NULL where hash='h20'", [])
             .unwrap();
-        let opened = open(
-            HistoryQuery {
-                keywords: String::new(),
-                label: String::new(),
-            },
-            "all".into(),
-            history_views::reserve_native_open(),
-        )
-        .unwrap();
-        let id = opened["token"]["viewId"].as_str().unwrap().to_string();
+        let all = HistoryQuery {
+            keywords: String::new(),
+            label: String::new(),
+        };
+        let opened = open(&all, "all".into(), history_views::reserve_native_open()).unwrap();
+        assert!(contains_preview(&all, &opened, "h0", || true).unwrap());
+        assert!(!opened.items.iter().any(|item| item.hash == "h150"));
+        assert!(contains_preview(&all, &opened, "h150", || true).unwrap());
+        assert!(!contains_preview(&all, &opened, "invisible", || true).unwrap());
+        assert!(!contains_preview(&all, &opened, "deleted", || true).unwrap());
+        let id = opened.token.view_id;
         let resumed = resume(vec![], history_views::reserve_native_open(), false).unwrap();
         assert_eq!(resumed["delta"]["token"]["viewId"], id);
         assert_eq!(resumed["delta"]["token"]["revision"], 1);
@@ -777,7 +823,7 @@ mod tests {
         assert!(deleted["pages"].as_array().unwrap().len() <= 6);
         // Membership changes use the same retained query, including an empty result.
         let favorites = open(
-            HistoryQuery {
+            &HistoryQuery {
                 keywords: String::new(),
                 label: "__favorite".into(),
             },
@@ -785,8 +831,8 @@ mod tests {
             history_views::reserve_native_open(),
         )
         .unwrap();
-        let favorite_id = favorites["token"]["viewId"].as_str().unwrap();
-        assert_eq!(favorites["items"].as_array().unwrap().len(), 0);
+        let favorite_id = &favorites.token.view_id;
+        assert!(favorites.items.is_empty());
         clipboard::set_favorite("h5", true).unwrap();
         CHANGES.fetch_add(1, Ordering::AcqRel);
         let added = synchronize(favorite_id, 1, &[]).unwrap();
@@ -832,7 +878,7 @@ mod tests {
                 rusqlite::params![format!("dev-{index}"), 1000 - index]).unwrap();
         }
         let opened = open(
-            HistoryQuery {
+            &HistoryQuery {
                 keywords: String::new(),
                 label: String::new(),
             },
@@ -840,7 +886,7 @@ mod tests {
             history_views::reserve_native_open(),
         )
         .unwrap();
-        let id = opened["token"]["viewId"].as_str().unwrap().to_string();
+        let id = opened.token.view_id;
         checkpoint(
             &id,
             Checkpoint {

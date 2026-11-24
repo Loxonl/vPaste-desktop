@@ -1,12 +1,14 @@
 import AppKit
 import UniformTypeIdentifiers
 
-// Native mirror of src/clipboard/clipboardContextMenu.ts. Entries, order,
-// conditions and labels (src/lang/locales) must stay identical to the WebView.
 enum PanelMenuAction: Equatable {
-  case preview, editText, viewImageText, toggleFavorite, createTag
+  case preview, editText, viewImageText, favorite(Bool), createTag, retryTags
   case assignTag(PanelTag), removeAllTags, removeTag(PanelTag)
   case exportImage, openFolder, copyFolder, copyColor(String), pastePlainText, delete
+}
+
+enum PanelMenuTags {
+  case loading, failed, loaded([PanelTag])
 }
 
 struct PanelMenuOption: Equatable {
@@ -15,6 +17,9 @@ struct PanelMenuOption: Equatable {
   var action: PanelMenuAction?
   var children: [PanelMenuOption] = []
   var danger = false
+  var checked = false
+  var isSeparator = false
+  static let separator = Self(title: "", isSeparator: true)
 }
 
 struct PanelColorOption: Decodable, Equatable {
@@ -25,22 +30,26 @@ struct PanelColorOption: Decodable, Equatable {
 enum PanelContextMenu {
   private static let labels: [String: (String, String)] = [
     "preview": ("Preview", "预览"),
-    "editText": ("Edit text", "编辑文字"),
-    "imageText": ("View image text", "查看图片文字"),
-    "addFavorite": ("Add to Favorites", "加入收藏"),
-    "removeFavorite": ("Remove from Favorites", "取消收藏"),
-    "addRecordTag": ("Add Record Tag", "添加记录标签"),
-    "createRecord": ("Create Record Tag", "创建记录标签"),
-    "noAssignable": ("No record tags to add", "没有可添加的记录标签"),
-    "removeRecordTag": ("Remove Record Tag", "移除记录标签"),
-    "removeAllTags": ("Remove All Record Tags", "移除全部记录标签"),
-    "exportImage": ("Export as File", "导出为文件"),
-    "openFolder": ("Open Containing Folder", "打开所在路径"),
-    "copyFolder": ("Copy Containing Folder", "复制所在路径"),
-    "convertColor": ("Copy Color As", "复制为颜色格式"),
+    "editText": ("Edit text", "编辑文本"),
+    "imageText": ("Recognize text in image", "识别图片文字"),
+    "addFavorite": ("Add favorite", "收藏"),
+    "removeFavorite": ("Remove favorite", "取消收藏"),
+    "tags": ("Tags", "标签"),
+    "createRecord": ("Create and assign tag…", "新建并添加标签…"),
+    "tagsLoading": ("Loading tags… Reopen the menu.", "正在加载标签，请重新打开菜单。"),
+    "tagsFailed": ("Tags unavailable", "标签暂不可用"),
+    "retryTags": ("Retry loading tags", "重试加载标签"),
+    "tagsEmpty": ("No record tags", "没有记录标签"),
+    "allAssigned": ("All tags are assigned", "已添加全部标签"),
+    "removeAllTags": ("Remove all assigned tags", "移除全部标签"),
+    "exportImage": ("Export image…", "导出图片…"),
+    "openFolder": ("Open containing folder", "打开所在目录"),
+    "copyFolder": ("Copy containing folder", "复制所在目录"),
+    "convertColor": ("Copy color as", "复制颜色格式"),
+    "colorLoading": ("Loading color formats… Reopen the menu.", "正在加载颜色格式，请重新打开菜单。"),
     "colorUnsupported": ("This color format cannot be converted yet", "当前颜色格式暂不支持转换"),
-    "pastePlainText": ("Paste as Plain Text", "粘贴为纯文本"),
-    "deleteRecord": ("Delete Record", "删除记录"),
+    "pastePlainText": ("Paste as plain text", "粘贴为纯文本"),
+    "deleteRecord": ("Delete record", "删除记录"),
   ]
 
   static func label(_ key: String, chinese: Bool) -> String {
@@ -95,18 +104,14 @@ enum PanelContextMenu {
   static func isEditableText(_ type: String) -> Bool { isTextLike(type) || type == "Color" }
 
   static func options(
-    card: PanelCard, tags: [PanelTag], colors: [PanelColorOption], chinese: Bool
+    card: PanelCard, tags: PanelMenuTags, colors: [PanelColorOption]?, chinese: Bool
   ) -> [PanelMenuOption] {
     func l(_ key: String) -> String { label(key, chinese: chinese) }
-    let assignedIds = Set(card.tags.map(\.id))
-    let currentIds = Set(tags.map(\.id))
-    let assignable = tags.filter { !assignedIds.contains($0.id) }
-    let assigned = card.tags.filter { currentIds.contains($0.id) }
 
     var options = [
       PanelMenuOption(title: l("preview"), action: .preview),
       PanelMenuOption(
-        title: l(card.favorite ? "removeFavorite" : "addFavorite"), action: .toggleFavorite),
+        title: l(card.favorite ? "removeFavorite" : "addFavorite"), action: .favorite(!card.favorite)),
     ]
     if isEditableText(card.itemType) {
       options.insert(PanelMenuOption(title: l("editText"), action: .editText), at: 1)
@@ -115,24 +120,29 @@ enum PanelContextMenu {
       options.insert(PanelMenuOption(title: l("imageText"), action: .viewImageText), at: 1)
     }
 
-    if tags.isEmpty {
-      options.append(PanelMenuOption(title: l("addRecordTag"), action: .createTag))
-    } else {
-      options.append(
-        PanelMenuOption(
-          title: l("addRecordTag"), action: nil,
-          children: [PanelMenuOption(title: l("createRecord"), action: .createTag)]
-            + (assignable.isEmpty
-              ? [PanelMenuOption(title: l("noAssignable"), action: nil)]
-              : assignable.map { PanelMenuOption(title: $0.name, action: .assignTag($0)) })))
+    let tagOptions: [PanelMenuOption]
+    switch tags {
+    case .loading:
+      tagOptions = [PanelMenuOption(title: l("tagsLoading"))]
+    case .failed:
+      tagOptions = [PanelMenuOption(title: l("tagsFailed")),
+        PanelMenuOption(title: l("retryTags"), action: .retryTags)]
+    case .loaded(let available):
+      let assigned = Set(card.tags.map(\.id))
+      let assignments = available.map { tag in
+        let checked = assigned.contains(tag.id)
+        return PanelMenuOption(title: tag.name, action: checked ? .removeTag(tag) : .assignTag(tag),
+          checked: checked)
+      }
+      var children = [PanelMenuOption(title: l("createRecord"), action: .createTag)] + assignments
+      if assignments.isEmpty { children.append(PanelMenuOption(title: l("tagsEmpty"))) }
+      else if assignments.allSatisfy(\.checked) { children.append(PanelMenuOption(title: l("allAssigned"))) }
+      if assignments.contains(where: \.checked) {
+        children += [.separator, PanelMenuOption(title: l("removeAllTags"), action: .removeAllTags, danger: true)]
+      }
+      tagOptions = children
     }
-    if !assigned.isEmpty {
-      options.append(
-        PanelMenuOption(
-          title: l("removeRecordTag"), action: nil,
-          children: [PanelMenuOption(title: l("removeAllTags"), action: .removeAllTags, danger: true)]
-            + assigned.map { PanelMenuOption(title: $0.name, action: .removeTag($0)) }))
-    }
+    options.append(PanelMenuOption(title: l("tags"), children: tagOptions))
     if card.exportImage {
       options.append(PanelMenuOption(title: l("exportImage"), action: .exportImage))
     }
@@ -141,19 +151,17 @@ enum PanelContextMenu {
       options.append(PanelMenuOption(title: l("copyFolder"), action: .copyFolder))
     }
     if card.itemType == "Color" {
-      options.append(
-        PanelMenuOption(
-          title: l("convertColor"), action: nil,
-          children: colors.isEmpty
-            ? [PanelMenuOption(title: l("colorUnsupported"), action: nil)]
-            : colors.map {
-              PanelMenuOption(title: "\($0.format) \($0.value)", action: .copyColor($0.value))
-            }))
+      let entries = colors?.map {
+        PanelMenuOption(title: "\($0.format) \($0.value)", action: .copyColor($0.value))
+      } ?? []
+      options.append(PanelMenuOption(title: l("convertColor"), children: entries.isEmpty
+        ? [PanelMenuOption(title: l(colors == nil ? "colorLoading" : "colorUnsupported"))]
+        : entries))
     }
     if isTextLike(card.itemType) {
       options.append(PanelMenuOption(title: l("pastePlainText"), action: .pastePlainText))
     }
-    options.append(PanelMenuOption(title: l("deleteRecord"), action: .delete))
+    options += [.separator, PanelMenuOption(title: l("deleteRecord"), action: .delete, danger: true)]
     return options
   }
 
@@ -162,7 +170,9 @@ enum PanelContextMenu {
     let menu = NSMenu()
     menu.autoenablesItems = false
     for option in options {
+      if option.isSeparator { menu.addItem(.separator()); continue }
       let item = NSMenuItem(title: option.title, action: nil, keyEquivalent: "")
+      item.state = option.checked ? .on : .off
       if option.danger {
         item.attributedTitle = NSAttributedString(
           string: option.title,

@@ -81,6 +81,34 @@ final class NativePanelSearchTests: XCTestCase {
     }
   }
 
+  func testEscapeInTheCommittedPdfReaderClosesItAndRestoresListFocus() throws {
+    try withPanel { controller, search, _ in
+      let panel = try XCTUnwrap(search.window as? NativeHistoryPanel)
+      let list = try XCTUnwrap(allViews(try XCTUnwrap(panel.contentView)).compactMap {
+        $0 as? NSCollectionView
+      }.first)
+      let reader = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+        styleMask: [.titled], backing: .buffered, defer: false)
+      reader.isReleasedWhenClosed = false
+      defer { reader.close() }
+      reader.makeKeyAndOrderFront(nil)
+      controller.bridge.receive(["session": 42, "event": "preview-pdf", "windowNumber": reader.windowNumber])
+      searchRequests.removeAll()
+
+      NSApp.sendEvent(try key(49, characters: " ", window: reader))
+      XCTAssertFalse(searchRequests.contains { $0["op"] as? String == "preview-close" })
+      NSApp.sendEvent(try key(53, characters: "\u{1b}", window: reader))
+
+      XCTAssertEqual(searchRequests.filter { $0["op"] as? String == "preview-close" }.count, 1)
+      XCTAssertTrue(panel.firstResponder === list)
+
+      controller.bridge.receive(["session": 42, "event": "preview-pdf"])
+      reader.makeKeyAndOrderFront(nil)
+      NSApp.sendEvent(try key(53, characters: "\u{1b}", window: reader))
+      XCTAssertEqual(searchRequests.filter { $0["op"] as? String == "preview-close" }.count, 1)
+    }
+  }
+
   func testFavoriteMenuKeepsTheCapturedHashAndIntentAfterHistoryReorders() throws {
     try withPanel(hashes: ["A", "B"]) { controller, _, _ in
       let b = try panelDecode(PanelCard.self, card("B"))

@@ -213,6 +213,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private var applicationFocus: PanelApplicationFocus?
   private var mainRoleObserver: NSObjectProtocol?
   private let previewWindows = NSHashTable<NSWindow>.weakObjects()
+  private var pdfWindowNumber: Int?
+  private var previewEscapeMonitor: Any?
   private var transition = 0
   private var starting = true
   private var hiding = false
@@ -255,6 +257,20 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     window.delegate = self
     window.keyHandler = { [weak self] event in self?.key(event) ?? false }
     window.pointerHandler = { [weak self] in self?.previews.cancelHover() }
+    previewEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+      let handled = MainActor.assumeIsolated {
+        guard let self, !self.closed, !self.hiding, event.keyCode == 53,
+          event.windowNumber == self.pdfWindowNumber,
+          event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty
+        else { return false }
+        if !event.isARepeat {
+          self.previews.clear()
+          self.focus()
+        }
+        return true
+      }
+      return handled ? nil : event
+    }
     applicationFocus = PanelApplicationFocus { [weak self] active in
       guard let self, !self.closed, !self.config.sizePreview else { return }
       self.bridge.setKey(active && self.window.isKeyWindow)
@@ -414,6 +430,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         if !self.dragging { self.refreshTabs() }
       } else if name == "preview-focused", let number = value["windowNumber"] as? Int {
         self.retainMainAppearanceForPreview(windowNumber: number)
+      } else if name == "preview-pdf" {
+        self.pdfWindowNumber = value["windowNumber"] as? Int
       } else if name == "preview-hover", let inside = value["inside"] as? Bool {
         self.previews.pointerInPreview(inside)
       } else if name == "preview-navigation" {
@@ -650,6 +668,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     applicationFocus = nil
     if let mainRoleObserver { NotificationCenter.default.removeObserver(mainRoleObserver) }
     mainRoleObserver = nil
+    if let previewEscapeMonitor { NSEvent.removeMonitor(previewEscapeMonitor) }
+    previewEscapeMonitor = nil
     previewWindows.removeAllObjects()
     previews.close()
     pendingPreviewSelection = nil

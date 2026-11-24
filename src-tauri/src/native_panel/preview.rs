@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Mutex,
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, WebviewWindow};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Surface {
@@ -122,6 +122,24 @@ pub(crate) fn closed() {
     *record = None;
     OWNED.store(false, Ordering::Release);
     HOVER.store(false, Ordering::Release);
+    drop(record);
+    set_pdf_window(None);
+}
+
+pub(crate) fn set_pdf_window(window: Option<&WebviewWindow>) {
+    if !active() {
+        return;
+    }
+    let number = window
+        .and_then(|window| window.ns_window().ok())
+        .map(|native| {
+            use cocoa::base::id;
+            use objc::{msg_send, sel, sel_impl};
+            // SAFETY: the committed reader is inspected on the AppKit thread.
+            let number: isize = unsafe { msg_send![native as id, windowNumber] };
+            number
+        });
+    route(serde_json::json!({"event": "preview-pdf", "windowNumber": number}));
 }
 pub(super) fn dismiss_hover(app: &AppHandle, request: Option<u64>) -> Result<(), String> {
     {

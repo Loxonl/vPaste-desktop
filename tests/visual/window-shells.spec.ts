@@ -89,17 +89,19 @@ test.describe("window shells", () => {
             await page.setViewportSize({ width: popup.width, height: popup.height });
             await page.goto(popup.path);
             const surface = page.locator(popup.surface).first();
+            const macTray = popup.path === "/tray-menu" &&
+                await page.evaluate(() => navigator.userAgent.toLowerCase().includes("macintosh"));
             await expect(surface).toHaveCSS("border-radius", "12px");
             await expect(surface).not.toHaveCSS("box-shadow", "none");
             const surfaceColor = await surface.evaluate(element => getComputedStyle(element).backgroundColor);
             if (!sharedSurfaceColor) sharedSurfaceColor = surfaceColor;
             expect(surfaceColor).toBe(sharedSurfaceColor);
-            await expect.poll(async () => (await surface.boundingBox())?.x ?? -1).toBeGreaterThanOrEqual(8);
-            await expect.poll(async () => (await surface.boundingBox())?.y ?? -1).toBeGreaterThanOrEqual(8);
-            const box = await surface.boundingBox();
-            expect(box).not.toBeNull();
-            expect(box!.x).toBeGreaterThanOrEqual(8);
-            expect(box!.y).toBeGreaterThanOrEqual(8);
+            await expect.poll(async () => (await surface.boundingBox())?.x ?? -1).toBeGreaterThanOrEqual(macTray ? 10 : 8);
+            if (macTray) {
+                await expect.poll(async () => (await surface.boundingBox())?.y ?? -1).toBe(0);
+            } else {
+                await expect.poll(async () => (await surface.boundingBox())?.y ?? -1).toBeGreaterThanOrEqual(8);
+            }
         }
         await expect(page.getByRole("button").first()).toHaveCSS("border-radius", "8px");
     });

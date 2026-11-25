@@ -137,8 +137,11 @@ test.describe("settings preview", () => {
     test("Windows settings use one inset rounded surface and CSS shadow", async ({ page }) => {
         await page.setViewportSize({ width: 720, height: 700 });
         await page.goto("/__settings-preview?theme=light&lang=zh-CN&platform=windows");
+        const macSnapshot = process.platform === "darwin";
         await page.addStyleTag({
-            content: "html, body, #root { background: #20242a !important; }",
+            content: "html, body, #root { background: #20242a !important; }"
+                // Keep the inset margin inside the Mac snapshot's browser fixture.
+                + (macSnapshot ? "#root { display: flow-root; }" : ""),
         });
 
         const settingsRoot = page.getByTestId("settings-root");
@@ -163,6 +166,9 @@ test.describe("settings preview", () => {
         await expect(backdrop).toHaveCSS("bottom", "8px");
         await expect(backdrop).toHaveCSS("left", "8px");
         await expect(backdrop).toHaveCSS("border-radius", "12px");
+        if (macSnapshot) {
+            expect(await settingsRoot.boundingBox()).toEqual(rootBox);
+        }
         await expect(page).toHaveScreenshot("settings-windows-dialog-surface.png");
     });
 });

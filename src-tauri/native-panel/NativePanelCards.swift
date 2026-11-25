@@ -281,6 +281,9 @@ final class PanelCardView: NSView, NSDraggingSource {
     content.frame = bounds
     content.layer?.cornerRadius = radius
     layer?.cornerRadius = radius
+    // AppKit can restore outer clipping while laying out a scaled card.
+    if #available(macOS 14.0, *) { clipsToBounds = false }
+    layer?.masksToBounds = false
     layer?.shadowColor = NSColor.black.cgColor
     layer?.shadowOpacity = PanelStyle.dark(self) ? 0.18 : 0.06
     layer?.shadowRadius = 3 * scale

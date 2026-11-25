@@ -3,8 +3,7 @@ import QuartzCore
 import XCTest
 
 // Compile alongside the native-panel sources. These cases do not use a WebView
-// or the user's clipboard/database. Kept for future execution; suites are not
-// run as part of the requested implementation workflow.
+// or the user's clipboard/database. Window focus requires a foreground XCTest host.
 @MainActor
 final class NativePanelWindowBehaviorTests: XCTestCase {
   func testCardDragUsesClosedHandOnlyAfterThresholdAndRestoresOnRelease() throws {
@@ -73,7 +72,7 @@ final class NativePanelWindowBehaviorTests: XCTestCase {
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
       styleMask: [.titled], backing: .buffered, defer: false)
     let view = PanelCardView(frame: NSRect(x: 60, y: 30, width: 220, height: 230))
-    window.contentView = view
+    window.contentView?.addSubview(view)
     view.configure(nil, placeholder: "Loading…", media: PanelMedia(), scale: 1,
       chinese: false, query: "", selected: true)
     view.layoutSubtreeIfNeeded()
@@ -129,7 +128,7 @@ final class NativePanelWindowBehaviorTests: XCTestCase {
     XCTAssertTrue(scroll.documentView === document)
   }
 
-  func testCardContentKeepsWebViewCornersWithoutClippingItsOutlineOrShadow() {
+  func testCardContentKeepsWebViewCornersWithoutClippingItsOutlineOrShadow() throws {
     _ = NSApplication.shared
     for scale: CGFloat in [0.8, 0.9, 1] {
       let card = PanelCardView(frame: NSRect(x: 0, y: 0, width: 220 * scale, height: 230 * scale))
@@ -139,7 +138,15 @@ final class NativePanelWindowBehaviorTests: XCTestCase {
       card.layoutSubtreeIfNeeded()
       XCTAssertFalse(card.layer?.masksToBounds ?? true, "The outer outline and shadow must remain visible")
       XCTAssertNotNil(card.layer?.shadowPath)
-      let content = descendants(of: card).filter { $0 is NSImageView || $0 is NSTextField }
+      let queueBadge = try XCTUnwrap(card.subviews.first { $0 is NSImageView })
+      XCTAssertTrue(queueBadge.isHidden)
+      card.queueSelectionMode = true
+      XCTAssertFalse(queueBadge.isHidden)
+      XCTAssertTrue(card.bounds.contains(queueBadge.frame))
+
+      let content = descendants(of: card).filter {
+        ($0 is NSImageView && $0 !== queueBadge) || $0 is NSTextField
+      }
       XCTAssertFalse(content.isEmpty)
       for view in content {
         var ancestor = view.superview
@@ -185,8 +192,8 @@ final class NativePanelWindowBehaviorTests: XCTestCase {
     XCTAssertFalse(panel.isMovable)
   }
 
-  func testPreviewCanKeepKeyboardFocusWhileNativePanelRetainsMainAppearance() {
-    _ = NSApplication.shared
+  func testPreviewCanKeepKeyboardFocusWhileNativePanelRetainsMainAppearance() throws {
+    try XCTSkipUnless(NSApplication.shared.isActive, "Window focus needs a foreground XCTest host")
     let panel = NativeHistoryPanel(dockedFrame: NSRect(x: 0, y: 0, width: 800, height: 302))
     let preview = NSWindow(contentRect: NSRect(x: 100, y: 320, width: 400, height: 300),
       styleMask: [.titled], backing: .buffered, defer: false)

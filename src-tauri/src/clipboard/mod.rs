@@ -1002,7 +1002,14 @@ pub(crate) fn history_action_item(hash: &str) -> Result<Item, String> {
 pub(crate) fn history_preview_payload(
     hash: &str,
     mode: PreviewMode,
-) -> Result<(Item, Option<crate::rich_card_assets::RichRenderPayload>, bool), String> {
+) -> Result<
+    (
+        Item,
+        Option<crate::rich_card_assets::RichRenderPayload>,
+        bool,
+    ),
+    String,
+> {
     let stored = stored_history_item(hash)?;
     let meta = rich_meta_from_source(&stored.source);
     let render = meta.as_ref().and_then(|meta| match mode {
@@ -2267,7 +2274,8 @@ fn rich_render_with_limit(
     let render = images.finish(html)?;
     // Reader-only renders would bypass the card budget when read from the shared cache.
     if limit <= RICH_CARD_SOURCE_MAX_BYTES.min(RICH_CARD_HTML_MAX_BYTES as u64) {
-        crate::rich_card_assets::cache_render(path, stamp.len, stamp.modified_nanos, &render).ok()?;
+        crate::rich_card_assets::cache_render(path, stamp.len, stamp.modified_nanos, &render)
+            .ok()?;
     }
     Some(render)
 }
@@ -5562,10 +5570,14 @@ mod tests {
             assert!(has_rich_format);
             assert!(reader.is_some_and(|render| render.html == html));
         }
-        let (_, hover, has_rich_format) = history_preview_payload(&hash, PreviewMode::Hover).unwrap();
+        let (_, hover, has_rich_format) =
+            history_preview_payload(&hash, PreviewMode::Hover).unwrap();
         assert!(has_rich_format);
         assert!(hover.is_none());
-        assert!(history_card_payload(&hash, true).unwrap().rich_render.is_none());
+        assert!(history_card_payload(&hash, true)
+            .unwrap()
+            .rich_render
+            .is_none());
         let meta = rich_clipboard_meta(&hash).unwrap();
         assert_eq!(
             history_store::read_file(&meta.html_path).unwrap(),

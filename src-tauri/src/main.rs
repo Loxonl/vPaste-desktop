@@ -5488,8 +5488,7 @@ async fn prepare_preview_window(
             text_truncated,
             has_rich_format,
         ) = if let Some(hash) = history_hash {
-            let (item, render, has_rich_format) =
-                clipboard::history_preview_payload(&hash, mode)?;
+            let (item, render, has_rich_format) = clipboard::history_preview_payload(&hash, mode)?;
             let (text, truncated) = if item.item_type == clipboard::item::ItemType::TextFile {
                 let preview = clipboard::plain_text_preview(&hash)?;
                 (preview.text, preview.truncated)
@@ -12274,21 +12273,9 @@ fn macos_paste_rejects_a_different_frontmost_app_at_either_stage() {
     let own_pid = std::process::id() as i32;
     let target = own_pid + 1;
     let other = own_pid + 2;
-    assert!(macos_paste_target_matches(
-        target,
-        Some(target),
-        false
-    ));
-    assert!(macos_paste_target_matches(
-        target,
-        Some(own_pid),
-        true
-    ));
-    assert!(!macos_paste_target_matches(
-        target,
-        Some(own_pid),
-        false
-    ));
+    assert!(macos_paste_target_matches(target, Some(target), false));
+    assert!(macos_paste_target_matches(target, Some(own_pid), true));
+    assert!(!macos_paste_target_matches(target, Some(own_pid), false));
     for foreground in [Some(other), None] {
         assert!(!macos_paste_target_matches(target, foreground, true));
         assert!(!macos_paste_target_matches(target, foreground, false));

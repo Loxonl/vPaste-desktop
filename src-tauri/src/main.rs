@@ -166,6 +166,7 @@ static LAST_CLIPBOARD_MONITOR_CENTER: Mutex<Option<(f64, f64)>> = Mutex::new(Non
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 static CLIPBOARD_RESTORE_FOCUS_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_PINNED: AtomicBool = AtomicBool::new(false);
+static MACOS_IMAGE_TEXT_DRAFT_PROTECTED: AtomicBool = AtomicBool::new(false);
 static WINUI_IMAGE_TEXT_PREVIEW: AtomicBool = AtomicBool::new(false);
 static WINUI_PDF_PREVIEW: AtomicBool = AtomicBool::new(false);
 static PREVIEW_HOVER: AtomicBool = AtomicBool::new(false);
@@ -473,6 +474,7 @@ struct PreviewPayload {
     navigation_direction: i8,
     hover: bool,
     native_toolbar: bool,
+    protect_image_text_draft: bool,
     item_type: String,
     content: String,
     preview_content: String,
@@ -3755,6 +3757,13 @@ fn app_window_is_foreground(app: &tauri::AppHandle, label: &str, context: &str) 
 }
 
 fn retain_preview_window(app: &tauri::AppHandle) -> Result<(), String> {
+    if MACOS_IMAGE_TEXT_DRAFT_PROTECTED.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    close_preview_window(app)
+}
+
+fn close_preview_window(app: &tauri::AppHandle) -> Result<(), String> {
     #[cfg(all(target_os = "windows", feature = "winui"))]
     if main_panel_mode::winui() {
         winui_panel::preview::closed();
@@ -3765,6 +3774,7 @@ fn retain_preview_window(app: &tauri::AppHandle) -> Result<(), String> {
     PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
     PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
     PREVIEW_PINNED.store(false, Ordering::SeqCst);
+    MACOS_IMAGE_TEXT_DRAFT_PROTECTED.store(false, Ordering::SeqCst);
     WINUI_IMAGE_TEXT_PREVIEW.store(false, Ordering::SeqCst);
     WINUI_PDF_PREVIEW.store(false, Ordering::SeqCst);
     if let Some(preview_window) = app.get_webview_window("clipboardPreview") {
@@ -4328,6 +4338,7 @@ mod paste_queue_menu_tests {
 fn preview_blur_state(app: &tauri::AppHandle) -> preview_focus::State {
     preview_focus::State {
         pinned: PREVIEW_PINNED.load(Ordering::SeqCst),
+        keep_draft: MACOS_IMAGE_TEXT_DRAFT_PROTECTED.load(Ordering::SeqCst),
         close_on_clipboard_focus: WINUI_IMAGE_TEXT_PREVIEW.load(Ordering::SeqCst),
         cursor_inside_app: cursor_inside_app_windows(app),
         preview_foreground: app_window_is_foreground(app, "clipboardPreview", "preview blur guard"),
@@ -5151,11 +5162,7 @@ fn commit_preview_window(
         return Ok(false);
     }
     let visible = window.is_visible().unwrap_or(false);
-    if !prepared.mode.allows(
-        visible || PREVIEW_REQUESTS.active(),
-        PREVIEW_HOVER.load(Ordering::SeqCst),
-        preview_protected_from_replacement(),
-    ) {
+    if !preview_request_allowed(prepared.mode, visible || PREVIEW_REQUESTS.active()) {
         return Ok(false);
     }
     #[cfg(all(target_os = "windows", feature = "winui"))]
@@ -5221,6 +5228,11 @@ fn commit_preview_window(
                 .map_err(|err| err.to_string())?;
         }
     }
+    if prepared.payload.protect_image_text_draft {
+        window
+            .set_always_on_top(false)
+            .map_err(|err| err.to_string())?;
+    }
     if !visible {
         window
             .set_focusable(focus_target == Some(preview_focus::FocusTarget::Preview))
@@ -5234,6 +5246,8 @@ fn commit_preview_window(
             let _ = window.set_always_on_top(true);
         }
     }
+    MACOS_IMAGE_TEXT_DRAFT_PROTECTED
+        .store(prepared.payload.protect_image_text_draft, Ordering::SeqCst);
     // Keep the native content visible until the ready shared window is mapped.
     // A stale shared commit must not retire a newer native selection.
     #[cfg(all(target_os = "windows", feature = "winui"))]
@@ -5247,7 +5261,7 @@ fn commit_preview_window(
     native_panel::preview::set_pdf_window(prepared.is_pdf.then_some(&window));
     // Restore the native level for first show and visible-window reuse alike.
     #[cfg(target_os = "macos")]
-    {
+    if !prepared.payload.protect_image_text_draft {
         let level = 102;
         #[cfg(debug_assertions)]
         let level = if native_panel::preview::active() {
@@ -5372,6 +5386,7 @@ async fn prepare_preview_window(
     let mode = mode.unwrap_or_default();
     let image_text = item_type == "ImageText";
     let native_toolbar = cfg!(target_os = "windows") && main_panel_mode::winui();
+    let protect_image_text_draft = cfg!(target_os = "macos") && image_text;
     if mode == PreviewMode::Hover {
         let navigation_foreground =
             app_window_is_foreground(&app, "clipboard", "hover preview native guard")
@@ -5394,10 +5409,9 @@ async fn prepare_preview_window(
         }
         PREVIEW_HOVER_REQUEST.fetch_max(hover_request.unwrap_or(0), Ordering::SeqCst);
     }
-    if !mode.allows(
+    if !preview_request_allowed(
+        mode,
         preview_window_visible(&app) || PREVIEW_REQUESTS.active(),
-        PREVIEW_HOVER.load(Ordering::SeqCst),
-        preview_protected_from_replacement(),
     ) {
         return Ok(());
     }
@@ -5405,7 +5419,9 @@ async fn prepare_preview_window(
         let mut pending = PREVIEW_PENDING
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !preview_origin_current(native_request) {
+        if !preview_origin_current(native_request)
+            || MACOS_IMAGE_TEXT_DRAFT_PROTECTED.load(Ordering::SeqCst)
+        {
             return Ok(());
         }
         PREVIEW_WINDOW_GENERATION.fetch_add(1, Ordering::SeqCst);
@@ -5416,7 +5432,10 @@ async fn prepare_preview_window(
             PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
             // The WinUI OCR editor protects its draft without starting pinned.
             WINUI_IMAGE_TEXT_PREVIEW.store(image_text && native_toolbar, Ordering::SeqCst);
-            PREVIEW_PINNED.store(image_text && !native_toolbar, Ordering::SeqCst);
+            PREVIEW_PINNED.store(
+                image_text && !native_toolbar && !protect_image_text_draft,
+                Ordering::SeqCst,
+            );
         }
         request_id
     };
@@ -5525,6 +5544,7 @@ async fn prepare_preview_window(
                 navigation_direction: navigation_direction.unwrap_or(0).clamp(-1, 1),
                 hover: mode == PreviewMode::Hover,
                 native_toolbar,
+                protect_image_text_draft,
                 item_type,
                 content,
                 preview_content,
@@ -5549,10 +5569,9 @@ async fn prepare_preview_window(
     {
         return Ok(());
     }
-    if !mode.allows(
+    if !preview_request_allowed(
+        mode,
         preview_window_visible(&app) || PREVIEW_REQUESTS.active(),
-        PREVIEW_HOVER.load(Ordering::SeqCst),
-        preview_protected_from_replacement(),
     ) {
         return Ok(());
     }
@@ -5666,13 +5685,21 @@ fn is_preview_window_visible(app: tauri::AppHandle) -> bool {
     preview_window_visible(&app) || PREVIEW_REQUESTS.active()
 }
 
-fn preview_protected_from_replacement() -> bool {
-    PREVIEW_PINNED.load(Ordering::SeqCst) || WINUI_IMAGE_TEXT_PREVIEW.load(Ordering::SeqCst)
+fn preview_request_allowed(mode: PreviewMode, visible: bool) -> bool {
+    !MACOS_IMAGE_TEXT_DRAFT_PROTECTED.load(Ordering::SeqCst)
+        && mode.allows(
+            visible,
+            PREVIEW_HOVER.load(Ordering::SeqCst),
+            PREVIEW_PINNED.load(Ordering::SeqCst)
+                || WINUI_IMAGE_TEXT_PREVIEW.load(Ordering::SeqCst),
+        )
 }
 
 #[tauri::command]
 fn set_preview_pinned(app: tauri::AppHandle, pinned: bool) -> Result<(), String> {
-    if WINUI_IMAGE_TEXT_PREVIEW.load(Ordering::SeqCst) {
+    if MACOS_IMAGE_TEXT_DRAFT_PROTECTED.load(Ordering::SeqCst)
+        || WINUI_IMAGE_TEXT_PREVIEW.load(Ordering::SeqCst)
+    {
         if let Some(window) = app.get_webview_window("clipboardPreview") {
             window
                 .set_always_on_top(pinned)
@@ -5830,8 +5857,19 @@ fn maybe_hide_macos_dock_icon() {
 }
 
 #[tauri::command]
-fn hide_preview_window(app: tauri::AppHandle) -> Result<(), String> {
-    retain_preview_window(&app)?;
+fn hide_preview_window(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    if MACOS_IMAGE_TEXT_DRAFT_PROTECTED.load(Ordering::SeqCst)
+        && window.label() != "clipboardPreview"
+    {
+        return app
+            .emit_to("clipboardPreview", "preview-close-requested", ())
+            .map_err(|err| err.to_string());
+    }
+    close_preview_and_focus(app)
+}
+
+fn close_preview_and_focus(app: tauri::AppHandle) -> Result<(), String> {
+    close_preview_window(&app)?;
     #[cfg(all(debug_assertions, target_os = "macos"))]
     if native_panel::preview::active() {
         return native_panel::preview::focus(&app);
@@ -14888,8 +14926,12 @@ fn main() {
                 }
                 if matches!(window.label(), "clipboardPreview" | browser_preview::LABEL) {
                     api.prevent_close();
-                    let _ = retain_preview_window(window.app_handle());
-                    move_focus_to_clipboard(window.app_handle(), "preview close requested");
+                    if window.label() == "clipboardPreview" && MACOS_IMAGE_TEXT_DRAFT_PROTECTED.load(Ordering::SeqCst) {
+                        let _ = window.emit("preview-close-requested", ());
+                    } else {
+                        let _ = retain_preview_window(window.app_handle());
+                        move_focus_to_clipboard(window.app_handle(), "preview close requested");
+                    }
                 }
                 if window.label() == "tabEditor" {
                     api.prevent_close();

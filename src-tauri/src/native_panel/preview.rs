@@ -116,6 +116,15 @@ pub(super) fn reserve(mode: PreviewMode, hash: &str) -> u64 {
     *pending = None;
     request
 }
+
+pub(super) fn cancel_pending() {
+    if OWNED.load(Ordering::Acquire) {
+        // Stop queued preparation and commits while AppKit animates the owner out.
+        REQUEST.fetch_add(1, Ordering::AcqRel);
+        crate::cancel_preview_content();
+    }
+}
+
 pub(crate) fn closed() {
     let mut record = RECORD.lock().unwrap_or_else(|e| e.into_inner());
     REQUEST.fetch_add(1, Ordering::AcqRel);

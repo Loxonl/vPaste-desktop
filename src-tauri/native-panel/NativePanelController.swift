@@ -1637,14 +1637,23 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     var chosen: PanelMenuAction?
     let handler = PanelMenuHandler { chosen = $0 }
     let menu = PanelContextMenu.menu(PanelContextMenu.options(card: card, tags: menuTags,
-      colors: menuColors?.options, chinese: chinese), handler: handler)
+      colors: menuColors?.options, chinese: chinese, queueActive: pasteQueue.active), handler: handler)
     let scale = CGFloat(config.scale)
     let location = view.convert(point ?? NSPoint(x: 14 * scale, y: 40 * scale), to: nil)
-    guard let event = NSEvent.mouseEvent(with: .rightMouseDown, location: location, modifierFlags: [],
-      timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-      context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { return }
     withExtendedLifetime(handler) {
-      NSMenu.popUpContextMenu(menu, with: event, for: view)
+      let screenPoint = window.convertPoint(toScreen: location)
+      let screen = NSScreen.screens.first { $0.frame.contains(screenPoint) } ?? window.screen
+      if point != nil, let screen,
+        let origin = PanelContextMenu.upwardOrigin(at: screenPoint, menuHeight: menu.size.height,
+          screen: screen.visibleFrame) {
+        menu.items.reverse()
+        let viewOrigin = view.convert(window.convertPoint(fromScreen: origin), from: nil)
+        menu.popUp(positioning: nil, at: viewOrigin, in: view)
+      } else if let event = NSEvent.mouseEvent(with: .rightMouseDown, location: location, modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+        context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+        NSMenu.popUpContextMenu(menu, with: event, for: view)
+      }
     }
     guard let chosen, request == menuRequest else { return }
     performMenu(chosen, card: card)
@@ -1684,6 +1693,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     let hash = card.hash
     guard !busyAction, hasCurrentResults, window.attachedSheet == nil, containsRecord(hash) else { return }
     switch menuAction {
+    case .copyAndPaste:
+      if !pasteQueue.active { perform("paste", hash: hash) }
     case .preview: previews.open(PanelPreviewItem(hash: hash, itemType: card.itemType))
     case .editText: menuRun("edit", ["hash": hash], success: nil, reload: false)
     case .viewImageText: menuRun("ocr", ["hash": hash], success: nil, reload: false)

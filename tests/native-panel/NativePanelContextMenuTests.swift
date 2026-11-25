@@ -21,34 +21,34 @@ final class NativePanelContextMenuTests: XCTestCase {
     PanelContextMenu.options(card: card, tags: .loaded(tags), colors: colors, chinese: chinese)
   }
 
-  func testOffersImageTextOnlyForImagesAsTheSecondEntry() {
+  func testOffersImageTextOnlyForImagesAfterPreview() {
     for type in types {
       let menu = options(card(type))
       let index = menu.firstIndex { $0.action == .viewImageText }
-      XCTAssertEqual(index, type == "Image" ? 1 : nil, type)
+      XCTAssertEqual(index, type == "Image" ? 2 : nil, type)
     }
   }
 
   func testBaseActionsKeepExplicitFavoriteIntentAndSeparateDelete() {
     let menu = options(card("Text", favorite: true))
     XCTAssertEqual(menu.map(\.title), [
-      "Preview", "Edit text", "Remove favorite", "Tags", "Paste as plain text", "", "Delete record",
+      "Copy and paste", "Paste as plain text", "Preview", "Edit text", "Remove favorite", "Tags", "", "Delete record",
     ])
     XCTAssertEqual(menu.map(\.action), [
-      .preview, .editText, .favorite(false), nil, .pastePlainText, nil, .delete,
+      .copyAndPaste, .pastePlainText, .preview, .editText, .favorite(false), nil, nil, .delete,
     ])
-    XCTAssertEqual(options(card("Text"))[2].action, .favorite(true))
-    XCTAssertTrue(menu[5].isSeparator)
+    XCTAssertTrue(options(card("Text")).contains { $0.action == .favorite(true) })
+    XCTAssertTrue(menu.dropLast().last?.isSeparator == true)
     XCTAssertFalse(menu.map(\.title).contains("Copy as plain text"))
   }
 
   func testUsesNativeParityChineseLabels() {
     let menu = options(card("Text"), chinese: true)
     XCTAssertEqual(menu.filter { !$0.isSeparator }.map(\.title), [
-      "预览", "编辑文本", "收藏", "标签", "粘贴为纯文本", "删除记录",
+      "复制并粘贴", "粘贴为纯文本", "预览", "编辑文本", "收藏", "标签", "删除记录",
     ])
-    XCTAssertEqual(options(card("Image"), chinese: true)[1].title, "识别图片文字")
-    XCTAssertEqual(options(card("Image"))[1].title, "Recognize text in image")
+    XCTAssertEqual(options(card("Image"), chinese: true).first { $0.action == .viewImageText }?.title, "识别图片文字")
+    XCTAssertEqual(options(card("Image")).first { $0.action == .viewImageText }?.title, "Recognize text in image")
   }
 
   func testOffersEditingOnlyForTextBackedItems() {
@@ -65,6 +65,23 @@ final class NativePanelContextMenuTests: XCTestCase {
         options(card(type)).contains { $0.action == .pastePlainText },
         ["Text", "TextFile", "Link"].contains(type), type)
     }
+  }
+
+  func testQueueMenuKeepsPreviewFirstWithoutOfferingCopyAndPaste() {
+    let menu = PanelContextMenu.options(card: card("Text"), tags: .loaded([]), colors: nil,
+      chinese: false, queueActive: true)
+    XCTAssertEqual(menu.first?.action, .preview)
+    XCTAssertFalse(menu.contains { $0.action == .copyAndPaste })
+  }
+
+  func testMouseMenuCanAnchorFullyAboveThePointerWhenItCannotFitBelow() {
+    let display = NSRect(x: -800, y: -200, width: 800, height: 600)
+    XCTAssertEqual(PanelContextMenu.upwardOrigin(at: NSPoint(x: -50, y: -175), menuHeight: 140,
+      screen: display), NSPoint(x: -50, y: -31))
+    XCTAssertEqual(PanelContextMenu.upwardOrigin(at: NSPoint(x: -50, y: -225), menuHeight: 140,
+      screen: display), NSPoint(x: -50, y: -56))
+    XCTAssertNil(PanelContextMenu.upwardOrigin(at: NSPoint(x: -50, y: 30), menuHeight: 140, screen: display))
+    XCTAssertNil(PanelContextMenu.upwardOrigin(at: NSPoint(x: -50, y: -20), menuHeight: 500, screen: display))
   }
 
   func testIgnoresStaleAssignmentsAndKeepsCreateAndAssign() throws {
@@ -118,7 +135,7 @@ final class NativePanelContextMenuTests: XCTestCase {
 
   func testAddsExportAndFolderActionsForASingleImageFile() {
     XCTAssertEqual(options(card("File", exportImage: true)).map(\.action), [
-      .preview, .favorite(true), nil, .exportImage, .openFolder, .copyFolder, nil, .delete,
+      .copyAndPaste, .preview, .favorite(true), nil, .exportImage, .copyFolder, .openFolder, nil, .delete,
     ])
     XCTAssertFalse(options(card("File")).contains { $0.action == .exportImage })
     XCTAssertTrue(options(card("Image", exportImage: true)).contains { $0.action == .exportImage })

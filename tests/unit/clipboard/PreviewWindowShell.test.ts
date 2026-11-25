@@ -70,8 +70,9 @@ describe("preview window outer shell", () => {
 
     it("keeps one cleared hidden preview resident without an idle destruction timer", () => {
         const closing = sourceBetween("fn hide_preview_window", "fn show_main_panel_for_app");
-        expect(closing).toContain("retain_preview_window(&app)");
-        const retention = sourceBetween("fn retain_preview_window", "fn hide_preview_and_clipboard");
+        expect(closing).toContain("close_preview_and_focus(app)");
+        expect(closing).toContain("close_preview_window(&app)");
+        const retention = sourceBetween("fn close_preview_window", "fn hide_preview_and_clipboard");
         expect(retention).toContain("clear_preview_content(&preview_window)");
         expect(retention).toContain("preview_window.hide()");
         expect(retention).not.toContain("auxiliary_windows::destroy");

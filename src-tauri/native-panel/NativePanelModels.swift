@@ -11,6 +11,7 @@ struct PanelConfiguration: Decodable {
   let session: UInt64
   let pasteQueue: PanelPasteQueueStatus?
   var developerReconfigure: Bool? = nil
+  var editorReturnHash: String? = nil
   var onboarding: PanelOnboardingState? = nil
   let sizePreview: Bool
   let language: String

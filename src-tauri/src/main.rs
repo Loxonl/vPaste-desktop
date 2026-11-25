@@ -7191,7 +7191,21 @@ async fn save_clipboard_text(
         .unwrap()
         .as_ref()
         .map(|target| target.hash.clone());
-    save_clipboard_text_for_hash(app, previous_hash, update).await
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    let native_target = previous_hash.clone().filter(|_| main_panel_mode::native());
+    let item = save_clipboard_text_for_hash(app, previous_hash, update).await?;
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if let Some(hash) = native_target {
+        if let Some(target) = TEXT_EDITOR_TARGET
+            .lock()
+            .unwrap()
+            .as_mut()
+            .filter(|target| target.hash == hash)
+        {
+            target.hash.clone_from(&item.hash);
+        }
+    }
+    Ok(item)
 }
 
 async fn save_clipboard_text_for_hash(
@@ -7216,7 +7230,7 @@ fn hide_text_editor_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("textEditor") {
         auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
     }
-    *TEXT_EDITOR_TARGET.lock().unwrap() = None;
+    let _target = TEXT_EDITOR_TARGET.lock().unwrap().take();
     TEXT_EDITOR_FOCUSED.store(false, Ordering::SeqCst);
     #[cfg(all(target_os = "windows", feature = "winui"))]
     if main_panel_mode::winui() {
@@ -7225,7 +7239,7 @@ fn hide_text_editor_window(app: tauri::AppHandle) -> Result<(), String> {
     }
     #[cfg(all(debug_assertions, target_os = "macos"))]
     if main_panel_mode::native() {
-        return native_panel::show_default(app);
+        return native_panel::show_after_editor(app, _target.map(|target| target.hash));
     }
     if let Some(window) = app.get_webview_window("clipboard") {
         if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {

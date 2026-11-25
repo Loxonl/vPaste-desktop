@@ -45,6 +45,12 @@ describe("paste queue native window", () => {
         expect(mainSource).toContain('window.emit("paste-queue-dismiss-menu", ())');
     });
 
+    it("keeps the Mac main panel open while its queue exit confirmation has focus", () => {
+        const blur = mainSource.split("fn handle_main_panel_focus_lost")[1]
+            .split("fn handle_preview_focus_lost")[0];
+        expect(blur).toMatch(/app_window_is_foreground\(&app, "pasteQueue", "paste queue exit confirmation"\)[\s\S]*return;/);
+    });
+
     it("restores the previous target app for queue-window item clicks only", () => {
         expect(mainSource).toContain("enum PasteQueueRequestOrigin");
         expect(mainSource).toContain("PasteQueueRequestOrigin::QueueWindow");

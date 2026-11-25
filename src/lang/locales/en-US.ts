@@ -102,6 +102,7 @@ const enUS: LanguagePack = {
         "pasteQueue.title": "Paste Queue",
         "pasteQueue.count": "{count} / {capacity}",
         "pasteQueue.close": "Exit Paste Queue",
+        "pasteQueue.exitConfirm": "Exit and remove all items from the paste queue?",
         "pasteQueue.reverse": "Reverse order",
         "pasteQueue.more": "More queue actions",
         "pasteQueue.clear": "Clear queue",

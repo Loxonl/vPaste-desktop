@@ -102,6 +102,7 @@ const zhCN: LanguagePack = {
         "pasteQueue.title": "粘贴队列",
         "pasteQueue.count": "{count} / {capacity}",
         "pasteQueue.close": "退出粘贴队列",
+        "pasteQueue.exitConfirm": "退出会清空全部待粘贴项目。确定退出吗？",
         "pasteQueue.reverse": "反转顺序",
         "pasteQueue.more": "更多队列操作",
         "pasteQueue.clear": "清空队列",

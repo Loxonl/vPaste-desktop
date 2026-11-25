@@ -1,8 +1,9 @@
 import type { ReactElement } from "react";
-import { act, cleanup, fireEvent, render as renderUi, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as renderUi, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import EmojiPicker from "../../../src/clipboard/EmojiPicker";
+import PasteQueue from "../../../src/clipboard/PasteQueue";
 import PasteFallbackNotice from "../../../src/clipboard/PasteFallbackNotice";
 import Preview from "../../../src/clipboard/Preview";
 import TabEditor from "../../../src/clipboard/TabEditor";
@@ -77,6 +78,59 @@ describe("auxiliary window controls", () => {
             return undefined;
         });
         tauri.listen.mockReset().mockResolvedValue(() => undefined);
+    });
+
+    it.each(["never", "always"] as const)("keeps a macOS queue until exit is confirmed with reduced motion %s", async reducedMotion => {
+        vi.stubGlobal("__TAURI_INTERNALS__", {});
+        const listeners = new Map<string, (event: { payload: number }) => void>();
+        tauri.listen.mockImplementation(async (name: string, callback: (event: { payload: number }) => void) => {
+            listeners.set(name, callback);
+            return () => undefined;
+        });
+        const queued = {
+            active: true,
+            busy: false,
+            capacity: 100,
+            revision: 1,
+            items: [{ id: 1, hash: "A", itemType: "Text", content: "Queued fixture", time: 1 }],
+        };
+        tauri.invoke.mockImplementation(async (name: string) => {
+            if (name === "get_paste_queue_state") return queued;
+            if (name === "set_paste_queue_active") {
+                listeners.get("paste-queue-exit-requested")?.({ payload: 42 });
+                return queued;
+            }
+        });
+        const user = userEvent.setup();
+        try {
+            renderUi(<MotionTestProvider reducedMotion={reducedMotion}><PasteQueue /></MotionTestProvider>);
+            await screen.findByText("Queued fixture");
+            const exitButton = screen.getByRole("button", { name: "pasteQueue.close" });
+            await user.click(exitButton);
+
+            const dialog = await screen.findByRole("alertdialog", { name: "pasteQueue.close" });
+            expect(dialog).toHaveTextContent("pasteQueue.exitConfirm");
+            expect(tauri.invoke).not.toHaveBeenCalledWith("respond_to_paste_queue_exit", { activationEpoch: 42, confirmed: true });
+            await user.click(screen.getByRole("button", { name: "pasteQueue.keep" }));
+            await waitFor(() => expect(dialog).not.toBeInTheDocument());
+            expect(tauri.invoke).toHaveBeenCalledWith("respond_to_paste_queue_exit", { activationEpoch: 42, confirmed: false });
+            expect(screen.getByText("Queued fixture")).toBeVisible();
+
+            act(() => listeners.get("paste-queue-exit-requested")?.({ payload: 42 }));
+            await screen.findByRole("alertdialog");
+            await user.keyboard("{Escape}");
+            await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+            expect(screen.getByText("Queued fixture")).toBeVisible();
+
+            await user.click(exitButton);
+            const confirmation = within(await screen.findByRole("alertdialog"));
+            await user.click(confirmation.getByRole("button", { name: "pasteQueue.close" }));
+            expect(tauri.invoke.mock.calls.filter(([name, args]) => name === "respond_to_paste_queue_exit" && args.confirmed))
+                .toEqual([["respond_to_paste_queue_exit", { activationEpoch: 42, confirmed: true }]]);
+        } finally {
+            cleanup();
+            vi.unstubAllGlobals();
+        }
     });
 
     it("opens permission settings before destroying the fallback notice", async () => {

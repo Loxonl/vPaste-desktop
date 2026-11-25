@@ -4599,6 +4599,8 @@ fn handle_main_panel_focus_lost(app: tauri::AppHandle) {
             || text_editor_window_active(&app)
             || memory_monitor_window_active(&app)
             || native_auxiliary_window_active()
+            || (cfg!(target_os = "macos")
+                && app_window_is_foreground(&app, "pasteQueue", "paste queue exit confirmation"))
         {
             return;
         }
@@ -13340,6 +13342,26 @@ async fn apply_paste_queue_activation_inner(
             if !requests.current(request) {
                 return Ok(());
             }
+            #[cfg(target_os = "macos")]
+            if paste_queue::is_active() {
+                let window = app
+                    .get_webview_window("pasteQueue")
+                    .ok_or_else(|| "Paste queue window is unavailable".to_string())?;
+                record_foreground_app_before_clipboard();
+                window.set_focusable(true).map_err(|err| err.to_string())?;
+                if let Err(err) = window
+                    .emit(
+                        "paste-queue-exit-requested",
+                        paste_queue::activation_epoch(),
+                    )
+                    .and_then(|()| window.set_focus())
+                {
+                    let _ = window.set_focusable(false);
+                    return Err(err.to_string());
+                }
+                requests.finish(request);
+                return Ok(());
+            }
             deactivate_paste_queue_window_inner(&app)?;
             requests.finish(request);
             paste_queue::emit_state(&app);
@@ -13371,6 +13393,50 @@ async fn set_paste_queue_active(
 ) -> Result<paste_queue::PasteQueueState, String> {
     set_paste_queue_active_impl(&app, active).await?;
     paste_queue::state()
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn respond_to_paste_queue_exit(
+    window: tauri::WebviewWindow,
+    activation_epoch: u64,
+    confirmed: bool,
+) -> Result<(), String> {
+    if window.label() != "pasteQueue" {
+        return Err("Paste queue confirmation must come from the queue window".into());
+    }
+    let app = window.app_handle().clone();
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        if !paste_queue::is_active() || activation_epoch != paste_queue::activation_epoch() {
+            return Ok(());
+        }
+        let restore_focus = window.is_focused().unwrap_or(false);
+        window.set_focusable(false).map_err(|err| err.to_string())?;
+        let result = if confirmed {
+            let result = deactivate_paste_queue_window(&app);
+            paste_queue::emit_state(&app);
+            result
+        } else {
+            Ok(())
+        };
+        if restore_focus {
+            #[cfg(debug_assertions)]
+            if native_panel::preview::active() {
+                let _ = native_panel::show_default(app);
+                return result;
+            }
+            if let Some(main) = app
+                .get_webview_window("clipboard")
+                .filter(|main| main_surface_visible() && main.is_visible().unwrap_or(false))
+            {
+                let _ = main.set_focus();
+            } else {
+                restore_foreground_app_before_paste();
+            }
+        }
+        result
+    })
+    .await
 }
 
 #[tauri::command]
@@ -14920,10 +14986,23 @@ fn main() {
                 }
                 if window.label() == "pasteQueue" {
                     api.prevent_close();
-                    if let Err(err) = deactivate_paste_queue_window(window.app_handle()) {
-                        paste_queue::set_error(None, err);
+                    #[cfg(target_os = "macos")]
+                    {
+                        let app = window.app_handle().clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(err) = set_paste_queue_active_impl(&app, false).await {
+                                paste_queue::set_error(None, err);
+                                paste_queue::emit_state(&app);
+                            }
+                        });
                     }
-                    paste_queue::emit_state(window.app_handle());
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        if let Err(err) = deactivate_paste_queue_window(window.app_handle()) {
+                            paste_queue::set_error(None, err);
+                        }
+                        paste_queue::emit_state(window.app_handle());
+                    }
                 }
                 if window.label() == "config" {
                     api.prevent_close();
@@ -15269,6 +15348,8 @@ fn main() {
             get_paste_queue_state,
             set_paste_queue_menu_open,
             set_paste_queue_active,
+            #[cfg(target_os = "macos")]
+            respond_to_paste_queue_exit,
             add_paste_queue_items,
             reorder_paste_queue,
             reverse_paste_queue,

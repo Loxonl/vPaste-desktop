@@ -32,7 +32,8 @@ fn inline_png_icon_is_cached_without_a_network_request() {
             &client,
             &reqwest::Url::parse("https://example.com/login").unwrap(),
             &uri,
-        );
+        )
+        .unwrap();
         let bytes = fs::read(&path).unwrap_or_default();
         finish_store();
         (path, bytes)
@@ -59,8 +60,24 @@ fn inline_icon_rejects_html_svg_invalid_and_mislabeled_payloads() {
         ),
         format!("data:image/png;base64,{}", "A".repeat(8 * 1024 * 1024)),
     ] {
-        assert!(fetch_preview_image(&client, &base, &uri).is_empty());
+        assert!(fetch_preview_image(&client, &base, &uri)
+            .unwrap()
+            .is_empty());
     }
+}
+
+#[test]
+fn preview_image_response_stops_reading_at_the_existing_size_limit() {
+    let max_bytes = 5 * 1024 * 1024;
+    let mut body = std::io::Cursor::new(vec![1; max_bytes + 4096]);
+    assert!(read_preview_image_bytes(&mut body).is_none());
+    assert_eq!(body.position() as usize, max_bytes + 1);
+    assert_eq!(
+        read_preview_image_bytes(&[1, 2, 3][..]).as_deref(),
+        Some(&[1, 2, 3][..])
+    );
+    assert!(read_preview_image_bytes(&[][..]).is_none());
+    assert!(read_preview_image_bytes(&vec![1; max_bytes][..]).is_some());
 }
 
 #[test]
@@ -243,6 +260,190 @@ fn cached_records_do_not_starve_later_work_and_lookup_uses_the_loaded_identity()
 }
 
 #[test]
+fn preview_rate_limit_keeps_existing_metadata_and_continues_the_batch() {
+    let retry_at = Instant::now() + Duration::from_secs(45);
+    let (stored, updates, attempted, limited_id, deferred) = {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let _root = test_store();
+        let limited = seed_link(71, 1, "||||||Old title|||default-icon|||2026-01-01");
+        let later = seed_link(72, 1, "");
+        let mut attempted = Vec::new();
+        let mut deferred = Vec::new();
+        let updates = refresh_link_records_with_updates(
+            vec![limited.clone(), later],
+            true,
+            &|| true,
+            |url| {
+                attempted.push(url.to_string());
+                if url.ends_with("/71") {
+                    return Err(PreviewHttpError::RateLimited(Some(retry_at)));
+                }
+                Ok(LinkPreviewUpdate {
+                    url: url.into(),
+                    title: "Other card".into(),
+                    image_path: String::new(),
+                    image_kind: "default-icon".into(),
+                })
+            },
+            |_| Vec::new(),
+            |_| {},
+            |record, deadline| deferred.push((record.id, deadline)),
+        )
+        .unwrap();
+        let stored = find_link_record_for_preview("https://example.com/71")
+            .unwrap()
+            .unwrap();
+        let unchanged = stored.content == limited.content;
+        finish_store();
+        (unchanged, updates, attempted, limited.id, deferred)
+    };
+    assert!(
+        stored,
+        "a transient rate limit must not overwrite cached metadata"
+    );
+    assert_eq!(attempted.len(), 2);
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].url, "https://example.com/72");
+    assert_eq!(deferred, [(limited_id, retry_at)]);
+}
+
+#[test]
+fn loaded_duplicate_link_reuses_an_older_rows_same_day_cover() {
+    let (cover, reused, saved_time, attempts) = {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = test_store();
+        let cover = root.path().join("duplicate-link-cover.png");
+        fs::write(&cover, include_bytes!("../../icons/32x32.png")).unwrap();
+        let local_day = Local::now().format("%Y-%m-%d");
+        let source = seed_link(
+            11,
+            1,
+            &format!(
+                "|||{}|||Cover title|||preview|||{local_day}",
+                cover.display()
+            ),
+        );
+        let mut missing = seed_link(12, 2, "");
+        let url = "https://example.com/11";
+        missing.content = format!("{url}||||||example.com|||default-icon|||{local_day}");
+        db().execute(
+            "update clipboard set content=?1 where id=?2",
+            params![missing.content, missing.id],
+        )
+        .unwrap();
+        let mut attempts = 0;
+        let related_ids = [source.id, missing.id];
+        let updates = refresh_link_records_with_updates(
+            vec![source, missing.clone()],
+            true,
+            &|| true,
+            |_| {
+                attempts += 1;
+                Err("the existing image should be reused instead".into())
+            },
+            |_| related_ids.to_vec(),
+            |_| {},
+            |_, _| {},
+        )
+        .unwrap();
+        let saved = db()
+            .query_row(
+                "select id, hash, cast(time as integer), content from clipboard where id=?1",
+                [missing.id],
+                read_link_preview_record,
+            )
+            .unwrap();
+        finish_store();
+        assert_eq!(saved.hash, missing.hash);
+        (cover, updates, saved.time, attempts)
+    };
+    assert_eq!(attempts, 0);
+    assert_eq!(saved_time, 2);
+    assert_eq!(
+        reused.len(),
+        1,
+        "today's placeholder can be replaced locally"
+    );
+    assert_eq!(reused[0].image_path, cover.to_str().unwrap());
+    assert_eq!(reused[0].title, "Cover title");
+}
+
+#[test]
+fn loaded_duplicate_links_only_fetch_once_per_day() {
+    let (requests, updates) = {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let _root = test_store();
+        let first = seed_link(21, 1, "");
+        let mut second = seed_link(22, 2, "");
+        second.content = first.content.clone();
+        db().execute(
+            "update clipboard set content=?1 where id=?2",
+            params![second.content, second.id],
+        )
+        .unwrap();
+        let ids = [first.id, second.id];
+        let mut requests = 0;
+        let updates = refresh_link_records_with_updates(
+            vec![first, second],
+            true,
+            &|| true,
+            |url| {
+                requests += 1;
+                Ok(LinkPreviewUpdate {
+                    url: url.into(),
+                    title: "Page without an icon".into(),
+                    image_path: String::new(),
+                    image_kind: "default-icon".into(),
+                })
+            },
+            |_| ids.to_vec(),
+            |_| {},
+            |_, _| {},
+        )
+        .unwrap();
+        finish_store();
+        (requests, updates.len())
+    };
+    assert_eq!((requests, updates), (1, 2));
+}
+
+#[test]
+#[ignore = "uses the live vPaste website and current system proxy"]
+fn live_vpaste_website_card_repairs_a_missing_cover() {
+    let (updates, stored_time, valid, reused) = {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let _root = test_store();
+        let url = "https://vpaste.app/";
+        db().execute(
+            "insert into clipboard(hash,time,content,preview_content,item_type,search_index,source,title_color,icon) values('live-site',1,?1,?1,'Link',1,'','','')",
+            [format!("{url}||||||vpaste.app|||default-icon|||2000-01-01")],
+        )
+        .unwrap();
+        let record = find_link_record_for_preview(url).unwrap().unwrap();
+        let updates =
+            refresh_loaded_link_previews(vec![record], || true, |_| Vec::new(), |_| {}, |_, _| {})
+                .unwrap();
+        let stored = find_link_record_for_preview(url).unwrap().unwrap();
+        let image = link_record_cached_image_path(&stored);
+        let stored_time = stored.time;
+        let reused = refresh_link_records_with(vec![stored], true, &|| true, |_| {
+            panic!("the saved cover must be reused on the same day")
+        })
+        .unwrap();
+        let payload = history_card_payload("live-site", false).unwrap();
+        let valid = cached_link_image_is_usable(&image)
+            && payload.item.content.split("|||").nth(1) == Some(image.as_str());
+        finish_store();
+        (updates, stored_time, valid, reused)
+    };
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].image_kind, "preview");
+    assert!(valid, "the saved cover must be readable by the card cache");
+    assert_eq!(stored_time, 1);
+    assert!(reused.is_empty());
+}
+
+#[test]
 fn cancellation_does_not_persist_failure_or_request_the_next_link() {
     let observed = {
         let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
@@ -384,7 +585,8 @@ fn an_empty_title_with_an_inline_icon_is_persisted_as_a_success() {
             Ok(LinkPreviewUpdate {
                 url: url.into(),
                 title: title_from_html(&document),
-                image_path: fetch_preview_image(&client, &reqwest::Url::parse(url).unwrap(), &icon),
+                image_path: fetch_preview_image(&client, &reqwest::Url::parse(url).unwrap(), &icon)
+                    .unwrap(),
                 image_kind: "icon".into(),
             })
         })
@@ -458,7 +660,8 @@ fn cancelled_link_fetch_and_icon_fallback_do_not_start_network_requests() {
         &reqwest::Url::parse("https://example.com/").unwrap(),
         "",
         &|| false,
-    );
+    )
+    .unwrap();
     assert!(preview.image_path.is_empty());
 }
 
@@ -640,7 +843,9 @@ fn link_progress_is_notified_before_fetching_the_next_record() {
                     image_kind: "default-icon".into(),
                 })
             },
+            |_| Vec::new(),
             |_| notifications.set(notifications.get() + 1),
+            |_, _| {},
         )
         .unwrap();
         finish_store();
@@ -682,7 +887,9 @@ fn link_progress_notifies_a_loaded_snapshot_that_was_updated_before_queueing() {
                 calls += 1;
                 Err("must use the completed cache".into())
             },
+            |_| Vec::new(),
             |_| notifications += 1,
+            |_, _| {},
         )
         .unwrap();
         let stored = find_link_record_for_preview("https://example.com/1")
@@ -697,7 +904,9 @@ fn link_progress_notifies_a_loaded_snapshot_that_was_updated_before_queueing() {
                 calls += 1;
                 Err("must not refetch the current cache".into())
             },
+            |_| Vec::new(),
             |_| notifications += 1,
+            |_, _| {},
         )
         .unwrap();
         finish_store();

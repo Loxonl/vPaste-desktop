@@ -6,6 +6,50 @@ private var searchRequests: [[String: Any]] = []
 
 @MainActor
 final class NativePanelSearchTests: XCTestCase {
+  func testPreviewFailureSurvivesViewportRefreshUntilAnotherCardIsSelected() throws {
+    try withPanel(hashes: ["A", "B"]) { controller, search, _ in
+      let window = try XCTUnwrap(search.window as? NativeHistoryPanel)
+      let content = try XCTUnwrap(window.contentView)
+      let footer = try XCTUnwrap(allViews(content).compactMap { $0 as? NSTextField }.first {
+        $0.stringValue.hasPrefix("Native preview")
+      })
+
+      _ = window.keyHandler?(try key(49, characters: " ", window: window))
+      let request = try XCTUnwrap(searchRequests.last { $0["op"] as? String == "preview-toggle" })
+      reply(controller, request, data: [:], error: "fixture preview source missing")
+      XCTAssertTrue(footer.stringValue.contains("fixture preview source missing"))
+
+      let viewportUpdated = expectation(description: "Refresh the viewport after the footer appears")
+      DispatchQueue.main.async { viewportUpdated.fulfill() }
+      wait(for: [viewportUpdated], timeout: 1)
+      XCTAssertTrue(footer.stringValue.contains("fixture preview source missing"))
+
+      _ = window.keyHandler?(try key(124, characters: "", window: window))
+      XCTAssertFalse(footer.stringValue.contains("fixture preview source missing"))
+    }
+  }
+
+  func testLatePreviewFailureDoesNotReplaceFeedbackForNewerRequest() throws {
+    try withPanel(hashes: ["A", "B"]) { controller, search, _ in
+      let window = try XCTUnwrap(search.window as? NativeHistoryPanel)
+      let content = try XCTUnwrap(window.contentView)
+      let space = try key(49, characters: " ", window: window)
+      _ = window.keyHandler?(space)
+      let first = try XCTUnwrap(searchRequests.last { $0["op"] as? String == "preview-toggle" })
+      _ = window.keyHandler?(try key(124, characters: "", window: window))
+      _ = window.keyHandler?(space)
+      let next = try XCTUnwrap(searchRequests.last { $0["op"] as? String == "preview-toggle" })
+      XCTAssertEqual(first["hash"] as? String, "A")
+      XCTAssertEqual(next["hash"] as? String, "B")
+
+      reply(controller, next, data: [:])
+      reply(controller, first, data: [:], error: "fixture expired preview")
+      XCTAssertFalse(allViews(content).compactMap { $0 as? NSTextField }.contains {
+        $0.stringValue.contains("fixture expired preview")
+      })
+    }
+  }
+
   func testReturnWhileDebouncingUsesNewQueryNotOldSelection() throws {
     try withPanel { controller, search, editor in
       editor.string = "bravo"
@@ -81,6 +125,34 @@ final class NativePanelSearchTests: XCTestCase {
     }
   }
 
+  func testEscapeInTheCommittedPdfReaderClosesItAndRestoresListFocus() throws {
+    try withPanel { controller, search, _ in
+      let panel = try XCTUnwrap(search.window as? NativeHistoryPanel)
+      let list = try XCTUnwrap(allViews(try XCTUnwrap(panel.contentView)).compactMap {
+        $0 as? NSCollectionView
+      }.first)
+      let reader = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+        styleMask: [.titled], backing: .buffered, defer: false)
+      reader.isReleasedWhenClosed = false
+      defer { reader.close() }
+      reader.makeKeyAndOrderFront(nil)
+      controller.bridge.receive(["session": 42, "event": "preview-pdf", "windowNumber": reader.windowNumber])
+      searchRequests.removeAll()
+
+      NSApp.sendEvent(try key(49, characters: " ", window: reader))
+      XCTAssertFalse(searchRequests.contains { $0["op"] as? String == "preview-close" })
+      NSApp.sendEvent(try key(53, characters: "\u{1b}", window: reader))
+
+      XCTAssertEqual(searchRequests.filter { $0["op"] as? String == "preview-close" }.count, 1)
+      XCTAssertTrue(panel.firstResponder === list)
+
+      controller.bridge.receive(["session": 42, "event": "preview-pdf"])
+      reader.makeKeyAndOrderFront(nil)
+      NSApp.sendEvent(try key(53, characters: "\u{1b}", window: reader))
+      XCTAssertEqual(searchRequests.filter { $0["op"] as? String == "preview-close" }.count, 1)
+    }
+  }
+
   func testFavoriteMenuKeepsTheCapturedHashAndIntentAfterHistoryReorders() throws {
     try withPanel(hashes: ["A", "B"]) { controller, _, _ in
       let b = try panelDecode(PanelCard.self, card("B"))
@@ -142,6 +214,23 @@ final class NativePanelSearchTests: XCTestCase {
     }
   }
 
+  func testAnimatedDismissalCancelsPendingPreviewWithoutClosingTheReader() throws {
+    try withPanel { controller, search, _ in
+      let window = try XCTUnwrap(search.window as? NativeHistoryPanel)
+      _ = window.keyHandler?(try key(49, characters: " ", window: window))
+      XCTAssertEqual(searchRequests.last?["op"] as? String, "preview-toggle")
+
+      let start = searchRequests.count
+      controller.dismiss()
+      controller.dismiss()
+
+      let previewOperations = searchRequests.dropFirst(start)
+        .compactMap { $0["op"] as? String }
+        .filter { $0.hasPrefix("preview-") }
+      XCTAssertEqual(previewOperations, ["preview-cancel-pending"])
+    }
+  }
+
   func testQueueSelectionDoesNotFollowPreviewButSpaceStillDoes() throws {
     try withPanel(hashes: ["A", "B"]) { controller, search, editor in
       let window = try XCTUnwrap(search.window as? NativeHistoryPanel)
@@ -158,6 +247,22 @@ final class NativePanelSearchTests: XCTestCase {
       let explicit = try XCTUnwrap(searchRequests.last { $0["op"] as? String == "preview-toggle" })
       XCTAssertEqual(explicit["hash"] as? String, "B")
       XCTAssertFalse(searchRequests.contains { $0["op"] as? String == "paste-queue-select" })
+    }
+  }
+
+  func testTextEditorOpenFailureStaysOnTheNativePanel() throws {
+    try withPanel { controller, search, _ in
+      let window = try XCTUnwrap(search.window as? NativeHistoryPanel)
+      controller.performMenu(.editText, card: try panelDecode(PanelCard.self, card("A")))
+      let request = try XCTUnwrap(searchRequests.last { $0["op"] as? String == "edit" })
+      reply(controller, request, data: [:], error: "fixture text source missing")
+
+      let sheet = try XCTUnwrap(window.attachedSheet)
+      XCTAssertTrue(allViews(try XCTUnwrap(sheet.contentView)).compactMap { $0 as? NSTextField }.contains {
+        $0.stringValue.contains("fixture text source missing")
+      })
+      window.endSheet(sheet)
+      XCTAssertTrue(window.isVisible)
     }
   }
 
@@ -276,6 +381,38 @@ final class NativePanelSearchTests: XCTestCase {
 
       reply(controller, open, data: page(nil), error: "fixture query failure")
       XCTAssertEqual(searchRequests.filter { $0["op"] as? String == "preview-close" }.count, 1)
+    }
+  }
+
+  func testCreatedTagAssignmentFailureKeepsCurrentResultsAndOffersManualRetry() throws {
+    try withPanel(hashes: ["A", "B"], keywords: "result") { controller, search, _ in
+      let content = try XCTUnwrap(search.window?.contentView)
+      let review: [String: Any] = ["id": "record:9", "name": "Review", "label": "review", "record": true]
+      searchRequests.removeAll()
+
+      controller.bridge.receive(["session": 42, "event": "tabs-changed", "activeId": "record:9",
+        "assignmentError": "fixture assignment refused"])
+      let tabs = try XCTUnwrap(searchRequests.last { $0["op"] as? String == "tabs" })
+      reply(controller, tabs, data: [review])
+
+      XCTAssertFalse(searchRequests.contains { $0["op"] as? String == "open" })
+      XCTAssertEqual(search.stringValue, "result")
+      XCTAssertTrue(allViews(content).compactMap { $0 as? NSTextField }.contains {
+        $0.stringValue.contains("Tag created") && $0.stringValue.contains("original card")
+      })
+    }
+  }
+
+  func testCreatedTagAssignmentSuccessSelectsNewTab() throws {
+    try withPanel { controller, _, _ in
+      let review: [String: Any] = ["id": "record:9", "name": "Review", "label": "review", "record": true]
+      searchRequests.removeAll()
+
+      controller.bridge.receive(["session": 42, "event": "tabs-changed", "activeId": "record:9"])
+      let tabs = try XCTUnwrap(searchRequests.last { $0["op"] as? String == "tabs" })
+      reply(controller, tabs, data: [review])
+
+      XCTAssertEqual(searchRequests.last { $0["op"] as? String == "open" }?["tabId"] as? String, "record:9")
     }
   }
 

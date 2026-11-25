@@ -71,7 +71,14 @@ pub(super) async fn open(
                     json!({"languageCode":next_language,"themePreview":next_theme}),
                 );
             }
-            super::present(app, next_language.into(), next_theme.into(), false, true)?;
+            super::present(
+                app,
+                next_language.into(),
+                next_theme.into(),
+                false,
+                true,
+                None,
+            )?;
         }
         "memory" => {
             crate::open_dev_memory_window_from_source(app, None, language.into(), theme.into())
@@ -102,7 +109,7 @@ pub(super) async fn open(
         }
         "tutorial-mac" => {
             super::onboarding::start(&app)?;
-            super::present(app, language.into(), theme.into(), false, true)?;
+            super::present(app, language.into(), theme.into(), false, true, None)?;
         }
         "tutorial-windows" => {
             let window = crate::auxiliary_windows::ensure(

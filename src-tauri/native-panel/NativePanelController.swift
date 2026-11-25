@@ -154,18 +154,30 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private var filterEntryHashes: Set<String> = []
   private var filterEntryAnimated: Set<String> = []
   private var pendingPreviewSelection: (index: Int, direction: Int)?
+  private var previewRequestId: UInt64?
+  private var previewError: String?
   private lazy var previews = PanelPreviewDriver(hoverEnabled: config.hoverPreviewEnabled) {
     [weak self] operation, args in
     guard let self, !self.closed else { return }
+    if operation == "preview-close" { self.clearPreviewFeedback() }
     if operation == "hover-dismiss" || operation == "preview-close" {
       self.bridge.send(operation, args)
       return
     }
     guard !self.hiding, self.window.attachedSheet == nil, !self.dragging else { return }
-    if args["mode"] as? String == "hover", !self.window.isKeyWindow { return }
-    self.bridge.send(operation, args) { [weak self] result in
-      if case .failure(let error) = result, args["mode"] as? String != "hover" {
-        self?.showMessage(error.localizedDescription)
+    if args["mode"] as? String == "hover" {
+      if self.window.isKeyWindow { self.bridge.send(operation, args) }
+      return
+    }
+    self.clearPreviewFeedback()
+    self.previewRequestId = self.bridge.send(operation, args) { [weak self] result in
+      guard let self, !self.closed, !self.hiding else { return }
+      self.previewRequestId = nil
+      if case .failure(let error) = result {
+        let message = self.local("Could not preview this item. \(error.localizedDescription)",
+          "无法预览此项。\(error.localizedDescription)")
+        self.previewError = message
+        self.showMessage(message)
       }
     }
   }
@@ -213,6 +225,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private var applicationFocus: PanelApplicationFocus?
   private var mainRoleObserver: NSObjectProtocol?
   private let previewWindows = NSHashTable<NSWindow>.weakObjects()
+  private var pdfWindowNumber: Int?
+  private var previewEscapeMonitor: Any?
   private var transition = 0
   private var starting = true
   private var hiding = false
@@ -255,6 +269,20 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     window.delegate = self
     window.keyHandler = { [weak self] event in self?.key(event) ?? false }
     window.pointerHandler = { [weak self] in self?.previews.cancelHover() }
+    previewEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+      let handled = MainActor.assumeIsolated {
+        guard let self, !self.closed, !self.hiding, event.keyCode == 53,
+          event.windowNumber == self.pdfWindowNumber,
+          event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty
+        else { return false }
+        if !event.isARepeat {
+          self.previews.clear()
+          self.focus()
+        }
+        return true
+      }
+      return handled ? nil : event
+    }
     applicationFocus = PanelApplicationFocus { [weak self] active in
       guard let self, !self.closed, !self.config.sizePreview else { return }
       self.bridge.setKey(active && self.window.isKeyWindow)
@@ -398,13 +426,18 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       if name == "history-dirty" {
         self.requestHistorySync()
       } else if name == "tabs-changed" {
-        if let id = value["activeId"] as? String { self.pendingTabSelection = id }
+        if let error = value["assignmentError"] as? String {
+          self.pendingTabSelection = nil
+          let message = self.local("Tag created, but assignment failed. Add it from the original card’s Tags menu. (\(error))",
+            "标签已创建，但赋值失败。请在原卡片的「标签」菜单中添加。（\(error)）")
+          self.tagActionError = message
+          self.showMessage(message)
+        } else if let id = value["activeId"] as? String {
+          self.pendingTabSelection = id
+        }
         self.refreshMenuTags()
         self.refreshTabs()
         self.requestHistorySync()
-        if let message = value["assignmentError"] as? String {
-          self.showMessage(self.local("Could not add the new tag: \(message)", "无法添加新标签：\(message)"))
-        }
       } else if name == "paste-queue-state" {
         if self.applyPasteQueueState(value), let error = value["error"] as? String {
           self.pasteQueue.reportError(error)
@@ -414,6 +447,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         if !self.dragging { self.refreshTabs() }
       } else if name == "preview-focused", let number = value["windowNumber"] as? Int {
         self.retainMainAppearanceForPreview(windowNumber: number)
+      } else if name == "preview-pdf" {
+        self.pdfWindowNumber = value["windowNumber"] as? Int
       } else if name == "preview-hover", let inside = value["inside"] as? Bool {
         self.previews.pointerInPreview(inside)
       } else if name == "preview-navigation" {
@@ -632,6 +667,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     if animated {
       guard !hiding else { return }
       hiding = true
+      bridge.send("preview-cancel-pending")
       animate(show: false) { [weak self] in self?.window.close() }
     } else {
       transition &+= 1
@@ -650,6 +686,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     applicationFocus = nil
     if let mainRoleObserver { NotificationCenter.default.removeObserver(mainRoleObserver) }
     mainRoleObserver = nil
+    if let previewEscapeMonitor { NSEvent.removeMonitor(previewEscapeMonitor) }
+    previewEscapeMonitor = nil
     previewWindows.removeAllObjects()
     previews.close()
     pendingPreviewSelection = nil
@@ -832,6 +870,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private func reload(revalidatePreview: Bool = false) {
     guard !closed, !hiding, onboarding == nil, searchEditor?.hasMarkedText() != true else { return }
     abandonQuery()
+    clearPreviewFeedback()
     tagActionError = nil
     readyQuery = nil
     let query = currentQuery
@@ -940,7 +979,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private func resumeHistory() {
     generation &+= 1
     let epoch = generation
-    bridge.send("history-resume", ["preserveHistory": config.developerReconfigure == true]) { [weak self] result in
+    let args: [String: Any] = ["preserveHistory": config.developerReconfigure == true,
+      "hash": config.editorReturnHash ?? ""]
+    bridge.send("history-resume", args) { [weak self] result in
       guard let self, !self.closed, self.generation == epoch else { return }
       do {
         let value = try panelDecode(PanelHistoryPresentation.self, result.get())
@@ -1032,6 +1073,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     if delta.resourcesChanged { media.clear() }
     if previousSelection != ref(selected)?.hash {
+      clearPreviewFeedback()
       pendingPreviewSelection = (selected, 0)
     } else if let pending = pendingPreviewSelection {
       pendingPreviewSelection = (selected, pending.direction)
@@ -1339,7 +1381,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       }
     }
 
-    if let error = pasteQueue.error ?? tagActionError {
+    if let error = pasteQueue.error ?? tagActionError ?? previewError {
       footer.stringValue = error
       return
     }
@@ -1356,6 +1398,13 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         ? local(" · Enter select · Space preview · Esc close", " · Enter 勾选 · 空格预览 · Esc 关闭")
         : local(" · Enter paste · ⌘C copy · Space preview · Esc close",
           " · Enter 粘贴 · ⌘C 复制 · 空格预览 · Esc 关闭"))
+  }
+  private func clearPreviewFeedback() {
+    if let previewRequestId { bridge.abandon(previewRequestId) }
+    previewRequestId = nil
+    guard previewError != nil else { return }
+    previewError = nil
+    status()
   }
   private func refreshSelectedPreview() {
     if pasteQueue.active { pendingPreviewSelection = nil; return }
@@ -1374,6 +1423,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     selected = index
     if pasteQueue.active { queueKeyboardTarget = hasCurrentResults ? ref(index)?.hash : nil }
     if index != previous {
+      clearPreviewFeedback()
       pendingPreviewSelection = (index, shouldScroll ? (index > previous ? 1 : -1) : 0)
       refreshSelectedPreview()
     }
@@ -1751,6 +1801,15 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       defer { self.synchronizeHistoryIfNeeded() }
       switch result {
       case .failure(let error):
+        if op == "edit", !self.hiding, self.window.attachedSheet == nil {
+          let alert = NSAlert()
+          alert.messageText = self.local("Could not open the text editor", "无法打开文本编辑器")
+          alert.informativeText = error.localizedDescription
+          alert.addButton(withTitle: self.local("OK", "确定"))
+          alert.beginSheetModal(for: self.window)
+          failed?()
+          return
+        }
         let message = self.local("Action failed: \(error.localizedDescription)",
           "操作失败：\(error.localizedDescription)")
         if reloadAfterFailure, self.hasCurrentResults {

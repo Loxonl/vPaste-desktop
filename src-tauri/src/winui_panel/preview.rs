@@ -137,7 +137,7 @@ pub(crate) fn install_escape_handler(window: &tauri::WebviewWindow) {
                                 if crate::PREVIEW_WINDOW_GENERATION.load(Ordering::SeqCst)
                                     == generation
                                 {
-                                    crate::hide_preview_window(app)?;
+                                    crate::close_preview_and_focus(app)?;
                                 }
                                 Ok(())
                             })
@@ -424,7 +424,7 @@ pub(super) fn close(app: &tauri::AppHandle) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if REQUESTS.version_current(ticket) && !crate::PREVIEW_REQUESTS.active() {
-            let _ = crate::hide_preview_window(handle);
+            let _ = crate::close_preview_and_focus(handle);
         }
     });
 }

@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -56,7 +56,34 @@ fn link_preview_accepts_a_configured_localhost_proxy_and_its_authentication() {
     assert!(!request.contains("private-test-value"));
 }
 
-fn read_proxy_headers(stream: &mut std::net::TcpStream) -> Vec<u8> {
+#[cfg(any(windows, target_os = "macos"))]
+#[test]
+fn link_preview_offers_http2_and_http1_after_proxy_connect() {
+    let hello = proxy_fixture_exchange("127.0.0.1", false, |stream, request| {
+        assert!(request.starts_with(b"CONNECT preview-fixture.example:443 HTTP/1.1\r\n"));
+        stream
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .unwrap();
+        let mut header = [0; 5];
+        stream.read_exact(&mut header).unwrap();
+        assert_eq!(header[0], 22, "expected a TLS handshake record");
+        let mut hello = vec![0; u16::from_be_bytes([header[3], header[4]]) as usize];
+        stream.read_exact(&mut hello).unwrap();
+        assert_eq!(hello.first(), Some(&1), "expected a TLS ClientHello");
+        hello
+    });
+
+    // ALPN extension: two length-prefixed protocol IDs, preferred version first.
+    let protocols = b"\x00\x10\x00\x0e\x00\x0c\x02h2\x08http/1.1";
+    assert!(
+        hello
+            .windows(protocols.len())
+            .any(|bytes| bytes == protocols),
+        "link preview TLS must offer both HTTP/2 and HTTP/1.1 through CONNECT"
+    );
+}
+
+fn read_proxy_headers(stream: &mut TcpStream) -> Vec<u8> {
     // Windows can inherit the listener's nonblocking mode on accepted sockets.
     stream.set_nonblocking(false).unwrap();
     stream
@@ -107,6 +134,22 @@ fn proxy_fixture_waits_for_delayed_and_fragmented_headers() {
 }
 
 fn proxy_fixture_request(host: &str, authentication: bool) -> String {
+    let bytes = proxy_fixture_exchange(host, authentication, |stream, request| {
+        stream
+            .write_all(
+                b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+        request
+    });
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn proxy_fixture_exchange(
+    host: &str,
+    authentication: bool,
+    respond: impl FnOnce(&mut TcpStream, Vec<u8>) -> Vec<u8> + Send + 'static,
+) -> Vec<u8> {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
@@ -117,10 +160,7 @@ fn proxy_fixture_request(host: &str, authentication: bool) -> String {
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     let bytes = read_proxy_headers(&mut stream);
-                    sender
-                        .send(String::from_utf8_lossy(&bytes).into_owned())
-                        .unwrap();
-                    stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    sender.send(respond(&mut stream, bytes)).unwrap();
                     return;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {

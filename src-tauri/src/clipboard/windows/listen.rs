@@ -3186,8 +3186,14 @@ mod tests {
             .encode_utf16()
             .collect::<Vec<_>>();
         unsafe {
-            let station = CreateWindowStationW(name.as_ptr(), 0, 0x37f, std::ptr::null());
-            assert_ne!(station, 0, "cannot create isolated clipboard station");
+            // CWF_CREATE_ONLY: never attach to an existing station or share its clipboard.
+            let station = CreateWindowStationW(name.as_ptr(), 1, 0x37f, std::ptr::null());
+            assert_ne!(
+                station,
+                0,
+                "cannot create isolated clipboard station: {}",
+                std::io::Error::last_os_error()
+            );
             assert_ne!(SetProcessWindowStation(station), 0);
             let desktop_name = "Default\0".encode_utf16().collect::<Vec<_>>();
             let desktop = CreateDesktopW(
@@ -3414,7 +3420,7 @@ mod tests {
         clipboard::db::init();
         crate::paste_queue::set_active(true);
         let epoch = crate::paste_queue::activation_epoch();
-        let (sender, receiver) = mpsc::sync_channel(4);
+        let (sender, receiver) = mpsc::sync_channel(6);
         let bytes = Arc::new(Mutex::new(0));
         for (sequence, gap, selection, fallback, markup) in [
             (
@@ -3430,6 +3436,13 @@ mod tests {
                 "Build\ncommands",
                 "Build\r\ncommands\r\nReference",
                 "<div><strong>Build</strong><br><a href='https://example.com/build'>commands</a></div>",
+            ),
+            (
+                5,
+                50,
+                "\nRelease notes\n",
+                "Release notes\r\n[Open article]",
+                "<div><a href='https://example.com/notes'>Release notes</a><br></div>",
             ),
         ] {
             let time = 1000 + 1000 * u64::from(sequence);
@@ -3459,11 +3472,15 @@ mod tests {
         }
         let queue = crate::paste_queue::ordered_hashes().unwrap();
         crate::paste_queue::set_active(false);
-        assert_eq!(processed.len(), 2, "one record per linked selection");
-        assert_eq!(queue, processed);
+        assert_eq!(processed.len(), 3, "one completed capture per gesture");
+        assert_eq!(
+            processed[0], processed[2],
+            "a new copy of the same formatted selection reuses its record"
+        );
+        assert_eq!(queue, [processed[1].clone(), processed[0].clone()]);
         assert_eq!(*bytes.lock().unwrap(), 0);
         for (hash, time, fallback) in [
-            (&processed[0], 2000, "Release notes\r\n[Open article]"),
+            (&processed[0], 6000, "Release notes\r\n[Open article]"),
             (&processed[1], 4000, "Build\r\ncommands\r\nReference"),
         ] {
             let item = clipboard::try_get_by_hash(hash).unwrap();

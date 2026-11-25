@@ -62,7 +62,7 @@ public:
     QueueView &operator=(QueueView &&) noexcept;
 
     winrt::Microsoft::UI::Xaml::FrameworkElement Root() const;
-    void SetState(winrt::Windows::Data::Json::JsonObject const &state);
+    void SetState(winrt::Windows::Data::Json::JsonObject const &state, bool preserveFeedback = false);
     bool Receive(winrt::Windows::Data::Json::JsonObject const &response);
     void SetError(const std::wstring &message);
     void SetLanguage(bool english);
@@ -87,6 +87,8 @@ private:
         winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
     friend winrt::Windows::Foundation::IAsyncAction TestQueuePointerReorderControls(
         winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
+    friend winrt::Windows::Foundation::IAsyncAction TestBatch2QueueControls(
+        winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::vector<std::string> &failures);
 #endif
     struct Impl;
     std::shared_ptr<Impl> m_impl;
@@ -105,6 +107,8 @@ winrt::Windows::Foundation::IAsyncAction TestQueueRowContinuityControls(
     winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
 winrt::Windows::Foundation::IAsyncAction TestQueuePointerReorderControls(
     winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::uint32_t &stage);
+winrt::Windows::Foundation::IAsyncAction TestBatch2QueueControls(
+    winrt::Microsoft::UI::Xaml::FrameworkElement fixture, std::vector<std::string> &failures);
 #endif
 
 } // namespace vpaste::winui

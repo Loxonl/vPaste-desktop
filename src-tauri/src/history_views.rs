@@ -56,6 +56,12 @@ pub(crate) struct HistoryRef {
     pub(crate) source_metadata: crate::clipboard::source_metadata::SourceMetadata,
     pub(crate) title_color: String,
     pub(crate) preview_text: String,
+    #[serde(skip)]
+    pub(crate) is_rich_text: bool,
+    #[serde(skip)]
+    pub(crate) link_resource: String,
+    #[serde(skip)]
+    pub(crate) has_ocr_text: bool,
 }
 
 impl HistoryRef {

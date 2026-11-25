@@ -296,6 +296,7 @@ fn build_winui_panel() {
     println!("cargo:rerun-if-changed={TAG_MANAGER_SOURCE}");
     println!("cargo:rerun-if-changed={TAG_MANAGER_HEADER}");
     println!("cargo:rerun-if-changed={APPEARANCE_HEADER}");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiMenuFocus.h");
     println!("cargo:rerun-if-changed={RICH_SOURCE}");
     println!("cargo:rerun-if-changed={RICH_HEADER}");
     println!("cargo:rerun-if-changed={DRAG_SOURCE}");
@@ -311,6 +312,7 @@ fn build_winui_panel() {
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiHistoryViewport.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiRecordTagEditor.cpp");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiRecordTagEditor.h");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiEditorKeys.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiCardContent.cpp");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiCardPreview.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiCardContent.h");

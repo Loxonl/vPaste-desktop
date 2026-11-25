@@ -184,6 +184,56 @@ impl Guide {
             "error":error.unwrap_or_default()
         })
     }
+
+    fn set_language(&mut self, english: bool) -> bool {
+        if self.english == english {
+            return false;
+        }
+        self.english = english;
+        if !self.loaded {
+            return true;
+        }
+        // 同步更新当前导览已启用预设筛选标签的名称，避免语言切换后保留旧语言标签名。
+        let update_tab_names = |tabs: &mut Vec<Value>| {
+            for tab in tabs.iter_mut() {
+                if let Some(filter) = FILTERS.iter().find(|f| tab["id"] == f.tab_id()) {
+                    tab["name"] = json!(filter.name(english));
+                }
+            }
+        };
+        if self.preview {
+            update_tab_names(&mut self.tabs);
+            return true;
+        }
+        if let Ok(_store) = super::filters::STORE_ACCESS.lock() {
+            if let Ok(mut tabs) = read_tabs() {
+                update_tab_names(&mut tabs);
+                if crate::save_custom_tabs(json!(tabs)).is_ok() {
+                    self.tabs = tabs;
+                    return true;
+                }
+            }
+        }
+        update_tab_names(&mut self.tabs);
+        true
+    }
+}
+
+pub(crate) fn refresh_language(app: &AppHandle, english: bool) {
+    let payload = {
+        let Ok(mut active) = GUIDE.lock() else {
+            return;
+        };
+        let Some(guide) = active.as_mut() else {
+            return;
+        };
+        if !guide.set_language(english) {
+            return;
+        }
+        publish_real_tabs(app, guide);
+        guide.state(None)
+    };
+    super::send_response(0, "nativeTutorialState", Ok(payload));
 }
 
 fn publish_real_tabs(app: &AppHandle, guide: &Guide) {
@@ -450,5 +500,26 @@ mod tests {
             json!({"itemType":"Color","appSource":"","appSources":[],
             "favorite":"any","relativeAmount":"","relativeUnit":"day"})
         );
+    }
+
+    #[test]
+    fn winui_regression_onboarding_language_update_refreshes_filter_labels() {
+        let mut tabs = Vec::new();
+        FILTERS[0].apply(&mut tabs, true, false);
+        let mut guide = Guide {
+            session: 1,
+            preview: true,
+            mac: false,
+            english: false,
+            shortcut: "Alt + V".into(),
+            tabs,
+            loaded: true,
+        };
+        assert_eq!(guide.state(None)["english"], false);
+        assert!(guide.set_language(true));
+        let updated = guide.state(None);
+        assert_eq!(updated["english"], true);
+        assert_eq!(updated["filters"][0]["name"], "📝 Text");
+        assert!(!guide.set_language(true));
     }
 }

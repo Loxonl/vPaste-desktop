@@ -107,6 +107,7 @@
     <ClInclude Include="WinUiTrayWindow.h" />
     <ClInclude Include="WinUiTagManager.h" />
     <ClInclude Include="WinUiAppearance.h" />
+    <ClInclude Include="WinUiMenuFocus.h" />
     <ClInclude Include="WinUiRichContent.h" />
     <ClInclude Include="WinUiDrag.h" />
     <ClInclude Include="WinUiFilterEditor.h" />
@@ -115,6 +116,7 @@
     <ClInclude Include="WinUiKeyboard.h" />
     <ClInclude Include="WinUiHistoryViewport.h" />
     <ClInclude Include="WinUiRecordTagEditor.h" />
+    <ClInclude Include="WinUiEditorKeys.h" />
     <ClInclude Include="WinUiCardContent.h" />
     <ClInclude Include="WinUiAppActions.h" />
     <ClInclude Include="WinUiHeaderArtwork.h" />

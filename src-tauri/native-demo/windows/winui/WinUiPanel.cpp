@@ -76,6 +76,7 @@ winrt::Windows::Foundation::IAsyncAction NextNativeFrame() {
 #include "WinUiFilterEditor.h"
 #include "WinUiNameEmoji.h"
 #include "WinUiAppearance.h"
+#include "WinUiMenuFocus.h"
 #include "WinUiRichContent.h"
 #include "WinUiDrag.h"
 #include "WinUiCardActions.h"
@@ -108,6 +109,7 @@ winrt::Windows::Foundation::IAsyncAction NextNativeFrame() {
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -166,6 +168,7 @@ constexpr UINT kSetQueueView = WM_APP + 11;
 constexpr UINT kShowQueueNoActivate = WM_APP + 12;
 constexpr UINT kHideForQueuePaste = WM_APP + 13;
 constexpr UINT kFocusHistory = WM_APP + 14;
+constexpr LPARAM kPreviewFocusReturn = 1;
 constexpr UINT kSetLayout = WM_APP + 15;
 constexpr UINT kSetBehavior = WM_APP + 16;
 constexpr UINT kSyncHistoryViewport = WM_APP + 17;
@@ -232,12 +235,15 @@ struct HistoryRowVisual {
     winrt::hstring visualType;
     std::shared_ptr<vpaste::winui::AutoScrollCardPreview> autoPreview, richAutoPreview;
     std::shared_ptr<vpaste::winui::CardRecordTags> recordTags;
+    bool isRichText = false;
+    winrt::Windows::Data::Json::JsonObject pendingMenuActions{nullptr};
 };
 
 struct Panel {
     HWND window = nullptr;
     std::unique_ptr<vpaste::winui::DockMotion> dockMotion;
     winrt::Microsoft::UI::Xaml::Controls::Grid root{nullptr};
+    std::shared_ptr<vpaste::winui::MenuOpeningInput> menuInput;
     winrt::Microsoft::UI::Xaml::Controls::Grid header{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Grid shadowReceiver{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Viewbox viewport{nullptr};
@@ -247,7 +253,6 @@ struct Panel {
     bool hasSystemBackdrop = false;
     winrt::Microsoft::UI::Xaml::Controls::TextBox search{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Grid searchField{nullptr};
-    winrt::Microsoft::UI::Xaml::Controls::Button searchSubmit{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::TextBox::TextChanging_revoker searchChanging;
     winrt::Microsoft::UI::Xaml::Controls::TextBox::TextCompositionStarted_revoker searchCompositionStarted;
     winrt::Microsoft::UI::Xaml::Controls::TextBox::TextCompositionEnded_revoker searchCompositionEnded;
@@ -277,7 +282,7 @@ struct Panel {
     winrt::Microsoft::UI::Xaml::Controls::TextBlock selectionTitle{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::TextBlock selectionCount{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::ContentDialog deletionDialog{nullptr};
-    winrt::Microsoft::UI::Xaml::Controls::InfoBar feedback{nullptr};
+    winrt::Microsoft::UI::Xaml::Controls::InfoBar feedback{nullptr}, staleHistory{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Button queueAdd{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Button queueOpen{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Button settings{nullptr};
@@ -313,8 +318,12 @@ bool NativeEditorOpen() {
 std::uint64_t g_searchSubmitRequestId = 0;
 winrt::hstring g_searchText;
 bool g_searchComposing = false;
+void ScheduleHistoryFocus(WPARAM wparam = 0);
+winrt::Microsoft::UI::Xaml::ElementTheme EffectivePanelTheme(
+    winrt::Microsoft::UI::Xaml::ElementTheme requested) noexcept;
 std::uint64_t g_latestHoverRequestId = 0;
 int g_searchSubmitIndex = 0;
+std::wstring g_submitSelectedHash;
 bool g_searchSubmitPlain = false, g_searchSubmitQuick = false;
 vpaste::winui::PanelBehavior g_behavior;
 bool g_altHints = false;
@@ -323,7 +332,10 @@ struct HistoryViewState {
     vpaste::winui::HistoryQuery visibleQuery, requestedQuery;
     winrt::hstring renderedItems;
     std::optional<Restore> restore;
+    std::optional<vpaste::winui::HistoryQuery> removedTabFallback;
     std::optional<std::pair<std::uint64_t, std::uint64_t>> lastAutoCursor;
+    // Text changes retire in-flight requests before the next debounce dispatches.
+    std::uint64_t visibleQueryId = 0, discardThrough = 0;
     double parkedOffset = 0;
     bool resetOnShow = false, pageFailed = false;
 } g_historyView;
@@ -346,6 +358,27 @@ bool g_updatingTagFilter = false;
 bool g_updatingHistorySelection = false;
 bool g_queueSelectionMode = false;
 std::wstring g_queueReturnHash;
+struct CardTarget {
+    std::wstring hash;
+    std::uint64_t recordId;
+};
+HistoryRowVisual *FindCard(const std::wstring &hash);
+std::uint64_t g_textEditorOpenRequest = 0;
+std::optional<CardTarget> g_textEditorRequestedCard, g_textEditorOrigin;
+bool g_textEditorRefreshAfterSave = false;
+struct TextEditorReturn {
+    CardTarget target;
+    vpaste::winui::HistoryQuery query;
+    std::wstring selection;
+};
+std::optional<TextEditorReturn> g_textEditorReturnAfterQuery;
+struct QueuePreviewFocus {
+    CardTarget target;
+    std::uint64_t request, generation = 0;
+    bool ready = false, closed = false;
+};
+std::optional<QueuePreviewFocus> g_queuePreviewFocus;
+std::optional<CardTarget> g_recordTagAssignmentTarget;
 bool g_queueViewActive = false;
 bool g_deleteConfirmationOpen = false;
 bool g_applyingLayout = false;
@@ -361,6 +394,8 @@ std::uint64_t g_latestQueryId = 0;
 std::uint64_t g_latestHistoryRequestId = 0;
 std::uint64_t g_latestTagsRequestId = 0;
 bool g_recordTagsLoaded = false;
+bool g_recordTagsFailed = false;
+std::set<std::uint64_t> g_cardTagRequests;
 std::uint64_t g_latestFiltersRequestId = 0;
 std::vector<winrt::Windows::Data::Json::JsonObject> g_customFilters;
 std::optional<std::vector<winrt::Windows::Data::Json::JsonObject>> g_tutorialPreviewFilters;
@@ -525,6 +560,7 @@ bool RebuildTagFilter();
 void RequestHistory(bool preserveSearchSubmit = false);
 void RefreshFilters();
 void SetTagManagerActive(bool active);
+void SetQueueViewActive(bool active);
 void ApplyActiveLayout();
 void ResizeIsland() noexcept;
 void UpdateHistoryState();
@@ -539,28 +575,53 @@ void CancelHoverPreview() {
 }
 template<typename T> T FindHistoryChild(winrt::Microsoft::UI::Xaml::DependencyObject const &element);
 winrt::hstring SearchText() { return g_searchText; }
+vpaste::winui::HistoryQuery CurrentHistoryQuery() {
+    return {std::wstring{SearchText()},
+        g_selectedFilterId.empty() ? FilterValue(FilterIndex()) : L"custom:" + g_selectedFilterId, g_selectedTagName};
+}
+
+bool HistoryRowsMatchSearch() {
+    return !g_searchComposing && !g_historyFailed &&
+        g_historyView.visibleQueryId > g_historyView.discardThrough &&
+        g_historyView.visibleQuery == CurrentHistoryQuery();
+}
+
+bool HistoryRowsCurrent() {
+    return HistoryRowsMatchSearch() && !(g_historyLoading && g_latestHistoryRequestId == g_latestQueryId);
+}
+
+void RetireHistoryQuery() {
+    g_historyView.discardThrough = g_latestHistoryRequestId;
+    g_historyLoading = false;
+    g_searchSubmitRequestId = 0;
+}
 
 void ScheduleSearch() {
     if (!g_searchTimer) return;
     g_searchTimer.Stop();
-    if (g_searchComposing) return;
+    if (g_searchComposing) { UpdateHistoryState(); return; }
     const bool empty = std::wstring_view{g_searchText}.find_first_not_of(L" \t\r\n") == std::wstring_view::npos;
     // Query debounce, matching clipboardSearch.ts; these are not motion timings.
     g_searchTimer.Interval(std::chrono::milliseconds(empty ? 40 : 120));
     g_searchTimer.Start();
+    UpdateHistoryState();
 }
 
 void SearchCompositionChanged(bool composing, winrt::hstring const &text) {
     g_searchComposing = composing;
-    g_searchText = text; g_searchSubmitRequestId = 0; CancelHoverPreview();
+    g_searchText = text;
+    RetireHistoryQuery();
+    g_historyFailed = false;
+    CancelHoverPreview();
     ScheduleSearch();
 }
 
 void SearchChanged(winrt::hstring const &text) {
     if (g_searchText == text) return;
     g_searchText = text;
+    RetireHistoryQuery();
+    g_historyFailed = false;
     CancelHoverPreview();
-    g_searchSubmitRequestId = 0;
     ScheduleSearch();
 }
 
@@ -571,10 +632,31 @@ void ApplyCardPresenterChrome(winrt::Microsoft::UI::Xaml::DependencyObject const
                               bool contrast);
 void UpdateSearchWidth() {
     if (g_panel.searchField && g_panel.root) {
-        const bool narrow = g_panel.root.Width() < 900;
+        const double width = g_panel.root.Width();
+        const bool narrow = width < 900;
+        const bool ultraNarrow = width > 0 && width < 560;
         g_panel.searchField.Width(narrow ? 120 : 276);
         if (g_panel.status) g_panel.status.Visibility(winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
         if (g_panel.tagFilter) g_panel.tagFilter.Width(narrow ? 112 : 144);
+        // 窄屏下同步收敛开发者工具胶囊与极端窄窗边距，保护标签栏与右上角主操作按钮不被裁剪挤压。
+        if (g_panel.appActions) g_panel.appActions->SetCompact(width > 0 && width < 860);
+        if (g_panel.header) {
+            const double inset = ultraNarrow ? 16.0 : kHeaderInset;
+            const auto currentPadding = g_panel.header.Padding();
+            if (currentPadding.Left != inset || currentPadding.Right != inset) {
+                g_panel.header.Padding(winrt::Microsoft::UI::Xaml::Thickness{inset, 0, inset, 0});
+            }
+            const double nextColumnSpacing = ultraNarrow ? 6.0 : 10.0;
+            if (g_panel.header.ColumnSpacing() != nextColumnSpacing) {
+                g_panel.header.ColumnSpacing(nextColumnSpacing);
+            }
+        }
+        if (g_panel.commands) {
+            const double nextCommandSpacing = ultraNarrow ? 6.0 : 8.0;
+            if (g_panel.commands.Spacing() != nextCommandSpacing) {
+                g_panel.commands.Spacing(nextCommandSpacing);
+            }
+        }
     }
 }
 
@@ -612,6 +694,20 @@ bool IsDarkTheme() {
     return g_themeMode == 2 ||
            (g_themeMode == 0 && g_panel.root &&
             g_panel.root.ActualTheme() == winrt::Microsoft::UI::Xaml::ElementTheme::Dark);
+}
+
+void ScheduleHistoryFocus(WPARAM wparam) {
+    if (g_panel.window) PostMessageW(g_panel.window, kFocusHistory, wparam, 0);
+}
+
+winrt::Microsoft::UI::Xaml::ElementTheme EffectivePanelTheme(
+    winrt::Microsoft::UI::Xaml::ElementTheme requested) noexcept {
+    const auto actual = g_panel.root
+        ? g_panel.root.ActualTheme()
+        : winrt::Microsoft::UI::Xaml::ElementTheme::Default;
+    return vpaste::winui::ResolveDarkTheme(requested, actual)
+        ? winrt::Microsoft::UI::Xaml::ElementTheme::Dark
+        : winrt::Microsoft::UI::Xaml::ElementTheme::Light;
 }
 
 winrt::Microsoft::UI::Xaml::Media::Brush CardHeaderBrush(HistoryRowVisual const &row) {
@@ -751,7 +847,7 @@ void ApplyRowTheme(bool contrast = vpaste::winui::HighContrastEnabled()) {
         vpaste::winui::ApplyElevation(g_panel.appActions->UpdateButton(), vpaste::winui::ControlElevation, contrast, g_panel.shadowReceiver);
     }
     vpaste::winui::ApplyElevation(g_panel.selectionBar, vpaste::winui::HoveredCardElevation, contrast, g_panel.shadowReceiver);
-    if (g_panel.deletionDialog) g_panel.deletionDialog.RequestedTheme(g_panel.root.ActualTheme());
+    if (g_panel.deletionDialog) g_panel.deletionDialog.RequestedTheme(EffectivePanelTheme(g_panel.root.RequestedTheme()));
     if (g_panel.history) g_panel.history.Background(nullptr);
     if (g_panel.status) vpaste::winui::ApplyStyle(g_panel.status, L"VPaste.Secondary");
     for (std::size_t index = 0; index < g_panel.rows.size(); ++index) {
@@ -774,7 +870,7 @@ void ApplyRowTheme(bool contrast = vpaste::winui::HighContrastEnabled()) {
         vpaste::winui::ApplyStyle(row.preview, L"VPaste.Body");
         row.preview.FontSize(13);
         if (row.imageMatte && row.itemType == L"Image") row.imageMatte.Background(contrast
-            ? nullptr : vpaste::winui::TransparencyBrush(g_panel.root.ActualTheme() == winrt::Microsoft::UI::Xaml::ElementTheme::Dark));
+            ? nullptr : vpaste::winui::TransparencyBrush(EffectivePanelTheme(g_panel.root.RequestedTheme()) == winrt::Microsoft::UI::Xaml::ElementTheme::Dark));
         row.preview.ClearValue(winrt::Microsoft::UI::Xaml::Controls::TextBlock::ForegroundProperty());
         if (!contrast && row.itemType == L"Color") row.preview.Foreground(Brush(40, 40, 40));
         const auto favoriteGlyph = row.favoriteButton.Content().as<winrt::Microsoft::UI::Xaml::Controls::FontIcon>();
@@ -900,22 +996,26 @@ void UpdateHistoryState() {
     using namespace winrt::Microsoft::UI::Xaml;
     using namespace winrt::Microsoft::UI::Xaml::Controls;
     if (!g_panel.emptyState) return;
-    const bool filtered = !SearchText().empty() || FilterIndex() != 0 || g_selectedTagId != 0 || !g_selectedFilterId.empty();
-    const bool empty = g_hashes.empty() && !g_historyLoading;
-    // A query is usually shorter than an entrance animation. Keep the current
-    // result surface steady; native progress is reserved for explicit actions.
-    g_panel.loading.Visibility(Visibility::Collapsed);
+    const bool filtered = std::wstring_view{SearchText()}.find_first_not_of(L" \t\r\n") != std::wstring_view::npos ||
+        FilterIndex() != 0 || g_selectedTagId != 0 || !g_selectedFilterId.empty();
+    const bool searching = g_searchComposing || (g_searchTimer && g_searchTimer.IsRunning()) ||
+        (g_historyLoading && g_latestHistoryRequestId == g_latestQueryId);
+    const bool empty = g_hashes.empty() && !searching;
+    // Existing rows stay in place while the new query is loading.
+    g_panel.loading.Visibility(searching && !g_hashes.empty() ? Visibility::Visible : Visibility::Collapsed);
+    g_panel.staleHistory.Title(Text(L"查询失败：以下不是最新结果", L"Search failed: showing previous results"));
+    g_panel.staleHistory.IsOpen(g_historyFailed && !g_hashes.empty());
     g_panel.emptyState.Visibility(empty ? Visibility::Visible : Visibility::Collapsed);
     const auto heading = g_panel.emptyState.Children().GetAt(1).as<TextBlock>();
     const auto detail = g_panel.emptyState.Children().GetAt(2).as<TextBlock>();
     heading.Text(g_historyFailed ? Text(L"暂时无法读取历史", L"History is unavailable")
         : filtered ? Text(L"没有匹配的剪贴项", L"No matching items") : Text(L"剪贴板还是空的", L"Your clipboard shelf is empty"));
-    detail.Text(g_historyFailed ? Text(L"请重试，剪贴板历史不会被删除。", L"Try again. Your saved history is not deleted.")
+    detail.Text(g_historyFailed ? g_panel.staleHistory.Message()
         : filtered ? Text(L"试试其他关键词，或清除筛选条件。", L"Try another search or clear the filters.")
         : Text(L"在其他应用中复制文字、图片或文件，它们会出现在这里。", L"Copy text, images or files in another app to see them here."));
     g_panel.retry.Visibility(g_historyFailed ? Visibility::Visible : Visibility::Collapsed);
     g_panel.resetFilters.Visibility(!g_historyFailed && filtered ? Visibility::Visible : Visibility::Collapsed);
-    g_panel.more.Visibility(g_hasMore ? Visibility::Visible : Visibility::Collapsed);
+    g_panel.more.Visibility(g_hasMore && HistoryRowsCurrent() ? Visibility::Visible : Visibility::Collapsed);
 }
 
 bool IsCardAction(winrt::Windows::Foundation::IInspectable const &source) {
@@ -994,9 +1094,21 @@ std::uint64_t SendRequest(const wchar_t *operation, const std::wstring &hash = {
                           const std::vector<std::wstring> &hashes = {},
                           const std::wstring &name = {}, int navigationDirection = 0,
                           const std::wstring &argument = {}) {
-    if (g_request == nullptr) {
+    if (g_request == nullptr) return 0;
+    const std::wstring_view op{operation};
+    if (g_panel.reader && (op == L"panelBlur" || op == L"dismiss" || op == L"previewToggle" ||
+                           op == L"imageText") && g_panel.reader->HasOcrDraft()) {
+        if (op == L"dismiss" || op == L"previewToggle") {
+            g_searchSubmitRequestId = 0;
+            g_panel.reader->CloseOcrDraft();
+        } else if (op == L"imageText") {
+            ShowFeedback(Text(L"请先处理当前图片文字草稿", L"Close the current image text draft before opening another."), true);
+        }
         return 0;
     }
+    if (op == L"edit" && g_textEditorOpenRequest) return 0;
+    if ((op == L"paste" || op == L"pastePlain" || op == L"quickPaste" || op == L"delete") &&
+        (!HistoryRowsCurrent() || std::find(g_hashes.begin(), g_hashes.end(), hash) == g_hashes.end())) return 0;
     if (wcscmp(operation, L"query") == 0 || wcscmp(operation, L"queryMore") == 0 ||
         wcscmp(operation, L"paste") == 0 || wcscmp(operation, L"quickPaste") == 0 ||
         wcscmp(operation, L"edit") == 0 || wcscmp(operation, L"delete") == 0 ||
@@ -1004,7 +1116,8 @@ std::uint64_t SendRequest(const wchar_t *operation, const std::wstring &hash = {
         wcscmp(operation, L"previewClose") == 0 || wcscmp(operation, L"previewDismiss") == 0) CancelHoverPreview();
     if (wcscmp(operation, L"paste") == 0 || wcscmp(operation, L"copy") == 0 || wcscmp(operation, L"quickPaste") == 0 ||
         wcscmp(operation, L"edit") == 0 || wcscmp(operation, L"delete") == 0 ||
-        wcscmp(operation, L"previewToggle") == 0 || wcscmp(operation, L"modalBegin") == 0) g_searchSubmitRequestId = 0;
+        wcscmp(operation, L"previewToggle") == 0 || wcscmp(operation, L"modalBegin") == 0 ||
+        op == L"pastePlain" || op == L"dismiss") g_searchSubmitRequestId = 0;
     using namespace winrt::Windows::Data::Json;
     JsonObject request;
     const auto id = ++g_requestId;
@@ -1020,20 +1133,16 @@ std::uint64_t SendRequest(const wchar_t *operation, const std::wstring &hash = {
     }
     if (wcscmp(operation, L"previewDismiss") == 0 || wcscmp(operation, L"previewClose") == 0 || wcscmp(operation, L"dismiss") == 0)
         g_latestPreviewRequestId = 0;
-    if (wcscmp(operation, L"query") == 0) {
-        request.Insert(L"query", JsonValue::CreateStringValue(
-                                      SearchText()));
-        request.Insert(L"filter", JsonValue::CreateStringValue(
-                                        g_selectedFilterId.empty() ? std::wstring{FilterValue(FilterIndex())} : L"custom:" + g_selectedFilterId));
-        request.Insert(L"tagName", JsonValue::CreateStringValue(g_selectedTagName));
+    if (op == L"query" || op == L"queryMore") {
+        const auto &query = g_historyView.requestedQuery;
+        request.Insert(L"query", JsonValue::CreateStringValue(query.search));
+        request.Insert(L"filter", JsonValue::CreateStringValue(query.category));
+        request.Insert(L"tagName", JsonValue::CreateStringValue(query.tag));
+    }
+    if (op == L"query") {
         const bool sameRange = !g_historyView.resetOnShow && g_historyView.requestedQuery == g_historyView.visibleQuery;
         request.Insert(L"limit", JsonValue::CreateNumberValue(static_cast<double>(std::max<std::size_t>(36, sameRange ? g_hashes.size() : 0))));
-    } else if (wcscmp(operation, L"queryMore") == 0) {
-        request.Insert(L"query", JsonValue::CreateStringValue(
-                                      SearchText()));
-        request.Insert(L"filter", JsonValue::CreateStringValue(
-                                        g_selectedFilterId.empty() ? std::wstring{FilterValue(FilterIndex())} : L"custom:" + g_selectedFilterId));
-        request.Insert(L"tagName", JsonValue::CreateStringValue(g_selectedTagName));
+    } else if (op == L"queryMore") {
         request.Insert(L"lastId", JsonValue::CreateNumberValue(static_cast<double>(g_nextId)));
         request.Insert(L"lastTime", JsonValue::CreateNumberValue(static_cast<double>(g_nextTime)));
     }
@@ -1066,6 +1175,11 @@ std::uint64_t SendRequest(const wchar_t *operation, const std::wstring &hash = {
     }
     const auto bytes = winrt::to_string(request.Stringify());
     if (bytes.size() > vpaste::winui::MaxRequestBytes) return 0;
+    if (op == L"assignTag" || op == L"removeTag" || op == L"clearTags") g_cardTagRequests.insert(id);
+    if (op == L"edit") {
+        g_textEditorOpenRequest = id;
+        if (const auto card = FindCard(hash)) g_textEditorRequestedCard = CardTarget{hash, card->recordId};
+    }
     g_request(reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size());
     // Escape lets Rust close a preview before deciding whether to hide the dock.
     // Cancelling hover first would make that preview appear already closed.
@@ -1097,6 +1211,34 @@ HistoryRowVisual *FindCard(const std::wstring &hash) {
     if (found == g_hashes.end()) return nullptr;
     const auto index = static_cast<std::size_t>(std::distance(g_hashes.begin(), found));
     return index < g_panel.rows.size() ? &g_panel.rows[index] : nullptr;
+}
+
+HistoryRowVisual *FindCard(const CardTarget &target) {
+    const auto card = FindCard(target.hash);
+    return card && card->recordId == target.recordId ? card : nullptr;
+}
+
+bool SelectEditorOrigin(const CardTarget &target) {
+    const auto card = FindCard(target);
+    if (!card) return false;
+    const auto index = static_cast<int>(card - g_panel.rows.data());
+    const bool updating = std::exchange(g_updatingHistorySelection, true);
+    g_panel.history.SelectedIndex(index);
+    g_selectedHash = target.hash;
+    g_updatingHistorySelection = updating;
+    if (!g_panel.history.ContainerFromIndex(index))
+        g_panel.history.ScrollIntoView(g_panel.history.Items().GetAt(index));
+    return true;
+}
+
+void ScheduleEditorReturnFocus(const CardTarget &target, std::uint64_t id) {
+    // The query can replace or realize the selected container. Leave a newer
+    // selection or the search field in control if the user moves on.
+    g_panel.root.DispatcherQueue().TryEnqueue(winrt::Microsoft::UI::Dispatching::DispatcherQueuePriority::Low,
+        [id, target] {
+            if (g_historyView.visibleQueryId == id && HistoryRowsCurrent() && !g_panel.textEditor &&
+                !g_queueSelectionMode && g_selectedHash == target.hash && FindCard(target)) ScheduleHistoryFocus();
+        });
 }
 
 void SetCardDetailState(HistoryRowVisual &row, CardDetailState state, const winrt::hstring &message = L"") {
@@ -1180,12 +1322,19 @@ void HighlightCard(HistoryRowVisual &row) {
 
 std::uint64_t SendCardAction(const std::wstring &operation, const std::wstring &hash,
                             const std::wstring &argument) {
+    if (g_queueSelectionMode || !HistoryRowsCurrent() || !FindCard(hash)) return 0;
     g_searchSubmitRequestId = 0;
     if (operation == L"exportPrepare") {
         if (g_panel.imageExport) g_panel.imageExport->Start(hash);
         return 0;
     }
     return SendRequest(operation.c_str(), hash, false, 0, {}, {}, 0, argument);
+}
+
+vpaste::winui::CardActionRequest GuardedCardAction(CardTarget target) {
+    return [target = std::move(target)](auto const &operation, auto const &hash, auto const &argument) {
+        return FindCard(target) ? SendCardAction(operation, hash, argument) : 0;
+    };
 }
 
 bool IsQueueOperation(const winrt::hstring &operation) {
@@ -1211,6 +1360,7 @@ std::uint64_t SendTagManagerRequest(const std::wstring &operation, std::int64_t 
 void RefreshTags() {
     g_recordTagsLoaded = false;
     g_latestTagsRequestId = SendRequest(L"tags");
+    g_recordTagsFailed = !g_latestTagsRequestId;
     RefreshFilters();
     g_tabOrderLoadRequest = SendRequest(L"tabOrderLoad");
 }
@@ -1218,11 +1368,16 @@ void RefreshTags() {
 std::uint64_t SendEditorRequest(const std::wstring &operation, winrt::Windows::Data::Json::JsonObject payload) {
     using namespace winrt::Windows::Data::Json;
     if (!g_request) return 0;
+    if (operation == L"recordTagAssign" && (!g_recordTagAssignmentTarget ||
+        payload.GetNamedString(L"hash") != g_recordTagAssignmentTarget->hash || !FindCard(*g_recordTagAssignmentTarget))) {
+        throw winrt::hresult_error(E_FAIL, Text(L"原剪贴项不再可用", L"The original clipboard item is no longer available."));
+    }
     const auto id = ++g_requestId;
     payload.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(id)));
     payload.Insert(L"op", JsonValue::CreateStringValue(operation));
     const auto bytes = winrt::to_string(payload.Stringify());
     if (bytes.size() > 16 * 1024) throw winrt::hresult_invalid_argument(L"Request too large / 请求内容过大");
+    if (operation == L"recordTagAssign") g_cardTagRequests.insert(id);
     g_request(reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size());
     return id;
 }
@@ -1252,12 +1407,15 @@ std::function<void()> EditorFocusReturn(std::wstring id, std::wstring hash = {})
     const auto generation = ++g_editorGeneration;
     return [generation, id = std::move(id), hash = std::move(hash)] {
         if (!g_panel.root) return;
-        g_panel.root.DispatcherQueue().TryEnqueue([generation, id, hash] {
-            if (generation != g_editorGeneration || NativeEditorOpen() || !g_panel.root ||
-                !PanelVisible() || GetForegroundWindow() != g_panel.window) return;
-            if (const auto control = EditorAnchor(id, hash).try_as<winrt::Microsoft::UI::Xaml::Controls::Control>())
-                control.Focus(winrt::Microsoft::UI::Xaml::FocusState::Programmatic);
-        });
+        g_panel.root.DispatcherQueue().TryEnqueue(winrt::Microsoft::UI::Dispatching::DispatcherQueuePriority::Low,
+            [generation, id, hash] {
+                if (generation != g_editorGeneration || NativeEditorOpen() || !g_panel.root ||
+                    !PanelVisible()) return;
+                // The popup can still own native focus while XAML is returning
+                // to the dock. Restore its logical target without activating the HWND.
+                if (const auto control = EditorAnchor(id, hash).try_as<winrt::Microsoft::UI::Xaml::Controls::Control>())
+                    control.Focus(winrt::Microsoft::UI::Xaml::FocusState::Programmatic);
+            });
     };
 }
 
@@ -1283,7 +1441,7 @@ void ShowFilterEditor(winrt::Windows::Data::Json::JsonObject draft) {
 }
 
 void ShowRecordTagEditor(std::int64_t id = 0, const std::wstring &hash = {}) {
-    if (!g_panel.recordTagEditor || g_panel.tagManagerViewActive || g_deleteConfirmationOpen ||
+    if (!g_panel.recordTagEditor || g_panel.recordTagEditor->IsOpen() || g_panel.tagManagerViewActive || g_deleteConfirmationOpen ||
         (g_panel.cardDrag && g_panel.cardDrag->Active()) || (g_panel.filterEditor && g_panel.filterEditor->IsOpen())) return;
     std::wstring name;
     if (id) {
@@ -1291,59 +1449,79 @@ void ShowRecordTagEditor(std::int64_t id = 0, const std::wstring &hash = {}) {
         if (found == g_tagIds.end()) return;
         name = g_tagNames[static_cast<std::size_t>(std::distance(g_tagIds.begin(), found))];
     }
-    if (!hash.empty() && std::find(g_hashes.begin(), g_hashes.end(), hash) == g_hashes.end()) return;
+    const auto card = hash.empty() ? nullptr : FindCard(hash);
+    if (!hash.empty() && !card) return;
+    const auto target = card ? std::optional{CardTarget{hash, card->recordId}} : std::nullopt;
     g_searchSubmitRequestId = 0;
     ShowAltHints(false);
     (void)SendRequest(L"previewDismiss");
     // Position from the trigger but own the flyout on a root that survives refresh.
     const auto tabId = id ? RecordTabId(id) : L"";
+    const auto returnFocus = EditorFocusReturn(tabId, hash);
+    const auto generation = g_editorGeneration;
     g_panel.recordTagEditor->Show(EditorAnchor(tabId, hash), id, name, hash, g_english,
-        g_panel.root.RequestedTheme(), g_panel.root, EditorFocusReturn(tabId, hash));
+        g_panel.root.RequestedTheme(), g_panel.root, [returnFocus, generation] {
+            if (generation == g_editorGeneration) g_recordTagAssignmentTarget.reset();
+            returnFocus();
+        });
+    g_recordTagAssignmentTarget = target;
 }
 
 winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutItemBase MakeCardTagEntry(
-    const std::wstring &hash, const std::vector<std::int64_t> &tagIds,
+    const CardTarget &target, const std::vector<std::int64_t> &tagIds,
     const std::shared_ptr<bool> &createRequested) {
     using namespace winrt::Microsoft::UI::Xaml::Controls;
-    if (g_tagIds.empty()) {
-        if (!g_recordTagsLoaded) {
-            MenuFlyoutItem unavailable;
-            unavailable.Text(Text(L"标签暂不可用", L"Tags unavailable"));
-            unavailable.IsEnabled(false);
-            return unavailable;
-        }
-        MenuFlyoutItem createTag;
-        createTag.Text(Text(L"新建并添加标签…", L"Create and assign tag…"));
-        createTag.Icon(SymbolIcon{Symbol::Add});
-        createTag.Click([createRequested](auto const &, auto const &) {
-            *createRequested = g_recordTagsLoaded && g_tagIds.empty();
-        });
-        return createTag;
-    }
-
     MenuFlyoutSubItem tagsItem;
     tagsItem.Text(Text(L"标签", L"Tags"));
     tagsItem.Icon(vpaste::winui::Glyph(L"\uE8EC"));
-    bool hasAssignedTags = false;
+    const auto hint = [&](winrt::hstring const &text) {
+        MenuFlyoutItem item; item.Text(text); item.IsEnabled(false); tagsItem.Items().Append(item);
+    };
+    if (!g_recordTagsLoaded) {
+        hint(g_recordTagsFailed ? Text(L"标签读取失败", L"Could not load tags") : Text(L"正在读取标签…", L"Loading tags…"));
+        if (g_recordTagsFailed) {
+            MenuFlyoutItem retry; retry.Text(Text(L"重试", L"Try again"));
+            retry.Click([](auto const &, auto const &) { RefreshTags(); });
+            tagsItem.Items().Append(retry);
+        }
+        return tagsItem;
+    }
+    if (g_tagIds.empty()) hint(Text(L"还没有标签", L"No tags yet"));
+    std::size_t assignedCount = 0;
     for (std::size_t index = 0; index < g_tagIds.size(); ++index) {
         const auto tagId = g_tagIds[index];
         const bool assigned = std::find(tagIds.begin(), tagIds.end(), tagId) != tagIds.end();
-        hasAssignedTags = hasAssignedTags || assigned;
+        if (assigned) ++assignedCount;
         ToggleMenuFlyoutItem tagOption;
         tagOption.Text(winrt::hstring{g_tagNames[index]});
         tagOption.IsChecked(assigned);
-        tagOption.Click([hash, tagId, assigned](auto const &sender, auto const &) {
-            // Membership comes from the backend, including after a rejected update.
-            sender.as<ToggleMenuFlyoutItem>().IsChecked(assigned);
-            (void)SendRequest(assigned ? L"removeTag" : L"assignTag", hash, false, tagId);
+        tagOption.RegisterPropertyChangedCallback(ToggleMenuFlyoutItem::IsCheckedProperty(),
+            [target, tagId, assigned](auto const &sender, auto const &) {
+            const auto toggle = sender.template as<ToggleMenuFlyoutItem>();
+            if (toggle.IsChecked() == assigned) return;
+            // Pointer, keyboard and automation change the same checked property.
+            toggle.IsChecked(assigned);
+            if (!g_queueSelectionMode && HistoryRowsCurrent() && FindCard(target) &&
+                !SendRequest(assigned ? L"removeTag" : L"assignTag", target.hash, false, tagId))
+                ShowFeedback(Text(L"标签更改未发送，请重试", L"Could not send the tag change. Try again."), true);
         });
         tagsItem.Items().Append(tagOption);
     }
-    if (hasAssignedTags) {
+    if (assignedCount && assignedCount == g_tagIds.size())
+        hint(Text(L"已添加全部标签", L"All tags are assigned"));
+    MenuFlyoutItem createTag;
+    createTag.Text(Text(L"新建并添加标签…", L"Create and assign tag…"));
+    createTag.Icon(SymbolIcon{Symbol::Add});
+    createTag.Click([createRequested](auto const &, auto const &) { *createRequested = true; });
+    tagsItem.Items().Append(createTag);
+    if (assignedCount) {
         tagsItem.Items().Append(MenuFlyoutSeparator{});
         MenuFlyoutItem clearTags;
         clearTags.Text(Text(L"移除全部标签", L"Remove all assigned tags"));
-        clearTags.Click([hash](auto const &, auto const &) { (void)SendRequest(L"clearTags", hash); });
+        clearTags.Click([target](auto const &, auto const &) {
+            if (!g_queueSelectionMode && HistoryRowsCurrent() && FindCard(target) && !SendRequest(L"clearTags", target.hash))
+                ShowFeedback(Text(L"标签更改未发送，请重试", L"Could not send the tag change. Try again."), true);
+        });
         tagsItem.Items().Append(clearTags);
     }
     return tagsItem;
@@ -1602,6 +1780,7 @@ void RebuildDynamicTabs() {
             tab.DoubleTapped([tagId](auto const &, auto const &args) { ShowRecordTagEditor(tagId); args.Handled(true); });
         }
         menu.Items().Append(edit); menu.Items().Append(remove);
+        vpaste::winui::BindMenuOpeningFocus(menu, g_panel.menuInput);
         tab.ContextFlyout(menu);
         tab.CanDrag(true);
         tab.DragStarting([id](auto const &, auto const &args) {
@@ -1637,18 +1816,38 @@ std::vector<winrt::Windows::Data::Json::JsonObject> FilterObjects(
 }
 
 void ApplyFilters(const winrt::Windows::Data::Json::JsonArray &items) {
+    winrt::hstring previousActiveFilter;
+    if (!g_selectedFilterId.empty()) {
+        const auto oldFound = std::find_if(g_customFilters.begin(), g_customFilters.end(),
+            [](auto const &draft) { return std::wstring{draft.GetNamedString(L"id")} == g_selectedFilterId; });
+        if (oldFound != g_customFilters.end()) {
+            const auto filterObj = oldFound->GetNamedValue(L"filter", nullptr);
+            previousActiveFilter = filterObj ? filterObj.Stringify() : L"";
+        }
+    }
     g_customFilters = FilterObjects(items);
-    if (!g_selectedFilterId.empty() && std::none_of(g_customFilters.begin(), g_customFilters.end(),
-        [](auto const &draft) { return std::wstring{draft.GetNamedString(L"id")} == g_selectedFilterId; })) {
-        g_selectedFilterId.clear();
-        if (!g_selectedTagId) {
-            const auto updatingLanguage = g_updatingLanguage; g_updatingLanguage = true;
-            g_panel.filter.SelectedItem(g_panel.filter.Items().GetAt(0));
-            g_updatingLanguage = updatingLanguage;
+    bool selectionImpacted = false;
+    if (!g_selectedFilterId.empty()) {
+        const auto newFound = std::find_if(g_customFilters.begin(), g_customFilters.end(),
+            [](auto const &draft) { return std::wstring{draft.GetNamedString(L"id")} == g_selectedFilterId; });
+        if (newFound == g_customFilters.end()) {
+            g_selectedFilterId.clear();
+            selectionImpacted = true;
+            if (!g_selectedTagId) {
+                const auto updatingLanguage = g_updatingLanguage; g_updatingLanguage = true;
+                g_panel.filter.SelectedItem(g_panel.filter.Items().GetAt(0));
+                g_updatingLanguage = updatingLanguage;
+            }
+        } else {
+            const auto filterObj = newFound->GetNamedValue(L"filter", nullptr);
+            const auto nextActiveFilter = filterObj ? filterObj.Stringify() : winrt::hstring{};
+            selectionImpacted = nextActiveFilter != previousActiveFilter;
         }
     }
     RebuildDynamicTabs();
-    RequestHistory();
+    // 仅当当前激活筛选条件变更/被删除，或尚未拉取首次历史数据时才请求查询，避免启动连发重复 query。
+    if (selectionImpacted && g_selectedFilterId.empty()) g_historyView.removedTabFallback = CurrentHistoryQuery();
+    if (selectionImpacted || g_latestQueryId == 0) RequestHistory();
 }
 
 bool RebuildTagFilter() {
@@ -1683,12 +1882,23 @@ bool RebuildTagFilter() {
     RebuildDynamicTabs();
     g_updatingTagFilter = false;
     const bool selectionChanged = selectedTagRemoved || selectedTagRenamed;
+    if (selectedTagRemoved) g_historyView.removedTabFallback = CurrentHistoryQuery();
     if (selectionChanged) RequestHistory();
     return selectionChanged;
 }
 
+void FailHistoryQuery(winrt::hstring const &message) {
+    RetireHistoryQuery();
+    g_historyFailed = true;
+    g_hasMore = false;
+    g_panel.more.IsEnabled(false);
+    g_panel.staleHistory.Message(message);
+    UpdateHistoryState();
+}
+
 void RequestHistory(bool preserveSearchSubmit) {
     if (!preserveSearchSubmit) g_searchSubmitRequestId = 0;
+    if (g_searchComposing) return;
     if (g_panel.cardDrag && g_panel.cardDrag->Active()) {
         g_historyRefreshAfterDrag = true;
         return;
@@ -1696,16 +1906,25 @@ void RequestHistory(bool preserveSearchSubmit) {
     // This request already includes the current text, even when a tab click
     // arrives before its search debounce. Do not query the same view twice.
     if (g_searchTimer && g_searchTimer.IsRunning()) g_searchTimer.Stop();
+    auto query = CurrentHistoryQuery();
+    if (g_historyView.removedTabFallback && *g_historyView.removedTabFallback != query)
+        g_historyView.removedTabFallback.reset();
+    if (query != g_historyView.requestedQuery) RetireHistoryQuery();
+    g_historyView.requestedQuery = std::move(query);
+#ifdef _DEBUG
+    g_queryStarted = std::chrono::steady_clock::now();
+#endif
+    const auto sent = SendRequest(L"query");
+    if (!sent) {
+        // A failed dispatch has no reply to retire the pending Enter.
+        FailHistoryQuery(Text(L"查询无法发送，请缩短搜索词或重试。", L"Could not send the query. Shorten the search text or try again."));
+        return;
+    }
     g_historyLoading = true;
     g_historyFailed = false;
     g_historyView.pageFailed = false;
     g_historyView.lastAutoCursor.reset();
-    g_historyView.requestedQuery = {std::wstring{SearchText()},
-        g_selectedFilterId.empty() ? FilterValue(FilterIndex()) : L"custom:" + g_selectedFilterId, g_selectedTagName};
-#ifdef _DEBUG
-    g_queryStarted = std::chrono::steady_clock::now();
-#endif
-    g_latestQueryId = SendRequest(L"query");
+    g_latestQueryId = sent;
     if (preserveSearchSubmit && g_searchSubmitRequestId != 0)
         g_searchSubmitRequestId = g_latestQueryId;
 #ifdef _DEBUG
@@ -1741,15 +1960,25 @@ void RequestMoreHistory(bool automatic = false) {
         g_historyRefreshAfterDrag = true;
         return;
     }
-    if (g_hasMore && !g_historyLoading) {
+    if (g_hasMore && !g_historyLoading && HistoryRowsCurrent()) {
         const auto cursor = std::pair{g_nextId, g_nextTime};
         if (automatic && cursor == std::pair<std::uint64_t, std::uint64_t>{0, 0}) return;
         if (automatic && (g_historyView.pageFailed || g_historyView.lastAutoCursor == cursor)) return;
         if (automatic) g_historyView.lastAutoCursor = cursor;
         else { g_historyView.pageFailed = false; g_historyView.lastAutoCursor.reset(); }
+        const auto sent = SendRequest(L"queryMore");
+        if (!sent) {
+            g_historyLoading = false;
+            g_historyView.pageFailed = true;
+            g_historyView.lastAutoCursor.reset();
+            g_panel.more.IsEnabled(g_hasMore);
+            UpdateHistoryState();
+            ShowFeedback(Text(L"加载更多失败，请重试", L"Could not load more items; try again"), true);
+            return;
+        }
         g_historyLoading = true;
         g_panel.more.IsEnabled(false);
-        g_latestHistoryRequestId = SendRequest(L"queryMore");
+        g_latestHistoryRequestId = sent;
         UpdateHistoryState();
     }
 }
@@ -1932,13 +2161,9 @@ void RequestSelectedAction(const wchar_t *operation) {
 }
 
 void ActivateHistoryIndex(int index, bool plainText, bool quick) {
-    if (NativeEditorOpen()) return;
+    if (NativeEditorOpen() || !HistoryRowsCurrent()) return;
     ShowAltHints(false);
     g_searchSubmitRequestId = 0;
-    if (index == -1) {
-        const auto selected = std::find(g_hashes.begin(), g_hashes.end(), g_selectedHash);
-        index = selected == g_hashes.end() ? 0 : static_cast<int>(std::distance(g_hashes.begin(), selected));
-    }
     if (index < 0 || static_cast<std::size_t>(index) >= g_hashes.size()) return;
     const auto item = g_panel.history.Items().GetAt(static_cast<std::uint32_t>(index));
     if (g_queueSelectionMode) {
@@ -1954,21 +2179,61 @@ void ActivateHistoryIndex(int index, bool plainText, bool quick) {
 
 void SubmitSearch(bool plainText = false, int index = 0, bool quick = false) {
     if (g_searchComposing) return;
-    if (g_searchTimer.IsRunning()) { g_searchTimer.Stop(); RequestHistory(); }
+    if (g_searchTimer.IsRunning()) RequestHistory();
+    if (g_historyFailed || g_historyView.requestedQuery != CurrentHistoryQuery()) return;
     if (g_historyLoading && g_latestHistoryRequestId == g_latestQueryId) {
         g_searchSubmitRequestId = g_latestQueryId;
+        g_submitSelectedHash.clear();
         g_searchSubmitIndex = index; g_searchSubmitPlain = plainText; g_searchSubmitQuick = quick;
     } else ActivateHistoryIndex(index, plainText, quick);
 }
 
-bool OpenSelectedCardMenu() {
-    if (g_queueSelectionMode || g_panel.tagManagerViewActive || g_deleteConfirmationOpen ||
+void CompletePendingSubmit(std::uint64_t id) {
+    if (!id || id != g_searchSubmitRequestId) return;
+    g_searchSubmitRequestId = 0;
+    if (!g_submitSelectedHash.empty()) {
+        const auto selected = std::find(g_hashes.begin(), g_hashes.end(), g_submitSelectedHash);
+        g_submitSelectedHash.clear();
+        if (selected == g_hashes.end()) return;
+        g_searchSubmitIndex = static_cast<int>(std::distance(g_hashes.begin(), selected));
+    }
+    ActivateHistoryIndex(g_searchSubmitIndex, g_searchSubmitPlain, g_searchSubmitQuick);
+}
+
+int HistoryIndexFromSource(winrt::Windows::Foundation::IInspectable const &source) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    auto element = source.try_as<DependencyObject>();
+    while (element && element != g_panel.history) {
+        if (const auto container = element.try_as<Controls::ListViewItem>())
+            return g_panel.history.IndexFromContainer(container);
+        element = Media::VisualTreeHelper::GetParent(element);
+    }
+    return -1;
+}
+
+void ToggleQueueCardPreview(std::wstring const &hash) {
+    const auto card = FindCard(hash);
+    if (!g_queueSelectionMode || !card || !HistoryRowsCurrent() || NativeEditorOpen() ||
+        g_deleteConfirmationOpen || g_panel.tagManagerViewActive) return;
+    if (const auto request = SendRequest(L"previewToggle", hash)) {
+        // While a preview is open, a second toggle closes it. Keep its origin.
+        if (!g_queuePreviewFocus || g_queuePreviewFocus->closed)
+            g_queuePreviewFocus = QueuePreviewFocus{{hash, card->recordId}, request};
+    } else if (!g_panel.reader || !g_panel.reader->HasOcrDraft()) {
+        ShowFeedback(Text(L"无法打开预览，请重试", L"Could not request the preview. Try again."), true);
+    }
+}
+
+bool OpenSelectedCardMenu(winrt::Windows::Foundation::IInspectable const &source = nullptr) {
+    if (g_panel.tagManagerViewActive || g_deleteConfirmationOpen ||
         NativeEditorOpen() ||
         (g_panel.cardDrag && g_panel.cardDrag->Active())) return false;
-    const auto found = std::find(g_hashes.begin(), g_hashes.end(), g_selectedHash);
-    if (found == g_hashes.end()) return false;
+    const auto index = g_queueSelectionMode ? HistoryIndexFromSource(source)
+        : static_cast<int>(std::find(g_hashes.begin(), g_hashes.end(), g_selectedHash) - g_hashes.begin());
+    if (index < 0 || static_cast<std::size_t>(index) >= g_panel.rows.size() || !HistoryRowsCurrent()) return false;
     g_searchSubmitRequestId = 0;
-    const auto &row = g_panel.rows[static_cast<std::size_t>(std::distance(g_hashes.begin(), found))];
+    const auto &row = g_panel.rows[index];
+    g_panel.menuInput->keyboardGesture = true;
     row.surface.ContextFlyout().ShowAt(row.surface);
     return true;
 }
@@ -2011,7 +2276,7 @@ void NavigatePreview(int direction, bool category = false) {
 bool HandlePreviewKey(winrt::Windows::System::VirtualKey key, bool repeated,
                       bool control, bool shift, bool alt) {
     using winrt::Windows::System::VirtualKey;
-    if (NativeEditorOpen()) return false;
+    if (NativeEditorOpen() || g_searchComposing) return false;
     if (g_panel.cardDrag && g_panel.cardDrag->Active()) return false;
     if (g_queueSelectionMode || g_panel.tagManagerViewActive || g_deleteConfirmationOpen) return false;
     if (!control && !shift && !alt && (key == VirtualKey::Space || key == VirtualKey::Escape)) {
@@ -2040,12 +2305,16 @@ void SelectBuiltinCategory(std::uint32_t index, bool refresh = true) {
     g_panel.tagFilter.SelectedIndex(0);
     g_panel.filter.SelectedItem(g_panel.filter.Items().GetAt(index));
     g_updatingLanguage = languageGuard; g_updatingTagFilter = tagGuard;
-    if (refresh) RequestHistory();
+    if (refresh) {
+        RequestHistory();
+        ScheduleHistoryFocus();
+    }
 }
 
 bool HandleMainKey(vpaste::winui::MainKeyInput input,
                    winrt::Windows::Foundation::IInspectable const &source = nullptr) {
     using namespace vpaste::winui;
+    input.composing = input.composing || g_searchComposing;
     input.blocked = input.blocked || g_panel.tagManagerViewActive || g_deleteConfirmationOpen ||
         NativeEditorOpen() || (g_panel.cardDrag && g_panel.cardDrag->Active()) ||
         (g_panel.imageExport && g_panel.imageExport->Active());
@@ -2059,7 +2328,7 @@ bool HandleMainKey(vpaste::winui::MainKeyInput input,
     case MainKeyAction::None: return false;
     case MainKeyAction::Ignore: return true;
     case MainKeyAction::Dismiss: (void)SendRequest(L"dismiss"); break;
-    case MainKeyAction::OpenCardMenu: return OpenSelectedCardMenu();
+    case MainKeyAction::OpenCardMenu: return OpenSelectedCardMenu(source);
     case MainKeyAction::ShowHints: ShowAltHints(true); break;
     case MainKeyAction::FocusSearch:
         ShowSearch(); break;
@@ -2089,17 +2358,15 @@ bool HandleMainKey(vpaste::winui::MainKeyInput input,
     case MainKeyAction::PastePlain: {
         const bool plainText = result.action == MainKeyAction::PastePlain;
         if (g_queueSelectionMode) {
-            using namespace winrt::Microsoft::UI::Xaml;
-            auto element = source.try_as<DependencyObject>();
-            while (element && element != g_panel.history) {
-                if (const auto container = element.try_as<Controls::ListViewItem>()) {
-                    const auto index = g_panel.history.IndexFromContainer(container);
-                    if (index >= 0) ActivateHistoryIndex(index, plainText, false);
-                    break;
-                }
-                element = Media::VisualTreeHelper::GetParent(element);
+            const auto index = HistoryIndexFromSource(source);
+            if (index >= 0) ActivateHistoryIndex(index, plainText, false);
+        } else if (HistoryRowsMatchSearch()) {
+            const auto selected = std::find(g_hashes.begin(), g_hashes.end(), g_selectedHash);
+            if (selected != g_hashes.end()) {
+                SubmitSearch(plainText, static_cast<int>(std::distance(g_hashes.begin(), selected)));
+                if (g_searchSubmitRequestId) g_submitSelectedHash = *selected;
             }
-        } else SubmitSearch(plainText, -1);
+        }
         break;
     }
     case MainKeyAction::SearchPaste: SubmitSearch(); break;
@@ -2109,7 +2376,6 @@ bool HandleMainKey(vpaste::winui::MainKeyInput input,
     case MainKeyAction::QuickFavorite: SelectBuiltinCategory(1); break;
     case MainKeyAction::ClearSearch: SetSearchText(L""); break;
     case MainKeyAction::CloseSearch:
-        g_searchSubmitRequestId = 0;
         g_panel.search.Visibility(winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
         PostMessageW(g_panel.window, kFocusHistory, 1, 0); break;
     }
@@ -2147,7 +2413,7 @@ bool NativeControlOwnsKeys(winrt::Windows::Foundation::IInspectable const &sourc
 
 bool PointerHistoryAllowed() {
     if (!g_panel.root || !g_panel.root.IsLoaded() || !g_panel.history || !g_panel.history.IsLoaded() ||
-        !PanelVisible() || IsIconic(g_panel.window) || g_historyLoading ||
+        !PanelVisible() || IsIconic(g_panel.window) || g_historyLoading || !HistoryRowsCurrent() ||
         (g_searchTimer && g_searchTimer.IsRunning()) || g_queueSelectionMode ||
         g_panel.tagManagerViewActive || g_deleteConfirmationOpen || NativeEditorOpen() ||
         (g_panel.cardDrag && g_panel.cardDrag->Active()) ||
@@ -2215,15 +2481,26 @@ void UpdateQueueSelectionControls() {
         ? winrt::Microsoft::UI::Xaml::Visibility::Visible
         : winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
     if (g_panel.queueOpen) {
+        const auto targetStyleKey = g_queueViewActive ? L"VPaste.ActiveToolbarCommand" : L"VPaste.RoundToolbarCommand";
         vpaste::winui::NameIconButton(g_panel.queueOpen, g_queueViewActive
-            ? Text(L"退出粘贴队列", L"Exit Paste Queue") : Text(L"粘贴队列", L"Paste Queue"));
-        vpaste::winui::ApplyStyle(g_panel.queueOpen, g_queueViewActive
-            ? L"VPaste.ActiveToolbarCommand" : L"VPaste.RoundToolbarCommand");
+            ? Text(L"退出并清空粘贴队列", L"Exit Paste Queue and clear items") : Text(L"粘贴队列", L"Paste Queue"));
+        const auto expected = winrt::Microsoft::UI::Xaml::Application::Current().Resources()
+            .Lookup(winrt::box_value(targetStyleKey)).as<winrt::Microsoft::UI::Xaml::Style>();
+        if (g_panel.queueOpen.Style() != expected) {
+            g_panel.queueOpen.Style(expected);
+            // Style 切换会重建 Button 的 ControlTemplate；重挂 Content 使内部 PathIcon 立即重新继承新前景色，防止退出队列后残留激活态色调。
+            if (const auto content = g_panel.queueOpen.Content()) {
+                g_panel.queueOpen.Content(nullptr);
+                g_panel.queueOpen.Content(content);
+            }
+        }
     }
 }
 
 void ToggleQueueSelectionMode(bool updateStatus = true) {
     if (!g_panel.history) return;
+    g_searchSubmitRequestId = 0;
+    g_textEditorReturnAfterQuery.reset();
     if (!g_queueSelectionMode) {
         g_queueReturnHash = g_selectedHash;
         (void)SendRequest(L"previewDismiss");
@@ -2236,6 +2513,8 @@ void ToggleQueueSelectionMode(bool updateStatus = true) {
     } else {
         g_panel.history.SelectedItems().Clear();
     }
+    if (g_queuePreviewFocus && !g_queuePreviewFocus->closed) (void)SendRequest(L"previewDismiss");
+    g_queuePreviewFocus.reset();
     g_queueSelectionMode = !g_queueSelectionMode;
     g_queueSelectedHashes.clear();
     g_selectedHash.clear();
@@ -2274,6 +2553,10 @@ void AddSelectedItemsToQueue() {
     g_queueSubmittedHashes = g_queueSelectedHashes;
     g_queueSelectionAddRequest = SendRequest(L"queueAdd", {}, false, 0, g_queueSubmittedHashes);
     g_queueSelectionAdding = g_queueSelectionAddRequest != 0;
+    if (!g_queueSelectionAdding) {
+        g_queueSubmittedHashes.clear();
+        ShowFeedback(Text(L"无法发送加入队列请求，请重试。", L"Could not send the queue add request. Try again."), true);
+    }
     UpdateQueueSelectionControls();
 }
 
@@ -2294,7 +2577,6 @@ winrt::fire_and_forget ConfirmDeleteTab(std::wstring id) {
     const auto focusReturn = EditorFocusReturn(id);
     g_searchSubmitRequestId = 0;
     g_deleteConfirmationOpen = true;
-    (void)SendRequest(L"previewDismiss");
     ContentDialog dialog{nullptr};
     bool completed = false;
     try {
@@ -2330,47 +2612,45 @@ winrt::fire_and_forget ConfirmDeleteTab(std::wstring id) {
     }
 }
 
-winrt::fire_and_forget ConfirmDeleteItem(std::wstring hash) {
-    if (g_deleteConfirmationOpen || !g_panel.root) co_return;
+winrt::fire_and_forget DeleteCard(std::wstring hash) {
+    const auto card = FindCard(hash);
+    if (g_queueSelectionMode || g_panel.tagManagerViewActive || g_deleteConfirmationOpen ||
+        NativeEditorOpen() || !HistoryRowsCurrent() || !card ||
+        (g_panel.cardDrag && g_panel.cardDrag->Active())) co_return;
+    const CardTarget target{hash, card->recordId};
+    using namespace winrt::Microsoft::UI::Xaml::Controls;
+    const auto restoreFocus = EditorFocusReturn({}, hash);
     g_searchSubmitRequestId = 0;
+    ContentDialog dialog{nullptr};
     g_deleteConfirmationOpen = true;
-    (void)SendRequest(L"previewDismiss");
-    winrt::Microsoft::UI::Xaml::Controls::ContentDialog dialog{nullptr};
     try {
-        using namespace winrt::Microsoft::UI::Xaml::Controls;
-        dialog = vpaste::winui::MakeConfirmationDialog(g_panel.root,
-            Text(L"删除剪贴板记录", L"Delete clipboard record"), Text(
-            L"此操作无法撤销。确定要删除这条记录吗？",
-            L"This action cannot be undone. Delete this record?"),
-            Text(L"删除", L"Delete"), Text(L"取消", L"Cancel"));
+        dialog = vpaste::winui::MakeConfirmationDialog(g_panel.root, Text(L"删除记录", L"Delete record"),
+            Text(L"删除这条历史记录？", L"Delete this history record?"), Text(L"删除", L"Delete"), Text(L"取消", L"Cancel"));
         g_panel.deletionDialog = dialog;
         const auto result = co_await dialog.ShowAsync();
         if (g_panel.deletionDialog != dialog) co_return;
-        g_panel.deletionDialog = nullptr;
-        g_deleteConfirmationOpen = false;
-        if (result == ContentDialogResult::Primary && g_panel.root.IsLoaded()) {
-            (void)SendRequest(L"delete", hash);
+        if (result == ContentDialogResult::Primary && PanelVisible() && !g_queueSelectionMode) {
+            if (!HistoryRowsMatchSearch() || !FindCard(target)) {
+                ShowFeedback(Text(L"历史记录已变更，请重新选择要删除的记录", L"History changed. Select the record again to delete it."), true);
+            } else if (!HistoryRowsCurrent()) {
+                ShowFeedback(Text(L"历史记录正在刷新，请加载完成后重试", L"History is refreshing. Try deleting again after it loads."), true);
+            } else {
+                (void)SendRequest(L"previewDismiss");
+                if (!SendRequest(L"delete", target.hash))
+                    ShowFeedback(Text(L"删除失败，请重试", L"Could not delete. Try again."), true);
+            }
         }
-    } catch (...) {
+    } catch (winrt::hresult_error const &error) {
         if (g_panel.deletionDialog != dialog) co_return;
-        g_panel.deletionDialog = nullptr;
-        g_deleteConfirmationOpen = false;
-        if (g_panel.status) {
-            g_panel.status.Text(Text(L"无法打开删除确认窗口", L"Could not open delete confirmation"));
-        }
+        ShowFeedback(error.message(), true);
     }
-}
-
-void ConfirmDeleteSelectedItem() {
-    if (g_queueSelectionMode || g_selectedHash.empty() ||
-        std::find(g_hashes.begin(), g_hashes.end(), g_selectedHash) == g_hashes.end()) {
-        return;
-    }
-    (void)ConfirmDeleteItem(g_selectedHash);
+    g_panel.deletionDialog = nullptr;
+    g_deleteConfirmationOpen = false;
+    restoreFocus();
 }
 
 void EditSelectedItem() {
-    if (g_queueSelectionMode || g_selectedHash.empty()) return;
+    if (g_queueSelectionMode || !HistoryRowsCurrent() || g_selectedHash.empty()) return;
     const auto found = std::find(g_hashes.begin(), g_hashes.end(), g_selectedHash);
     if (found == g_hashes.end()) return;
     const auto index = static_cast<std::size_t>(std::distance(g_hashes.begin(), found));
@@ -2385,6 +2665,7 @@ winrt::hstring ItemTypeLabel(const winrt::hstring &type) {
 }
 
 void ApplyResponse(const std::string &bytes) {
+    bool applyingQuery = false;
     try {
         using namespace winrt::Windows::Data::Json;
         const auto response = JsonObject::Parse(winrt::to_hstring(bytes));
@@ -2421,6 +2702,14 @@ void ApplyResponse(const std::string &bytes) {
             const auto data = response.GetNamedObject(L"data");
             const auto session = static_cast<std::uint64_t>(data.GetNamedNumber(L"session"));
             if (operation == L"nativeTutorialOpen") {
+                SetTagManagerActive(false);
+                if (g_queueViewActive) SetQueueViewActive(false);
+                if (g_queueSelectionMode) ToggleQueueSelectionMode();
+                if (g_panel.filterEditor) g_panel.filterEditor->Hide();
+                if (g_panel.recordTagEditor) g_panel.recordTagEditor->Hide();
+                g_deleteConfirmationOpen = false;
+                if (const auto dialog = std::exchange(g_panel.deletionDialog, nullptr)) dialog.Hide();
+                (void)SendRequest(L"previewDismiss");
                 auto view = std::make_unique<vpaste::winui::OnboardingView>(data,
                     [](auto operation, auto const &payload) { return SendEditorRequest(operation, payload); });
                 RemoveTutorial();
@@ -2468,12 +2757,59 @@ void ApplyResponse(const std::string &bytes) {
             g_queueSubmittedHashes.clear();
             g_queueSelectedHashes.clear();
             g_queueReturnHash.clear();
+            g_queuePreviewFocus.reset();
+            g_cardTagRequests.clear();
+            g_recordTagAssignmentTarget.reset();
+            g_textEditorRequestedCard.reset();
+            g_textEditorOrigin.reset();
+            g_textEditorRefreshAfterSave = false;
+            g_textEditorReturnAfterQuery.reset();
+            g_historyView.removedTabFallback.reset();
             if (g_queueSelectionMode) g_panel.history.SelectedItems().Clear();
             UpdateQueueSelectionControls();
             g_historyView.resetOnShow = true;
+            if (g_panel.tagManagerViewActive && g_panel.tagManager) g_panel.tagManager->Refresh(true);
             RefreshTags();
             RefreshFilters();
             RequestHistory();
+            return;
+        }
+        if (operation == L"clipboardItemEdited") {
+            const auto data = response.GetNamedObject(L"data");
+            const auto prevHash = std::wstring(data.GetNamedString(L"previousHash", L""));
+            const auto newHash = std::wstring(data.GetNamedString(L"hash", L""));
+            if (!prevHash.empty()) {
+                if (g_textEditorOrigin && g_textEditorOrigin->hash == prevHash && !newHash.empty()) {
+                    g_textEditorOrigin->hash = newHash;
+                    g_textEditorRefreshAfterSave = true;
+                }
+                if (g_selectedHash == prevHash && !newHash.empty()) g_selectedHash = newHash;
+                if (g_queueReturnHash == prevHash && !newHash.empty()) g_queueReturnHash = newHash;
+                for (auto &itemHash : g_hashes) {
+                    if (itemHash == prevHash && !newHash.empty()) itemHash = newHash;
+                }
+                bool touched = false;
+                for (auto it = g_queueSelectedHashes.begin(); it != g_queueSelectedHashes.end();) {
+                    if (*it == prevHash) {
+                        touched = true;
+                        if (newHash.empty() || std::find(g_queueSelectedHashes.begin(), g_queueSelectedHashes.end(), newHash) != g_queueSelectedHashes.end()) {
+                            it = g_queueSelectedHashes.erase(it);
+                        } else {
+                            *it = newHash;
+                            ++it;
+                        }
+                    } else {
+                        ++it;
+                    }
+                }
+                if (touched) {
+                    if (g_queueSelectionMode) {
+                        g_panel.status.Text(std::to_wstring(g_queueSelectedHashes.size()) + L" " + Text(L"条已选择", L"selected"));
+                    }
+                    UpdateQueueSelectionControls();
+                    ApplyRowTheme();
+                }
+            }
             return;
         }
         if (operation == L"imageOcrUpdated") {
@@ -2489,11 +2825,36 @@ void ApplyResponse(const std::string &bytes) {
         if (operation == L"nativeReaderBegin" || operation == L"nativeReader" ||
             operation == L"nativeReaderHide" || operation == L"nativeReaderFocus" ||
             operation == L"nativeOcrState" || operation == L"nativeOcrImage" || operation == L"nativeOcrCopy") {
+            if (g_queuePreviewFocus && (operation == L"nativeReaderBegin" || operation == L"nativeReaderHide")) {
+                const auto generation = static_cast<std::uint64_t>(response.GetNamedObject(L"data").GetNamedNumber(L"generation"));
+                if (operation == L"nativeReaderBegin" && !g_queuePreviewFocus->ready) {
+                    g_queuePreviewFocus->generation = generation;
+                    g_queuePreviewFocus->closed = false;
+                }
+                // A WebView handoff retires the native reader at the same generation.
+                else if (operation == L"nativeReaderHide" && g_queuePreviewFocus->generation &&
+                         generation > g_queuePreviewFocus->generation)
+                    g_queuePreviewFocus->closed = true;
+            }
             if (g_panel.reader) g_panel.reader->Receive(response);
             return;
         }
         if (operation == L"nativeEditorOpen") {
-            if (!g_panel.textEditor && !response.HasKey(L"error")) {
+            if (!g_panel.textEditor) {
+                const auto failure = Text(L"无法打开文字编辑器，请重试。", L"Could not open the text editor. Try again.");
+                if (response.HasKey(L"error")) {
+                    ShowFeedback(failure, true);
+                    return;
+                }
+                const auto data = response.GetNamedObject(L"data");
+                const auto generation = static_cast<std::uint64_t>(data.GetNamedNumber(L"generation"));
+                const auto error = data.GetNamedString(L"error", L"");
+                if (!error.empty()) {
+                    ShowFeedback(error == L"editor.missing" ? Text(L"找不到原剪贴记录。",
+                        L"The original clipboard record is no longer available.") : failure, true);
+                    (void)SendDocumentRequest(L"nativeEditorClose", generation, {});
+                    return;
+                }
                 auto editor = std::make_unique<vpaste::winui::Reader>(
                     [](auto const &op, auto generation, auto const &document) {
                         return SendDocumentRequest(op.c_str(), generation, document);
@@ -2502,8 +2863,10 @@ void ApplyResponse(const std::string &bytes) {
                 try {
                     editor->Receive(response);
                     g_panel.textEditor = std::move(editor);
+                    g_textEditorOrigin = std::exchange(g_textEditorRequestedCard, std::nullopt);
+                    g_textEditorReturnAfterQuery.reset();
                 } catch (...) {
-                    const auto generation = static_cast<std::uint64_t>(response.GetNamedObject(L"data").GetNamedNumber(L"generation"));
+                    ShowFeedback(failure, true);
                     (void)SendDocumentRequest(L"nativeEditorClose", generation, {});
                     throw;
                 }
@@ -2514,12 +2877,24 @@ void ApplyResponse(const std::string &bytes) {
             if (g_panel.textEditor) g_panel.textEditor->Receive(response);
             return;
         }
+        if (operation == L"edit") {
+            if (id != g_textEditorOpenRequest) return;
+            g_textEditorOpenRequest = 0;
+            // The native open message precedes the acknowledgement. The rich editor owns its focus.
+            g_textEditorRequestedCard.reset();
+        }
         if (operation == L"nativeEditorClosed") {
             const auto generation = static_cast<std::uint64_t>(response.GetNamedObject(L"data").GetNamedNumber(L"generation"));
-            if (g_panel.textEditor && g_panel.textEditor->Generation() != generation) return;
+            if (!g_panel.textEditor || g_panel.textEditor->Generation() != generation) return;
             g_panel.textEditor.reset();
-            // Same dock/focus decision as the shipping text editor.
+            const auto origin = std::exchange(g_textEditorOrigin, std::nullopt);
+            const bool refreshAfterSave = std::exchange(g_textEditorRefreshAfterSave, false);
             SetVisible(true, false);
+            if (origin && !g_queueSelectionMode) {
+                if (SelectEditorOrigin(*origin)) ApplyRowTheme();
+                if (refreshAfterSave || !HistoryRowsCurrent())
+                    g_textEditorReturnAfterQuery = TextEditorReturn{*origin, CurrentHistoryQuery(), g_selectedHash};
+            }
             PostMessageW(g_panel.window, kFocusHistory, 0, 0);
             return;
         }
@@ -2592,7 +2967,9 @@ void ApplyResponse(const std::string &bytes) {
         }
         if (operation == L"recordTagCreate" || operation == L"recordTagRename" ||
             operation == L"recordTagDelete" || operation == L"recordTagAssign") {
+            if (operation == L"recordTagAssign" && !g_cardTagRequests.erase(id)) return;
             if (g_panel.recordTagEditor) g_panel.recordTagEditor->Receive(response);
+            if (operation == L"recordTagAssign" && !response.HasKey(L"error")) RequestHistory(true);
             return;
         }
         if (operation == L"filtersList") {
@@ -2607,6 +2984,7 @@ void ApplyResponse(const std::string &bytes) {
             return;
         }
         if (operation == L"previewNavigation") {
+            if (g_queueSelectionMode) return;
             const auto data = response.GetNamedObject(L"data");
             const auto source = static_cast<std::uint64_t>(data.GetNamedNumber(L"sourceRequest", 0));
             if (!source || (source != g_latestPreviewRequestId && source != g_latestHoverRequestId) || !PanelVisible()) return;
@@ -2617,15 +2995,20 @@ void ApplyResponse(const std::string &bytes) {
         }
         if (operation == L"dismiss" || operation == L"previewToggle" || operation == L"previewSelect" ||
             operation == L"previewClose" || operation == L"previewDismiss") {
+            if (operation == L"previewToggle" && g_queuePreviewFocus && id == g_queuePreviewFocus->request) {
+                if (response.HasKey(L"error") || !g_queuePreviewFocus->generation) g_queuePreviewFocus.reset();
+                else g_queuePreviewFocus->ready = true;
+            }
             if ((operation == L"dismiss" || id == g_latestPreviewRequestId) && response.HasKey(L"error")) {
                 g_panel.status.Text(response.GetNamedString(L"error"));
                 ShowFeedback(g_panel.status.Text(), true);
             }
             return;
         }
-        if ((operation == L"query" || operation == L"queryMore") &&
-            id < g_latestHistoryRequestId) {
-            return;
+        if (operation == L"query" || operation == L"queryMore") {
+            if (id < g_latestHistoryRequestId || id <= g_historyView.discardThrough || g_searchComposing) return;
+            if (id == g_latestHistoryRequestId && g_historyView.requestedQuery != CurrentHistoryQuery()) return;
+            applyingQuery = operation == L"query";
         }
 #ifdef _DEBUG
         const auto responseStarted = std::chrono::steady_clock::now();
@@ -2647,13 +3030,12 @@ void ApplyResponse(const std::string &bytes) {
         }
         if (IsQueueOperation(operation)) {
             const bool queueHandled = g_panel.queueView && g_panel.queueView->Receive(response);
-            if (operation == L"queueAdd" && id != 0 && id < g_queueSelectionAddRequest) {
-                if (!response.HasKey(L"error") && !queueHandled && g_panel.queueView)
-                    g_panel.queueView->SetState(response.GetNamedObject(L"data"));
+            const bool selectionAdd = operation == L"queueAdd" && id == g_queueSelectionAddRequest && g_queueSelectionAdding;
+            if (operation == L"queueAdd" && !selectionAdd && !queueHandled) {
+                if (!response.HasKey(L"error") && g_panel.queueView)
+                    g_panel.queueView->SetState(response.GetNamedObject(L"data"), /*preserveFeedback=*/true);
                 return;
             }
-            const bool selectionAdd = operation == L"queueAdd" && id == g_queueSelectionAddRequest;
-            if (selectionAdd && !g_queueSelectionAdding) return;
             if (selectionAdd) g_queueSelectionAdding = false;
             if (response.HasKey(L"error")) {
                 const auto message = response.GetNamedString(L"error");
@@ -2669,6 +3051,13 @@ void ApplyResponse(const std::string &bytes) {
             }
             if (!queueHandled && g_panel.queueView && operation != L"queueOpen" && operation != L"queueClose") {
                 g_panel.queueView->SetState(response.GetNamedObject(L"data"));
+            }
+            if (operation == L"queueStateUpdate") {
+                const auto stateData = response.GetNamedObject(L"data");
+                if (stateData.HasKey(L"active") && !stateData.GetNamedBoolean(L"active") && g_queueViewActive) {
+                    SetQueueViewActive(false);
+                    return;
+                }
             }
             if (operation == L"queueAdd") {
                 g_panel.status.Text(Text(L"已加入粘贴队列", L"Added to paste queue"));
@@ -2687,7 +3076,18 @@ void ApplyResponse(const std::string &bytes) {
             }
             return;
         }
+        if (operation == L"assignTag" || operation == L"removeTag" || operation == L"clearTags") {
+            if (!g_cardTagRequests.erase(id)) return;
+            const bool failed = response.HasKey(L"error");
+            ShowFeedback(failed ? response.GetNamedString(L"error") : Text(L"标签已更新", L"Tags updated"), failed);
+            RequestHistory(true);
+            return;
+        }
         if (response.HasKey(L"error")) {
+            if (operation == L"tags") {
+                g_recordTagsLoaded = false;
+                g_recordTagsFailed = true;
+            }
             if (operation == L"card") {
                 for (auto &row : g_panel.rows) if (row.cardRequestId == id) {
                     row.pendingBitmap = nullptr;
@@ -2698,34 +3098,19 @@ void ApplyResponse(const std::string &bytes) {
             }
             g_panel.status.Text(response.GetNamedString(L"error"));
             if (operation == L"copy" || operation == L"paste" || operation == L"favorite" ||
-                operation == L"delete" || operation == L"assignTag" || operation == L"removeTag" || operation == L"edit" ||
+                operation == L"delete" || operation == L"edit" ||
                 operation == L"copyPlain" || operation == L"pastePlain" || operation == L"quickPaste" || operation == L"openFolder" ||
-                operation == L"copyFolder" || operation == L"copyColor" || operation == L"clearTags" || operation == L"imageText") {
+                operation == L"copyFolder" || operation == L"copyColor" || operation == L"imageText") {
                 ShowFeedback(g_panel.status.Text(), true);
             }
             if (operation == L"query") {
-                g_historyView.restore.reset(); g_historyView.parkedOffset = 0;
-                g_searchSubmitRequestId = 0;
-                g_historyLoading = false;
-                g_historyFailed = true;
-                g_updatingHistorySelection = true;
-                g_panel.history.Items().Clear();
-                g_hashes.clear();
-                g_selectedHash.clear();
-                g_favorites.clear();
-                g_panel.rows.clear();
-                g_panel.cardRequested.clear();
-                g_hasMore = false;
-                g_panel.more.IsEnabled(false);
-                g_updatingHistorySelection = false;
-                UpdateQueueSelectionControls();
-                ApplyRowTheme();
-                UpdateHistoryState();
+                FailHistoryQuery(g_panel.status.Text());
             } else if (operation == L"queryMore") {
                 g_historyView.pageFailed = true;
                 g_historyLoading = false;
                 g_panel.more.IsEnabled(g_hasMore);
                 UpdateHistoryState();
+                ShowFeedback(g_panel.status.Text(), true);
             }
             return;
         }
@@ -2744,7 +3129,9 @@ void ApplyResponse(const std::string &bytes) {
                 }
             }
             g_recordTagsLoaded = true;
-            if (!RebuildTagFilter()) RequestHistory();
+            g_recordTagsFailed = false;
+            const bool selectionChanged = RebuildTagFilter();
+            if (!selectionChanged && g_latestQueryId == 0) RequestHistory();
             return;
         }
         if (operation == L"card") {
@@ -2761,8 +3148,10 @@ void ApplyResponse(const std::string &bytes) {
             row.pendingBitmap = nullptr;
             SetCardDetailState(row, CardDetailState::Ready);
             const auto actions = data.GetNamedValue(L"actions", nullptr);
-            if (actions && actions.ValueType() == JsonValueType::Object)
-                vpaste::winui::UpdateCardActions(row.menu, actions.GetObject(), hash, SendCardAction);
+            if (actions && actions.ValueType() == JsonValueType::Object) {
+                if (row.surface.ContextFlyout().IsOpen()) row.pendingMenuActions = actions.GetObject();
+                else vpaste::winui::UpdateCardActions(row.menu, actions.GetObject(), hash, GuardedCardAction({hash, row.recordId}));
+            }
             row.accent = ParseColor(data.GetNamedString(L"titleColor", L""));
             const auto headerValue = data.GetNamedValue(L"headerColor", nullptr);
             if (headerValue && headerValue.ValueType() == JsonValueType::Object) {
@@ -2799,7 +3188,9 @@ void ApplyResponse(const std::string &bytes) {
             row.richAutoPreview.reset();
             row.richFrame.Child(nullptr);
             row.richFrame.Visibility(winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
-            SetFormatBadge(row.richBadgeFrame, data.GetNamedBoolean(L"isRichText", false));
+            const bool richText = data.GetNamedBoolean(L"isRichText", false);
+            row.isRichText = richText;
+            SetFormatBadge(row.richBadgeFrame, richText);
             row.preview.Visibility(winrt::Microsoft::UI::Xaml::Visibility::Visible);
             UpdateCardContent(row, detail.empty() ? row.preview.Text() : detail);
             if (row.itemType == L"File" || row.itemType == L"Link") {
@@ -2952,14 +3343,11 @@ void ApplyResponse(const std::string &bytes) {
                 }
                 g_panel.status.Text(Text(L"记录已删除", L"Record deleted"));
                 RequestHistory();
-            } else if (operation == L"assignTag" || operation == L"removeTag" || operation == L"clearTags") {
-                g_panel.status.Text(Text(L"标签已更新", L"Tags updated"));
             } else {
                 g_panel.status.Text(data.GetNamedString(
                     L"message", Text(L"操作已完成", L"Action completed")));
             }
             if (operation == L"copy" || operation == L"favorite" || operation == L"delete" ||
-                operation == L"assignTag" || operation == L"removeTag" || operation == L"clearTags" ||
                 operation == L"copyPlain" || operation == L"copyFolder" || operation == L"copyColor" ||
                 operation == L"openFolder") ShowFeedback(g_panel.status.Text());
             return;
@@ -2976,6 +3364,7 @@ void ApplyResponse(const std::string &bytes) {
         const bool highlightTermsChanged = previousHighlightTerms != g_highlightTerms;
         const auto viewportOffset = HistoryOffset();
         const auto items = data.GetNamedArray(L"items");
+        const bool removedTabFallback = operation == L"query" && std::exchange(g_historyView.removedTabFallback, {}).has_value();
         const bool sameQuery = g_historyView.requestedQuery == g_historyView.visibleQuery;
         const bool preserveRenderedHistory = operation == L"query" &&
             sameQuery && !highlightTermsChanged &&
@@ -2986,12 +3375,20 @@ void ApplyResponse(const std::string &bytes) {
         const bool resetSelection = operation == L"query" && g_historyView.resetOnShow;
         const bool resetViewport = operation == L"query" && (g_historyView.resetOnShow || g_historyView.requestedQuery != g_historyView.visibleQuery);
         QueueHistoryOffset(resetViewport ? 0 : viewportOffset, id);
+        std::optional<TextEditorReturn> editorReturn;
         if (operation == L"query") {
+            g_textEditorRefreshAfterSave = false;
+            editorReturn = std::exchange(g_textEditorReturnAfterQuery, std::nullopt);
             g_historyView.visibleQuery = g_historyView.requestedQuery;
+            g_historyView.visibleQueryId = id;
             g_historyView.resetOnShow = false;
         }
+        const auto editorTarget = editorReturn && !g_panel.textEditor && !g_queueSelectionMode &&
+            editorReturn->query == g_historyView.visibleQuery && editorReturn->selection == g_selectedHash
+            ? &editorReturn->target : nullptr;
         std::wstring selectionToRestore;
         std::uint64_t recordToRestore = 0;
+        int previousSelectedIndex = -1;
         g_historyLoading = false;
         g_historyFailed = false;
         g_nextId = static_cast<std::uint64_t>(data.GetNamedNumber(L"nextId", 0));
@@ -3005,22 +3402,26 @@ void ApplyResponse(const std::string &bytes) {
             for (std::uint32_t index = 0; index < items.Size(); ++index)
                 g_panel.rows[index].time.Text(FormatCardTime(
                     static_cast<std::uint64_t>(items.GetObjectAt(index).GetNamedNumber(L"time", 0)), now));
-            if (resetSelection && !g_queueSelectionMode) {
+            const bool selectionChanged = resetSelection && !g_queueSelectionMode && !g_hashes.empty() && g_selectedHash != g_hashes.front();
+            if (resetSelection && !g_queueSelectionMode && !g_hashes.empty()) {
                 g_updatingHistorySelection = true;
                 g_panel.history.SelectedIndex(0); g_selectedHash = g_hashes.front();
                 g_updatingHistorySelection = false;
                 for (std::size_t index = 0; index < g_panel.rows.size(); ++index) UpdateCardOutline(index);
+            }
+            const bool editorRestored = editorTarget && SelectEditorOrigin(*editorTarget);
+            if (editorRestored) {
+                ApplyRowTheme();
+                ScheduleEditorReturnFocus(*editorTarget, id);
             }
             g_panel.more.IsEnabled(g_hasMore);
             g_panel.status.Text(g_queueSelectionMode
                 ? std::to_wstring(g_queueSelectedHashes.size()) + L" " + Text(L"条已选择", L"selected")
                 : std::to_wstring(g_hashes.size()) + (g_hasMore ? L"+ " : L" ") + Text(L"条剪贴项", L"clipboard items"));
             UpdateHistoryState(); UpdateQueueSelectionControls();
-            if (g_searchSubmitRequestId == id) {
-                g_searchSubmitRequestId = 0;
-                ActivateHistoryIndex(g_searchSubmitIndex, g_searchSubmitPlain, g_searchSubmitQuick);
-            }
-            RequestSelectedPreview(L"previewSelect");
+            CompletePendingSubmit(id);
+            if (!removedTabFallback && PanelVisible() && (selectionChanged || resetViewport || editorRestored))
+                RequestSelectedPreview(L"previewSelect");
             return;
         }
         g_historyView.renderedItems = operation == L"query" ? items.Stringify() : L"";
@@ -3029,6 +3430,10 @@ void ApplyResponse(const std::string &bytes) {
         if (operation == L"query") {
             if (!g_queueSelectionMode && !resetSelection) {
                 selectionToRestore = g_selectedHash;
+                if (!selectionToRestore.empty()) {
+                    const auto prevIt = std::find(g_hashes.begin(), g_hashes.end(), selectionToRestore);
+                    if (prevIt != g_hashes.end()) previousSelectedIndex = static_cast<int>(std::distance(g_hashes.begin(), prevIt));
+                }
                 if (const auto selected = FindCard(selectionToRestore)) recordToRestore = selected->recordId;
             }
             // A copied item can prepend a query while the dock is opening.
@@ -3334,6 +3739,8 @@ void ApplyResponse(const std::string &bytes) {
             cardFrame.Children().Append(surface);
             cardFrame.Children().Append(outline);
             const auto rowHash = std::wstring(hash);
+            const CardTarget target{rowHash, static_cast<std::uint64_t>(item.GetNamedNumber(L"id", 0))};
+            const auto requestCardAction = GuardedCardAction(target);
             surface.PointerEntered([rowHash](auto const &, auto const &) {
                 if (auto *current = FindCard(rowHash)) {
                     current->pointerOver = true;
@@ -3368,7 +3775,7 @@ void ApplyResponse(const std::string &bytes) {
                 if (auto *current = FindCard(rowHash); current && current->mediaFrame == sender) ApplyNaturalImageBounds(*current);
             });
             surface.DragStarting([rowHash](auto const &sender, auto const &args) {
-                if (g_queueSelectionMode || IsCardAction(args.OriginalSource()) || !g_panel.cardDrag) {
+                if (!HistoryRowsCurrent() || g_queueSelectionMode || IsCardAction(args.OriginalSource()) || !g_panel.cardDrag) {
                     args.Cancel(true);
                     return;
                 }
@@ -3384,99 +3791,135 @@ void ApplyResponse(const std::string &bytes) {
                 const auto current = FindCard(rowHash);
                 if (!current) { args.Cancel(true); return; }
                 g_panel.cardDrag->Start(sender.as<UIElement>(), args, rowHash, std::wstring{current->itemType},
-                    current->richBadgeFrame.Visibility() == Visibility::Visible);
+                    current->isRichText || current->richBadgeFrame.Visibility() == Visibility::Visible);
             });
             surface.DropCompleted([](auto const &sender, auto const &args) {
                 if (g_panel.cardDrag) g_panel.cardDrag->Finish(sender.as<UIElement>(), args.DropResult());
             });
             surface.PointerPressed([](auto const &, auto const &) { g_suppressDragTap = false; });
             MenuFlyout flyout;
-            flyout.Opened([](auto const &, auto const &) { g_searchSubmitRequestId = 0; CancelHoverPreview(); });
+            flyout.Placement(Controls::Primitives::FlyoutPlacementMode::Top);
             MenuFlyoutItem pasteItem;
             pasteItem.Text(Text(L"复制并粘贴", L"Copy and paste"));
             pasteItem.Icon(SymbolIcon{Symbol::Paste});
             pasteItem.KeyboardAcceleratorTextOverride(L"Enter");
-            pasteItem.Click([rowHash](auto const &, auto const &) {
-                (void)SendRequest(L"paste", rowHash);
+            pasteItem.Click([rowHash, requestCardAction](auto const &, auto const &) {
+                (void)requestCardAction(L"paste", rowHash, {});
             });
-            flyout.Items().Append(pasteItem);
+            MenuFlyoutItem deleteItem;
+            deleteItem.Text(Text(L"删除记录", L"Delete record"));
+            deleteItem.Icon(SymbolIcon{Symbol::Delete});
+            deleteItem.KeyboardAcceleratorTextOverride(L"Delete");
+            deleteItem.Click([rowHash, target](auto const &, auto const &) {
+                if (FindCard(target)) DeleteCard(rowHash);
+            });
+            flyout.Items().Append(deleteItem);
+            flyout.Items().Append(MenuFlyoutSeparator{});
+            const auto menuExtras = vpaste::winui::AppendCardActions(
+                flyout, rowHash, type, g_english, requestCardAction);
+            const auto tagSlot = flyout.Items().Size();
+            flyout.Items().Append(MenuFlyoutItem{});
+            MenuFlyoutItem favoriteItem;
+            favoriteItem.Text(favorite ? Text(L"取消收藏", L"Remove favorite") : Text(L"收藏", L"Add favorite"));
+            favoriteItem.Icon(SymbolIcon{favorite ? Symbol::UnFavorite : Symbol::Favorite});
+            const auto toggleFavorite = [target, favorite](auto const &, auto const &) {
+                if (!g_queueSelectionMode && HistoryRowsCurrent() && FindCard(target) &&
+                    !SendRequest(L"favorite", target.hash, !favorite))
+                    ShowFeedback(Text(L"收藏更改未发送，请重试", L"Could not send the favorite change. Try again."), true);
+            };
+            favoriteItem.Click(toggleFavorite);
+            favoriteButton.Click(toggleFavorite);
+            flyout.Items().Append(favoriteItem);
             if (IsEditableTextItem(type)) {
                 MenuFlyoutItem editItem;
                 editItem.Text(Text(L"编辑文本", L"Edit text"));
                 editItem.Icon(SymbolIcon{Symbol::Edit});
                 editItem.KeyboardAcceleratorTextOverride(L"F2");
-                editItem.Click([rowHash](auto const &, auto const &) {
-                    (void)SendRequest(L"edit", rowHash);
+                editItem.Click([rowHash, requestCardAction](auto const &, auto const &) {
+                    (void)requestCardAction(L"edit", rowHash, {});
                 });
                 flyout.Items().Append(editItem);
             } else if (type == L"Image") {
-                flyout.Items().Append(vpaste::winui::MakeImageTextAction(rowHash, g_english, SendCardAction));
+                flyout.Items().Append(vpaste::winui::MakeImageTextAction(rowHash, g_english, requestCardAction));
             }
-            MenuFlyoutItem favoriteItem;
-            favoriteItem.Text(favorite ? Text(L"取消收藏", L"Remove favorite")
-                                       : Text(L"收藏", L"Add favorite"));
-            favoriteItem.Icon(SymbolIcon{favorite ? Symbol::UnFavorite : Symbol::Favorite});
-            const auto toggleFavorite = [rowHash](auto const &, auto const &) {
-                const auto found = std::find(g_hashes.begin(), g_hashes.end(), rowHash);
-                if (found == g_hashes.end()) return;
-                const auto index = static_cast<std::size_t>(std::distance(g_hashes.begin(), found));
-                if (index < g_favorites.size()) {
-                    (void)SendRequest(L"favorite", rowHash, !g_favorites[index]);
-                }
-            };
-            favoriteItem.Click(toggleFavorite);
-            favoriteButton.Click(toggleFavorite);
-            flyout.Items().Append(favoriteItem);
             MenuFlyoutItem previewItem;
             previewItem.Text(Text(L"预览", L"Preview"));
             previewItem.Icon(vpaste::winui::Glyph(L"\uE890"));
             previewItem.KeyboardAcceleratorTextOverride(L"Space");
-            previewItem.Click([rowHash](auto const &, auto const &) {
-                if (g_queueSelectionMode) return;
-                const auto found = std::find(g_hashes.begin(), g_hashes.end(), rowHash);
-                if (found == g_hashes.end()) return;
-                g_panel.history.SelectedIndex(static_cast<int>(std::distance(g_hashes.begin(), found)));
-                RequestSelectedPreview(L"previewToggle");
+            previewItem.Click([target](auto const &, auto const &) {
+                if (!HistoryRowsCurrent() || !FindCard(target)) return;
+                if (g_queueSelectionMode) ToggleQueueCardPreview(target.hash);
+                else (void)SendCardAction(L"previewToggle", target.hash, {});
             });
             flyout.Items().Append(previewItem);
-            flyout.Items().Append(MenuFlyoutSeparator{});
-            MenuFlyoutItem deleteItem;
-            deleteItem.Text(Text(L"删除记录", L"Delete record"));
-            deleteItem.Icon(SymbolIcon{Symbol::Delete});
-            deleteItem.Click([rowHash](auto const &, auto const &) {
-                if (g_queueSelectionMode || g_deleteConfirmationOpen || NativeEditorOpen() || !FindCard(rowHash)) return;
-                (void)SendRequest(L"previewDismiss");
-                (void)SendRequest(L"delete", rowHash);
-            });
-            flyout.Items().Append(deleteItem);
-            const auto tagSlot = flyout.Items().Size();
-            flyout.Items().Append(MenuFlyoutItem{});
+            if (menuExtras.pastePlain) {
+                menuExtras.pastePlain.KeyboardAcceleratorTextOverride(
+                    g_behavior.plainBinding.key ? vpaste::winui::ShortcutLabel(g_behavior.plainShortcut) : L"");
+                flyout.Items().Append(menuExtras.pastePlain);
+            }
+            flyout.Items().Append(pasteItem);
             // A retained card can outlive changes to the list of available tags.
             const auto createTagRequested = std::make_shared<bool>(false);
-            flyout.Opening([rowHash, tagSlot, createTagRequested](auto const &sender, auto const &) {
-                if (const auto *card = FindCard(rowHash)) {
+            const auto keyboardMenu = std::make_shared<bool>(false);
+            const auto hiddenQueueCommands = std::make_shared<std::vector<MenuFlyoutItemBase>>();
+            flyout.Opening([target, tagSlot, createTagRequested, keyboardMenu, hiddenQueueCommands,
+                            preview = winrt::make_weak(previewItem)]
+                           (auto const &sender, auto const &) {
+                *keyboardMenu = g_panel.menuInput->keyboardGesture;
+                if (auto *card = FindCard(target)) {
                     const auto menu = sender.as<MenuFlyout>();
-                    menu.Items().SetAt(tagSlot, MakeCardTagEntry(rowHash, card->tagIds, createTagRequested));
+                    menu.Items().SetAt(tagSlot, MakeCardTagEntry(target, card->tagIds, createTagRequested));
+                    if (card->pendingMenuActions)
+                        vpaste::winui::UpdateCardActions(card->menu, std::exchange(card->pendingMenuActions, nullptr),
+                            target.hash, GuardedCardAction(target));
+                    if (g_queueSelectionMode) {
+                        for (const auto &item : menu.Items()) {
+                            if (item != preview.get() && item.Visibility() == Visibility::Visible) {
+                                item.Visibility(Visibility::Collapsed);
+                                hiddenQueueCommands->push_back(item);
+                            }
+                        }
+                    } else if (HistoryRowsCurrent()) {
+                        const auto index = static_cast<int>(card - g_panel.rows.data());
+                        if (g_panel.history.SelectedIndex() != index) g_panel.history.SelectedIndex(index);
+                    }
                 }
             });
-            flyout.Closed([rowHash, createTagRequested, anchor = winrt::make_weak(surface)](auto const &, auto const &) {
-                if (!std::exchange(*createTagRequested, false)) return;
-                const auto element = anchor.get();
-                if (!element) return;
+            flyout.Opened([keyboardMenu, primary = winrt::make_weak(pasteItem), preview = winrt::make_weak(previewItem)]
+                          (auto const &sender, auto const &) {
+                g_searchSubmitRequestId = 0;
+                CancelHoverPreview();
+                if (!*keyboardMenu) return;
+                const auto command = g_queueSelectionMode ? preview : primary;
+                const auto popup = winrt::make_weak(sender.as<MenuFlyout>());
+                g_panel.root.DispatcherQueue().TryEnqueue([command, popup] {
+                    const auto menu = popup.get();
+                    if (!menu || !menu.IsOpen()) return;
+                    if (const auto item = command.get(); item && item.IsLoaded()) item.Focus(FocusState::Keyboard);
+                });
+            });
+            flyout.Closed([target, createTagRequested, keyboardMenu, hiddenQueueCommands](auto const &, auto const &) {
+                for (const auto &item : *hiddenQueueCommands) item.Visibility(Visibility::Visible);
+                hiddenQueueCommands->clear();
+                const bool create = std::exchange(*createTagRequested, false);
+                const bool keyboard = std::exchange(*keyboardMenu, false);
+                if (!g_panel.root || (!create && !keyboard)) return;
                 // The editor shares the XamlRoot; wait for the menu's light-dismiss to finish.
-                element.DispatcherQueue().TryEnqueue([rowHash, anchor] {
-                    const auto element = anchor.get();
-                    const auto *card = FindCard(rowHash);
-                    if (element && card && card->surface == element && element.IsLoaded() &&
-                        PanelVisible() && !g_queueSelectionMode && g_recordTagsLoaded && g_tagIds.empty()) {
-                        ShowRecordTagEditor(0, rowHash);
+                g_panel.root.DispatcherQueue().TryEnqueue([target, create] {
+                    const auto card = FindCard(target);
+                    if (!card || !PanelVisible() || NativeEditorOpen() || g_deleteConfirmationOpen) return;
+                    if (create && !g_queueSelectionMode && HistoryRowsCurrent()) {
+                        ShowRecordTagEditor(0, target.hash);
+                    } else if (!create && GetForegroundWindow() == g_panel.window) {
+                        const auto focused = Input::FocusManager::GetFocusedElement(g_panel.root.XamlRoot());
+                        if (NativeControlOwnsKeys(focused) || MainInputArea(focused) == vpaste::winui::InputArea::Search) return;
+                        const auto index = static_cast<int>(card - g_panel.rows.data());
+                        if (const auto container = g_panel.history.ContainerFromIndex(index).try_as<Control>())
+                            container.Focus(FocusState::Keyboard);
                     }
                 });
             });
-            const auto menuExtras = vpaste::winui::AppendCardActions(
-                flyout, rowHash, type, g_english, SendCardAction);
-            if (menuExtras.pastePlain) menuExtras.pastePlain.KeyboardAcceleratorTextOverride(
-                g_behavior.plainBinding.key ? vpaste::winui::ShortcutLabel(g_behavior.plainShortcut) : L"");
+            vpaste::winui::BindMenuOpeningFocus(flyout, g_panel.menuInput);
             surface.ContextFlyout(flyout);
             // Child actions must not bubble into the configured card paste gesture.
             favoriteButton.Tapped([](auto const &, auto const &args) { args.Handled(true); });
@@ -3515,7 +3958,8 @@ void ApplyResponse(const std::string &bytes) {
             visual.fileInvalidBadge = fileInvalidBadge;
             visual.outline = outline; visual.tagChip = tagChip;
             visual.autoPreview = std::move(autoPreview); visual.recordTags = recordTags;
-            visual.recordId = static_cast<std::uint64_t>(item.GetNamedNumber(L"id", 0));
+            visual.isRichText = item.GetNamedBoolean(L"isRichText", false);
+            visual.recordId = target.recordId;
             visual.detailFeedback = detailFeedback; visual.detailStatus = detailStatus; visual.retryDetails = retryDetails;
             HighlightCard(visual);
             if (operation != L"query") g_panel.history.Items().Append(cardFrame);
@@ -3523,6 +3967,19 @@ void ApplyResponse(const std::string &bytes) {
                 std::find(g_queueSelectedHashes.begin(), g_queueSelectedHashes.end(), rowHash) !=
                     g_queueSelectedHashes.end()) {
                 g_panel.history.SelectedItems().Append(cardFrame);
+            }
+        }
+        bool hadHistoryFocus = false;
+        if (operation == L"query" && g_panel.root && g_panel.root.XamlRoot() && PanelVisible()) {
+            if (const auto focused = winrt::Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(g_panel.root.XamlRoot())) {
+                auto dep = focused.try_as<winrt::Microsoft::UI::Xaml::DependencyObject>();
+                while (dep) {
+                    if (dep == g_panel.history) {
+                        hadHistoryFocus = true;
+                        break;
+                    }
+                    dep = winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper::GetParent(dep);
+                }
             }
         }
         if (operation == L"query") {
@@ -3565,43 +4022,62 @@ void ApplyResponse(const std::string &bytes) {
                 }
             } else if (!g_hashes.empty()) {
                 const auto found = std::find(g_hashes.begin(), g_hashes.end(), selectionToRestore);
-                auto selectedIndex = found != g_hashes.end()
-                    ? static_cast<int>(std::distance(g_hashes.begin(), found)) : 0;
-                if (found == g_hashes.end() && recordToRestore) {
+                int selectedIndex = 0;
+                if (found != g_hashes.end()) {
+                    selectedIndex = static_cast<int>(std::distance(g_hashes.begin(), found));
+                } else if (recordToRestore) {
                     const auto record = std::find_if(g_panel.rows.begin(), g_panel.rows.end(),
                         [&](auto const &row) { return row.recordId == recordToRestore; });
                     if (record != g_panel.rows.end()) selectedIndex = static_cast<int>(std::distance(g_panel.rows.begin(), record));
+                    else if (sameQuery && previousSelectedIndex >= 0)
+                        selectedIndex = std::min(previousSelectedIndex, static_cast<int>(g_hashes.size()) - 1);
+                } else if (sameQuery && previousSelectedIndex >= 0) {
+                    // 当前选中的记录被删除且同条件刷新后，将焦点回落到相邻下标而非无条件跳回首条。
+                    selectedIndex = std::min(previousSelectedIndex, static_cast<int>(g_hashes.size()) - 1);
                 }
                 g_selectedHash = g_hashes[static_cast<std::size_t>(selectedIndex)];
                 g_panel.history.SelectedIndex(selectedIndex);
             }
         }
+        if (editorTarget && SelectEditorOrigin(*editorTarget)) ScheduleEditorReturnFocus(*editorTarget, id);
         g_updatingHistorySelection = false;
         UpdateQueueSelectionControls();
         UpdateHistoryState();
         ApplyRowTheme();
         UpdateCardPreviewMotion();
+        if (hadHistoryFocus && PanelVisible() && g_panel.history && g_panel.history.IsLoaded()) {
+            // 旧卡片容器刚被 RemoveAt 从树中移除时，WinUI 会把焦点回落到顶栏首控件；
+            // 立即将焦点锚定回历史列表并在下一帧精确定位新选中卡片。
+            if (g_panel.historyScroll) g_panel.historyScroll.BringIntoViewOnFocusChange(false);
+            g_panel.history.Focus(winrt::Microsoft::UI::Xaml::FocusState::Programmatic);
+            if (!g_hashes.empty()) ScheduleHistoryFocus();
+        }
 #ifdef _DEBUG
         if (operation == L"query") std::fprintf(stderr, "WinUI query render: id=%llu rows=%zu applyMs=%.2f\n",
             static_cast<unsigned long long>(id), g_panel.rows.size(),
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - responseStarted).count());
 #endif
-        if (!g_queueSelectionMode && g_selectedHash.empty()) (void)SendRequest(L"previewDismiss");
-        else RequestSelectedPreview(L"previewSelect");
-        if (g_searchSubmitRequestId == id && operation == L"query") {
-            g_searchSubmitRequestId = 0;
-            ActivateHistoryIndex(g_searchSubmitIndex, g_searchSubmitPlain, g_searchSubmitQuick);
+        if (removedTabFallback && !g_queueSelectionMode) {
+            if (g_selectedHash.empty() || (!selectionToRestore.empty() && !FindCard(CardTarget{selectionToRestore, recordToRestore})))
+                (void)SendRequest(L"previewDismiss");
+        } else if (!g_queueSelectionMode && g_selectedHash.empty()) (void)SendRequest(L"previewDismiss");
+        else if (operation == L"query" && PanelVisible() &&
+                 (resetSelection || resetViewport || g_selectedHash != selectionToRestore)) {
+            RequestSelectedPreview(L"previewSelect");
         }
+        if (operation == L"query") CompletePendingSubmit(id);
     } catch (const winrt::hresult_error &error) {
         g_updatingHistorySelection = false;
         std::fprintf(stderr, "WinUI response failed: 0x%08X %s\n", static_cast<unsigned>(error.code()), winrt::to_string(error.message()).c_str());
         if (g_panel.status) {
             g_panel.status.Text(error.message());
+            if (applyingQuery) FailHistoryQuery(error.message());
         }
     } catch (...) {
         g_updatingHistorySelection = false;
         if (g_panel.status) {
             g_panel.status.Text(Text(L"无法显示剪贴板历史", L"Could not display clipboard history"));
+            if (applyingQuery) FailHistoryQuery(g_panel.status.Text());
         }
     }
 }
@@ -3626,6 +4102,8 @@ void SetTutorialInteraction(bool active) {
     g_panel.emptyState.Opacity(active ? 0 : 1);
     g_panel.selectionBar.Opacity(active ? 0 : 1);
     g_panel.loading.Opacity(active ? 0 : 1);
+    g_panel.staleHistory.Opacity(active ? 0 : 1);
+    g_panel.staleHistory.IsHitTestVisible(!active);
     g_panel.history.IsHitTestVisible(!active);
     g_panel.emptyState.IsHitTestVisible(!active);
     g_panel.selectionBar.IsHitTestVisible(!active);
@@ -3652,7 +4130,12 @@ void SetVisible(bool visible, bool freshShow = true, bool animate) noexcept {
     if (!visible && !g_panel.tagManagerViewActive) g_historyView.parkedOffset = HistoryOffset();
     if (!visible) ShowAltHints(false);
     if (!visible) g_searchSubmitRequestId = 0;
-    if (!visible) g_latestPreviewRequestId = 0;
+    if (!visible) {
+        g_latestPreviewRequestId = 0;
+        g_queuePreviewFocus.reset();
+        g_textEditorReturnAfterQuery.reset();
+        g_historyView.removedTabFallback.reset();
+    }
     if (!visible && g_panel.imageExport) g_panel.imageExport->Cancel();
     if (!visible && g_panel.appActions) g_panel.appActions->Deactivate();
     if (!visible && g_panel.deletionDialog) g_panel.deletionDialog.Hide();
@@ -3673,12 +4156,12 @@ void SetVisible(bool visible, bool freshShow = true, bool animate) noexcept {
             ShowWindow(g_panel.window, visible ? SW_SHOW : SW_HIDE);
         }
         if (visible) {
-            SetForegroundWindow(g_panel.window);
+            (void)vpaste::winui::ActivateWindowFromBackground(g_panel.window);
             if (g_panel.onboarding) g_panel.onboarding->Shown();
             if (entering && !g_panel.tagManagerViewActive)
                 ShowAltHints((GetAsyncKeyState(VK_MENU) & 0x8000) != 0 &&
                     ((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) == 0);
-            if (entering && !g_panel.onboarding) PostMessageW(g_panel.window, kFocusHistory, 0, 0);
+            if (entering && !g_panel.onboarding) ScheduleHistoryFocus();
             UpdateCardPreviewMotion();
         }
     }
@@ -3930,8 +4413,16 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         SetVisible(false, true, false);
         return S_OK;
     case kToggleWindow:
-        SetVisible(!g_panel.dockMotion->Visible() || IsIconic(window));
-        return S_OK;
+        try {
+            const bool show = !g_panel.dockMotion->Visible() || IsIconic(window);
+            if (!show && g_panel.reader && g_panel.reader->HasOcrDraft()) {
+                g_searchSubmitRequestId = 0;
+                g_panel.reader->CloseOcrDraft([] { SetVisible(false); });
+            } else SetVisible(show);
+            return S_OK;
+        } catch (...) {
+            return winrt::to_hresult();
+        }
     case kStopWindow:
         if (g_panel.dockMotion) g_panel.dockMotion->Suspend();
         g_panel.tabIndicator.reset();
@@ -3950,7 +4441,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         return 0;
     }
     case kRefreshHistory:
-        RequestHistory();
+        RequestHistory(true);
         return 0;
     case kSyncHistoryViewport:
         SyncHistoryViewport(); return S_OK;
@@ -3975,12 +4466,17 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
             // Only an explicit keyboard handoff may take that focus away.
             if (!wparam && island && (focusedWindow == island || IsChild(island, focusedWindow))) {
                 const auto focused = winrt::Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(g_panel.root.XamlRoot());
-                if (MainInputArea(focused) == vpaste::winui::InputArea::Search || focused == g_panel.searchSubmit)
+                if (MainInputArea(focused) == vpaste::winui::InputArea::Search)
                     return S_OK;
             }
-            if (GetForegroundWindow() != window) SetForegroundWindow(window);
+            if (GetForegroundWindow() != window) (void)vpaste::winui::ActivateWindowFromBackground(window);
             SetFocus(island);
-            const auto selected = g_panel.history.SelectedIndex();
+            auto selected = g_panel.history.SelectedIndex();
+            if (lparam == kPreviewFocusReturn && g_queueSelectionMode && g_queuePreviewFocus && g_queuePreviewFocus->ready) {
+                if (const auto card = FindCard(g_queuePreviewFocus->target))
+                    selected = static_cast<int>(card - g_panel.rows.data());
+                if (g_queuePreviewFocus->closed) g_queuePreviewFocus.reset();
+            }
             const auto container = selected >= 0
                 ? g_panel.history.ContainerFromIndex(selected).try_as<winrt::Microsoft::UI::Xaml::Controls::Control>()
                 : winrt::Microsoft::UI::Xaml::Controls::Control{nullptr};
@@ -4011,7 +4507,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
             g_themeMode = static_cast<std::uint32_t>(wparam);
             g_panel.root.RequestedTheme(theme);
             g_panel.viewport.RequestedTheme(theme);
-            if (g_panel.appActions) g_panel.appActions->SetTheme(g_panel.root.ActualTheme());
+            const auto effectiveTheme = EffectivePanelTheme(theme);
+            if (g_panel.appActions) g_panel.appActions->SetTheme(effectiveTheme);
             ApplyRowTheme();
             if (g_panel.queueView) g_panel.queueView->SetTheme(theme);
             if (g_panel.queueWindow) g_panel.queueWindow->SetAppearance(g_english, theme);
@@ -4040,6 +4537,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         return DefWindowProcW(window, message, wparam, lparam);
     case WM_ACTIVATE:
         if (LOWORD(wparam) == WA_INACTIVE) {
+            g_searchSubmitRequestId = 0;
             if (g_panel.hoverPreview) g_panel.hoverPreview->Leave();
             ShowAltHints(false);
             if (g_panel.appActions) g_panel.appActions->Deactivate();
@@ -4060,7 +4558,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
             winrt::box_value(Text(L"搜索 (Ctrl+F)", L"Search (Ctrl+F)")));
         winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
             g_panel.search, Text(L"搜索剪贴板历史", L"Search clipboard history"));
-        vpaste::winui::NameIconButton(g_panel.searchSubmit, Text(L"应用搜索", L"Apply search"));
         winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
             g_panel.tagFilter, Text(L"按标签筛选", L"Filter by tag"));
         g_panel.tagFilter.Header(winrt::box_value(Text(L"按标签筛选", L"Filter by tag")));
@@ -4071,12 +4568,15 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
             menu.Items().GetAt(1).as<winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutItem>().Text(Text(L"记录型标签", L"Record Tag"));
         }
         if (g_panel.recordTagEditor) g_panel.recordTagEditor->SetLanguage(g_english);
+        if (g_panel.filterEditor) g_panel.filterEditor->SetLanguage(g_english);
         if (g_panel.customTabs) winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
             g_panel.customTabs, Text(L"自定义筛选标签", L"Custom filter tabs"));
         UpdateShortcutLabels();
         g_panel.more.Content(winrt::box_value(Text(L"加载更多", L"Load more")));
         g_panel.resetFilters.Content(winrt::box_value(Text(L"清除筛选", L"Clear filters")));
         g_panel.retry.Content(winrt::box_value(Text(L"重试", L"Try again")));
+        g_panel.staleHistory.ActionButton().as<winrt::Microsoft::UI::Xaml::Controls::Button>()
+            .Content(winrt::box_value(Text(L"重试", L"Try again")));
         vpaste::winui::NameIconButton(g_panel.cancelSelection,
             Text(L"取消队列选择", L"Cancel queue selection"));
         winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
@@ -4099,6 +4599,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
         RebuildTagFilter();
         g_panel.status.Text(Text(L"正在读取剪贴板历史…", L"Loading clipboard history…"));
         g_updatingLanguage = false;
+        g_historyView.renderedItems.clear();
+        for (std::size_t index = 0; index < g_panel.rows.size(); ++index) {
+            auto &row = g_panel.rows[index];
+            row.summary = L"";
+            if (row.type) row.type.Text(ItemTypeLabel(row.visualType.empty() ? row.itemType : row.visualType));
+            if (row.richBadge) row.richBadge.Text(Text(L"富文本", L"Rich"));
+            const bool favorite = index < g_favorites.size() && g_favorites[index];
+            if (row.favoriteButton) {
+                vpaste::winui::NameIconButton(row.favoriteButton,
+                    favorite ? Text(L"取消收藏", L"Remove favorite") : Text(L"收藏", L"Add favorite"));
+            }
+        }
         RequestHistory();
         UpdateHistoryState();
         UpdateQueueSelectionControls();
@@ -4251,6 +4763,7 @@ HRESULT CreatePanel() noexcept {
         root.RowDefinitions().GetAt(1).Height(GridLength{1, GridUnitType::Star});
         root.Background(vpaste::winui::WindowCanvasBackground());
         g_panel.root = root;
+        g_panel.menuInput = vpaste::winui::TrackMenuOpeningInput(root);
         // A sibling background receives inline shadows on Windows 10; it must
         // not be an ancestor of any caster. Keep existing child indices stable.
         g_panel.shadowReceiver = Grid();
@@ -4276,14 +4789,19 @@ HRESULT CreatePanel() noexcept {
             DismissFeedback();
         });
         root.ActualThemeChanged([](auto const &, auto const &) {
+            // 销毁流程清空 g_panel.root 后，XAML 关闭期间仍可能派发挂起的主题变更回调。
+            if (!g_panel.root) return;
             ApplyRowTheme();
-            if (g_panel.appActions) g_panel.appActions->SetTheme(g_panel.root.ActualTheme());
-            if (g_panel.queueView) {
-                g_panel.queueView->SetTheme(g_panel.root.RequestedTheme());
-            }
-            if (g_panel.tagManager) {
-                g_panel.tagManager->SetTheme(g_panel.root.RequestedTheme());
-            }
+            const auto requested = g_panel.root.RequestedTheme();
+            const auto effective = EffectivePanelTheme(requested);
+            if (g_panel.appActions) g_panel.appActions->SetTheme(effective);
+            if (g_panel.queueView) g_panel.queueView->SetTheme(requested);
+            if (g_panel.queueWindow) g_panel.queueWindow->SetAppearance(g_english, requested);
+            if (g_panel.tagManager) g_panel.tagManager->SetTheme(requested);
+            if (g_panel.filterEditor) g_panel.filterEditor->SetTheme(requested);
+            if (g_panel.recordTagEditor) g_panel.recordTagEditor->SetTheme(requested);
+            if (g_panel.reader) g_panel.reader->SetAppearance(g_english, requested);
+            if (g_panel.textEditor) g_panel.textEditor->SetAppearance(g_english, requested);
         });
         phase = "create panel controls";
         Grid header;
@@ -4304,7 +4822,6 @@ HRESULT CreatePanel() noexcept {
         g_panel.commands.HorizontalAlignment(HorizontalAlignment::Right);
         g_panel.commands.VerticalAlignment(VerticalAlignment::Center);
         Grid::SetColumn(g_panel.commands, 2);
-        header.Children().Append(g_panel.commands);
         Grid searchGroup;
         searchGroup.VerticalAlignment(VerticalAlignment::Center);
         g_panel.searchButton = vpaste::winui::NamedIconButton(SymbolIcon{Symbol::Find}, Text(L"搜索", L"Search"));
@@ -4322,17 +4839,6 @@ HRESULT CreatePanel() noexcept {
         g_panel.searchField.VerticalAlignment(VerticalAlignment::Center);
         g_panel.searchField.Visibility(Visibility::Collapsed);
         g_panel.searchField.Width(276);
-        g_panel.searchField.ColumnDefinitions().Append(ColumnDefinition{});
-        ColumnDefinition submitColumn; submitColumn.Width({28, GridUnitType::Pixel});
-        g_panel.searchField.ColumnDefinitions().Append(submitColumn);
-        g_panel.searchSubmit = vpaste::winui::NamedIconButton(SymbolIcon{Symbol::Find}, Text(L"应用搜索", L"Apply search"));
-        vpaste::winui::ApplyStyle(g_panel.searchSubmit, L"VPaste.RoundToolbarButton");
-        g_panel.searchSubmit.ClearValue(FrameworkElement::WidthProperty());
-        g_panel.searchSubmit.ClearValue(FrameworkElement::HeightProperty());
-        Grid::SetColumn(g_panel.searchSubmit, 1);
-        g_panel.searchSubmit.Click([](auto const &, auto const &) {
-            if (!g_searchComposing) RequestHistory();
-        });
         g_panel.search.FontSize(13);
         g_panel.search.PlaceholderText(Text(L"搜索剪贴板历史", L"Search clipboard history"));
         g_panel.search.MinHeight(32);
@@ -4345,6 +4851,7 @@ HRESULT CreatePanel() noexcept {
                 g_panel.searchButton.Visibility(visibility == Visibility::Visible
                     ? Visibility::Collapsed : Visibility::Visible);
                 if (visibility == Visibility::Collapsed) {
+                    g_searchSubmitRequestId = 0;
                     g_searchComposing = false;
                     vpaste::winui::ResetFeedbackOpacity(g_panel.search);
                     if (PanelVisible()) vpaste::winui::FadeFeedback(g_panel.searchButton);
@@ -4354,16 +4861,16 @@ HRESULT CreatePanel() noexcept {
         winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(
             g_panel.search, Text(L"搜索剪贴板历史", L"Search clipboard history"));
         g_panel.searchField.Children().Append(g_panel.search);
-        g_panel.searchField.Children().Append(g_panel.searchSubmit);
         searchGroup.Children().Append(g_panel.searchField);
         header.Children().Append(searchGroup);
         root.SizeChanged([](auto const &, auto const &) { UpdateSearchWidth(); });
         g_panel.search.LostFocus([](auto const &, auto const &) {
             if (!g_panel.root || !g_panel.search || !g_panel.search.IsLoaded()) return;
             const auto focused = Input::FocusManager::GetFocusedElement(g_panel.root.XamlRoot());
-            if (SearchText().empty() && focused != g_panel.searchSubmit &&
-                MainInputArea(focused) != vpaste::winui::InputArea::Search)
-                g_panel.search.Visibility(Visibility::Collapsed);
+            if (MainInputArea(focused) != vpaste::winui::InputArea::Search) {
+                g_searchSubmitRequestId = 0;
+                if (SearchText().empty()) g_panel.search.Visibility(Visibility::Collapsed);
+            }
         });
         g_panel.searchChanging = g_panel.search.TextChanging(winrt::auto_revoke,
             [](auto const &sender, auto const &) { SearchChanged(sender.Text()); });
@@ -4388,7 +4895,8 @@ HRESULT CreatePanel() noexcept {
             input.repeated = args.KeyStatus().WasKeyDown;
             input.composing = g_searchComposing || input.key == VK_PROCESSKEY || static_cast<std::uint32_t>(args.OriginalKey()) == VK_PROCESSKEY;
             input.area = MainInputArea(args.OriginalSource());
-            input.blocked = NativeControlOwnsKeys(args.OriginalSource());
+            input.blocked = NativeControlOwnsKeys(args.OriginalSource()) &&
+                !(input.key == VK_ESCAPE && input.area == vpaste::winui::InputArea::Search);
             if (!input.blocked && !input.composing &&
                 (input.area == vpaste::winui::InputArea::History || input.key == VK_TAB) &&
                 (input.key == VK_LEFT || input.key == VK_RIGHT || input.key == VK_TAB || input.key == VK_HOME ||
@@ -4502,6 +5010,7 @@ HRESULT CreatePanel() noexcept {
         addRecordTag.Text(Text(L"记录型标签", L"Record Tag")); addRecordTag.Icon(SymbolIcon{Symbol::Add});
         addRecordTag.Click([](auto const &, auto const &) { ShowRecordTagEditor(); });
         addMenu.Items().Append(addRecordTag);
+        vpaste::winui::BindMenuOpeningFocus(addMenu, g_panel.menuInput);
         g_panel.addTag.Flyout(addMenu);
         g_panel.filterStrip.Children().Append(g_panel.addTag);
         g_panel.filterScroll = ScrollViewer();
@@ -4528,6 +5037,8 @@ HRESULT CreatePanel() noexcept {
         g_panel.tabDropMarker.Background(g_panel.tabIndicatorHost.BorderBrush());
         g_panel.tabDropMarker.IsHitTestVisible(false); g_panel.tabDropMarker.Visibility(Visibility::Collapsed);
         Grid::SetColumn(g_panel.tabDropMarker, 1); header.Children().Append(g_panel.tabDropMarker);
+        // 按左到右视觉列序追加命令区，避免失焦回落优先击中右上角工具栏按钮。
+        header.Children().Append(g_panel.commands);
         g_panel.tabIndicatorHost.SizeChanged([](auto const &, auto const &) {
             Media::RectangleGeometry clip;
             clip.Rect({0, 0, static_cast<float>(g_panel.tabIndicatorHost.ActualWidth()), static_cast<float>(kHeaderHeight)});
@@ -4563,6 +5074,7 @@ HRESULT CreatePanel() noexcept {
             else if (index == 0 && !g_panel.filter.SelectedItem() && g_selectedFilterId.empty()) g_panel.filter.SelectedItem(g_panel.filter.Items().GetAt(0));
             g_updatingLanguage = wasUpdating;
             RequestHistory();
+            ScheduleHistoryFocus();
         });
 
         g_panel.history = ListView();
@@ -4634,16 +5146,28 @@ HRESULT CreatePanel() noexcept {
         g_panel.history.PreviewKeyDown([](auto const &,
                                    winrt::Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const &args) {
             if (IsCardAction(args.OriginalSource())) return;
-            if (args.Key() == winrt::Windows::System::VirtualKey::Down &&
+            if (!g_queueSelectionMode && args.Key() == winrt::Windows::System::VirtualKey::Down &&
                 (GetKeyState(VK_CONTROL) & 0x8000) == 0 && (GetKeyState(VK_MENU) & 0x8000) == 0 &&
                 (GetKeyState(VK_SHIFT) & 0x8000) == 0 && !args.KeyStatus().WasKeyDown && OpenSelectedCardMenu()) {
+                args.Handled(true);
+                return;
+            }
+            if (g_queueSelectionMode && args.Key() == winrt::Windows::System::VirtualKey::Space &&
+                (GetKeyState(VK_CONTROL) & 0x8000) == 0 && (GetKeyState(VK_MENU) & 0x8000) == 0 &&
+                (GetKeyState(VK_SHIFT) & 0x8000) == 0) {
+                const auto index = HistoryIndexFromSource(args.OriginalSource());
+                if (!args.KeyStatus().WasKeyDown && index >= 0 && static_cast<std::size_t>(index) < g_hashes.size())
+                    ToggleQueueCardPreview(g_hashes[index]);
                 args.Handled(true);
                 return;
             }
             if (g_queueSelectionMode && args.Key() == winrt::Windows::System::VirtualKey::Escape &&
                 (GetKeyState(VK_CONTROL) & 0x8000) == 0 && (GetKeyState(VK_MENU) & 0x8000) == 0 &&
                 (GetKeyState(VK_SHIFT) & 0x8000) == 0) {
-                if (!args.KeyStatus().WasKeyDown) ToggleQueueSelectionMode();
+                if (!args.KeyStatus().WasKeyDown) {
+                    if (g_queuePreviewFocus && !g_queuePreviewFocus->closed) (void)SendRequest(L"previewClose");
+                    else ToggleQueueSelectionMode();
+                }
                 args.Handled(true);
                 return;
             }
@@ -4659,7 +5183,7 @@ HRESULT CreatePanel() noexcept {
         });
         g_panel.history.KeyDown([](auto const &,
                                    winrt::Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const &args) {
-            if (g_panel.cardDrag && g_panel.cardDrag->Active()) return;
+            if (NativeEditorOpen() || g_deleteConfirmationOpen || (g_panel.cardDrag && g_panel.cardDrag->Active())) return;
             if (IsCardAction(args.OriginalSource())) return;
             if (HandlePreviewKey(args.Key(), args.KeyStatus().WasKeyDown,
                                  (GetKeyState(VK_CONTROL) & 0x8000) != 0,
@@ -4673,7 +5197,7 @@ HRESULT CreatePanel() noexcept {
                        (GetKeyState(VK_CONTROL) & 0x8000) == 0 &&
                        (GetKeyState(VK_SHIFT) & 0x8000) == 0 &&
                        (GetKeyState(VK_MENU) & 0x8000) == 0) {
-                ConfirmDeleteSelectedItem();
+                DeleteCard(g_selectedHash);
                 args.Handled(true);
             } else if (args.Key() == winrt::Windows::System::VirtualKey::F2 &&
                        !args.KeyStatus().WasKeyDown &&
@@ -4683,7 +5207,9 @@ HRESULT CreatePanel() noexcept {
                 EditSelectedItem();
                 args.Handled(true);
             } else if (args.Key() == winrt::Windows::System::VirtualKey::C &&
-                       (GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+                       (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
+                       (GetKeyState(VK_SHIFT) & 0x8000) == 0 &&
+                       (GetKeyState(VK_MENU) & 0x8000) == 0) {
                 RequestSelectedAction(L"copy");
                 args.Handled(true);
             }
@@ -4768,6 +5294,17 @@ HRESULT CreatePanel() noexcept {
         Automation::AutomationProperties::SetName(g_panel.loading, Text(L"正在读取历史", L"Loading history"));
         Grid::SetRow(g_panel.loading, 1);
         root.Children().Append(g_panel.loading);
+        g_panel.staleHistory = InfoBar();
+        g_panel.staleHistory.Severity(InfoBarSeverity::Error);
+        g_panel.staleHistory.IsClosable(false);
+        g_panel.staleHistory.VerticalAlignment(VerticalAlignment::Top);
+        g_panel.staleHistory.HorizontalAlignment(HorizontalAlignment::Center);
+        Button retryStale;
+        retryStale.Content(winrt::box_value(Text(L"重试", L"Try again")));
+        retryStale.Click([](auto const &, auto const &) { RequestHistory(); });
+        g_panel.staleHistory.ActionButton(retryStale);
+        Grid::SetRow(g_panel.staleHistory, 1);
+        root.Children().Append(g_panel.staleHistory);
         g_panel.feedback = InfoBar();
         g_panel.feedback.IsOpen(false);
         g_panel.feedback.MaxWidth(420);
@@ -4813,8 +5350,11 @@ HRESULT CreatePanel() noexcept {
         g_panel.selectionBar.Visibility(Visibility::Collapsed);
         Grid::SetRow(g_panel.selectionBar, 1);
         root.Children().Append(g_panel.selectionBar);
+        // 光学微调队列图标，使其三条横线与对勾居中对齐并拥有均衡视觉重心。
         g_panel.queueOpen = vpaste::winui::NamedIconButton(
-            vpaste::winui::HeaderIcon(vpaste::winui::HeaderArtwork::PlaylistAddCheckRounded), Text(L"粘贴队列", L"Paste Queue"));
+            vpaste::winui::HeaderIcon(vpaste::winui::HeaderArtwork::PlaylistAddCheckRounded,
+                vpaste::winui::HeaderIconMetrics{vpaste::winui::CompactIconSize, 1.06, -0.10, -0.75}),
+            Text(L"粘贴队列", L"Paste Queue"));
         g_panel.queueOpen.Click([](auto const &, auto const &) {
             (void)SendRequest(g_queueViewActive ? L"queueClose" : L"queueOpen");
         });
@@ -4956,6 +5496,7 @@ HRESULT CreatePanel() noexcept {
             }
             if (operation == L"readerNext" || operation == L"readerPrevious" ||
                 operation == L"readerNextCategory" || operation == L"readerPreviousCategory") {
+                if (g_queueSelectionMode) return 0;
                 NavigatePreview(operation == L"readerPrevious" || operation == L"readerPreviousCategory" ? -1 : 1,
                     operation == L"readerNextCategory" || operation == L"readerPreviousCategory");
                 return 0;
@@ -5045,6 +5586,11 @@ void RunUiThread() noexcept {
     g_panel.imageExport.reset();
     g_panel.reader.reset();
     g_panel.textEditor.reset();
+    g_textEditorOpenRequest = 0;
+    g_textEditorRequestedCard.reset();
+    g_textEditorOrigin.reset();
+    g_textEditorRefreshAfterSave = false;
+    g_textEditorReturnAfterQuery.reset();
     g_panel.onboarding.reset();
     g_panel.filterEditor.reset();
     g_panel.recordTagEditor.reset();
@@ -5072,7 +5618,6 @@ void RunUiThread() noexcept {
     g_panel.searchCompositionStarted.revoke(); g_panel.searchCompositionEnded.revoke();
     g_panel.search = nullptr;
     g_panel.searchField = nullptr;
-    g_panel.searchSubmit = nullptr;
     g_searchText = L"";
     g_searchComposing = false;
     g_panel.searchButton = nullptr;
@@ -5099,6 +5644,7 @@ void RunUiThread() noexcept {
     g_tabDeleteRequest = 0;
     g_tabDeleteOperation.clear();
     g_panel.feedback = nullptr;
+    g_panel.staleHistory = nullptr;
     g_panel.queueAdd = nullptr;
     g_panel.queueOpen = nullptr;
     g_panel.settings = nullptr;
@@ -5107,6 +5653,7 @@ void RunUiThread() noexcept {
     g_panel.header = nullptr;
     g_panel.shadowReceiver = nullptr;
     g_panel.root = nullptr;
+    g_panel.menuInput.reset();
     g_panel.trayWindow.reset();
     g_panel.queueWindow.reset();
     g_panel.queueView.reset();
@@ -5129,6 +5676,8 @@ void RunUiThread() noexcept {
     g_highlightTerms.clear();
     g_tagIds.clear();
     g_recordTagsLoaded = false;
+    g_cardTagRequests.clear();
+    g_recordTagAssignmentTarget.reset();
     g_dynamicIds.clear(); g_tabOrder.clear(); g_tabOrderLoadRequest = 0; g_tabOrderSaveRequest = 0;
     g_selectedTagId = 0;
     g_selectedTagName.clear();
@@ -5242,7 +5791,7 @@ extern "C" __declspec(dllexport) std::uintptr_t vpaste_winui_reader_handle() noe
 extern "C" __declspec(dllexport) int32_t vpaste_winui_focus_history() noexcept {
     std::lock_guard lock(g_stateMutex);
     if (!g_panel.window || !IsWindow(g_panel.window)) return S_FALSE;
-    return PostMessageW(g_panel.window, kFocusHistory, 0, 0) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+    return PostMessageW(g_panel.window, kFocusHistory, 0, kPreviewFocusReturn) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
 }
 
 extern "C" __declspec(dllexport) int32_t vpaste_winui_hide() noexcept {
@@ -5610,9 +6159,9 @@ winrt::fire_and_forget RunNativePresentationRegression(
             const auto firstCardMenu = g_panel.rows[0].surface.ContextFlyout()
                 .as<winrt::Microsoft::UI::Xaml::Controls::MenuFlyout>();
             winrt::check_hresult(g_selectedHash == L"test-a" && firstCardMenu.Items().Size() >= 3 &&
-                firstCardMenu.Items().GetAt(0).as<winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutItem>().Text() ==
+                firstCardMenu.Items().GetAt(firstCardMenu.Items().Size() - 1).as<winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutItem>().Text() ==
                     Text(L"复制并粘贴", L"Copy and paste") &&
-                firstCardMenu.Items().GetAt(1).as<winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutItem>().Text() ==
+                firstCardMenu.Items().GetAt(firstCardMenu.Items().Size() - 4).as<winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutItem>().Text() ==
                     Text(L"编辑文本", L"Edit text") ? S_OK : E_FAIL);
             g_panel.history.SelectedIndex(1);
             ApplyResponse(R"({"id":301,"op":"query","data":{"items":[{"hash":"test-c"},{"hash":"test-a"},{"hash":"test-b"}]}})");
@@ -6026,8 +6575,8 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 g_panel.rows[4].colorSwatch.Background().as<Media::SolidColorBrush>().Color().B == 255 &&
                 IsCardAction(g_panel.rows[0].favoriteButton) && !IsCardAction(g_panel.rows[0].surface) ? S_OK : E_FAIL);
             const auto cardFlyout = g_panel.rows[0].surface.ContextFlyout().as<MenuFlyout>();
-            winrt::check_hresult(cardFlyout.Items().GetAt(0).as<MenuFlyoutItem>().Icon() &&
-                cardFlyout.Items().GetAt(0).as<MenuFlyoutItem>().KeyboardAcceleratorTextOverride() == L"Enter" ? S_OK : E_FAIL);
+            winrt::check_hresult(cardFlyout.Items().GetAt(cardFlyout.Items().Size() - 1).as<MenuFlyoutItem>().Icon() &&
+                cardFlyout.Items().GetAt(cardFlyout.Items().Size() - 1).as<MenuFlyoutItem>().KeyboardAcceleratorTextOverride() == L"Enter" ? S_OK : E_FAIL);
             ApplyResponse(R"({"id":901,"op":"tags","data":{"items":[{"id":1,"name":"Work"},{"id":2,"name":"Notes"}]}})");
             winrt::check_hresult(DynamicTab(L"record:1") && DynamicTab(L"record:2") ? S_OK : E_FAIL);
             g_panel.customTabs.SelectedItem(DynamicTab(L"record:1"));
@@ -6518,7 +7067,7 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 };
                 for (auto const *type : {L"Text", L"TextFile", L"Link"}) {
                     MenuFlyout menu;
-                    AppendCardActions(menu, L"plain-fixture", type, true, SendCardAction);
+                    menu.Items().Append(AppendCardActions(menu, L"plain-fixture", type, true, SendCardAction).pastePlain);
                     winrt::check_hresult(!find(menu, L"Copy as plain text") && find(menu, L"Paste as plain text") &&
                         !find(menu, L"Export image…") ? S_OK : E_FAIL);
                     menu.ShowAt(g_panel.searchButton); co_await NextNativeFrame();
@@ -6641,7 +7190,8 @@ winrt::fire_and_forget RunNativePresentationRegression(
             {
                 using namespace winrt::Windows::Data::Json;
                 auto response = JsonObject::Parse(LR"({"op":"query","data":{"items":[{"hash":"menu-key-test","itemType":"Text"}],"hasMore":false}})");
-                response.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(++g_requestId)));
+                RequestHistory();
+                response.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestQueryId)));
                 ApplyResponse(winrt::to_string(response.Stringify()));
                 co_await NextNativeFrame();
                 const auto menu = g_panel.rows[0].surface.ContextFlyout().as<MenuFlyout>();
@@ -6716,10 +7266,9 @@ winrt::fire_and_forget RunNativePresentationRegression(
                         item.Insert(L"itemType", JsonValue::CreateStringValue(L"Text")); items.Append(item);
                     }
                     JsonObject data; data.Insert(L"items", items); data.Insert(L"hasMore", JsonValue::CreateBooleanValue(false));
-                    JsonObject response; response.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(++g_requestId)));
+                    if (!g_historyLoading || g_historyView.requestedQuery != CurrentHistoryQuery()) RequestHistory();
+                    JsonObject response; response.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestQueryId)));
                     response.Insert(L"op", JsonValue::CreateStringValue(L"query")); response.Insert(L"data", data);
-                    // Match an outstanding accepted search where present.
-                    if (g_searchSubmitRequestId) response.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_searchSubmitRequestId)));
                     ApplyResponse(winrt::to_string(response.Stringify()));
                 };
                 setBehavior(R"({"quickInput":true,"tabSelection":true,"plainShortcut":"Shift+Enter"})");
@@ -7114,8 +7663,8 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 using namespace winrt::Microsoft::UI::Xaml::Controls;
                 using namespace winrt::Windows::Data::Json;
                 g_panel.search.Text(L"hello tag:Work"); g_searchTimer.Stop(); RequestHistory();
-                auto result = JsonObject::Parse(LR"({"op":"query","data":{"highlightTerms":["hello"],"hasMore":false,"items":[
-                    {"hash":"content-text","itemType":"Text","previewText":"😀 HELLO reference"},
+                auto result = JsonObject::Parse(LR"({"op":"query","data":{"highlightTerms":["tag:Work","hello"],"hasMore":false,"items":[
+                    {"hash":"content-text","itemType":"Text","previewText":"😀 HELLO reference tag:Work"},
                     {"hash":"content-file","itemType":"File","previewText":"hello.txt"},
                     {"hash":"content-image","itemType":"Image","previewText":"Tiny image"}]}})");
                 result.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
@@ -7132,7 +7681,7 @@ winrt::fire_and_forget RunNativePresentationRegression(
                     ApplyResponse(winrt::to_string(response.Stringify()));
                 };
                 currentStage = 710;
-                winrt::check_hresult(g_highlightTerms == vpaste::winui::SearchTerms{L"hello"} &&
+                winrt::check_hresult(g_highlightTerms == vpaste::winui::SearchTerms{L"tag:Work", L"hello"} &&
                     FindCard(L"content-text")->preview.TextHighlighters().Size() == 1 &&
                     FindCard(L"content-text")->preview.TextHighlighters().GetAt(0).Ranges().GetAt(0).StartIndex == 3 ? S_OK : E_FAIL);
                 cardResult(L"content-file", FindCard(L"content-file")->cardRequestId,
@@ -8293,13 +8842,17 @@ winrt::fire_and_forget RunNativePresentationRegression(
             }
             currentStage = 136;
             {
+                using namespace winrt::Windows::Data::Json;
+                const auto savedFilters = g_customFilters;
+                g_customFilters.push_back(JsonObject::Parse(LR"({"id":"reset-confirmation","name":"Test filter"})"));
+                const auto tab = L"reset-confirmation";
                 const auto deletes = [&] {
                     return std::count_if(previewRequests.begin(), previewRequests.end(), [](auto const &bytes) {
-                        return winrt::Windows::Data::Json::JsonObject::Parse(winrt::to_hstring(bytes)).GetNamedString(L"op") == L"delete";
+                        return JsonObject::Parse(winrt::to_hstring(bytes)).GetNamedString(L"op") == L"filtersDelete";
                     });
                 };
                 const auto before = deletes();
-                (void)ConfirmDeleteItem(L"reselected");
+                (void)ConfirmDeleteTab(tab);
                 winrt::check_hresult(g_panel.deletionDialog && g_deleteConfirmationOpen ? S_OK : E_FAIL);
                 const auto previous = g_panel.deletionDialog;
                 co_await AwaitNativeLoaded(previous);
@@ -8321,7 +8874,7 @@ winrt::fire_and_forget RunNativePresentationRegression(
                         if (const auto button = self(self, Media::VisualTreeHelper::GetChild(element, index))) return button;
                     return nullptr;
                 };
-                (void)ConfirmDeleteItem(L"reselected");
+                (void)ConfirmDeleteTab(tab);
                 const auto closing = g_panel.deletionDialog;
                 co_await AwaitNativeLoaded(closing);
                 bool resetAtClose = false;
@@ -8340,15 +8893,20 @@ winrt::fire_and_forget RunNativePresentationRegression(
                     !g_deleteConfirmationOpen && deletes() == before ? S_OK : E_FAIL);
 
                 currentStage = 138;
-                (void)ConfirmDeleteItem(L"current-dataset");
+                (void)ConfirmDeleteTab(tab);
                 const auto current = g_panel.deletionDialog;
-                (void)ConfirmDeleteItem(L"duplicate");
+                (void)ConfirmDeleteTab(tab);
                 winrt::check_hresult(current && g_panel.deletionDialog == current ? S_OK : E_FAIL);
                 co_await AwaitNativeLoaded(current);
                 invoke(primaryButton(primaryButton, current));
                 for (int frame = 0; frame < 90 && g_deleteConfirmationOpen; ++frame) co_await NextNativeFrame();
-                winrt::check_hresult(!g_deleteConfirmationOpen && deletes() == before + 1 &&
-                    requestAt(previewRequests.size() - 1).GetNamedString(L"hash") == L"current-dataset" ? S_OK : E_FAIL);
+                winrt::check_hresult(!g_deleteConfirmationOpen && deletes() == before + 1 && g_tabDeleteRequest &&
+                    requestAt(previewRequests.size() - 1).GetNamedString(L"tabId") == tab ? S_OK : E_FAIL);
+                JsonObject deleted;
+                deleted.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_tabDeleteRequest)));
+                deleted.Insert(L"op", JsonValue::CreateStringValue(L"filtersDelete"));
+                ApplyResponse(winrt::to_string(deleted.Stringify()));
+                g_customFilters = savedFilters;
             }
             currentStage = 139;
             {
@@ -8571,7 +9129,7 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 const auto menu = g_panel.rows.front().surface.ContextFlyout().as<MenuFlyout>();
                 menu.ShowAt(g_panel.rows.front().surface); co_await NextNativeFrame();
                 const auto before = previewRequests.size();
-                Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(menu.Items().GetAt(0))
+                Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(menu.Items().GetAt(menu.Items().Size() - 1))
                     .GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
                 co_await NextNativeFrame();
                 winrt::check_hresult(previewRequests.size() == before + 1 && requestAt(before).GetNamedString(L"op") == L"paste" &&
@@ -8634,7 +9192,7 @@ winrt::fire_and_forget RunNativePresentationRegression(
                         ShowFilterEditor(JsonObject{});
                         co_await AwaitNativeLoaded(g_panel.filterEditor->TestRoot());
                     } else if (overlay == 1) {
-                        (void)ConfirmDeleteItem(L"deferred-result");
+                        (void)ConfirmDeleteTab(L"fresh-filter");
                         co_await AwaitNativeLoaded(g_panel.deletionDialog);
                     } else {
                         Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(g_panel.appActions->UpdateButton())
@@ -8703,11 +9261,11 @@ winrt::fire_and_forget RunNativePresentationRegression(
             {
                 const auto deletes = [&] {
                     return std::count_if(previewRequests.begin(), previewRequests.end(), [](auto const &bytes) {
-                        return winrt::Windows::Data::Json::JsonObject::Parse(winrt::to_hstring(bytes)).GetNamedString(L"op") == L"delete";
+                        return winrt::Windows::Data::Json::JsonObject::Parse(winrt::to_hstring(bytes)).GetNamedString(L"op") == L"filtersDelete";
                     });
                 };
                 const auto before = deletes();
-                (void)ConfirmDeleteItem(L"deferred-result");
+                (void)ConfirmDeleteTab(L"fresh-filter");
                 const auto dialog = g_panel.deletionDialog;
                 co_await AwaitNativeLoaded(dialog);
                 SetVisible(false, true, false); SetVisible(true, false, false);
@@ -8717,7 +9275,7 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 dialog.Hide();
                 for (int frame = 0; frame < 90 && g_deleteConfirmationOpen; ++frame) co_await NextNativeFrame();
                 winrt::check_hresult(!g_deleteConfirmationOpen && deletes() == before ? S_OK : E_FAIL);
-                (void)ConfirmDeleteItem(L"fresh-confirmation");
+                (void)ConfirmDeleteTab(L"fresh-filter");
                 winrt::check_hresult(g_deleteConfirmationOpen && g_panel.deletionDialog != dialog ? S_OK : E_FAIL);
                 co_await AwaitNativeLoaded(g_panel.deletionDialog);
                 g_panel.deletionDialog.Hide();
@@ -8884,9 +9442,9 @@ winrt::Windows::Foundation::IAsyncAction CheckDesktopFollowup(std::uint32_t &sta
             const bool dark = theme == ElementTheme::Dark;
             const auto ink = g_panel.settings.Foreground().as<Media::SolidColorBrush>().Color();
             const auto edge = g_panel.settings.BorderBrush().as<Media::SolidColorBrush>().Color();
-            const auto expectedInk = dark ? winrt::Windows::UI::Color{255, 215, 220, 229}
-                                          : winrt::Windows::UI::Color{184, 41, 48, 46};
-            winrt::check_hresult(ink == expectedInk && edge.A == (dark ? 20 : 13) ? S_OK : E_FAIL);
+            const auto expectedInk = dark ? winrt::Windows::UI::Color{255, 228, 233, 241}
+                                          : winrt::Windows::UI::Color{217, 32, 38, 36};
+            winrt::check_hresult(ink == expectedInk && edge.A == (dark ? 0x26 : 0x24) ? S_OK : E_FAIL);
         }
         g_panel.root.RequestedTheme(originalTheme);
     }
@@ -8955,6 +9513,127 @@ void CheckEmptySearchFocus(std::vector<std::string> const &requests, std::uint32
     stage = 268;
 }
 
+winrt::Windows::Foundation::IAsyncAction CheckCardHoverScroll(std::uint32_t &stage) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace winrt::Microsoft::UI::Xaml::Controls;
+    using namespace winrt::Windows::Data::Json;
+    stage = 258;
+    RequestHistory();
+    JsonArray items;
+    for (const auto *hash : {L"scroll-a", L"scroll-b"}) {
+        JsonObject item;
+        std::wstring text;
+        for (int line = 1; line <= 16; ++line) {
+            text += std::wstring{hash} + L" text line " + std::to_wstring(line) + L"\n";
+        }
+        item.Insert(L"hash", JsonValue::CreateStringValue(hash));
+        item.Insert(L"itemType", JsonValue::CreateStringValue(L"Text"));
+        item.Insert(L"previewText", JsonValue::CreateStringValue(text));
+        items.Append(item);
+    }
+    JsonObject data; data.Insert(L"items", items);
+    JsonObject response; response.Insert(L"op", JsonValue::CreateStringValue(L"query"));
+    response.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+    response.Insert(L"data", data);
+    ApplyResponse(winrt::to_string(response.Stringify()));
+    winrt::check_hresult(g_panel.rows.size() == 2 ? S_OK : E_FAIL);
+    for (auto &row : g_panel.rows) {
+        co_await AwaitNativeLoaded(row.autoPreview->viewport);
+        row.preview.Foreground(Brush(255, 0, 255));
+    }
+    const auto a = g_panel.rows[0].autoPreview;
+    const auto b = g_panel.rows[1].autoPreview;
+    const auto move = [](int hover, int selected) {
+        g_panel.history.SelectedIndex(selected);
+        g_panel.rows[0].pointerOver = hover == 0;
+        g_panel.rows[1].pointerOver = hover == 1;
+        UpdateCardPreviewMotion();
+    };
+    const auto moving = [](std::shared_ptr<vpaste::winui::AutoScrollCardPreview> preview)
+        -> winrt::Windows::Foundation::IAsyncOperation<bool> {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        do {
+            co_await NextNativeFrame();
+            if (preview->viewport.VerticalOffset() >= 32) co_return true;
+        } while (std::chrono::steady_clock::now() < deadline);
+        co_return false;
+    };
+    move(0, 0);
+    stage = 2581;
+    const bool firstMoves = co_await moving(a);
+    move(1, 0); // The selected card can still be active when a neighbor is hovered.
+    stage = 2582;
+    const bool neighborMoves = co_await moving(b);
+    const bool overlap = a->viewport.VerticalOffset() > 0 && a->Animating();
+    move(1, 1);
+    for (int frame = 0; frame < 12 && a->viewport.VerticalOffset() > 0.5; ++frame) co_await NextNativeFrame();
+    const bool firstRetired = !a->Animating() && a->viewport.VerticalOffset() <= 0.5;
+    move(0, 1);
+    stage = 2583;
+    const bool returnMoves = co_await moving(a);
+    std::fprintf(stderr, "WinUI card scroll switch: first=%d neighbor=%d overlap=%d retired=%d return=%d\n",
+        firstMoves, neighborMoves, overlap, firstRetired, returnMoves);
+    winrt::check_hresult(firstMoves && neighborMoves && overlap && firstRetired && returnMoves ? S_OK : E_FAIL);
+    stage = 2584;
+    Media::Imaging::RenderTargetBitmap bitmap;
+    co_await bitmap.RenderAsync(g_panel.root);
+    const auto pixels = co_await bitmap.GetPixelsAsync();
+    std::vector<std::uint8_t> bytes(pixels.Length());
+    winrt::Windows::Storage::Streams::DataReader::FromBuffer(pixels).ReadBytes(bytes);
+    const auto width = bitmap.PixelWidth(), height = bitmap.PixelHeight();
+    winrt::check_hresult(width > 0 && height > 0 ? S_OK : E_FAIL);
+    const auto scaleX = width / g_panel.root.ActualWidth();
+    const auto scaleY = height / g_panel.root.ActualHeight();
+    const auto bounds = [](FrameworkElement const &element) {
+        return element.TransformToVisual(g_panel.root).TransformBounds({0, 0,
+            static_cast<float>(element.ActualWidth()), static_cast<float>(element.ActualHeight())});
+    };
+    for (const auto &row : g_panel.rows) {
+        const auto viewport = row.autoPreview->viewport;
+        const auto body = bounds(viewport), header = bounds(row.header), card = bounds(row.frame);
+        const auto top = static_cast<int>(body.Y * scaleY);
+        const auto bottom = static_cast<int>((body.Y + body.Height) * scaleY);
+        const auto left = std::max(0, static_cast<int>(card.X * scaleX));
+        const auto right = std::min(width, static_cast<int>((card.X + card.Width) * scaleX));
+        int inside = 0, outside = 0;
+        for (int y = 0; y < height; ++y) for (int x = left; x < right; ++x) {
+            const auto i = static_cast<std::size_t>((y * width + x) * 4);
+            if (bytes[i] < 190 || bytes[i + 1] > 100 || bytes[i + 2] < 190 || bytes[i + 3] < 200) continue;
+            if (y >= top && y < bottom) ++inside;
+            else if (y < top - 1 || y > bottom) ++outside;
+        }
+        std::fprintf(stderr, "WinUI moving card pixels: offset=%.1f body=(%.1f,%.1f) header=(%.1f,%.1f) inside=%d outside=%d\n",
+            viewport.VerticalOffset(), body.Y, body.Height, header.Y, header.Height, inside, outside);
+        winrt::check_hresult(body.Y + 0.5 >= header.Y + header.Height && inside > 0 && outside == 0 ? S_OK : E_FAIL);
+    }
+    for (int index = 0; index < 6; ++index) {
+        move(index % 2, index % 2);
+        co_await NextNativeFrame();
+    }
+    move(-1, -1);
+    stage = 2585;
+    const auto quietUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(450);
+    do { co_await NextNativeFrame(); } while (std::chrono::steady_clock::now() < quietUntil);
+    winrt::check_hresult(!a->Animating() && !b->Animating() &&
+        a->viewport.VerticalOffset() <= 0.5 && b->viewport.VerticalOffset() <= 0.5 ? S_OK : E_FAIL);
+
+    move(0, 0);
+    stage = 2586;
+    const auto bottom = a->viewport.ScrollableHeight();
+    const auto loopUntil = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+    bool reachedBottom = false, returnedToTop = false, restarted = false;
+    do {
+        co_await NextNativeFrame();
+        const auto offset = a->viewport.VerticalOffset();
+        reachedBottom |= offset >= bottom - 1;
+        returnedToTop |= reachedBottom && offset <= 0.5;
+        restarted = returnedToTop && offset > 8;
+    } while (!restarted && std::chrono::steady_clock::now() < loopUntil);
+    std::fprintf(stderr, "WinUI card scroll loop: bottom=%d top=%d restarted=%d\n", reachedBottom, returnedToTop, restarted);
+    winrt::check_hresult(restarted && !b->Animating() && b->viewport.VerticalOffset() <= 0.5 ? S_OK : E_FAIL);
+    move(-1, -1);
+}
+
 winrt::Windows::Foundation::IAsyncAction CheckCardContextMenu(
     std::vector<std::string> const &requests, std::uint32_t &stage) {
     using namespace winrt::Microsoft::UI::Xaml;
@@ -8971,6 +9650,19 @@ winrt::Windows::Foundation::IAsyncAction CheckCardContextMenu(
             if (const auto submenu = item.template try_as<MenuFlyoutSubItem>(); submenu && submenu.Text() == label) return item;
         }
         return nullptr;
+    };
+    const auto closeMenu = [](MenuFlyout const &popup) -> winrt::Windows::Foundation::IAsyncAction {
+        const auto first = popup.Items().GetAt(0);
+        if (!popup.IsOpen() && !first.IsLoaded()) co_return;
+        if (popup.IsOpen()) popup.Hide();
+        // Invocation can start light dismissal before IsOpen and the visual tree agree.
+        for (int frame = 0; frame < 60 && (popup.IsOpen() || first.IsLoaded()); ++frame)
+            co_await NextNativeFrame();
+        winrt::check_hresult(!popup.IsOpen() && !first.IsLoaded() ? S_OK : E_FAIL);
+        // The inactive desktop can still be finishing the popup's focus handoff.
+        const winrt::apartment_context ui;
+        co_await winrt::resume_after(std::chrono::milliseconds(180));
+        co_await ui;
     };
     const auto invoke = [](FrameworkElement const &item) {
         winrt::check_hresult(item ? S_OK : E_FAIL);
@@ -8994,165 +9686,500 @@ winrt::Windows::Foundation::IAsyncAction CheckCardContextMenu(
             return req.GetNamedString(L"op") == op && req.GetNamedString(L"hash", L"") == hash;
         });
     };
+    const auto requestFor = [&](std::size_t from, const wchar_t *op, const wchar_t *hash) {
+        for (auto it = requests.begin() + from; it != requests.end(); ++it) {
+            const auto request = JsonObject::Parse(winrt::to_hstring(*it));
+            if (request.GetNamedString(L"op") == op && request.GetNamedString(L"hash", L"") == hash) return request;
+        }
+        winrt::throw_hresult(E_FAIL);
+    };
     WindowProc(g_panel.window, kSetLanguage, true, 0);
     RequestHistory();
     const auto response = JsonObject::Parse(LR"({"op":"query","data":{"items":[
-        {"hash":"menu-text","itemType":"Text","previewText":"Menu text"},
-        {"hash":"menu-image","itemType":"Image","previewText":"Menu image"},
+        {"id":101,"hash":"menu-text","itemType":"Text","previewText":"Menu text"},
+        {"id":102,"hash":"menu-image","itemType":"Image","previewText":"Menu image"},
         {"hash":"menu-file","itemType":"File","previewText":"Menu file"},
         {"hash":"menu-link","itemType":"Link","previewText":"https://example.com"},
         {"hash":"menu-color","itemType":"Color","previewText":"#0B86FF"},
         {"hash":"menu-text-file","itemType":"TextFile","previewText":"Long text"}
     ]}})");
     reply(response);
-    stage = 271;
-    winrt::check_hresult(g_panel.rows.size() == 6 ? S_OK : E_FAIL);
-    for (std::size_t i = 0; i < g_panel.rows.size(); ++i) {
-        const auto items = menuFor(i).Items();
-        const auto paste = items.GetAt(0).as<MenuFlyoutItem>();
-        const auto preview = find(items, L"Preview").try_as<MenuFlyoutItem>();
-        winrt::check_hresult(paste.Text() == L"Copy and paste" && paste.KeyboardAcceleratorTextOverride() == L"Enter" &&
-            preview && preview.KeyboardAcceleratorTextOverride() == L"Space" &&
-            !find(items, L"Copy") && !find(items, L"Copy as plain text") && !find(items, L"Add to paste queue") &&
-            find(items, L"Delete record") ? S_OK : E_FAIL);
-    }
-    const auto textItems = menuFor(0).Items();
-    const auto imageItems = menuFor(1).Items();
-    const auto ocr = imageItems.GetAt(1).as<MenuFlyoutItem>();
-    winrt::check_hresult(textItems.GetAt(1).as<MenuFlyoutItem>().Text() == L"Edit text" &&
-        ocr.Text() == L"Recognize text in image" && ocr.Icon().try_as<PathIcon>() &&
-        find(textItems, L"Paste as plain text") &&
-        find(menuFor(2).Items(), L"Open containing folder") && find(menuFor(2).Items(), L"Copy containing folder") &&
-        find(menuFor(3).Items(), L"Paste as plain text") && find(menuFor(4).Items(), L"Copy color as") &&
-        find(menuFor(5).Items(), L"Edit text") ? S_OK : E_FAIL);
-    stage = 272;
-    const auto menu = menuFor(0);
-    const auto target = g_panel.rows[0].surface;
-    co_await AwaitNativeLoaded(target);
-    const auto show = [&] { menu.ShowAt(target); };
-    show(); co_await NextNativeFrame();
-    const auto unavailable = find(menu.Items(), L"Tags unavailable").try_as<MenuFlyoutItem>();
-    winrt::check_hresult(unavailable && !unavailable.IsEnabled() &&
-        !find(menu.Items(), L"Create and assign tag…") ? S_OK : E_FAIL);
-    co_await CloseNativeFlyout(menu);
-
-    // Tags can arrive after history or change without replacing a retained card.
-    stage = 2723;
-    tagsReply(LR"({"op":"tags","data":{"items":[{"id":9,"name":"Work"},{"id":10,"name":"Notes"}]}})");
-    show(); co_await NextNativeFrame();
-    const auto assigned = find(menu.Items(), L"Tags").try_as<MenuFlyoutSubItem>();
-    if (!assigned || assigned.Items().Size() != 2) std::fprintf(stderr,
-        "WinUI card tags: menuOpen=%d, loaded=%d, knownTags=%zu, submenuItems=%u\n",
-        menu.IsOpen(), g_recordTagsLoaded, g_tagIds.size(), assigned ? assigned.Items().Size() : 0);
-    winrt::check_hresult(assigned && assigned.Items().Size() == 2 &&
-        !assigned.Items().GetAt(0).as<ToggleMenuFlyoutItem>().IsChecked() &&
-        !find(menu.Items(), L"Create and assign tag…") ? S_OK : E_FAIL);
-    co_await CloseNativeFlyout(menu);
-    stage = 273;
-    g_panel.rows[0].tagIds = {9};
-    show(); co_await NextNativeFrame();
-    const auto tagMenu = find(menu.Items(), L"Tags").as<MenuFlyoutSubItem>();
-    const auto tags = tagMenu.Items();
-    winrt::check_hresult(tags.GetAt(0).as<ToggleMenuFlyoutItem>().IsChecked() &&
-        !tags.GetAt(1).as<ToggleMenuFlyoutItem>().IsChecked() &&
-        tags.GetAt(tags.Size() - 1).as<MenuFlyoutItem>().Text() == L"Remove all assigned tags" &&
-        !find(menu.Items(), L"Remove all assigned tags") ? S_OK : E_FAIL);
-    stage = 2731;
-    expand(tagMenu);
-    co_await AwaitNativeLoaded(tags.GetAt(tags.Size() - 1));
+    const auto primaryButton = [&](auto const &self, DependencyObject const &element) -> Button {
+        if (const auto button = element.try_as<Button>(); button && button.Name() == L"PrimaryButton") return button;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(element); ++i)
+            if (const auto button = self(self, Media::VisualTreeHelper::GetChild(element, i))) return button;
+        return nullptr;
+    };
     auto before = requests.size();
-    invoke(tags.GetAt(tags.Size() - 1)); co_await NextNativeFrame();
-    winrt::check_hresult(sent(before, L"clearTags", L"menu-text") == 1 ? S_OK : E_FAIL);
-    co_await CloseNativeFlyout(menu);
-    for (const bool wasAssigned : {true, false}) {
-        stage = wasAssigned ? 2732 : 2733;
-        show(); co_await NextNativeFrame();
-        const auto submenu = find(menu.Items(), L"Tags").as<MenuFlyoutSubItem>();
-        expand(submenu);
-        const auto toggle = submenu.Items().GetAt(wasAssigned ? 0 : 1).as<ToggleMenuFlyoutItem>();
-        co_await AwaitNativeLoaded(toggle);
-        before = requests.size();
-        Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(toggle)
-            .GetPattern(Automation::Peers::PatternInterface::Toggle)
-            .as<Automation::Provider::IToggleProvider>().Toggle();
+    if (!GetEnvironmentVariableW(L"VPASTE_WINUI_CARD_ASYNC_CHECK", nullptr, 0)) {
+        stage = 271;
+        winrt::check_hresult(g_panel.rows.size() == 6 ? S_OK : E_FAIL);
+        // Direct mutations must re-read history even when the tab catalogue is unchanged.
+        for (auto op : {L"assignTag", L"removeTag", L"clearTags"}) {
+            for (bool reject : {false, true}) {
+                JsonObject mutation;
+                mutation.Insert(L"op", JsonValue::CreateStringValue(op));
+                const auto id = SendRequest(op, L"menu-text", false, 9);
+                mutation.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(id)));
+                if (reject) mutation.Insert(L"error", JsonValue::CreateStringValue(L"Controlled tag write failure"));
+                else mutation.Insert(L"data", JsonObject{});
+                const auto beforeQuery = g_latestQueryId;
+                ApplyResponse(winrt::to_string(mutation.Stringify()));
+                winrt::check_hresult(id && g_latestQueryId > beforeQuery && g_panel.feedback.IsOpen() &&
+                    g_panel.feedback.Message() == (reject ? L"Controlled tag write failure" : L"Tags updated") ? S_OK : E_FAIL);
+                const auto refreshed = g_latestQueryId;
+                ApplyResponse(winrt::to_string(mutation.Stringify()));
+                winrt::check_hresult(refreshed == g_latestQueryId ? S_OK : E_FAIL);
+                reply(response);
+            }
+        }
+        for (std::size_t i = 0; i < g_panel.rows.size(); ++i) {
+            const auto items = menuFor(i).Items();
+            const auto paste = items.GetAt(items.Size() - 1).as<MenuFlyoutItem>();
+            const auto preview = find(items, L"Preview").try_as<MenuFlyoutItem>();
+            const auto deletion = find(items, L"Delete record").try_as<MenuFlyoutItem>();
+            winrt::check_hresult(paste.Text() == L"Copy and paste" && paste.KeyboardAcceleratorTextOverride() == L"Enter" &&
+                preview && preview.KeyboardAcceleratorTextOverride() == L"Space" &&
+                !find(items, L"Copy") && !find(items, L"Copy as plain text") && !find(items, L"Add to paste queue") &&
+                deletion && deletion.KeyboardAcceleratorTextOverride() == L"Delete" ? S_OK : E_FAIL);
+        }
+        const auto textItems = menuFor(0).Items();
+        const auto imageItems = menuFor(1).Items();
+        const auto ocr = find(imageItems, L"Recognize text in image").as<MenuFlyoutItem>();
+        winrt::check_hresult(find(textItems, L"Edit text") &&
+            ocr.Text() == L"Recognize text in image" && ocr.Icon().try_as<PathIcon>() &&
+            find(textItems, L"Paste as plain text") &&
+            find(menuFor(2).Items(), L"Open containing folder") && find(menuFor(2).Items(), L"Copy containing folder") &&
+            find(menuFor(3).Items(), L"Paste as plain text") && find(menuFor(4).Items(), L"Copy color as") &&
+            find(menuFor(5).Items(), L"Edit text") ? S_OK : E_FAIL);
+        for (const auto index : {0u, 2u}) {
+            g_panel.history.ScrollIntoView(g_panel.history.Items().GetAt(index));
+            co_await NextNativeFrame();
+            const auto surface = g_panel.rows[index].surface;
+            const auto popup = menuFor(index);
+            co_await AwaitNativeLoaded(surface);
+            popup.ShowAt(surface);
+            co_await NextNativeFrame();
+            const auto labels = index == 0
+                ? std::vector<const wchar_t *>{L"Delete record", L"Tags", L"Add favorite", L"Edit text", L"Preview", L"Paste as plain text", L"Copy and paste"}
+                : std::vector<const wchar_t *>{L"Delete record", L"Open containing folder", L"Copy containing folder", L"Tags", L"Add favorite", L"Preview", L"Copy and paste"};
+            float previousBottom = -INFINITY;
+            for (const auto label : labels) {
+                const auto command = find(popup.Items(), label);
+                co_await AwaitNativeLoaded(command);
+                const auto rect = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(command).GetBoundingRectangle();
+                std::fwprintf(stderr, L"WinUI menu %ls: y=%.1f h=%.1f\\n", label, rect.Y, rect.Height);
+                winrt::check_hresult(rect.Height > 0 && rect.Y >= previousBottom - 1 ? S_OK : E_FAIL);
+                previousBottom = rect.Y + rect.Height;
+            }
+            winrt::check_hresult(popup.Items().GetAt(1).try_as<MenuFlyoutSeparator>() ? S_OK : E_FAIL);
+            co_await closeMenu(popup);
+        }
+        g_panel.history.ScrollIntoView(g_panel.history.Items().GetAt(0));
         co_await NextNativeFrame();
-        const auto op = wasAssigned ? L"removeTag" : L"assignTag";
-        winrt::check_hresult(sent(before, op, L"menu-text") == 1 ? S_OK : E_FAIL);
-        co_await CloseNativeFlyout(menu);
-    }
-    tagsReply(LR"({"op":"tags","data":{"items":[{"id":10,"name":"Renamed"}]}})");
-    show(); co_await NextNativeFrame();
-    const auto remaining = find(menu.Items(), L"Tags").as<MenuFlyoutSubItem>().Items();
-    winrt::check_hresult(remaining.Size() == 1 &&
-        remaining.GetAt(0).as<ToggleMenuFlyoutItem>().Text() == L"Renamed" ? S_OK : E_FAIL);
-    co_await CloseNativeFlyout(menu);
+        stage = 272;
+        const auto menu = menuFor(0);
+        const auto target = g_panel.rows[0].surface;
+        co_await AwaitNativeLoaded(target);
+        const auto show = [&]() -> winrt::Windows::Foundation::IAsyncAction {
+            co_await closeMenu(menu);
+            const auto first = menu.Items().GetAt(0);
+            menu.ShowAt(target);
+            co_await AwaitNativeLoaded(first);
+            winrt::check_hresult(menu.IsOpen() ? S_OK : E_FAIL);
+        };
+        co_await show();
+        const auto loading = find(menu.Items(), L"Tags").as<MenuFlyoutSubItem>();
+        const auto unavailable = find(loading.Items(), L"Loading tags…").try_as<MenuFlyoutItem>();
+        winrt::check_hresult(unavailable && !unavailable.IsEnabled() &&
+            !find(menu.Items(), L"Create and assign tag…") ? S_OK : E_FAIL);
+        co_await closeMenu(menu);
+        stage = 2721;
+        tagsReply(LR"({"op":"tags","error":"Controlled catalogue failure"})");
+        co_await show();
+        const auto failed = find(menu.Items(), L"Tags").as<MenuFlyoutSubItem>();
+        expand(failed);
+        const auto retryTags = find(failed.Items(), L"Try again").as<MenuFlyoutItem>();
+        co_await AwaitNativeLoaded(retryTags);
+        const auto beforeRetry = g_latestTagsRequestId;
+        winrt::check_hresult(!find(failed.Items(), L"Could not load tags").as<MenuFlyoutItem>().IsEnabled() &&
+            retryTags.IsEnabled() && !find(failed.Items(), L"Create and assign tag…") ? S_OK : E_FAIL);
+        {
+            bool closed = false;
+            const auto observer = menu.Closed(winrt::auto_revoke, [&](auto const &, auto const &) { closed = true; });
+            invoke(retryTags);
+            co_await NextNativeFrame();
+            if (menu.IsOpen()) menu.Hide();
+            for (int frame = 0; frame < 60 && !closed; ++frame) co_await NextNativeFrame();
+            winrt::check_hresult(closed ? S_OK : E_FAIL);
+        }
+        winrt::check_hresult(g_latestTagsRequestId > beforeRetry && !g_recordTagsLoaded && !g_recordTagsFailed ? S_OK : E_FAIL);
+        co_await closeMenu(menu);
 
-    stage = 274;
-    g_panel.history.SelectedIndex(1);
-    before = requests.size();
-    RequestSelectedAction(L"copy");
-    winrt::check_hresult(sent(before, L"copy", L"menu-image") == 1 && !sent(before, L"paste", L"menu-image") ? S_OK : E_FAIL);
-    show(); co_await NextNativeFrame();
-    before = requests.size();
-    invoke(find(menu.Items(), L"Copy and paste")); co_await NextNativeFrame();
-    winrt::check_hresult(sent(before, L"paste", L"menu-text") == 1 && !sent(before, L"copy", L"menu-text") ? S_OK : E_FAIL);
-    co_await CloseNativeFlyout(menu);
-    show(); co_await NextNativeFrame();
-    before = requests.size();
-    invoke(find(menu.Items(), L"Delete record")); co_await NextNativeFrame();
-    winrt::check_hresult(sent(before, L"delete", L"menu-text") == 1 && !sent(before, L"delete", L"menu-image") &&
-        !g_deleteConfirmationOpen && !g_panel.deletionDialog ? S_OK : E_FAIL);
-    co_await CloseNativeFlyout(menu);
-    stage = 275;
-    before = requests.size();
-    ConfirmDeleteSelectedItem();
-    const auto confirmation = g_panel.deletionDialog;
-    winrt::check_hresult(confirmation && !sent(before, L"delete", L"menu-image") ? S_OK : E_FAIL);
-    confirmation.Hide();
+        // Tags can arrive after history or change without replacing a retained card.
+        stage = 2723;
+        tagsReply(LR"({"op":"tags","data":{"items":[{"id":9,"name":"Work"},{"id":10,"name":"Notes"}]}})");
+        co_await show();
+        const auto assigned = find(menu.Items(), L"Tags").try_as<MenuFlyoutSubItem>();
+        if (!assigned || assigned.Items().Size() != 3) std::fprintf(stderr,
+            "WinUI card tags: menuOpen=%d, loaded=%d, knownTags=%zu, submenuItems=%u\n",
+            menu.IsOpen(), g_recordTagsLoaded, g_tagIds.size(), assigned ? assigned.Items().Size() : 0);
+        winrt::check_hresult(assigned && assigned.Items().Size() == 3 &&
+            !assigned.Items().GetAt(0).as<ToggleMenuFlyoutItem>().IsChecked() &&
+            !find(menu.Items(), L"Create and assign tag…") ? S_OK : E_FAIL);
+        co_await closeMenu(menu);
+        stage = 273;
+        g_panel.rows[0].tagIds = {9};
+        co_await show();
+        const auto tagMenu = find(menu.Items(), L"Tags").as<MenuFlyoutSubItem>();
+        const auto tags = tagMenu.Items();
+        winrt::check_hresult(tags.GetAt(0).as<ToggleMenuFlyoutItem>().IsChecked() &&
+            !tags.GetAt(1).as<ToggleMenuFlyoutItem>().IsChecked() &&
+            tags.GetAt(tags.Size() - 1).as<MenuFlyoutItem>().Text() == L"Remove all assigned tags" &&
+            !find(menu.Items(), L"Remove all assigned tags") ? S_OK : E_FAIL);
+        stage = 2731;
+        expand(tagMenu);
+        co_await AwaitNativeLoaded(tags.GetAt(tags.Size() - 1));
+        for (const bool wasAssigned : {true, false}) {
+            stage = wasAssigned ? 2732 : 2733;
+            const auto toggle = tags.GetAt(wasAssigned ? 0 : 1).as<ToggleMenuFlyoutItem>();
+            before = requests.size();
+            toggle.IsChecked(!wasAssigned);
+            const auto op = wasAssigned ? L"removeTag" : L"assignTag";
+            winrt::check_hresult(toggle.IsChecked() == wasAssigned && sent(before, op, L"menu-text") == 1 &&
+                requestFor(before, op, L"menu-text").GetNamedNumber(L"tagId") == (wasAssigned ? 9 : 10) ? S_OK : E_FAIL);
+        }
+        stage = 2734;
+        before = requests.size();
+        invoke(tags.GetAt(tags.Size() - 1)); co_await NextNativeFrame();
+        winrt::check_hresult(sent(before, L"clearTags", L"menu-text") == 1 ? S_OK : E_FAIL);
+        co_await closeMenu(menu);
+        stage = 2735;
+        tagsReply(LR"({"op":"tags","data":{"items":[{"id":10,"name":"Renamed"}]}})");
+        co_await show();
+        const auto remaining = find(menu.Items(), L"Tags").as<MenuFlyoutSubItem>().Items();
+        winrt::check_hresult(remaining.Size() == 2 &&
+            remaining.GetAt(0).as<ToggleMenuFlyoutItem>().Text() == L"Renamed" ? S_OK : E_FAIL);
+        co_await closeMenu(menu);
+
+        stage = 274;
+        g_panel.history.SelectedIndex(1);
+        before = requests.size();
+        RequestSelectedAction(L"copy");
+        winrt::check_hresult(sent(before, L"copy", L"menu-image") == 1 && !sent(before, L"paste", L"menu-image") ? S_OK : E_FAIL);
+        co_await show();
+        before = requests.size();
+        invoke(find(menu.Items(), L"Copy and paste")); co_await NextNativeFrame();
+        winrt::check_hresult(sent(before, L"paste", L"menu-text") == 1 && !sent(before, L"copy", L"menu-text") ? S_OK : E_FAIL);
+        co_await closeMenu(menu);
+        co_await show();
+        before = requests.size();
+        invoke(find(menu.Items(), L"Paste as plain text")); co_await NextNativeFrame();
+        winrt::check_hresult(sent(before, L"pastePlain", L"menu-text") == 1 && !sent(before, L"paste", L"menu-text") &&
+            !sent(before, L"copyPlain", L"menu-text") ? S_OK : E_FAIL);
+        co_await closeMenu(menu);
+        co_await show();
+        before = requests.size();
+        invoke(find(menu.Items(), L"Delete record")); co_await NextNativeFrame();
+        winrt::check_hresult(!sent(before, L"delete", L"menu-text") && g_deleteConfirmationOpen && g_panel.deletionDialog ? S_OK : E_FAIL);
+        co_await AwaitNativeLoaded(g_panel.deletionDialog);
+        g_panel.deletionDialog.Hide();
+        while (g_deleteConfirmationOpen) co_await NextNativeFrame();
+        winrt::check_hresult(!sent(before, L"delete", L"menu-text") && g_selectedHash == L"menu-text" ? S_OK : E_FAIL);
+        co_await closeMenu(menu);
+        stage = 275;
+        before = requests.size();
+        g_panel.history.SelectedIndex(1);
+        DeleteCard(g_selectedHash);
+        const auto confirmation = g_panel.deletionDialog;
+        DeleteCard(L"menu-text");
+        winrt::check_hresult(confirmation && confirmation == g_panel.deletionDialog && !sent(before, L"delete", L"menu-image") ? S_OK : E_FAIL);
+        co_await AwaitNativeLoaded(confirmation);
+        invoke(primaryButton(primaryButton, confirmation));
+        while (g_deleteConfirmationOpen) co_await NextNativeFrame();
+        DeleteCard(L"missing-row");
+        winrt::check_hresult(sent(before, L"delete", L"menu-image") == 1 && !sent(before, L"delete", L"menu-text") &&
+            !g_deleteConfirmationOpen ? S_OK : E_FAIL);
+        SetQueueViewActive(true);
+        g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(0));
+        g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(1));
+        winrt::check_hresult(g_panel.queueOpen && g_queueViewActive && g_panel.queueAdd.IsEnabled() ? S_OK : E_FAIL);
+        before = requests.size();
+        DeleteCard(L"menu-text");
+        winrt::check_hresult(!sent(before, L"delete", L"menu-text") ? S_OK : E_FAIL);
+        invoke(g_panel.queueAdd); co_await NextNativeFrame();
+        const auto add = std::find_if(requests.begin() + before, requests.end(), [](auto const &bytes) {
+            return JsonObject::Parse(winrt::to_hstring(bytes)).GetNamedString(L"op") == L"queueAdd";
+        });
+        winrt::check_hresult(add != requests.end() ? S_OK : E_FAIL);
+        const auto selected = JsonObject::Parse(winrt::to_hstring(*add)).GetNamedArray(L"hashes");
+        winrt::check_hresult(selected.Size() == 2 && selected.GetStringAt(0) == L"menu-text" &&
+            selected.GetStringAt(1) == L"menu-image" ? S_OK : E_FAIL);
+        SetQueueViewActive(false);
+        stage = 2751;
+        tagsReply(LR"({"op":"tags","data":{"items":[]}})");
+        co_await AwaitNativeLoaded(target);
+        co_await show();
+        const auto empty = find(menu.Items(), L"Tags").as<MenuFlyoutSubItem>();
+        expand(empty);
+        const auto create = find(empty.Items(), L"Create and assign tag…").as<MenuFlyoutItem>();
+        winrt::check_hresult(!find(empty.Items(), L"No tags yet").as<MenuFlyoutItem>().IsEnabled() ? S_OK : E_FAIL);
+        co_await AwaitNativeLoaded(create);
+        g_searchSubmitRequestId = g_latestQueryId;
+        stage = 2752;
+        invoke(create);
+        for (int frame = 0; frame < 12 && !g_panel.recordTagEditor->IsOpen(); ++frame) co_await NextNativeFrame();
+        winrt::check_hresult(!menu.IsOpen() && g_panel.recordTagEditor->IsOpen() && !g_searchSubmitRequestId ? S_OK : E_FAIL);
+        co_await AwaitNativeLoaded(g_panel.recordTagEditor->TestRoot());
+        before = requests.size();
+        g_panel.recordTagEditor->TestName(L"First tag");
+        g_panel.recordTagEditor->TestSave();
+        winrt::check_hresult(sent(before, L"recordTagCreate", L"") == 1 ? S_OK : E_FAIL);
+        const auto created = JsonObject::Parse(winrt::to_hstring(requests.back()));
+        auto createdReply = JsonObject::Parse(LR"({"op":"recordTagCreate","data":{"tag":{"id":9,"name":"First tag"}}})");
+        createdReply.Insert(L"id", created.GetNamedValue(L"id"));
+        ApplyResponse(winrt::to_string(createdReply.Stringify()));
+        winrt::check_hresult(sent(before, L"recordTagAssign", L"menu-text") == 1 ? S_OK : E_FAIL);
+        const auto assignment = JsonObject::Parse(winrt::to_hstring(requests.back()));
+        auto assignedReply = JsonObject::Parse(LR"({"op":"recordTagAssign","data":{}})");
+        assignedReply.Insert(L"id", assignment.GetNamedValue(L"id"));
+        const auto beforeAssignRefresh = g_latestQueryId;
+        stage = 27521;
+        ApplyResponse(winrt::to_string(assignedReply.Stringify()));
+        winrt::check_hresult(!g_panel.recordTagEditor->IsOpen() && g_latestQueryId > beforeAssignRefresh ? S_OK : E_FAIL);
+        const auto assignedRows = JsonObject::Parse(response.Stringify());
+        assignedRows.GetNamedObject(L"data").GetNamedArray(L"items").GetObjectAt(0).Insert(
+            L"tags", JsonArray::Parse(LR"([{"id":9,"name":"First tag"}])"));
+        reply(assignedRows);
+        const auto assignedCard = FindCard(L"menu-text");
+        winrt::check_hresult(assignedCard && assignedCard->tagChip.Visibility() == Visibility::Visible &&
+            assignedCard->tags.Text() == L"First tag" ? S_OK : E_FAIL);
+        stage = 2753;
+        tagsReply(LR"({"op":"tags","data":{"items":[{"id":9,"name":"Work"}]}})");
+        g_panel.customTabs.SelectedItem(DynamicTab(RecordTabId(9)));
+        const auto onlyMatch = JsonObject::Parse(LR"({"op":"query","data":{"items":[{"hash":"only-match","itemType":"Text","tags":[{"id":9,"name":"Work"}]}]}})");
+        reply(onlyMatch);
+        for (bool reject : {true, false}) {
+            const CardTarget target{L"only-match", 0};
+            const auto card = FindCard(target);
+            winrt::check_hresult(card ? S_OK : E_FAIL);
+            const auto sub = MakeCardTagEntry(target, card->tagIds, std::make_shared<bool>(false)).as<MenuFlyoutSubItem>();
+            const auto toggle = sub.Items().GetAt(0).as<ToggleMenuFlyoutItem>();
+            winrt::check_hresult(toggle.IsChecked() && !find(sub.Items(), L"All tags are assigned").as<MenuFlyoutItem>().IsEnabled() &&
+                find(sub.Items(), L"Create and assign tag…").as<MenuFlyoutItem>().IsEnabled() &&
+                sub.Items().GetAt(sub.Items().Size() - 2).try_as<MenuFlyoutSeparator>() ? S_OK : E_FAIL);
+            const auto initial = requests.size();
+            toggle.IsChecked(false);
+            winrt::check_hresult(sent(initial, L"removeTag", L"only-match") == 1 ? S_OK : E_FAIL);
+            const auto previous = g_latestQueryId;
+            auto removal = JsonObject::Parse(reject ? LR"({"op":"removeTag","error":"Controlled fixture failure"})"
+                                                    : LR"({"op":"removeTag","data":{}})");
+            removal.Insert(L"id", requestFor(initial, L"removeTag", L"only-match").GetNamedValue(L"id"));
+            ApplyResponse(winrt::to_string(removal.Stringify()));
+            winrt::check_hresult(g_latestQueryId > previous && g_historyView.requestedQuery.tag == L"Work" ? S_OK : E_FAIL);
+            reply(reject ? onlyMatch : JsonObject::Parse(LR"({"op":"query","data":{"items":[]}})"));
+            winrt::check_hresult(PanelVisible() && g_selectedTagId == 9 &&
+                (reject ? FindCard(L"only-match") && g_panel.feedback.IsOpen() && g_panel.feedback.Message() == L"Controlled fixture failure"
+                        : g_hashes.empty()) ? S_OK : E_FAIL);
+        }
+        stage = 276;
+        co_return;
+    }
+
+    stage = 2761;
+    SelectBuiltinCategory(0);
+    reply(response);
+    const auto file = FindCard(L"menu-file");
+    g_panel.history.ScrollIntoView(file->frame);
+    co_await AwaitNativeLoaded(file->surface);
+    if (!file->cardRequestId) RequestCardDetails(L"menu-file");
+    const auto filePopup = file->surface.ContextFlyout().as<MenuFlyout>();
+    filePopup.ShowAt(file->surface);
     co_await NextNativeFrame();
-    winrt::check_hresult(!g_deleteConfirmationOpen ? S_OK : E_FAIL);
+    const auto fileExport = file->menu.exportImage;
+    const auto fileDelete = find(filePopup.Items(), L"Delete record");
+    co_await AwaitNativeLoaded(fileDelete);
+    const auto deletePeer = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(fileDelete);
+    const auto initialBounds = deletePeer.GetBoundingRectangle();
+    winrt::check_hresult(filePopup.IsOpen() && initialBounds.Height > 0 && !fileExport.IsEnabled() &&
+        fileExport.Visibility() == Visibility::Collapsed ? S_OK : E_FAIL);
+    auto details = JsonObject::Parse(LR"({"op":"card","data":{"hash":"menu-file","actions":{"canExportImage":true}}})");
+    details.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(file->cardRequestId)));
+    ApplyResponse(winrt::to_string(details.Stringify()));
+    co_await NextNativeFrame();
+    winrt::check_hresult(filePopup.IsOpen() && file->pendingMenuActions &&
+        !fileExport.IsEnabled() && fileExport.Visibility() == Visibility::Collapsed &&
+        deletePeer.GetBoundingRectangle() == initialBounds ? S_OK : E_FAIL);
+    co_await closeMenu(filePopup);
+    filePopup.ShowAt(file->surface);
+    co_await AwaitNativeLoaded(fileExport);
+    winrt::check_hresult(!file->pendingMenuActions && fileExport.IsEnabled() ? S_OK : E_FAIL);
+    co_await closeMenu(filePopup);
+
+    stage = 2762;
+    auto reordered = JsonObject::Parse(response.Stringify());
+    const auto reorderedItems = reordered.GetNamedObject(L"data").GetNamedArray(L"items");
+    const auto firstItem = reorderedItems.GetAt(0);
+    reorderedItems.SetAt(0, reorderedItems.GetAt(1));
+    reorderedItems.SetAt(1, firstItem);
+    RequestHistory(true); reply(reordered);
+    const auto moved = FindCard(L"menu-text")->surface;
+    const auto movedMenu = moved.ContextFlyout().as<MenuFlyout>();
+    g_panel.history.SelectedIndex(0);
+    g_panel.history.ScrollIntoView(g_panel.history.Items().GetAt(1));
+    co_await AwaitNativeLoaded(moved);
+    before = requests.size();
+    movedMenu.ShowAt(moved); co_await NextNativeFrame();
+    const auto addFavorite = find(movedMenu.Items(), L"Add favorite");
+    winrt::check_hresult(g_selectedHash == L"menu-text" && sent(before, L"previewSelect", L"menu-text") == 1 && addFavorite ? S_OK : E_FAIL);
+    // A newer favorite value must not invert the action the open menu offered.
+    g_favorites[1] = true;
+    invoke(addFavorite); co_await NextNativeFrame();
+    winrt::check_hresult(sent(before, L"favorite", L"menu-text") == 1 &&
+        requestFor(before, L"favorite", L"menu-text").GetNamedBoolean(L"favorite") ? S_OK : E_FAIL);
+    co_await closeMenu(movedMenu);
+    auto replaced = JsonObject::Parse(reordered.Stringify());
+    replaced.GetNamedObject(L"data").GetNamedArray(L"items").GetObjectAt(1).Insert(L"id", JsonValue::CreateNumberValue(201));
+    RequestHistory(true); reply(replaced);
+    winrt::check_hresult(!GuardedCardAction({L"menu-text", 101})(L"paste", L"menu-text", {}) &&
+        !GuardedCardAction({L"removed-from-view", 300})(L"copyFolder", L"removed-from-view", {}) ? S_OK : E_FAIL);
+
+    stage = 2763;
+    before = requests.size();
+    DeleteCard(L"menu-image");
+    const auto refreshConfirmation = g_panel.deletionDialog;
+    co_await AwaitNativeLoaded(refreshConfirmation);
+    RequestHistory(true);
+    invoke(primaryButton(primaryButton, refreshConfirmation));
+    while (g_deleteConfirmationOpen) co_await NextNativeFrame();
+    winrt::check_hresult(!sent(before, L"delete", L"menu-image") &&
+        g_panel.feedback.Message() == L"History is refreshing. Try deleting again after it loads." ? S_OK : E_FAIL);
+    reply(response);
+    DeleteCard(L"menu-image");
+    const auto changedConfirmation = g_panel.deletionDialog;
+    co_await AwaitNativeLoaded(changedConfirmation);
+    RequestHistory(true);
+    auto changedRows = JsonObject::Parse(response.Stringify());
+    changedRows.GetNamedObject(L"data").GetNamedArray(L"items").GetObjectAt(1).Insert(L"id", JsonValue::CreateNumberValue(202));
+    reply(changedRows);
+    invoke(primaryButton(primaryButton, changedConfirmation));
+    while (g_deleteConfirmationOpen) co_await NextNativeFrame();
+    winrt::check_hresult(!sent(before, L"delete", L"menu-image") &&
+        g_panel.feedback.Message() == L"History changed. Select the record again to delete it." ? S_OK : E_FAIL);
+
+    stage = 2764;
     SetQueueViewActive(true);
-    g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(0));
-    g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(1));
-    winrt::check_hresult(g_panel.queueOpen && g_queueViewActive && g_panel.queueAdd.IsEnabled() ? S_OK : E_FAIL);
+    co_await NextNativeFrame();
+    const auto firstContainer = g_panel.history.ContainerFromIndex(0).as<ListViewItem>();
+    const auto secondContainer = g_panel.history.ContainerFromIndex(1).as<ListViewItem>();
+    vpaste::winui::MainKeyInput enter;
+    enter.key = VK_RETURN; enter.area = vpaste::winui::InputArea::History;
     before = requests.size();
-    invoke(g_panel.queueAdd); co_await NextNativeFrame();
-    const auto add = std::find_if(requests.begin() + before, requests.end(), [](auto const &bytes) {
-        return JsonObject::Parse(winrt::to_hstring(bytes)).GetNamedString(L"op") == L"queueAdd";
-    });
-    winrt::check_hresult(add != requests.end() ? S_OK : E_FAIL);
-    const auto selected = JsonObject::Parse(winrt::to_hstring(*add)).GetNamedArray(L"hashes");
-    winrt::check_hresult(selected.Size() == 2 && selected.GetStringAt(0) == L"menu-text" &&
-        selected.GetStringAt(1) == L"menu-image" ? S_OK : E_FAIL);
+    winrt::check_hresult(HandleMainKey(enter, g_panel.history) && g_queueSelectedHashes.empty() ? S_OK : E_FAIL);
+    winrt::check_hresult(HandleMainKey(enter, firstContainer) &&
+        g_queueSelectedHashes == std::vector<std::wstring>{L"menu-text"} ? S_OK : E_FAIL);
+    enter.repeated = true;
+    (void)HandleMainKey(enter, secondContainer);
+    winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"menu-text"} &&
+        !sent(before, L"paste", L"menu-text") && !sent(before, L"paste", L"menu-image") ? S_OK : E_FAIL);
+    const auto selectedBeforePreview = g_queueSelectedHashes;
+    const auto beforePreviewQuery = CurrentHistoryQuery();
+    winrt::check_hresult(OpenSelectedCardMenu(secondContainer) ? S_OK : E_FAIL);
+    const auto queuePopup = menuFor(1);
+    co_await NextNativeFrame();
+    const auto queuePreviewCommand = find(queuePopup.Items(), L"Preview");
+    for (const auto &item : queuePopup.Items())
+        winrt::check_hresult(item.Visibility() == (item == queuePreviewCommand ? Visibility::Visible : Visibility::Collapsed) ? S_OK : E_FAIL);
+    invoke(queuePreviewCommand); co_await NextNativeFrame();
+    winrt::check_hresult(g_queuePreviewFocus && sent(before, L"previewToggle", L"menu-image") == 1 &&
+        g_queueSelectedHashes == selectedBeforePreview ? S_OK : E_FAIL);
+    const auto previewId = g_queuePreviewFocus->request;
+    ApplyResponse(R"({"op":"nativeReaderHide","data":{"generation":700}})");
+    ApplyResponse(R"({"op":"nativeReaderBegin","data":{"generation":701}})");
+    const auto opened = std::string{R"({"op":"previewToggle","data":null,"id":)"} + std::to_string(previewId) + "}";
+    ApplyResponse(opened);
+    WindowProc(g_panel.window, kFocusHistory, 0, 0);
+    winrt::check_hresult(g_queuePreviewFocus && g_queuePreviewFocus->ready && !g_queuePreviewFocus->closed ? S_OK : E_FAIL);
+    const auto navigation = std::string{R"({"op":"previewNavigation","data":{"key":"Tab","direction":1,"ctrlKey":true,"sourceRequest":)"}
+        + std::to_string(previewId) + "}}";
+    ApplyResponse(navigation);
+    ApplyResponse(R"({"op":"nativeReaderHide","data":{"generation":701}})");
+    winrt::check_hresult(g_queuePreviewFocus && !g_queuePreviewFocus->closed && CurrentHistoryQuery() == beforePreviewQuery ? S_OK : E_FAIL);
+    ApplyResponse(R"({"op":"nativeReaderHide","data":{"generation":702}})");
+    WindowProc(g_panel.window, kFocusHistory, 0, kPreviewFocusReturn);
+    co_await NextNativeFrame();
+    winrt::check_hresult(!g_queuePreviewFocus && g_queueSelectedHashes == selectedBeforePreview &&
+        HistoryIndexFromSource(Input::FocusManager::GetFocusedElement(g_panel.root.XamlRoot())) == 1 ? S_OK : E_FAIL);
+    ToggleQueueCardPreview(L"menu-image");
+    auto previewFailure = std::string{R"({"op":"previewToggle","error":"Controlled preview failure","id":)"}
+        + std::to_string(g_queuePreviewFocus->request) + "}";
+    ApplyResponse(previewFailure);
+    winrt::check_hresult(!g_queuePreviewFocus && g_panel.feedback.Message() == L"Controlled preview failure" ? S_OK : E_FAIL);
+    ToggleQueueCardPreview(L"menu-image");
     SetQueueViewActive(false);
-    stage = 2751;
-    tagsReply(LR"({"op":"tags","data":{"items":[]}})");
-    co_await AwaitNativeLoaded(target);
-    show(); co_await NextNativeFrame();
-    const auto create = find(menu.Items(), L"Create and assign tag…").try_as<MenuFlyoutItem>();
-    winrt::check_hresult(create && !find(menu.Items(), L"Tags") ? S_OK : E_FAIL);
-    co_await AwaitNativeLoaded(create);
-    g_searchSubmitRequestId = g_latestQueryId;
-    stage = 2752;
-    invoke(create);
-    for (int frame = 0; frame < 12 && !g_panel.recordTagEditor->IsOpen(); ++frame) co_await NextNativeFrame();
-    winrt::check_hresult(!menu.IsOpen() && g_panel.recordTagEditor->IsOpen() && !g_searchSubmitRequestId ? S_OK : E_FAIL);
-    co_await AwaitNativeLoaded(g_panel.recordTagEditor->TestRoot());
+    winrt::check_hresult(!g_queuePreviewFocus ? S_OK : E_FAIL);
+
+    stage = 2765;
+    ApplyFilters(JsonArray::Parse(LR"([{"id":"filter-fixture","name":"Example filter","filter":{}}])"));
+    tagsReply(LR"({"op":"tags","data":{"items":[{"id":9,"name":"Work"}]}})");
+    const std::array<std::wstring, 2> tabIds{L"filter-fixture", RecordTabId(9)};
+    SetSearchText(L"preserve this query");
+    for (const auto &tab : tabIds) {
+        const bool tag = tab == tabIds[1];
+        g_panel.customTabs.SelectedItem(DynamicTab(tab));
+        reply(response);
+        g_panel.history.SelectedIndex(0);
+        before = requests.size();
+        ConfirmDeleteTab(tab);
+        auto dialog = g_panel.deletionDialog;
+        co_await AwaitNativeLoaded(dialog);
+        dialog.Hide();
+        while (g_deleteConfirmationOpen) co_await NextNativeFrame();
+        const auto op = tag ? L"recordTagDelete" : L"filtersDelete";
+        winrt::check_hresult(!sent(before, op, L"") && !sent(before, L"previewDismiss", L"") &&
+            DynamicTab(tab) && g_panel.customTabs.SelectedItem() == DynamicTab(tab) ? S_OK : E_FAIL);
+        ConfirmDeleteTab(tab);
+        dialog = g_panel.deletionDialog;
+        co_await AwaitNativeLoaded(dialog);
+        invoke(primaryButton(primaryButton, dialog));
+        while (g_deleteConfirmationOpen) co_await NextNativeFrame();
+        winrt::check_hresult(sent(before, op, L"") == 1 && !sent(before, L"delete", L"menu-text") ? S_OK : E_FAIL);
+        auto deletionReply = requestFor(before, op, L"");
+        deletionReply.Insert(L"data", JsonObject{});
+        ApplyResponse(winrt::to_string(deletionReply.Stringify()));
+        if (tag) {
+            tagsReply(LR"({"op":"tags","data":{"items":[]}})");
+        } else {
+            auto filters = JsonObject::Parse(LR"({"op":"filtersList","data":{"items":[]}})");
+            filters.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestFiltersRequestId)));
+            ApplyResponse(winrt::to_string(filters.Stringify()));
+        }
+        winrt::check_hresult(!DynamicTab(tab) && FilterIndex() == 0 && g_selectedFilterId.empty() &&
+            !g_selectedTagId && SearchText() == L"preserve this query" ? S_OK : E_FAIL);
+        before = requests.size();
+        reply(response);
+        winrt::check_hresult(g_selectedHash == L"menu-text" && !sent(before, L"previewDismiss", L"") &&
+            !sent(before, L"previewSelect", L"menu-text") ? S_OK : E_FAIL);
+    }
+
+    stage = 2766;
+    ApplyFilters(JsonArray::Parse(LR"([{"id":"drag-first","name":"First"},{"id":"drag-last","name":"Last"}])"));
+    co_await NextNativeFrame();
     before = requests.size();
-    g_panel.recordTagEditor->TestName(L"First tag");
-    g_panel.recordTagEditor->TestSave();
-    winrt::check_hresult(sent(before, L"recordTagCreate", L"") == 1 ? S_OK : E_FAIL);
-    const auto created = JsonObject::Parse(winrt::to_hstring(requests.back()));
-    auto createdReply = JsonObject::Parse(LR"({"op":"recordTagCreate","data":{"tag":{"id":9,"name":"First tag"}}})");
-    createdReply.Insert(L"id", created.GetNamedValue(L"id"));
-    ApplyResponse(winrt::to_string(createdReply.Stringify()));
-    winrt::check_hresult(sent(before, L"recordTagAssign", L"menu-text") == 1 ? S_OK : E_FAIL);
-    const auto assignment = JsonObject::Parse(winrt::to_hstring(requests.back()));
-    auto assignedReply = JsonObject::Parse(LR"({"op":"recordTagAssign","data":{}})");
-    assignedReply.Insert(L"id", assignment.GetNamedValue(L"id"));
-    ApplyResponse(winrt::to_string(assignedReply.Stringify()));
-    winrt::check_hresult(!g_panel.recordTagEditor->IsOpen() ? S_OK : E_FAIL);
-    stage = 276;
+    BeginTabDropPreview(L"drag-first");
+    winrt::check_hresult(g_tabDrop.bounds.size() == 2 ? S_OK : E_FAIL);
+    const auto lastTab = g_tabDrop.bounds.back();
+    winrt::check_hresult(PreviewTabDrop(L"drag-first", lastTab.X + lastTab.Width) && g_tabDrop.target == L"drag-last" ? S_OK : E_FAIL);
+    ClearTabDropPreview();
+    winrt::check_hresult(g_tabDrop.target.empty() && g_panel.tabDropMarker.Visibility() == Visibility::Collapsed &&
+        !sent(before, L"tabOrderSave", L"") && g_dynamicIds.front() == L"drag-first" ? S_OK : E_FAIL);
+    SaveTabDrop(L"drag-first", L"drag-last");
+    const auto move = requestFor(before, L"tabOrderSave", L"");
+    winrt::check_hresult(move.GetNamedString(L"sourceId") == L"drag-first" && move.GetNamedString(L"targetId") == L"drag-last" &&
+        !move.GetNamedBoolean(L"before") ? S_OK : E_FAIL);
+    ApplyResponse(R"({"op":"tabOrderChanged","data":{"order":["drag-last","drag-first"]}})");
+    winrt::check_hresult(g_dynamicIds == std::vector<std::wstring>{L"drag-last", L"drag-first"} ? S_OK : E_FAIL);
+    stage = 2767;
 }
 
 winrt::Windows::Foundation::IAsyncAction CheckNativeTray(
@@ -9226,6 +10253,297 @@ winrt::Windows::Foundation::IAsyncAction CheckNativeTray(
     g_panel.trayWindow.reset();
 }
 
+winrt::Windows::Foundation::IAsyncAction CheckMenuOpeningFocus(std::uint32_t &stage) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace winrt::Microsoft::UI::Xaml::Controls;
+    using namespace winrt::Windows::Data::Json;
+    stage = 27900;
+    SetVisible(true, true, false);
+    g_tagIds = {7}; g_tagNames = {L"Focus fixture"}; RebuildTagFilter();
+    ApplyFilters(JsonArray::Parse(LR"([{"id":"focus-fixture","name":"Focus filter","filter":{}}])"));
+    auto response = JsonObject::Parse(LR"({"op":"query","data":{"items":[{"hash":"focus-record","itemType":"Text","previewText":"Synthetic"}],"hasMore":false}})");
+    response.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+    ApplyResponse(winrt::to_string(response.Stringify()));
+    winrt::check_hresult(g_panel.rows.size() == 1 ? S_OK : E_FAIL);
+    const auto invisible = [](Media::Brush const &brush) {
+        const auto solid = brush.try_as<Media::SolidColorBrush>();
+        return solid && solid.Color().A == 0;
+    };
+    const auto postKey = [](UINT key) {
+        // Post only to the test panel's own input site, never to the desktop.
+        HWND target = GetFocus();
+        if (!target) EnumChildWindows(g_panel.window, [](HWND child, LPARAM result) -> BOOL {
+            wchar_t kind[64]{};
+            if (!GetClassNameW(child, kind, 64) || std::wstring_view{kind} != L"InputSiteWindowClass") return TRUE;
+            *reinterpret_cast<HWND *>(result) = child;
+            return FALSE;
+        }, reinterpret_cast<LPARAM>(&target));
+        winrt::check_hresult(target && GetWindowThreadProcessId(target, nullptr) == GetCurrentThreadId() ? S_OK : E_FAIL);
+        const auto bits = 1 | (MapVirtualKeyW(key, MAPVK_VK_TO_VSC) << 16) | (key == VK_DOWN ? (1u << 24) : 0);
+        winrt::check_bool(PostMessageW(target, WM_KEYDOWN, key, bits));
+        winrt::check_bool(PostMessageW(target, WM_KEYUP, key, bits | (3u << 30)));
+    };
+    const std::array<FrameworkElement, 4> origins{g_panel.addTag, g_panel.rows[0].surface,
+        DynamicTab(L"focus-fixture"), DynamicTab(L"record:7")};
+    for (const auto &origin : origins) {
+        ++stage;
+        co_await AwaitNativeLoaded(origin);
+        const bool add = origin == g_panel.addTag;
+        const auto menu = (add ? g_panel.addTag.Flyout() : origin.ContextFlyout()).as<MenuFlyout>();
+        const auto first = menu.Items().GetAt(0);
+        if (add) {
+            Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(origin)
+                .GetPattern(Automation::Peers::PatternInterface::Invoke)
+                .as<Automation::Provider::IInvokeProvider>().Invoke();
+        } else menu.ShowAt(origin, {8, 8});
+        co_await NextNativeFrame();
+        co_await AwaitNativeLoaded(first);
+        const bool hidden = invisible(first.FocusVisualPrimaryBrush()) && invisible(first.FocusVisualSecondaryBrush());
+        std::fprintf(stderr, "WinUI command focus: stage=%u open=%d focus=%d hidden=%d\n", stage, menu.IsOpen(),
+            static_cast<int>(first.FocusState()), hidden);
+        winrt::check_hresult(menu.IsOpen() && first.UseSystemFocusVisuals() && hidden ? S_OK : E_FAIL);
+        if (add) {
+            // Deliberately request late keyboard focus once the real popup is
+            // loaded. The visual stays hidden until a real navigation event.
+            winrt::check_hresult(first.Focus(FocusState::Keyboard) ? S_OK : E_FAIL);
+            co_await NextNativeFrame();
+            winrt::check_hresult(first.FocusState() == FocusState::Keyboard &&
+                invisible(first.FocusVisualPrimaryBrush()) ? S_OK : E_FAIL);
+            postKey(VK_DOWN);
+            const auto second = menu.Items().GetAt(1);
+            for (int frame = 0; frame < 30 && second.FocusState() != FocusState::Keyboard; ++frame) co_await NextNativeFrame();
+            std::fprintf(stderr, "WinUI command focus after Down: second=%d visible=%d\n",
+                static_cast<int>(second.FocusState()), !invisible(second.FocusVisualPrimaryBrush()));
+            winrt::check_hresult(menu.IsOpen() && second.FocusState() == FocusState::Keyboard &&
+                !invisible(second.FocusVisualPrimaryBrush()) && !invisible(second.FocusVisualSecondaryBrush()) ? S_OK : E_FAIL);
+            postKey(VK_ESCAPE);
+            for (int frame = 0; frame < 30 && menu.IsOpen(); ++frame) co_await NextNativeFrame();
+            winrt::check_hresult(!menu.IsOpen() ? S_OK : E_FAIL);
+        }
+        co_await CloseNativeFlyout(menu);
+        winrt::check_hresult(!invisible(first.FocusVisualPrimaryBrush()) && !invisible(first.FocusVisualSecondaryBrush()) ? S_OK : E_FAIL);
+    }
+    ++stage;
+    const auto add = g_panel.addTag;
+    const auto menu = add.Flyout().as<MenuFlyout>();
+    winrt::check_hresult(add.Focus(FocusState::Keyboard) ? S_OK : E_FAIL);
+    postKey(VK_SPACE);
+    for (int frame = 0; frame < 30 && !menu.IsOpen(); ++frame) co_await NextNativeFrame();
+    const auto first = menu.Items().GetAt(0);
+    co_await AwaitNativeLoaded(first);
+    std::fprintf(stderr, "WinUI keyboard open: state=%d visible=%d\n",
+        static_cast<int>(first.FocusState()), !invisible(first.FocusVisualPrimaryBrush()));
+    // An inactive test island may not assign initial focus. This test checks
+    // whether the actual keyboard opening preserves the system brushes.
+    winrt::check_hresult(menu.IsOpen() && first.UseSystemFocusVisuals() &&
+        !invisible(first.FocusVisualPrimaryBrush()) && !invisible(first.FocusVisualSecondaryBrush()) ? S_OK : E_FAIL);
+    co_await CloseNativeFlyout(menu);
+}
+
+// Runs with the shell suite's recording bridge: no clipboard, database or paste target.
+winrt::Windows::Foundation::IAsyncAction CheckSearchSendFailure(const std::vector<std::string> &requests, std::uint32_t &stage) {
+    using namespace winrt::Windows::Data::Json;
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace vpaste::winui;
+    const auto result = [](const wchar_t *payload, std::uint64_t id = 0) {
+        auto response = JsonObject::Parse(payload);
+        response.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(id ? id : g_latestQueryId)));
+        ApplyResponse(winrt::to_string(response.Stringify()));
+    };
+    const auto enter = [] { (void)HandleMainKey({.key=VK_RETURN, .area=InputArea::Search}); };
+    const auto pastes = [&] {
+        std::vector<std::wstring> hashes;
+        for (const auto &bytes : requests) {
+            const auto message = JsonObject::Parse(winrt::to_hstring(bytes));
+            if (message.GetNamedString(L"op") == L"paste") hashes.emplace_back(message.GetNamedString(L"hash"));
+        }
+        return hashes;
+    };
+    ShowSearch();
+    winrt::check_hresult(g_panel.searchButton.Visibility() == Visibility::Collapsed &&
+        g_panel.searchField.Children().Size() == 1 && g_panel.search.Visibility() == Visibility::Visible ? S_OK : E_FAIL);
+    stage = 301;
+    SetSearchText(L"phase-one A"); RequestHistory();
+    result(LR"({"op":"query","data":{"items":[{"hash":"synthetic-A","itemType":"Text"}]}})");
+    enter();
+    const auto before = pastes();
+    winrt::check_hresult(before == std::vector<std::wstring>{L"synthetic-A"} ? S_OK : E_FAIL);
+    stage = 302;
+    RequestHistory(); // A refresh is still outstanding when B fails to dispatch.
+    // Exceed the real send budget, keeping the callback installed to catch an
+    // accidental paste. A and B never refer to the same synthetic record.
+    SetSearchText(winrt::hstring{L"phase-one B " + std::wstring(MaxRequestBytes, L'b')});
+    const auto beforeFailure = g_latestQueryId;
+    winrt::check_hresult(g_panel.loading.Visibility() == Visibility::Visible ? S_OK : E_FAIL);
+    enter();
+    const auto afterFailure = pastes();
+    if (afterFailure.size() > before.size()) std::fprintf(stderr, "WinUI search send failure pasted %s\n",
+        winrt::to_string(afterFailure.back()).c_str());
+    winrt::check_hresult(g_latestQueryId == beforeFailure && afterFailure == before && !g_searchSubmitRequestId ? S_OK : E_FAIL);
+    result(LR"({"op":"query","data":{"items":[{"hash":"late-A","itemType":"Text"}]}})", beforeFailure);
+    winrt::check_hresult(g_panel.staleHistory.IsOpen() && g_panel.staleHistory.ActionButton().IsEnabled() &&
+        g_hashes == before && !PointerHistoryAllowed() ? S_OK : E_FAIL);
+    const auto beforeStaleAction = requests.size();
+    DeleteCard(L"synthetic-A");
+    for (auto op : {L"paste", L"pastePlain", L"quickPaste", L"delete"}) (void)SendRequest(op, L"synthetic-A");
+    winrt::check_hresult(requests.size() == beforeStaleAction ? S_OK : E_FAIL);
+    stage = 303;
+    SetSearchText(L"phase-one B"); enter();
+    result(LR"({"op":"query","data":{"items":[{"hash":"synthetic-B","itemType":"Text"}]}})");
+    winrt::check_hresult(pastes() == std::vector<std::wstring>{L"synthetic-A", L"synthetic-B"} ? S_OK : E_FAIL);
+    stage = 304;
+    SetSearchText(L"phase-one no match"); enter();
+    result(LR"({"op":"query","data":{"items":[]}})");
+    enter();
+    winrt::check_hresult(pastes().size() == 2 && !g_searchSubmitRequestId &&
+        g_panel.resetFilters.Visibility() == Visibility::Visible && !g_panel.staleHistory.IsOpen() ? S_OK : E_FAIL);
+    stage = 305;
+    SetSearchText(winrt::hstring{std::wstring(MaxRequestBytes, L'c')});
+    enter();
+    winrt::check_hresult(pastes().size() == 2 && !g_searchSubmitRequestId && g_panel.emptyState.Visibility() == Visibility::Visible &&
+        g_panel.retry.Visibility() == Visibility::Visible && g_panel.resetFilters.Visibility() == Visibility::Collapsed ? S_OK : E_FAIL);
+    stage = 306;
+    SetSearchText(L"draft"); enter();
+    const auto previous = g_latestQueryId;
+    SearchCompositionChanged(true, L"candidate");
+    const auto beforeComposition = requests.size();
+    enter(); RequestHistory();
+    winrt::check_hresult(!HandleMainKey({.key=VK_ESCAPE, .area=InputArea::Search, .searchHasText=true}) &&
+        requests.size() == beforeComposition && !g_searchSubmitRequestId ? S_OK : E_FAIL);
+    SearchCompositionChanged(false, L"draft"); // Same text as the retired request.
+    result(LR"({"op":"query","data":{"items":[{"hash":"late-draft","itemType":"Text"}]}})", previous);
+    winrt::check_hresult(g_hashes.empty() && g_searchTimer.IsRunning() ? S_OK : E_FAIL);
+    enter();
+    result(LR"({"op":"query","error":"Controlled query failure"})");
+    winrt::check_hresult(pastes().size() == 2 && !g_searchSubmitRequestId && g_panel.retry.Visibility() == Visibility::Visible ? S_OK : E_FAIL);
+    stage = 307;
+    RequestHistory(); enter(); // A retry can succeed after a deferred Enter is canceled.
+    (void)HandleMainKey({.key=VK_ESCAPE, .area=InputArea::Other, .searchHasText=true});
+    result(LR"({"op":"query","data":{"items":[{"hash":"canceled","itemType":"Text"}]}})");
+    winrt::check_hresult(SearchText().empty() && g_hashes.empty() && !g_searchSubmitRequestId &&
+        g_panel.search.Visibility() == Visibility::Visible && pastes().size() == 2 ? S_OK : E_FAIL);
+    (void)HandleMainKey({.key=VK_ESCAPE, .repeated=true, .area=InputArea::Other});
+    winrt::check_hresult(g_panel.search.Visibility() == Visibility::Visible ? S_OK : E_FAIL);
+    (void)HandleMainKey({.key=VK_ESCAPE, .area=InputArea::Other});
+    RequestHistory(); result(LR"({"op":"query","data":{"items":[]}})");
+    winrt::check_hresult(g_panel.search.Visibility() == Visibility::Collapsed &&
+        g_panel.emptyState.Children().GetAt(1).as<winrt::Microsoft::UI::Xaml::Controls::TextBlock>().Text() ==
+            Text(L"剪贴板还是空的", L"Your clipboard shelf is empty") ? S_OK : E_FAIL);
+    stage = 308;
+    RequestHistory();
+    const auto twoRows = LR"({"op":"query","data":{"items":[{"hash":"synthetic-A","itemType":"Text"},{"hash":"synthetic-B","itemType":"Text"}]}})";
+    result(twoRows);
+    g_panel.history.SelectedIndex(-1);
+    (void)HandleMainKey({.key=VK_RETURN});
+    winrt::check_hresult(pastes().size() == 2 ? S_OK : E_FAIL);
+    g_panel.history.SelectedIndex(1);
+    RequestHistory();
+    const auto beforeRefreshAction = requests.size();
+    DeleteCard(L"synthetic-B");
+    (void)SendRequest(L"paste", L"synthetic-B");
+    winrt::check_hresult(requests.size() == beforeRefreshAction ? S_OK : E_FAIL);
+    (void)HandleMainKey({.key=VK_RETURN});
+    result(LR"({"op":"query","data":{"items":[{"hash":"synthetic-A","itemType":"Text"}]}})");
+    winrt::check_hresult(pastes().size() == 2 && !g_searchSubmitRequestId ? S_OK : E_FAIL);
+    RequestHistory(); result(twoRows);
+    g_panel.history.SelectedIndex(1);
+    (void)HandleMainKey({.key=VK_RETURN});
+    winrt::check_hresult(pastes().size() == 3 && pastes().back() == L"synthetic-B" ? S_OK : E_FAIL);
+    RequestHistory();
+    (void)HandleMainKey({.key=VK_RETURN, .shift=true});
+    result(twoRows);
+    const auto plain = JsonObject::Parse(winrt::to_hstring(requests.back()));
+    winrt::check_hresult(plain.GetNamedString(L"op") == L"pastePlain" && plain.GetNamedString(L"hash") == L"synthetic-B" ? S_OK : E_FAIL);
+    (void)HandleMainKey({.key='1', .alt=true});
+    const auto quick = JsonObject::Parse(winrt::to_hstring(requests.back()));
+    winrt::check_hresult(quick.GetNamedString(L"op") == L"quickPaste" && quick.GetNamedString(L"hash") == L"synthetic-A" ? S_OK : E_FAIL);
+    stage = 309;
+    ToggleQueueSelectionMode();
+    RequestHistory(); enter(); result(twoRows);
+    winrt::check_hresult(pastes().size() == 3 && g_queueSelectedHashes == std::vector<std::wstring>{L"synthetic-A"} ? S_OK : E_FAIL);
+    ToggleQueueSelectionMode();
+    stage = 310;
+    ShowSearch(); SetSearchText(L"tag:Work");
+    SelectBuiltinCategory(1); enter();
+    result(LR"({"op":"query","error":"Controlled filter failure"})");
+    const auto failed = g_latestQueryId;
+    const auto invoke = [](Controls::Button const &button) {
+        Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(button)
+            .GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+    };
+    co_await NextNativeFrame();
+    invoke(g_panel.staleHistory.ActionButton().as<Controls::Button>());
+    co_await NextNativeFrame();
+    winrt::check_hresult(g_latestQueryId > failed && !g_searchSubmitRequestId && g_historyLoading && !g_panel.staleHistory.IsOpen() ? S_OK : E_FAIL);
+    const auto retry = JsonObject::Parse(winrt::to_hstring(requests.back()));
+    winrt::check_hresult(retry.GetNamedString(L"op") == L"query" && retry.GetNamedString(L"query") == L"tag:Work" &&
+        retry.GetNamedString(L"filter") == L"favorite" ? S_OK : E_FAIL);
+    result(LR"({"op":"query","data":{"items":[]}})");
+    co_await NextNativeFrame();
+    invoke(g_panel.resetFilters);
+    co_await NextNativeFrame();
+    winrt::check_hresult(SearchText().empty() && FilterIndex() == 0 && pastes().size() == 3 ? S_OK : E_FAIL);
+    enter();
+    result(LR"({"op":"query","data":{"items":"invalid"}})");
+    winrt::check_hresult(g_historyFailed && !g_searchSubmitRequestId &&
+        g_panel.retry.Visibility() == Visibility::Visible && pastes().size() == 3 ? S_OK : E_FAIL);
+    const auto inSearch = [] {
+        return MainInputArea(Input::FocusManager::GetFocusedElement(g_panel.root.XamlRoot())) == vpaste::winui::InputArea::Search;
+    };
+    stage = 311;
+    ShowSearch();
+    for (int frame = 0; frame < 30 && !inSearch(); ++frame) co_await NextNativeFrame();
+    winrt::check_hresult(inSearch() ? S_OK : E_FAIL);
+    RequestHistory(); enter();
+    winrt::check_hresult(g_searchSubmitRequestId == g_latestQueryId && g_searchSubmitRequestId ? S_OK : E_FAIL);
+    g_panel.settings.Focus(FocusState::Keyboard);
+    for (int frame = 0; frame < 30 && (inSearch() || g_searchSubmitRequestId); ++frame) co_await NextNativeFrame();
+    winrt::check_hresult(g_panel.search.Visibility() == Visibility::Collapsed ? S_OK : E_FAIL);
+    result(twoRows);
+    winrt::check_hresult(!g_searchSubmitRequestId && pastes().size() == 3 ? S_OK : E_FAIL);
+    stage = 312;
+    ShowSearch(); SetSearchText(L"phase-one B");
+    for (int frame = 0; frame < 30 && !inSearch(); ++frame) co_await NextNativeFrame();
+    winrt::check_hresult(inSearch() ? S_OK : E_FAIL);
+    enter();
+    const auto beforeBlur = pastes().size();
+    g_panel.settings.Focus(FocusState::Keyboard);
+    for (int frame = 0; frame < 30 && (inSearch() || g_searchSubmitRequestId); ++frame) co_await NextNativeFrame();
+    result(twoRows);
+    const bool canceledOnFocusChange = g_panel.search.Visibility() == Visibility::Visible && pastes().size() == beforeBlur;
+    ShowSearch(); RequestHistory(); enter();
+    const auto beforeDeactivate = pastes().size();
+    SendMessageW(g_panel.window, WM_ACTIVATE, WA_INACTIVE, 0);
+    result(twoRows);
+    const bool canceledOnDeactivate = pastes().size() == beforeDeactivate;
+    ShowSearch(); RequestHistory(); enter();
+    const auto beforeOcr = pastes().size();
+    ApplyResponse(R"({"id":0,"op":"imageOcrUpdated","data":{}})");
+    const auto firstRefresh = g_latestQueryId;
+    SendMessageW(g_panel.window, kRefreshHistory, 0, 0);
+    result(twoRows, firstRefresh);
+    const auto afterOldReply = pastes().size();
+    result(LR"({"op":"query","data":{"items":[{"hash":"synthetic-B","itemType":"Text"}]}})");
+    const auto finalPastes = pastes();
+    const bool followedRefresh = afterOldReply == beforeOcr && finalPastes.size() == beforeOcr + 1 && finalPastes.back() == L"synthetic-B";
+    std::fprintf(stderr, "WinUI deferred Enter: fieldBlurCanceled=%d deactivationCanceled=%d latestRefreshPasted=%d\n",
+        canceledOnFocusChange, canceledOnDeactivate, followedRefresh);
+    winrt::check_hresult(canceledOnFocusChange && canceledOnDeactivate && followedRefresh ? S_OK : E_FAIL);
+    stage = 313;
+    SetQueueViewActive(true);
+    RequestHistory(); enter();
+    winrt::check_hresult(g_queueSelectionMode && g_queueSelectedHashes.empty() && g_searchSubmitRequestId ? S_OK : E_FAIL);
+    const auto beforeQueueExit = pastes().size();
+    SetQueueViewActive(false);
+    result(twoRows);
+    winrt::check_hresult(!g_queueSelectionMode && !g_searchSubmitRequestId && pastes().size() == beforeQueueExit ? S_OK : E_FAIL);
+    RequestHistory(); enter();
+    SetQueueViewActive(true);
+    result(twoRows);
+    winrt::check_hresult(g_queueSelectionMode && !g_searchSubmitRequestId && g_queueSelectedHashes.empty() ? S_OK : E_FAIL);
+    SetQueueViewActive(false);
+}
+
 winrt::fire_and_forget RunNativeShellRegression(
     std::shared_ptr<std::promise<std::pair<HRESULT, std::uint32_t>>> completion) {
     std::uint32_t stage = 1;
@@ -9243,16 +10561,199 @@ winrt::fire_and_forget RunNativeShellRegression(
         g_request = +[](const std::uint8_t *data, std::size_t length) {
             requests.emplace_back(reinterpret_cast<const char *>(data), length);
         };
+        if (GetEnvironmentVariableW(L"VPASTE_WINUI_SEARCH_CHECK", nullptr, 0)) {
+            co_await CheckSearchSendFailure(requests, stage);
+            completion->set_value({S_OK, stage}); co_return;
+        }
+        if (GetEnvironmentVariableW(L"VPASTE_WINUI_MENU_FOCUS_CHECK", nullptr, 0)) {
+            co_await CheckMenuOpeningFocus(stage);
+            completion->set_value({S_OK, stage}); co_return;
+        }
         if (GetEnvironmentVariableW(L"VPASTE_WINUI_TRAY_CHECK", nullptr, 0)) {
             co_await CheckNativeTray(requests, stage);
+            completion->set_value({S_OK, stage}); co_return;
+        }
+        if (GetEnvironmentVariableW(L"VPASTE_WINUI_CARD_EDITORS_CHECK", nullptr, 0)) {
+            Border fixture;
+            g_panel.xamlSource.Content(fixture); ResizeIsland();
+            co_await vpaste::winui::TestRecordTagEditorControls(fixture, stage);
+            co_await vpaste::winui::TestFilterEditorControls(fixture, stage);
             completion->set_value({S_OK, stage}); co_return;
         }
         if (GetEnvironmentVariableW(L"VPASTE_WINUI_CARD_MENU_CHECK", nullptr, 0)) {
             co_await CheckCardContextMenu(requests, stage);
             completion->set_value({S_OK, stage}); co_return;
         }
+        if (GetEnvironmentVariableW(L"VPASTE_WINUI_EDITOR_OPEN_CHECK", nullptr, 0)) {
+            stage = 320;
+            WindowProc(g_panel.window, kSetLanguage, true, 0);
+            ApplyResponse(R"({"op":"nativeEditorOpen","data":{"generation":90,"kind":"editor","error":"editor.missing",
+                "rect":{"x":80,"y":80,"width":420,"height":350},"durationMs":0,"easing":[0,0,1,1]}})");
+            winrt::check_hresult(!g_panel.textEditor && g_panel.feedback.IsOpen() &&
+                g_panel.feedback.Message() == L"The original clipboard record is no longer available." &&
+                std::any_of(requests.begin(), requests.end(), [](auto const &bytes) {
+                    const auto request = JsonObject::Parse(winrt::to_hstring(bytes));
+                    return request.GetNamedString(L"op") == L"nativeEditorClose" && request.GetNamedString(L"argument") == L"90";
+                }) ? S_OK : E_FAIL);
+            stage = 324;
+            RequestHistory();
+            auto rows = JsonObject::Parse(LR"({"op":"query","data":{"items":[
+                {"id":40,"hash":"edited-a","itemType":"Text","previewText":"Original A"},
+                {"id":41,"hash":"other-b","itemType":"Text","previewText":"Other B"}]}})");
+            rows.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+            ApplyResponse(winrt::to_string(rows.Stringify()));
+            const auto open = SendRequest(L"edit", L"edited-a");
+            winrt::check_hresult(open && !SendRequest(L"edit", L"other-b") ? S_OK : E_FAIL);
+            ApplyResponse(R"({"op":"nativeEditorOpen","data":{"generation":91,"kind":"editor","text":"Original A",
+                "rect":{"x":80,"y":80,"width":420,"height":350},"durationMs":0,"easing":[0,0,1,1]}})");
+            auto ack = JsonObject::Parse(LR"({"op":"edit","data":{}})");
+            ack.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(open)));
+            ApplyResponse(winrt::to_string(ack.Stringify()));
+            g_panel.history.SelectedIndex(1);
+            ApplyResponse(R"({"op":"clipboardItemEdited","data":{"previousHash":"edited-a","hash":"saved-a"}})");
+            ApplyResponse(R"({"op":"nativeEditorClosed","data":{"generation":90}})");
+            winrt::check_hresult(g_panel.textEditor && g_selectedHash == L"other-b" ? S_OK : E_FAIL);
+            ApplyResponse(R"({"op":"nativeEditorClosed","data":{"generation":91}})");
+            winrt::check_hresult(!g_panel.textEditor && g_selectedHash == L"saved-a" &&
+                g_panel.history.SelectedIndex() == 0 ? S_OK : E_FAIL);
+            const auto refresh = [](JsonArray const &items) {
+                JsonObject response, data;
+                response.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+                response.Insert(L"op", JsonValue::CreateStringValue(L"query"));
+                data.Insert(L"items", items);
+                response.Insert(L"data", data);
+                ApplyResponse(winrt::to_string(response.Stringify()));
+            };
+            for (const int scenario : {0, 1, 2}) {
+                const bool save = scenario == 1, moveSelection = scenario == 2;
+                stage = moveSelection ? 329 : save ? 326 : 325;
+                SetSearchText(L"editor start"); RequestHistory();
+                const auto visible = JsonArray::Parse(LR"([
+                    {"id":41,"hash":"other-b","itemType":"Text"},
+                    {"id":40,"hash":"return-a","itemType":"Text"},
+                    {"id":42,"hash":"other-c","itemType":"Text"}])");
+                refresh(visible);
+                const auto edit = SendRequest(L"edit", L"return-a");
+                winrt::check_hresult(edit ? S_OK : E_FAIL);
+                auto editor = JsonObject::Parse(LR"({"op":"nativeEditorOpen","data":{"kind":"editor","text":"Original A",
+                    "rect":{"x":80,"y":80,"width":420,"height":350},"durationMs":0,"easing":[0,0,1,1]}})");
+                const auto generation = JsonValue::CreateNumberValue(save ? 93 : 92);
+                editor.GetNamedObject(L"data").Insert(L"generation", generation);
+                ApplyResponse(winrt::to_string(editor.Stringify()));
+                ack.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(edit)));
+                ApplyResponse(winrt::to_string(ack.Stringify()));
+                SetSearchText(L"only B"); RequestHistory();
+                JsonArray filtered;
+                filtered.Append(visible.GetAt(0));
+                filtered.Append(visible.GetAt(2));
+                refresh(filtered);
+                SetSearchText(L"both records"); RequestHistory();
+                if (save) {
+                    ApplyResponse(R"({"op":"clipboardItemEdited","data":{"previousHash":"return-a","hash":"return-saved"}})");
+                    visible.GetObjectAt(1).Insert(L"hash", JsonValue::CreateStringValue(L"return-saved"));
+                }
+                auto closed = JsonObject::Parse(LR"({"op":"nativeEditorClosed","data":{}})");
+                closed.GetNamedObject(L"data").Insert(L"generation", generation);
+                ApplyResponse(winrt::to_string(closed.Stringify()));
+                if (moveSelection) g_panel.history.SelectedIndex(1);
+                refresh(visible);
+                const auto expected = moveSelection ? L"other-c" : save ? L"return-saved" : L"return-a";
+                winrt::check_hresult(!g_panel.textEditor && g_selectedHash == expected &&
+                    g_panel.history.SelectedIndex() == (moveSelection ? 2 : 1) ? S_OK : E_FAIL);
+            }
+            completion->set_value({S_OK, stage}); co_return;
+        }
+        if (GetEnvironmentVariableW(L"VPASTE_WINUI_QUEUE_FEEDBACK_CHECK", nullptr, 0)) {
+            stage = 327;
+            ApplyResponse(R"({"op":"queueStateUpdate","data":{"revision":10,"active":true,"items":[{"hash":"queued-a"}]}})");
+            const auto root = g_panel.queueView->Root().as<Grid>();
+            const auto rows = root.Children().GetAt(1).as<ScrollViewer>().Content().as<StackPanel>();
+            const auto feedback = root.Children().GetAt(3).as<InfoBar>();
+            g_panel.queueView->SetError(L"Reverse failed after Add");
+            ApplyResponse(R"({"id":80,"op":"queueAdd","data":{"revision":10,"active":true,"items":[{"hash":"queued-a"}]}})");
+            winrt::check_hresult(rows.Children().Size() == 1 && feedback.IsOpen() &&
+                feedback.Message() == L"Reverse failed after Add" ? S_OK : E_FAIL);
+            stage = 328;
+            ApplyResponse(R"({"id":80,"op":"queueAdd","data":{"revision":11,"active":true,
+                "items":[{"hash":"queued-a"},{"hash":"queued-b"}]}})");
+            winrt::check_hresult(rows.Children().Size() == 2 && feedback.IsOpen() &&
+                feedback.Message() == L"Reverse failed after Add" ? S_OK : E_FAIL);
+            completion->set_value({S_OK, stage}); co_return;
+        }
+        if (GetEnvironmentVariableW(L"VPASTE_WINUI_QUEUE_CHECK", nullptr, 0)) {
+            stage = 321;
+            WindowProc(g_panel.window, kSetLanguage, true, 0);
+            RequestHistory();
+            const auto result = [](const wchar_t *payload) {
+                auto response = JsonObject::Parse(payload);
+                response.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+                ApplyResponse(winrt::to_string(response.Stringify()));
+            };
+            result(LR"({"op":"query","data":{"items":[{"hash":"batch-a"},{"hash":"batch-b"}]}})");
+            ToggleQueueSelectionMode();
+            g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(0));
+            SetSearchText(L"hide selected fixture"); RequestHistory();
+            result(LR"({"op":"query","data":{"items":[{"hash":"batch-b"}],"hasMore":true,"nextId":11,"nextTime":1}})");
+            winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"batch-a"} && g_panel.queueAdd.IsEnabled() ? S_OK : E_FAIL);
+            RequestMoreHistory();
+            result(LR"({"op":"queryMore","data":{"items":[{"hash":"batch-c"}],"hasMore":false}})");
+            winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"batch-a"} && g_hashes.back() == L"batch-c" ? S_OK : E_FAIL);
+            AddSelectedItemsToQueue();
+            const auto first = g_queueSelectionAddRequest;
+            winrt::check_hresult(first && g_queueSelectionAdding ? S_OK : E_FAIL);
+            ToggleQueueSelectionMode(); ToggleQueueSelectionMode();
+            g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(0));
+            const auto activeStatus = g_panel.status.Text();
+            auto staleAdd = JsonObject::Parse(LR"({"op":"queueAdd","data":{"revision":2,"items":[]}})");
+            staleAdd.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(first)));
+            ApplyResponse(winrt::to_string(staleAdd.Stringify()));
+            winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"batch-b"} &&
+                g_panel.queueAdd.IsEnabled() && g_panel.status.Text() == activeStatus ? S_OK : E_FAIL);
+            stage = 322;
+            const auto callback = std::exchange(g_request, nullptr);
+            AddSelectedItemsToQueue();
+            g_request = callback;
+            winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"batch-b"} && g_panel.queueAdd.IsEnabled() &&
+                !g_queueSelectionAdding && g_panel.feedback.IsOpen() &&
+                g_panel.feedback.Message() == L"Could not send the queue add request. Try again." ? S_OK : E_FAIL);
+            stage = 323;
+            AddSelectedItemsToQueue();
+            const auto sendResult = [](JsonObject response) {
+                response.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_queueSelectionAddRequest)));
+                ApplyResponse(winrt::to_string(response.Stringify()));
+            };
+            sendResult(JsonObject::Parse(LR"({"op":"queueAdd","error":"Synthetic add failure"})"));
+            winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"batch-b"} && g_panel.queueAdd.IsEnabled() &&
+                g_panel.feedback.Message() == L"Synthetic add failure" ? S_OK : E_FAIL);
+            AddSelectedItemsToQueue();
+            g_panel.history.SelectedItems().Append(g_panel.history.Items().GetAt(1));
+            sendResult(JsonObject::Parse(LR"({"op":"queueAdd","data":{"revision":3,"items":[{"hash":"batch-b"}]}})"));
+            winrt::check_hresult(g_queueSelectedHashes == std::vector<std::wstring>{L"batch-c"} && g_panel.queueAdd.IsEnabled() ? S_OK : E_FAIL);
+            ToggleQueueSelectionMode();
+            SetTagManagerActive(true);
+            Border fixture;
+            fixture.Padding(vpaste::winui::UniformThickness(12));
+            g_panel.xamlSource.Content(fixture); ResizeIsland();
+            co_await vpaste::winui::TestQueueConsolidationControls(fixture, stage);
+            co_await vpaste::winui::TestQueueFailureRecoveryControls(fixture, stage);
+            co_await vpaste::winui::TestQueueRowContinuityControls(fixture, stage);
+            co_await vpaste::winui::TestQueuePointerReorderControls(fixture, stage);
+            co_await vpaste::winui::TestQueueUndoExpiryControls(fixture, stage);
+            co_await vpaste::winui::TestQueueFocusContinuityControls(fixture, stage);
+            SetTagManagerActive(false);
+            completion->set_value({S_OK, stage}); co_return;
+        }
+        if (GetEnvironmentVariableW(L"VPASTE_WINUI_CARD_PREVIEW_CHECK", nullptr, 0)) {
+            co_await vpaste::winui::TestCardPreviewControls(g_panel.root, stage);
+            co_await CheckCardHoverScroll(stage);
+            completion->set_value({S_OK, stage}); co_return;
+        }
         if (GetEnvironmentVariableW(L"VPASTE_WINUI_PREVIEW_TOOLBAR_CHECK", nullptr, 0)) {
             stage = 270;
+            RequestHistory();
+            auto rows = JsonObject::Parse(LR"({"op":"query","data":{"items":[{"id":10,"hash":"ocr-fixture","itemType":"Image"}]}})");
+            rows.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+            ApplyResponse(winrt::to_string(rows.Stringify()));
             MenuFlyout image;
             const auto recognize = vpaste::winui::MakeImageTextAction(L"ocr-fixture", true, SendCardAction);
             image.Items().Append(recognize);
@@ -9269,6 +10770,73 @@ winrt::fire_and_forget RunNativeShellRegression(
             winrt::check_hresult(request.GetNamedString(L"op") == L"imageText" &&
                 request.GetNamedString(L"hash") == L"ocr-fixture" ? S_OK : E_FAIL);
             image.Hide();
+            stage = 271;
+            ApplyResponse(R"({"op":"nativeReader","data":{"generation":300,"kind":"ocr",
+                "rect":{"x":80,"y":80,"width":680,"height":380},"durationMs":0,"easing":[0,0,1,1]}})");
+            ApplyResponse(R"({"op":"nativeOcrState","data":{"generation":300,"record":{"status":"complete","text":"Original OCR"}}})");
+            co_await NextNativeFrame();
+            const auto findField = [](auto const &self, DependencyObject const &element) -> TextBox {
+                if (const auto field = element.try_as<TextBox>()) return field;
+                for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(element); ++i)
+                    if (const auto field = self(self, Media::VisualTreeHelper::GetChild(element, i))) return field;
+                return nullptr;
+            };
+            const auto draft = findField(findField, g_panel.reader->TestRoot());
+            winrt::check_hresult(draft ? S_OK : E_FAIL);
+            draft.Text(L"Keep this OCR draft");
+            const auto beforeDraft = requests.size();
+            (void)SendRequest(L"panelBlur");
+            (void)SendRequest(L"imageText", L"ocr-fixture");
+            (void)SendRequest(L"dismiss");
+            winrt::check_hresult(requests.size() == beforeDraft && g_panel.reader->HasOcrDraft() &&
+                draft.Text() == L"Keep this OCR draft" && g_panel.feedback.IsOpen() ? S_OK : E_FAIL);
+            ApplyResponse(R"({"op":"nativeReaderHide","data":{"generation":301}})");
+            co_await NextNativeFrame();
+            stage = 272;
+            SetVisible(true, false, false);
+            ApplyResponse(R"({"op":"nativeReader","data":{"generation":302,"kind":"ocr",
+                "rect":{"x":80,"y":80,"width":680,"height":380},"durationMs":0,"easing":[0,0,1,1]}})");
+            ApplyResponse(R"({"op":"nativeOcrState","data":{"generation":302,"record":{"status":"complete","text":"Original OCR"}}})");
+            co_await NextNativeFrame();
+            const auto hotkeyDraft = findField(findField, g_panel.reader->TestRoot());
+            winrt::check_hresult(hotkeyDraft && PanelVisible() ? S_OK : E_FAIL);
+            hotkeyDraft.Text(L"Keep the hotkey draft");
+            WindowProc(g_panel.window, kToggleWindow, 0, 0);
+            winrt::check_hresult(PanelVisible() && g_panel.reader->HasOcrDraft() &&
+                hotkeyDraft.Text() == L"Keep the hotkey draft" ? S_OK : E_FAIL);
+            stage = 273;
+            const auto keep = g_panel.reader->TestDiscardDialog().as<ContentDialog>();
+            winrt::check_hresult(keep && !keep.CloseButtonText().empty() ? S_OK : E_FAIL);
+            keep.Hide();
+            const auto promptDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (g_panel.reader->TestDiscardDialog() && std::chrono::steady_clock::now() < promptDeadline)
+                co_await NextNativeFrame();
+            winrt::check_hresult(!g_panel.reader->TestDiscardDialog() && PanelVisible() &&
+                g_panel.reader->HasOcrDraft() ? S_OK : E_FAIL);
+            stage = 274;
+            WindowProc(g_panel.window, kToggleWindow, 0, 0);
+            const auto discard = g_panel.reader->TestDiscardDialog();
+            winrt::check_hresult(discard ? S_OK : E_FAIL);
+            const auto findButton = [](auto const &self, DependencyObject const &element, const wchar_t *name) -> Button {
+                if (const auto button = element.try_as<Button>(); button && button.Name() == name) return button;
+                for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(element); ++i)
+                    if (const auto button = self(self, Media::VisualTreeHelper::GetChild(element, i), name)) return button;
+                return nullptr;
+            };
+            Button discardButton{nullptr};
+            for (int frame = 0; frame < 60 && !discardButton; ++frame) {
+                co_await NextNativeFrame();
+                discardButton = findButton(findButton, discard, L"PrimaryButton");
+            }
+            winrt::check_hresult(discardButton && discardButton.IsLoaded() ? S_OK : E_FAIL);
+            Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(discardButton)
+                .GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+            const auto hideDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (PanelVisible() && std::chrono::steady_clock::now() < hideDeadline) co_await NextNativeFrame();
+            winrt::check_hresult(!PanelVisible() ? S_OK : E_FAIL);
+            ApplyResponse(R"({"op":"nativeReaderHide","data":{"generation":303}})");
+            SetVisible(true, false, false);
+            co_await NextNativeFrame();
             co_await vpaste::winui::TestReaderControls(stage);
             completion->set_value({S_OK, stage}); co_return;
         }
@@ -9281,7 +10849,7 @@ winrt::fire_and_forget RunNativeShellRegression(
             completion->set_value({S_OK, stage}); co_return;
         }
         const auto search = g_panel.search;
-        winrt::check_hresult(search && g_panel.searchSubmit ? S_OK : E_FAIL);
+        winrt::check_hresult(search && g_panel.searchField.Children().Size() == 1 ? S_OK : E_FAIL);
         ShowSearch();
         std::fprintf(stderr, "WinUI shell: search shown, awaiting frame\n");
         co_await NextNativeFrame();
@@ -10557,6 +12125,450 @@ extern "C" __declspec(dllexport) int32_t vpaste_winui_test_preview_key_route(
         }
     })) return E_FAIL;
     if (result.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
+        return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+    }
+    const auto [status, completedStage] = result.get();
+    *stage = completedStage;
+    return status;
+}
+
+winrt::Windows::Foundation::IAsyncAction RunBatch2RegressionTests(
+    std::shared_ptr<std::promise<std::pair<HRESULT, std::uint32_t>>> completion) {
+    using namespace vpaste::winui;
+    using namespace winrt::Microsoft::UI::Xaml;
+    using namespace winrt::Microsoft::UI::Xaml::Controls;
+    using namespace winrt::Windows::Data::Json;
+    std::uint32_t stage = 2000;
+    std::vector<std::string> failures;
+    const auto previousRequest = g_request;
+    static std::vector<std::string> requests;
+    requests.clear();
+
+    try {
+        g_request = +[](const std::uint8_t *bytes, std::size_t size) {
+            requests.emplace_back(reinterpret_cast<const char *>(bytes), size);
+        };
+        // 注意：SendRequest 在 g_request == nullptr 时返回 0，因此在 stage=2007 暂时置空 g_request 验证防卡死逻辑。
+
+        // 2001: FilterEditor 保持空白名称必填拦截，且 SetLanguage 支持热更新不丢失草稿。
+        stage = 2001;
+        {
+            Border host;
+            host.Width(360); host.Height(480);
+            std::vector<JsonObject> editorReqs;
+            FilterEditor editor{
+                [&](std::wstring const &op, JsonObject payload) {
+                    payload.Insert(L"op", JsonValue::CreateStringValue(op));
+                    payload.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(editorReqs.size() + 1)));
+                    editorReqs.push_back(payload);
+                    return static_cast<std::uint64_t>(editorReqs.size());
+                },
+                [](JsonArray const &) {}};
+            auto root = editor.TestLoad(JsonObject::Parse(LR"({"id":"","name":"","filter":{"itemType":"Image"}})"), true);
+            g_panel.root.Children().Append(host);
+            host.Child(root);
+            co_await NextNativeFrame();
+            editor.TestName(L"   ");
+            editor.TestSave();
+            const auto save = std::find_if(editorReqs.begin(), editorReqs.end(), [](auto const &req) {
+                return req.GetNamedString(L"op") == L"filtersSave";
+            });
+            if (save == editorReqs.end() || editor.TestName() != L"New filter" ||
+                save->GetNamedObject(L"tab").GetNamedString(L"name") != editor.TestName() || !editor.IsOpen()) {
+                failures.push_back("filter_editor_blank_name_should_save_visible_default");
+            }
+            editor.SetLanguage(false);
+            if (editor.TestTitle() != L"添加标签" && editor.TestTitle() != L"编辑标签") {
+                failures.push_back("filter_editor_set_language_no_effect");
+            }
+            host.Child(nullptr);
+            std::uint32_t hostIndex = 0;
+            if (g_panel.root.Children().IndexOf(host, hostIndex)) g_panel.root.Children().RemoveAt(hostIndex);
+        }
+
+        // 2002: 超长文本写入搜索框应正常保留并发送完整查询请求，不得截断或静默丢弃。
+        stage = 2002;
+        {
+            SetVisible(true, false);
+            g_panel.search.Visibility(Visibility::Visible);
+            std::wstring long500;
+            long500.reserve(520);
+            for (int i = 0; i < 10; ++i) long500 += L"abcdefghijklmnopqrstuvwxyz0123456789_ABCDEFGHIJKLM";
+            g_panel.search.Text(winrt::hstring{long500});
+            co_await NextNativeFrame();
+            const auto reqBefore = requests.size();
+            RequestHistory();
+            if (requests.size() != reqBefore + 1 || SearchText().size() != long500.size()) {
+                failures.push_back("long_search_query_truncated_or_dropped");
+            }
+            SetSearchText(L"");
+            if (g_searchTimer) g_searchTimer.Stop();
+            g_panel.search.Visibility(Visibility::Collapsed);
+            co_await NextNativeFrame();
+        }
+
+        // 2003: QueueView 内联清空确认条。
+        stage = 2003;
+        {
+            Border queueHost; queueHost.Padding(vpaste::winui::UniformThickness(12));
+            g_panel.xamlSource.Content(queueHost); ResizeIsland();
+            co_await TestBatch2QueueControls(queueHost, failures);
+            g_panel.xamlSource.Content(g_panel.viewport); ResizeIsland();
+            co_await NextNativeFrame();
+        }
+
+        // 2004: Reader SVG 加载、图像像素宽度防放大/限高、以及 SetAppearance 同步刷新 DWM 暗色标志。
+        stage = 2004;
+        co_await TestBatch2ReaderControls(failures);
+
+        // 2005: OnboardingView::Update 语言切换应触发重绘 + nativeTutorialOpen 应自动退出现有标签管理器和弹框。
+        stage = 2005;
+        {
+            SetTagManagerActive(true);
+            co_await NextNativeFrame();
+            ApplyResponse(R"({"op":"nativeTutorialOpen","data":{"session":77,"ready":true,"preview":true,"mac":false,"english":false,"shortcut":"Alt+V","items":[],"filters":[{"id":"text","name":"📝 文本","enabled":false},{"id":"image","name":"🖼️ 图片","enabled":false},{"id":"link","name":"🔗 链接","enabled":false},{"id":"file","name":"📁 文件","enabled":false},{"id":"color","name":"🎨 颜色","enabled":false}]}})");
+            co_await NextNativeFrame();
+            if (g_panel.tagManagerViewActive) {
+                failures.push_back("tutorial_open_left_tag_manager_covering_screen");
+            }
+            const auto zhTitle = g_panel.onboarding ? g_panel.onboarding->TestWelcomeTitle() : winrt::hstring{};
+            ApplyResponse(R"({"op":"nativeTutorialState","data":{"session":77,"ready":true,"preview":true,"mac":false,"english":true,"shortcut":"Alt+V","items":[],"filters":[{"id":"text","name":"📝 Text","enabled":false},{"id":"image","name":"🖼️ Image","enabled":false},{"id":"link","name":"🔗 Link","enabled":false},{"id":"file","name":"📁 File","enabled":false},{"id":"color","name":"🎨 Color","enabled":false}]}})");
+            co_await NextNativeFrame();
+            const auto enTitle = g_panel.onboarding ? g_panel.onboarding->TestWelcomeTitle() : winrt::hstring{};
+            if (zhTitle == enTitle || enTitle.empty()) {
+                failures.push_back("onboarding_update_ignored_language_change");
+            }
+            if (g_panel.onboarding) (void)g_panel.onboarding->CancelPreview();
+            RemoveTutorial();
+            SetTagManagerActive(false);
+        }
+
+        // 2006: TrayWindow Update 深色模式应同步刷新 DWM 暗色标题栏属性。
+        stage = 2006;
+        {
+            ApplyResponse(R"({"op":"nativeTrayShow","data":{"anchor":{"x":300,"y":300,"cursor":true},"workArea":{"left":0,"top":0,"right":640,"bottom":480},"dpiScale":1,"english":false,"paused":false,"theme":"light","textScale":1,"updateReady":false}})");
+            co_await NextNativeFrame();
+            ApplyResponse(R"({"op":"nativeTrayState","data":{"english":false,"paused":false,"theme":"dark","textScale":1,"updateReady":false}})");
+            BOOL trayDark = FALSE;
+            if (!g_panel.trayWindow || !g_panel.trayWindow->Handle() ||
+                FAILED(DwmGetWindowAttribute(g_panel.trayWindow->Handle(), DWMWA_USE_IMMERSIVE_DARK_MODE, &trayDark, sizeof(trayDark))) || !trayDark) {
+                failures.push_back("tray_theme_dwm_sync_stale");
+            }
+            ApplyResponse(R"({"op":"nativeTrayState","data":{"english":false,"paused":false,"theme":"light","textScale":1,"updateReady":false}})");
+            BOOL trayLightDarkAttr = TRUE;
+            if (!g_panel.trayWindow || !g_panel.trayWindow->Handle() ||
+                FAILED(DwmGetWindowAttribute(g_panel.trayWindow->Handle(), DWMWA_USE_IMMERSIVE_DARK_MODE, &trayLightDarkAttr, sizeof(trayLightDarkAttr))) || trayLightDarkAttr) {
+                failures.push_back("tray_theme_dwm_sync_stale_to_light");
+            }
+            if (g_panel.trayWindow) ShowWindow(g_panel.trayWindow->Handle(), SW_HIDE);
+        }
+
+        // 2007: SendRequest 返回 0 时不可永久卡死 g_historyLoading 且不可抹零 g_latestHistoryRequestId；
+        // 且已有卡片同条件刷新失败时不清空可见历史。
+        stage = 2007;
+        {
+            SetVisible(true, false);
+            ApplyResponse(R"({"id":9002,"op":"query","data":{"items":[{"hash":"keep-on-err","itemType":"Text","previewText":"Stay visible"}],"hasMore":true,"nextId":5,"nextTime":500}})");
+            co_await NextNativeFrame();
+            const auto savedLatestReq = g_latestHistoryRequestId;
+            const auto savedCallback = g_request;
+            g_request = nullptr;
+            RequestMoreHistory(false);
+            const bool failedPage = !g_historyLoading && g_historyView.pageFailed;
+            RequestHistory();
+            const bool stuckLoading = g_historyLoading;
+            const bool clobberedId = g_latestHistoryRequestId == 0 && savedLatestReq != 0;
+            g_request = savedCallback;
+            if (stuckLoading || clobberedId || !failedPage) {
+                failures.push_back("send_request_zero_locks_loading_or_clobbers_id");
+            }
+
+            // 同条件下后台刷新失败应保留已有卡片。
+            RequestHistory();
+            JsonObject refreshErr;
+            refreshErr.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+            refreshErr.Insert(L"op", JsonValue::CreateStringValue(L"query"));
+            refreshErr.Insert(L"error", JsonValue::CreateStringValue(L"Transient query error"));
+            ApplyResponse(winrt::to_string(refreshErr.Stringify()));
+            if (g_hashes.empty() || g_hashes.front() != L"keep-on-err") {
+                failures.push_back("refresh_error_wiped_existing_history");
+            }
+        }
+
+        // 2008: SearchCompositionChanged(true) IME 组合输入期间切换 Tab，发出的 query 不应含未提交拼音草稿。
+        stage = 2008;
+        {
+            g_panel.search.Text(L"committed");
+            SearchCompositionChanged(false, L"committed");
+            if (g_searchTimer) g_searchTimer.Stop();
+            SearchCompositionChanged(true, L"committed nihao");
+            g_panel.search.Text(L"committed nihao");
+            const auto before = requests.size();
+            RequestHistory();
+            if (requests.size() != before || SearchText() != L"committed nihao")
+                failures.push_back("ime_composing_text_leaked_to_query");
+            SearchCompositionChanged(false, L"");
+            g_panel.search.Text(L"");
+            if (g_searchTimer) g_searchTimer.Stop();
+        }
+
+        // 2009: tags 回复若未影响当前选中标签，且已有历史请求，不应额外重复发出 RequestHistory()。
+        stage = 2009;
+        {
+            SelectBuiltinCategory(0, false);
+            g_tagIds = {10}; g_tagNames = {L"Alpha"};
+            RebuildTagFilter();
+            RequestHistory();
+            const auto before = requests.size();
+            ApplyResponse(R"({"id":9003,"op":"tags","data":{"items":[{"id":10,"name":"Alpha"},{"id":11,"name":"Beta"}]}})");
+            const auto queryCount = std::count_if(requests.begin() + before, requests.end(), [](auto const &bytes) {
+                return JsonObject::Parse(winrt::to_hstring(bytes)).GetNamedString(L"op") == L"query";
+            });
+            if (queryCount > 0) {
+                failures.push_back("unchanged_tags_triggered_redundant_query");
+            }
+        }
+
+        // 2010: 删除中间第 2 项或最后一项后刷新，未找到原 hash 时应停在 min(deletedIndex, size - 1)。
+        stage = 2010;
+        {
+            ApplyResponse(R"({"id":9004,"op":"query","data":{"items":[{"hash":"d0","itemType":"Text"},{"hash":"d1","itemType":"Text"},{"hash":"d2","itemType":"Text"}]}})");
+            co_await NextNativeFrame();
+            g_panel.history.SelectedIndex(2);
+            g_selectedHash = L"d2";
+            RequestHistory();
+            JsonObject afterDelete;
+            afterDelete.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+            afterDelete.Insert(L"op", JsonValue::CreateStringValue(L"query"));
+            afterDelete.Insert(L"data", JsonObject::Parse(LR"({"items":[{"hash":"d0","itemType":"Text"},{"hash":"d1","itemType":"Text"}]})"));
+            ApplyResponse(winrt::to_string(afterDelete.Stringify()));
+            if (g_selectedHash != L"d1" || g_panel.history.SelectedIndex() != 1) {
+                failures.push_back("delete_last_card_jumped_to_zero");
+            }
+        }
+
+        // 2011: clipboardItemEdited 把多选和单选归位状态从 previousHash 迁移到新 hash。
+        stage = 2011;
+        {
+            ApplyResponse(R"({"id":9005,"op":"query","data":{"items":[{"hash":"edit-old","itemType":"Text"}]}})");
+            co_await NextNativeFrame();
+            g_selectedHash = L"edit-old";
+            if (!g_queueSelectionMode) ToggleQueueSelectionMode();
+            g_queueSelectedHashes = {L"edit-old"};
+            ApplyResponse(R"({"id":0,"op":"clipboardItemEdited","data":{"previousHash":"edit-old","hash":"edit-new"}})");
+            if (g_queueSelectedHashes != std::vector<std::wstring>{L"edit-new"}) {
+                failures.push_back("clipboard_item_edited_left_stale_hash");
+            }
+            if (g_queueSelectionMode) ToggleQueueSelectionMode();
+            if (g_selectedHash != L"edit-new") {
+                failures.push_back("clipboard_item_edited_left_stale_return_hash");
+            }
+        }
+
+        // 2012: queueStateUpdate 带 active=false 时应关闭队列管理视图。
+        stage = 2012;
+        {
+            SetQueueViewActive(true);
+            co_await NextNativeFrame();
+            ApplyResponse(R"({"id":0,"op":"queueStateUpdate","data":{"active":false,"busy":false,"capacity":100,"revision":99,"items":[],"error":null,"undoHash":null}})");
+            co_await NextNativeFrame();
+            if (g_queueViewActive) {
+                failures.push_back("queue_inactive_update_did_not_close_view");
+                SetQueueViewActive(false);
+            }
+        }
+
+        // 2013: query 摘要自带 isRichText=true 时，rows[0].isRichText 应在细节加载前即为 true。
+        stage = 2013;
+        {
+            ApplyResponse(R"({"id":9006,"op":"query","data":{"items":[{"hash":"rich-summary","itemType":"Text","isRichText":true,"previewText":"Rich"}]}})");
+            co_await NextNativeFrame();
+            if (g_panel.rows.empty() || !g_panel.rows.front().isRichText) {
+                failures.push_back("history_row_missing_is_rich_text_flag");
+            }
+        }
+
+        // 2014: queryMore 翻页与隐藏状态刷新不可覆写置顶预览令牌 g_latestPreviewRequestId。
+        stage = 2014;
+        {
+            SetVisible(true, false);
+            ApplyResponse(R"({"id":9007,"op":"query","data":{"items":[{"hash":"pv-0","itemType":"Text"}],"hasMore":true,"nextId":1,"nextTime":100}})");
+            co_await NextNativeFrame();
+            (void)SendRequest(L"previewToggle", L"pv-0");
+            const auto pinnedToken = g_latestPreviewRequestId;
+            RequestMoreHistory(false);
+            JsonObject moreResp;
+            moreResp.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+            moreResp.Insert(L"op", JsonValue::CreateStringValue(L"queryMore"));
+            moreResp.Insert(L"data", JsonObject::Parse(LR"({"items":[{"hash":"pv-1","itemType":"Text"}],"hasMore":false})"));
+            ApplyResponse(winrt::to_string(moreResp.Stringify()));
+            if (g_latestPreviewRequestId != pinnedToken) {
+                failures.push_back("query_more_clobbered_pinned_preview_token");
+            }
+            SetVisible(false, false);
+            g_latestPreviewRequestId = pinnedToken;
+            RequestHistory();
+            JsonObject bgResp;
+            bgResp.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+            bgResp.Insert(L"op", JsonValue::CreateStringValue(L"query"));
+            bgResp.Insert(L"data", JsonObject::Parse(LR"({"items":[{"hash":"pv-bg","itemType":"Text"},{"hash":"pv-0","itemType":"Text"}]})"));
+            ApplyResponse(winrt::to_string(bgResp.Stringify()));
+            if (g_latestPreviewRequestId != pinnedToken) {
+                failures.push_back("hidden_background_query_clobbered_pinned_preview_token");
+            }
+            SetVisible(true, false);
+        }
+
+        // 2015: kSetLanguage 应同步清理 renderedItems/更新卡片类型文本，kSetTheme/ActualThemeChanged 传播到弹窗，
+        // historyReset 应刷新开启着的 TagManager，分类/标签切换后记录聚焦恢复。
+        stage = 2015;
+        {
+            ApplyResponse(R"({"id":9008,"op":"query","data":{"items":[{"hash":"lang-1","itemType":"Text","previewText":"Lang check"}]}})");
+            co_await NextNativeFrame();
+            WindowProc(g_panel.window, kSetLanguage, 1, 0);
+            if (g_panel.rows.empty() || g_panel.rows.front().type.Text() != L"Text") {
+                failures.push_back("language_switch_did_not_update_existing_cards");
+            }
+            WindowProc(g_panel.window, kSetLanguage, 0, 0);
+            if (g_panel.rows.empty() || g_panel.rows.front().type.Text() != L"文本") {
+                failures.push_back("language_switch_back_zh_did_not_update_existing_cards");
+            }
+            // 测试 kSetTheme 对 reader 标题栏和打开的 filterEditor 语言/主题同步生效。
+            if (g_panel.filterEditor) {
+                g_panel.filterEditor->Show(g_panel.addTag, JsonObject::Parse(LR"({"id":"","name":"","filter":{}})"),
+                    g_english, g_panel.root.RequestedTheme(), g_panel.root);
+                co_await NextNativeFrame();
+                WindowProc(g_panel.window, kSetLanguage, 1, 0);
+                if (g_panel.filterEditor->TestTitle() != L"Add Tab" && g_panel.filterEditor->TestTitle() != L"Edit Tab") {
+                    failures.push_back("kset_language_did_not_update_open_filter_editor");
+                }
+                WindowProc(g_panel.window, kSetTheme, 1, 0);
+                co_await NextNativeFrame();
+                WindowProc(g_panel.window, kSetTheme, 2, 0);
+                if (g_panel.filterEditor->TestRoot().RequestedTheme() != ElementTheme::Dark) {
+                    failures.push_back("panel_kset_theme_filter_editor_stale");
+                }
+                g_panel.filterEditor->Hide();
+            } else {
+                WindowProc(g_panel.window, kSetTheme, 1, 0);
+                co_await NextNativeFrame();
+                WindowProc(g_panel.window, kSetTheme, 2, 0);
+            }
+            if (g_panel.reader) {
+                auto readerOpen = JsonObject::Parse(LR"({"op":"nativeReader","data":{"generation":91,"kind":"text","text":"Theme sync check","rect":{"x":80,"y":80,"width":400,"height":240},"durationMs":0,"easing":[0.22,1,0.36,1]}})");
+                g_panel.reader->Receive(readerOpen);
+                co_await NextNativeFrame();
+                BOOL readerDark = FALSE;
+                const auto readerHwnd = reinterpret_cast<HWND>(vpaste::winui::ReaderWindowHandle());
+                if (!readerHwnd || FAILED(DwmGetWindowAttribute(readerHwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &readerDark, sizeof(readerDark))) || !readerDark) {
+                    failures.push_back("panel_kset_theme_reader_dwm_stale");
+                }
+                g_panel.reader->Receive(JsonObject::Parse(LR"({"op":"nativeReaderHide","data":{"generation":92}})"));
+            }
+            WindowProc(g_panel.window, kSetTheme, 0, 0);
+            WindowProc(g_panel.window, kSetLanguage, 0, 0);
+
+            // historyReset 应自动刷新打开着的 tagManager。
+            SetTagManagerActive(true);
+            co_await NextNativeFrame();
+            const auto beforeResetReq = requests.size();
+            ApplyResponse(R"({"op":"historyReset","data":{}})");
+            const bool refreshedTagManager = std::any_of(requests.begin() + beforeResetReq, requests.end(), [](auto const &bytes) {
+                return JsonObject::Parse(winrt::to_hstring(bytes)).GetNamedString(L"op") == L"tagsList";
+            });
+            if (!refreshedTagManager) {
+                failures.push_back("history_reset_did_not_refresh_active_tag_manager");
+            }
+            SetTagManagerActive(false);
+
+            // SelectBuiltinCategory(1, true) 应调度 kFocusHistory。
+            MSG msg{};
+            while (PeekMessageW(&msg, g_panel.window, kFocusHistory, kFocusHistory, PM_REMOVE)) {}
+            SelectBuiltinCategory(1, true);
+            const bool posted = PeekMessageW(&msg, g_panel.window, kFocusHistory, kFocusHistory, PM_NOREMOVE) != FALSE;
+            if (!posted) {
+                failures.push_back("select_category_did_not_return_focus_to_history");
+            }
+            while (PeekMessageW(&msg, g_panel.window, kFocusHistory, kFocusHistory, PM_REMOVE)) {}
+            SelectBuiltinCategory(0, false);
+
+            // 2016: 点击分类筛选导致旧聚焦卡片被 ApplyResponse 移除后，焦点不得回落到“Windows 使用引导”等顶栏按钮。
+            stage = 2016;
+            if (g_panel.appActions) {
+                ApplyResponse(R"({"id":0,"op":"appState","data":{"developerMode":true,"update":{"revision":0,"status":"disabled","portable":false,"availableVersion":null}}})");
+            }
+            SetVisible(true, false, false);
+            co_await NextNativeFrame();
+            SelectBuiltinCategory(0, false);
+            RequestHistory();
+            {
+                auto r1 = JsonObject::Parse(LR"({"op":"query","data":{"items":[{"hash":"cat-a-1","itemType":"Text","previewText":"Cat A"}],"hasMore":false}})");
+                r1.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+                ApplyResponse(winrt::to_string(r1.Stringify()));
+            }
+            co_await NextNativeFrame();
+            WindowProc(g_panel.window, kFocusHistory, 1, 0);
+            co_await NextNativeFrame();
+            // 模拟鼠标切换分类触发 SelectionChanged -> 期间 kFocusHistory 先落到旧卡 -> 随后 query 替换旧卡（包含非空与空结果场景）
+            g_panel.filter.SelectedItem(g_panel.filter.Items().GetAt(1));
+            co_await NextNativeFrame();
+            {
+                auto r2 = JsonObject::Parse(LR"({"op":"query","data":{"items":[{"hash":"cat-b-1","itemType":"Text","previewText":"Cat B"}],"hasMore":false}})");
+                r2.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+                ApplyResponse(winrt::to_string(r2.Stringify()));
+            }
+            co_await NextNativeFrame();
+            const auto focusedAfterReplace = Input::FocusManager::GetFocusedElement(g_panel.root.XamlRoot());
+            const auto focusedDep = focusedAfterReplace.try_as<DependencyObject>();
+            const auto focusedName = focusedDep ? Automation::AutomationProperties::GetName(focusedDep) : L"";
+            if (!focusedAfterReplace || MainInputArea(focusedAfterReplace) != InputArea::History) {
+                std::fprintf(stderr, "BATCH2_FOCUS_DIAG: replace focusedName=%ls area=%d\n",
+                    focusedName.c_str(), static_cast<int>(MainInputArea(focusedAfterReplace)));
+                failures.push_back("category_click_lost_history_focus_to_header");
+            }
+            // 再切回全部分类且返回空结果，确认焦点也不应滑进顶栏按钮（如 Windows 使用引导）
+            g_panel.filter.SelectedItem(g_panel.filter.Items().GetAt(0));
+            co_await NextNativeFrame();
+            {
+                auto r3 = JsonObject::Parse(LR"({"op":"query","data":{"items":[],"hasMore":false}})");
+                r3.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+                ApplyResponse(winrt::to_string(r3.Stringify()));
+            }
+            co_await NextNativeFrame();
+            const auto focusedAfterEmpty = Input::FocusManager::GetFocusedElement(g_panel.root.XamlRoot());
+            const auto emptyDep = focusedAfterEmpty.try_as<DependencyObject>();
+            const auto emptyName = emptyDep ? Automation::AutomationProperties::GetName(emptyDep) : L"";
+            if (!focusedAfterEmpty || MainInputArea(focusedAfterEmpty) != InputArea::History) {
+                std::fprintf(stderr, "BATCH2_FOCUS_DIAG: empty focusedName=%ls area=%d\n",
+                    emptyName.c_str(), static_cast<int>(MainInputArea(focusedAfterEmpty)));
+                failures.push_back("empty_category_lost_history_focus_to_header");
+            }
+            SetVisible(false, false, false);
+        }
+    } catch (winrt::hresult_error const &err) {
+        failures.push_back("exception_hr_" + std::to_string(static_cast<unsigned>(err.code())) + "_stage_" + std::to_string(stage));
+    } catch (...) {
+        failures.push_back("unknown_exception_stage_" + std::to_string(stage));
+    }
+
+    g_request = previousRequest;
+    for (auto const &item : failures) {
+        std::fprintf(stderr, "BATCH2_REGRESSION_FAILURE: %s\n", item.c_str());
+    }
+    std::fprintf(stderr, "BATCH2_REGRESSION_SUMMARY: total_failures=%zu\n", failures.size());
+    completion->set_value({failures.empty() ? S_OK : E_FAIL, failures.empty() ? stage : 2999});
+}
+
+extern "C" __declspec(dllexport) int32_t vpaste_winui_test_batch2_regressions(std::uint32_t *stage) noexcept {
+    if (!stage || !g_dispatcher) return E_INVALIDARG;
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    auto completion = std::make_shared<std::promise<std::pair<HRESULT, std::uint32_t>>>();
+    auto result = completion->get_future();
+    if (!g_dispatcher.DispatcherQueue().TryEnqueue([completion] {
+        RunBatch2RegressionTests(completion);
+    })) return E_FAIL;
+    if (result.wait_for(std::chrono::seconds(30)) != std::future_status::ready) {
         return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
     }
     const auto [status, completedStage] = result.get();

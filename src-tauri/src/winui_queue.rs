@@ -88,21 +88,32 @@ pub async fn dispatch(app: AppHandle, op: String, payload: Value) -> Result<Valu
         return Err("WinUI queue operation does not match its payload".into());
     }
 
-    let state = match request {
-        QueueRequest::QueueState => crate::get_paste_queue_state()?,
-        QueueRequest::QueueAdd { hashes } => crate::add_paste_queue_items(app.clone(), hashes)?,
-        QueueRequest::QueueRemove { hash } => crate::remove_paste_queue_item(app.clone(), hash)?,
-        QueueRequest::QueueReorder { hashes } => crate::reorder_paste_queue(app.clone(), hashes)?,
-        QueueRequest::QueueReverse => crate::reverse_paste_queue(app.clone())?,
-        QueueRequest::QueueClear => crate::clear_paste_queue(app.clone())?,
+    match request {
+        QueueRequest::QueueState => {}
+        QueueRequest::QueueAdd { hashes } => {
+            crate::add_paste_queue_items(app.clone(), hashes)?;
+        }
+        QueueRequest::QueueRemove { hash } => {
+            crate::remove_paste_queue_item(app.clone(), hash)?;
+        }
+        QueueRequest::QueueReorder { hashes } => {
+            crate::reorder_paste_queue(app.clone(), hashes)?;
+        }
+        QueueRequest::QueueReverse => {
+            crate::reverse_paste_queue(app.clone())?;
+        }
+        QueueRequest::QueueClear => {
+            crate::clear_paste_queue(app.clone())?;
+        }
         QueueRequest::QueuePaste { hash } => {
             crate::paste_queue_item(app, hash)?;
-            crate::get_paste_queue_state()?
         }
-        QueueRequest::QueueUndo => crate::undo_paste_queue_consume(app.clone())?,
-    };
+        QueueRequest::QueueUndo => {
+            crate::undo_paste_queue_consume(app.clone())?;
+        }
+    }
 
-    serde_json::to_value(state).map_err(|error| error.to_string())
+    crate::paste_queue::winui_state_value()
 }
 
 #[cfg(test)]

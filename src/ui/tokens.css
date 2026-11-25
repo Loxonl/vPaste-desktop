@@ -215,8 +215,13 @@
   --ui-clipboard-radius-preview: 6px;
   --ui-clipboard-radius-highlight: 4px;
   /* Fluent values for browser content hosted inside a WinUI-mode HWND. */
-  --ui-winui-aux-text: #000000e4;
+  /* Correct the host's tint without adding a second blur or a CSS window frame. */
+  --ui-winui-aux-window-surface: rgba(252, 252, 252, 0.92);
+  --ui-winui-aux-light-document-text: #000000e4;
+  --ui-winui-aux-text: var(--ui-winui-aux-light-document-text);
   --ui-winui-aux-divider: #0000000f;
+  --ui-winui-aux-reading-layer: rgba(255, 255, 255, 0.5);
+  --ui-winui-aux-light-document: transparent;
   --ui-winui-aux-control: #ffffffb3;
   --ui-winui-aux-control-hover: #f9f9f980;
   --ui-winui-aux-control-pressed: #f9f9f94d;
@@ -229,6 +234,9 @@
   --ui-winui-aux-on-disabled-accent: #ffffff;
   --ui-winui-aux-control-radius: 4px;
   --ui-winui-aux-body-size: 14px;
+  --ui-winui-aux-body-line-height: 20px;
+  --ui-winui-aux-body-font: 400 var(--ui-winui-aux-body-size)/var(--ui-winui-aux-body-line-height) var(--ui-font-family);
+  --ui-winui-aux-title-font: 600 16px/22px var(--ui-font-family);
   --ui-preview-window-text: #20242a;
   --ui-preview-window-surface: rgba(246, 246, 244, 0.88);
   --ui-preview-pin-surface: rgba(255, 255, 255, 0.82);
@@ -573,8 +581,11 @@
   --ui-clipboard-image-limited-secondary-text: rgba(232, 236, 244, 0.62);
   --ui-clipboard-mixed-badge-surface: rgba(31, 143, 255, 0.72);
   --ui-clipboard-mixed-badge-text: var(--ui-clipboard-dark-pill-text);
+  --ui-winui-aux-window-surface: rgba(32, 32, 32, 0.92);
   --ui-winui-aux-text: #ffffff;
   --ui-winui-aux-divider: #00000019;
+  --ui-winui-aux-reading-layer: #3a3a3a4c;
+  --ui-winui-aux-light-document: #f3f3f3;
   --ui-winui-aux-control: #ffffff0f;
   --ui-winui-aux-control-hover: #ffffff15;
   --ui-winui-aux-control-pressed: #ffffff08;

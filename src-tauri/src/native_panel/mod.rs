@@ -113,18 +113,44 @@ fn main_docked_frame(app: &AppHandle) -> Option<Value> {
 }
 
 pub(crate) fn show(app: AppHandle, language: String, theme: String) -> Result<(), String> {
-    present(app, language, theme, false, false)
+    present(app, language, theme, false, false, None)
 }
 
 pub(crate) fn show_default(app: AppHandle) -> Result<(), String> {
     let config = crate::config::get();
-    present(app, config.multilingual, config.theme_mode, false, false)
+    present(
+        app,
+        config.multilingual,
+        config.theme_mode,
+        false,
+        false,
+        None,
+    )
+}
+
+pub(crate) fn show_after_editor(app: AppHandle, hash: Option<String>) -> Result<(), String> {
+    let config = crate::config::get();
+    present(
+        app,
+        config.multilingual,
+        config.theme_mode,
+        false,
+        false,
+        hash,
+    )
 }
 
 pub(crate) fn toggle(app: AppHandle) -> Result<(), String> {
     let config = crate::config::get();
     let toggle = !onboarding::blocks_toggle();
-    present(app, config.multilingual, config.theme_mode, toggle, false)
+    present(
+        app,
+        config.multilingual,
+        config.theme_mode,
+        toggle,
+        false,
+        None,
+    )
 }
 
 pub(crate) fn close_preview(app: &AppHandle) -> Result<(), String> {
@@ -141,6 +167,7 @@ fn present(
     theme: String,
     toggle: bool,
     reconfigure: bool,
+    editor_return_hash: Option<String>,
 ) -> Result<(), String> {
     if !crate::get_developer_mode() {
         return Err("Native panel requires --dev-mode".into());
@@ -153,10 +180,14 @@ fn present(
             let preview = crate::panel_size::is_previewing();
             // SAFETY: AppKit owns the controller. A normal wake focuses the
             // current surface; a shortcut toggles it. Size changes recreate it.
-            if !preview && !reconfigure && unsafe { vpaste_native_panel_activate(toggle) } {
+            if !preview
+                && !reconfigure
+                && editor_return_hash.is_none()
+                && unsafe { vpaste_native_panel_activate(toggle) }
+            {
                 return;
             }
-            if reconfigure {
+            if reconfigure || editor_return_hash.is_some() {
                 // Save the old viewport while its bridge session is still valid.
                 unsafe { vpaste_native_panel_close(false) };
             }
@@ -226,6 +257,7 @@ fn present(
                 "pasteQueue": queue_selection::snapshot(),
                 "sizePreview": preview,
                 "developerReconfigure": reconfigure,
+                "editorReturnHash": editor_return_hash,
                 "onboarding": onboarding::snapshot(),
                 "language": language,
                 "theme": theme,
@@ -417,6 +449,8 @@ struct Request {
     #[serde(default)]
     label: String,
     #[serde(default)]
+    revalidate_preview: bool,
+    #[serde(default)]
     view_id: String,
     #[serde(default)]
     revision: u64,
@@ -472,6 +506,8 @@ struct Request {
     frame: Option<[f64; 4]>,
     #[serde(skip)]
     preview_request: Option<u64>,
+    #[serde(skip)]
+    preview_to_revalidate: Option<(u64, String)>,
 }
 fn card_width() -> u32 {
     480
@@ -525,6 +561,10 @@ unsafe extern "C" fn request(bytes: *const u8, length: usize) {
             let _ = preview::dismiss_hover(&app, req.hover_request);
             return;
         }
+        "preview-cancel-pending" => {
+            preview::cancel_pending();
+            return;
+        }
         "preview-close" => {
             let _ = crate::retain_preview_window(&app);
             return;
@@ -551,7 +591,17 @@ unsafe extern "C" fn request(bytes: *const u8, length: usize) {
             deliver(req.session, json!({"id":req.id,"data":null}));
             return;
         }
-        req.preview_request = Some(preview::reserve(req.mode));
+        req.preview_request = Some(preview::reserve(req.mode, &req.hash));
+    } else if req.op == "open"
+        && req.revalidate_preview
+        && req.tab_id == "all"
+        && req.label.is_empty()
+        && crate::is_preview_window_visible(app.clone())
+    {
+        req.preview_to_revalidate = preview::current_record();
+        if req.preview_to_revalidate.is_none() {
+            let _ = crate::retain_preview_window(&app);
+        }
     }
     let open = if matches!(req.op.as_str(), "open" | "history-resume") {
         history_views::reserve_native_open()
@@ -620,11 +670,39 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
                 label: r.label.clone(),
             };
             let tab = r.tab_id.clone();
-            blocking(move || history::open(query, tab, open)).await
+            let preview = r.preview_to_revalidate.clone();
+            let (page, close_preview) = blocking(move || {
+                let page = history::open(&query, tab, open)?;
+                let close_preview = preview.and_then(|(request, hash)| {
+                    let keep = history::contains_preview(&query, &page, &hash, || {
+                        preview::current(request)
+                    });
+                    (!keep.unwrap_or(false)).then_some(request)
+                });
+                Ok((page, close_preview))
+            })
+            .await?;
+            if let Some(request) = close_preview {
+                let app = app.clone();
+                let session = r.session;
+                let token = page.token.clone();
+                let _ = crate::auxiliary_windows::on_main_thread(app.clone(), move || {
+                    if current(session)
+                        && preview::current(request)
+                        && history_views::validate_native(&token.view_id, token.revision).is_ok()
+                    {
+                        crate::retain_preview_window(&app)?;
+                    }
+                    Ok(())
+                })
+                .await;
+            }
+            serde_json::to_value(page).map_err(|err| err.to_string())
         }
         "history-resume" => {
             let preserve = r.preserve_history;
-            blocking(move || history::resume(panel_tabs()?, open, preserve)).await
+            let hash = (!r.hash.is_empty()).then(|| r.hash.clone());
+            blocking(move || history::resume(panel_tabs()?, open, preserve, hash.as_deref())).await
         }
         "developer" => developer::open(app.clone(), &r.target, &r.language, &r.theme).await,
         "onboarding" => onboarding::handle(app.clone(), r).await,
@@ -992,8 +1070,13 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
             Ok(Value::Null)
         }
         "edit" => {
+            let target = hash.clone();
+            let document = blocking(move || clipboard::editor::load(&target)).await?;
+            if !current(r.session) {
+                return Ok(Value::Null);
+            }
             close_for_action(app).await?;
-            crate::open_text_editor_window(app.clone(), hash).await?;
+            crate::show_text_editor_window(app.clone(), hash, Some(Ok(document))).await?;
             Ok(Value::Null)
         }
         "ocr" => {

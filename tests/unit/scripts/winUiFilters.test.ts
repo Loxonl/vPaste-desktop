@@ -40,7 +40,8 @@ describe("WinUI custom filter architecture", () => {
         expect(store).not.toContain("std::fs::write");
         const panel = read(`${native}WinUiPanel.cpp`);
         const requestBuilder = panel.slice(panel.indexOf("std::uint64_t SendRequest("), panel.indexOf("std::uint64_t SendCardAction("));
-        expect(requestBuilder.match(/L"custom:" \+ g_selectedFilterId/g)).toHaveLength(2);
+        expect(panel).toContain('L"custom:" + g_selectedFilterId, g_selectedTagName');
+        expect(requestBuilder).toMatch(/op == L"query" \|\| op == L"queryMore"[\s\S]*?g_historyView\.requestedQuery[\s\S]*?CreateStringValue\(query\.category\)[\s\S]*?CreateStringValue\(query\.tag\)/);
     });
     it("builds the editor and releases it on the XAML apartment before closing the island", () => {
         expect(read(`${native}WinUiPanel.vcxproj`)).toContain('ClCompile Include="WinUiFilterEditor.cpp"');

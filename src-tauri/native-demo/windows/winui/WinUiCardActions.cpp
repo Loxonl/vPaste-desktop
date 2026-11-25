@@ -37,21 +37,22 @@ CardMenuExtras AppendCardActions(MenuFlyout const &menu, std::wstring const &has
         item.Click([request, hash, operation = std::wstring{operation}](auto const &, auto const &) {
             (void)request(operation, hash, {});
         });
-        menu.Items().Append(item);
         return item;
     };
     const bool text = type == L"Text" || type == L"TextFile" || type == L"Link";
-    if (text || type == L"Image" || type == L"File" || type == L"Color")
-        menu.Items().Append(MenuFlyoutSeparator{});
     if (text) {
         extras.pastePlain = add(L"粘贴为纯文本", L"Paste as plain text", L"\uE77F", L"pastePlain");
     }
     if (type == L"File") {
-        add(L"打开所在目录", L"Open containing folder", L"\uE838", L"openFolder");
-        add(L"复制所在目录", L"Copy containing folder", L"\uE8C8", L"copyFolder");
+        menu.Items().Append(add(L"打开所在目录", L"Open containing folder", L"\uE838", L"openFolder"));
+        menu.Items().Append(add(L"复制所在目录", L"Copy containing folder", L"\uE8C8", L"copyFolder"));
     }
     if (type == L"Image" || type == L"File") {
         extras.exportImage = add(L"导出图片…", L"Export image…", L"\uE74E", L"exportPrepare");
+        extras.exportImage.IsEnabled(false);
+        ToolTipService::SetToolTip(extras.exportImage, winrt::box_value(english
+            ? L"Waiting for image export details" : L"正在读取图片导出信息"));
+        menu.Items().Append(extras.exportImage);
         if (type == L"File") extras.exportImage.Visibility(Visibility::Collapsed);
     }
     if (type == L"Color") {
@@ -59,6 +60,7 @@ CardMenuExtras AppendCardActions(MenuFlyout const &menu, std::wstring const &has
         extras.colors.Text(english ? L"Copy color as" : L"复制颜色格式");
         extras.colors.Icon(Glyph(L"\uE790"));
         extras.colors.IsEnabled(false);
+        ToolTipService::SetToolTip(extras.colors, winrt::box_value(english ? L"Waiting for color formats" : L"正在读取颜色格式"));
         menu.Items().Append(extras.colors);
     }
     return extras;
@@ -66,8 +68,12 @@ CardMenuExtras AppendCardActions(MenuFlyout const &menu, std::wstring const &has
 
 void UpdateCardActions(CardMenuExtras const &menu, JsonObject const &metadata,
     std::wstring const &hash, CardActionRequest request) {
-    if (menu.exportImage) menu.exportImage.Visibility(
-        metadata.GetNamedBoolean(L"canExportImage", false) ? Visibility::Visible : Visibility::Collapsed);
+    if (menu.exportImage) {
+        const bool canExport = metadata.GetNamedBoolean(L"canExportImage", false);
+        menu.exportImage.IsEnabled(canExport);
+        menu.exportImage.Visibility(canExport ? Visibility::Visible : Visibility::Collapsed);
+        ToolTipService::SetToolTip(menu.exportImage, nullptr);
+    }
     if (!menu.colors) return;
     menu.colors.Items().Clear();
     for (auto const &value : metadata.GetNamedArray(L"colorFormats", JsonArray{})) {
@@ -79,6 +85,7 @@ void UpdateCardActions(CardMenuExtras const &menu, JsonObject const &metadata,
         menu.colors.Items().Append(item);
     }
     menu.colors.IsEnabled(menu.colors.Items().Size() > 0);
+    if (menu.colors.IsEnabled()) ToolTipService::SetToolTip(menu.colors, nullptr);
 }
 
 ImageExport::ImageExport(HWND owner, CardActionRequest request, Report report)

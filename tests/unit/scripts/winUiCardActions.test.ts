@@ -3,10 +3,21 @@ import { describe, expect, it } from "vitest";
 
 describe("WinUI card action wiring", () => {
     const native = "src-tauri/native-demo/windows/winui/";
+    it("requires confirmation for menu and non-repeated keyboard deletion of a single record", () => {
+        const panel = readFileSync(`${native}WinUiPanel.cpp`, "utf8");
+        const menu = panel.slice(panel.indexOf("MenuFlyoutItem deleteItem;"), panel.indexOf("flyout.Items().Append(deleteItem);"));
+        const keyboard = panel.slice(panel.indexOf("args.Key() == winrt::Windows::System::VirtualKey::Delete"), panel.indexOf("EditSelectedItem();"));
+        expect(menu).toContain('deleteItem.KeyboardAcceleratorTextOverride(L"Delete")');
+        expect(menu).toContain("DeleteCard(rowHash)");
+        expect(keyboard).toContain("DeleteCard(g_selectedHash)");
+        expect(keyboard).toContain("!args.KeyStatus().WasKeyDown");
+        const deletion = panel.slice(panel.indexOf("winrt::fire_and_forget DeleteCard("), panel.indexOf("void EditSelectedItem()"));
+        expect(deletion).toMatch(/co_await dialog.ShowAsync\(\)[\s\S]*ContentDialogResult::Primary[\s\S]*SendRequest\(L"delete"/);
+    });
     it("builds the native menu/picker and preserves native auxiliary actions and rich editing", () => {
         const project = readFileSync(`${native}WinUiPanel.vcxproj`, "utf8");
         const build = readFileSync("src-tauri/build.rs", "utf8");
-        for (const file of ["WinUiCardActions.cpp", "WinUiCardActions.h"]) {
+        for (const file of ["WinUiCardActions.cpp", "WinUiCardActions.h", "WinUiEditorKeys.h"]) {
             expect(project).toContain(file);
             expect(build).toContain(file);
         }

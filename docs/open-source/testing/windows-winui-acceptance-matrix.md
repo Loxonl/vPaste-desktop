@@ -1,6 +1,6 @@
 # Windows WinUI current parity and desktop acceptance
 
-Audit date: 2026-11-15; latest desktop-report follow-up: 2026-11-20. Closeout base: `3153543` (PR 381), including the earlier
+Audit date: 2026-11-15; latest desktop-report follow-up: 2026-11-21. Closeout base: `3153543` (PR 381), including the earlier
 `c573d83` (PR 379) implementation. The follow-up is recorded below.
 This is the current acceptance index; [windows-winui-parity.md](windows-winui-parity.md)
 retains the chronological implementation and regression history.
@@ -32,6 +32,60 @@ physical acceptance; it does not authorize further product changes.
 
 An implemented row is not an unconditional desktop pass. The last column names
 the remaining acceptance boundary. No physical-desktop row was auto-approved.
+
+## 2026-11-23 Windows native search S01–S08
+
+Base `a453767`. Native checks use a Debug x64 panel on a separate Windows desktop with synthetic rows and a recording bridge. The search probe runs through the shell parity export with `VPASTE_WINUI_SEARCH_CHECK=1`.
+
+| Rule | Evidence |
+| --- | --- |
+| S01 | **S/X**. The shell checks the loaded command order: conditional developer controls, tools, queue, settings, conditional update. |
+| S02 | **X/A**. Expanded search contains one TextBox and hides the trigger. The shell invokes the built-in clear button, types again, submits, collapses and reopens search. The actual App exposed the search field and neither magnifier after expansion. |
+| S03 | **X**. Simulated composition suspends the timer and ignores Enter and Escape. Composition end schedules the final text. An earlier reply is discarded even when the final text equals the earlier request. |
+| S04 | **X**. On the baseline an oversized B query caused a second recorded paste of A. The fixed probe covers late A, successful B, zero matches, failed dispatch with zero rows, canceled Enter, a selected row disappearing during refresh and queue selection. Stage 312 verifies that only the latest reply pastes B when OCR causes another refresh. Stage 313 verifies that entering or leaving queue selection retires an Enter waiting for a query response. |
+| S05 | **X/A**. Escape clears, then collapses, including from toolbar focus. Repeat leaves the field open. Stages 311–312 cancel a pending Enter when an empty field collapses, a populated field loses focus, or the panel receives native deactivation. In the actual App, two posted Escape keys cleared the query then collapsed the field. |
+| S06 | **X/A**. Retained rows show progress. The recording bridge blocks stale paste, plain paste, quick paste and deletion. Retry reissues the same query and filter. In the actual App, Delete on retained B after a failed send left B in SQLite. The same key removed a fresh control row C. |
+| S07 | **X/A**. The actual App showed copying guidance in a fresh empty database, Clear filters for a successful empty query, Retry for failure with zero rows, and a warning with Retry when a failed query retained rows. The native probe invoked the recovery controls. |
+| S08 | **S/U/X/A**. Three Rust adapter tests cover literal tag text, prior whitespace normalization and UTF-16 highlights. In the actual App, an explicit FixtureTag excluded untagged A and returned B for the literal query `tag:PhaseOchreB`. A multi-space query still matched single-space fixture text. |
+
+**Actual App and remaining manual checks.** The Debug acceptance executable used two marked synthetic profiles and inactive desktops. External paste was excluded because creating a separate window station failed with Windows error 5. Its clipboard and an interactive target must be isolated before external-delivery and physical IME testing. The broader history/queue regression stops at its rich-card stage 32 on both baseline and the phase-one build (`E_NOINTERFACE`). Its fixture casts the card viewport to `ScrollViewer`; the card uses `ScrollView`.
+
+## 2026-11-23 Windows native card actions, keyboard and tags
+
+This local batch builds on `fec0189`. The isolated Debug XAML probes use a recording bridge. Actual App checks use separate marked profiles with synthetic records on inactive desktops.
+
+| Rules | Evidence |
+| --- | --- |
+| C00–C02, C07 | **S/X.** The native menu puts Delete with a separator at the top of the upward popup. The text menu's actual automation rectangles place Delete at Y299, plain paste at Y466 and normal paste at Y499. File, link, image, color and long-text entries follow the native type rules. Normal and plain paste have different requests. |
+| C03–C06, C08 | **S/X/A.** The menu binds the record and displayed intent. In the isolated App a trigger-induced direct assignment error was visible, a retry with a valid tag updated the chip, and removing the last result on the active tag view emptied it in the same panel. The fixture checks tag catalogue states and deferred type metadata. The App preview followed a selected record while unpinned and stayed on its pinned record when another card menu opened. |
+| C09 | **S/X.** Both single-record Delete entry points confirm against the captured record. A refresh or a replaced target can cancel with feedback. The existing native bridge has no history-delete Undo. The separate paste-queue consumption Undo has its own contract. |
+| K01–K06 | **S/X.** The native click-mode and drag paths remain in use. Normal Copy is separate from plain paste. Menus preserve keyboard opening cues. Queue list Enter uses the source card, and explicit preview uses the queue card without changing the selection. |
+| T01–T05 | **S/X/A.** Both editors accept visible default names. Storage errors leave the draft. Create-and-assign retries the original card/tag pair, and a successful assignment refreshes the current history. In the isolated App, Enter created and assigned a tag and returned focus to the card. Filter Escape discarded the draft and returned focus to Add tab. Enter on a blank filter persisted the generated name. Tab deletion confirms and preserves the search. Native tab reorder still uses a relative move. |
+
+**Remaining evidence.** The owner waived an additional manual pass for this batch. Physical input, pointer-to-popup distance across monitors, IME and external paste delivery remain unverified. The broad history/queue probe reproduced the prior stage 32 fixture failure.
+
+## 2026-11-23 Windows native previews, queue and onboarding
+
+This local batch builds on `fec0189` and the unstaged card, keyboard and tag work. Loaded WinUI tests run on an inactive desktop with synthetic data and a recording bridge. The actual App runs use marked synthetic profiles on inactive desktops.
+
+| Rule | Evidence |
+| --- | --- |
+| P01 | **S/X/A.** WinUI converts Windows verbatim disk and UNC paths to file URIs. A real bitmap failed to render before this change and loaded afterward. The marked App loaded a seeded image in the OCR reader. The original preview routes and limits remain in use. |
+| P02 | **S/X.** The native card uses bounded display content. The full reader and rich fallback obtain the original record. The card viewport and reader probes passed. |
+| P03 | **X.** Native tests check pending decode, superseded results, animated GIF, light and dark checkerboards, and immediate placement in the reduced-motion branch. Physical compositor behavior remains unverified. |
+| P04 | **S/U.** The preview toolbar has its own row. Focused PDF Escape closes the preview through the Windows accelerator route. Ordinary browser form input remains with the browser. Component checks passed. Current actual PDF and browser form input remain unverified. |
+| P05 | **S/X/A.** The isolated App opened OCR unpinned and outside the topmost band. The loaded reader retained a changed field through simulated blur and a late OCR response. The dock's global-toggle route keeps the dock open on cancellation and hides it after confirmed discard. The ordinary reader close and post-close response guards also passed. Actual App draft entry failed before text entry on the inactive desktop and remains unverified. |
+| P06 | **S/X/A.** A failed native open reports in the dock and retires the failed generation. A stale close is ignored. In the isolated App, Cancel returned focus to the original card after selection of a different record. Save returned focus to the updated result at the same record ID after refresh. The native tests also cover Cancel and Save when the origin returns in a pending query, a newer user selection, and retention of the draft on save failure. |
+| P07 | **S/X.** The reader test retires late image and OCR work across close/reopen and verifies 20 text/image/hide cycles. Existing fallback window retirement remains in use. |
+| Q01 | **S/X.** Checkmarks survive filter and pagination changes. Successful Add clears only the submitted records. Failed Add preserves them. A reply to a canceled Add leaves newer error feedback in place, even when it brings a newer queue revision with additional rows. |
+| Q02 | **S/X.** The native drag test covers stable row IDs, a concurrent append, a removed drop target, cancellation and a large queue. The existing reorder reconciliation remains in use. |
+| Q03 | **S/X.** Loaded controls cover confirmation, cancellation, reverse and row removal. |
+| Q04 | **S/X.** An unsent Add is visible and retryable. The native queue suite exercises failed-item retry and the existing Undo expiry. The target and successful-delivery checks were inspected in the shared route. |
+| Q05 | **S/U.** The exit commands name the consequence of clearing items. Temporary dock hiding remains separate from ending the queue. Real target movement, mouse and hotkey delivery remain unverified. |
+| L01 | **A.** A fresh marked portable App completed and persisted the formal native guide. The separate Debug tutorial left an incomplete fixture's flag and configuration unchanged. |
+| L02 | **S.** Existing source and synthetic evidence cover capture-phase correlation by source and queue session. Real QQ capture remains unverified. |
+
+**Verification boundary.** The previous rich-card fixture blocker still returns `E_NOINTERFACE` at broad history/queue stage 32. Focused regressions are separate. The owner waived manual acceptance, so physical input and external paste remain unverified.
 
 ## 2026-11-19 queue controls and WebView inventory
 
@@ -264,7 +318,8 @@ the initial resource-name and visibility attempts were excluded.
   membership. “Remove all assigned tags” appears at the bottom only when
   applicable. Only an authoritative empty tag list offers “Create and assign
   tag”; the tag editor opens after the context menu has closed. Single-row
-  context-menu deletion is immediate; Delete-key and bulk confirmations remain.
+  context-menu deletion is immediate. At this stage the Delete key still
+  confirmed; the later single-card follow-up below aligns both entry points.
   The WebView menu, macOS and shared Rust commands are unchanged.
 - **U/X:** 144 targeted frontend/contract tests and 76 WinUI-filtered Rust tests
   passed. The isolated native menu probe (`VPASTE_WINUI_CARD_MENU_CHECK=1`,
@@ -670,8 +725,8 @@ pass. Reuse this matrix instead of repeatedly declaring generic phases done.
 | Tab text, icons, selected state and trailing `+` | [Header][web-header], [appearance][appearance], [panel][panel], [indicator][indicator] | S, X: Chinese/English, light/dark, 640/960-DIP headers; accent foreground, faster bounded spring and the two reference creation choices | The added Manage tags choice is removed; existing tags keep double-click/context-menu editing and deletion. Native `SelectorBar` feedback is retained. M: motion feel, font rendering and Windows contrast-theme appearance. |
 | Custom filter creation/editing | [WebView filters][web-tabs], [native editor][filter-editor], [shared adapter][filters] | S, U, X: editor requests, replies, cancellation and stale-session checks | M: pointer anchor and IME entry on the displays in use. Existing filter file and field meanings are retained. |
 | Record tags and mixed tab order | [WebView tabs][web-tabs], [record editor][record-editor], [tag adapter][tags], [atomic tab moves][tab-order] | S, U, X: create/assign, refresh, failed requests and editor lifetime; shared database order wins over legacy native order | M: actual tab drag/drop and emoji picker placement. No separate Windows tab-order store is introduced. |
-| Search, category, favorite, source and `tag:` filters | [WebView search][web-search], [native search grammar][search], [query bridge][bridge] | S, U: quoted tag names, combined filters, UTF-16 highlight terms and existing Rust query | M: real data containing the user's source names and languages. |
-| Search submission and stale results | [WebView keyboard][web-keys], [native keyboard][keys], [panel][panel] | S, X: synchronized search text, pending query/refresh guards and Enter handling | M: IME composition and quick Enter in the actual foreground App. Native `AutoSuggestBox` replaces the DOM search shell. |
+| Search, category, favorite, source and explicit tag filters | [WebView search][web-search], [native search adapter][search], [query bridge][bridge] | S, U, X: literal query text, independent filters and UTF-16 highlights; see S08 above. | M: real data containing the user's source names and languages. |
+| Search submission and stale results | [WebView keyboard][web-keys], [native keyboard][keys], [panel][panel] | S, X: native TextBox, pending query/refresh guards and Enter handling; see S02–S07 above. | M: IME composition and quick Enter in the actual foreground App. |
 | Pagination, fresh captures and retained position | [WebView lifecycle][web-lifecycle], [panel][panel], [viewport policy][viewport] | S, U, X: refresh loaded pages, retain/reset offsets and selection, stale replies and 36-card replacement | M: live capture while the panel is open/hidden. The isolated fixture intentionally has no capture listener. |
 | Card content and media | [WebView card][web-card], [Rust projection][presentation], [native content][content] | S, U, X: text/emphasis/tables/colors, source metadata, image loading and card detail replacement | Native bounded card projection does not promise arbitrary HTML/CSS pixel parity. Full rich content remains available through the reader fallback. |
 | Loading, empty and failure states | [Panel][panel], [queue][queue] | S, X: real control state, retry, cleared filters and stale/error responses | M: transient failures with real external resources. Failed requests must not delete history. |
@@ -686,7 +741,7 @@ pass. Reuse this matrix instead of repeatedly declaring generic phases done.
 | Text entry, modal and menu key ownership | [WebView keyboard][web-keys], [native policy][keys], [panel][panel] | S, U, X: editor/menu/ComboBox/drag guards and repeat suppression | M: Chinese IME and actual focus transfer. A source guard alone is not proof that Windows dispatched composition events correctly. |
 | Copy/paste/favorite/preview and assigned-tag menus | [WebView menu][web-menu], [panel][panel], [Rust actions][bridge] | S, U, X: actual control invocation with recorded requests, favorite/tag refresh and request identity | M: external clipboard/paste effects. Native `MenuFlyout` owns focus, keyboard and submenu behavior. |
 | OCR, image export, containing folder and color formats | [WebView menu][web-menu], [native extras/picker][card-actions], [Rust adapter][actions] | S, U, X: action metadata, file picker cancellation/generation and color formats | M: real file picker, OCR availability and export files. Existing Rust operations and overwrite confirmation are retained. |
-| Delete confirmation and text editing | [WebView actions][web-actions], [panel][panel], [bridge][bridge] | S, U, X: native confirmation, cancel/reply guards and edit request/identity handling | M: real editor save/close and focus return. Text editor remains an on-demand shared auxiliary window. Use disposable history for destructive checks. |
+| Single-card deletion and text editing | [WebView actions][web-actions], [panel][panel], [bridge][bridge] | S, U, X: Windows confirms a single-card Delete from the menu and keyboard, with repeat and record-identity guards. Tag deletion and clear actions still confirm. | M: physical focus return and keyboard ownership. Plain editing is native. Rich editing opens an on-demand WebView. |
 | Queue entry and repeated batch selection | [WebView queue][web-queue], [panel][panel], [Rust queue routes][queue-rust] | S, U, X: opening enters selection, successful Add clears only the submitted batch and retains mode, failure retains the draft; cancel/reenter isolates the new draft from old replies; enabled Add/Cancel topmost pointer hits and centered labels over cards in both languages/widths, with hovered cards and disabled motion/contrast overrides | M: physical pointer, live copy-to-queue and external paste target. Closing queue must leave selection mode. |
 | Queue reorder, remove, reverse, clear and Undo | [WebView queue][web-queue], [native queue][queue], [Rust queue routes][queue-rust] | S, U, X: real native controls, revision/busy guards, local reorder and confirmation behavior | M: real drag handle and queue-paste/Undo flow. Existing shared queue storage and paste semantics remain authoritative. |
 | Queue window, scroll and compact density | [Queue window][queue-window], [queue][queue], [appearance][appearance] | S, X: 100-item refresh, constrained viewport and 80/90/100% density | M: actual short monitors, scaling and focus continuity. Queue owns a separate HWND and does not resize/replace the main dock. |
@@ -1276,6 +1331,326 @@ The visual preview was the design reference, not compositor capture.
   Repeat across monitors. Physical capture, rounding and acrylic are not
   proven by the fixtures.
 
+### Auxiliary Acrylic and reading-layer follow-up, 2026-11-21
+
+- **S:** The old combined setter configured both the Win32 host and the browser
+  controller. With a color set, Tao handled `WM_ERASEBKGND` with an RGB brush,
+  so alpha zero did not expose the DWM material. Leave the host fill unset when
+  the backdrop is available and set the controller color separately. Keep a
+  solid theme/system fallback. WinUI-mode browser previews share one neutral
+  reading layer; rich-text contrast and document/website pixels remain local
+  to the content. The native XAML reader, legacy renderer and editor save
+  contract are unchanged.
+- **U / browser:** 21 focused tests and 10 browser cases passed. The ownership
+  contract and shared reading layer failed first against the old source/bundle.
+  Check normal/reduced motion, light/dark, dark ink versus light ink, PDF/link
+  toolbar placement, and formatting-preserving editing. Style, asset,
+  formatting and native Debug build checks passed.
+- **X:** No XAML code changed; the preceding XAML results above are unchanged.
+  Browser captures cannot show the OS material.
+- **A:** On the same isolated 120-DPI system, both rich-editor and rich-preview
+  HWNDs kept transient-backdrop and round-corner attributes; the erase message
+  changed from handled (`1`) to unhandled (`0`) on each. WebView2 rendered the
+  shared layer; the rich editor preserved HTML and an RTF hyperlink on save.
+  Fallback preview reuse/pin/three cold close-reopen cycles, settings recreation
+  and guide completion passed with a marked synthetic profile. The ordinary
+  WinUI Debug was restarted once with matching executable/DLL hashes; no
+  foreground input or user clipboard data was used for verification.
+- **M:** Compare preview kinds and both editor frames in one session with the
+  same Windows theme, transparency and focus state. Verify only the content
+  (e.g. light ink on a dark canvas or a PDF's page) changes its fill. Window
+  erase ownership is not a measurement of DWM output. The prioritized remaining
+  coverage and renderer inventory are in the [next decisions list](windows-winui-next-decisions.md).
+
+### Capture, paste delivery, and window self-check, 2026-11-21
+
+- **S / U — capture:** replay the plain-to-rich phases for QQ and Chrome and
+  recopy the same Chrome selection after a different one. Three completed
+  captures leave two formatted history records; the recopied item's original
+  hash moves to the end of the queue. No capture or deduplication policy changed.
+  A probe confirmed access denied (`5`) creating a named test window station
+  under the current account. The OS-generated name was already in use (`183`).
+  The native clipboard tests now require a newly created station and report the
+  OS error; they must never fall back to the user's station. The full Rust run
+  passed 603 tests; the seven native clipboard tests stopped in that setup, and
+  seven tests were ignored by the ordinary invocation.
+- **S / U — paste:** queue Ctrl+V captures the external HWND and process at
+  keydown and does not intercept in vPaste's own windows. The serial worker
+  rechecks the target before clipboard restoration and before key injection;
+  failure retains the queued item and its retry state. Queue-window clicks
+  keep their saved target. Ordinary paste also requires the recorded foreground
+  window independently of editable-control capture. Three source regressions
+  failed before the change. Target identity (including reused handles), rapid
+  shortcut order, undo, capture format and focus-policy tests passed. No
+  assertion equates successful `SendInput` with delivery to the target control.
+- **X — windows:** the focused loaded reader/OCR/editor regression passed after
+  replacing a frame-count wait for confirmation dismissal with a bounded
+  wall-clock wait. The dialog, draft-preservation and later Save assertions
+  are unchanged. The full shell passed with ordinary and reduced motion.
+  The history/queue run exercised OLE formats and queued row
+  sorting, then stopped at the pre-existing Debug glyph pixel check (stage 981),
+  also reproduced against the baseline; it is not a complete XAML suite pass.
+- **A / browser:** the isolated app passed fallback preview replacement/pin,
+  three canceled cold opens with reopen, settings recreation, and no second
+  drag request from the settings caption. Rich editing retained HTML and RTF.
+  The fixture did not activate the keyboard hook or write to the clipboard.
+  The 23 focused frontend/source and 10 visual cases passed, including both
+  browser motion preferences. Source formatting and the Debug build passed.
+- **M — pending:** real Chrome/QQ copy and repeated external paste without
+  history reentry, delivery/focus in external targets and physical drag cancel,
+  native-to-WebView transitions on the actual desktop, IME, real mixed DPI and
+  Windows contrast. Tests on a separate desktop do not cover input or the
+  clipboard of a separate station; use an independent test session or a
+  supervised pass. No user data or foreground input was used here.
+
+### On-demand webpage renderer in WinUI previews
+
+- **S:** In WinUI mode, creating the shared preview shell no longer prewarms
+  `previewBrowser`. The committed link's existing geometry synchronization
+  creates it if needed. Rich HTML and PDF still use the shared shell. Once
+  used, the webpage renderer parks on a non-link and is reused until the
+  preview closes. Legacy Windows WebView and macOS keep their prewarm path.
+- **U / browser:** Four Rust browser-preview tests, 40 focused frontend/source
+  tests and the style check passed. All 12 preview-resident and link-network
+  cases passed against the built frontend with normal and reduced motion.
+  Two initial Vite runs timed out before the mocked preview listener registered.
+- **X:** No XAML code changed; no new XAML pass is claimed.
+- **A:** The old Release failed the lifecycle assertion with an extra
+  `about:blank` target during rich-text preview. The new Release passed cold
+  rich and link opens, an intercepted HTML page rendered in the real webpage
+  view, link-to-rich-to-link reuse, pinning, three canceled cold opens and
+  renderer retirement. The legacy Windows mode still created the warm targets.
+- **A / memory:** Two runs of each x64 Release used the same native DLL,
+  marked 500-record profile and one-page PDF. Settings was closed before
+  sampling rich HTML followed by PDF (no link opened). The PDF asset returned
+  HTTP 200 in all four runs. WebView2 private-commit medians were 261–282 to
+  235–237 MiB for rich text and 493–595 to 475–497 MiB for PDF. Each non-link
+  phase consistently had one fewer WebView2 process (7 to 6 and 10 to 9).
+  The host already differed by about 26 MiB before opening any preview; the
+  ranges isolate WebView2 and do not claim a fixed reduction in app total.
+  After close, all four runs returned to zero WebView2 processes.
+- **M:** Physical keyboard/focus, live external websites and macOS were not
+  exercised. The Windows runtime runs used an isolated, non-input desktop.
+
+### Native-reference tint and typography for rich preview and editor
+
+- **S:** The reported light-theme samples measured `#f9f9f9` on the
+  native preview surround versus `#d3d3d3` on the rich preview surround.
+  In WinUI mode only, the two WebView shells now share a theme-aware
+  translucent tint and the native title/body typography roles. There is no
+  extra blur, outer edge or shadow; DWM still owns the frame. Rich document
+  canvases and authored formatting remain separate. Plain editing and OCR
+  keep their native controls. No preview lifetime, geometry or save change.
+- **U / browser:** The old bundle failed all four new light/dark and motion
+  assertions for the unpainted window surround. The new bundle passes 64
+  focused units, 20 browser cases, styles and the native-debug asset check.
+  Compositing the preview CSS over the reported gray substrate gives about
+  `#f9f9f9` for the surround and `#fcfcfc` for the reading layer; this is a
+  controlled browser test, not a desktop capture. The existing dark/light ink,
+  pin, Escape, PDF/link layout and HTML/RTF save assertions still pass.
+- **X:** The unchanged native reader check passed at stage 12475 with plain
+  editor and OCR form captures in both themes. Its XAML output excludes DWM.
+- **A:** With the new embedded assets in the real Debug app on an isolated
+  120-DPI desktop, the rich editor and rich preview both applied the new
+  tint and the 16/600 title and 14/400 body styles. Both HWNDs still reported
+  transient backdrop, rounded corners and an unhandled erase message.
+  The editor saved formatted HTML and an RTF hyperlink; the preview and
+  editor both closed. No user history or physical input was used.
+- **M:** Compare the final composed windows over the same desktop in light and
+  dark and in comparable focus states. A source color that needs its own
+  reading canvas may still differ inside the document; its surround must not.
+
+### Single-card Delete and rich-editor startup (2026-11-21)
+
+- **S:** Match the shipping history's direct single-record deletion. The
+  native card menu displays `Delete` as a hint, not a global accelerator.
+  The menu uses the clicked row and the key uses the selected row; both
+  dismiss any associated preview and dispatch the same Rust delete. Modifier,
+  repeat, multi-selection and modal guards remain. Tab and clear confirmations
+  are separate and unchanged.
+- **S:** The WinUI rich editor keeps the existing theme, editing, save and
+  discard behavior. It opens a dedicated HTML entry with one script and one
+  stylesheet, consumes the document already read to choose the editor, and
+  skips the speculative fetch before the target is available. Plain text
+  still opens natively. A fresh WebView is created only when requested and
+  is destroyed when the editor closes.
+- **U / browser:** Both new source/component checks failed before the relevant
+  fix. 635 related frontend tests, 9 Rust editor tests and 10 browser cases
+  passed. The browser cases include the separate editor entry in light and
+  dark and editing, save failure, discard and undo. Style and single-bundle
+  asset checks pass for native Debug and production.
+- **X:** The loaded menu checked the shortcut label across card types before
+  an unrelated tag-toggle assertion (stage 2733). The broader presentation
+  check stopped at the Debug guide glyph pixel assertion (981). Both failures
+  reproduce with the old DLL too; neither overall suite is marked as passed.
+- **A:** Isolated actual-App runs posted the editor/Delete keys to the native
+  panel and invoked the real card menu via UI Automation. Each delete removed
+  only its synthetic record without confirming. The editor loaded the rich
+  document and released its WebView on close. In the final bundle, an actual
+  edit saved formatted HTML and an RTF hyperlink, and kept the approved
+  editor/preview tint, text roles, backdrop and rounded native frame.
+- **A / timing:** With Settings already open (a warm WebView2 runtime),
+  five open/destroy cycles per build measured median show time 768 → 632 ms
+  and median editable-content time 1,273 → 683 ms (31 → 1 scripts). In the
+  paired first-open test with no Settings WebView the HWND became visible in
+  1,664 ms before and 1,709 ms after; this does not establish a cold-start
+  improvement. Failed isolated profile launches during search index setup
+  occurred on both builds, before any editor timing, and are not samples.
+- **M:** Verify physical right-click and keyboard ownership on a disposable
+  record and compare the first and subsequent rich edits on a normal profile.
+
+### Long text card body clipping (2026-11-21)
+
+The following records the initial fix and its isolation checks. The user
+still observed body text over the card header while moving between cards;
+the fixed-position capture below did not rule out a live-compositor issue.
+
+- **S:** The shipping WebView scrolls within the body element. WinUI instead
+  translates the text visual on the compositor. Give that shared card
+  viewport a stationary rectangular clip, updated from its arranged size;
+  never move the clip with the text. Plain, long-file text and rich-text cards
+  share it. Keep the activation, timing, cancellation, normal/reduced-motion
+  policy and the separate Space reader unchanged.
+- **U:** The viewport source contract failed against the old code. The new
+  contract and related WinUI card/WebView auto-scroll checks pass (21 tests).
+- **X:** The focused loaded WinUI probe passed (`VPASTE_WINUI_CARD_PREVIEW_CHECK`,
+  stage 257). After resizing from a 200×120-DIP viewport to 164×92, a
+  translated text frame rendered 458 matching text pixels inside the body
+  and none in the header or footer. Start, reduced motion, hiding, and
+  unload still use the existing animation lifecycle.
+- **A:** The rebuilt Debug app rendered three synthetic history records
+  (plain text, TextFile and rich text) in the real native main panel. This
+  verifies loading, not physical hover. The isolated search index reported a
+  temporary write-access error; it did not prevent the cards from rendering.
+- **M:** Hover a long plain or rich record until it scrolls. The source name,
+  timestamp and badges must remain untouched when new lines enter or leave the
+  body. Move to another card to check the inactive body's return to its start.
+
+### Long text card scroll ownership follow-up
+
+- **S:** The earlier fix supplied a viewport clip but kept a separate
+  compositor translation on the body. The user's switching sequence is a
+  reproduction clue, not a rule that the second card causes the defect.
+  Preserve the desktop reference's real viewport scrolling: the card-only
+  `ScrollView` animates its offsets, retains the stationary body clip, uses
+  the existing delay/speed/pauses, and never translates the text directly.
+  Only phase changes use a timer. Retirement resets the offset and ignores
+  completion events from old scroll requests. Space readers are unchanged.
+- **U:** The revised source contract fails on the translated-body path and
+  passes with native offsets. 21 focused card, viewport and WebView reference
+  tests and the UI style check pass.
+- **X:** The old DLL passed the single fixed-position pixel check but failed
+  the loaded main-panel transition test: neither card advanced its viewport
+  offset. The native-offset DLL passes `VPASTE_WINUI_CARD_PREVIEW_CHECK`,
+  stage 2586. It covers two active cards (selected and hovered), retirement
+  of the stopped card, restarting on return, rapid switches, and a complete
+  bottom/return/restart cycle. A single render of the panel samples both
+  positions while nonzero; the test found zero matching text pixels outside
+  either body's measured bounds. This is an XAML render, not a physical DWM
+  capture. Keep this animated, multi-card check as the regression gate; a
+  static translated glyph fixture cannot establish scroll ownership.
+- **A:** The actual Debug app rendered all three synthetic long-card types.
+  Automation could select fixture cards but could not read the private body
+  viewport's scroll pattern, so offset and pixel evidence above comes from
+  the loaded native test. No user history or physical input was used.
+- **M:** On a normal interactive desktop, try several long cards in different
+  orders, including a previously healthy card before and after a transition.
+  Check both cards' title, icon and time during scrolling. An off-desktop
+  selection action or XAML capture does not establish physical pointer parity.
+
+### Command-menu opening focus
+
+This initial attempt was superseded by the focus-stroke follow-up below. Its
+synthetic source and focus injection did not verify the reported opening path.
+
+- **S:** The reported black outline is consistent with WinUI's first menu
+  item receiving keyboard focus when the menu was opened with the pointer.
+  Scope the opening adjustment to the pointer's own menu and keep the
+  native item selection, hover, keyboard focus visuals and dismissal. The
+  same rule covers both custom-tab types, the add-tab button, card context
+  menus and both queue-row context anchors. The tray already sets pointer
+  opening focus separately. Emoji and source pickers are regular flyouts;
+  editor controls and confirmation dialogs retain their intentional focus.
+- **U:** 30 focused menu, keyboard, queue and native interaction source
+  checks pass, including the new all-entrances focus contract. UI style and
+  formatting checks pass.
+- **X:** `VPASTE_WINUI_MENU_FOCUS_CHECK` passes at stage 27908 on the
+  isolated desktop. A loaded native menu seeded with keyboard focus switches
+  to pointer focus only for its own pointer opening. Reopens, an unrelated
+  pointer source, a disabled first command and subsequent keyboard focus are
+  covered without disabling system focus visuals. The isolated tray and
+  desktop follow-up also pass (27810 and 268). The broader history/queue
+  suite hits the same stage-32 `0x80004002` on both the before and after DLLs;
+  it does not establish physical queue-menu parity.
+- **A:** The built WinUI app opened the real card menu via an Apps-key
+  message on an isolated desktop. Its Delete command remained actionable
+  via UI Automation and deleted only the synthetic fixture record. This
+  checks keyboard/command routing, not a physical pointer gesture.
+- **M:** After using the keyboard, right-click each tab type and click `+`.
+  Repeat after closing and reopening the panel, and check a card, its Tags
+  submenu, an item in the queue, and the tray. Nothing should draw an idle
+  keyboard rectangle on the first command after a mouse open. Open with
+  the keyboard and use Up/Down, Enter and Escape to check that keyboard
+  focus remains visible, including with a Windows contrast theme.
+
+### Command-menu focus stroke before the first key
+
+- **S:** The user's screenshots covered Add tab, the card menu and the filter
+  menu. The outline moved to the next row on Down, confirming a focus cue
+  rather than a menu border. The first attempt inferred a pointer source and
+  corrected the first item's focus once at `Opened`. Keep native focus now:
+  suppress the two focus strokes before painting a non-keyboard open, restore
+  stock theme brushes on the first menu key or close, and preserve them from
+  the start when the opening is part of a routed keyboard gesture. Apply the
+  same policy to record tags, submenu commands and queue items; keep the tray's
+  existing behavior and leave form controls and confirmations alone.
+- **U:** 30 focused checks (menu wiring, keyboard, cards and queue) plus the
+  UI style and diff checks pass.
+- **X:** The new real-control check failed on the previous DLL at 27901 (the
+  Add tab command still had both visible focus strokes). It passes at 27905
+  with the current DLL across Add tab, card, filter tag and record tag. It
+  holds the first cue off even when the first item acquires keyboard focus
+  late, verifies Down moves focus and restores the second item's strokes,
+  verifies Escape dismissal, and checks that closing and reopening with Space
+  leaves stock resources in place. The tray and desktop checks also pass.
+- **A:** An isolated app profile opened the real Add tab using Space, closed
+  it with Escape, and reopened it through the button's UI Automation Invoke
+  path. Sampling the popup's rendered upper row edges showed a continuous
+  dark first-row stroke on the old build and no dark first-row stroke on the
+  new build. Both kept logical focus; after injected Down the second-row
+  stroke was visible and Escape dismissed the menu. On a direct Space open the
+  new build rendered the first-row stroke immediately. This is a rendered
+  comparison of the real app, not physical mouse input. An Apps-key event
+  opened the card menu, and its existing Delete action removed only the
+  isolated fixture record, without a confirmation prompt.
+- **M:** The three user screenshots are the physical before evidence. Recheck
+  those same entries with the mouse and with Down/Escape on the updated Debug
+  build. Contrast-theme rendering and physical submenu/queue/record-tag
+  coverage remain manual.
+
+### Integrated WinUI follow-ups (2026-11-22)
+
+- **S / U:** On the #401 / #403 integration base, build, style and asset
+  checks passed, along with 900 frontend tests, 617 Rust tests and 20
+  browser cases (including reduced motion). The 120 affected source
+  checks passed again after #403. Seven Rust clipboard-station fixtures
+  could not create their isolated station on this host; the Linux
+  release-upload fixtures were not run on Windows.
+- **X:** Menu focus (27905), card scroll (2586), reader and editor/OCR
+  controls (12475), tray (27810), and the #401 regression suite (2016)
+  passed on an isolated desktop. The scrolling probe counted no body
+  text pixels outside the two moving card viewports.
+- **A:** The current app rendered the Add-tab focus cue only on a
+  keyboard open or after Down, and both tested opening paths dismissed
+  with Escape. A cold rich editor opened through F2, retired its WebView
+  on close, and the card-menu Delete removed only the synthetic record.
+  The lifecycle probe passed on-demand webpage allocation, preview
+  reuse and pinning, Settings recreation, and guide completion without
+  a guide or main-panel WebView. No external paste was exercised.
+- **M:** The user confirmed the reported menu-outline fix before this
+  integration. The integrated base was not rechecked by physical input;
+  the desktop material, contrast and external-paste checks remain separate.
+
 ## One consolidated manual desktop pass
 
 All entries below are **pending** physical acceptance. Use the actual Debug
@@ -1339,6 +1714,13 @@ One session can cover several rows; no per-control review round trip is needed.
    the queue shortcut. Open a card's Tags submenu and check label alignment,
    checked state and keyboard navigation.
    The isolated automated fixture intentionally disables several such services.
+9. **Duplicate capture versus repeated paste:** make a single real rich copy
+   in Chrome and QQ; each should record one complete item. Re-copy the exact
+   same payload, then copy a different selection and compare history and queue.
+   Separately paste repeatedly to another app (Enter and queued Ctrl+V); check
+   target content and queue advancement without creating a history item from
+   an internal clipboard write. Do not count fixture-only capture tests or
+   modifier replay as this live pass.
 
 [main]: ../../../src-tauri/src/main.rs
 [mode]: ../../../src-tauri/src/main_panel_mode.rs

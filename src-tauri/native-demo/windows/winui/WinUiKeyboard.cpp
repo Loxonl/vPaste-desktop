@@ -56,6 +56,8 @@ KeyBinding ParseKeyBinding(std::wstring_view value) {
         return binding;
     }
     if (key.size() != 1) return {};
+    // Ctrl+C belongs to the focused text input or the ordinary card copy.
+    if (key[0] == L'c' && binding.control && !binding.shift && !binding.alt && !binding.meta) return {};
     if ((key[0] >= L'a' && key[0] <= L'z') || (key[0] >= L'0' && key[0] <= L'9')) {
         binding.key = static_cast<std::uint32_t>(std::towupper(key[0]));
         return binding;
@@ -97,7 +99,8 @@ MainKeyResult ResolveMainKey(PanelBehavior const &behavior, MainKeyInput const &
     if (input.area == InputArea::Search) {
         if (input.key == VK_RETURN) return {input.repeated ? Action::Ignore : Action::SearchPaste};
         if (!input.control && !input.shift && !input.alt && !input.meta) {
-            if (input.key == VK_ESCAPE) return {input.searchHasText ? Action::ClearSearch : Action::CloseSearch};
+            if (input.key == VK_ESCAPE) return {input.repeated ? Action::Ignore :
+                input.searchHasText ? Action::ClearSearch : Action::CloseSearch};
         }
         return {};
     }

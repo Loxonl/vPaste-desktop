@@ -70,8 +70,9 @@ describe("preview window outer shell", () => {
 
     it("keeps one cleared hidden preview resident without an idle destruction timer", () => {
         const closing = sourceBetween("fn hide_preview_window", "fn show_main_panel_for_app");
-        expect(closing).toContain("retain_preview_window(&app)");
-        const retention = sourceBetween("fn retain_preview_window", "fn hide_preview_and_clipboard");
+        expect(closing).toContain("close_preview_and_focus(app)");
+        expect(closing).toContain("close_preview_window(&app)");
+        const retention = sourceBetween("fn close_preview_window", "fn hide_preview_and_clipboard");
         expect(retention).toContain("clear_preview_content(&preview_window)");
         expect(retention).toContain("preview_window.hide()");
         expect(retention).not.toContain("auxiliary_windows::destroy");
@@ -146,7 +147,15 @@ describe("preview window outer shell", () => {
         expect(uiTokens).toContain("--ui-radius-window: 12px");
         expect(shellRule).toContain("overflow: hidden");
         expect(systemShellRule).toContain("border-radius: 0");
-        expect(systemShellRule).toContain("background: transparent");
+        expect(systemShellRule).toContain("background: var(--ui-winui-aux-window-surface)");
         expect(systemShellRule).toContain("backdrop-filter: none");
+    });
+
+    it("leaves the HWND unpainted when the WinUI fallback uses Acrylic", () => {
+        const material = sourceBetween("fn apply_winui_auxiliary_frame", "fn preview_window_active");
+        expect(material).toMatch(/else if material && extended \{\s*None/);
+        expect(material).toContain("webview.window().set_background_color(host_fill)");
+        expect(material).toContain("webview.set_background_color(Some(");
+        expect(material).not.toContain("window.set_background_color(Some(");
     });
 });

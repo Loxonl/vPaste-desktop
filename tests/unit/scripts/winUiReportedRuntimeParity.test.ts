@@ -15,8 +15,10 @@ it("routes card Enter from the root tunnel before the native ListView consumes i
 
 it("uses the focused native card for Enter in queue selection without sending a paste", () => {
     const action = panel.slice(panel.indexOf("case MainKeyAction::PasteCard:"), panel.indexOf("case MainKeyAction::SearchPaste:"));
-    expect(action).toContain("IndexFromContainer");
+    expect(action).toContain("HistoryIndexFromSource(source)");
     expect(action).toContain("ActivateHistoryIndex(index,");
+    const lookup = panel.slice(panel.indexOf("int HistoryIndexFromSource("), panel.indexOf("void ToggleQueueCardPreview("));
+    expect(lookup).toContain("g_panel.history.IndexFromContainer(container)");
     const activate = panel.slice(panel.indexOf("void ActivateHistoryIndex("), panel.indexOf("void SubmitSearch("));
     expect(activate).toMatch(/if \(g_queueSelectionMode\)[\s\S]*?SelectedItems\(\)\.Append\(item\);\s*return;/);
 });
@@ -27,7 +29,7 @@ it("refreshes both format colors when card detail resolves its source accent", (
 });
 
 it("keeps the native tag check column without adding an icon column", () => {
-    const submenu = panel.slice(panel.indexOf("MenuFlyoutSubItem tagsItem;"), panel.indexOf("return tagsItem;"));
+    const submenu = panel.slice(panel.indexOf("MenuFlyoutSubItem tagsItem;"), panel.indexOf("return tagsItem;", panel.indexOf("ToggleMenuFlyoutItem tagOption")));
     expect(submenu).toContain("ToggleMenuFlyoutItem tagOption");
     expect(submenu).not.toContain("clearTags.Icon(");
 });

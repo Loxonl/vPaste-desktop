@@ -1,13 +1,10 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
-import { info } from "@tauri-apps/plugin-log";
-import "./theme.css";
-import { installThemeSync } from "./theme.ts";
+import "./desktopBootstrap";
 import AppThemeProvider from "./ui/AppThemeProvider.tsx";
 import RouteFallback from "./ui/RouteFallback.tsx";
 import AppMotionProvider from "./ui/motion/AppMotionProvider.tsx";
-import { syncMotionCssVariables } from "./ui/motion";
 
 const Clipboard = React.lazy(() => import("./clipboard/Clipboard.tsx"));
 const EmojiPicker = React.lazy(() => import("./clipboard/EmojiPicker.tsx"));
@@ -40,51 +37,6 @@ const DeveloperMemoryWindow = import.meta.env.DEV || embeddedDeveloperTools
 const DeveloperTutorialWindow = import.meta.env.DEV || embeddedDeveloperTools
     ? React.lazy(() => import("./debug/DeveloperTutorialWindow.tsx"))
     : null;
-
-if ("__TAURI_INTERNALS__" in window) {
-    void info(`Rendering app, path: ${window.location.pathname}`);
-}
-installThemeSync();
-syncMotionCssVariables();
-
-function isEditableTarget(target: EventTarget | null) {
-    if (!(target instanceof HTMLElement)) return false;
-    const tag = target.tagName.toLowerCase();
-    return tag === "input" || tag === "textarea" || target.isContentEditable;
-}
-
-function installDesktopInteractionGuards() {
-    window.addEventListener("contextmenu", event => {
-        if (!(event.target instanceof HTMLElement) || !event.target.closest("[data-allow-context-menu='true']")) {
-            event.preventDefault();
-        }
-    });
-
-    window.addEventListener("auxclick", event => {
-        if (event.button === 1) {
-            event.preventDefault();
-        }
-    });
-
-    window.addEventListener("dragover", event => event.preventDefault());
-    window.addEventListener("drop", event => event.preventDefault());
-
-    window.addEventListener("keydown", event => {
-        const key = event.key.toLowerCase();
-        const ctrlOrMeta = event.ctrlKey || event.metaKey;
-        const reloadLike = key === "f5" || (ctrlOrMeta && key === "r");
-        const browserAction = ctrlOrMeta && ["p", "s", "o", "n"].includes(key);
-        const historyNav = event.altKey && ["arrowleft", "arrowright"].includes(key);
-        const backspaceNav = key === "backspace" && !isEditableTarget(event.target);
-
-        if (reloadLike || browserAction || historyNav || backspaceNav) {
-            event.preventDefault();
-            event.stopPropagation();
-        }
-    }, true);
-}
-
-installDesktopInteractionGuards();
 
 const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 if (import.meta.env.DEV && "__vpasteMemoryProfileDiagnostics" in window) {

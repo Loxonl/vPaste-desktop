@@ -2,6 +2,7 @@
 #undef GetCurrentTime
 #include "WinUiQueueView.h"
 #include "WinUiAppearance.h"
+#include "WinUiMenuFocus.h"
 #include "WinUiRichContent.h"
 #include "WinUiMotion.h"
 
@@ -84,6 +85,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
     RequestCallback request;
     CloseCallback close;
     Grid root{nullptr};
+    std::shared_ptr<MenuOpeningInput> menuInput;
     Grid header{nullptr};
     StackPanel rows{nullptr};
     Canvas exitingRows{nullptr};
@@ -103,6 +105,9 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
     Border undoToast{nullptr};
     TextBlock undoMessage{nullptr};
     Button closeButton{nullptr};
+    Border clearConfirmBar{nullptr};
+    TextBlock clearConfirmText{nullptr};
+    Button clearConfirmAction{nullptr}, clearCancelAction{nullptr};
     ContentDialog confirmation{nullptr};
     MenuFlyout openItemMenu{nullptr};
     JsonObject state{nullptr};
@@ -142,6 +147,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
     bool showError = false;
     std::wstring draggingHash;
     JsonObject pendingDragState{nullptr};
+    bool pendingDragStatePreservesFeedback = false;
     bool suppressDragPaste = false;
     winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer dragScroll{nullptr};
     winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer undoExpiry{nullptr};
@@ -169,6 +175,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
 
     void Build() {
         root = Grid{};
+        menuInput = TrackMenuOpeningInput(root);
         // The queue has its own HWND, not the main panel's Acrylic backdrop.
         ApplyStyle(root, L"VPaste.QueueCanvas");
         root.Padding(UniformThickness(ManagementInset));
@@ -368,13 +375,53 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         exitExpiry.Interval(std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
             std::chrono::duration<double>{MotionTokens().GetNamedObject(L"duration").GetNamedNumber(L"fast")}));
         exitExpiry.Tick([weak](auto const &, auto const &) { if (auto self = weak.lock()) self->ClearExits(); });
+        clearConfirmBar = Border();
+        ApplyStyle(clearConfirmBar, L"VPaste.SelectionBar");
+        clearConfirmBar.Margin(Thickness{0, 8, 0, 0});
+        clearConfirmBar.Visibility(Visibility::Collapsed);
+        Grid confirmLayout;
+        confirmLayout.ColumnSpacing(8);
+        confirmLayout.ColumnDefinitions().Append(ColumnDefinition{});
+        ColumnDefinition confirmBtnsCol; confirmBtnsCol.Width(GridLength{1, GridUnitType::Auto});
+        confirmLayout.ColumnDefinitions().Append(confirmBtnsCol);
+        clearConfirmText = MakeText(L"", 12);
+        clearConfirmText.VerticalAlignment(VerticalAlignment::Center);
+        confirmLayout.Children().Append(clearConfirmText);
+        StackPanel confirmActions;
+        confirmActions.Orientation(Orientation::Horizontal);
+        confirmActions.Spacing(6);
+        clearCancelAction = Button();
+        ApplyStyle(clearCancelAction, L"VPaste.CompactButton");
+        Automation::AutomationProperties::SetAutomationId(clearCancelAction, L"queue-clear-cancel");
+        clearCancelAction.Click([weak](auto const &, auto const &) {
+            if (auto self = weak.lock()) self->CancelClearConfirmation();
+        });
+        clearConfirmAction = Button();
+        StyleAuxiliaryAction(clearConfirmAction, true);
+        clearConfirmAction.MinWidth(68);
+        clearConfirmAction.FontSize(12);
+        Automation::AutomationProperties::SetAutomationId(clearConfirmAction, L"queue-clear-confirm");
+        clearConfirmAction.Click([weak](auto const &, auto const &) {
+            if (auto self = weak.lock()) self->ExecuteClearConfirmation();
+        });
+        confirmActions.Children().Append(clearCancelAction);
+        confirmActions.Children().Append(clearConfirmAction);
+        Grid::SetColumn(confirmActions, 1);
+        confirmLayout.Children().Append(confirmActions);
+        clearConfirmBar.Child(confirmLayout);
+        // 与 undoToast 共用第 3 行并通过 confirmingClear 互斥显隐，保持 Grid 4 行与子节点 0..5 索引契约不变
+        Grid::SetRow(clearConfirmBar, 3);
+        root.Children().Append(clearConfirmBar);
         ApplyLanguage();
         ApplyTheme();
     }
 
     void LocalizeConfirmation() {
-        if (!confirmation) return;
         const auto label = Text(L"清空队列", L"Clear queue");
+        if (clearConfirmText) clearConfirmText.Text(Text(L"确定清空队列？", L"Clear every item?"));
+        if (clearConfirmAction) clearConfirmAction.Content(winrt::box_value(label));
+        if (clearCancelAction) clearCancelAction.Content(winrt::box_value(Text(L"保留", L"Keep")));
+        if (!confirmation) return;
         confirmation.Title(winrt::box_value(label));
         confirmation.Content(winrt::box_value(Text(L"清空全部待粘贴项目？队列模式会保持激活。",
             L"Clear every queued item? Queue mode will remain active.")));
@@ -382,29 +429,29 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         confirmation.CloseButtonText(Text(L"保留", L"Keep"));
     }
 
+    void CancelClearConfirmation() {
+        confirmingClear = false;
+        if (clearConfirmBar) clearConfirmBar.Visibility(Visibility::Collapsed);
+        RenderItems();
+        if (clear && clear.IsEnabled()) clear.Focus(FocusState::Programmatic);
+    }
+
+    void ExecuteClearConfirmation() {
+        if (!confirmingClear) return;
+        confirmingClear = false;
+        if (clearConfirmBar) clearConfirmBar.Visibility(Visibility::Collapsed);
+        RenderItems();
+        if (!busy && !items.empty()) Send(L"queueClear");
+    }
+
     winrt::fire_and_forget ConfirmClear() {
         const auto lifetime = shared_from_this();
         if (busy || confirmingClear || items.empty() || !root.IsLoaded()) co_return;
         confirmingClear = true;
-        const auto generation = ++confirmationGeneration;
+        LocalizeConfirmation();
+        // WS_EX_NOACTIVATE 悬浮窗不抢系统前台激活，改用内联确认条避免 ContentDialog 拦截键盘失效。
+        if (clearConfirmBar) clearConfirmBar.Visibility(Visibility::Visible);
         RenderItems();
-        try {
-            confirmation = MakeConfirmationDialog(root, L"", L"", L"", L"");
-            LocalizeConfirmation();
-            const auto result = co_await confirmation.ShowAsync();
-            if (generation != confirmationGeneration) co_return;
-            confirmation = nullptr;
-            confirmingClear = false;
-            if (!root.IsLoaded()) co_return;
-            RenderItems();
-            if (result == ContentDialogResult::Primary && !busy && !items.empty()) Send(L"queueClear");
-            else if (result != ContentDialogResult::Primary && clear.IsEnabled()) clear.Focus(FocusState::Programmatic);
-        } catch (const winrt::hresult_error &error) {
-            if (generation != confirmationGeneration) co_return;
-            confirmation = nullptr;
-            confirmingClear = false;
-            if (root.IsLoaded()) SetError(std::wstring{error.message()});
-        }
     }
 
     void Activate() {
@@ -420,6 +467,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         ++confirmationGeneration;
         const auto dialog = std::exchange(confirmation, nullptr);
         confirmingClear = false;
+        if (clearConfirmBar) clearConfirmBar.Visibility(Visibility::Collapsed);
         if (dialog) dialog.Hide();
         if (const auto menu = std::exchange(openItemMenu, nullptr)) menu.Hide();
         reorderFocusHash.clear();
@@ -468,9 +516,10 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         const double deadline = value && value.ValueType() == JsonValueType::Number ? value.GetNumber() : 0;
         const bool live = hash && hash.ValueType() == JsonValueType::String && !hash.GetString().empty() &&
             std::isfinite(deadline) && deadline > static_cast<double>(now);
-        undo.Visibility(live ? Visibility::Visible : Visibility::Collapsed);
-        undoToast.Visibility(live ? Visibility::Visible : Visibility::Collapsed);
-        undo.IsEnabled(live && !busy && !confirmingClear);
+        const bool showUndo = live && !confirmingClear;
+        undo.Visibility(showUndo ? Visibility::Visible : Visibility::Collapsed);
+        undoToast.Visibility(showUndo ? Visibility::Visible : Visibility::Collapsed);
+        undo.IsEnabled(showUndo && !busy);
         if (live && root.IsLoaded() && !suspended) {
             // Only the Undo affordance changes at expiry; keep rows and focus intact.
             undoExpiry.Interval(std::chrono::milliseconds{
@@ -518,10 +567,11 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         }
         dragMetrics.clear(); dragSourceOrder.clear(); dragTransition = nullptr;
         const auto latest = std::exchange(pendingDragState, nullptr);
+        const bool preserveFeedback = std::exchange(pendingDragStatePreservesFeedback, false);
         pointerId = 0;
         if (auto owner = std::exchange(pointerOwner, nullptr)) owner.ReleasePointerCaptures();
         if (!source.empty() && request) request(L"dragEnd", {}, {});
-        if (latest) SetState(latest);
+        if (latest) SetState(latest, preserveFeedback);
     }
 
     bool BeginReorder(const std::wstring &hash) {
@@ -801,6 +851,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
                 if (auto self = weak.lock()) self->MoveItem(hash, 1);
             });
             rowMenu.Items().Append(down);
+            BindMenuOpeningFocus(rowMenu, menuInput);
             paste.ContextFlyout(rowMenu);
 
             Button remove = NamedIconButton(SymbolIcon{Symbol::Remove}, Text(L"从队列移除", L"Remove from queue"));
@@ -932,7 +983,13 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         count.Text(winrt::hstring{std::to_wstring(items.size()) + L" / " +
                                    std::to_wstring(capacity)});
         reverse.IsEnabled(!busy && items.size() > 1);
+        if (items.empty() && confirmingClear) {
+            confirmingClear = false;
+            if (clearConfirmBar) clearConfirmBar.Visibility(Visibility::Collapsed);
+        }
         clear.IsEnabled(!busy && !items.empty() && !confirmingClear);
+        if (clearConfirmAction) clearConfirmAction.IsEnabled(!busy && !items.empty());
+        if (clearCancelAction) clearCancelAction.IsEnabled(!busy);
         if (confirmation) confirmation.IsPrimaryButtonEnabled(!busy && !items.empty());
         UpdateUndo();
         if (!reorderFocusHash.empty() && std::none_of(items.begin(), items.end(), [&](auto const &item) { return item.hash == reorderFocusHash; }))
@@ -941,16 +998,18 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         RestoreRowFocus();
     }
 
-    bool SetState(JsonObject const &nextState) {
+    bool SetState(JsonObject const &nextState, bool preserveFeedback = false) {
+        const auto nextRevision = static_cast<std::uint64_t>(nextState.GetNamedNumber(L"revision", 0));
+        if (hasRevision && (nextRevision < lastRevision || (preserveFeedback && nextRevision == lastRevision))) return false;
         if (!draggingHash.empty()) {
-            if (!pendingDragState || nextState.GetNamedNumber(L"revision", 0) >= pendingDragState.GetNamedNumber(L"revision", 0)) {
+            const auto deferredRevision = pendingDragState
+                ? static_cast<std::uint64_t>(pendingDragState.GetNamedNumber(L"revision", 0)) : 0;
+            if (!pendingDragState || nextRevision > deferredRevision || (nextRevision == deferredRevision && !preserveFeedback)) {
                 pendingDragState = nextState;
+                pendingDragStatePreservesFeedback = preserveFeedback;
             }
             return false;
         }
-        const auto nextRevision = static_cast<std::uint64_t>(
-            nextState.GetNamedNumber(L"revision", 0));
-        if (hasRevision && nextRevision < lastRevision) return false;
         if (!orderBeforePointerDrop.empty() && pendingRequest && nextRevision == lastRevision) return false;
         lastRevision = nextRevision;
         hasRevision = true;
@@ -995,19 +1054,17 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
             }
         }
 
-        winrt::hstring error;
-        failedHash.clear();
-        if (state.HasKey(L"error") && state.GetNamedValue(L"error").ValueType() == JsonValueType::Object) {
-            const auto failure = state.GetNamedObject(L"error");
-            error = failure.GetNamedString(L"message", L"");
-            const auto hash = failure.GetNamedValue(L"hash", nullptr);
-            if (hash && hash.ValueType() == JsonValueType::String) failedHash = hash.GetString();
-        }
-        showError = !error.empty();
-        if (showError) {
+        if (!preserveFeedback) {
+            winrt::hstring error;
+            failedHash.clear();
+            if (state.HasKey(L"error") && state.GetNamedValue(L"error").ValueType() == JsonValueType::Object) {
+                const auto failure = state.GetNamedObject(L"error");
+                error = failure.GetNamedString(L"message", L"");
+                const auto hash = failure.GetNamedValue(L"hash", nullptr);
+                if (hash && hash.ValueType() == JsonValueType::String) failedHash = hash.GetString();
+            }
+            showError = !error.empty();
             status.Text(error);
-        } else {
-            status.Text(L"");
         }
         RenderItems();
         return true;
@@ -1036,7 +1093,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         retryFailed.Content(winrt::box_value(Text(L"重试", L"Retry")));
         removeFailed.Content(winrt::box_value(Text(L"删除", L"Delete")));
         Automation::AutomationProperties::SetName(removeFailed, Text(L"删除失败项", L"Delete failed item"));
-        NameIconButton(closeButton, Text(L"退出粘贴队列", L"Exit Paste Queue"));
+        NameIconButton(closeButton, Text(L"退出并清空粘贴队列", L"Exit Paste Queue and clear items"));
         LocalizeConfirmation();
         const auto emptyTitle = emptyState.Children().GetAt(1).try_as<TextBlock>();
         const auto emptyDescription = emptyState.Children().GetAt(2).try_as<TextBlock>();
@@ -1098,8 +1155,8 @@ FrameworkElement QueueView::Root() const {
     return m_impl ? m_impl->root : FrameworkElement{nullptr};
 }
 
-void QueueView::SetState(JsonObject const &state) {
-    if (m_impl) m_impl->SetState(state);
+void QueueView::SetState(JsonObject const &state, bool preserveFeedback) {
+    if (m_impl) m_impl->SetState(state, preserveFeedback);
 }
 
 bool QueueView::Receive(JsonObject const &response) {
@@ -1606,6 +1663,62 @@ winrt::Windows::Foundation::IAsyncAction TestQueueFocusContinuityControls(Framew
         // window stays inactive. Check identity and HWND activation separately.
         winrt::check_hresult(control(2, 1) == retained &&
             GetAncestor(owner, GA_ROOT) != GetForegroundWindow() ? S_OK : E_FAIL);
+    }
+    fixture.as<Border>().Child(nullptr);
+}
+
+winrt::Windows::Foundation::IAsyncAction TestBatch2QueueControls(
+    FrameworkElement fixture, std::vector<std::string> &failures) {
+    std::vector<JsonObject> requests;
+    QueueView queue{[&](auto const &operation, auto const &, auto const &hashes) {
+        JsonObject value; value.Insert(L"op", JsonValue::CreateStringValue(operation));
+        JsonArray order; for (auto const &hash : hashes) order.Append(JsonValue::CreateStringValue(hash));
+        value.Insert(L"hashes", order); requests.push_back(value);
+        return static_cast<std::uint64_t>(requests.size());
+    }, [] {}};
+    const auto root = queue.Root().as<Grid>(); root.Width(360); root.Height(448);
+    fixture.as<Border>().Child(root);
+    auto state = JsonObject::Parse(LR"({"revision":1,"items":[{"hash":"a","previewText":"First"},{"hash":"b","previewText":"Second"},{"hash":"c","previewText":"Third"}]})");
+    queue.SetState(state); co_await NextNativeFrame(); root.UpdateLayout();
+
+    // 点击清空按钮应呈现内联确认操作而不是在 WS_EX_NOACTIVATE 窗体上弹 ContentDialog。
+    const auto invoke = [](FrameworkElement const &element) {
+        Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(element)
+            .GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+    };
+    std::function<Button(DependencyObject const &, winrt::hstring const &)> findButton =
+        [&](DependencyObject const &parent, winrt::hstring const &id) -> Button {
+            if (!parent) return nullptr;
+            if (const auto btn = parent.try_as<Button>(); btn && Automation::AutomationProperties::GetAutomationId(btn) == id)
+                return btn;
+            const auto count = Media::VisualTreeHelper::GetChildrenCount(parent);
+            for (int i = 0; i < count; ++i) {
+                if (const auto found = findButton(Media::VisualTreeHelper::GetChild(parent, i), id)) return found;
+            }
+            return nullptr;
+        };
+    for (int f = 0; f < 10 && !queue.m_impl->clear.IsLoaded(); ++f) co_await NextNativeFrame();
+    const auto beforeClearReq = requests.size();
+    invoke(queue.m_impl->clear);
+    co_await NextNativeFrame(); root.UpdateLayout();
+    if (queue.m_impl->confirmation) {
+        failures.push_back("queue_clear_uses_content_dialog");
+        queue.m_impl->confirmation.Hide();
+        for (int f = 0; f < 30 && queue.m_impl->confirmation; ++f) co_await NextNativeFrame();
+    } else {
+        const auto confirmBtn = findButton(root, L"queue-clear-confirm");
+        if (confirmBtn) {
+            for (int f = 0; f < 10 && !confirmBtn.IsLoaded(); ++f) co_await NextNativeFrame();
+        }
+        if (!confirmBtn || !confirmBtn.IsLoaded() || confirmBtn.Visibility() != Visibility::Visible) {
+            failures.push_back("queue_clear_missing_inline_confirm");
+        } else {
+            invoke(confirmBtn);
+            co_await NextNativeFrame();
+            if (requests.size() <= beforeClearReq || requests.back().GetNamedString(L"op") != L"queueClear") {
+                failures.push_back("queue_clear_inline_confirm_did_not_submit");
+            }
+        }
     }
     fixture.as<Border>().Child(nullptr);
 }

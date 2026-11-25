@@ -246,6 +246,8 @@ final class PanelEmptyState: NSView {
   private let title = NSTextField(labelWithString: "")
   private let detail = NSTextField(wrappingLabelWithString: "")
   private let progress = NSProgressIndicator()
+  private let actionButton = NSButton()
+  private var action: (() -> Void)?
   var scale: CGFloat = 1
   override init(frame: NSRect) {
     super.init(frame: frame)
@@ -255,13 +257,22 @@ final class PanelEmptyState: NSView {
     detail.alignment = .center
     progress.style = .spinning
     progress.controlSize = .small
-    for view in [symbol, title, detail, progress] { addSubview(view) }
+    actionButton.bezelStyle = .rounded
+    actionButton.target = self
+    actionButton.action = #selector(activateAction)
+    actionButton.isHidden = true
+    for view in [symbol, title, detail, progress, actionButton] { addSubview(view) }
     setAccessibilityElement(true)
     setAccessibilityRole(.staticText)
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-  func show(title: String, detail: String, loading: Bool = false) {
+  func show(title: String, detail: String, loading: Bool = false, actionTitle: String? = nil,
+    action: (() -> Void)? = nil) {
     isHidden = false
+    self.action = action
+    actionButton.title = actionTitle ?? ""
+    actionButton.isHidden = actionTitle == nil
+    setAccessibilityRole(actionTitle == nil ? .staticText : .group)
     self.title.stringValue = title
     self.detail.stringValue = detail
     symbol.isHidden = loading
@@ -272,9 +283,15 @@ final class PanelEmptyState: NSView {
   }
   func hide() {
     isHidden = true
+    action = nil
     progress.stopAnimation(nil)
   }
-  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+  @objc private func activateAction() { action?() }
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard !isHidden, !actionButton.isHidden,
+      actionButton.frame.contains(convert(point, from: superview)) else { return nil }
+    return actionButton
+  }
   override func layout() {
     super.layout()
     let center = bounds.midX
@@ -286,6 +303,9 @@ final class PanelEmptyState: NSView {
       x: center - 180 * scale, y: top + 44 * scale, width: 360 * scale, height: 22 * scale)
     detail.frame = NSRect(
       x: center - 220 * scale, y: top + 70 * scale, width: 440 * scale, height: 34 * scale)
+    let buttonWidth = actionButton.fittingSize.width
+    actionButton.frame = NSRect(x: center - buttonWidth / 2, y: top + 104 * scale,
+      width: buttonWidth, height: actionButton.fittingSize.height)
     title.font = .systemFont(ofSize: 14 * scale, weight: .semibold)
     detail.font = .systemFont(ofSize: 12 * scale)
     title.textColor = PanelStyle.text(self)

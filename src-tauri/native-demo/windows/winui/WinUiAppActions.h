@@ -28,6 +28,7 @@ public:
     bool ModalOpen() const;
     void SetLanguage(bool english);
     void SetTheme(winrt::Microsoft::UI::Xaml::ElementTheme theme);
+    void SetCompact(bool compact);
     void Deactivate();
 #ifdef _DEBUG
     std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> DeveloperButtons() const;

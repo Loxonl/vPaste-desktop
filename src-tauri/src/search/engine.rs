@@ -11,7 +11,7 @@ use lazy_static::lazy_static;
 use log::error;
 use tantivy::collector::TopDocs;
 use tantivy::directory::MmapDirectory;
-use tantivy::query::{PhraseQuery, Query, TermQuery};
+use tantivy::query::{BooleanQuery, Occur, PhraseQuery, Query, TermQuery};
 use tantivy::schema::*;
 use tantivy::tokenizer::{Token, TokenStream, Tokenizer};
 use tantivy::{DocId, Index, IndexReader, IndexWriter, Searcher, SegmentReader, TantivyDocument};
@@ -22,6 +22,8 @@ const INDEX_READY_MARKER: &str = ".vpaste-search-v2";
 const INDEX_BATCH_DELAY: Duration = Duration::from_millis(120);
 const INDEX_BATCH_SIZE: usize = 32;
 const MAX_PENDING_TEXT_BYTES: usize = 8 * 1024 * 1024;
+// 超长短语会构造数百个单字 positions 交集导致秒级卡顿；超过阈值时改用分段短锚点 PhraseQuery + SQLite 精确复核。
+const MAX_PHRASE_QUERY_CHARS: usize = 32;
 
 lazy_static! {
     static ref ENGINE_LOCK: Mutex<()> = Mutex::new(());
@@ -56,6 +58,8 @@ pub struct SearchSession {
     query: Box<dyn Query>,
     pending_matches: Vec<((u64, u64), String)>,
     pending_hashes: HashSet<String>,
+    exact_needle: Option<String>,
+    history_path: PathBuf,
 }
 
 struct SearchDocument {
@@ -324,17 +328,26 @@ fn add_document(
     Ok(())
 }
 
+fn open_readonly_history_connection(
+    history_path: &PathBuf,
+) -> Result<rusqlite::Connection, String> {
+    let connection = rusqlite::Connection::open_with_flags(
+        history_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|err| err.to_string())?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|err| err.to_string())?;
+    Ok(connection)
+}
+
 fn stored_document(
     history_path: &PathBuf,
     hash: &str,
 ) -> Result<Option<crate::clipboard::StoredItem>, String> {
-    use rusqlite::{OpenFlags, OptionalExtension};
-    let connection =
-        rusqlite::Connection::open_with_flags(history_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|err| err.to_string())?;
-    connection
-        .busy_timeout(Duration::from_secs(5))
-        .map_err(|err| err.to_string())?;
+    use rusqlite::OptionalExtension;
+    let connection = open_readonly_history_connection(history_path)?;
     connection
         .query_row(
             "SELECT * FROM clipboard WHERE hash = ?1",
@@ -343,6 +356,43 @@ fn stored_document(
         )
         .optional()
         .map_err(|err| err.to_string())
+}
+
+fn filter_hashes_by_needle(
+    history_path: &PathBuf,
+    hashes: &[String],
+    needle: &str,
+) -> Result<HashSet<String>, String> {
+    let mut matched = HashSet::new();
+    if hashes.is_empty() {
+        return Ok(matched);
+    }
+    let connection = open_readonly_history_connection(history_path)?;
+    for chunk in hashes.chunks(200) {
+        let placeholders = (1..=chunk.len())
+            .map(|idx| format!("?{idx}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("SELECT * FROM clipboard WHERE hash IN ({placeholders})");
+        let mut statement = connection.prepare(&sql).map_err(|err| err.to_string())?;
+        let rows = statement
+            .query_map(
+                rusqlite::params_from_iter(chunk.iter()),
+                crate::clipboard::read_stored_item,
+            )
+            .map_err(|err| err.to_string())?;
+        for row in rows {
+            let stored = row.map_err(|err| err.to_string())?;
+            if document_from_stored(&stored)
+                .content
+                .to_lowercase()
+                .contains(needle)
+            {
+                matched.insert(stored.hash);
+            }
+        }
+    }
+    Ok(matched)
 }
 
 fn document_from_stored(stored: &crate::clipboard::StoredItem) -> SearchDocument {
@@ -483,6 +533,38 @@ pub fn search_page(keywords: &str, offset: usize, limit: usize) -> Result<Search
     start_search(&normalized)?.search_page(offset, limit)
 }
 
+fn build_search_query(terms: Vec<Term>) -> (Box<dyn Query>, bool) {
+    if terms.len() == 1 {
+        return (
+            Box::new(TermQuery::new(terms[0].clone(), IndexRecordOption::Basic)),
+            false,
+        );
+    }
+    if terms.len() <= MAX_PHRASE_QUERY_CHARS {
+        return (Box::new(PhraseQuery::new(terms)), false);
+    }
+    let window = MAX_PHRASE_QUERY_CHARS;
+    let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(3);
+    clauses.push((
+        Occur::Must,
+        Box::new(PhraseQuery::new(terms[..window].to_vec())),
+    ));
+    if terms.len() >= window * 3 {
+        let mid_start = (terms.len() - window) / 2;
+        clauses.push((
+            Occur::Must,
+            Box::new(PhraseQuery::new(
+                terms[mid_start..mid_start + window].to_vec(),
+            )),
+        ));
+    }
+    clauses.push((
+        Occur::Must,
+        Box::new(PhraseQuery::new(terms[terms.len() - window..].to_vec())),
+    ));
+    (Box::new(BooleanQuery::new(clauses)), true)
+}
+
 pub fn start_search(keywords: &str) -> Result<SearchSession, String> {
     let normalized = keywords.trim().to_lowercase();
     if normalized.is_empty() {
@@ -521,20 +603,51 @@ pub fn start_search(keywords: &str) -> Result<SearchSession, String> {
         .chars()
         .map(|character| Term::from_field_text(*SEARCH_CONTENT_FIELD, &character.to_string()))
         .collect::<Vec<_>>();
-    let query: Box<dyn Query> = if terms.len() > 1 {
-        Box::new(PhraseQuery::new(terms))
-    } else {
-        Box::new(TermQuery::new(terms[0].clone(), IndexRecordOption::Basic))
-    };
+    let (query, exact_needed) = build_search_query(terms);
     Ok(SearchSession {
         searcher,
         query,
         pending_matches,
         pending_hashes,
+        exact_needle: exact_needed.then_some(normalized),
+        history_path,
     })
 }
 
 impl SearchSession {
+    fn extract_hash(&self, address: tantivy::DocAddress) -> Result<String, String> {
+        let document = self
+            .searcher
+            .doc::<TantivyDocument>(address)
+            .map_err(|err| err.to_string())?;
+        document
+            .get_first(*HASH_FIELD)
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| "search index document is missing its hash".to_string())
+    }
+
+    fn verify_exact_candidates<T>(
+        &self,
+        mut candidates: Vec<(T, String)>,
+    ) -> Result<Vec<(T, String)>, String> {
+        let Some(needle) = self.exact_needle.as_deref() else {
+            return Ok(candidates);
+        };
+        if candidates.is_empty() {
+            return Ok(candidates);
+        }
+        let unique_hashes = candidates
+            .iter()
+            .map(|(_, hash)| hash.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let confirmed = filter_hashes_by_needle(&self.history_path, &unique_hashes, needle)?;
+        candidates.retain(|(_, hash)| confirmed.contains(hash));
+        Ok(candidates)
+    }
+
     // Native viewport seeking counts matches without collecting a TopDocs
     // prefix proportional to the retained scroll position.
     #[cfg(all(debug_assertions, target_os = "macos"))]
@@ -547,6 +660,19 @@ impl SearchSession {
         use tantivy::{DocAddress, DocSet, TERMINATED};
         let size = batch_size.clamp(1, 400);
         let mut batch = Vec::with_capacity(size);
+        let flush_batch = |batch: &mut Vec<String>,
+                           visit: &mut dyn FnMut(&[String]) -> Result<(), String>|
+         -> Result<(), String> {
+            if let Some(needle) = self.exact_needle.as_deref() {
+                let confirmed = filter_hashes_by_needle(&self.history_path, batch, needle)?;
+                batch.retain(|hash| confirmed.contains(hash));
+            }
+            if !batch.is_empty() {
+                visit(batch)?;
+                batch.clear();
+            }
+            Ok(())
+        };
         let weight = self
             .query
             .weight(tantivy::query::EnableScoring::disabled_from_searcher(
@@ -561,20 +687,12 @@ impl SearchSession {
                     return Err("history view expired".into());
                 }
                 if !segment.is_deleted(doc) {
-                    let document = self
-                        .searcher
-                        .doc::<TantivyDocument>(DocAddress::new(segment_ord as u32, doc))
-                        .map_err(|err| err.to_string())?;
-                    let hash = document
-                        .get_first(*HASH_FIELD)
-                        .and_then(|value| value.as_str())
-                        .ok_or("search index document is missing its hash")?;
-                    if !self.pending_hashes.contains(hash) {
-                        batch.push(hash.to_string());
+                    let hash = self.extract_hash(DocAddress::new(segment_ord as u32, doc))?;
+                    if !self.pending_hashes.contains(&hash) {
+                        batch.push(hash);
                     }
                     if batch.len() == size {
-                        visit(&batch)?;
-                        batch.clear();
+                        flush_batch(&mut batch, &mut visit)?;
                     }
                 }
                 doc = scorer.advance();
@@ -586,8 +704,10 @@ impl SearchSession {
             }
             batch.push(hash.clone());
             if batch.len() == size {
-                visit(&batch)?;
-                batch.clear();
+                if !batch.is_empty() {
+                    visit(&batch)?;
+                    batch.clear();
+                }
             }
         }
         if !batch.is_empty() {
@@ -636,23 +756,20 @@ impl SearchSession {
                 .search(self.query.as_ref(), &collector)
                 .map_err(|err| err.to_string())?;
             let mut scanned = 0;
+            let mut batch = Vec::new();
             for (key, address) in matches {
                 let Some(key) = key else {
                     continue;
                 };
                 cursor = key;
                 scanned += 1;
-                let document = self
-                    .searcher
-                    .doc::<TantivyDocument>(address)
-                    .map_err(|err| err.to_string())?;
-                let hash = document
-                    .get_first(*HASH_FIELD)
-                    .and_then(|value| value.as_str())
-                    .ok_or("search index document is missing its hash")?;
-                if !self.pending_hashes.contains(hash) {
-                    found.push((key, hash.to_string()));
+                let hash = self.extract_hash(address)?;
+                if !self.pending_hashes.contains(&hash) {
+                    batch.push((key, hash));
                 }
+            }
+            for item in self.verify_exact_candidates(batch)? {
+                found.push(item);
                 if found.len() == target {
                     break;
                 }
@@ -688,6 +805,60 @@ impl SearchSession {
                 has_more: false,
             });
         }
+        let custom_time_id = |segment_reader: &SegmentReader| {
+            let time_reader = segment_reader
+                .fast_fields()
+                .u64("time")
+                .expect("time fast field should exist")
+                .first_or_default_col(0);
+            let id_reader = segment_reader
+                .fast_fields()
+                .u64("id")
+                .expect("id fast field should exist")
+                .first_or_default_col(0);
+            move |doc: DocId| (time_reader.get_val(doc), id_reader.get_val(doc))
+        };
+        if self.exact_needle.is_some() {
+            let target = offset.saturating_add(limit).saturating_add(1);
+            let batch_size = target.clamp(64, 256);
+            let mut raw_offset = 0;
+            let mut matches = Vec::new();
+            while matches.len() < target {
+                let top_docs = TopDocs::with_limit(batch_size)
+                    .and_offset(raw_offset)
+                    .custom_score(custom_time_id);
+                let chunk = self
+                    .searcher
+                    .search(self.query.as_ref(), &top_docs)
+                    .map_err(|err| err.to_string())?;
+                let raw_count = chunk.len();
+                if raw_count == 0 {
+                    break;
+                }
+                raw_offset += raw_count;
+                let mut candidates = Vec::with_capacity(raw_count);
+                for (score, address) in chunk {
+                    let hash = self.extract_hash(address)?;
+                    if !self.pending_hashes.contains(&hash) {
+                        candidates.push((score, hash));
+                    }
+                }
+                matches.extend(self.verify_exact_candidates(candidates)?);
+                if raw_count < batch_size {
+                    break;
+                }
+            }
+            matches.extend(self.pending_matches.iter().cloned());
+            matches.sort_by(|left, right| right.0.cmp(&left.0));
+            let has_more = matches.len() > offset.saturating_add(limit);
+            let hashes = matches
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .map(|(_, hash)| hash)
+                .collect();
+            return Ok(SearchPage { hashes, has_more });
+        }
         let index_offset = if self.pending_hashes.is_empty() {
             offset
         } else {
@@ -701,37 +872,15 @@ impl SearchSession {
                 .saturating_add(1),
         )
         .and_offset(index_offset)
-        .custom_score(|segment_reader: &SegmentReader| {
-            let time_reader = segment_reader
-                .fast_fields()
-                .u64("time")
-                .expect("time fast field should exist")
-                .first_or_default_col(0);
-            let id_reader = segment_reader
-                .fast_fields()
-                .u64("id")
-                .expect("id fast field should exist")
-                .first_or_default_col(0);
-            move |doc: DocId| (time_reader.get_val(doc), id_reader.get_val(doc))
-        });
+        .custom_score(custom_time_id);
         let matches = self
             .searcher
             .search(self.query.as_ref(), &top_docs)
             .map_err(|err| err.to_string())?;
         let mut matches = matches
             .into_iter()
-            .map(|(score, address)| {
-                let document = self
-                    .searcher
-                    .doc::<TantivyDocument>(address)
-                    .map_err(|err| err.to_string())?;
-                document
-                    .get_first(*HASH_FIELD)
-                    .and_then(|value| value.as_str())
-                    .map(|hash| (score, hash.to_string()))
-                    .ok_or_else(|| "search index document is missing its hash".to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|(score, address)| Ok((score, self.extract_hash(address)?)))
+            .collect::<Result<Vec<_>, String>>()?;
         matches.retain(|(_, hash)| !self.pending_hashes.contains(hash));
         matches.extend(self.pending_matches.iter().cloned());
         matches.sort_by(|left, right| right.0.cmp(&left.0));
@@ -1081,6 +1230,82 @@ fn paged_search_bounds_broad_match_candidates() {
 
     assert_eq!(page.hashes.len(), 400);
     assert!(page.has_more);
+    shutdown_runtime_for_tests();
+}
+
+#[test]
+fn winui_regression_long_phrase_query_stays_fast_and_exact() {
+    let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+    let temp_dir = tempfile::tempdir().unwrap();
+    *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+        Some(temp_dir.path().to_string_lossy().to_string());
+    crate::config::save(crate::config::Config::default());
+    crate::clipboard::db::init();
+
+    let vocab = "const longSearchHeader = \"shared prefix\", (0123456789); abcdef-return finalizeSearchResult checksumValue_EXACT UNIQUE MIDDLE TOKEN alpha beta gamma ";
+    let filler = vocab.repeat(10);
+    let head = "const longSearchHeader = \"shared-prefix-0123456789-abcdef\"; ";
+    let target_mid = "alpha-beta-gamma ".repeat(20) + "EXACT_UNIQUE_MIDDLE_TOKEN_9876543210 ";
+    let decoy_mid = "alpha-beta-gamma ".repeat(20) + "DIFFERENT_MIDDLE_TOKEN_0000000000 ";
+    let tail = "return finalizeSearchResult(longSearchHeader, checksumValue);";
+    let needle = format!("{head}{target_mid}{tail}");
+    assert!(needle.chars().count() > 400);
+
+    let insert_doc = |id: u64, time: u64, hash: &str, text: String| {
+        let conn = crate::clipboard::db::db();
+        conn.execute(
+            "INSERT INTO clipboard (item_type, content, preview_content, source, app_source, app_icon_path, title_color, icon, hash, time, label, search_index) VALUES (?1, ?2, '', '', '', '', '', '', ?3, ?4, 0, 1)",
+            rusqlite::params!["Text", text, hash, time as i64],
+        )
+        .unwrap();
+        (id, time, text, hash.to_string())
+    };
+
+    let mut docs = Vec::with_capacity(2_004);
+    for idx in 1..=2_000_u64 {
+        let padding = format!("common text block #{idx}: {head} gamma-beta-alpha {filler}");
+        docs.push(insert_doc(idx, idx, &format!("noise-{idx}"), padding));
+    }
+    docs.push(insert_doc(
+        2_001,
+        2_001,
+        "head-only-decoy",
+        format!("{head}{filler}"),
+    ));
+    docs.push(insert_doc(
+        2_002,
+        2_002,
+        "match-older",
+        format!("prefix {needle} suffix"),
+    ));
+    docs.push(insert_doc(
+        2_003,
+        2_003,
+        "head-tail-decoy",
+        format!("{head}{decoy_mid}{tail}"),
+    ));
+    docs.push(insert_doc(2_004, 2_004, "match-newer", needle.clone()));
+    rebuild(docs).unwrap();
+
+    let started = std::time::Instant::now();
+    let page0 = search_page(&needle, 0, 1).unwrap();
+    let elapsed = started.elapsed();
+    eprintln!(
+        "LONG_PHRASE_SEARCH_BENCH chars={} ms={}",
+        needle.chars().count(),
+        elapsed.as_millis()
+    );
+    assert_eq!(page0.hashes, vec!["match-newer"]);
+    assert!(page0.has_more);
+    let page1 = search_page(&needle, 1, 2).unwrap();
+    assert_eq!(page1.hashes, vec!["match-older"]);
+    assert!(!page1.has_more);
+    assert!(
+        elapsed < std::time::Duration::from_millis(500),
+        "long phrase query took {}ms (expected < 500ms)",
+        elapsed.as_millis()
+    );
+
     shutdown_runtime_for_tests();
 }
 

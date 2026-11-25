@@ -26,6 +26,21 @@ pub(super) fn focused() -> bool {
     CURRENT.load(Ordering::Acquire) != 0 && crate::TEXT_EDITOR_FOCUSED.load(Ordering::Acquire)
 }
 
+pub(super) fn is_open() -> bool {
+    CURRENT.load(Ordering::Acquire) != 0
+}
+
+pub(super) fn raise_if_open() {
+    let generation = CURRENT.load(Ordering::Acquire);
+    if generation != 0 {
+        super::send_response(
+            0,
+            "nativeEditorRaise",
+            Ok(json!({ "generation": generation })),
+        );
+    }
+}
+
 pub(super) fn focus_changed(op: &str, argument: &str) -> bool {
     if !matches!(op, "nativeEditorFocusIn" | "nativeEditorFocusOut") {
         return false;
@@ -66,7 +81,7 @@ pub(super) async fn open(app: tauri::AppHandle, hash: String) -> Result<Value, S
             .as_ref()
             .is_err_and(|error| error == "editor.richUnavailable")
     {
-        crate::open_text_editor_window(app, hash).await?;
+        crate::show_text_editor_window(app, hash, Some(document)).await?;
         return Ok(json!({}));
     }
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;

@@ -6,6 +6,10 @@ if (!["native-debug", "production"].includes(mode)) {
   throw new Error("Use: node scripts/check-native-debug-assets.mjs <native-debug|production> [dist]");
 }
 const assets = join(resolve(directory), "assets");
+const editor = readFileSync(join(resolve(directory), "text-editor.html"), "utf8");
+if ((editor.match(/<script type="module"/g) ?? []).length !== 1 || editor.includes('rel="modulepreload"')) {
+  throw new Error("The on-demand WinUI editor must load as one JavaScript bundle.");
+}
 const files = readdirSync(assets).filter(file => file.endsWith(".js"));
 const embedded = mode === "native-debug";
 for (const name of ["TestRoom", "DeveloperMemoryWindow", "DeveloperTutorialWindow"]) {

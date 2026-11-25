@@ -39,7 +39,7 @@
   padding: 0 var(--ui-space-4) var(--ui-space-4);
   gap: 0;
   border-radius: 0;
-  background: transparent;
+  background: var(--ui-winui-aux-window-surface);
   box-shadow: none;
 }
 
@@ -68,6 +68,10 @@
   font-weight: 600;
 }
 
+.window[data-chrome="winui"] .title {
+  font: var(--ui-winui-aux-title-font);
+}
+
 .titleText {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -85,7 +89,7 @@
   margin-block: var(--ui-space-3) var(--ui-space-2);
   font-size: var(--ui-winui-aux-body-size);
   font-weight: 600;
-  line-height: 20px;
+  line-height: var(--ui-winui-aux-body-line-height);
   flex-shrink: 0;
 }
 
@@ -101,9 +105,7 @@
   border: 1px solid var(--ui-winui-aux-stroke);
   border-bottom-color: var(--ui-winui-aux-stroke-bottom);
   border-radius: var(--ui-winui-aux-control-radius);
-  font-size: var(--ui-winui-aux-body-size);
-  font-weight: 400;
-  line-height: 20px;
+  font: var(--ui-winui-aux-body-font);
   color: var(--ui-winui-aux-text);
   background: var(--ui-winui-aux-control);
 }
@@ -135,7 +137,11 @@
   border-color: var(--ui-winui-aux-stroke);
   border-bottom-color: var(--ui-winui-aux-stroke-bottom);
   border-radius: var(--ui-winui-aux-control-radius);
-  font-size: var(--ui-winui-aux-body-size);
+  font: var(--ui-winui-aux-body-font);
+}
+
+.window[data-chrome="winui"] .rich[data-rich-canvas="light"] {
+  color: var(--ui-winui-aux-light-document-text);
 }
 
 .window[data-chrome="winui"] .rich:focus-visible {

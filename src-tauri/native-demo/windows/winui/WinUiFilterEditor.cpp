@@ -3,6 +3,7 @@
 #include "WinUiFilterEditor.h"
 #include "WinUiAppearance.h"
 #include "WinUiNameEmoji.h"
+#include "WinUiEditorKeys.h"
 #include "WinUiRichContent.h"
 
 #include <algorithm>
@@ -113,8 +114,8 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
     StackPanel form{nullptr}, sourceRows{nullptr}, actions{nullptr};
     TextBox name{nullptr}, amount{nullptr}, sourceSearch{nullptr};
     ComboBox type{nullptr}, favorite{nullptr}, unit{nullptr};
-    TextBlock sourceLabel{nullptr}, error{nullptr};
-    Button save{nullptr}, cancel{nullptr}, close{nullptr};
+    TextBlock title{nullptr}, nameLabel{nullptr}, sourceLabel{nullptr}, error{nullptr};
+    Button emoji{nullptr}, save{nullptr}, cancel{nullptr}, close{nullptr};
     DropDownButton sourceButton{nullptr};
     JsonObject draft;
     std::wstring originalName, operation;
@@ -129,8 +130,7 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
     void Hide() {
         active = false; pending = 0; sourcesRequest = 0; busy = false;
         if (sourceButton && sourceButton.Flyout()) sourceButton.Flyout().Hide();
-        if (const auto previous = std::exchange(flyout, nullptr)) previous.Hide();
-        if (const auto callback = std::exchange(returnFocus, {})) callback();
+        CloseEditorFlyout(std::exchange(flyout, nullptr), std::exchange(returnFocus, {}));
     }
 
     winrt::hstring Text(const wchar_t *zh, const wchar_t *en) const { return english ? en : zh; }
@@ -272,15 +272,59 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
         this->operation = operation;
         try {
             pending = request(operation, payload);
-            if (!pending) winrt::throw_hresult(E_UNEXPECTED);
+            if (!pending) {
+                SetBusy(false);
+                SetError(Text(L"保存请求未发送，请重试", L"Could not send the save request. Try again."));
+            }
         } catch (const winrt::hresult_error &failure) {
             pending = 0; SetBusy(false); SetError(failure.message());
         }
     }
+    void ApplyLanguage(bool useEnglish) {
+        english = useEnglish;
+        if (!active || !root) return;
+        const bool isAdd = String(draft, L"id").empty();
+        if (title) title.Text(isAdd ? Text(L"添加标签", L"Add Tab") : Text(L"编辑标签", L"Edit Tab"));
+        if (close) NameIconButton(close, Text(L"关闭", L"Close"));
+        if (nameLabel) nameLabel.Text(Text(L"名称", L"Name"));
+        if (name) Automation::AutomationProperties::SetName(name, Text(L"名称", L"Name"));
+        if (emoji) SetNameEmojiLanguage(emoji, english);
+        auto replaceChoice = [](ComboBox const &box, winrt::hstring const &header, const std::vector<winrt::hstring> &labels) {
+            if (!box) return;
+            const auto selected = box.SelectedIndex();
+            box.Header(winrt::box_value(header));
+            Automation::AutomationProperties::SetName(box, header);
+            box.Items().Clear();
+            for (const auto &label : labels) box.Items().Append(winrt::box_value(label));
+            box.SelectedIndex(selected);
+        };
+        replaceChoice(type, Text(L"类型", L"Type"),
+            {Text(L"不限", L"Any"), Text(L"文本", L"Text"), Text(L"图片", L"Image"), Text(L"文件", L"File"), Text(L"链接", L"Link"), Text(L"颜色", L"Color")});
+        replaceChoice(favorite, Text(L"收藏状态", L"Favorite State"),
+            {Text(L"不限", L"Any"), Text(L"仅收藏", L"Favorites only"), Text(L"未收藏", L"Not favorite")});
+        replaceChoice(unit, Text(L"单位", L"Unit"),
+            {Text(L"分钟", L"Minutes"), Text(L"小时", L"Hours"), Text(L"天", L"Days"), Text(L"周", L"Weeks"), Text(L"月", L"Months")});
+        if (amount) {
+            const auto recentLabel = Text(L"最近", L"Recent");
+            amount.Header(winrt::box_value(recentLabel));
+            amount.PlaceholderText(Text(L"不限", L"Any time"));
+            Automation::AutomationProperties::SetName(amount, recentLabel);
+        }
+        if (sourceButton) Automation::AutomationProperties::SetName(sourceButton, Text(L"来源应用", L"Source app"));
+        if (sourceSearch) {
+            sourceSearch.PlaceholderText(Text(L"筛选近 7 天的来源应用", L"Find source apps from the last 7 days"));
+            Automation::AutomationProperties::SetName(sourceSearch, Text(L"筛选来源应用", L"Find source apps"));
+        }
+        if (cancel) cancel.Content(winrt::box_value(Text(L"取消", L"Cancel")));
+        if (save) save.Content(winrt::box_value(Text(L"保存", L"Save")));
+        RenderSources();
+    }
+
     void Save() {
         if (!active || busy) return;
         const auto text = std::wstring{name.Text()};
-        if (text.find_first_not_of(L" \t\r\n") == std::wstring::npos || (text.size() > 20 && text != originalName)) {
+        if (text.find_first_not_of(L" \t\r\n") == std::wstring::npos) name.Text(Text(L"新筛选", L"New filter"));
+        else if (text.size() > 20 && text != originalName) {
             SetError(Text(L"请输入 1–20 个字符的筛选名称", L"Use a filter name of 1–20 characters")); name.Focus(FocusState::Programmatic); return;
         }
         // Clone rather than mutate the active tab before persistence succeeds.
@@ -314,7 +358,7 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
 
         root = Grid{}; root.Width(320); root.MaxHeight(508); root.RowSpacing(8);
         for (int i = 0; i < 4; ++i) { RowDefinition row; row.Height(GridLength{1, i == 1 ? GridUnitType::Star : GridUnitType::Auto}); root.RowDefinitions().Append(row); }
-        auto title = Label(String(draft, L"id").empty() ? Text(L"添加标签", L"Add Tab") : Text(L"编辑标签", L"Edit Tab"), true);
+        title = Label(String(draft, L"id").empty() ? Text(L"添加标签", L"Add Tab") : Text(L"编辑标签", L"Edit Tab"), true);
         const auto weak = weak_from_this();
         close = AuxiliaryClose(Text(L"关闭", L"Close"));
         close.Click([weak](auto const &sender, auto const &) {
@@ -326,12 +370,13 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
         name.MaxLength(static_cast<int>(std::max<std::size_t>(20, originalName.size()))); name.Text(originalName);
         name.Header(nullptr);
         StackPanel nameGroup; nameGroup.Spacing(4);
-        auto nameLabel = Label(Text(L"名称", L"Name")); ApplyStyle(nameLabel, L"VPaste.Body"); nameLabel.FontSize(13);
+        nameLabel = Label(Text(L"名称", L"Name")); ApplyStyle(nameLabel, L"VPaste.Body"); nameLabel.FontSize(13);
         nameGroup.Children().Append(nameLabel);
         Grid nameRow; nameRow.ColumnSpacing(8);
         ColumnDefinition emojiColumn; emojiColumn.Width(GridLength{1, GridUnitType::Auto});
         nameRow.ColumnDefinitions().Append(emojiColumn); nameRow.ColumnDefinitions().Append(ColumnDefinition{});
-        nameRow.Children().Append(NameEmojiButton(name, english));
+        emoji = NameEmojiButton(name, english);
+        nameRow.Children().Append(emoji);
         Grid::SetColumn(name, 1); nameRow.Children().Append(name); nameGroup.Children().Append(nameRow);
         form.Children().Append(AuxiliaryGroup(nameGroup));
         StackPanel criteria; criteria.Spacing(AuxiliaryGap);
@@ -390,6 +435,14 @@ struct FilterEditor::Impl : std::enable_shared_from_this<FilterEditor::Impl> {
         save.Click([weak](auto const &sender, auto const &) {
             if (auto self = weak.lock(); self && sender == self->save) self->Save();
         }); actions.Children().Append(save);
+        for (const auto &field : {name, amount}) {
+            BindSingleLineEditorKeys(field, [weak](auto const &sender, bool submit) {
+                if (const auto self = weak.lock(); self && self->active && !self->busy &&
+                    (sender == self->name || sender == self->amount)) {
+                    if (submit) self->Save(); else self->Hide();
+                }
+            });
+        }
         const auto footer = AuxiliaryFooter(actions);
         Grid::SetRow(footer, 3); root.Children().Append(footer);
         root.Unloaded([weak](auto const &sender, auto const &) {
@@ -464,6 +517,7 @@ void FilterEditor::Hide() {
 }
 bool FilterEditor::IsOpen() const { return m_impl && m_impl->active; }
 void FilterEditor::SetTheme(ElementTheme theme) { if (m_impl->root) m_impl->root.RequestedTheme(theme); }
+void FilterEditor::SetLanguage(bool english) { if (m_impl) m_impl->ApplyLanguage(english); }
 #ifdef _DEBUG
 FrameworkElement FilterEditor::TestLoad(JsonObject draft, bool english) {
     Hide(); m_impl->Build(draft, english);
@@ -472,6 +526,17 @@ FrameworkElement FilterEditor::TestLoad(JsonObject draft, bool english) {
 }
 void FilterEditor::TestName(const winrt::hstring &name) { m_impl->name.Text(name); }
 winrt::hstring FilterEditor::TestName() const { return m_impl->name.Text(); }
+void FilterEditor::TestTypeIndex(int index) { if (m_impl->type) m_impl->type.SelectedIndex(index); }
+winrt::hstring FilterEditor::TestError() const { return m_impl->error ? m_impl->error.Text() : L""; }
+winrt::hstring FilterEditor::TestTitle() const {
+    if (!m_impl->root || m_impl->root.Children().Size() == 0) return L"";
+    if (const auto caption = m_impl->root.Children().GetAt(0).try_as<Grid>()) {
+        for (const auto &child : caption.Children()) {
+            if (const auto text = child.try_as<TextBlock>()) return text.Text();
+        }
+    }
+    return L"";
+}
 FrameworkElement FilterEditor::TestRoot() const { return m_impl->root; }
 void FilterEditor::TestSave() { m_impl->Save(); }
 
@@ -700,7 +765,20 @@ winrt::Windows::Foundation::IAsyncAction TestFilterEditorControls(FrameworkEleme
     winrt::check_hresult(!root.IsLoaded() && !editor.IsOpen() ? S_OK : E_FAIL);
     reply(unloaded, L"filtersSave");
     winrt::check_hresult(saved == 1 ? S_OK : E_FAIL);
+
+    stage = 872;
+    draft = JsonObject::Parse(LR"({"name":"","filter":{}})");
+    mount(); co_await NextNativeFrame(); editor.TestName(L"  "); editor.TestSave();
+    const auto defaultSave = requests.back();
+    winrt::check_hresult(editor.IsOpen() && editor.TestName() == L"New filter" &&
+        defaultSave.GetNamedObject(L"tab").GetNamedString(L"name") == editor.TestName() ? S_OK : E_FAIL);
+    reply(defaultSave, L"filtersSave", L"Synthetic default save failure");
+    winrt::check_hresult(editor.IsOpen() && editor.TestName() == L"New filter" &&
+        root.Children().GetAt(2).as<TextBlock>().Text() == L"Synthetic default save failure" ? S_OK : E_FAIL);
+    editor.TestSave(); reply(requests.back(), L"filtersSave");
+    winrt::check_hresult(!editor.IsOpen() && saved == 2 ? S_OK : E_FAIL);
     editor.Hide();
+    fixture.Child(nullptr);
 }
 #endif
 } // namespace vpaste::winui

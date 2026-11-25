@@ -11,6 +11,7 @@ struct PanelConfiguration: Decodable {
   let session: UInt64
   let pasteQueue: PanelPasteQueueStatus?
   var developerReconfigure: Bool? = nil
+  var editorReturnHash: String? = nil
   var onboarding: PanelOnboardingState? = nil
   let sizePreview: Bool
   let language: String
@@ -229,29 +230,34 @@ final class PanelBridge {
     self.callbacks = callbacks
     self.session = session
   }
+  @discardableResult
   func send(
     _ op: String, _ args: [String: Any] = [:], completion: ((Result<Any, Error>) -> Void)? = nil
-  ) {
-    guard !closed else { return }
+  ) -> UInt64? {
+    guard !closed else { return nil }
     next &+= 1
     var request = args
     request["id"] = next
     request["session"] = session
     request["op"] = op
-    guard let data = try? JSONSerialization.data(withJSONObject: request) else { return }
-    // Rust drops requests beyond the bridge limit. Don't leave the editor
-    // waiting for a save reply if a legacy draft exceeds it.
-    if op == "tab-editor-save", data.count > 64 * 1024 {
-      completion?(.failure(NSError(domain: "vPaste", code: 1, userInfo: [
-        NSLocalizedDescriptionKey: "Tab draft is too large / 标签内容过长"
-      ])))
-      return
+    guard let data = try? JSONSerialization.data(withJSONObject: request) else { return nil }
+    guard data.count <= 64 * 1024 else {
+      // The editor needs a reply to leave its saving state when a legacy draft is too large.
+      if op == "tab-editor-save" {
+        completion?(.failure(NSError(domain: "vPaste", code: 1, userInfo: [
+          NSLocalizedDescriptionKey: "Tab draft is too large / 标签内容过长"
+        ])))
+      }
+      return nil
     }
-    if let completion { pending[next] = completion }
+    let id = next
+    if let completion { pending[id] = completion }
     data.withUnsafeBytes { bytes in
       callbacks.request(bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count)
     }
+    return id
   }
+  func abandon(_ id: UInt64) { pending.removeValue(forKey: id) }
   func receive(_ value: [String: Any]) {
     guard !closed, (value["session"] as? NSNumber)?.uint64Value == session else { return }
     if let name = value["event"] as? String {

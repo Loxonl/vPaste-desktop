@@ -122,9 +122,17 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
         const pdf = current(page).locator("iframe");
         const toolbarPin = toolbar.locator("button[aria-pressed]");
         const shell = page.locator('[data-chrome="winui"]');
+        const readingLayer = () => shell.locator('[class*="preview-content"]').evaluate(node =>
+            getComputedStyle(node, "::before").backgroundColor);
         await expect(shell).toHaveCSS("border-radius", "0px");
         await expect(shell).toHaveCSS("backdrop-filter", "none");
-        await expect(toolbar.getByRole("heading", { name: "Preview", exact: true })).toBeVisible();
+        const title = toolbar.getByRole("heading", { name: "Preview", exact: true });
+        await expect(title).toBeVisible();
+        await expect(shell).toHaveCSS("background-color", "rgba(252, 252, 252, 0.92)");
+        await expect(title).toHaveCSS("font-size", "16px");
+        await expect(title).toHaveCSS("font-weight", "600");
+        await expect(title).toHaveCSS("line-height", "22px");
+        await expect(title).toHaveCSS("color", "rgba(0, 0, 0, 0.894)");
         await expect(toolbar).toHaveCSS("border-bottom-width", "1px");
         await expect(toolbarPin).toBeVisible();
         await expect(toolbar.getByRole("button")).toHaveCount(1);
@@ -151,6 +159,48 @@ for (const reducedMotion of ["no-preference", "reduce"] as const) {
             .filter(call => call.command === "sync_preview_browser" && call.args.requestId === 9).at(-1)!.args.bounds as { y: number });
         await expect(toolbar.getByRole("heading", { name: "Preview", exact: true })).toBeVisible();
         expect(browserBounds.y).toBeGreaterThanOrEqual(toolbarBounds!.y + toolbarBounds!.height);
+
+        const rich = current(page).locator("[data-rich-canvas]");
+        await expect.poll(readingLayer).toBe("rgba(255, 255, 255, 0.5)");
+        await emit(page, { request_id: 10, item_type: "Text", content: "Dark ink", rich_html: '<b style="color:#242424">Dark ink</b>', native_toolbar: true });
+        await expect(rich).toHaveAttribute("data-rich-canvas", "light");
+        await expect(rich).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+        await expect(rich.locator("b")).toHaveCSS("color", "rgb(36, 36, 36)");
+        expect(await readingLayer()).toBe("rgba(255, 255, 255, 0.5)");
+        await expect(rich).toHaveCSS("font-size", "14px");
+        await expect(rich).toHaveCSS("line-height", "20px");
+        await expect(rich).toHaveCSS("color", "rgba(0, 0, 0, 0.894)");
+        // Composite the browser layers over the measured gray host. The
+        // browser cannot capture Windows' system backdrop on its own.
+        const colors = await shell.evaluate((element, reading) => {
+            const canvas = document.createElement("canvas");
+            canvas.width = canvas.height = 1;
+            const context = canvas.getContext("2d")!;
+            const blend = (color: string) => {
+                context.fillStyle = color;
+                context.fillRect(0, 0, 1, 1);
+                return context.getImageData(0, 0, 1, 1).data[0];
+            };
+            blend("#d3d3d3");
+            return [blend(getComputedStyle(element).backgroundColor), blend(reading)];
+        }, await readingLayer());
+        expect(Math.abs(colors[0] - 249)).toBeLessThanOrEqual(1);
+        expect(Math.abs(colors[1] - 252)).toBeLessThanOrEqual(1);
+
+        await emit(page, { request_id: 11, item_type: "Text", content: "Light ink", rich_html: '<b style="color:#f0f0f0">Light ink</b>', native_toolbar: true });
+        await expect(rich).toHaveAttribute("data-rich-canvas", "dark");
+        await expect(rich).toHaveCSS("background-color", "rgb(36, 36, 36)");
+        expect(await readingLayer()).toBe("rgba(255, 255, 255, 0.5)");
+        await expect(shell).toHaveCSS("background-color", "rgba(252, 252, 252, 0.92)");
+
+        await page.emulateMedia({ colorScheme: "dark" });
+        await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+        await emit(page, { request_id: 12, item_type: "Text", content: "Dark ink in dark theme", rich_html: '<b style="color:#242424">Dark ink in dark theme</b>', native_toolbar: true });
+        await expect(rich).toHaveAttribute("data-rich-canvas", "light");
+        await expect(rich).toHaveCSS("background-color", "rgb(243, 243, 243)");
+        await expect(rich.locator("b")).toHaveCSS("color", "rgb(36, 36, 36)");
+        await expect(shell).toHaveCSS("background-color", "rgba(32, 32, 32, 0.92)");
+        await expect(title).toHaveCSS("color", "rgb(255, 255, 255)");
         await toolbarPin.press("Escape");
         await expect.poll(() => page.evaluate(() => (window as PreviewWindow).__residentPreview.calls
             .some(call => call.command === "hide_preview_window"))).toBe(true);

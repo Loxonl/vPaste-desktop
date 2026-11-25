@@ -115,7 +115,7 @@ void QueueWindow::Hide() { ShowWindow(window, SW_HIDE); }
 void QueueWindow::SetAppearance(bool english, winrt::Microsoft::UI::Xaml::ElementTheme theme) {
     SetWindowTextW(window, english ? L"vPaste — Paste queue" : L"vPaste — 粘贴队列");
     viewport.RequestedTheme(theme);
-    const BOOL dark = viewport.ActualTheme() == winrt::Microsoft::UI::Xaml::ElementTheme::Dark;
+    const BOOL dark = ResolveDarkTheme(theme, viewport.ActualTheme());
     (void)DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
 }
 

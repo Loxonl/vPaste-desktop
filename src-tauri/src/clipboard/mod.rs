@@ -779,6 +779,21 @@ fn collect_history_refs(
                 let app_icon_path = resolve_app_icon_path(&stored.app_source, stored.app_icon_path);
                 let title_color =
                     app_icon_dominant_color(&app_icon_path).unwrap_or(stored.title_color);
+                let is_rich_text = rich_meta_from_source(&stored.source).is_some();
+                let link_resource = if item_type == ItemType::Link {
+                    let mut parts = stored.content.split("|||");
+                    let _url = parts.next();
+                    let media = parts.next().unwrap_or("");
+                    let _title = parts.next();
+                    let kind = parts.next().unwrap_or("");
+                    if media.is_empty() && kind.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{media}:{kind}")
+                    }
+                } else {
+                    String::new()
+                };
                 let preview_text =
                     history_preview_text(&item_type, &stored.content, &stored.preview_content);
                 list.push(crate::history_views::HistoryRef {
@@ -793,7 +808,22 @@ fn collect_history_refs(
                     app_icon_path,
                     title_color,
                     preview_text,
+                    is_rich_text,
+                    link_resource,
+                    has_ocr_text: false,
                 });
+            }
+            let ocr_completed = crate::image_ocr::completed_hashes(
+                list.iter()
+                    .filter(|item| item.item_type == ItemType::Image)
+                    .map(|item| item.hash.as_str()),
+            );
+            if !ocr_completed.is_empty() {
+                for item in &mut list {
+                    if item.item_type == ItemType::Image && ocr_completed.contains(&item.hash) {
+                        item.has_ocr_text = true;
+                    }
+                }
             }
             Ok(Some(Page {
                 list,

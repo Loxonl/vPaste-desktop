@@ -112,18 +112,44 @@ fn main_docked_frame(app: &AppHandle) -> Option<Value> {
 }
 
 pub(crate) fn show(app: AppHandle, language: String, theme: String) -> Result<(), String> {
-    present(app, language, theme, false, false)
+    present(app, language, theme, false, false, None)
 }
 
 pub(crate) fn show_default(app: AppHandle) -> Result<(), String> {
     let config = crate::config::get();
-    present(app, config.multilingual, config.theme_mode, false, false)
+    present(
+        app,
+        config.multilingual,
+        config.theme_mode,
+        false,
+        false,
+        None,
+    )
+}
+
+pub(crate) fn show_after_editor(app: AppHandle, hash: Option<String>) -> Result<(), String> {
+    let config = crate::config::get();
+    present(
+        app,
+        config.multilingual,
+        config.theme_mode,
+        false,
+        false,
+        hash,
+    )
 }
 
 pub(crate) fn toggle(app: AppHandle) -> Result<(), String> {
     let config = crate::config::get();
     let toggle = !onboarding::blocks_toggle();
-    present(app, config.multilingual, config.theme_mode, toggle, false)
+    present(
+        app,
+        config.multilingual,
+        config.theme_mode,
+        toggle,
+        false,
+        None,
+    )
 }
 
 pub(crate) fn close_preview(app: &AppHandle) -> Result<(), String> {
@@ -140,6 +166,7 @@ fn present(
     theme: String,
     toggle: bool,
     reconfigure: bool,
+    editor_return_hash: Option<String>,
 ) -> Result<(), String> {
     if !crate::get_developer_mode() {
         return Err("Native panel requires --dev-mode".into());
@@ -152,10 +179,14 @@ fn present(
             let preview = crate::panel_size::is_previewing();
             // SAFETY: AppKit owns the controller. A normal wake focuses the
             // current surface; a shortcut toggles it. Size changes recreate it.
-            if !preview && !reconfigure && unsafe { vpaste_native_panel_activate(toggle) } {
+            if !preview
+                && !reconfigure
+                && editor_return_hash.is_none()
+                && unsafe { vpaste_native_panel_activate(toggle) }
+            {
                 return;
             }
-            if reconfigure {
+            if reconfigure || editor_return_hash.is_some() {
                 // Save the old viewport while its bridge session is still valid.
                 unsafe { vpaste_native_panel_close(false) };
             }
@@ -225,6 +256,7 @@ fn present(
                 "pasteQueue": queue_selection::snapshot(),
                 "sizePreview": preview,
                 "developerReconfigure": reconfigure,
+                "editorReturnHash": editor_return_hash,
                 "onboarding": onboarding::snapshot(),
                 "language": language,
                 "theme": theme,
@@ -662,7 +694,8 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
         }
         "history-resume" => {
             let preserve = r.preserve_history;
-            blocking(move || history::resume(panel_tabs()?, open, preserve)).await
+            let hash = (!r.hash.is_empty()).then(|| r.hash.clone());
+            blocking(move || history::resume(panel_tabs()?, open, preserve, hash.as_deref())).await
         }
         "developer" => developer::open(app.clone(), &r.target, &r.language, &r.theme).await,
         "onboarding" => onboarding::handle(app.clone(), r).await,

@@ -940,7 +940,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private func resumeHistory() {
     generation &+= 1
     let epoch = generation
-    bridge.send("history-resume", ["preserveHistory": config.developerReconfigure == true]) { [weak self] result in
+    let args: [String: Any] = ["preserveHistory": config.developerReconfigure == true,
+      "hash": config.editorReturnHash ?? ""]
+    bridge.send("history-resume", args) { [weak self] result in
       guard let self, !self.closed, self.generation == epoch else { return }
       do {
         let value = try panelDecode(PanelHistoryPresentation.self, result.get())

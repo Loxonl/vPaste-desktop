@@ -56,7 +56,7 @@ fn link_preview_accepts_a_configured_localhost_proxy_and_its_authentication() {
     assert!(!request.contains("private-test-value"));
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 #[test]
 fn link_preview_offers_http2_and_http1_after_proxy_connect() {
     let hello = proxy_fixture_exchange("127.0.0.1", false, |stream, request| {

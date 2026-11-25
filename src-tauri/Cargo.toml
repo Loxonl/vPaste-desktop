@@ -82,6 +82,7 @@ clipboard-win = { version = "5.3.0", features = ["monitor"] }
 windows = { version = "0.56.0", features = ["Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage_Streams", "UI_ViewManagement", "Wdk_System_Threading", "Win32_System_Threading", "Win32_System_Kernel", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Accessibility", "Win32_UI_Controls", "Win32_Graphics_Gdi", "Win32_Graphics_Dwm", "Win32_System_ProcessStatus", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_System_Ole", "Win32_System_WinRT", "Win32_Globalization"] }
 
 [target."cfg(target_os = \"macos\")".dependencies]
+reqwest = { version = "0.12.24", features = ["native-tls-alpn"] }
 cocoa = "0.25"
 objc = "0.2.7"
 core-graphics = "0.19.2"

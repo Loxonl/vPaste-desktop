@@ -2,9 +2,10 @@ import AppKit
 import UniformTypeIdentifiers
 
 enum PanelMenuAction: Equatable {
+  case copyAndPaste, pastePlainText
   case preview, editText, viewImageText, favorite(Bool), createTag, retryTags
   case assignTag(PanelTag), removeAllTags, removeTag(PanelTag)
-  case exportImage, openFolder, copyFolder, copyColor(String), pastePlainText, delete
+  case exportImage, openFolder, copyFolder, copyColor(String), delete
 }
 
 enum PanelMenuTags {
@@ -29,6 +30,7 @@ struct PanelColorOption: Decodable, Equatable {
 
 enum PanelContextMenu {
   private static let labels: [String: (String, String)] = [
+    "copyAndPaste": ("Copy and paste", "复制并粘贴"),
     "preview": ("Preview", "预览"),
     "editText": ("Edit text", "编辑文本"),
     "imageText": ("Recognize text in image", "识别图片文字"),
@@ -59,6 +61,14 @@ enum PanelContextMenu {
 
   static func editorAnchor(mouse: NSPoint, primaryHeight: CGFloat) -> [CGFloat] {
     [mouse.x, primaryHeight - mouse.y]
+  }
+
+  static func upwardOrigin(at point: NSPoint, menuHeight: CGFloat, screen: NSRect) -> NSPoint? {
+    let height = menuHeight + 4
+    // A docked card can sit below the screen area AppKit accepts for menus.
+    let bottom = max(point.y, screen.minY)
+    guard point.y - screen.minY < height, screen.maxY - bottom >= height else { return nil }
+    return NSPoint(x: point.x, y: bottom + height)
   }
 
   @MainActor
@@ -104,21 +114,23 @@ enum PanelContextMenu {
   static func isEditableText(_ type: String) -> Bool { isTextLike(type) || type == "Color" }
 
   static func options(
-    card: PanelCard, tags: PanelMenuTags, colors: [PanelColorOption]?, chinese: Bool
+    card: PanelCard, tags: PanelMenuTags, colors: [PanelColorOption]?, chinese: Bool, queueActive: Bool = false
   ) -> [PanelMenuOption] {
     func l(_ key: String) -> String { label(key, chinese: chinese) }
 
-    var options = [
-      PanelMenuOption(title: l("preview"), action: .preview),
-      PanelMenuOption(
-        title: l(card.favorite ? "removeFavorite" : "addFavorite"), action: .favorite(!card.favorite)),
-    ]
+    var options: [PanelMenuOption] = []
+    if !queueActive {
+      options.append(PanelMenuOption(title: l("copyAndPaste"), action: .copyAndPaste))
+    }
+    options.append(PanelMenuOption(title: l("preview"), action: .preview))
     if isEditableText(card.itemType) {
-      options.insert(PanelMenuOption(title: l("editText"), action: .editText), at: 1)
+      options.append(PanelMenuOption(title: l("editText"), action: .editText))
     }
     if card.itemType == "Image" {
-      options.insert(PanelMenuOption(title: l("imageText"), action: .viewImageText), at: 1)
+      options.append(PanelMenuOption(title: l("imageText"), action: .viewImageText))
     }
+    options.append(PanelMenuOption(
+      title: l(card.favorite ? "removeFavorite" : "addFavorite"), action: .favorite(!card.favorite)))
 
     let tagOptions: [PanelMenuOption]
     switch tags {
@@ -147,8 +159,8 @@ enum PanelContextMenu {
       options.append(PanelMenuOption(title: l("exportImage"), action: .exportImage))
     }
     if card.itemType == "File" {
-      options.append(PanelMenuOption(title: l("openFolder"), action: .openFolder))
       options.append(PanelMenuOption(title: l("copyFolder"), action: .copyFolder))
+      options.append(PanelMenuOption(title: l("openFolder"), action: .openFolder))
     }
     if card.itemType == "Color" {
       let entries = colors?.map {
@@ -159,7 +171,8 @@ enum PanelContextMenu {
         : entries))
     }
     if isTextLike(card.itemType) {
-      options.append(PanelMenuOption(title: l("pastePlainText"), action: .pastePlainText))
+      options.insert(PanelMenuOption(title: l("pastePlainText"), action: .pastePlainText),
+        at: queueActive ? options.count : 1)
     }
     options += [.separator, PanelMenuOption(title: l("deleteRecord"), action: .delete, danger: true)]
     return options

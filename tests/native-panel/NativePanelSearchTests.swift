@@ -176,6 +176,18 @@ final class NativePanelSearchTests: XCTestCase {
     }
   }
 
+  func testCopyAndPasteMenuUsesTheOriginalFormatOfTheCapturedCard() throws {
+    try withPanel(hashes: ["A", "B"]) { controller, _, _ in
+      let b = try panelDecode(PanelCard.self, card("B"))
+      let options = PanelContextMenu.options(card: b, tags: .loading, colors: nil, chinese: false)
+      controller.performMenu(try XCTUnwrap(options.first { $0.title == "Copy and paste" }?.action), card: b)
+      let request = try XCTUnwrap(actions.last)
+      XCTAssertEqual(request["op"] as? String, "paste")
+      XCTAssertEqual(request["hash"] as? String, "B")
+      XCTAssertEqual(request["plain"] as? Bool, false)
+    }
+  }
+
   func testOldCardMouseAndMenuCannotPasteOrDeleteDuringDebounce() throws {
     try withPanel { controller, search, editor in
       RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
@@ -194,6 +206,7 @@ final class NativePanelSearchTests: XCTestCase {
         if type == .leftMouseUp { view.mouseUp(with: event) }
         else { view.rightMouseDown(with: event) }
       }
+      controller.performMenu(.copyAndPaste, card: old)
       controller.performMenu(.pastePlainText, card: old)
       controller.performMenu(.delete, card: old)
       XCTAssertNil(window.attachedSheet)

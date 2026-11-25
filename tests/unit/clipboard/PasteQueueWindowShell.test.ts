@@ -61,7 +61,23 @@ describe("paste queue native window", () => {
     it("verifies the original Windows target before the clipboard write and again before sending keys", () => {
         const worker = mainSource.split("fn process_paste_queue_request_inner")[1]
             .split("fn process_paste_queue_request(")[0];
-        expect(worker).toMatch(/target\.require_foreground\(\)\?;[\s\S]*restore_paste_queue_item[\s\S]*target\.require_foreground\(\)\?;[\s\S]*simulate_paste_shortcut\(\)/);
+        expect(worker).toMatch(/target\.require_foreground\(\)\?;[\s\S]*restore_paste_queue_item[\s\S]*target\.require_foreground\(\)\?;[\s\S]*simulate_paste_shortcut\(/);
+    });
+
+    it("binds macOS queue clicks and shortcuts to a target before the worker runs", () => {
+        const click = mainSource.split("fn paste_queue_item(")[1].split("fn undo_paste_queue_consume")[0];
+        const tap = mainSource.split("fn paste_queue_macos_event_callback")[1]
+            .split("fn run_paste_queue_interceptor")[0];
+        expect(click).toMatch(/macos_foreground_app_pid\(\)[\s\S]*enqueue_paste_queue_request\([\s\S]*target_pid,/);
+        expect(tap).toMatch(/macos_foreground_app_pid\(\)[\s\S]*enqueue_paste_queue_request\([\s\S]*target_pid,/);
+    });
+
+    it("rejects a changed macOS target before posting either event and pins both events to the original process", () => {
+        const worker = mainSource.split("fn process_paste_queue_request_inner")[1]
+            .split("fn process_paste_queue_request(")[0];
+        const send = mainSource.split("fn simulate_paste_shortcut(")[1].split("fn paste_shortcut_inputs")[0];
+        expect(worker).toMatch(/request\s*\.target_pid[\s\S]*restore_paste_queue_item[\s\S]*simulate_paste_shortcut\([\s\S]*Some\(target_pid\)/);
+        expect(send).toMatch(/require_macos_paste_queue_target\(pid, false\)\?;\s*key_down\.post_to_pid\(pid\);\s*key_up\.post_to_pid\(pid\);/);
     });
 
     it("does not intercept a normal Ctrl+V inside a vPaste surface", () => {
@@ -84,6 +100,6 @@ describe("paste queue native window", () => {
 
     it("keeps ordinary Windows paste bound to the recorded window even without a UI Automation snapshot", () => {
         const paste = mainSource.split("fn paste(\n")[1].split("fn record_text_history")[0];
-        expect(paste).toMatch(/Target::recorded\(\)[\s\S]*restore_before_paste\(target\)\?;[\s\S]*target\.require_foreground\(\)\?;[\s\S]*simulate_paste_shortcut\(\)/);
+        expect(paste).toMatch(/Target::recorded\(\)[\s\S]*restore_before_paste\(target\)\?;[\s\S]*target\.require_foreground\(\)\?;[\s\S]*simulate_paste_shortcut\(/);
     });
 });

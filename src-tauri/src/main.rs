@@ -138,6 +138,8 @@ struct PasteQueueRequest {
     origin: PasteQueueRequestOrigin,
     #[cfg(target_os = "windows")]
     target: Option<windows_paste_focus::Target>,
+    #[cfg(target_os = "macos")]
+    target_pid: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1531,24 +1533,26 @@ fn record_foreground_app_before_clipboard() {
 }
 
 #[cfg(target_os = "macos")]
-fn record_foreground_app_before_clipboard() {
+fn macos_foreground_app_pid() -> Option<i32> {
     use cocoa::base::{id, nil};
     use objc::{class, msg_send, sel, sel_impl};
 
-    unsafe {
+    objc::rc::autoreleasepool(|| unsafe {
         let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
-        if workspace == nil {
-            return;
-        }
         let app: id = msg_send![workspace, frontmostApplication];
         if app == nil {
-            return;
+            return None;
         }
         let pid: i32 = msg_send![app, processIdentifier];
-        if pid != std::process::id() as i32 {
-            if let Ok(mut last_pid) = LAST_FOREGROUND_APP_PID.lock() {
-                *last_pid = Some(pid);
-            }
+        (pid > 0).then_some(pid)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn record_foreground_app_before_clipboard() {
+    if let Some(pid) = macos_foreground_app_pid().filter(|&pid| pid != std::process::id() as i32) {
+        if let Ok(mut last_pid) = LAST_FOREGROUND_APP_PID.lock() {
+            *last_pid = Some(pid);
         }
     }
 }
@@ -1636,13 +1640,16 @@ fn restore_foreground_app_before_paste() {
 
 #[cfg(target_os = "macos")]
 fn restore_foreground_app_before_paste() {
+    let pid = LAST_FOREGROUND_APP_PID.lock().ok().and_then(|pid| *pid);
+    if let Some(pid) = pid {
+        activate_macos_app(pid);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn activate_macos_app(pid: i32) {
     use cocoa::appkit::{NSApplicationActivateIgnoringOtherApps, NSRunningApplication};
     use cocoa::base::{id, nil};
-
-    let pid = LAST_FOREGROUND_APP_PID.lock().ok().and_then(|pid| *pid);
-    let Some(pid) = pid else {
-        return;
-    };
 
     unsafe {
         let app = id::runningApplicationWithProcessIdentifier(nil, pid);
@@ -12175,7 +12182,7 @@ async fn copy_history_item(
 }
 
 #[cfg(target_os = "macos")]
-fn simulate_paste_shortcut() -> Result<(), String> {
+fn simulate_paste_shortcut(queue_target_pid: Option<i32>) -> Result<(), String> {
     use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, EventField};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
@@ -12191,7 +12198,6 @@ fn simulate_paste_shortcut() -> Result<(), String> {
         EventField::EVENT_SOURCE_USER_DATA,
         PASTE_QUEUE_MAC_EVENT_MARKER,
     );
-    key_down.post(CGEventTapLocation::HID);
 
     let key_up = CGEvent::new_keyboard_event(source, V_KEY_CODE, false)
         .map_err(|_| "failed to create paste key up event".to_string())?;
@@ -12200,8 +12206,66 @@ fn simulate_paste_shortcut() -> Result<(), String> {
         EventField::EVENT_SOURCE_USER_DATA,
         PASTE_QUEUE_MAC_EVENT_MARKER,
     );
-    key_up.post(CGEventTapLocation::HID);
+    if let Some(pid) = queue_target_pid {
+        // Pin delivery to the checked process even if focus moves as the events are posted.
+        require_macos_paste_queue_target(pid, false)?;
+        key_down.post_to_pid(pid);
+        key_up.post_to_pid(pid);
+    } else {
+        key_down.post(CGEventTapLocation::HID);
+        key_up.post(CGEventTapLocation::HID);
+    }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+const MACOS_PASTE_QUEUE_TARGET_LOST: &str =
+    "The original paste app is no longer active / 原粘贴应用已不在前台";
+
+#[cfg(target_os = "macos")]
+fn macos_paste_queue_target_matches(
+    target_pid: i32,
+    foreground_pid: Option<i32>,
+    allow_own_app: bool,
+) -> bool {
+    foreground_pid == Some(target_pid)
+        || (allow_own_app && foreground_pid == Some(std::process::id() as i32))
+}
+
+#[cfg(target_os = "macos")]
+fn require_macos_paste_queue_target(target_pid: i32, allow_own_app: bool) -> Result<(), String> {
+    if macos_paste_queue_target_matches(target_pid, macos_foreground_app_pid(), allow_own_app) {
+        Ok(())
+    } else {
+        Err(MACOS_PASTE_QUEUE_TARGET_LOST.into())
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[test]
+fn macos_paste_queue_rejects_a_different_frontmost_app_at_either_stage() {
+    let own_pid = std::process::id() as i32;
+    let target = own_pid + 1;
+    let other = own_pid + 2;
+    assert!(macos_paste_queue_target_matches(
+        target,
+        Some(target),
+        false
+    ));
+    assert!(macos_paste_queue_target_matches(
+        target,
+        Some(own_pid),
+        true
+    ));
+    assert!(!macos_paste_queue_target_matches(
+        target,
+        Some(own_pid),
+        false
+    ));
+    for foreground in [Some(other), None] {
+        assert!(!macos_paste_queue_target_matches(target, foreground, true));
+        assert!(!macos_paste_queue_target_matches(target, foreground, false));
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -12305,6 +12369,7 @@ fn prepare_paste_queue_click_target(
     app: &tauri::AppHandle,
     origin: PasteQueueRequestOrigin,
     #[cfg(target_os = "windows")] target: windows_paste_focus::Target,
+    #[cfg(target_os = "macos")] target_pid: i32,
 ) -> Result<(), String> {
     if !should_prepare_paste_queue_click_target(origin, main_surface_visible()) {
         return Ok(());
@@ -12331,6 +12396,8 @@ fn prepare_paste_queue_click_target(
         return Ok(());
     }
 
+    #[cfg(target_os = "macos")]
+    require_macos_paste_queue_target(target_pid, true)?;
     if main_surface_visible() {
         #[cfg(all(debug_assertions, target_os = "macos"))]
         if native_panel::preview::active() {
@@ -12344,6 +12411,13 @@ fn prepare_paste_queue_click_target(
             std::thread::sleep(std::time::Duration::from_millis(8));
         }
     }
+    #[cfg(target_os = "macos")]
+    match macos_foreground_app_pid() {
+        Some(pid) if pid == target_pid => {}
+        Some(pid) if pid == std::process::id() as i32 => activate_macos_app(target_pid),
+        _ => return Err(MACOS_PASTE_QUEUE_TARGET_LOST.into()),
+    }
+    #[cfg(not(target_os = "macos"))]
     restore_foreground_app_before_paste();
     std::thread::sleep(std::time::Duration::from_millis(40));
     Ok(())
@@ -12402,8 +12476,21 @@ fn process_paste_queue_request_inner(app: &tauri::AppHandle, request: PasteQueue
             target.require_foreground()?;
             target
         };
+        #[cfg(target_os = "macos")]
+        let target_pid = {
+            let target_pid = request
+                .target_pid
+                .ok_or_else(|| MACOS_PASTE_QUEUE_TARGET_LOST.to_string())?;
+            require_macos_paste_queue_target(
+                target_pid,
+                request.origin == PasteQueueRequestOrigin::QueueWindow,
+            )?;
+            target_pid
+        };
         restore_paste_queue_item(app.clone(), &hash)?;
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        prepare_paste_queue_click_target(app, request.origin, target_pid)?;
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         prepare_paste_queue_click_target(app, request.origin)?;
         // Restoring a rich payload or a file can take time. A focus change in
         // that interval must not deliver the paste to another application.
@@ -12411,7 +12498,10 @@ fn process_paste_queue_request_inner(app: &tauri::AppHandle, request: PasteQueue
         target.require_foreground()?;
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         PASTE_QUEUE_INTERNAL_PASTE.store(true, Ordering::SeqCst);
-        let result = simulate_paste_shortcut();
+        let result = simulate_paste_shortcut(
+            #[cfg(target_os = "macos")]
+            Some(target_pid),
+        );
         // Let the target read this clipboard payload before restoring the next item.
         std::thread::sleep(std::time::Duration::from_millis(24));
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
@@ -12478,6 +12568,7 @@ fn enqueue_paste_queue_request(
     hash: Option<String>,
     origin: PasteQueueRequestOrigin,
     #[cfg(target_os = "windows")] target: Option<windows_paste_focus::Target>,
+    #[cfg(target_os = "macos")] target_pid: Option<i32>,
 ) -> Result<(), String> {
     let sender = PASTE_QUEUE_REQUEST_SENDER
         .lock()
@@ -12491,6 +12582,8 @@ fn enqueue_paste_queue_request(
             origin,
             #[cfg(target_os = "windows")]
             target,
+            #[cfg(target_os = "macos")]
+            target_pid,
         })
         .map_err(|err| err.to_string())
 }
@@ -12845,17 +12938,26 @@ unsafe extern "C" fn paste_queue_macos_event_callback(
         let flags = CGEventGetFlags(event);
         let exact_command = flags & FLAG_COMMAND != 0
             && flags & (FLAG_SHIFT | FLAG_CONTROL | FLAG_ALTERNATE | FLAG_SECONDARY_FN) == 0;
-        let intercept = paste_queue_shortcut_allowed(
-            paste_queue::is_active(),
-            TEXT_EDITOR_FOCUSED.load(Ordering::SeqCst),
-        ) && exact_command;
-        let trigger = intercept && !state.v_down;
-        state.v_down = true;
-        if intercept {
-            state.swallow_v = true;
-            if trigger {
-                let _ = enqueue_paste_queue_request(None, PasteQueueRequestOrigin::Shortcut);
+        if !state.v_down {
+            let target_pid = (exact_command
+                && paste_queue_shortcut_allowed(
+                    paste_queue::is_active(),
+                    TEXT_EDITOR_FOCUSED.load(Ordering::SeqCst),
+                ))
+            .then(|| macos_foreground_app_pid())
+            .flatten()
+            .filter(|&pid| pid != std::process::id() as i32);
+            state.swallow_v = target_pid.is_some();
+            if state.swallow_v {
+                let _ = enqueue_paste_queue_request(
+                    None,
+                    PasteQueueRequestOrigin::Shortcut,
+                    target_pid,
+                );
             }
+        }
+        state.v_down = true;
+        if state.swallow_v {
             CGEventSetType(event, NULL_EVENT);
         }
     } else {
@@ -13493,6 +13595,14 @@ fn paste_queue_item(app: tauri::AppHandle, hash: Option<String>) -> Result<(), S
     if !paste_queue::is_active() {
         return Err("粘贴队列尚未激活".to_string());
     }
+    #[cfg(target_os = "macos")]
+    let target_pid = match macos_foreground_app_pid() {
+        Some(pid) if pid == std::process::id() as i32 => {
+            LAST_FOREGROUND_APP_PID.lock().ok().and_then(|pid| *pid)
+        }
+        foreground => foreground,
+    };
+    #[cfg(not(target_os = "macos"))]
     if should_refresh_paste_queue_click_target(
         PasteQueueRequestOrigin::QueueWindow,
         main_surface_visible(),
@@ -13509,6 +13619,8 @@ fn paste_queue_item(app: tauri::AppHandle, hash: Option<String>) -> Result<(), S
         PasteQueueRequestOrigin::QueueWindow,
         #[cfg(target_os = "windows")]
         windows_paste_focus::Target::recorded(),
+        #[cfg(target_os = "macos")]
+        target_pid,
     )?;
     paste_queue::emit_state(&app);
     Ok(())
@@ -13573,7 +13685,10 @@ fn paste(
         target.require_foreground()?;
     }
 
-    if let Err(err) = simulate_paste_shortcut() {
+    if let Err(err) = simulate_paste_shortcut(
+        #[cfg(target_os = "macos")]
+        None,
+    ) {
         error!("Failed to simulate paste shortcut: {}", err);
         return Err(err);
     }

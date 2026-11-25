@@ -1,5 +1,4 @@
 use std::error::Error as _;
-use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -38,69 +37,6 @@ pub(crate) fn is_previewable_domain_link(url: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '.')
 }
 
-pub(crate) fn is_public_preview_ip(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(address) => {
-            let [a, b, c, _] = address.octets();
-            !matches!(a, 0 | 10 | 127 | 224..=255)
-                && !(a == 100 && (64..=127).contains(&b))
-                && !(a == 169 && b == 254)
-                && !(a == 172 && (16..=31).contains(&b))
-                && !(a == 192
-                    && (b == 168 || (b == 0 && matches!(c, 0 | 2)) || (b == 88 && c == 99)))
-                && !(a == 198 && (matches!(b, 18 | 19) || (b == 51 && c == 100)))
-                && !(a == 203 && b == 0 && c == 113)
-        }
-        std::net::IpAddr::V6(address) => {
-            let octets = address.octets();
-            octets[0] & 0xe0 == 0x20
-                && !(octets[0] == 0x20 && octets[1] == 0x02)
-                && !(octets[0] == 0x20
-                    && octets[1] == 0x01
-                    && octets[2] == 0x00
-                    && octets[3] == 0x00)
-                && !(octets[0] == 0x20
-                    && octets[1] == 0x01
-                    && octets[2] == 0x0d
-                    && octets[3] == 0xb8)
-        }
-    }
-}
-
-fn public_addresses(addresses: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, std::io::Error> {
-    let has_fake_ip = addresses.iter().any(|address| {
-        matches!(address.ip(), IpAddr::V4(ip) if ip.octets()[0] == 198 && matches!(ip.octets()[1], 18 | 19))
-    });
-    let addresses: Vec<_> = addresses
-        .into_iter()
-        .filter(|address| is_public_preview_ip(address.ip()))
-        .collect();
-    if addresses.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            if has_fake_ip {
-                "link_preview_fake_ip"
-            } else {
-                "link_preview_blocked"
-            },
-        ));
-    }
-    Ok(addresses)
-}
-
-struct PublicPreviewResolver;
-
-impl reqwest::dns::Resolve for PublicPreviewResolver {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let host = name.as_str().to_string();
-        Box::pin(async move {
-            let addresses =
-                public_addresses(tokio::net::lookup_host((host.as_str(), 0)).await?.collect())?;
-            Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
-        })
-    }
-}
-
 pub(crate) struct PreviewHttpClient {
     direct: Client,
     proxies: Matcher,
@@ -131,8 +67,8 @@ impl PreviewHttpClient {
         proxies: Matcher,
     ) -> Result<Self, String> {
         let cookie_jar = cookie_store.then(|| Arc::new(Jar::default()));
+        // Validate URL hosts, but leave DNS answers (including TUN/Fake-IP) to the network stack.
         let direct = Self::builder(user_agent, &cookie_jar)
-            .dns_resolver(Arc::new(PublicPreviewResolver))
             .build()
             .map_err(|_| "link_preview_network".to_string())?;
         Ok(Self {
@@ -269,22 +205,10 @@ fn request_error(url: &Url, stage: &str, via_proxy: bool, error: reqwest::Error)
         "link_preview_timeout"
     } else if error.status().is_some() {
         "link_preview_http_status"
+    } else if via_proxy {
+        "link_preview_proxy_unavailable"
     } else {
-        let mut cause = error.source();
-        let mut code = if via_proxy {
-            "link_preview_proxy_unavailable"
-        } else {
-            "link_preview_network"
-        };
-        while let Some(source) = cause {
-            match source.to_string().as_str() {
-                "link_preview_fake_ip" => code = "link_preview_fake_ip",
-                "link_preview_blocked" => code = "link_preview_blocked",
-                _ => {}
-            }
-            cause = source.source();
-        }
-        code
+        "link_preview_network"
     };
     let status = error.status();
     let error = error.without_url();
@@ -334,6 +258,18 @@ fn diagnostic_detail(detail: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn direct_requests_delegate_dns_to_the_http_clients_default_resolver() {
+        let production = include_str!("preview_http.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(
+            !production.contains(".dns_resolver("),
+            "the shared preview client must not install a destination-IP filtering resolver"
+        );
+    }
+
     fn client(proxies: Matcher) -> PreviewHttpClient {
         PreviewHttpClient::new("vPaste-preview-test", 2, true, proxies).unwrap()
     }
@@ -380,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn no_configured_proxy_selects_the_strict_direct_client() {
+    fn no_configured_proxy_selects_the_direct_client() {
         let client = client(Matcher::builder().build());
         let url = Url::parse("https://example.com/page").unwrap();
         assert!(client.proxy_for(&url).is_none());
@@ -481,39 +417,6 @@ mod tests {
         assert_eq!(
             next_destination(&url, "/next").unwrap().as_str(),
             "https://example.com/next"
-        );
-    }
-
-    #[test]
-    fn direct_dns_keeps_only_public_addresses_without_fake_ip_exemptions() {
-        let addresses = [
-            "127.0.0.1:0",
-            "198.18.0.5:0",
-            "[fc00::1]:0",
-            "8.8.8.8:0",
-            "[2606:4700:4700::1111]:0",
-        ]
-        .into_iter()
-        .map(|ip| ip.parse().unwrap())
-        .collect();
-        let filtered = public_addresses(addresses).unwrap();
-        assert_eq!(filtered.len(), 2);
-        assert!(filtered
-            .iter()
-            .all(|address| is_public_preview_ip(address.ip())));
-    }
-
-    #[test]
-    fn direct_fake_ip_and_internal_dns_fail_with_distinct_safe_codes() {
-        for ip in ["198.18.0.5:0", "198.19.1.1:0"] {
-            let error = public_addresses(vec![ip.parse().unwrap()]).unwrap_err();
-            assert_eq!(error.to_string(), "link_preview_fake_ip");
-        }
-        let error = public_addresses(vec!["10.0.0.1:0".parse().unwrap()]).unwrap_err();
-        assert_eq!(error.to_string(), "link_preview_blocked");
-        assert_eq!(
-            public_addresses(vec![]).unwrap_err().to_string(),
-            "link_preview_blocked"
         );
     }
 

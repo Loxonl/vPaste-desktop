@@ -1,6 +1,9 @@
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct State {
     pub(crate) pinned: bool,
+    pub(crate) keep_draft: bool,
+    /// The unpinned OCR editor dismisses on a real click back into the panel.
+    pub(crate) close_on_clipboard_focus: bool,
     pub(crate) preview_foreground: bool,
     pub(crate) clipboard_foreground: bool,
     pub(crate) memory_monitor_active: bool,
@@ -25,10 +28,18 @@ pub(crate) enum Action {
 }
 
 pub(crate) fn decide(state: State, phase: Phase) -> Action {
-    if state.pinned || state.preview_foreground || state.memory_monitor_active {
+    if state.pinned || state.keep_draft || state.preview_foreground || state.memory_monitor_active {
         return Action::Keep;
     }
     if state.clipboard_foreground {
+        if state.close_on_clipboard_focus {
+            return match phase {
+                Phase::Initial {
+                    opening_grace: true,
+                } => Action::Recheck,
+                _ => Action::HidePreview,
+            };
+        }
         return match phase {
             Phase::Initial { .. } => Action::Keep,
             Phase::GraceRecheck if state.focus_handoff => Action::Keep,
@@ -61,13 +72,15 @@ pub(crate) enum FocusTarget {
 /// Which window should hold keyboard focus after a preview is committed.
 /// A Space preview gives focus to the preview only when the cursor is already
 /// inside it; otherwise the clipboard keeps focus. Hover previews never move focus.
+/// Interactive text readers take focus immediately so selection and copy work.
 pub(crate) fn commit_focus_target(
     takes_focus: bool,
     cursor_in_preview: bool,
+    interactive_text: bool,
 ) -> Option<FocusTarget> {
     if !takes_focus {
         None
-    } else if cursor_in_preview {
+    } else if interactive_text || cursor_in_preview {
         Some(FocusTarget::Preview)
     } else {
         Some(FocusTarget::Clipboard)
@@ -170,6 +183,83 @@ impl FocusWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_protected_draft_survives_external_blur_without_pinning() {
+        let phase = Phase::Initial {
+            opening_grace: false,
+        };
+        assert_eq!(decide(State::default(), phase), Action::HideBoth);
+        let editor = State {
+            keep_draft: true,
+            ..State::default()
+        };
+        assert_eq!(decide(editor, phase), Action::Keep);
+        assert_eq!(decide(editor, Phase::GraceRecheck), Action::Keep);
+    }
+
+    #[test]
+    fn unpinned_ocr_dismisses_on_focus_loss_without_changing_ordinary_preview_behavior() {
+        let editor = State {
+            close_on_clipboard_focus: true,
+            clipboard_foreground: true,
+            ..State::default()
+        };
+        let immediate = Phase::Initial {
+            opening_grace: false,
+        };
+        assert_eq!(decide(editor, immediate), Action::HidePreview);
+        assert_eq!(
+            decide(
+                editor,
+                Phase::Initial {
+                    opening_grace: true
+                }
+            ),
+            Action::Recheck
+        );
+        assert_eq!(decide(editor, Phase::GraceRecheck), Action::HidePreview);
+        assert_eq!(
+            decide(
+                State {
+                    pinned: true,
+                    ..editor
+                },
+                immediate
+            ),
+            Action::Keep
+        );
+        assert_eq!(
+            decide(
+                State {
+                    preview_foreground: true,
+                    ..editor
+                },
+                immediate
+            ),
+            Action::Keep
+        );
+        assert_eq!(
+            decide(
+                State {
+                    clipboard_foreground: false,
+                    ..editor
+                },
+                immediate
+            ),
+            Action::HideBoth
+        );
+        assert_eq!(
+            decide(
+                State {
+                    close_on_clipboard_focus: false,
+                    ..editor
+                },
+                immediate
+            ),
+            Action::Keep
+        );
+    }
 
     #[test]
     fn focusing_memory_monitor_preserves_both_windows_during_and_after_grace() {
@@ -277,13 +367,29 @@ mod tests {
     #[test]
     fn space_preview_leaves_focus_on_the_clipboard_unless_the_cursor_is_inside_it() {
         assert_eq!(
-            commit_focus_target(true, false),
+            commit_focus_target(true, false, false),
             Some(FocusTarget::Clipboard)
         );
-        assert_eq!(commit_focus_target(true, true), Some(FocusTarget::Preview));
+        assert_eq!(
+            commit_focus_target(true, true, false),
+            Some(FocusTarget::Preview)
+        );
         // Hover previews never move focus, wherever the cursor is.
-        assert_eq!(commit_focus_target(false, false), None);
-        assert_eq!(commit_focus_target(false, true), None);
+        assert_eq!(commit_focus_target(false, false, false), None);
+        assert_eq!(commit_focus_target(false, true, false), None);
+    }
+
+    #[test]
+    fn interactive_text_takes_focus_without_waiting_for_cursor_entry() {
+        assert_eq!(
+            commit_focus_target(true, false, true),
+            Some(FocusTarget::Preview)
+        );
+        assert_eq!(
+            commit_focus_target(true, true, true),
+            Some(FocusTarget::Preview)
+        );
+        assert_eq!(commit_focus_target(false, false, true), None);
     }
 
     #[test]

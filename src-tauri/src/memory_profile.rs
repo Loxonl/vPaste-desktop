@@ -18,6 +18,10 @@ pub fn directory() -> Option<&'static Path> {
 }
 
 pub fn driver_script() -> &'static str {
+    #[cfg(target_os = "macos")]
+    if std::env::args().any(|arg| arg == "--native-panel-check") {
+        return "window.__vpasteMemoryProfileDiagnostics=true;";
+    }
     if std::env::args().any(|arg| arg == "--memory-profile-parking-check") {
         include_str!("../../scripts/profile-main-window-parking.js")
     } else if std::env::args().any(|arg| arg == "--memory-profile-resource-check") {
@@ -131,6 +135,15 @@ pub fn dev_origin() -> tauri::Url {
     format!("http://127.0.0.1:{port}")
         .parse()
         .expect("profile port was validated before startup")
+}
+
+pub fn webview_url(route: &str) -> tauri::WebviewUrl {
+    // Tauri treats devOrigin as remote when custom-protocol is compiled in.
+    // Use the embedded frontend's trusted origin without granting remote IPC.
+    #[cfg(feature = "custom-protocol")]
+    return tauri::WebviewUrl::App(route.into());
+    #[cfg(not(feature = "custom-protocol"))]
+    tauri::WebviewUrl::External(dev_origin().join(route).expect("known profile route"))
 }
 
 pub fn configure() -> Result<bool, String> {
@@ -468,19 +481,86 @@ fn prepare() -> Result<(), String> {
     .map_err(|error| error.to_string())
 }
 
+fn record_startup_memory(phase: &str) {
+    if let Ok(Some(memory)) = crate::dev_memory::read_memory(std::process::id()) {
+        log::info!(
+            "Isolated startup memory: phase={phase} privateBytes={} residentBytes={}",
+            memory.accounted_bytes,
+            memory.resident_bytes
+        );
+    }
+}
+
 pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
+    // The isolated startup returns before ordinary plugin initialization.
+    // Keep frontend logging available for both renderer measurements.
+    app.plugin(
+        tauri_plugin_log::Builder::new()
+            .targets([tauri_plugin_log::Target::new(
+                tauri_plugin_log::TargetKind::Stdout,
+            )])
+            .level(log::LevelFilter::Info)
+            .level_for("tantivy", log::LevelFilter::Error)
+            .build(),
+    )
+    .map_err(|error| error.to_string())?;
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory)
         .map_err(|error| error.to_string())?;
+    record_startup_memory("core-ready");
     crate::ensure_history_storage_dirs()?;
     crate::clipboard::db::try_init().map_err(|error| error.to_string())?;
+    record_startup_memory("history-open");
     crate::rebuild_current_search_index()?;
+    record_startup_memory("search-index-ready");
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    if crate::main_panel_mode::winui() {
+        crate::winui_panel::initialize(app.clone())?;
+        record_startup_memory("winui-initialized");
+        if std::env::args().any(|arg| arg == "--memory-profile-tray-check") {
+            // Exercise the ordinary tray route on the isolated desktop, with
+            // no shell icon, clipboard listeners or real user configuration.
+            let owner = app.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::show_vpaste_tray_menu(
+                    &owner,
+                    tauri::Rect {
+                        position: tauri::PhysicalPosition::new(320.0, 240.0).into(),
+                        size: tauri::PhysicalSize::new(16.0, 16.0).into(),
+                    },
+                )
+                .await;
+                log::info!(
+                    "Isolated tray route: webview_created={}",
+                    owner.get_webview_window("trayMenu").is_some()
+                );
+            });
+            return Ok(());
+        }
+        if std::env::args().any(|arg| arg == "--memory-profile-auxiliary-check") {
+            let owner = app.clone();
+            // A trusted control page for the local CDP regression. This branch
+            // is reachable only in an explicitly marked, isolated Debug fixture.
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = crate::open_config_window_from_source(owner, None, None).await {
+                    log::error!("Auxiliary regression control page failed: {error}");
+                }
+            });
+        }
+        return crate::startup_panel::request_show(app);
+    }
+    if crate::main_panel_mode::native() {
+        return crate::startup_panel::request_show(app);
+    }
     let window = crate::build_clipboard_window(app).map_err(|error| error.to_string())?;
+    // Interactive comparison uses the same isolated fixture, without watchers.
+    let interactive =
+        cfg!(target_os = "macos") && std::env::args().any(|arg| arg == "--native-panel-check");
     window
-        .set_focusable(false)
+        .set_focusable(interactive)
         .map_err(|error| error.to_string())?;
     window
-        .set_ignore_cursor_events(true)
+        .set_ignore_cursor_events(!interactive)
         .map_err(|error| error.to_string())?;
     crate::startup_panel::request_show(app)?;
     if std::env::args().any(|arg| arg == "--memory-profile-inspector") {
@@ -653,6 +733,22 @@ fn lifetime_peak(_pid: u32) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_webview_uses_the_builds_trusted_frontend_origin() {
+        for route in ["clipboard", "config"] {
+            let url = webview_url(route);
+            #[cfg(feature = "custom-protocol")]
+            assert!(
+                matches!(url, tauri::WebviewUrl::App(path) if path == PathBuf::from(route)),
+                "embedded Debug assets must not load as a remote developer page"
+            );
+            #[cfg(not(feature = "custom-protocol"))]
+            assert!(
+                matches!(url, tauri::WebviewUrl::External(origin) if origin == dev_origin().join(route).unwrap())
+            );
+        }
+    }
 
     #[test]
     fn portable_installation_is_rejected_before_any_profile_or_personal_data_is_initialized() {

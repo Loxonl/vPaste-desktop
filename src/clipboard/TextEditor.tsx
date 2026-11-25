@@ -18,10 +18,12 @@ const errorMessage = (reason: unknown) => reason instanceof Error ? reason.messa
 
 export default function TextEditor() {
     const { t } = useLanguage();
+    const winuiChrome = new URLSearchParams(window.location.search).get("chrome") === "winui";
+    const ipcDragRegion = winuiChrome ? undefined : true;
     const [entry, setEntry] = useState<TextDocument | null>(null);
     const [draft, setDraft] = useState("");
     const [initial, setInitial] = useState("");
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState(winuiChrome);
     const [saving, setSaving] = useState(false);
     const [composing, setComposing] = useState(false);
     const [failure, setFailure] = useState("");
@@ -55,8 +57,13 @@ export default function TextEditor() {
     useEffect(() => {
         let disposed = false;
         const load = async () => {
+            if (saveInFlight.current) return;
             const request = ++generation.current;
             setLoading(true);
+            setEntry(null);
+            setDraft("");
+            setInitial("");
+            setComposing(false);
             setFailure("");
             setConfirmClose(false);
             void loadAndApplyTheme();
@@ -68,7 +75,7 @@ export default function TextEditor() {
                     setEntry({ ...document, html: document.html ? content : "" });
                     setDraft(content);
                     setInitial(content);
-                }
+                } else setFailure("editor.missing");
             } catch (reason) {
                 if (!disposed && request === generation.current) setFailure(errorMessage(reason));
             } finally {
@@ -78,9 +85,12 @@ export default function TextEditor() {
         const unlistenOpen = listen("text-editor-open", () => { void load(); });
         const unlistenClose = listen("text-editor-close-requested", () => closeRef.current());
         const cancelReady = notifyAuxiliaryWindowReady([unlistenOpen, unlistenClose]);
-        void Promise.all([unlistenOpen, unlistenClose]).then(() => {
-            if (!disposed) void load();
-        });
+        // The WinUI host publishes the target only after this page reports ready.
+        if (!winuiChrome) {
+            void Promise.all([unlistenOpen, unlistenClose]).then(() => {
+                if (!disposed) void load();
+            });
+        }
         const keyDown = (event: KeyboardEvent) => {
             if (event.isComposing || event.keyCode === 229) return;
             if (event.key === "F2") event.preventDefault();
@@ -98,7 +108,7 @@ export default function TextEditor() {
             void unlistenOpen.then(unlisten => unlisten());
             void unlistenClose.then(unlisten => unlisten());
         };
-    }, []);
+    }, [winuiChrome]);
 
     useEffect(() => {
         if (!entry) return;
@@ -128,12 +138,18 @@ export default function TextEditor() {
         ? t(failure) : t("editor.failed", { error: failure });
 
     return (
-        <div className={styles.window}>
+        <div className={styles.window} data-chrome={winuiChrome ? "winui" : undefined}>
             <section className={styles.panel} aria-labelledby="text-editor-title">
-                <header className={styles.header} data-tauri-drag-region>
-                    <strong id="text-editor-title" data-tauri-drag-region>{t("menu.editText")}</strong>
-                    <ToolbarIconButton label={t("common.close")} size="small" disabled={saving} onClick={() => closeRef.current()}><CloseIcon /></ToolbarIconButton>
+                <header className={styles.header} data-tauri-drag-region={ipcDragRegion}>
+                    {winuiChrome ? <h1 className={styles.title} id="text-editor-title">
+                        <span className={styles.glyph} aria-hidden="true">{"\uE70F"}</span>
+                        <span className={styles.titleText}>{t("editor.title")}</span>
+                    </h1> : <strong id="text-editor-title" data-tauri-drag-region>{t("menu.editText")}</strong>}
+                    <ToolbarIconButton label={t("common.close")} size={winuiChrome ? "medium" : "small"} disabled={saving} onClick={() => closeRef.current()}>
+                        {winuiChrome ? <span className={styles.glyph} aria-hidden="true">{"\uE711"}</span> : <CloseIcon />}
+                    </ToolbarIconButton>
                 </header>
+                {winuiChrome && <span className={styles.fieldLabel}>{t("editor.content")}</span>}
                 {rich ? <div
                     ref={richRef}
                     className={styles.rich}
@@ -172,8 +188,8 @@ export default function TextEditor() {
                 {loading && <OperationStatus busy message={t("editor.loading")} />}
                 {failure && <OperationStatus tone="error" message={failureMessage} />}
                 <footer className={styles.actions}>
-                    <Button disabled={saving} onClick={() => closeRef.current()}>{t("common.cancel")}</Button>
-                    <Button variant="contained" disabled={!entry || !dirty || !draft.trim() || loading || saving || composing} onClick={() => { void save(); }}>{t("editor.save")}</Button>
+                    <Button className={winuiChrome ? styles.action : undefined} variant={winuiChrome ? "contained" : "text"} color={winuiChrome ? "inherit" : "primary"} disabled={saving} onClick={() => closeRef.current()}>{t("common.cancel")}</Button>
+                    <Button className={winuiChrome ? styles.primaryAction : undefined} variant="contained" disabled={!entry || !dirty || !draft.trim() || loading || saving || composing} onClick={() => { void save(); }}>{t("editor.save")}</Button>
                 </footer>
             </section>
             <ConfirmDialog open={confirmClose} title={t("editor.discardTitle")} description={t("editor.discardDescription")}

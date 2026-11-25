@@ -1,4 +1,4 @@
-import type { ItemTag, ItemType } from "./Item";
+import type { ItemTag, ItemType, SourceMetadata } from "./Item";
 import type { SearchItemPayload } from "./searchPagination";
 import type { RichRenderPayload } from "./historyResourceTypes";
 
@@ -7,6 +7,7 @@ export type ViewToken = { viewId: string; revision: number };
 export type HistoryRef = {
     id: number; hash: string; itemType: ItemType; time: number; label: number; tags: ItemTag[];
     appSource: string; appIconPath: string; titleColor: string;
+    sourceMetadata?: SourceMetadata;
 };
 export type HistoryViewPage = {
     token: ViewToken; pageIndex: number; startIndex: number; items: HistoryRef[];

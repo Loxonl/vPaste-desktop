@@ -1,13 +1,10 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
-import { info } from "@tauri-apps/plugin-log";
-import "./theme.css";
-import { installThemeSync } from "./theme.ts";
+import "./desktopBootstrap";
 import AppThemeProvider from "./ui/AppThemeProvider.tsx";
 import RouteFallback from "./ui/RouteFallback.tsx";
 import AppMotionProvider from "./ui/motion/AppMotionProvider.tsx";
-import { syncMotionCssVariables } from "./ui/motion";
 
 const Clipboard = React.lazy(() => import("./clipboard/Clipboard.tsx"));
 const EmojiPicker = React.lazy(() => import("./clipboard/EmojiPicker.tsx"));
@@ -15,6 +12,7 @@ const Preview = React.lazy(() => import("./clipboard/Preview.tsx"));
 const TabEditor = React.lazy(() => import("./clipboard/TabEditor.tsx"));
 const TextEditor = React.lazy(() => import("./clipboard/TextEditor.tsx"));
 const OnboardingPermissionWindow = React.lazy(() => import("./clipboard/OnboardingPermissionWindow.tsx"));
+const NativeOnboardingWindow = React.lazy(() => import("./clipboard/NativeOnboardingWindow.tsx"));
 const PasteFallbackNotice = React.lazy(() => import("./clipboard/PasteFallbackNotice.tsx"));
 const PasteQueue = React.lazy(() => import("./clipboard/PasteQueue.tsx"));
 const Config = React.lazy(() => import("./config/Config.tsx"));
@@ -26,57 +24,19 @@ const UiLab = import.meta.env.DEV
 const SettingsPreview = import.meta.env.DEV
     ? React.lazy(() => import("./config/SettingsPreview.tsx"))
     : null;
-const TestRoom = import.meta.env.DEV
+// Only the native experiment's explicit build mode embeds these on-demand tools.
+// Normal production builds still exclude them; UI Lab remains Vite-only.
+const embeddedDeveloperTools = import.meta.env.MODE === "native-debug";
+const TestRoom = import.meta.env.DEV || embeddedDeveloperTools
     ? React.lazy(() => import("./debug/TestRoom.tsx"))
     : null;
-const DeveloperMemoryWindow = import.meta.env.DEV
+const DeveloperMemoryWindow = import.meta.env.DEV || embeddedDeveloperTools
     ? React.lazy(() => import("./debug/DeveloperMemoryWindow.tsx"))
     : null;
 
-if ("__TAURI_INTERNALS__" in window) {
-    void info(`Rendering app, path: ${window.location.pathname}`);
-}
-installThemeSync();
-syncMotionCssVariables();
-
-function isEditableTarget(target: EventTarget | null) {
-    if (!(target instanceof HTMLElement)) return false;
-    const tag = target.tagName.toLowerCase();
-    return tag === "input" || tag === "textarea" || target.isContentEditable;
-}
-
-function installDesktopInteractionGuards() {
-    window.addEventListener("contextmenu", event => {
-        if (!(event.target instanceof HTMLElement) || !event.target.closest("[data-allow-context-menu='true']")) {
-            event.preventDefault();
-        }
-    });
-
-    window.addEventListener("auxclick", event => {
-        if (event.button === 1) {
-            event.preventDefault();
-        }
-    });
-
-    window.addEventListener("dragover", event => event.preventDefault());
-    window.addEventListener("drop", event => event.preventDefault());
-
-    window.addEventListener("keydown", event => {
-        const key = event.key.toLowerCase();
-        const ctrlOrMeta = event.ctrlKey || event.metaKey;
-        const reloadLike = key === "f5" || (ctrlOrMeta && key === "r");
-        const browserAction = ctrlOrMeta && ["p", "s", "o", "n"].includes(key);
-        const historyNav = event.altKey && ["arrowleft", "arrowright"].includes(key);
-        const backspaceNav = key === "backspace" && !isEditableTarget(event.target);
-
-        if (reloadLike || browserAction || historyNav || backspaceNav) {
-            event.preventDefault();
-            event.stopPropagation();
-        }
-    }, true);
-}
-
-installDesktopInteractionGuards();
+const DeveloperTutorialWindow = import.meta.env.DEV || embeddedDeveloperTools
+    ? React.lazy(() => import("./debug/DeveloperTutorialWindow.tsx"))
+    : null;
 
 const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 if (import.meta.env.DEV && "__vpasteMemoryProfileDiagnostics" in window) {
@@ -95,6 +55,7 @@ root.render(
                         <Route path="/tab-editor" element={<TabEditor />} />
                         <Route path="/text-editor" element={<TextEditor />} />
                         <Route path="/onboarding-permission" element={<OnboardingPermissionWindow />} />
+                        <Route path="/native-onboarding" element={<NativeOnboardingWindow />} />
                         <Route path="/paste-fallback-notice" element={<PasteFallbackNotice />} />
                         <Route path="/paste-failure-notice" element={<PasteFallbackNotice showSettingsAction={false} />} />
                         <Route path="/paste-queue" element={<PasteQueue />} />
@@ -103,6 +64,7 @@ root.render(
                         {UiLab ? <Route path="/__ui-lab" element={<UiLab />} /> : null}
                         {SettingsPreview ? <Route path="/__settings-preview" element={<SettingsPreview />} /> : null}
                         {TestRoom ? <Route path="/__test-room" element={<TestRoom />} /> : null}
+                        {DeveloperTutorialWindow ? <Route path="/__dev-tutorial" element={<DeveloperTutorialWindow />} /> : null}
                         {DeveloperMemoryWindow ? <Route path="/__dev-memory" element={<DeveloperMemoryWindow />} /> : null}
                         <Route path="/" element={<Clipboard />} />
                         <Route path="*" element={<Clipboard />} />

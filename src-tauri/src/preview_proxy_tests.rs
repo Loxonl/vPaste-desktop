@@ -1,8 +1,14 @@
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+fn fetch_transport_document(url: &str) -> Result<String, String> {
+    let url = reqwest::Url::parse(url).map_err(|_| "link_preview_blocked")?;
+    let client = crate::clipboard::preview_http_client("vPaste-preview-test", 6, false)?;
+    client.text(client.get(url, &[])?)
+}
 
 #[test]
 fn system_proxy_probe() {
@@ -11,24 +17,20 @@ fn system_proxy_probe() {
     };
     if mode == "live-system" {
         for url in ["https://github.com/", "https://vpaste.app/"] {
-            let document =
-                tauri::async_runtime::block_on(crate::fetch_link_preview_document(url.to_string()))
-                    .unwrap_or_else(|code| panic!("live preview failed: {code}"));
-            assert!(!document.html.trim().is_empty());
+            let document = fetch_transport_document(url)
+                .unwrap_or_else(|code| panic!("live preview failed: {code}"));
+            assert!(!document.trim().is_empty());
             println!(
                 "live preview succeeded: host={} bytes={}",
-                reqwest::Url::parse(&document.url)
-                    .unwrap()
-                    .host_str()
-                    .unwrap(),
-                document.html.len()
+                reqwest::Url::parse(url).unwrap().host_str().unwrap(),
+                document.len()
             );
         }
         return;
     }
-    let result = tauri::async_runtime::block_on(crate::fetch_link_preview_document(
-        "https://preview-fixture.example/article?token=private-test-value".to_string(),
-    ));
+    let result = fetch_transport_document(
+        "https://preview-fixture.example/article?token=private-test-value",
+    );
     assert!(
         result.is_err(),
         "fixture proxy must not return an HTML document"
@@ -54,7 +56,100 @@ fn link_preview_accepts_a_configured_localhost_proxy_and_its_authentication() {
     assert!(!request.contains("private-test-value"));
 }
 
+#[cfg(any(windows, target_os = "macos"))]
+#[test]
+fn link_preview_offers_http2_and_http1_after_proxy_connect() {
+    let hello = proxy_fixture_exchange("127.0.0.1", false, |stream, request| {
+        assert!(request.starts_with(b"CONNECT preview-fixture.example:443 HTTP/1.1\r\n"));
+        stream
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .unwrap();
+        let mut header = [0; 5];
+        stream.read_exact(&mut header).unwrap();
+        assert_eq!(header[0], 22, "expected a TLS handshake record");
+        let mut hello = vec![0; u16::from_be_bytes([header[3], header[4]]) as usize];
+        stream.read_exact(&mut hello).unwrap();
+        assert_eq!(hello.first(), Some(&1), "expected a TLS ClientHello");
+        hello
+    });
+
+    // ALPN extension: two length-prefixed protocol IDs, preferred version first.
+    let protocols = b"\x00\x10\x00\x0e\x00\x0c\x02h2\x08http/1.1";
+    assert!(
+        hello
+            .windows(protocols.len())
+            .any(|bytes| bytes == protocols),
+        "link preview TLS must offer both HTTP/2 and HTTP/1.1 through CONNECT"
+    );
+}
+
+fn read_proxy_headers(stream: &mut TcpStream) -> Vec<u8> {
+    // Windows can inherit the listener's nonblocking mode on accepted sockets.
+    stream.set_nonblocking(false).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut bytes = Vec::new();
+    while !bytes.ends_with(b"\r\n\r\n") && bytes.len() < 8192 {
+        let mut chunk = [0; 1024];
+        let length = stream.read(&mut chunk).unwrap();
+        if length == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..length]);
+    }
+    bytes
+}
+
+#[test]
+fn proxy_fixture_waits_for_delayed_and_fragmented_headers() {
+    let request = b"CONNECT fixture.example:443 HTTP/1.1\r\nHost: fixture.example\r\n\r\n";
+    for prefix_length in [0, 20] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        client.write_all(&request[..prefix_length]).unwrap();
+        let (started, ready) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            sender.send(read_proxy_headers(&mut stream)).unwrap();
+        });
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            matches!(
+                receiver.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "fixture must wait for the complete request headers"
+        );
+        client.write_all(&request[prefix_length..]).unwrap();
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+            request
+        );
+        server.join().unwrap();
+    }
+}
+
 fn proxy_fixture_request(host: &str, authentication: bool) -> String {
+    let bytes = proxy_fixture_exchange(host, authentication, |stream, request| {
+        stream
+            .write_all(
+                b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+        request
+    });
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn proxy_fixture_exchange(
+    host: &str,
+    authentication: bool,
+    respond: impl FnOnce(&mut TcpStream, Vec<u8>) -> Vec<u8> + Send + 'static,
+) -> Vec<u8> {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
@@ -64,22 +159,8 @@ fn proxy_fixture_request(host: &str, authentication: bool) -> String {
         while Instant::now() < deadline {
             match listener.accept() {
                 Ok((mut stream, _)) => {
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
-                        .unwrap();
-                    let mut bytes = Vec::new();
-                    while !bytes.ends_with(b"\r\n\r\n") && bytes.len() < 8192 {
-                        let mut chunk = [0; 1024];
-                        let length = stream.read(&mut chunk).unwrap();
-                        if length == 0 {
-                            break;
-                        }
-                        bytes.extend_from_slice(&chunk[..length]);
-                    }
-                    sender
-                        .send(String::from_utf8_lossy(&bytes).into_owned())
-                        .unwrap();
-                    stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    let bytes = read_proxy_headers(&mut stream);
+                    sender.send(respond(&mut stream, bytes)).unwrap();
                     return;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {

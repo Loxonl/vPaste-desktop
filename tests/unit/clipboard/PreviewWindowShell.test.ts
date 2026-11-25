@@ -16,6 +16,7 @@ const uiTokens = readFileSync(
 );
 const startupSource = readFileSync(join(process.cwd(), "src-tauri", "src", "startup_panel.rs"), "utf8");
 const auxiliarySource = readFileSync(join(process.cwd(), "src-tauri", "src", "auxiliary_windows.rs"), "utf8");
+const browserSource = readFileSync(join(process.cwd(), "src-tauri", "src", "browser_preview.rs"), "utf8");
 
 function sourceBetween(start: string, end: string): string {
     const startIndex = mainSource.indexOf(start);
@@ -26,9 +27,28 @@ function sourceBetween(start: string, end: string): string {
 }
 
 describe("preview window outer shell", () => {
+    it("gives the embedded webpage content focus on first show as well as cursor re-entry", () => {
+        const focus = browserSource.slice(browserSource.indexOf("fn focus_window_content("), browserSource.indexOf("pub(crate) fn focus_under_cursor("));
+        expect(focus).toContain("window.set_focus()");
+        expect(focus).toContain("AsRef::<tauri::Webview>::as_ref(window)");
+        const sync = browserSource.slice(browserSource.indexOf("pub(crate) async fn sync_preview_browser("));
+        expect(sync).toContain("focus_window_content(&browser)?");
+        expect(browserSource).toContain("focus_window_content(&window)?");
+    });
+
+    it("repairs the clipboard WebView after showing native content without stealing focus on resize or from another app", () => {
+        const sync = browserSource.slice(browserSource.indexOf("pub(crate) async fn sync_preview_browser("));
+        expect(sync).toContain("let clipboard_had_focus =");
+        expect(sync.indexOf("let clipboard_had_focus =")).toBeLessThan(sync.indexOf("let browser = build(&handle)?"));
+        expect(sync).toContain("if (navigate || showing)");
+        expect(sync).toContain("else if clipboard_had_focus");
+        expect(sync).toContain("focus_window_content(&clipboard)?");
+        expect(sync).toContain('"webpage focus handoff"');
+    });
+
     it("lets keyboard focus follow the cursor instead of always moving to a Space preview", () => {
         const commit = sourceBetween("fn commit_preview_window", "#[tauri::command]");
-        expect(commit).toContain("preview_focus::commit_focus_target(prepared.mode.takes_focus(), cursor_in_preview)");
+        expect(commit).toMatch(/preview_focus::commit_focus_target\(\s*prepared\.mode\.takes_focus\(\),\s*cursor_in_preview,\s*prepared\.payload\.item_type == "ImageText",?\s*\)/);
         expect(commit).toContain("set_focusable(focus_target == Some(preview_focus::FocusTarget::Preview))");
         expect(commit).not.toContain("set_focusable(prepared.mode.takes_focus())");
         expect(commit).not.toContain("if prepared.mode.takes_focus()");
@@ -50,8 +70,9 @@ describe("preview window outer shell", () => {
 
     it("keeps one cleared hidden preview resident without an idle destruction timer", () => {
         const closing = sourceBetween("fn hide_preview_window", "fn show_main_panel_for_app");
-        expect(closing).toContain("retain_preview_window(&app)");
-        const retention = sourceBetween("fn retain_preview_window", "fn hide_preview_and_clipboard");
+        expect(closing).toContain("close_preview_and_focus(app)");
+        expect(closing).toContain("close_preview_window(&app)");
+        const retention = sourceBetween("fn close_preview_window", "fn hide_preview_and_clipboard");
         expect(retention).toContain("clear_preview_content(&preview_window)");
         expect(retention).toContain("preview_window.hide()");
         expect(retention).not.toContain("auxiliary_windows::destroy");
@@ -80,7 +101,7 @@ describe("preview window outer shell", () => {
         const mainHide = sourceBetween("fn finish_hide_window_locked", "fn finish_hide_window(");
         expect(mainHide).toContain("retain_preview_window");
         expect(mainHide).toContain("!PREVIEW_PINNED.load");
-        const closeEvent = sourceBetween('if window.label() == "clipboardPreview" {', 'if window.label() == "tabEditor" {');
+        const closeEvent = sourceBetween('if matches!(window.label(), "clipboardPreview" | browser_preview::LABEL) {', 'if window.label() == "tabEditor" {');
         expect(closeEvent).toContain("retain_preview_window");
         expect(closeEvent).not.toContain("auxiliary_windows::destroy_native");
     });
@@ -95,7 +116,7 @@ describe("preview window outer shell", () => {
         expect(auxiliarySource).toContain("page_ready_ms");
     });
 
-    it("uses one CSS-owned rounded surface without a competing Win32 region", () => {
+    it("uses one outer frame: CSS for the legacy preview and DWM only for the Windows WinUI fallback", () => {
         const creation = sourceBetween(
             "fn build_preview_window",
             "fn preview_window_active",
@@ -109,15 +130,32 @@ describe("preview window outer shell", () => {
             "if let tauri::WindowEvent::CloseRequested",
         );
         const shellRule = previewStyles.match(/\.preview-shell\s*\{([^}]*)\}/)?.[1];
+        const systemShellRule = previewStyles.match(/\.preview-shell\[data-chrome="winui"\]\s*\{([^}]*)\}/)?.[1];
 
         expect(creation).toContain(".transparent(true)");
         expect(creation).toContain(".background_color(tauri::window::Color(0, 0, 0, 0))");
-        expect(creation).toContain(".shadow(false)");
+        expect(creation).toMatch(/let system_frame =\s*cfg!\(all\(target_os = "windows", feature = "winui"\)\) && main_panel_mode::winui\(\);/);
+        expect(creation).toContain(".shadow(system_frame)");
+        expect(creation).toMatch(/if !system_frame \{[^}]*window\.set_shadow\(false\)/);
+        expect(creation).toMatch(/if system_frame \{\s*apply_winui_auxiliary_frame\(window\)/);
+        expect(creation).toContain("DWMWA_WINDOW_CORNER_PREFERENCE");
         expect(creation).not.toContain("apply_windows_rounded_window_region");
         expect(showing).not.toContain("apply_windows_rounded_window_region");
-        expect(preCloseWindowEvents).not.toContain('window.label() == "clipboardPreview"');
+        expect(preCloseWindowEvents).not.toContain("apply_windows_rounded_window_region");
+        expect(preCloseWindowEvents).toContain("browser_preview::follow_parent(window.app_handle())");
         expect(shellRule).toContain("border-radius: var(--ui-radius-window)");
         expect(uiTokens).toContain("--ui-radius-window: 12px");
         expect(shellRule).toContain("overflow: hidden");
+        expect(systemShellRule).toContain("border-radius: 0");
+        expect(systemShellRule).toContain("background: var(--ui-winui-aux-window-surface)");
+        expect(systemShellRule).toContain("backdrop-filter: none");
+    });
+
+    it("leaves the HWND unpainted when the WinUI fallback uses Acrylic", () => {
+        const material = sourceBetween("fn apply_winui_auxiliary_frame", "fn preview_window_active");
+        expect(material).toMatch(/else if material && extended \{\s*None/);
+        expect(material).toContain("webview.window().set_background_color(host_fill)");
+        expect(material).toContain("webview.set_background_color(Some(");
+        expect(material).not.toContain("window.set_background_color(Some(");
     });
 });

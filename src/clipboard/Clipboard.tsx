@@ -31,11 +31,13 @@ import {
     mergeTagSearchFilter,
     normalizeCustomTabs,
     orderedDynamicTabs,
+    appendDynamicTabId,
     parseTagSearch,
     recordTagIdFromTab,
     recordTagTabId,
     saveCustomTabs,
     saveTabOrder,
+    tabOrderToMigrate,
     type CustomTab,
 } from "./customTabs";
 import { HistoryViewStore } from "./historyViewStore";
@@ -204,6 +206,7 @@ export default function Clipboard() {
     const [activeTab, setActiveTab] = useState<string>("all");
     const [customTabs, setCustomTabs] = useState<CustomTab[]>(loadCustomTabs);
     const [tabOrder, setTabOrder] = useState<string[]>(loadTabOrder);
+    const tabOrderEpochRef = useRef(0);
     const [draggingTabId, setDraggingTabId] = useState<string>("");
     const [toast, setToast] = useState<ToastState>(null);
     const [fileRefreshKey, setFileRefreshKey] = useState(0);
@@ -217,6 +220,8 @@ export default function Clipboard() {
     const updateDialogOpenedRef = useRef(false);
     updateDialogOpenedRef.current ||= updateConfirmOpen;
     const [itemTags, setItemTags] = useState<ItemTag[]>([]);
+    const tabDataRef = useRef({ customTabs, itemTags });
+    tabDataRef.current = { customTabs, itemTags };
     const [hasMoreHistory, setHasMoreHistory] = useState(true);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [simulatedHoverHash, setSimulatedHoverHash] = useState("");
@@ -477,6 +482,17 @@ export default function Clipboard() {
 
     useEffect(() => {
         void loadItemTags();
+        const savedOrder = loadTabOrder();
+        const orderEpoch = tabOrderEpochRef.current;
+        void invoke<string[]>('get_tab_order')
+            .then(stored => {
+                if (tabOrderEpochRef.current !== orderEpoch) return;
+                const databaseOrder = Array.isArray(stored) ? stored : [];
+                const migrated = tabOrderToMigrate(databaseOrder, savedOrder);
+                if (migrated) storeTabOrder(migrated);
+                applyTabOrder(migrated ?? databaseOrder);
+            })
+            .catch(e => error(`Failed to load stored tab order: ${e}`));
         void Promise.all([
             invoke<unknown>('get_custom_tabs'),
             loadClipboardBehaviorConfig(),
@@ -517,12 +533,10 @@ export default function Clipboard() {
     }, [activeTab, customTabs, itemTags]);
 
     useEffect(() => {
-        const normalizedOrder = dynamicTabs.map(tab => tab.id);
-        if (!arraysEqual(tabOrder, normalizedOrder)) {
-            setTabOrder(normalizedOrder);
-        }
-        saveTabOrder(normalizedOrder);
-    }, [dynamicTabs, tabOrder]);
+        // Keep ids for tabs whose data has not loaded yet. The render model
+        // already filters stale ids and fills in the remaining tabs.
+        saveTabOrder(tabOrder);
+    }, [tabOrder]);
 
     useEffect(() => {
         selectedRef.current = selected as string;
@@ -625,10 +639,26 @@ export default function Clipboard() {
         openTabEditorWindow("add", "record", undefined, undefined, addTabButtonRef.current);
     };
 
+    // User-made order changes also go to the history database, where the
+    // native panel reads them.
+    const applyTabOrder = (order: string[]) => {
+        tabOrderEpochRef.current += 1;
+        saveTabOrder(order);
+        setTabOrder(order);
+    };
+
+    const storeTabOrder = (order: string[]) => {
+        tabOrderEpochRef.current += 1;
+        saveTabOrder(order);
+        void invoke('save_tab_order', { order })
+            .catch(e => error(`Failed to store tab order: ${e}`));
+    };
+
     const appendTabOrderId = (tabId: string) => {
         setTabOrder(order => {
-            const next = [...order.filter(id => id !== tabId), tabId];
-            saveTabOrder(next);
+            const { customTabs, itemTags } = tabDataRef.current;
+            const next = appendDynamicTabId(customTabs, itemTags, order, tabId);
+            storeTabOrder(next);
             return next;
         });
     };
@@ -636,7 +666,7 @@ export default function Clipboard() {
     const removeTabOrderId = (tabId: string) => {
         setTabOrder(order => {
             const next = order.filter(id => id !== tabId);
-            saveTabOrder(next);
+            storeTabOrder(next);
             return next;
         });
     };
@@ -874,19 +904,14 @@ export default function Clipboard() {
     };
 
     const handleTabDrop = (targetId: string) => {
-        if (!draggingTabId || draggingTabId === targetId) return;
-        setTabOrder(order => {
-            const currentOrder = orderedDynamicTabs(customTabs, itemTags, order).map(tab => tab.id);
-            const sourceIndex = currentOrder.indexOf(draggingTabId);
-            const targetIndex = currentOrder.indexOf(targetId);
-            if (sourceIndex === -1 || targetIndex === -1) return order;
-            const next = [...currentOrder];
-            const [moved] = next.splice(sourceIndex, 1);
-            next.splice(targetIndex, 0, moved);
-            saveTabOrder(next);
-            return next;
-        });
+        const sourceId = draggingTabId;
         setDraggingTabId("");
+        if (!sourceId || sourceId === targetId) return;
+        const source = dynamicTabs.findIndex(tab => tab.id === sourceId);
+        const target = dynamicTabs.findIndex(tab => tab.id === targetId);
+        if (source === -1 || target === -1) return;
+        void invoke('reorder_tab', { sourceId, targetId, before: source > target })
+            .catch(reason => showToast(t("clipboard.actionFailed", { error: String(reason) }), "error"));
     };
 
     const scheduleFileRefresh = (delay: number = 320) => {
@@ -1269,12 +1294,15 @@ export default function Clipboard() {
             onPermissionStatusChanged: () => {
                 void refreshTutorialPermissionStatus();
             },
+            onTabOrderChanged: payload => {
+                if (Array.isArray(payload.order)) applyTabOrder(payload.order);
+            },
             onCustomTabsChanged: payload => {
                 const tabs = Array.isArray(payload.tabs) ? payload.tabs : loadCustomTabs();
                 persistCustomTabs(tabs);
                 setCustomTabs(tabs);
                 if (payload.activeId) {
-                    appendTabOrderId(payload.activeId);
+                    if (payload.mode !== "edit") appendTabOrderId(payload.activeId);
                     activeTabRef.current = payload.activeId;
                     setActiveTab(payload.activeId);
                 }
@@ -1409,6 +1437,15 @@ export default function Clipboard() {
     useEffect(() => {
         const unlisten = listen<{ hash: string; previousHash?: string }>("clipboard-item-edited", event => {
             editedHandlerRef.current(event.payload.hash, event.payload.previousHash);
+        });
+        return () => { void unlisten.then(dispose => dispose()); };
+    }, []);
+
+    useEffect(() => {
+        const unlisten = listen<string>("image-ocr-updated", () => {
+            if (searchWordRef.current.trim()) {
+                void fetchHistoryWith(searchWordRef.current, activeTabRef.current);
+            }
         });
         return () => { void unlisten.then(dispose => dispose()); };
     }, []);
@@ -1842,6 +1879,13 @@ export default function Clipboard() {
             onCreateRecordTag: openRecordTagCreateEditorForItem,
             onDelete: deleteClipboardItem,
             onEditText: openTextEditor,
+            onViewImageText: async item => {
+                setContextMenu(null);
+                hoverPreviewRef.current?.cancel();
+                previewRequestSeqRef.current += 1;
+                try { await invoke("show_image_text_window", { hash: item.getHash() }); }
+                catch { showToast(t("ocr.failed"), "error"); }
+            },
             onExportImage: exportImageItem,
             onOpenContainingFolder: openContainingFolder,
             onPastePlainText: pastePlainTextItem,
@@ -1916,6 +1960,15 @@ export default function Clipboard() {
         if (!import.meta.env.DEV || !developerMode) return;
         void invoke("open_dev_memory_window", { languageCode, themePreview: getResolvedTheme() })
             .catch(e => error(`Failed to open memory monitor: ${e}`));
+    };
+
+    const openNativePanel = () => {
+        if (!import.meta.env.DEV || !developerMode || !isMacPlatform()) return;
+        void invoke("open_native_main_panel", { languageCode, theme: getResolvedTheme() })
+            .catch(e => {
+                error(`Failed to open native main panel: ${e}`);
+                showToast(t("clipboard.actionFailed", { error: String(e) }), "error");
+            });
     };
 
     const publishMemoryPreview = (language: string, theme: ResolvedTheme) => {
@@ -2147,6 +2200,7 @@ export default function Clipboard() {
                     onOpenUiLab={openUiLab}
                     onOpenTestRoom={openTestRoom}
                     onOpenMemoryMonitor={openMemoryMonitor}
+                    onOpenNativePanel={openNativePanel}
                     onOpenSettings={tutorialActive ? blockTutorialNavigation : openConfigWindow}
                     updateReadyVersion={updateEntryVisible(updateState) ? updateState.availableVersion || "" : null}
                     updateInstalling={updateState.status === "installing"}

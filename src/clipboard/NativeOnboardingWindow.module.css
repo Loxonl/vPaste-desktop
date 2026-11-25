@@ -1,0 +1,27 @@
+.root {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+}
+
+.surface {
+    box-sizing: border-box;
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    color: var(--ui-text);
+    background: transparent;
+}
+
+.error {
+    position: absolute;
+    inset: auto var(--ui-space-4) var(--ui-space-4);
+}
+
+.finishing {
+    visibility: hidden;
+    pointer-events: none;
+}

@@ -17,8 +17,6 @@ use twox_hash::XxHash64;
 
 use crate::clipboard::db::db;
 use crate::clipboard::item::{convert_type, Item, ItemTag, ItemType, Page};
-#[cfg(test)]
-use crate::preview_http::is_public_preview_ip;
 use crate::preview_http::PreviewHttpClient;
 pub(crate) use crate::preview_http::{is_previewable_domain_link, preview_http_client};
 use crate::{app_runtime_dir, history_storage_dir, history_store, search::engine};
@@ -30,6 +28,8 @@ pub(crate) mod item;
 #[cfg(target_os = "macos")]
 pub mod macos;
 mod search_page;
+pub(crate) mod source_metadata;
+use source_metadata::SourceMetadata;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
@@ -155,6 +155,7 @@ pub(crate) struct StoredItem {
     pub(crate) source: String,
     pub(crate) app_source: String,
     pub(crate) app_icon_path: String,
+    pub(crate) source_metadata: SourceMetadata,
     pub(crate) title_color: String,
     pub(crate) time: u64,
     pub(crate) search_index: u8,
@@ -173,6 +174,7 @@ pub(crate) fn read_stored_item(row: &Row) -> Result<StoredItem, Error> {
         source: row.get::<_, Option<String>>("source")?.unwrap_or_default(),
         app_source: row.get("app_source").unwrap_or_default(),
         app_icon_path: row.get("app_icon_path").unwrap_or_default(),
+        source_metadata: SourceMetadata::from_row(row),
         title_color: row.get("title_color")?,
         time: row.get("time")?,
         search_index: row.get("search_index")?,
@@ -254,6 +256,7 @@ fn materialize_item_with_rich(stored: StoredItem, tags: Vec<ItemTag>, rich_html:
         },
         rich_html,
         app_source: stored.app_source,
+        source_metadata: stored.source_metadata,
         app_icon_path,
         title_color,
         item_type,
@@ -451,10 +454,19 @@ fn resolve_app_icon_path(app_source: &str, stored_icon_path: String) -> String {
             .unwrap_or_else(|| prefer_jumbo_app_icon(stored_icon_path));
     }
     let stored_icon_path = prefer_jumbo_app_icon(stored_icon_path);
-    if !stored_icon_path.is_empty() && Path::new(&stored_icon_path).is_file() {
-        return stored_icon_path;
+    let icon = if !stored_icon_path.is_empty() && Path::new(&stored_icon_path).is_file() {
+        stored_icon_path
+    } else {
+        bundled_app_source_icon_path(app_source).unwrap_or(stored_icon_path)
+    };
+    #[cfg(target_os = "windows")]
+    {
+        windows::source_icons::for_history(app_source, icon)
     }
-    bundled_app_source_icon_path(app_source).unwrap_or(stored_icon_path)
+    #[cfg(not(target_os = "windows"))]
+    {
+        icon
+    }
 }
 
 fn app_icon_dominant_color(icon_path: &str) -> Option<String> {
@@ -597,6 +609,21 @@ fn missing_app_icon_path_is_not_exposed() {
     let root = tempfile::tempdir().unwrap();
     let missing = root.path().join("missing-macos.png");
 
+    #[cfg(target_os = "windows")]
+    {
+        let _guard = crate::TEST_APP_DATA_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        let resolved = resolve_app_icon_path("Missing App", missing.to_string_lossy().to_string());
+        assert_eq!(
+            Path::new(&resolved).file_name().unwrap(),
+            "neutral-source-v1.png"
+        );
+        assert!(Path::new(&resolved).is_file());
+    }
+    #[cfg(not(target_os = "windows"))]
     assert_eq!(
         resolve_app_icon_path("Missing App", missing.to_string_lossy().to_string()),
         ""
@@ -686,20 +713,50 @@ pub(crate) fn history_ref_page(
     label: &str,
     is_current: impl Fn() -> bool,
 ) -> Result<Option<Page<crate::history_views::HistoryRef>>, String> {
+    collect_history_refs(
+        last_id,
+        last_time,
+        limit,
+        is_current,
+        |id, time, limit, current| {
+            search_stored_batch_with_cancellation(keywords, id, time, limit, label, current)
+        },
+    )
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn native_history_ref_page(
+    keywords: &str,
+    last_id: u64,
+    last_time: u64,
+    limit: usize,
+    label: &str,
+    is_current: impl Fn() -> bool,
+) -> Result<Option<Page<crate::history_views::HistoryRef>>, String> {
+    collect_history_refs(
+        last_id,
+        last_time,
+        limit,
+        is_current,
+        |id, time, limit, current| {
+            native_search_stored_batch(keywords, id, time, limit, label, current)
+        },
+    )
+}
+
+fn collect_history_refs(
+    last_id: u64,
+    last_time: u64,
+    limit: usize,
+    is_current: impl Fn() -> bool,
+    fetch: impl Fn(u64, u64, usize, &dyn Fn() -> bool) -> Result<Option<Page<StoredItem>>, String>,
+) -> Result<Option<Page<crate::history_views::HistoryRef>>, String> {
     search_page::collect(
         (last_id, last_time),
         limit,
         &is_current,
         |id, time, remaining| {
-            let Some(page) = search_stored_batch_with_cancellation(
-                keywords,
-                id,
-                time,
-                remaining,
-                label,
-                &is_current,
-            )?
-            else {
+            let Some(page) = fetch(id, time, remaining, &is_current)? else {
                 return Ok(None);
             };
             let mut list = Vec::new();
@@ -707,15 +764,8 @@ pub(crate) fn history_ref_page(
                 if !is_current() {
                     return Ok(None);
                 }
-                if stored.item_type == "Text" && is_semantically_blank_text(&stored.content) {
-                    let rich = rich_meta_from_source(&stored.source)
-                        .and_then(|meta| rich_render_from_path(&meta.html_path));
-                    if !rich.is_some_and(|rich| {
-                        rich.html.contains("vpaste-rich-image:")
-                            || rich_html_has_renderable_image(&rich.html)
-                    }) {
-                        continue;
-                    }
+                if !history_text_visible(&stored.item_type, &stored.content, &stored.source) {
+                    continue;
                 }
                 let mut item_type =
                     ItemType::from_str(&stored.item_type).map_err(|err| err.to_string())?;
@@ -729,6 +779,23 @@ pub(crate) fn history_ref_page(
                 let app_icon_path = resolve_app_icon_path(&stored.app_source, stored.app_icon_path);
                 let title_color =
                     app_icon_dominant_color(&app_icon_path).unwrap_or(stored.title_color);
+                let is_rich_text = rich_meta_from_source(&stored.source).is_some();
+                let link_resource = if item_type == ItemType::Link {
+                    let mut parts = stored.content.split("|||");
+                    let _url = parts.next();
+                    let media = parts.next().unwrap_or("");
+                    let _title = parts.next();
+                    let kind = parts.next().unwrap_or("");
+                    if media.is_empty() && kind.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{media}:{kind}")
+                    }
+                } else {
+                    String::new()
+                };
+                let preview_text =
+                    history_preview_text(&item_type, &stored.content, &stored.preview_content);
                 list.push(crate::history_views::HistoryRef {
                     id: stored.id,
                     hash: stored.hash,
@@ -737,9 +804,26 @@ pub(crate) fn history_ref_page(
                     label: stored.label,
                     tags,
                     app_source: stored.app_source,
+                    source_metadata: stored.source_metadata,
                     app_icon_path,
                     title_color,
+                    preview_text,
+                    is_rich_text,
+                    link_resource,
+                    has_ocr_text: false,
                 });
+            }
+            let ocr_completed = crate::image_ocr::completed_hashes(
+                list.iter()
+                    .filter(|item| item.item_type == ItemType::Image)
+                    .map(|item| item.hash.as_str()),
+            );
+            if !ocr_completed.is_empty() {
+                for item in &mut list {
+                    if item.item_type == ItemType::Image && ocr_completed.contains(&item.hash) {
+                        item.has_ocr_text = true;
+                    }
+                }
             }
             Ok(Some(Page {
                 list,
@@ -750,6 +834,150 @@ pub(crate) fn history_ref_page(
             }))
         },
     )
+}
+
+fn history_preview_text(item_type: &ItemType, content: &str, preview: &str) -> String {
+    match item_type {
+        ItemType::Text | ItemType::Color => preview.to_string(),
+        ItemType::Link => {
+            let parts = content.split("|||").collect::<Vec<_>>();
+            parts
+                .get(2)
+                .filter(|title| !title.is_empty())
+                .copied()
+                .or_else(|| parts.first().copied())
+                .unwrap_or_default()
+                .to_string()
+        }
+        ItemType::File => serde_json::from_str::<Vec<String>>(content)
+            .ok()
+            .and_then(|paths| paths.first().cloned())
+            .and_then(|path| {
+                Path::new(&path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "File".to_string()),
+        ItemType::TextFile => Path::new(content)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Text file".to_string()),
+        ItemType::Image => String::new(),
+    }
+}
+
+fn history_text_visible(item_type: &str, content: &str, source: &str) -> bool {
+    if item_type != "Text" || !is_semantically_blank_text(content) {
+        return true;
+    }
+    rich_meta_from_source(source)
+        .and_then(|meta| rich_render_from_path(&meta.html_path))
+        .is_some_and(|rich| {
+            rich.html.contains("vpaste-rich-image:") || rich_html_has_renderable_image(&rich.html)
+        })
+}
+
+// Locate a retained viewport by sort key. Only metadata crosses this cursor;
+// bodies/images and the full result hash list are never accumulated in memory.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn history_ref_seek(
+    query: &crate::history_views::HistoryQuery,
+    anchor: &crate::history_views::HistoryAnchor,
+    is_current: impl Fn() -> bool,
+) -> Result<(usize, usize, (u64, u64)), String> {
+    use std::collections::BTreeSet;
+    let started = Instant::now();
+    let filter = parse_search_filter(&query.label);
+    let mut position = 0usize;
+    let mut preceding = BTreeSet::new();
+    let mut visit = |hashes: Option<&[String]>| -> Result<(), String> {
+        let mut clauses = vec!["(time > ? or (time = ? and id >= ?))".to_string()];
+        let mut params = vec![
+            Value::Integer(anchor.time as i64),
+            Value::Integer(anchor.time as i64),
+            Value::Integer(anchor.id as i64),
+        ];
+        apply_filter_clauses(&filter, &mut clauses, &mut params);
+        if let Some(hashes) = hashes {
+            clauses.push(format!("hash in ({})", vec!["?"; hashes.len()].join(",")));
+            params.extend(hashes.iter().cloned().map(Value::Text));
+        }
+        // Nonblank bodies stay inside SQLite. Only potentially invisible legacy
+        // text needs Rust's rich-text visibility check.
+        params.insert(0, Value::Text(" \t\n\r\u{000b}\u{000c}\u{0085}\u{00a0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{200b}\u{feff}".into()));
+        let sql = format!("select id,time,hash,item_type,case when item_type='Text' and length(trim(coalesce(content, ''), ?))=0 then coalesce(content, '') else 'visible' end,coalesce(source, '') from clipboard where {}", clauses.join(" and "));
+        let conn = db();
+        let mut statement = conn.prepare(&sql).map_err(|err| err.to_string())?;
+        let mut rows = statement
+            .query(params_from_iter(params))
+            .map_err(|err| err.to_string())?;
+        while let Some(row) = rows.next().map_err(|err| err.to_string())? {
+            if !is_current() {
+                return Err("history view expired".into());
+            }
+            let id: u64 = row.get(0).map_err(|err| err.to_string())?;
+            let time: u64 = row.get(1).map_err(|err| err.to_string())?;
+            let hash: String = row.get(2).map_err(|err| err.to_string())?;
+            let kind: String = row.get(3).map_err(|err| err.to_string())?;
+            let content: String = row.get(4).map_err(|err| err.to_string())?;
+            let source: String = row.get(5).map_err(|err| err.to_string())?;
+            if !history_text_visible(&kind, &content, &source)
+                || (hash == anchor.hash && time == anchor.time && id == anchor.id as u64)
+            {
+                continue;
+            }
+            position += 1;
+            preceding.insert((time, id));
+            // Keep only the nearby page boundaries, including the overscan at an edge.
+            if preceding.len() > 108 {
+                preceding.pop_last();
+            }
+        }
+        Ok(())
+    };
+    if query.keywords.trim().is_empty() {
+        visit(None)?;
+    } else {
+        let session = search_index_session(&query.keywords)?;
+        session.visit_hashes(SEARCH_RESULT_DB_CHUNK_SIZE, &is_current, |hashes| {
+            visit(Some(hashes))
+        })?;
+    }
+    let first = (position.saturating_sub(2) / 36).saturating_sub(1);
+    let start = first * 36;
+    let cursor = if start == 0 {
+        (0, 0)
+    } else {
+        let (time, id) = preceding
+            .iter()
+            .nth(position - start)
+            .copied()
+            .ok_or("Retained history anchor is unavailable")?;
+        (id, time)
+    };
+    log::debug!(
+        "native history seek position={} metadata_ms={}",
+        position,
+        started.elapsed().as_millis()
+    );
+    Ok((position, first, cursor))
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn history_filter_deadline(
+    label: &str,
+    times: impl Iterator<Item = u64>,
+) -> Option<u64> {
+    let filter = parse_search_filter(label);
+    let duration = filter
+        .relative_amount?
+        .checked_mul(relative_unit_millis(filter.relative_unit.as_deref()?)?)?;
+    if duration == 0 {
+        return None;
+    }
+    times
+        .map(|time| time.saturating_add(duration).saturating_add(1))
+        .min()
 }
 
 pub(crate) fn history_action_item(hash: &str) -> Result<Item, String> {
@@ -913,6 +1141,79 @@ fn search_stored_batch_with_cancellation(
     }))
 }
 
+#[cfg(all(debug_assertions, target_os = "macos"))]
+fn native_search_stored_batch(
+    keywords: &str,
+    last_id: u64,
+    last_time: u64,
+    limit: usize,
+    label: &str,
+    is_current: impl Fn() -> bool,
+) -> Result<Option<Page<StoredItem>>, String> {
+    if keywords.trim().is_empty() {
+        return search_stored_batch_with_cancellation(
+            keywords, last_id, last_time, limit, label, is_current,
+        );
+    }
+    if !is_current() {
+        return Ok(None);
+    }
+    if !engine::is_ready() {
+        rebuild_search_index()?;
+    }
+    let filter = parse_search_filter(label);
+    let cursor_id = if last_id == 0 {
+        i64::MAX as u64
+    } else {
+        last_id
+    };
+    let cursor_time = if last_time == 0 {
+        i64::MAX as u64
+    } else {
+        last_time
+    };
+    let mut cursor = (cursor_time, cursor_id);
+    let session = search_index_session(keywords)?;
+    let mut items = Vec::new();
+    loop {
+        if !is_current() {
+            return Ok(None);
+        }
+        let (page, next) =
+            session.search_after(cursor, SEARCH_RESULT_DB_CHUNK_SIZE, &is_current)?;
+        if page.hashes.is_empty() {
+            break;
+        }
+        let (sql, params) =
+            build_indexed_filter_query(&filter, &page.hashes, cursor_id, cursor_time, limit + 1);
+        let conn = db();
+        let mut statement = conn.prepare(&sql).map_err(|err| err.to_string())?;
+        let batch = statement
+            .query_map(params_from_iter(params), read_stored_item)
+            .map_err(|err| err.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())?;
+        items.extend(batch);
+        items.sort_by(|a, b| b.time.cmp(&a.time).then_with(|| b.id.cmp(&a.id)));
+        items.dedup_by(|a, b| a.hash == b.hash);
+        items.truncate(limit + 1);
+        if items.len() > limit || !page.has_more {
+            break;
+        }
+        cursor = next;
+    }
+    let has_more = items.len() > limit;
+    items.truncate(limit);
+    let next = items.last().map(|item| (item.id as u64, item.time));
+    Ok(Some(Page {
+        consumed: 0,
+        list: items,
+        has_more,
+        next_id: next.map(|key| key.0).unwrap_or(last_id),
+        next_time: next.map(|key| key.1).unwrap_or(last_time),
+    }))
+}
+
 fn search_index_session(keywords: &str) -> Result<engine::SearchSession, String> {
     match engine::start_search(keywords) {
         Ok(session) => Ok(session),
@@ -925,6 +1226,11 @@ fn search_index_session(keywords: &str) -> Result<engine::SearchSession, String>
 }
 
 pub(crate) fn stored_item_search_content(stored: &StoredItem) -> String {
+    let image_text = if stored.item_type == ItemType::Image.to_string() {
+        crate::image_ocr::cached_text(&stored.hash)
+    } else {
+        String::new()
+    };
     let content = if stored.item_type == ItemType::TextFile.to_string() {
         history_store::read_file(&stored.content)
             .ok()
@@ -938,6 +1244,7 @@ pub(crate) fn stored_item_search_content(stored: &StoredItem) -> String {
         stored.preview_content.as_str(),
         stored.source.as_str(),
         stored.app_source.as_str(),
+        image_text.as_str(),
     ]
     .join("\n")
 }
@@ -2472,8 +2779,11 @@ fn insert_history_item(
             "update clipboard
                 set time = ?1,
                     search_index = 0,
-                    app_source = case when ?2 <> '' then ?2 else app_source end,
-                    app_icon_path = case when ?3 <> '' then ?3 else app_icon_path end,
+                    app_source = case when ?9 = 1 or source_is_remote = 1 or ?2 <> '' then ?2 else app_source end,
+                    app_icon_path = case when ?9 = 1 or source_is_remote = 1 or ?3 <> '' then ?3 else app_icon_path end,
+                    title_color = case when ?9 = 1 or source_is_remote = 1 then '' else title_color end,
+                    source_bundle_id = case when ?9 = 1 or source_is_remote = 1 or ?10 <> '' or ?2 <> '' then ?10 else source_bundle_id end,
+                    source_is_remote = ?9,
                     source = case when ?5 = 'Image' then ?4 when ?4 <> '' then ?4 else source end,
                     content = case when ?5 = 'Link' then content else ?7 end,
                     preview_content = case when ?5 = 'Link' then preview_content else ?8 end
@@ -2487,6 +2797,8 @@ fn insert_history_item(
                 item.hash,
                 stored_content,
                 stored_preview_content,
+                item.source_metadata.is_remote,
+                item.source_metadata.bundle_id,
             ],
         );
         return match state {
@@ -2514,8 +2826,8 @@ fn insert_history_item(
     let start = Instant::now();
 
     let insert_sql = "
-                        insert into clipboard(hash,content,preview_content,time,title_color,item_type,icon,source,app_source,app_icon_path,search_index)
-                                      values(:hash,:content,:preview_content,:time,:title_color,:item_type,:icon,:source,:app_source,:app_icon_path,:search_index)
+                        insert into clipboard(hash,content,preview_content,time,title_color,item_type,icon,source,app_source,app_icon_path,search_index,source_is_remote,source_bundle_id)
+                                      values(:hash,:content,:preview_content,:time,:title_color,:item_type,:icon,:source,:app_source,:app_icon_path,:search_index,:source_is_remote,:source_bundle_id)
                             ";
     let conn = db();
     let stored_content = item.content.clone();
@@ -2535,6 +2847,11 @@ fn insert_history_item(
             (":app_source", &app_source.to_string()),
             (":app_icon_path", &app_icon_path.to_string()),
             (":search_index", &"0".to_string()),
+            (
+                ":source_is_remote",
+                &u8::from(item.source_metadata.is_remote).to_string(),
+            ),
+            (":source_bundle_id", &item.source_metadata.bundle_id),
         ])
     };
     if let Err(err) = state {
@@ -2560,12 +2877,18 @@ fn captured_item_search_content(
     source: &str,
     app_source: &str,
 ) -> String {
+    let image_text = if item.item_type == ItemType::Image {
+        crate::image_ocr::cached_text(&item.hash)
+    } else {
+        String::new()
+    };
     [
         search_content,
         item.content.as_str(),
         item.preview_content.as_str(),
         source,
         app_source,
+        image_text.as_str(),
     ]
     .join("\n")
 }
@@ -2574,6 +2897,32 @@ fn captured_item_search_content(
 pub struct CaptureContext {
     pub(crate) time: u64,
     pub(crate) queue_epoch: Option<u64>,
+}
+
+pub struct CaptureRequest {
+    context: CaptureContext,
+    source_metadata: SourceMetadata,
+}
+
+impl CaptureContext {
+    pub(crate) fn with_source(self, source_metadata: SourceMetadata) -> CaptureRequest {
+        CaptureRequest {
+            context: self,
+            source_metadata,
+        }
+    }
+}
+
+impl From<CaptureContext> for CaptureRequest {
+    fn from(context: CaptureContext) -> Self {
+        context.with_source(SourceMetadata::default())
+    }
+}
+
+impl From<bool> for CaptureRequest {
+    fn from(queue_only: bool) -> Self {
+        CaptureContext::from(queue_only).into()
+    }
 }
 
 impl From<bool> for CaptureContext {
@@ -2753,7 +3102,7 @@ pub fn capture_text_from_app(
     content: String,
     app_source: &str,
     app_icon_path: &str,
-    context: impl Into<CaptureContext>,
+    context: impl Into<CaptureRequest>,
 ) -> Option<String> {
     insert_text_from_app_impl(content, app_source, app_icon_path, context.into())
 }
@@ -2765,7 +3114,7 @@ pub fn capture_rich_text_from_app(
     png: Option<Vec<u8>>,
     app_source: &str,
     app_icon_path: &str,
-    context: impl Into<CaptureContext>,
+    context: impl Into<CaptureRequest>,
 ) -> Option<String> {
     insert_rich_text_from_app_impl(
         plain_text,
@@ -2785,7 +3134,7 @@ fn insert_rich_text_from_app_impl(
     png: Option<Vec<u8>>,
     app_source: &str,
     app_icon_path: &str,
-    context: CaptureContext,
+    request: CaptureRequest,
 ) -> Option<String> {
     let _cleanup = crate::auto_cleanup::pause();
     let payload_bytes = plain_text
@@ -2807,7 +3156,7 @@ fn insert_rich_text_from_app_impl(
             normalized_color.to_string(),
             app_source,
             app_icon_path,
-            context,
+            request,
         );
     }
 
@@ -2822,7 +3171,7 @@ fn insert_rich_text_from_app_impl(
         html.as_deref(),
         rtf.as_deref(),
         png.as_deref(),
-        context.queue_epoch.is_some(),
+        request.context.queue_epoch.is_some(),
     );
     let meta = RichClipboardMeta {
         version: 1,
@@ -2863,10 +3212,11 @@ fn insert_rich_text_from_app_impl(
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: app_icon_path.to_string(),
+        source_metadata: request.source_metadata.clone(),
         hash,
         title_color: String::new(),
         item_type,
-        time: context.time,
+        time: request.context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
@@ -2878,7 +3228,7 @@ fn insert_rich_text_from_app_impl(
         &source,
         app_source,
         app_icon_path,
-        context,
+        request.context,
     )
     .then_some(hash)
 }
@@ -2919,6 +3269,7 @@ pub(crate) fn insert_test_room_rich_text(
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: String::new(),
+        source_metadata: SourceMetadata::default(),
         hash,
         title_color: String::new(),
         item_type,
@@ -2934,7 +3285,7 @@ fn insert_text_from_app_impl(
     content: String,
     app_source: &str,
     app_icon_path: &str,
-    context: CaptureContext,
+    request: CaptureRequest,
 ) -> Option<String> {
     let _cleanup = crate::auto_cleanup::pause();
     if is_semantically_blank_text(&content) {
@@ -2965,16 +3316,25 @@ fn insert_text_from_app_impl(
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: app_icon_path.to_string(),
+        source_metadata: request.source_metadata.clone(),
         hash,
         title_color: String::from(""),
         item_type,
-        time: context.time,
+        time: request.context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
     };
     let hash = item.hash.clone();
-    store_captured_item(&item, &content, "", app_source, app_icon_path, context).then_some(hash)
+    store_captured_item(
+        &item,
+        &content,
+        "",
+        app_source,
+        app_icon_path,
+        request.context,
+    )
+    .then_some(hash)
 }
 
 #[allow(dead_code)]
@@ -3008,7 +3368,7 @@ pub fn capture_image_with_text_and_app(
     text_content: &str,
     app_source: &str,
     app_icon_path: &str,
-    context: impl Into<CaptureContext>,
+    context: impl Into<CaptureRequest>,
 ) -> Option<String> {
     insert_image_with_text_and_app_impl(
         content,
@@ -3024,7 +3384,7 @@ fn insert_image_with_text_and_app_impl(
     text_content: &str,
     app_source: &str,
     app_icon_path: &str,
-    context: CaptureContext,
+    request: CaptureRequest,
 ) -> Option<String> {
     let _cleanup = crate::auto_cleanup::pause();
     if content.len() > crate::clipboard_budget::IMAGE_SOURCE_BYTES {
@@ -3047,24 +3407,28 @@ fn insert_image_with_text_and_app_impl(
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: app_icon_path.to_string(),
+        source_metadata: request.source_metadata.clone(),
         hash,
         title_color: String::from(""),
         item_type: ItemType::Image,
-        time: context.time,
+        time: request.context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
     };
     let hash = item.hash.clone();
-    store_captured_item(
+    let saved = store_captured_item(
         &item,
         text_content,
         text_content,
         app_source,
         app_icon_path,
-        context,
-    )
-    .then_some(hash)
+        request.context,
+    );
+    if saved {
+        crate::image_ocr::captured(&hash);
+    }
+    saved.then_some(hash)
 }
 
 #[allow(dead_code)]
@@ -3085,7 +3449,7 @@ pub fn capture_file_from_app(
     content: &Vec<String>,
     app_source: &str,
     app_icon_path: &str,
-    context: impl Into<CaptureContext>,
+    context: impl Into<CaptureRequest>,
 ) -> Option<String> {
     insert_file_from_app_impl(content, app_source, app_icon_path, context.into())
 }
@@ -3094,7 +3458,7 @@ fn insert_file_from_app_impl(
     content: &Vec<String>,
     app_source: &str,
     app_icon_path: &str,
-    context: CaptureContext,
+    request: CaptureRequest,
 ) -> Option<String> {
     let _cleanup = crate::auto_cleanup::pause();
     if let [path] = content.as_slice() {
@@ -3119,15 +3483,24 @@ fn insert_file_from_app_impl(
         rich_html: String::new(),
         app_source: app_source.to_string(),
         app_icon_path: app_icon_path.to_string(),
+        source_metadata: request.source_metadata.clone(),
         title_color: "".to_string(),
         item_type: ItemType::File,
-        time: context.time,
+        time: request.context.time,
         search_index: 1,
         label: 0,
         tags: Vec::new(),
     };
     let hash = item.hash.clone();
-    store_captured_item(&item, &content, "", app_source, app_icon_path, context).then_some(hash)
+    store_captured_item(
+        &item,
+        &content,
+        "",
+        app_source,
+        app_icon_path,
+        request.context,
+    )
+    .then_some(hash)
 }
 fn native_path_string(path: &Path) -> String {
     let value = path.to_string_lossy().into_owned();
@@ -4005,7 +4378,30 @@ mod tests {
     use rusqlite::params;
 
     #[test]
-    fn link_preview_rejects_internal_destinations() {
+    fn native_history_previews_use_bounded_copy_content_and_human_readable_titles() {
+        assert_eq!(
+            history_preview_text(&ItemType::Text, "full text", "short preview"),
+            "short preview"
+        );
+        assert_eq!(
+            history_preview_text(
+                &ItemType::Link,
+                "https://example.com|||/tmp/icon.png|||Example page|||icon",
+                "",
+            ),
+            "Example page"
+        );
+        let path = std::env::temp_dir().join("report.pdf");
+        let files = serde_json::to_string(&[path.to_string_lossy()]).unwrap();
+        assert_eq!(
+            history_preview_text(&ItemType::File, &files, ""),
+            "report.pdf"
+        );
+        assert_eq!(history_preview_text(&ItemType::Image, "", ""), "");
+    }
+
+    #[test]
+    fn link_preview_rejects_explicit_local_or_ip_urls() {
         for url in [
             "https://printer.local/status",
             "https://service.localhost/run",
@@ -4016,36 +4412,6 @@ mod tests {
             assert!(!is_previewable_domain_link(url), "accepted {url}");
         }
         assert!(is_previewable_domain_link("https://example.com/page"));
-    }
-
-    #[test]
-    fn link_preview_resolver_only_allows_public_ips() {
-        for address in [
-            "127.0.0.1",
-            "10.0.0.1",
-            "172.16.0.1",
-            "192.168.1.1",
-            "169.254.1.1",
-            "100.100.100.100",
-            "192.0.0.1",
-            "198.18.0.1",
-            "0.0.0.0",
-            "224.0.0.1",
-            "::1",
-            "fc00::1",
-            "fe80::1",
-            "::ffff:127.0.0.1",
-            "2001::1",
-            "2002:c0a8:101::1",
-            "2001:db8::1",
-        ] {
-            let ip = address.parse().unwrap();
-            assert!(!is_public_preview_ip(ip), "accepted {address}");
-        }
-        for address in ["8.8.8.8", "2606:4700:4700::1111"] {
-            let ip = address.parse().unwrap();
-            assert!(is_public_preview_ip(ip), "rejected {address}");
-        }
     }
 
     fn dominant_color_for_test_image(image: image::RgbaImage) -> Option<String> {
@@ -4741,6 +5107,7 @@ mod tests {
             preview_content: "text".to_string(),
             source: "text".to_string(),
             app_source: "Test App".to_string(),
+            source_metadata: SourceMetadata::default(),
             app_icon_path: icon_path.to_string_lossy().to_string(),
             title_color: String::new(),
             time: 1,
@@ -5438,6 +5805,7 @@ mod tests {
             text_content: String::new(),
             rich_html: String::new(),
             app_source: String::new(),
+            source_metadata: SourceMetadata::default(),
             app_icon_path: String::new(),
             hash: "disk-backed-long-text".to_string(),
             title_color: String::new(),
@@ -5458,6 +5826,24 @@ mod tests {
 
         assert!(!item_matches_filter(&item, &file_filter));
         assert!(item_matches_filter(&item, &text_filter));
+
+        // The shipping query categorizes by stored identity, independently
+        // of the single-image File card's visual header.
+        let image_filter = SearchFilter {
+            item_type: Some("Image".into()),
+            ..Default::default()
+        };
+        let image_file = Item {
+            item_type: ItemType::File,
+            content: r#"["photo.png"]"#.into(),
+            ..item
+        };
+        assert!(item_matches_filter(&image_file, &file_filter));
+        assert!(!item_matches_filter(&image_file, &image_filter));
+        let (_, image_params) =
+            build_filter_query(&image_filter, i64::MAX as u64, i64::MAX as u64, 36);
+        assert!(image_params.contains(&Value::Text("Image".into())));
+        assert!(!image_params.contains(&Value::Text("File".into())));
     }
 }
 

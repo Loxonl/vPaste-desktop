@@ -14,10 +14,29 @@ const ANCHOR_LIMIT: usize = 4096;
 const CACHE_BYTES: usize = 7 * 1024 * 1024; // reserve the remaining MiB for bounded anchors/indices
 static NEXT_VIEW: AtomicU64 = AtomicU64::new(1);
 static OPEN_REQUEST: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(debug_assertions, target_os = "macos"))]
+static NATIVE_OPEN_REQUEST: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ViewOwner {
+    Main,
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    NativeExperiment,
+}
+impl ViewOwner {
+    fn requests(self) -> &'static AtomicU64 {
+        match self {
+            Self::Main => &OPEN_REQUEST,
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            Self::NativeExperiment => &NATIVE_OPEN_REQUEST,
+        }
+    }
+}
+
 static VIEWS: LazyLock<Mutex<HashMap<String, Arc<View>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(crate) struct HistoryQuery {
     pub(crate) keywords: String,
     pub(crate) label: String,
@@ -34,7 +53,15 @@ pub(crate) struct HistoryRef {
     pub(crate) tags: Vec<ItemTag>,
     pub(crate) app_source: String,
     pub(crate) app_icon_path: String,
+    pub(crate) source_metadata: crate::clipboard::source_metadata::SourceMetadata,
     pub(crate) title_color: String,
+    pub(crate) preview_text: String,
+    #[serde(skip)]
+    pub(crate) is_rich_text: bool,
+    #[serde(skip)]
+    pub(crate) link_resource: String,
+    #[serde(skip)]
+    pub(crate) has_ocr_text: bool,
 }
 
 impl HistoryRef {
@@ -43,7 +70,9 @@ impl HistoryRef {
             + self.hash.capacity()
             + self.app_source.capacity()
             + self.app_icon_path.capacity()
+            + self.source_metadata.bundle_id.capacity()
             + self.title_color.capacity()
+            + self.preview_text.capacity()
             + self.tags.capacity() * std::mem::size_of::<ItemTag>()
             + self
                 .tags
@@ -102,11 +131,23 @@ struct Cache {
     bytes: usize,
 }
 struct View {
+    owner: ViewOwner,
     token: ViewToken,
     query: HistoryQuery,
     epoch: u64,
     closed: AtomicBool,
     cache: Mutex<Cache>,
+}
+
+fn remove_owned_views(views: &mut HashMap<String, Arc<View>>, owner: ViewOwner) {
+    views.retain(|_, view| {
+        if view.owner == owner {
+            view.closed.store(true, Ordering::Release);
+            false
+        } else {
+            true
+        }
+    });
 }
 
 fn view(id: &str, revision: u64) -> Result<Arc<View>, String> {
@@ -128,12 +169,22 @@ pub(crate) fn open(
     epoch: u64,
     request: u64,
 ) -> Result<HistoryViewPage, String> {
+    open_for_owner(query, epoch, request, ViewOwner::Main)
+}
+
+pub(crate) fn open_for_owner(
+    query: HistoryQuery,
+    epoch: u64,
+    request: u64,
+    owner: ViewOwner,
+) -> Result<HistoryViewPage, String> {
     let id = NEXT_VIEW.fetch_add(1, Ordering::Relaxed).to_string();
     let token = ViewToken {
         view_id: id.clone(),
         revision: 1,
     };
     let created = Arc::new(View {
+        owner,
         token,
         query,
         epoch,
@@ -149,13 +200,12 @@ pub(crate) fn open(
     });
     {
         let mut views = VIEWS.lock().unwrap_or_else(|e| e.into_inner());
-        if OPEN_REQUEST.load(Ordering::Acquire) != request {
+        if owner.requests().load(Ordering::Acquire) != request {
             return Err("history view expired".into());
         }
-        for old in views.values() {
-            old.closed.store(true, Ordering::Release);
-        }
-        views.clear(); // main history has one owner; no unbounded native result sessions
+        // At most one view per UI owner. The DEV native panel must not expire
+        // the existing main WebView's query (or vice versa).
+        remove_owned_views(&mut views, owner);
         views.insert(id.clone(), created);
     }
     read_page(&id, 1, 0)
@@ -208,6 +258,27 @@ pub(crate) fn read_page(id: &str, revision: u64, index: usize) -> Result<History
         let mut scan_index = mut_index;
         let mut cursor = mut_cursor;
         while scan_index <= index {
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            let page = if view.owner == ViewOwner::NativeExperiment {
+                crate::clipboard::native_history_ref_page(
+                    &view.query.keywords,
+                    cursor.0,
+                    cursor.1,
+                    PAGE_SIZE,
+                    &view.query.label,
+                    current,
+                )?
+            } else {
+                crate::clipboard::history_ref_page(
+                    &view.query.keywords,
+                    cursor.0,
+                    cursor.1,
+                    PAGE_SIZE,
+                    &view.query.label,
+                    current,
+                )?
+            };
+            #[cfg(not(all(debug_assertions, target_os = "macos")))]
             let page = crate::clipboard::history_ref_page(
                 &view.query.keywords,
                 cursor.0,
@@ -215,8 +286,8 @@ pub(crate) fn read_page(id: &str, revision: u64, index: usize) -> Result<History
                 PAGE_SIZE,
                 &view.query.label,
                 current,
-            )?
-            .ok_or_else(|| "history view expired".to_string())?;
+            )?;
+            let page = page.ok_or_else(|| "history view expired".to_string())?;
             if !current() {
                 return Err("history view expired".into());
             }
@@ -340,4 +411,152 @@ pub(crate) fn cache_bytes() -> usize {
                 .unwrap_or(CACHE_BYTES)
         })
         .sum()
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn reserve_native_open() -> u64 {
+    ViewOwner::NativeExperiment
+        .requests()
+        .fetch_add(1, Ordering::AcqRel)
+        + 1
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+#[derive(Clone, Debug)]
+pub(crate) struct HistoryAnchor {
+    pub(crate) hash: String,
+    pub(crate) id: usize,
+    pub(crate) time: u64,
+}
+
+// Rebase only the retained page window after a mutation. Replacing the view
+// under the same id invalidates old workers without opening another query.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn refresh_native(
+    id: &str,
+    revision: u64,
+    anchor: Option<&HistoryAnchor>,
+) -> Result<(ViewToken, usize), String> {
+    let old = view(id, revision)?;
+    let (position, first, cursor) = match anchor {
+        Some(anchor) => crate::clipboard::history_ref_seek(&old.query, anchor, || {
+            !old.closed.load(Ordering::Acquire)
+        })?,
+        None => (0, 0, (0, 0)),
+    };
+    let token = ViewToken {
+        view_id: id.into(),
+        revision: revision + 1,
+    };
+    let next = Arc::new(View {
+        owner: old.owner,
+        token: token.clone(),
+        query: old.query.clone(),
+        epoch: old.epoch,
+        closed: AtomicBool::new(false),
+        cache: Mutex::new(Cache {
+            pages: BTreeMap::new(),
+            order: VecDeque::new(),
+            anchors: BTreeMap::from([(0, (0, 0)), (first, cursor)]),
+            known_count: first * PAGE_SIZE,
+            terminal: None,
+            bytes: 0,
+        }),
+    });
+    let mut views = VIEWS.lock().unwrap_or_else(|err| err.into_inner());
+    if !views
+        .get(id)
+        .is_some_and(|current| Arc::ptr_eq(current, &old))
+    {
+        return Err("history view expired".into());
+    }
+    old.closed.store(true, Ordering::Release);
+    views.insert(id.into(), next);
+    Ok((token, position))
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn native_cached_refs(id: &str, revision: u64) -> Result<Vec<HistoryRef>, String> {
+    let view = view(id, revision)?;
+    let cache = view.cache.lock().unwrap_or_else(|err| err.into_inner());
+    Ok(cache
+        .pages
+        .values()
+        .flat_map(|page| page.items.iter().cloned())
+        .collect())
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn validate_native(id: &str, revision: u64) -> Result<(), String> {
+    let active = view(id, revision)?;
+    if active.owner != ViewOwner::NativeExperiment {
+        return Err("invalid native history view".into());
+    }
+    Ok(())
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn native_view_count() -> usize {
+    VIEWS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .filter(|view| view.owner == ViewOwner::NativeExperiment)
+        .count()
+}
+
+#[cfg(all(test, debug_assertions, target_os = "macos"))]
+mod native_owner_tests {
+    use super::*;
+
+    fn empty(owner: ViewOwner, id: &str) -> Arc<View> {
+        Arc::new(View {
+            owner,
+            token: ViewToken {
+                view_id: id.into(),
+                revision: 1,
+            },
+            query: HistoryQuery {
+                keywords: String::new(),
+                label: String::new(),
+            },
+            epoch: 0,
+            closed: AtomicBool::new(false),
+            cache: Mutex::new(Cache {
+                pages: BTreeMap::new(),
+                order: VecDeque::new(),
+                anchors: BTreeMap::new(),
+                known_count: 0,
+                terminal: None,
+                bytes: 0,
+            }),
+        })
+    }
+
+    #[test]
+    fn opening_or_closing_one_owner_preserves_the_other_owner_and_invalidates_its_own_workers() {
+        for removed in [ViewOwner::Main, ViewOwner::NativeExperiment] {
+            let main = empty(ViewOwner::Main, "main");
+            let native = empty(ViewOwner::NativeExperiment, "native");
+            let mut views = HashMap::from([
+                ("main".into(), main.clone()),
+                ("native".into(), native.clone()),
+            ]);
+            remove_owned_views(&mut views, removed);
+            assert_eq!(views.len(), 1);
+            assert_eq!(
+                main.closed.load(Ordering::Acquire),
+                removed == ViewOwner::Main
+            );
+            assert_eq!(
+                native.closed.load(Ordering::Acquire),
+                removed == ViewOwner::NativeExperiment
+            );
+            assert_eq!(views.contains_key("main"), removed != ViewOwner::Main);
+            assert_eq!(
+                views.contains_key("native"),
+                removed != ViewOwner::NativeExperiment
+            );
+        }
+    }
 }

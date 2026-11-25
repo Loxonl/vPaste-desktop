@@ -54,7 +54,7 @@ export function renderReleaseNotes(release, repo, tag, { requireUniversal = fals
   const rows = [
     ["Windows x64", "Installer / 安装版", "windows_x64_setup.exe"],
     ["Windows x64", "Portable / 免安装版", "windows_x64_portable.zip"],
-    ["macOS Apple Silicon", "Apple M-series / M 系列芯片", "macos_aarch64.dmg"],
+    ["macOS Apple Silicon", "M-series / M 系列芯片", "macos_aarch64.dmg"],
     ["macOS Intel", "Intel processors / Intel 芯片", "macos_x86_64.dmg"],
   ];
   if (requireUniversal || assets.has(`vPaste_${version}_macos_universal.dmg`)) {
@@ -75,15 +75,13 @@ export function renderReleaseNotes(release, repo, tag, { requireUniversal = fals
   const table = rows.map(([platform, description, suffix]) =>
     `| ${platform} | ${description} | ${link("Download / 下载", `vPaste_${version}_${suffix}`)} |`,
   );
-  const resources = [link("SHA-256 checksums / 校验", "SHA256SUMS.txt")];
-  const metadata = `vPaste_${version}_release-metadata.zip`;
-  if (assets.has(metadata)) resources.push(link("Release metadata / 许可证、签名与依赖资料", metadata));
+  if (!assets.has("SHA256SUMS.txt")) {
+    throw new Error("Required download asset is missing or not uploaded: SHA256SUMS.txt");
+  }
   return [
-    body.trimEnd(), "", start, "## Downloads / 下载", "",
-    "| Platform / 系统 | Package / 版本 | Download / 下载 |",
-    "| --- | --- | --- |", ...table, "", resources.join(" · "), "",
-    "Choose a package above for manual installation; `.app.tar.gz` files are used by the in-app updater.",
-    "普通安装请选择上表文件；`.app.tar.gz` 用于应用内自动更新。",
+    body.trimEnd(), "", start,
+    "| Platform / 系统 | Package / 类型 | Download / 下载 |",
+    "| --- | --- | --- |", ...table,
     end, "",
   ].join("\n");
 }

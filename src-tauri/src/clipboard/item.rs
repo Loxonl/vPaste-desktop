@@ -29,6 +29,8 @@ pub struct Item {
     pub app_source: String,
     #[serde(rename = "appIconPath")]
     pub app_icon_path: String,
+    #[serde(rename = "sourceMetadata")]
+    pub source_metadata: super::source_metadata::SourceMetadata,
     pub hash: String,
     #[serde(rename = "titleColor")]
     pub title_color: String,

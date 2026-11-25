@@ -71,7 +71,7 @@ static CHANGED: Notify = Notify::const_new();
 static MEDIA_WORK: Semaphore = Semaphore::const_new(2);
 static CAPTURE_CARD_WIDTH: AtomicU32 = AtomicU32::new(240);
 
-fn card_width_for_scale_factor(scale_factor: f64) -> u32 {
+pub(crate) fn card_width_for_scale_factor(scale_factor: f64) -> u32 {
     let pixels = 220.0 * scale_factor;
     if pixels <= 240.0 {
         240
@@ -302,6 +302,13 @@ fn build_with_size(
             if actual.preview_limited || actual.animation_limited {
                 return Err(crate::clipboard_budget::limit_error());
             }
+            if intent == MediaIntent::Preview
+                && matches!(image::guess_format(bytes), Ok(image::ImageFormat::Png))
+            {
+                // WebKit can mark a PNG ready even when its pixel stream is corrupt.
+                let _guard = image_preview::decode_lock()?;
+                image_preview::decode_card_image(bytes)?;
+            }
             crate::image_preview_asset_from_bytes(path, bytes)
         };
         if let Some(bytes) = fresh_bytes.as_ref() {
@@ -391,17 +398,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn png_preview_rejects_corrupt_pixels_with_valid_dimensions() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        let source = root.path().join("broken.png");
+        let bytes = hex::decode(concat!(
+            "89504e470d0a1a0a0000000d49484452000002090000013d08060000008161f1de000000",
+            "10494441544e6f6e2d7a6c6962207061796c6f61644c8d61a00000000049454e44ae4260",
+            "82",
+        ))
+        .unwrap();
+        std::fs::write(&source, &bytes).unwrap();
+        let path = source.to_str().unwrap();
+        assert_eq!(image::image_dimensions(&source).unwrap(), (521, 317));
+        assert!(image_preview::decode_card_image(&bytes).is_err());
+        assert!(build(path, MediaIntent::Preview, false).is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    }
+
+    #[test]
     fn preview_preserves_original_resolution_and_limited_gif_uses_a_static_frame() {
         let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
         let root = tempfile::tempdir().unwrap();
         *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
             Some(root.path().to_string_lossy().into_owned());
         let path = root.path().join("wide.png");
-        image::RgbImage::new(1200, 600).save(&path).unwrap();
+        image::RgbaImage::from_pixel(1200, 600, image::Rgba([25, 50, 75, 128]))
+            .save(&path)
+            .unwrap();
         let preview = build(path.to_str().unwrap(), MediaIntent::Preview, false).unwrap();
         assert_eq!(
             image::image_dimensions(&preview.asset_path).unwrap(),
             (1200, 600)
+        );
+        assert_eq!(
+            std::fs::read(&preview.asset_path).unwrap(),
+            std::fs::read(&path).unwrap()
         );
 
         let gif = root.path().join("large.gif");

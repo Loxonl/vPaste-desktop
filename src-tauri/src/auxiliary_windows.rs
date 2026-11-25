@@ -99,12 +99,15 @@ async fn wait_until_not_closing(mut lifecycle: watch::Receiver<Lifecycle>) -> Re
 pub(crate) enum WindowKind {
     #[cfg(debug_assertions)]
     DevMemory,
+    #[cfg(debug_assertions)]
+    DevTutorial,
     ClipboardPreview,
     PasteQueue,
     Config,
     TextEditor,
     PasteFallbackNotice,
     OnboardingPermission,
+    NativeOnboarding,
     TrayMenu,
     EmojiPicker,
     TabEditor,
@@ -116,12 +119,15 @@ impl WindowKind {
         match self {
             #[cfg(debug_assertions)]
             Self::DevMemory => "devMemory",
+            #[cfg(debug_assertions)]
+            Self::DevTutorial => "devTutorial",
             Self::ClipboardPreview => "clipboardPreview",
             Self::PasteQueue => "pasteQueue",
             Self::Config => "config",
             Self::TextEditor => "textEditor",
             Self::PasteFallbackNotice => "pasteFallbackNotice",
             Self::OnboardingPermission => "onboardingPermission",
+            Self::NativeOnboarding => "nativeOnboarding",
             Self::TrayMenu => "trayMenu",
             Self::EmojiPicker => "emojiPicker",
             Self::TabEditor => "tabEditor",
@@ -227,6 +233,14 @@ async fn ensure_open(
                             page_started.elapsed().as_millis()
                         );
                     }
+                    if cfg!(debug_assertions) && matches!(kind, WindowKind::TextEditor) {
+                        log::info!(
+                            "text editor window ready: created={} native_create_ms={} page_ready_ms={}",
+                            created,
+                            native_create_ms,
+                            page_started.elapsed().as_millis()
+                        );
+                    }
                     return Ok(window);
                 }
                 continue;
@@ -300,6 +314,7 @@ mod tests {
             WindowKind::TextEditor,
             WindowKind::PasteFallbackNotice,
             WindowKind::OnboardingPermission,
+            WindowKind::NativeOnboarding,
             WindowKind::TrayMenu,
             WindowKind::EmojiPicker,
             WindowKind::TabEditor,
@@ -315,6 +330,7 @@ mod tests {
                 "textEditor",
                 "pasteFallbackNotice",
                 "onboardingPermission",
+                "nativeOnboarding",
                 "trayMenu",
                 "emojiPicker",
                 "tabEditor",

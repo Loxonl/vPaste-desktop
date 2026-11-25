@@ -5,7 +5,7 @@ import { CircularProgress, LinearProgress } from "@mui/material";
 import Typography from '@mui/material/Typography';
 import { info, error } from "@tauri-apps/plugin-log";
 import { useLanguage } from "../lang";
-import { isMacPlatform } from "../shortcutDisplay";
+import { isMacPlatform, isWindowsPlatform } from "../shortcutDisplay";
 import { notifyAuxiliaryWindowReady } from "../auxiliaryWindowReady";
 import { applyThemeMode } from "../theme";
 import { tauriSettingsBridge, type SettingsBridge } from "./SettingsBridge";
@@ -182,7 +182,7 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
     const nativeWindowsPreview = import.meta.env.DEV
         && new URLSearchParams(window.location.search).get("platform") === "windows";
     const nativeWindowsSurface = nativeWindowsPreview
-        || ("__TAURI_INTERNALS__" in window && !isMac);
+        || ("__TAURI_INTERNALS__" in window && isWindowsPlatform());
     const activeSection = [
         <GeneralSettings bridge={bridge} config={config} languages={languages} t={t} onSave={saveConfig}
             onPanelSizeSaved={size => setConfig(current => ({ ...current, clipboard_panel_size: size }))} />,
@@ -202,10 +202,10 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
                     }
                 }}
             >
-                <div className={layout.dragRegion} onMouseDown={event => startConfigWindowDrag(event, bridge)} />
+                <div className={layout.dragRegion} onMouseDown={nativeWindowsSurface ? undefined : event => startConfigWindowDrag(event, bridge)} />
                 <WindowControls bridge={bridge} />
                 <div className={`${layout.sidebar} ${isMac ? layout.sidebarMac : ""}`}>
-                    <div className={layout.sidebarDragRegion} onMouseDown={event => startConfigWindowDrag(event, bridge)} />
+                    <div className={layout.sidebarDragRegion} onMouseDown={nativeWindowsSurface ? undefined : event => startConfigWindowDrag(event, bridge)} />
                     <div className={layout.sidebarBrand} aria-label={t("common.settings")}>
                         <img src={logoUrl} alt="" />
                         <span>{t("common.settings")}</span>
@@ -226,7 +226,7 @@ export default function Config({ bridge = tauriSettingsBridge }: { bridge?: Sett
                     </Tabs>
                 </div>
                 <div className={layout.contentArea}>
-                    <div className={layout.contentTitleBar} onMouseDown={event => startConfigWindowDrag(event, bridge)}>
+                    <div className={layout.contentTitleBar} onMouseDown={nativeWindowsSurface ? undefined : event => startConfigWindowDrag(event, bridge)}>
                         <Typography variant="h5">
                             {value === 0 ? t("settings.general.title") : value === 1 ? t("settings.data.title") : value === 2 ? t("settings.shortcuts.title") : t("settings.about.title")}
                         </Typography>

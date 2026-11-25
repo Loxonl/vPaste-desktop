@@ -18,12 +18,14 @@ impl PreviewRequests {
         (previous + 2) | 1
     }
 
-    pub(crate) fn cancel(&self) {
-        let _ = self
+    pub(crate) fn cancel(&self) -> u64 {
+        let previous = self
             .0
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
                 Some((value + 2) & !1)
-            });
+            })
+            .unwrap();
+        (previous + 2) & !1
     }
 
     pub(crate) fn active(&self) -> bool {
@@ -31,7 +33,16 @@ impl PreviewRequests {
     }
 
     pub(crate) fn current(&self, request: u64) -> bool {
-        request & 1 == 1 && self.0.load(Ordering::SeqCst) == request
+        request & 1 == 1 && self.version_current(request)
+    }
+
+    pub(crate) fn version_current(&self, version: u64) -> bool {
+        self.0.load(Ordering::SeqCst) == version
+    }
+
+    pub(crate) fn inactive_version(&self) -> Option<u64> {
+        let version = self.0.load(Ordering::SeqCst);
+        (version & 1 == 0).then_some(version)
     }
 }
 
@@ -86,6 +97,34 @@ pub(crate) fn eased_progress(progress: f64, easing: [f64; 4]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_queued_close_cannot_hide_a_reopened_session() {
+        let requests = PreviewRequests::new();
+        requests.begin();
+        let close = requests.cancel();
+        assert!(requests.version_current(close));
+        assert!(!requests.current(close));
+        let reopened = requests.begin();
+        assert!(requests.current(reopened));
+        assert!(!requests.version_current(close));
+    }
+
+    #[test]
+    fn renderer_retirement_does_not_own_a_reopened_or_replaced_session() {
+        let requests = PreviewRequests::new();
+        requests.begin();
+        assert!(requests.inactive_version().is_none());
+        let closed = requests.cancel();
+        assert_eq!(requests.inactive_version(), Some(closed));
+        let next = requests.begin();
+        assert!(!requests.version_current(closed));
+        assert!(requests.inactive_version().is_none());
+        assert!(requests.current(next));
+        let closed_again = requests.cancel();
+        assert_eq!(requests.inactive_version(), Some(closed_again));
+        assert_ne!(closed, closed_again);
+    }
 
     #[test]
     fn closing_or_a_new_selection_invalidates_late_content_and_geometry() {

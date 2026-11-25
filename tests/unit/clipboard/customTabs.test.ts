@@ -14,6 +14,8 @@ import {
     saveCustomTabs,
     saveTabOrder,
     type CustomTab,
+    tabOrderToMigrate,
+    appendDynamicTabId,
 } from "../../../src/clipboard/customTabs";
 
 const customTabs: CustomTab[] = [
@@ -106,6 +108,19 @@ describe("custom tab model", () => {
         ]);
     });
 
+    it("appends a created tab after existing tabs without moving an edited tab", () => {
+        const tags = [{ id: 4, name: "Work" }];
+        const order = ["record:4", "filter-images", "filter-links"];
+        expect(appendDynamicTabId(customTabs, tags, order, "filter-images")).toEqual(order);
+        expect(appendDynamicTabId([], [], ["not-loaded-yet"], "new-filter")).toEqual(["not-loaded-yet", "new-filter"]);
+        expect(appendDynamicTabId([...customTabs, { ...customTabs[0], id: "new-filter" }], tags, [], "new-filter")).toEqual([
+            "filter-images", "filter-links", "record:4", "new-filter",
+        ]);
+        expect(appendDynamicTabId(customTabs, tags, [], "new-filter")).toEqual([
+            "filter-images", "filter-links", "record:4", "new-filter",
+        ]);
+    });
+
     it("builds the unchanged backend filter payload", () => {
         const payload = customTabFilterPayload(customTabs[0]);
 
@@ -142,5 +157,13 @@ describe("custom tab model", () => {
         expect(recordTagIdFromTab("record:12")).toBe(12);
         expect(recordTagIdFromTab("record:0")).toBeNull();
         expect(recordTagIdFromTab("filter-images")).toBeNull();
+    });
+});
+
+describe("tabOrderToMigrate", () => {
+    it("copies the saved WebView order only into an empty database", () => {
+        expect(tabOrderToMigrate([], ["record:2", "tab-1"])).toEqual(["record:2", "tab-1"]);
+        expect(tabOrderToMigrate(["tab-1"], ["record:2", "tab-1"])).toBeNull();
+        expect(tabOrderToMigrate([], [])).toBeNull();
     });
 });

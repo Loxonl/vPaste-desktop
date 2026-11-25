@@ -29,6 +29,8 @@ describe("paste queue vertical dragging", () => {
             "first",
             "second",
         ]);
+        expect(queueOrderForOffset(metrics, "third", -125)).toEqual(["first", "third", "second"]);
+        expect(queueOrderForOffset(metrics, "third", -126)).toEqual(["third", "first", "second"]);
     });
 
     it("moves every row on the Y axis while neighboring rows make space", () => {

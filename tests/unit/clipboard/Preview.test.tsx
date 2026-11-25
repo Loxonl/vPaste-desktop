@@ -13,7 +13,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 vi.mock("@tauri-apps/api/event", () => ({
     emitTo: vi.fn(),
-    listen: vi.fn(),
+    listen: vi.fn(async () => () => {}),
 }));
 
 vi.mock("@tauri-apps/plugin-log", () => ({ error: vi.fn() }));
@@ -54,18 +54,19 @@ describe("PreviewBody transparency", () => {
         await waitFor(() => expect(container.querySelector("pre")?.textContent).toBe("file prefix"));
         expect(container).toHaveTextContent("preview.textTruncated");
     });
-    it("shows the existing link loading state while the webpage request is still pending", async () => {
-        let complete!: (document: { url: string; html: string }) => void;
+    it("shows the link loading state while the native webpage view is being prepared", async () => {
+        let complete!: (ready: boolean) => void;
         tauri.invoke.mockImplementation(async (command: string) => {
-            if (command === "fetch_link_preview_document") return new Promise(resolve => { complete = resolve; });
+            if (command === "sync_preview_browser") return new Promise(resolve => { complete = resolve; });
             return undefined;
         });
         const { container } = render(<PreviewBody payload={{ item_type: ItemType.Link, content: "https://example.com/slow" }} t={t} />);
         expect(container.textContent).toContain("https://example.com/slow");
         expect(container.textContent).toContain("preview.generating");
         expect(container.querySelector("iframe")).toBeNull();
-        complete({ url: "https://example.com/slow", html: "<html><body>Loaded article</body></html>" });
-        await waitFor(() => expect(container.querySelector("iframe")?.getAttribute("srcdoc")).toContain("Loaded article"));
+        await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("sync_preview_browser", expect.objectContaining({ url: "https://example.com/slow" })));
+        complete(true);
+        expect(container.querySelector("iframe")).toBeNull();
     });
 
     it("sanitizes clipboard rich HTML in the separate preview window", () => {
@@ -95,24 +96,15 @@ describe("PreviewBody transparency", () => {
         expect(container.querySelector("p")?.style.width).toBe("500px");
     });
 
-    it("prevents link preview HTML from requesting local or remote subresources", async () => {
-        tauri.invoke.mockImplementation(async (command: string) => {
-            if (command === "fetch_link_preview_document") {
-                return {
-                    url: "https://example.com/page",
-                    html: '<html><head><style>body { background: url(http://127.0.0.1/run) }</style></head><body><img src="http://127.0.0.1/run"><p>Article</p></body></html>',
-                };
-            }
-            throw new Error(`Unexpected command: ${command}`);
-        });
+    it("delegates webpage content to a separate native view rather than an app-privileged iframe", async () => {
+        tauri.invoke.mockResolvedValue(true);
         const { container } = render(
             <PreviewBody payload={{ item_type: ItemType.Link, content: "https://example.com/page" }} t={t} />,
         );
 
-        await waitFor(() => expect(container.querySelector("iframe")?.getAttribute("srcdoc")).toContain("default-src 'none'"));
-        const frame = container.querySelector("iframe")!;
-        expect(frame.getAttribute("srcdoc")).toContain("img-src data:");
-        expect(frame.getAttribute("sandbox")).toBe("");
+        await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("sync_preview_browser", expect.objectContaining({ url: "https://example.com/page" })));
+        expect(container.querySelector("iframe")).toBeNull();
+        expect(tauri.invoke.mock.calls.some(([command]) => command === "fetch_link_preview_document")).toBe(false);
     });
 
     it.each([
@@ -160,6 +152,8 @@ describe("PreviewBody transparency", () => {
 
     beforeEach(() => {
         cleanup();
+        vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(600);
+        vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
         vi.mocked(logError).mockClear();
         tauri.invoke.mockReset();
         tauri.invoke.mockImplementation(async (command: string) => {

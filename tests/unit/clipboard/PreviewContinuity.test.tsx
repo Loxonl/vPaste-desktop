@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import Preview from "../../../src/clipboard/Preview";
 import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
 import { motionDurationsMs, motionTokens } from "../../../src/ui/motion";
@@ -17,6 +17,8 @@ const text = (id: number, content: string, direction = 0) => ({
     request_id: id, item_type: "Text", content, navigation_direction: direction,
 });
 
+beforeAll(async () => { await import("../../../src/clipboard/ImageTextView"); });
+
 beforeEach(() => {
     listeners = new Map();
     tauri.listen.mockReset().mockImplementation(async (name, callback) => {
@@ -33,6 +35,105 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("continuous preview session", () => {
+    it("opens the macOS OCR editor unpinned", async () => {
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "commit_preview_window") return true;
+            if (command === "recognize_image_text") return { status: "complete", text: "Recognized text", error: null };
+            return undefined;
+        });
+        render(<MotionTestProvider><Preview /></MotionTestProvider>);
+        emit("preview-item", { request_id: 1, item_type: "ImageText", content: "image", protect_image_text_draft: true });
+        await screen.findByDisplayValue("Recognized text");
+        expect(screen.getByRole("button", { name: "preview.pin" })).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("keeps a macOS OCR draft until the user confirms discarding it", async () => {
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "commit_preview_window") return true;
+            if (command === "recognize_image_text") return { status: "complete", text: "Recognized text", error: null };
+            return undefined;
+        });
+        render(<MotionTestProvider reducedMotion="always"><Preview /></MotionTestProvider>);
+        const openOcr = (request_id: number) => emit("preview-item", {
+            request_id, item_type: "ImageText", content: "image", protect_image_text_draft: true,
+        });
+        openOcr(1);
+        const editor = await screen.findByDisplayValue("Recognized text");
+        fireEvent.change(editor, { target: { value: "My draft" } });
+        const user = userEvent.setup();
+        await user.click(screen.getByRole("button", { name: "common.close" }));
+        expect(tauri.invoke).not.toHaveBeenCalledWith("hide_preview_window");
+        expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "editor.keepEditing" }));
+        await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+        expect(editor).toHaveValue("My draft");
+
+        fireEvent.keyDown(editor, { key: "Escape" });
+        expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+        await user.keyboard("{Escape}");
+        await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+        expect(editor).toHaveValue("My draft");
+
+        emit("preview-close-requested");
+        expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "editor.discard" }));
+        expect(tauri.invoke).toHaveBeenCalledWith("hide_preview_window");
+        emit("preview-clear");
+        openOcr(2);
+        const reopened = await screen.findByDisplayValue("Recognized text");
+        tauri.invoke.mockClear();
+        fireEvent.keyDown(reopened, { key: "Escape" });
+        expect(tauri.invoke).toHaveBeenCalledWith("hide_preview_window");
+        await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    });
+
+    it("commits the shared image-text window while OCR is loading and releases it on clear", async () => {
+        let finishOcr!: (result: { status: string; text: string; error: null }) => void;
+        const ocr = new Promise(resolve => { finishOcr = resolve; });
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "commit_preview_window") return true;
+            if (command === "recognize_image_text") return ocr;
+            return undefined;
+        });
+        render(<MotionTestProvider><Preview /></MotionTestProvider>);
+        emit("preview-item", { request_id: 1, item_type: "ImageText", content: "image" });
+        await screen.findByRole("dialog", { name: "ocr.title" }, { timeout: 4000 });
+        await waitFor(() => expect(tauri.invoke).toHaveBeenCalledWith("commit_preview_window", expect.objectContaining({ requestId: 1 })));
+        expect(screen.getByText("ocr.recognizing")).toBeInTheDocument();
+        const pin = await screen.findByRole("button", { name: "preview.unpin" });
+        expect(pin).toHaveAttribute("aria-pressed", "true");
+        await userEvent.click(pin);
+        expect(tauri.invoke).toHaveBeenCalledWith("set_preview_pinned", { pinned: false });
+        await userEvent.click(screen.getByRole("button", { name: "preview.pin" }));
+        expect(tauri.invoke).toHaveBeenCalledWith("set_preview_pinned", { pinned: true });
+        for (const key of [" ", "ArrowLeft", "ArrowRight", "Tab"]) fireEvent.keyDown(window, { key });
+        fireEvent.keyDown(window, { key: "Tab", ctrlKey: true });
+        expect(tauri.invoke).not.toHaveBeenCalledWith("preview_navigate_selection", expect.anything());
+        expect(tauri.invoke).not.toHaveBeenCalledWith("hide_preview_window");
+        fireEvent.keyDown(window, { key: "Escape" });
+        expect(tauri.invoke).toHaveBeenCalledWith("hide_preview_window");
+        emit("preview-clear");
+        await act(async () => { finishOcr({ status: "complete", text: "stale result", error: null }); });
+        expect(screen.queryByText("stale result")).not.toBeInTheDocument();
+        emit("preview-item", text(2, "Ordinary preview"));
+        await waitFor(() => expect(screen.getByText("Ordinary preview").closest("[data-preview-phase]"))
+            .toHaveAttribute("data-preview-phase", "current"));
+        expect(screen.getByRole("button", { name: "preview.pin" })).toBeInTheDocument();
+    });
+
+    it("leaves text navigation and copy keys to the OCR field and closes through its primary action", async () => {
+        tauri.invoke.mockImplementation(async (command: string) => command === "commit_preview_window" ? true
+            : command === "recognize_image_text" ? { status: "complete", text: "中文 recognized text", error: null } : undefined);
+        render(<MotionTestProvider><Preview /></MotionTestProvider>);
+        emit("preview-item", { request_id: 1, item_type: "ImageText", content: "image" });
+        const field = await screen.findByRole("textbox", { name: "ocr.title" });
+        for (const key of ["ArrowLeft", "ArrowRight", "Tab", " "]) fireEvent.keyDown(field, { key });
+        expect(tauri.invoke).not.toHaveBeenCalledWith("preview_navigate_selection", expect.anything());
+        expect(screen.getAllByRole("button")).toHaveLength(3);
+        await userEvent.click(screen.getByRole("button", { name: "common.close" }));
+        expect(tauri.invoke).toHaveBeenCalledWith("hide_preview_window");
+    });
+
     it.each(["never", "always"] as const)("clears pin and content before reusing the page (reduced motion: %s)", async reducedMotion => {
         const user = userEvent.setup();
         render(<MotionTestProvider reducedMotion={reducedMotion}><Preview /></MotionTestProvider>);
@@ -48,6 +149,28 @@ describe("continuous preview session", () => {
         await waitFor(() => expect(screen.getByText("Reopened content").closest("[data-preview-phase]"))
             .toHaveAttribute("data-preview-phase", "current"));
         expect(screen.queryByText("Closed content")).not.toBeInTheDocument();
+    });
+
+    it("routes preview navigation through the active main-panel backend", async () => {
+        render(<MotionTestProvider><Preview /></MotionTestProvider>);
+        emit("preview-item", text(1, "Backend navigation"));
+        await screen.findByText("Backend navigation");
+        fireEvent.keyDown(window, { key: "ArrowRight" });
+        expect(tauri.invoke).toHaveBeenCalledWith("preview_navigate_selection", { direction: 1, key: "ArrowRight" });
+        fireEvent.keyDown(window, { key: "Tab", ctrlKey: true, shiftKey: true });
+        expect(tauri.invoke).toHaveBeenCalledWith("preview_navigate_selection", { direction: -1, key: "Tab", ctrlKey: true });
+        expect(tauri.emitTo).not.toHaveBeenCalledWith("clipboard", "preview-navigate-selection", expect.anything());
+    });
+
+    it("routes hover retention through the active main-panel backend", async () => {
+        const { container } = render(<MotionTestProvider><Preview /></MotionTestProvider>);
+        emit("preview-item", { ...text(1, "Hover retention"), hover: true });
+        await waitFor(() => expect(screen.getByText("Hover retention").closest("[data-preview-phase]"))
+            .toHaveAttribute("data-preview-phase", "current"));
+        fireEvent.mouseEnter(container.firstElementChild!);
+        expect(tauri.invoke).toHaveBeenCalledWith("preview_pointer_changed", { inside: true });
+        fireEvent.mouseLeave(container.firstElementChild!);
+        expect(tauri.invoke).toHaveBeenCalledWith("preview_pointer_changed", { inside: false });
     });
 
     it("does not close on repeated Space but closes on the next physical press", () => {

@@ -72,3 +72,8 @@ test-results/
 # Standalone release tool build outputs
 tools/verify-updater-manifest/target/
 tools/history-archive-converter/target/
+
+# Local WinUI 3 MSBuild/NuGet intermediates
+src-tauri/native-demo/windows/winui/obj/
+src-tauri/native-demo/windows/winui/x64/
+src-tauri/native-demo/windows/winui/WinUiPanel/

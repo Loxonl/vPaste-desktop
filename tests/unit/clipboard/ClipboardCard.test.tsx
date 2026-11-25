@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import ClipboardCard from "../../../src/clipboard/ClipboardCard";
 import { ensureWhiteTextContrast } from "../../../src/clipboard/clipboardHeaderColor";
 import { Item, ItemType } from "../../../src/clipboard/Item";
+import { itemFromPayload } from "../../../src/clipboard/searchPagination";
 
 const invokeMock = vi.hoisted(() => vi.fn());
 
@@ -23,6 +24,30 @@ afterEach(() => {
 });
 
 describe("clipboard card header", () => {
+    it("universal clipboard renders a device icon when the remote app is unknown", () => {
+        const payload = { id: 990, hash: "remote-unknown", itemType: ItemType.Text,
+            content: "remote text", time: 0, previewContent: "remote text", textContent: "",
+            label: 0, appSource: "", appIconPath: "", richHtml: "",
+            sourceMetadata: { isRemote: true, bundleId: "" } };
+        render(<ClipboardCard item={itemFromPayload(payload)} selected={false} simulatedHover={false}
+            refreshKey={0} searchQuery="" filterMotionIndex={0} mediaPlaybackReady={false}
+            t={key => key} onContextMenu={vi.fn()} />);
+        const icon = screen.getByRole("img", { name: "clipboard.remoteSource" });
+        expect(icon.closest("[title]")).toHaveAttribute("title", "clipboard.remoteSource");
+    });
+
+    it("universal clipboard labels an identified app as coming from another device", () => {
+        const payload = { id: 991, hash: "remote-known", itemType: ItemType.Text,
+            content: "remote text", time: 0, previewContent: "remote text", textContent: "",
+            label: 0, appSource: "Finder", appIconPath: "/tmp/finder-macos.png", richHtml: "",
+            sourceMetadata: { isRemote: true, bundleId: "com.apple.finder" } };
+        render(<ClipboardCard item={itemFromPayload(payload)} selected={false} simulatedHover={false}
+            refreshKey={0} searchQuery="" filterMotionIndex={0} mediaPlaybackReady={false}
+            t={key => key} onContextMenu={vi.fn()} />);
+        expect(screen.getByTitle("clipboard.remoteSourceApp").querySelector("img"))
+            .toHaveAttribute("src", "asset:///tmp/finder-macos.png");
+    });
+
     it("does not retain a completion timer after a native drag source is unmounted", async () => {
         vi.stubGlobal("navigator", { userAgent: "Windows", platform: "Win32" });
         vi.stubGlobal("__TAURI_INTERNALS__", {});

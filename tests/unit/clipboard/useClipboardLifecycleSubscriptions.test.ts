@@ -40,6 +40,7 @@ function handlers() {
             onCaptureRejected: vi.fn(),
             onResourcesUpdated: vi.fn(),
             onCustomTabsChanged: vi.fn(),
+            onTabOrderChanged: vi.fn(),
             onItemTagsChanged: vi.fn(),
             onPermissionStatusChanged: vi.fn(),
             onPreviewNavigation: vi.fn(),
@@ -78,6 +79,7 @@ describe("useClipboardLifecycleSubscriptions", () => {
             "tutorial-completed",
             "onboarding-permission-status-changed",
             "clipboard-behavior-config-changed",
+            "tab-order-changed",
             "custom-tabs-changed",
             "item-tags-changed",
             "preview-navigate-selection",
@@ -91,6 +93,7 @@ describe("useClipboardLifecycleSubscriptions", () => {
             tauri.callbacks.get("clipboard-behavior-config-changed")?.({
                 payload: { link_auto_preview: false },
             });
+            tauri.callbacks.get("tab-order-changed")?.({ payload: { order: ["record:9", "tab-a"] } });
             tauri.callbacks.get("custom-tabs-changed")?.({
                 payload: JSON.stringify({ activeId: "work", tabs: [] }),
             });
@@ -108,6 +111,7 @@ describe("useClipboardLifecycleSubscriptions", () => {
         expect(callbacks.tauri.onCaptureRejected).toHaveBeenCalledOnce();
         expect(callbacks.tauri.onBehaviorConfigChanged)
             .toHaveBeenCalledWith({ link_auto_preview: false });
+        expect(callbacks.tauri.onTabOrderChanged).toHaveBeenCalledWith({ order: ["record:9", "tab-a"] });
         expect(callbacks.tauri.onCustomTabsChanged)
             .toHaveBeenCalledWith({ activeId: "work", tabs: [] });
         expect(callbacks.tauri.onItemTagsChanged)

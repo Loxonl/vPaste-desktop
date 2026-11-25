@@ -33,6 +33,7 @@ export interface ConfigData {
     retain_last_position: boolean;
     retain_tab_position: boolean;
     link_auto_preview: boolean;
+    image_ocr_enabled: boolean;
     mouse_paste_mode: "single" | "double";
     clipboard_panel_size: PanelSizePreference;
     hover_preview_enabled: boolean;
@@ -124,6 +125,7 @@ export const DEFAULT_CONFIG: ConfigData = {
     retain_last_position: false,
     retain_tab_position: false,
     link_auto_preview: true,
+    image_ocr_enabled: true,
     mouse_paste_mode: "single",
     clipboard_panel_size: null,
     hover_preview_enabled: false,

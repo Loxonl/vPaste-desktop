@@ -20,7 +20,10 @@ strip = true
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# Compiles the Debug-only C++ native demo window on Windows (build.rs).
+cc = "1.2.62"
 resvg = { version = "0.47.0", default-features = false }
+serde_json = "1.0"
 
 [dependencies]
 resvg = "0.47.0"
@@ -70,14 +73,16 @@ tauri-plugin-clipboard-manager = "=2.3.2"
 window-vibrancy = "=0.6.0"
 
 [target."cfg(windows)".dependencies]
+reqwest = { version = "0.12.24", features = ["native-tls-alpn"] }
 webview2-com = "=0.39.1"
 windows-dev = { package = "windows", version = "0.62.2" }
 auto-launch = "0.5.0"
 winreg = "0.55"
 clipboard-win = { version = "5.3.0", features = ["monitor"] }
-windows = { version = "0.56.0", features = ["Foundation", "UI_ViewManagement", "Wdk_System_Threading", "Win32_System_Threading", "Win32_System_Kernel", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Accessibility", "Win32_Graphics_Gdi", "Win32_Graphics_Dwm", "Win32_System_ProcessStatus", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_System_Ole", "Win32_Globalization"] }
+windows = { version = "0.56.0", features = ["Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage_Streams", "UI_ViewManagement", "Wdk_System_Threading", "Win32_System_Threading", "Win32_System_Kernel", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Accessibility", "Win32_UI_Controls", "Win32_Graphics_Gdi", "Win32_Graphics_Dwm", "Win32_System_ProcessStatus", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_System_Ole", "Win32_System_WinRT", "Win32_Globalization"] }
 
 [target."cfg(target_os = \"macos\")".dependencies]
+reqwest = { version = "0.12.24", features = ["native-tls-alpn"] }
 cocoa = "0.25"
 objc = "0.2.7"
 core-graphics = "0.19.2"
@@ -87,6 +92,11 @@ block = "=0.1.6"
 [features]
 custom-protocol = ["tauri/custom-protocol"]
 mac-app-store = []
+winui = ["custom-protocol"]
+# Compatibility for existing development commands.
+winui-debug = ["winui"]
+# Local Release measurements only; the production builder rejects this feature.
+winui-acceptance = ["winui"]
 
 [target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
 tauri-plugin-global-shortcut = "=2.3.1"

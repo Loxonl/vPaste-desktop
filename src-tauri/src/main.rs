@@ -494,6 +494,8 @@ struct PreviewWindowSize {
 #[derive(Clone)]
 struct PreparedPreview {
     payload: PreviewPayload,
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    is_pdf: bool,
     mode: PreviewMode,
     rect: PreviewRect,
     scale_factor: f64,
@@ -5255,6 +5257,8 @@ fn commit_preview_window(
     if animated {
         animate_preview_rect(window.clone(), &prepared, from, duration_ms, easing);
     }
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    native_panel::preview::set_pdf_window(prepared.is_pdf.then_some(&window));
     // Restore the native level for first show and visible-window reuse alike.
     #[cfg(target_os = "macos")]
     if !prepared.payload.protect_image_text_draft {
@@ -5598,6 +5602,8 @@ async fn prepare_preview_window(
             WINUI_PDF_PREVIEW.store(is_pdf_preview, Ordering::SeqCst);
             *pending = Some(PreparedPreview {
                 payload: payload.clone(),
+                #[cfg(all(debug_assertions, target_os = "macos"))]
+                is_pdf: is_pdf_preview,
                 mode,
                 rect: PreviewRect {
                     x: position.x,

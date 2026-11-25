@@ -328,6 +328,67 @@ final class NativePanelTabEditorTests: XCTestCase {
     ] as NSDictionary)
   }
 
+  func testSourceIconsInRowsAndSelectedSummary() throws {
+    _ = NSApplication.shared
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let icon = directory.appendingPathComponent("icon.png")
+    let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 16,
+      pixelsHigh: 16, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+      colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+    for y in 0..<16 {
+      for x in 0..<16 { bitmap.setColor(.magenta, atX: x, y: y) }
+    }
+    try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: icon)
+    let parent = NSWindow(contentRect: NSRect(x: 40, y: 80, width: 300, height: 300),
+      styleMask: [.titled], backing: .buffered, defer: false)
+    parent.isReleasedWhenClosed = false
+    defer { parent.close() }
+    let filter = PanelTabEditorData.Filter(itemType: "", appSources: ["Safari", "Mail", "Notes"],
+      favorite: "any", relativeAmount: "", relativeUnit: "day")
+    let data = PanelTabEditorData(kind: .filter, name: "Apps", filter: filter, sources: [
+      .init(source: "Safari", icon_path: icon.path), .init(source: "Mail", icon_path: icon.path),
+      .init(source: "Notes", icon_path: icon.path), .init(source: "Missing", icon_path: icon.path + ".missing"),
+    ], emojis: nil, sourcesUnavailable: nil)
+    let editor = PanelTabEditor(data: data, chinese: false, onSave: { _ in }, onCancel: {})
+    editor.sourcePopover.animates = false
+    defer { editor.close() }
+    editor.show(parent: parent, anchor: NSPoint(x: 200, y: 400))
+    let child = try XCTUnwrap(parent.childWindows?.first)
+    let trigger = try XCTUnwrap(descendants(try XCTUnwrap(child.contentView)).compactMap { $0 as? NSButton }
+      .first { $0.accessibilityLabel() == "Source app" })
+    trigger.performClick(nil)
+    let pickerView = try XCTUnwrap(editor.sourcePopover.contentViewController).view
+    let choices = descendants(pickerView).compactMap { $0 as? NSButton }
+    let row = try XCTUnwrap(choices.first { $0.accessibilityLabel() == "Safari" })
+    let missing = try XCTUnwrap(choices.first { $0.title == "Missing" })
+    func iconViews(_ button: NSButton) -> [NSImageView] {
+      button.subviews.compactMap { $0 as? PanelSourceIconLabel }
+        .flatMap { $0.arrangedSubviews.compactMap { $0 as? NSImageView } }
+    }
+    let deadline = Date().addingTimeInterval(2)
+    while (iconViews(trigger).count < 2 || iconViews(row).count == 0) && Date() < deadline {
+      RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+    }
+    XCTAssertEqual(iconViews(trigger).count, 2)
+    XCTAssertEqual(iconViews(row).count, 1)
+    XCTAssertEqual(iconViews(missing).count, 0)
+    for button in [row, trigger] {
+      button.layoutSubtreeIfNeeded()
+      for icon in iconViews(button) {
+        XCTAssertNotNil(icon.image)
+        XCTAssertFalse(icon.bounds.isEmpty)
+        XCTAssertTrue(button.bounds.contains(icon.convert(icon.bounds, to: button)))
+      }
+    }
+    XCTAssertEqual(missing.title, "Missing")
+    XCTAssertEqual(row.state, .on)
+    try XCTUnwrap(choices.first { $0.title == "Any app" }).performClick(nil)
+    XCTAssertEqual(iconViews(trigger).count, 0)
+    XCTAssertEqual(trigger.title, "Any")
+  }
+
   private func keyEvent(_ keyCode: UInt16, flags: NSEvent.ModifierFlags, in child: NSWindow) throws -> NSEvent {
     let characters = keyCode == 53 ? "\u{1b}" : "\r"
     return try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,

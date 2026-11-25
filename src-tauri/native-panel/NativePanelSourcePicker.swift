@@ -1,14 +1,67 @@
 import AppKit
 
+// AppKit owns the checkbox, bezel, focus ring and disclosure glyph. The
+// content overlay is decorative and passes mouse events to the host button.
+@MainActor
+final class PanelSourceIconLabel: NSStackView {
+  private let text = NSTextField(labelWithString: "")
+
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  static func update(_ button: NSButton, title: String, icons: [NSImage?],
+    leading: CGFloat, trailing: CGFloat) {
+    button.subviews.compactMap { $0 as? PanelSourceIconLabel }.forEach { $0.removeFromSuperview() }
+    let images = icons.compactMap { $0 }
+    guard !images.isEmpty else { button.title = title; return }
+    button.title = ""
+    let label = PanelSourceIconLabel()
+    label.configure(title, images: images, for: button)
+    button.addSubview(label)
+    NSLayoutConstraint.activate([
+      label.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: leading),
+      label.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -trailing),
+      label.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+    ])
+  }
+
+  private func configure(_ title: String, images: [NSImage], for button: NSButton) {
+    translatesAutoresizingMaskIntoConstraints = false
+    orientation = .horizontal
+    alignment = .centerY
+    spacing = 4
+    setAccessibilityElement(false)
+    setAccessibilityChildren([])
+    for image in images {
+      let icon = NSImageView(image: image)
+      icon.imageScaling = .scaleProportionallyUpOrDown
+      icon.setAccessibilityElement(false)
+      addArrangedSubview(icon)
+      NSLayoutConstraint.activate([
+        icon.widthAnchor.constraint(equalToConstant: 16),
+        icon.heightAnchor.constraint(equalToConstant: 16),
+      ])
+    }
+    text.stringValue = title
+    text.font = button.font
+    text.textColor = button.isEnabled ? .controlTextColor : .disabledControlTextColor
+    text.lineBreakMode = .byTruncatingTail
+    text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    text.setAccessibilityElement(false)
+    addArrangedSubview(text)
+  }
+}
+
 @MainActor
 final class PanelSourcePicker: NSViewController, NSSearchFieldDelegate {
   struct Option {
     let source: String
     let name: String
     let recent: Bool
+    let iconPath: String
   }
 
   private let options: [Option]
+  private let iconMedia: PanelMedia
   private let unavailable: Bool
   private let chinese: Bool
   private let onChange: ([String]) -> Void
@@ -21,9 +74,10 @@ final class PanelSourcePicker: NSViewController, NSSearchFieldDelegate {
   private let empty = NSTextField(labelWithString: "")
   private var rows: [(Option, Choice)] = []
 
-  init(options: [Option], selected: [String], unavailable: Bool, chinese: Bool,
+  init(options: [Option], selected: [String], iconMedia: PanelMedia, unavailable: Bool, chinese: Bool,
     onChange: @escaping ([String]) -> Void, onDismiss: @escaping () -> Void) {
     self.options = options
+    self.iconMedia = iconMedia
     self.selected = selected
     self.unavailable = unavailable
     self.chinese = chinese
@@ -112,10 +166,17 @@ final class PanelSourcePicker: NSViewController, NSSearchFieldDelegate {
   private func makeRow(_ option: Option, index: Int) -> Choice {
     let button = Choice(frame: NSRect(x: 1, y: CGFloat(index) * 27 + 1, width: 263, height: 25))
     button.setButtonType(.switch)
-    button.title = option.recent ? option.name : local("\(option.name) (Not recent)", "\(option.name)（非近期）")
+    let title = option.recent ? option.name : local("\(option.name) (Not recent)", "\(option.name)（非近期）")
+    button.title = title
     button.lineBreakMode = .byTruncatingTail
-    button.toolTip = button.title
-    button.setAccessibilityLabel(button.title)
+    button.toolTip = title
+    button.setAccessibilityLabel(title)
+    if !option.iconPath.isEmpty {
+      iconMedia.load(option.iconPath, pixels: 48) { [weak button] icon in
+        guard let button, let icon else { return }
+        PanelSourceIconLabel.update(button, title: title, icons: [icon], leading: 24, trailing: 2)
+      }
+    }
     button.target = self
     button.action = #selector(toggle(_:))
     button.tag = index

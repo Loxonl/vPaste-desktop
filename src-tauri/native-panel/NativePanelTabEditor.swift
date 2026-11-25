@@ -191,6 +191,12 @@ final class PanelTabEditor: NSObject, NSTextFieldDelegate {
   private let unit = NSPopUpButton()
   private let amount = NSTextField()
   private let sourceButton = NSButton()
+  private let sourceIconMedia = PanelMedia()
+  private var sourceIconRequest = 0
+  private lazy var sourceIconPaths: [Data: String] = Dictionary((data.sources ?? []).compactMap { option in
+    guard let path = option.icon_path, !path.isEmpty else { return nil }
+    return (option.source.trimmed.identifier, path)
+  }, uniquingKeysWith: { first, _ in first })
   let sourcePopover = NSPopover()
   private let status = NSTextField(wrappingLabelWithString: "")
   private let save = NSButton()
@@ -267,6 +273,7 @@ final class PanelTabEditor: NSObject, NSTextFieldDelegate {
     guard active else { return }
     active = false
     closePopovers()
+    sourceIconMedia.clear()
     panel.parent?.removeChildWindow(panel)
     panel.close()
   }
@@ -525,9 +532,9 @@ final class PanelTabEditor: NSObject, NSTextFieldDelegate {
     let recent = Set((data.sources ?? []).map { $0.source.trimmed.identifier })
     let options = data.sourceChoices.map { source in
       PanelSourcePicker.Option(source: source, name: labels.sourceName(source),
-        recent: recent.contains(source.identifier))
+        recent: recent.contains(source.identifier), iconPath: sourceIconPaths[source.identifier] ?? "")
     }
-    let picker = PanelSourcePicker(options: options, selected: selectedSources,
+    let picker = PanelSourcePicker(options: options, selected: selectedSources, iconMedia: sourceIconMedia,
       unavailable: data.sourcesUnavailable == true, chinese: labels.chinese, onChange: { [weak self] selected in
         self?.selectedSources = selected
         self?.updateSources()
@@ -539,9 +546,20 @@ final class PanelTabEditor: NSObject, NSTextFieldDelegate {
 
   private func updateSources() {
     let summary = labels.sourceSummary(selectedSources)
-    sourceButton.title = summary
+    PanelSourceIconLabel.update(sourceButton, title: summary, icons: [], leading: 12, trailing: 32)
     sourceButton.toolTip = summary
     sourceButton.setAccessibilityValue(summary)
+    sourceIconRequest &+= 1
+    let request = sourceIconRequest
+    let paths = selectedSources.prefix(2).compactMap { sourceIconPaths[$0.identifier] }
+    var icons: [NSImage?] = Array(repeating: nil, count: paths.count)
+    for (index, path) in paths.enumerated() {
+      sourceIconMedia.load(path, pixels: 48) { [weak self] icon in
+        guard let self, self.sourceIconRequest == request else { return }
+        icons[index] = icon
+        PanelSourceIconLabel.update(self.sourceButton, title: summary, icons: icons, leading: 12, trailing: 32)
+      }
+    }
   }
 
   private func closePopovers() {

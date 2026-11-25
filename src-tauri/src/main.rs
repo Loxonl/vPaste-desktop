@@ -11382,15 +11382,17 @@ async fn open_history_view(
         .clone();
     let epoch = resources.epoch();
     let request = history_views::reserve_open();
-    let page =
-        tauri::async_runtime::spawn_blocking(move || history_views::open(query, epoch, request))
-            .await
-            .map_err(|err| err.to_string())??;
+    let requested_query = query.clone();
+    let page = tauri::async_runtime::spawn_blocking(move || {
+        history_views::open(requested_query, epoch, request)
+    })
+    .await
+    .map_err(|err| err.to_string())??;
     if resources.epoch() != epoch {
         history_views::close(&page.token.view_id);
         return Err("history view expired".into());
     }
-    resources.reset_links_for_view(epoch);
+    resources.select_history_link_view(epoch, request, query);
     Ok(page)
 }
 

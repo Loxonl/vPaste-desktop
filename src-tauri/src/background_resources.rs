@@ -1,11 +1,9 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
-use std::time::Duration;
-#[cfg(target_os = "windows")]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tauri::{Emitter, Manager};
 use tokio::sync::Notify;
@@ -13,6 +11,7 @@ use tokio::sync::Notify;
 use crate::clipboard::item::{Item, ItemType};
 
 const LINK_UPDATE_COALESCE: Duration = Duration::from_millis(100);
+const LINK_BATCH_SIZE: usize = 10;
 
 #[derive(Clone)]
 struct Batch {
@@ -28,6 +27,7 @@ struct LinkBatch {
     epoch: u64,
     revision: u64,
     records: Vec<crate::clipboard::LinkPreviewRecord>,
+    retry: bool,
 }
 
 #[derive(Default)]
@@ -36,9 +36,11 @@ struct State {
     epoch: u64,
     media_revision: u64,
     link_revision: u64,
+    history_link_view: Option<(u64, crate::history_views::HistoryQuery)>,
     media: Option<Batch>,
     links: VecDeque<crate::clipboard::LinkPreviewRecord>,
-    link_seen: HashSet<String>,
+    link_retries: Vec<(Instant, crate::clipboard::LinkPreviewRecord)>,
+    link_rows: HashMap<String, Vec<u64>>,
     link_update: Option<(u64, u64)>,
 }
 
@@ -47,7 +49,8 @@ impl State {
         if reset {
             self.link_revision = self.link_revision.wrapping_add(1);
             self.links.clear();
-            self.link_seen.clear();
+            self.link_retries.clear();
+            self.link_rows.clear();
             self.link_update = None;
         }
         if !self.visible {
@@ -58,34 +61,63 @@ impl State {
             .filter(|item| item.item_type == ItemType::Link)
         {
             let url = item.content.split("|||").next().unwrap_or_default().trim();
-            if item.id != 0
-                && crate::clipboard::is_previewable_domain_link(url)
-                && self.link_seen.insert(url.to_string())
-            {
-                self.links.push_back(crate::clipboard::LinkPreviewRecord {
-                    id: item.id as u64,
-                    hash: item.hash.clone(),
-                    time: item.time,
-                    content: item.content.clone(),
-                });
+            if item.id == 0 || !crate::clipboard::is_previewable_domain_link(url) {
+                continue;
             }
+            let id = item.id as u64;
+            let rows = self.link_rows.entry(url.to_string()).or_default();
+            if rows.contains(&id) {
+                continue;
+            }
+            rows.push(id);
+            self.links.push_back(crate::clipboard::LinkPreviewRecord {
+                id,
+                hash: item.hash.clone(),
+                time: item.time,
+                content: item.content.clone(),
+            });
         }
     }
 
     fn take_link_batch(&mut self) -> Option<LinkBatch> {
-        if !self.visible || self.links.is_empty() {
+        self.take_link_batch_at(Instant::now())
+    }
+
+    fn take_link_batch_at(&mut self, now: Instant) -> Option<LinkBatch> {
+        if !self.visible {
             return None;
         }
-        Some(LinkBatch {
+        let retry = self.links.is_empty();
+        let records: Vec<_> = if retry {
+            let mut selected = 0;
+            self.link_retries
+                .extract_if(.., |(retry_at, _)| {
+                    let ready = *retry_at <= now && selected < LINK_BATCH_SIZE;
+                    selected += usize::from(ready);
+                    ready
+                })
+                .map(|(_, record)| record)
+                .collect()
+        } else {
+            self.links
+                .drain(..self.links.len().min(LINK_BATCH_SIZE))
+                .collect()
+        };
+        (!records.is_empty()).then_some(LinkBatch {
             epoch: self.epoch,
             revision: self.link_revision,
-            records: self.links.drain(..self.links.len().min(10)).collect(),
+            records,
+            retry,
         })
+    }
+
+    fn link_current(&self, batch: &LinkBatch) -> bool {
+        self.visible && self.epoch == batch.epoch && self.link_revision == batch.revision
     }
 
     fn mark_link_update(&mut self, url: &str) -> bool {
         // A completed image may survive an older search; refresh only a current view of that URL.
-        if !self.visible || !self.link_seen.contains(url) {
+        if !self.visible || !self.link_rows.contains_key(url) {
             return false;
         }
         self.link_update = Some((self.epoch, self.link_revision));
@@ -133,14 +165,48 @@ impl BackgroundResources {
         state.media_revision = state.media_revision.wrapping_add(1);
         state.link_revision = state.link_revision.wrapping_add(1);
         state.media = None;
+        state.history_link_view = None;
         state.links.clear();
-        state.link_seen.clear();
+        state.link_retries.clear();
+        state.link_rows.clear();
         state.link_update = None;
         drop(state);
         self.0.media_wake.notify_one();
         self.0.link_wake.notify_one();
     }
 
+    pub(crate) fn select_history_link_view(
+        &self,
+        epoch: u64,
+        request: u64,
+        query: crate::history_views::HistoryQuery,
+    ) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !state.visible
+            || state.epoch != epoch
+            || state
+                .history_link_view
+                .as_ref()
+                .is_some_and(|(previous, _)| *previous >= request)
+        {
+            return;
+        }
+        let changed = state.history_link_view.as_ref().map(|(_, query)| query) != Some(&query);
+        state.history_link_view = Some((request, query));
+        if changed {
+            state.enqueue_links(std::iter::empty::<&Item>(), true);
+        }
+        drop(state);
+        if changed {
+            self.0.link_wake.notify_one();
+        }
+    }
+
+    #[cfg(all(target_os = "windows", feature = "winui"))]
     pub(crate) fn reset_links_for_view(&self, epoch: u64) {
         let mut state = self
             .0
@@ -205,10 +271,7 @@ impl BackgroundResources {
         if link_enabled {
             state.enqueue_links(items.iter().copied(), reset_links);
         } else {
-            state.link_revision = state.link_revision.wrapping_add(1);
-            state.links.clear();
-            state.link_seen.clear();
-            state.link_update = None;
+            state.enqueue_links(std::iter::empty::<&Item>(), true);
         }
         let has_work = state.media.is_some() || !state.links.is_empty();
         drop(state);
@@ -270,12 +333,45 @@ impl BackgroundResources {
     }
 
     fn link_current(&self, batch: &LinkBatch) -> bool {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .link_current(batch)
+    }
+
+    fn defer_rate_limited_link(
+        &self,
+        batch: &LinkBatch,
+        record: crate::clipboard::LinkPreviewRecord,
+        retry_at: Instant,
+    ) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !batch.retry && state.link_current(batch) {
+            state.link_retries.push((retry_at, record));
+            self.0.link_wake.notify_one();
+        }
+    }
+
+    fn related_link_rows(&self, batch: &LinkBatch, url: &str) -> Vec<u64> {
         let state = self
             .0
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        state.visible && state.epoch == batch.epoch && state.link_revision == batch.revision
+        if !state.link_current(batch) {
+            return Vec::new();
+        }
+        state
+            .link_rows
+            .get(url)
+            .filter(|rows| rows.len() > 1)
+            .cloned()
+            .unwrap_or_default()
     }
 
     async fn next_links(&self) -> LinkBatch {
@@ -283,16 +379,31 @@ impl BackgroundResources {
             let notified = self.0.link_wake.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            let batch = self
-                .0
-                .state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .take_link_batch();
+            let (batch, next_retry) = {
+                let mut state = self
+                    .0
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let batch = state.take_link_batch();
+                let next_retry = state
+                    .link_retries
+                    .iter()
+                    .map(|(retry_at, _)| *retry_at)
+                    .min();
+                (batch, next_retry)
+            };
             if let Some(batch) = batch {
                 return batch;
             }
-            notified.await;
+            if let Some(retry_at) = next_retry {
+                tokio::select! {
+                    _ = tokio::time::sleep_until(retry_at.into()) => {},
+                    _ = notified => {},
+                }
+            } else {
+                notified.await;
+            }
         }
     }
 
@@ -392,7 +503,9 @@ impl BackgroundResources {
                 crate::clipboard::refresh_loaded_link_previews(
                     request.records.clone(),
                     || service.link_current(&request) && crate::config::get().link_auto_preview,
+                    |url| service.related_link_rows(&request, url),
                     |url| service.link_record_updated(url),
+                    |record, retry_at| service.defer_rate_limited_link(&request, record, retry_at),
                 )
             })
             .await;
@@ -506,6 +619,51 @@ mod tests {
     }
 
     #[test]
+    fn preview_refresh_of_the_same_view_keeps_active_and_pending_links() {
+        let service = BackgroundResources::default();
+        service.set_visible(true);
+        let epoch = service.epoch();
+        let query = crate::history_views::HistoryQuery {
+            keywords: String::new(),
+            label: "link".into(),
+        };
+        service.select_history_link_view(epoch, 1, query.clone());
+        let active_batch = {
+            let mut state = service.0.state.lock().unwrap();
+            state.enqueue_links(&(1..=12).map(link).collect::<Vec<_>>(), false);
+            state.take_link_batch().unwrap()
+        };
+
+        service.link_record_updated("https://example.com/1");
+        service.select_history_link_view(epoch, 2, query.clone());
+
+        assert!(
+            service.link_current(&active_batch),
+            "showing the first result must not cancel the current batch"
+        );
+        let remaining = {
+            let mut state = service.0.state.lock().unwrap();
+            state.enqueue_links(&[link(2), link(11)], false);
+            state.take_link_batch().unwrap().records
+        };
+        assert_eq!(
+            remaining.iter().map(|record| record.id).collect::<Vec<_>>(),
+            [11, 12],
+            "pending work must survive the refresh without duplicate requests"
+        );
+        let next_query = crate::history_views::HistoryQuery {
+            keywords: "different".into(),
+            ..query.clone()
+        };
+        service.select_history_link_view(epoch, 4, next_query.clone());
+        assert!(!service.link_current(&active_batch));
+
+        service.select_history_link_view(epoch, 3, query);
+        let state = service.0.state.lock().unwrap();
+        assert_eq!(state.history_link_view, Some((4, next_query)));
+    }
+
+    #[test]
     fn link_queue_does_not_accept_non_links_or_unsafe_destinations() {
         let mut state = State {
             visible: true,
@@ -517,6 +675,111 @@ mod tests {
         local.content = "https://127.0.0.1/secret".into();
         state.enqueue_links(&[text, local], true);
         assert!(state.take_link_batch().is_none());
+    }
+
+    #[test]
+    fn link_queue_keeps_distinct_history_rows_for_the_same_url_across_pages() {
+        let mut state = State {
+            visible: true,
+            ..Default::default()
+        };
+        let first = link(1);
+        let mut second = link(2);
+        second.content = format!(
+            "{}||||||Saved title|||default-icon|||2000-01-01",
+            first.content
+        );
+        state.enqueue_links(&[first.clone()], false);
+        assert_eq!(state.take_link_batch().unwrap().records[0].id, 1);
+        state.enqueue_links(&[first, second.clone()], false);
+        let next = state
+            .take_link_batch()
+            .expect("a distinct history row must enter the queue");
+        assert_eq!(next.records.len(), 1);
+        assert_eq!(next.records[0].id, 2);
+        state.enqueue_links(&[second], false);
+        assert!(state.take_link_batch().is_none());
+    }
+
+    #[test]
+    fn link_preview_cooldown_retries_once_without_blocking_ready_cards() {
+        let service = BackgroundResources::default();
+        service.set_visible(true);
+        let now = Instant::now();
+        let retry_at = now + Duration::from_secs(60);
+        let epoch = service.epoch();
+        let query = crate::history_views::HistoryQuery {
+            keywords: "".into(),
+            label: "".into(),
+        };
+        service.select_history_link_view(epoch, 1, query.clone());
+        let first = {
+            let mut state = service.0.state.lock().unwrap();
+            state.enqueue_links(&[link(1)], false);
+            state.take_link_batch_at(now).unwrap()
+        };
+        service.defer_rate_limited_link(&first, first.records[0].clone(), retry_at);
+
+        service.select_history_link_view(epoch, 2, query);
+        let retried = {
+            let mut state = service.0.state.lock().unwrap();
+            state.enqueue_links(&[link(1), link(2)], false);
+            let other = state.take_link_batch_at(now).unwrap();
+            assert_eq!(other.records[0].id, 2);
+            assert!(state.take_link_batch_at(now).is_none());
+            let retried = state.take_link_batch_at(retry_at).unwrap();
+            assert_eq!(retried.records[0].id, 1);
+            retried
+        };
+        service.defer_rate_limited_link(&retried, retried.records[0].clone(), retry_at);
+        assert!(service
+            .0
+            .state
+            .lock()
+            .unwrap()
+            .take_link_batch_at(retry_at)
+            .is_none());
+    }
+
+    #[test]
+    fn link_preview_cooldown_work_cannot_escape_an_old_view() {
+        let service = BackgroundResources::default();
+        service.set_visible(true);
+        let now = Instant::now();
+        let first = {
+            let mut state = service.0.state.lock().unwrap();
+            state.enqueue_links(&[link(1)], false);
+            state.take_link_batch_at(now).unwrap()
+        };
+        service.defer_rate_limited_link(&first, first.records[0].clone(), now);
+        service.set_visible(false);
+        service.set_visible(true);
+        service.defer_rate_limited_link(&first, first.records[0].clone(), now);
+        assert!(service
+            .0
+            .state
+            .lock()
+            .unwrap()
+            .take_link_batch_at(now)
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn link_preview_cooldown_wakes_without_a_new_view_request() {
+        let service = BackgroundResources::default();
+        service.set_visible(true);
+        {
+            let mut state = service.0.state.lock().unwrap();
+            state.enqueue_links(&[link(1)], false);
+        }
+        let first = service.next_links().await;
+        let retry_at = Instant::now() + Duration::from_millis(100);
+        service.defer_rate_limited_link(&first, first.records[0].clone(), retry_at);
+        let retried = tokio::time::timeout(Duration::from_secs(5), service.next_links())
+            .await
+            .expect("cooldown expiry should wake the background worker");
+        assert!(Instant::now() >= retry_at);
+        assert_eq!(retried.records[0].id, 1);
     }
 
     #[test]

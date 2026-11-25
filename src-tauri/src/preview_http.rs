@@ -1,14 +1,113 @@
+use std::collections::HashMap;
 use std::error::Error as _;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use hyper_util::client::proxy::matcher::{Intercept, Matcher};
 use reqwest::blocking::{Client, ClientBuilder, Response};
 use reqwest::cookie::Jar;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, LOCATION, REFERER};
-use reqwest::Url;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, LOCATION, REFERER, RETRY_AFTER};
+use reqwest::{StatusCode, Url};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const DEFAULT_RATE_LIMIT_DELAY: Duration = Duration::from_secs(60);
+const RATE_LIMITED: &str = "link_preview_rate_limited";
+static RATE_LIMITS: LazyLock<Mutex<HashMap<String, HostCooldown>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Clone, Copy)]
+struct HostCooldown {
+    started: Instant,
+    delay: Duration,
+}
+
+impl HostCooldown {
+    fn remaining(self, now: Instant) -> Duration {
+        self.delay
+            .saturating_sub(now.saturating_duration_since(self.started))
+    }
+
+    fn retry_at(self) -> Option<Instant> {
+        self.started.checked_add(self.delay)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum PreviewHttpError {
+    RateLimited(Option<Instant>),
+    Failed(String),
+}
+
+impl From<String> for PreviewHttpError {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+
+impl From<&str> for PreviewHttpError {
+    fn from(error: &str) -> Self {
+        Self::Failed(error.into())
+    }
+}
+
+impl From<PreviewHttpError> for String {
+    fn from(error: PreviewHttpError) -> Self {
+        match error {
+            PreviewHttpError::RateLimited(_) => RATE_LIMITED.into(),
+            PreviewHttpError::Failed(error) => error,
+        }
+    }
+}
+
+fn rate_limit_delay(header: Option<&HeaderValue>, now: chrono::DateTime<chrono::Utc>) -> Duration {
+    header
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .and_then(|value| {
+            if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+                value.parse::<u64>().ok().map(Duration::from_secs)
+            } else {
+                chrono::DateTime::parse_from_rfc2822(value)
+                    .ok()
+                    .and_then(|date| date.signed_duration_since(now).to_std().ok())
+            }
+        })
+        .unwrap_or(DEFAULT_RATE_LIMIT_DELAY)
+        .max(Duration::from_secs(1))
+}
+
+fn active_host_cooldown(host: &str, now: Instant) -> Option<HostCooldown> {
+    let mut limits = RATE_LIMITS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let active = limits
+        .get(host)
+        .copied()
+        .filter(|cooldown| !cooldown.remaining(now).is_zero());
+    if active.is_none() {
+        limits.remove(host);
+    }
+    active
+}
+
+fn defer_host(host: &str, delay: Duration, now: Instant) -> HostCooldown {
+    let mut limits = RATE_LIMITS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    limits.retain(|_, cooldown| !cooldown.remaining(now).is_zero());
+    let next = HostCooldown {
+        started: now,
+        delay,
+    };
+    let cooldown = limits.entry(host.to_owned()).or_insert(next);
+    if cooldown
+        .retry_at()
+        .is_some_and(|previous| next.retry_at().is_none_or(|next| next > previous))
+    {
+        *cooldown = next;
+    }
+    *cooldown
+}
 
 pub(crate) fn is_previewable_domain_link(url: &str) -> bool {
     let parsed = match reqwest::Url::parse(url.trim()) {
@@ -129,7 +228,7 @@ impl PreviewHttpClient {
         &self,
         mut url: Url,
         headers: &[(HeaderName, &str)],
-    ) -> Result<Response, String> {
+    ) -> Result<Response, PreviewHttpError> {
         let mut headers: HeaderMap = headers
             .iter()
             .map(|(name, value)| HeaderValue::from_str(value).map(|value| (name.clone(), value)))
@@ -138,7 +237,11 @@ impl PreviewHttpClient {
         let deadline = Instant::now() + REQUEST_TIMEOUT;
         for previous_urls in 1..=self.max_redirects.max(1) {
             if !is_previewable_domain_link(url.as_str()) {
-                return Err("link_preview_blocked".to_string());
+                return Err("link_preview_blocked".into());
+            }
+            let host = url.host_str().unwrap_or_default().trim_end_matches('.');
+            if let Some(cooldown) = active_host_cooldown(host, Instant::now()) {
+                return Err(PreviewHttpError::RateLimited(cooldown.retry_at()));
             }
             let proxy = self.proxy_for(&url);
             let via_proxy = proxy.is_some();
@@ -151,7 +254,20 @@ impl PreviewHttpClient {
                 .headers(headers.clone())
                 .timeout(remaining)
                 .send()
-                .and_then(Response::error_for_status)
+                .map_err(|error| request_error(&url, "request", via_proxy, error))?;
+            if response.status() == StatusCode::TOO_MANY_REQUESTS {
+                let delay =
+                    rate_limit_delay(response.headers().get(RETRY_AFTER), chrono::Utc::now());
+                let cooldown = defer_host(host, delay, Instant::now());
+                log::info!(
+                    "link preview failed: host={host} stage=request route={} kind={RATE_LIMITED} status=Some(429) retry_after_secs={}",
+                    if via_proxy { "proxy" } else { "direct" },
+                    delay.as_secs()
+                );
+                return Err(PreviewHttpError::RateLimited(cooldown.retry_at()));
+            }
+            let response = response
+                .error_for_status()
                 .map_err(|error| request_error(&url, "request", via_proxy, error))?;
             if !matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
                 return Ok(response);
@@ -160,7 +276,7 @@ impl PreviewHttpClient {
                 return Ok(response);
             };
             if previous_urls >= self.max_redirects {
-                return Err("link_preview_redirect_limit".to_string());
+                return Err("link_preview_redirect_limit".into());
             }
             let next = next_destination(
                 &url,
@@ -181,7 +297,7 @@ impl PreviewHttpClient {
             }
             url = next;
         }
-        Err("link_preview_redirect_limit".to_string())
+        Err("link_preview_redirect_limit".into())
     }
 
     pub(crate) fn text(&self, response: Response) -> Result<String, String> {
@@ -257,6 +373,52 @@ fn diagnostic_detail(detail: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_retry_after_accepts_seconds_and_http_date() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .to_utc();
+        for (value, seconds) in [
+            ("17", 17),
+            ("Thu, 01 Jan 2026 00:01:30 GMT", 90),
+            ("Wed, 31 Dec 2025 23:59:59 GMT", 60),
+            ("0", 1),
+            ("not a date", 60),
+        ] {
+            assert_eq!(
+                rate_limit_delay(Some(&HeaderValue::from_static(value)), now),
+                Duration::from_secs(seconds)
+            );
+        }
+        assert_eq!(rate_limit_delay(None, now), DEFAULT_RATE_LIMIT_DELAY);
+    }
+
+    #[test]
+    fn preview_rate_limit_is_shared_by_hostname_and_expires() {
+        let now = Instant::now();
+        let host = "paused-preview.example";
+        defer_host(host, Duration::from_secs(30), now);
+        defer_host(host, Duration::from_secs(2), now + Duration::from_secs(5));
+        assert_eq!(
+            active_host_cooldown(host, now + Duration::from_secs(29))
+                .map(|cooldown| cooldown.remaining(now + Duration::from_secs(29))),
+            Some(Duration::from_secs(1))
+        );
+        assert!(active_host_cooldown("another-preview.example", now).is_none());
+
+        // Unsupported proxy scheme fails locally if the cooldown fails to stop this request.
+        let transport = client(Matcher::builder().https("socks5://127.0.0.1:1").build());
+        assert!(matches!(
+            transport.get(
+                Url::parse("https://paused-preview.example./favicon.ico").unwrap(),
+                &[]
+            ),
+            Err(PreviewHttpError::RateLimited(Some(retry_at)))
+                if retry_at == now + Duration::from_secs(30)
+        ));
+        assert!(active_host_cooldown(host, now + Duration::from_secs(30)).is_none());
+    }
 
     #[test]
     fn direct_requests_delegate_dns_to_the_http_clients_default_resolver() {
@@ -359,6 +521,7 @@ mod tests {
                 &[],
             )
             .unwrap_err();
+        let error = String::from(error);
         assert_eq!(error, "link_preview_proxy_unavailable");
         assert!(!error.contains("fixture-secret"));
     }
@@ -367,9 +530,11 @@ mod tests {
     fn unsupported_socks_proxy_does_not_fall_back_to_direct() {
         let client = client(Matcher::builder().https("socks5://127.0.0.1:1").build());
         assert_eq!(
-            client
-                .get(Url::parse("https://example.com").unwrap(), &[])
-                .unwrap_err(),
+            String::from(
+                client
+                    .get(Url::parse("https://example.com").unwrap(), &[])
+                    .unwrap_err()
+            ),
             "link_preview_proxy_unavailable"
         );
         assert!(client.proxy_client.get().is_none());
@@ -388,7 +553,7 @@ mod tests {
             "file:///C:/private.txt",
         ] {
             assert_eq!(
-                client.get(Url::parse(url).unwrap(), &[]).unwrap_err(),
+                String::from(client.get(Url::parse(url).unwrap(), &[]).unwrap_err()),
                 "link_preview_blocked",
                 "{url}"
             );
@@ -429,7 +594,7 @@ mod tests {
                 &[(REFERER, "private-value\r\ninjected: header")],
             )
             .unwrap_err();
-        assert_eq!(error, "link_preview_network");
+        assert_eq!(String::from(error), "link_preview_network");
     }
 
     #[test]

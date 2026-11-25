@@ -18,8 +18,8 @@ use twox_hash::XxHash64;
 use crate::clipboard::db::db;
 use crate::clipboard::item::{convert_type, Item, ItemTag, ItemType, Page};
 use crate::preview_behavior::PreviewMode;
-use crate::preview_http::PreviewHttpClient;
 pub(crate) use crate::preview_http::{is_previewable_domain_link, preview_http_client};
+use crate::preview_http::{PreviewHttpClient, PreviewHttpError};
 use crate::{app_runtime_dir, history_storage_dir, history_store, search::engine};
 
 pub mod color;
@@ -115,6 +115,7 @@ const LINK_PREVIEW_SUCCESS_COOLDOWN_SECS: u64 = 12 * 60 * 60;
 const LINK_PREVIEW_FAILURE_COOLDOWN_SECS: u64 = 72 * 60 * 60;
 const LINK_PREVIEW_CACHE_RETENTION_SECS: u64 = 96 * 60 * 60;
 const LINK_PREVIEW_HISTORY_WINDOW_MILLIS: u64 = 7 * 24 * 60 * 60 * 1000;
+const LINK_PREVIEW_IMAGE_MAX_BYTES: u64 = 5 * 1024 * 1024;
 const SEARCH_RESULT_DB_CHUNK_SIZE: usize = 400;
 const RICH_HTML_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
 const CARD_TEXT_PREVIEW_CHARS: usize = 1_800;
@@ -3676,20 +3677,30 @@ fn decode_inline_preview_image(value: &str) -> Result<Vec<u8>, &'static str> {
     Ok(bytes)
 }
 
+fn read_preview_image_bytes(body: impl std::io::Read) -> Option<Vec<u8>> {
+    use std::io::Read;
+
+    let mut bytes = Vec::new();
+    body.take(LINK_PREVIEW_IMAGE_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (!bytes.is_empty() && bytes.len() as u64 <= LINK_PREVIEW_IMAGE_MAX_BYTES).then_some(bytes)
+}
+
 fn fetch_preview_image(
     client: &PreviewHttpClient,
     base_url: &reqwest::Url,
     image_url: &str,
-) -> String {
+) -> Result<String, PreviewHttpError> {
     if image_url.trim().is_empty() {
-        return String::new();
+        return Ok(String::new());
     }
     let image_url = image_url.trim();
     if image_url
         .get(..5)
         .is_some_and(|scheme| scheme.eq_ignore_ascii_case("data:"))
     {
-        return match decode_inline_preview_image(image_url) {
+        return Ok(match decode_inline_preview_image(image_url) {
             Ok(bytes) => save_to_disk(&bytes, &calculate_xxhash64(&bytes)),
             Err(kind) => {
                 info!(
@@ -3698,15 +3709,15 @@ fn fetch_preview_image(
                 );
                 String::new()
             }
-        };
+        });
     }
     let Ok(resolved_image_url) = base_url.join(image_url.trim()) else {
-        return String::new();
+        return Ok(String::new());
     };
     if !is_previewable_domain_link(resolved_image_url.as_str()) {
-        return String::new();
+        return Ok(String::new());
     }
-    let Ok(image_response) = client.get(
+    let image_response = match client.get(
         resolved_image_url,
         &[
             (
@@ -3715,11 +3726,17 @@ fn fetch_preview_image(
             ),
             (reqwest::header::REFERER, base_url.as_str()),
         ],
-    ) else {
-        return String::new();
+    ) {
+        Ok(response) => response,
+        Err(error @ PreviewHttpError::RateLimited(_)) => return Err(error),
+        Err(_) => return Ok(String::new()),
     };
-    if !image_response.status().is_success() {
-        return String::new();
+    if !image_response.status().is_success()
+        || image_response
+            .content_length()
+            .is_some_and(|len| len > LINK_PREVIEW_IMAGE_MAX_BYTES)
+    {
+        return Ok(String::new());
     }
     let image_url_path = image_response.url().path().to_ascii_lowercase();
     let content_type_image = image_response
@@ -3734,13 +3751,9 @@ fn fetch_preview_image(
                 || value.contains("octet-stream")
         })
         .unwrap_or(true);
-    let Ok(bytes) = image_response.bytes() else {
-        return String::new();
+    let Some(bytes) = read_preview_image_bytes(image_response) else {
+        return Ok(String::new());
     };
-    if bytes.is_empty() || bytes.len() > 5 * 1024 * 1024 {
-        return String::new();
-    }
-    let bytes = bytes.to_vec();
     let inferred_image = infer::get(&bytes)
         .map(|kind| kind.mime_type().starts_with("image/"))
         .unwrap_or_else(|| bytes.starts_with(&[0x00, 0x00, 0x01, 0x00]));
@@ -3760,13 +3773,13 @@ fn fetch_preview_image(
         })
         .unwrap_or(false);
     if html_text {
-        return String::new();
+        return Ok(String::new());
     }
     if !content_type_image && !inferred_image && !extension_image && !svg_text && !webp_bytes {
-        return String::new();
+        return Ok(String::new());
     }
     let img_hash = calculate_xxhash64(&bytes);
-    save_to_disk(&bytes, &img_hash)
+    Ok(save_to_disk(&bytes, &img_hash))
 }
 
 fn is_icon_url(url: &str) -> bool {
@@ -3838,14 +3851,14 @@ fn fallback_link_preview(
     url: &reqwest::Url,
     title: &str,
     is_current: &dyn Fn() -> bool,
-) -> LinkPreviewUpdate {
+) -> Result<LinkPreviewUpdate, PreviewHttpError> {
     let mut image_path = String::new();
     let mut image_kind = String::new();
     for icon_url in fallback_icon_candidates(url) {
         if !is_current() {
             break;
         }
-        image_path = fetch_preview_image(client, url, &icon_url);
+        image_path = fetch_preview_image(client, url, &icon_url)?;
         if !image_path.is_empty() {
             image_kind = "icon".to_string();
             break;
@@ -3854,7 +3867,7 @@ fn fallback_link_preview(
     if image_path.is_empty() {
         image_kind = "default-icon".to_string();
     }
-    LinkPreviewUpdate {
+    Ok(LinkPreviewUpdate {
         url: url.as_str().to_string(),
         title: if title.trim().is_empty() {
             fallback_title_from_url(url)
@@ -3863,7 +3876,7 @@ fn fallback_link_preview(
         },
         image_path,
         image_kind,
-    }
+    })
 }
 
 trait NonEmptyOr {
@@ -3883,12 +3896,12 @@ impl NonEmptyOr for String {
 fn fetch_link_preview(
     url: &str,
     is_current: &dyn Fn() -> bool,
-) -> Result<LinkPreviewUpdate, String> {
+) -> Result<LinkPreviewUpdate, PreviewHttpError> {
     if !is_current() {
         return Err("link_preview_cancelled".into());
     }
     if !is_previewable_domain_link(url) {
-        return Err("unsupported link".to_string());
+        return Err("unsupported link".into());
     }
     let preview_url = reqwest::Url::parse(url.trim()).map_err(|err| err.to_string())?;
 
@@ -3904,8 +3917,9 @@ fn fetch_link_preview(
     ])
     {
         Ok(response) => response,
+        Err(error @ PreviewHttpError::RateLimited(_)) => return Err(error),
         Err(_) => {
-            let mut fallback = fallback_link_preview(&client, &preview_url, "", is_current);
+            let mut fallback = fallback_link_preview(&client, &preview_url, "", is_current)?;
             if fallback.image_path.is_empty() {
                 fallback.image_kind = "request-failed".into();
             }
@@ -3915,7 +3929,7 @@ fn fetch_link_preview(
     };
     if !response.status().is_success() {
         let status = response.status();
-        let mut fallback = fallback_link_preview(&client, &preview_url, "", is_current);
+        let mut fallback = fallback_link_preview(&client, &preview_url, "", is_current)?;
         if fallback.image_path.is_empty() {
             fallback.image_kind = "request-failed".into();
         }
@@ -3935,7 +3949,7 @@ fn fetch_link_preview(
         && !content_type.starts_with("text/html")
         && !content_type.starts_with("application/xhtml+xml")
     {
-        let fallback = fallback_link_preview(&client, &preview_url, "", is_current);
+        let fallback = fallback_link_preview(&client, &preview_url, "", is_current)?;
         info!(
             "link preview fetch returned non-html {}; using a local icon",
             content_type
@@ -3949,7 +3963,7 @@ fn fetch_link_preview(
     let html = match client.text(response) {
         Ok(html) => html,
         Err(_) => {
-            let mut fallback = fallback_link_preview(&client, &preview_url, "", is_current);
+            let mut fallback = fallback_link_preview(&client, &preview_url, "", is_current)?;
             if fallback.image_path.is_empty() {
                 fallback.image_kind = "request-failed".into();
             }
@@ -3967,7 +3981,7 @@ fn fetch_link_preview(
         .or_else_non_empty(|| meta_content(&document, "meta[name='twitter:image:src']"));
 
     let mut image_kind = String::new();
-    let mut image_path = fetch_preview_image(&client, &final_url, &image_url);
+    let mut image_path = fetch_preview_image(&client, &final_url, &image_url)?;
     if !image_path.is_empty() {
         image_kind = if is_icon_url(&image_url) {
             "icon".to_string()
@@ -3994,7 +4008,7 @@ fn fetch_link_preview(
             if !is_current() {
                 break;
             }
-            image_path = fetch_preview_image(&client, &final_url, &icon_url);
+            image_path = fetch_preview_image(&client, &final_url, &icon_url)?;
             if !image_path.is_empty() {
                 break;
             }
@@ -4189,14 +4203,18 @@ pub(crate) fn refresh_link_previews_with_cancellation(
 pub(crate) fn refresh_loaded_link_previews(
     records: Vec<LinkPreviewRecord>,
     is_current: impl Fn() -> bool,
+    related_rows: impl Fn(&str) -> Vec<u64>,
     on_updated: impl FnMut(&str),
+    on_rate_limited: impl FnMut(LinkPreviewRecord, Instant),
 ) -> Result<Vec<LinkPreviewUpdate>, String> {
     refresh_link_records_with_updates(
         records,
         true,
         &is_current,
         |url| fetch_link_preview(url, &is_current),
+        related_rows,
         on_updated,
+        on_rate_limited,
     )
 }
 
@@ -4228,17 +4246,83 @@ fn refresh_link_records_with(
     records: Vec<LinkPreviewRecord>,
     allow_old_missing: bool,
     is_current: &impl Fn() -> bool,
-    fetch: impl FnMut(&str) -> Result<LinkPreviewUpdate, String>,
+    fetch: impl FnMut(&str) -> Result<LinkPreviewUpdate, PreviewHttpError>,
 ) -> Result<Vec<LinkPreviewUpdate>, String> {
-    refresh_link_records_with_updates(records, allow_old_missing, is_current, fetch, |_| {})
+    refresh_link_records_with_updates(
+        records,
+        allow_old_missing,
+        is_current,
+        fetch,
+        |_| Vec::new(),
+        |_| {},
+        |_, _| {},
+    )
+}
+
+fn same_day_link_preview_from_loaded_rows(
+    url: &str,
+    local_day: &str,
+    target_id: u64,
+    ids: Vec<u64>,
+) -> Option<LinkPreviewUpdate> {
+    let mut fallback = None;
+    for id in ids.into_iter().filter(|id| *id != target_id) {
+        let Some(record) = db()
+            .query_row(
+                "select id, hash, cast(time as integer), content from clipboard
+                 where id = ?1 and item_type = 'Link'",
+                [id],
+                read_link_preview_record,
+            )
+            .optional()
+            .ok()
+            .flatten()
+        else {
+            continue;
+        };
+        if link_url_from_content(&record.content) != url
+            || link_record_cached_refresh_day(&record) != local_day
+        {
+            continue;
+        }
+        let image_kind = link_record_cached_image_kind(&record);
+        if matches!(image_kind.as_str(), "generated-icon" | "brand-icon") {
+            continue;
+        }
+        let image_path = link_record_cached_image_path(&record);
+        let usable = cached_link_image_is_usable(&image_path);
+        if !usable && !matches!(image_kind.as_str(), "default-icon" | "request-failed") {
+            continue;
+        }
+        let update = LinkPreviewUpdate {
+            url: url.into(),
+            title: record
+                .content
+                .split("|||")
+                .nth(2)
+                .unwrap_or_default()
+                .into(),
+            image_path: if usable { image_path } else { String::new() },
+            image_kind,
+        };
+        if usable {
+            return Some(update);
+        }
+        if fallback.is_none() {
+            fallback = Some(update);
+        }
+    }
+    fallback
 }
 
 fn refresh_link_records_with_updates(
     records: Vec<LinkPreviewRecord>,
     allow_old_missing: bool,
     is_current: &impl Fn() -> bool,
-    mut fetch: impl FnMut(&str) -> Result<LinkPreviewUpdate, String>,
+    mut fetch: impl FnMut(&str) -> Result<LinkPreviewUpdate, PreviewHttpError>,
+    related_rows: impl Fn(&str) -> Vec<u64>,
     mut on_updated: impl FnMut(&str),
+    mut on_rate_limited: impl FnMut(LinkPreviewRecord, Instant),
 ) -> Result<Vec<LinkPreviewUpdate>, String> {
     let _cleanup = crate::auto_cleanup::pause();
     let mut updates = Vec::new();
@@ -4249,7 +4333,7 @@ fn refresh_link_records_with_updates(
             break;
         }
         let url = link_url_from_content(&candidate.content);
-        if url.is_empty() || !seen.insert(url.clone()) || !is_previewable_domain_link(&url) {
+        if url.is_empty() || !seen.insert(candidate.id) || !is_previewable_domain_link(&url) {
             continue;
         }
         let Some(record) = db()
@@ -4267,22 +4351,35 @@ fn refresh_link_records_with_updates(
         if link_url_from_content(&record.content) != url {
             continue;
         }
-        if !link_preview_needs_refresh(
+        let needs_refresh = link_preview_needs_refresh(
             &record,
             &local_day,
             current_timestamp_millis(),
             allow_old_missing,
-        ) {
+        );
+        let cached_image_path = link_record_cached_image_path(&record);
+        let siblings = related_rows(&url);
+        let reusable = if !siblings.is_empty()
+            && (needs_refresh || !cached_link_image_is_usable(&cached_image_path))
+        {
+            same_day_link_preview_from_loaded_rows(&url, &local_day, record.id, siblings)
+        } else {
+            None
+        };
+        if !needs_refresh
+            && reusable
+                .as_ref()
+                .is_none_or(|update| update.image_path.is_empty())
+        {
             // Completion can race with the search snapshot before it enters the queue.
             if record.content != candidate.content {
                 on_updated(&url);
             }
             continue;
         }
-        let cached_image_path = link_record_cached_image_path(&record);
         let cached_image_kind = link_record_cached_image_kind(&record);
 
-        let fetched = fetch(&url);
+        let fetched = reusable.map(Ok).unwrap_or_else(|| fetch(&url));
         let completed_image = fetched
             .as_ref()
             .is_ok_and(|update| cached_link_image_is_usable(&update.image_path));
@@ -4291,6 +4388,12 @@ fn refresh_link_records_with_updates(
         }
         let mut update = match fetched {
             Ok(update) => update,
+            Err(PreviewHttpError::RateLimited(retry_at)) => {
+                if let Some(retry_at) = retry_at {
+                    on_rate_limited(record, retry_at);
+                }
+                continue;
+            }
             Err(_) => {
                 info!("link preview refresh skipped after a fetch failure");
                 LinkPreviewUpdate {

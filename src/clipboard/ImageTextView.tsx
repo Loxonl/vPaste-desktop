@@ -14,11 +14,12 @@ type OcrRecord = {
     error: "language_unavailable" | "unsupported" | "resource_limit" | "timeout" | "failed" | null;
 };
 
-export default function ImageTextView({ hash, imagePath, t, onClose, active = true }: {
+export default function ImageTextView({ hash, imagePath, t, onClose, onDraftEdited, active = true }: {
     hash: string;
     imagePath: string;
     t: TFunction;
     onClose?: () => void;
+    onDraftEdited?: () => void;
     active?: boolean;
 }) {
     const closeButton = useRef<HTMLButtonElement>(null);
@@ -143,7 +144,11 @@ export default function ImageTextView({ hash, imagePath, t, onClose, active = tr
                             InputLabelProps={{ shrink: true }}
                             className={styles.field}
                             value={text}
-                            onChange={event => { edited.current = true; setText(event.target.value); }}
+                            onChange={event => {
+                                edited.current = true;
+                                setText(event.target.value);
+                                onDraftEdited?.();
+                            }}
                             onCopy={copySelection}
                             InputProps={{ inputComponent: "textarea", className: styles.input }}
                             inputProps={{ spellCheck: false, className: styles.text }}

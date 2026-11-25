@@ -644,6 +644,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     if animated {
       guard !hiding else { return }
       hiding = true
+      bridge.send("preview-cancel-pending")
       animate(show: false) { [weak self] in self?.window.close() }
     } else {
       transition &+= 1

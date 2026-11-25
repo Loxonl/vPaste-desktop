@@ -173,6 +173,23 @@ final class NativePanelSearchTests: XCTestCase {
     }
   }
 
+  func testAnimatedDismissalCancelsPendingPreviewWithoutClosingTheReader() throws {
+    try withPanel { controller, search, _ in
+      let window = try XCTUnwrap(search.window as? NativeHistoryPanel)
+      _ = window.keyHandler?(try key(49, characters: " ", window: window))
+      XCTAssertEqual(searchRequests.last?["op"] as? String, "preview-toggle")
+
+      let start = searchRequests.count
+      controller.dismiss()
+      controller.dismiss()
+
+      let previewOperations = searchRequests.dropFirst(start)
+        .compactMap { $0["op"] as? String }
+        .filter { $0.hasPrefix("preview-") }
+      XCTAssertEqual(previewOperations, ["preview-cancel-pending"])
+    }
+  }
+
   func testQueueSelectionDoesNotFollowPreviewButSpaceStillDoes() throws {
     try withPanel(hashes: ["A", "B"]) { controller, search, editor in
       let window = try XCTUnwrap(search.window as? NativeHistoryPanel)

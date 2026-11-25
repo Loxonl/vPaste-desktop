@@ -7,6 +7,11 @@ const native = (name: string) => read(`src-tauri/native-demo/windows/winui/${nam
 const panel = native("WinUiPanel.cpp");
 
 describe("reported native continuity parity", () => {
+    it("connects IME composition to the search debounce lifecycle", () => {
+        expect(panel).toContain("TextCompositionStarted(winrt::auto_revoke");
+        expect(panel).toContain("TextCompositionEnded(winrt::auto_revoke");
+        expect(panel).toContain("SearchCompositionChanged(");
+    });
     it("leaves dock visibility animation to the shipping dock controller", () => {
         expect(panel).toContain("DWMWA_TRANSITIONS_FORCEDISABLED");
     });
@@ -26,7 +31,8 @@ describe("reported native continuity parity", () => {
     });
     it("embeds the shipping tutorial in the native panel area", () => {
         const tutorial = read("src-tauri/src/winui_panel/onboarding.rs");
-        expect(tutorial).toContain("set_tutorial_active");
+        expect(tutorial).toContain('"nativeTutorialOpen"');
+        expect(read("src-tauri/native-demo/windows/winui/WinUiPanel.cpp")).toContain("Grid::SetRow(view->Root(), 1)");
         expect(tutorial).not.toContain("super::hide()?;");
         expect(tutorial).not.toContain("fit_window_in_panel");
         const css = read("src/clipboard/NativeOnboardingWindow.module.css");
@@ -37,9 +43,12 @@ describe("reported native continuity parity", () => {
         const reader = native("WinUiReader.cpp");
         const commit = reader.slice(reader.indexOf("void Commit("), reader.indexOf("void ImageError("));
         expect(commit).not.toContain("body.Children().Clear()");
-        expect(commit).not.toContain("FadeFeedback(");
-        expect(commit).toContain("if (!visible) {");
-        expect(commit).toContain("ShowWindow(window, SW_SHOWNOACTIVATE)");
+        const coldStart = commit.indexOf("if (!visible) {");
+        const activate = commit.indexOf("MoveToTarget(", coldStart);
+        expect(coldStart).toBeGreaterThan(0);
+        expect(activate).toBeGreaterThan(coldStart);
+        expect(commit.slice(0, coldStart) + commit.slice(activate)).not.toContain("FadeFeedback(");
+        expect(commit.slice(coldStart, activate)).toMatch(/ShowWindow\(window, SW_SHOWNOACTIVATE\);\s*if \(form\) FadeFeedback\(/);
         expect(reader).toContain("outgoing");
     });
 });

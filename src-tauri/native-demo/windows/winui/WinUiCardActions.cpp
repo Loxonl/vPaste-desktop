@@ -1,5 +1,6 @@
 #include "WinUiCardActions.h"
 #include "WinUiAppearance.h"
+#include "WinUiHeaderArtwork.h"
 #include <shlobj.h>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
@@ -11,8 +12,23 @@ using namespace winrt::Microsoft::UI::Xaml;
 using namespace winrt::Microsoft::UI::Xaml::Controls;
 using namespace winrt::Windows::Data::Json;
 
+namespace {
+// Microsoft Fluent UI System Icons — ic_fluent_scan_text_24_regular.svg (MIT).
+constexpr wchar_t ScanText[] = LR"(M5.25 3.5C4.2835 3.5 3.5 4.2835 3.5 5.25V8.25C3.5 8.66421 3.16421 9 2.75 9C2.33579 9 2 8.66421 2 8.25V5.25C2 3.45507 3.45507 2 5.25 2H8.25C8.66421 2 9 2.33579 9 2.75C9 3.16421 8.66421 3.5 8.25 3.5H5.25ZM5.25 20.5C4.2835 20.5 3.5 19.7165 3.5 18.75V15.75C3.5 15.3358 3.16421 15 2.75 15C2.33579 15 2 15.3358 2 15.75V18.75C2 20.5449 3.45507 22 5.25 22H8.25C8.66421 22 9 21.6642 9 21.25C9 20.8358 8.66421 20.5 8.25 20.5H5.25ZM20.5 5.25C20.5 4.2835 19.7165 3.5 18.75 3.5H15.75C15.3358 3.5 15 3.16421 15 2.75C15 2.33579 15.3358 2 15.75 2H18.75C20.5449 2 22 3.45507 22 5.25V8.25C22 8.66421 21.6642 9 21.25 9C20.8358 9 20.5 8.66421 20.5 8.25V5.25ZM18.75 20.5C19.7165 20.5 20.5 19.7165 20.5 18.75V15.75C20.5 15.3358 20.8358 15 21.25 15C21.6642 15 22 15.3358 22 15.75V18.75C22 20.5449 20.5449 22 18.75 22H15.75C15.3358 22 15 21.6642 15 21.25C15 20.8358 15.3358 20.5 15.75 20.5H18.75ZM7.75 7C7.33579 7 7 7.33579 7 7.75C7 8.16421 7.33579 8.5 7.75 8.5H16.25C16.6642 8.5 17 8.16421 17 7.75C17 7.33579 16.6642 7 16.25 7H7.75ZM7 11.75C7 11.3358 7.33579 11 7.75 11H16.25C16.6642 11 17 11.3358 17 11.75C17 12.1642 16.6642 12.5 16.25 12.5H7.75C7.33579 12.5 7 12.1642 7 11.75ZM7.75 15C7.33579 15 7 15.3358 7 15.75C7 16.1642 7.33579 16.5 7.75 16.5H12.25C12.6642 16.5 13 16.1642 13 15.75C13 15.3358 12.6642 15 12.25 15H7.75Z)";
+}
+
+PathIcon MakeImageTextIcon() { return HeaderIcon(ScanText); }
+
+MenuFlyoutItem MakeImageTextAction(std::wstring const &hash, bool english, CardActionRequest const &request) {
+    MenuFlyoutItem item;
+    item.Text(english ? L"Recognize text in image" : L"识别图片文字");
+    item.Icon(MakeImageTextIcon());
+    item.Click([request, hash](auto const &, auto const &) { (void)request(L"imageText", hash, {}); });
+    return item;
+}
+
 CardMenuExtras AppendCardActions(MenuFlyout const &menu, std::wstring const &hash,
-    winrt::hstring const &type, bool hasTags, bool english, CardActionRequest request) {
+    winrt::hstring const &type, bool english, CardActionRequest request) {
     CardMenuExtras extras;
     auto add = [&](const wchar_t *zh, const wchar_t *en, const wchar_t *glyph, const wchar_t *operation) {
         MenuFlyoutItem item;
@@ -21,23 +37,22 @@ CardMenuExtras AppendCardActions(MenuFlyout const &menu, std::wstring const &has
         item.Click([request, hash, operation = std::wstring{operation}](auto const &, auto const &) {
             (void)request(operation, hash, {});
         });
-        menu.Items().Append(item);
         return item;
     };
     const bool text = type == L"Text" || type == L"TextFile" || type == L"Link";
-    if (text || type == L"Image" || type == L"File" || type == L"Color" || hasTags)
-        menu.Items().Append(MenuFlyoutSeparator{});
     if (text) {
-        add(L"复制为纯文本", L"Copy as plain text", L"\uE8A5", L"copyPlain");
         extras.pastePlain = add(L"粘贴为纯文本", L"Paste as plain text", L"\uE77F", L"pastePlain");
     }
-    if (type == L"Image") add(L"图片文字", L"Image text", L"\uE8A5", L"imageText");
     if (type == L"File") {
-        add(L"打开所在目录", L"Open containing folder", L"\uE838", L"openFolder");
-        add(L"复制所在目录", L"Copy containing folder", L"\uE8C8", L"copyFolder");
+        menu.Items().Append(add(L"打开所在目录", L"Open containing folder", L"\uE838", L"openFolder"));
+        menu.Items().Append(add(L"复制所在目录", L"Copy containing folder", L"\uE8C8", L"copyFolder"));
     }
     if (type == L"Image" || type == L"File") {
         extras.exportImage = add(L"导出图片…", L"Export image…", L"\uE74E", L"exportPrepare");
+        extras.exportImage.IsEnabled(false);
+        ToolTipService::SetToolTip(extras.exportImage, winrt::box_value(english
+            ? L"Waiting for image export details" : L"正在读取图片导出信息"));
+        menu.Items().Append(extras.exportImage);
         if (type == L"File") extras.exportImage.Visibility(Visibility::Collapsed);
     }
     if (type == L"Color") {
@@ -45,16 +60,20 @@ CardMenuExtras AppendCardActions(MenuFlyout const &menu, std::wstring const &has
         extras.colors.Text(english ? L"Copy color as" : L"复制颜色格式");
         extras.colors.Icon(Glyph(L"\uE790"));
         extras.colors.IsEnabled(false);
+        ToolTipService::SetToolTip(extras.colors, winrt::box_value(english ? L"Waiting for color formats" : L"正在读取颜色格式"));
         menu.Items().Append(extras.colors);
     }
-    if (hasTags) add(L"移除全部标签", L"Remove all assigned tags", L"\uE8EC", L"clearTags");
     return extras;
 }
 
 void UpdateCardActions(CardMenuExtras const &menu, JsonObject const &metadata,
     std::wstring const &hash, CardActionRequest request) {
-    if (menu.exportImage) menu.exportImage.Visibility(
-        metadata.GetNamedBoolean(L"canExportImage", false) ? Visibility::Visible : Visibility::Collapsed);
+    if (menu.exportImage) {
+        const bool canExport = metadata.GetNamedBoolean(L"canExportImage", false);
+        menu.exportImage.IsEnabled(canExport);
+        menu.exportImage.Visibility(canExport ? Visibility::Visible : Visibility::Collapsed);
+        ToolTipService::SetToolTip(menu.exportImage, nullptr);
+    }
     if (!menu.colors) return;
     menu.colors.Items().Clear();
     for (auto const &value : metadata.GetNamedArray(L"colorFormats", JsonArray{})) {
@@ -66,6 +85,7 @@ void UpdateCardActions(CardMenuExtras const &menu, JsonObject const &metadata,
         menu.colors.Items().Append(item);
     }
     menu.colors.IsEnabled(menu.colors.Items().Size() > 0);
+    if (menu.colors.IsEnabled()) ToolTipService::SetToolTip(menu.colors, nullptr);
 }
 
 ImageExport::ImageExport(HWND owner, CardActionRequest request, Report report)

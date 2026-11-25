@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Mutex,
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, WebviewWindow};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Surface {
@@ -45,6 +45,7 @@ static INTERACTIVE: AtomicBool = AtomicBool::new(false);
 static OWNED: AtomicBool = AtomicBool::new(false);
 static HOVER: AtomicBool = AtomicBool::new(false);
 static REQUEST: AtomicU64 = AtomicU64::new(0);
+static RECORD: Mutex<Option<(u64, String)>> = Mutex::new(None);
 
 pub(super) fn prepare(bounds: ScreenBounds, height: f64, interactive: bool) {
     INTERACTIVE.store(interactive, Ordering::Release);
@@ -89,14 +90,25 @@ pub(crate) fn current(request: u64) -> bool {
     active() && REQUEST.load(Ordering::Acquire) == request
 }
 
+pub(super) fn current_record() -> Option<(u64, String)> {
+    RECORD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .filter(|(request, _)| current(*request))
+        .cloned()
+}
+
 // Serialize the native intent and the shared render generation under the same
 // lock used by preview preparation. A stale queued worker cannot start later
 // and supersede a newer selection or resurrect a dismissed hover.
-pub(super) fn reserve(mode: PreviewMode) -> u64 {
+pub(super) fn reserve(mode: PreviewMode, hash: &str) -> u64 {
     let mut pending = crate::PREVIEW_PENDING
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    let mut record = RECORD.lock().unwrap_or_else(|e| e.into_inner());
     let request = REQUEST.fetch_add(1, Ordering::AcqRel) + 1;
+    *record = (mode != PreviewMode::Hover).then(|| (request, hash.to_owned()));
     OWNED.store(true, Ordering::Release);
     HOVER.store(mode == PreviewMode::Hover, Ordering::Release);
     crate::PREVIEW_REQUESTS.begin();
@@ -104,10 +116,39 @@ pub(super) fn reserve(mode: PreviewMode) -> u64 {
     *pending = None;
     request
 }
+
+pub(super) fn cancel_pending() {
+    if OWNED.load(Ordering::Acquire) {
+        // Stop queued preparation and commits while AppKit animates the owner out.
+        REQUEST.fetch_add(1, Ordering::AcqRel);
+        crate::cancel_preview_content();
+    }
+}
+
 pub(crate) fn closed() {
+    let mut record = RECORD.lock().unwrap_or_else(|e| e.into_inner());
     REQUEST.fetch_add(1, Ordering::AcqRel);
+    *record = None;
     OWNED.store(false, Ordering::Release);
     HOVER.store(false, Ordering::Release);
+    drop(record);
+    set_pdf_window(None);
+}
+
+pub(crate) fn set_pdf_window(window: Option<&WebviewWindow>) {
+    if !active() {
+        return;
+    }
+    let number = window
+        .and_then(|window| window.ns_window().ok())
+        .map(|native| {
+            use cocoa::base::id;
+            use objc::{msg_send, sel, sel_impl};
+            // SAFETY: the committed reader is inspected on the AppKit thread.
+            let number: isize = unsafe { msg_send![native as id, windowNumber] };
+            number
+        });
+    route(serde_json::json!({"event": "preview-pdf", "windowNumber": number}));
 }
 pub(super) fn dismiss_hover(app: &AppHandle, request: Option<u64>) -> Result<(), String> {
     {

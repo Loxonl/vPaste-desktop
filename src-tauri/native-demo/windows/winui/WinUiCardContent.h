@@ -17,8 +17,10 @@ winrt::Microsoft::UI::Xaml::Documents::TextHighlighter SearchHighlighter(
     std::wstring_view text, SearchTerms const &terms);
 void HighlightText(winrt::Microsoft::UI::Xaml::Controls::TextBlock const &block, SearchTerms const &terms);
 winrt::Microsoft::UI::Xaml::Media::Brush TransparencyBrush(bool dark);
+enum class FilePresentationVariant { Card, Preview };
 winrt::Microsoft::UI::Xaml::Controls::Grid FileTypePresentation(
-    winrt::Windows::Data::Json::JsonObject const &file, bool dark);
+    winrt::Windows::Data::Json::JsonObject const &file, bool dark,
+    FilePresentationVariant variant = FilePresentationVariant::Card);
 winrt::Windows::Foundation::Size NaturalImageBounds(double width, double height, double frameWidth, double frameHeight);
 std::wstring MediaCaption(winrt::Windows::Data::Json::JsonObject const &media,
     winrt::hstring const &dimensions, bool english, bool includeFormat);

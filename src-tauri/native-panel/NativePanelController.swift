@@ -137,6 +137,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private var pasteQueue = PanelPasteQueueIndicator()
   private let queueBar: PanelPasteQueueBar
   private var queueRequestPending = false
+  private var queueKeyboardTarget: String?
   private let infoBar = PanelInfoBar()
   private let emptyState = PanelEmptyState()
   private var infoHeight: NSLayoutConstraint!
@@ -153,18 +154,30 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private var filterEntryHashes: Set<String> = []
   private var filterEntryAnimated: Set<String> = []
   private var pendingPreviewSelection: (index: Int, direction: Int)?
+  private var previewRequestId: UInt64?
+  private var previewError: String?
   private lazy var previews = PanelPreviewDriver(hoverEnabled: config.hoverPreviewEnabled) {
     [weak self] operation, args in
     guard let self, !self.closed else { return }
+    if operation == "preview-close" { self.clearPreviewFeedback() }
     if operation == "hover-dismiss" || operation == "preview-close" {
       self.bridge.send(operation, args)
       return
     }
     guard !self.hiding, self.window.attachedSheet == nil, !self.dragging else { return }
-    if args["mode"] as? String == "hover", !self.window.isKeyWindow { return }
-    self.bridge.send(operation, args) { [weak self] result in
-      if case .failure(let error) = result, args["mode"] as? String != "hover" {
-        self?.showMessage(error.localizedDescription)
+    if args["mode"] as? String == "hover" {
+      if self.window.isKeyWindow { self.bridge.send(operation, args) }
+      return
+    }
+    self.clearPreviewFeedback()
+    self.previewRequestId = self.bridge.send(operation, args) { [weak self] result in
+      guard let self, !self.closed, !self.hiding else { return }
+      self.previewRequestId = nil
+      if case .failure(let error) = result {
+        let message = self.local("Could not preview this item. \(error.localizedDescription)",
+          "无法预览此项。\(error.localizedDescription)")
+        self.previewError = message
+        self.showMessage(message)
       }
     }
   }
@@ -190,11 +203,30 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private var closed = false
   private var dragging = false
   private var heldHash: String?
+  private struct Query: Equatable {
+    let keywords: String
+    let label: String
+    let tabId: String
+  }
   private var debounce: DispatchWorkItem?
+  private var queryTimeout: DispatchWorkItem?
+  private var queryRequestId: UInt64?
+  private var loadingQuery: Query?
+  private var readyQuery: Query?
+  private var searchEnter: Query?
+  private var searchEditor: NSTextView? { search.currentEditor() as? NSTextView }
+  private var currentQuery: Query {
+    Query(keywords: searchEditor?.string ?? search.stringValue, label: filter, tabId: activeTabId)
+  }
+  private var hasCurrentResults: Bool {
+    !closed && !hiding && searchEditor?.hasMarkedText() != true && readyQuery == currentQuery
+  }
   private var boundsObserver: NSObjectProtocol?
   private var applicationFocus: PanelApplicationFocus?
   private var mainRoleObserver: NSObjectProtocol?
   private let previewWindows = NSHashTable<NSWindow>.weakObjects()
+  private var pdfWindowNumber: Int?
+  private var previewEscapeMonitor: Any?
   private var transition = 0
   private var starting = true
   private var hiding = false
@@ -237,10 +269,27 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     window.delegate = self
     window.keyHandler = { [weak self] event in self?.key(event) ?? false }
     window.pointerHandler = { [weak self] in self?.previews.cancelHover() }
+    previewEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+      let handled = MainActor.assumeIsolated {
+        guard let self, !self.closed, !self.hiding, event.keyCode == 53,
+          event.windowNumber == self.pdfWindowNumber,
+          event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty
+        else { return false }
+        if !event.isARepeat {
+          self.previews.clear()
+          self.focus()
+        }
+        return true
+      }
+      return handled ? nil : event
+    }
     applicationFocus = PanelApplicationFocus { [weak self] active in
       guard let self, !self.closed, !self.config.sizePreview else { return }
       self.bridge.setKey(active && self.window.isKeyWindow)
-      if !active { self.scheduleFocusLoss() }
+      if !active {
+        self.searchEnter = nil
+        self.scheduleFocusLoss()
+      }
     }
     mainRoleObserver = NotificationCenter.default.addObserver(
       forName: NSWindow.didBecomeMainNotification, object: nil, queue: .main
@@ -283,9 +332,14 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         self.synchronizeHistoryIfNeeded()
       }
     }
-    toolbar.onTabReorder = { [weak self] source, target, before in
-      self?.menuRun("tab-reorder", ["tabId": source, "targetId": target, "before": before],
-        success: nil, reload: false)
+    toolbar.onTabReorder = { [weak self] source, target, before, finish in
+      guard let self else { finish(); return }
+      self.menuRun("tab-reorder", ["tabId": source, "targetId": target, "before": before],
+        success: nil, reload: false, failed: finish) { [weak self] in
+          guard let self, !self.closed else { finish(); return }
+          self.finishTabReorder = finish
+          self.refreshTabs()
+        }
     }
     toolbar.onRefresh = { [weak self] in self?.reload() }
     toolbar.onClose = { [weak self] in
@@ -372,12 +426,18 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       if name == "history-dirty" {
         self.requestHistorySync()
       } else if name == "tabs-changed" {
-        if let id = value["activeId"] as? String { self.pendingTabSelection = id }
+        if let error = value["assignmentError"] as? String {
+          self.pendingTabSelection = nil
+          let message = self.local("Tag created, but assignment failed. Add it from the original card’s Tags menu. (\(error))",
+            "标签已创建，但赋值失败。请在原卡片的「标签」菜单中添加。（\(error)）")
+          self.tagActionError = message
+          self.showMessage(message)
+        } else if let id = value["activeId"] as? String {
+          self.pendingTabSelection = id
+        }
+        self.refreshMenuTags()
         self.refreshTabs()
         self.requestHistorySync()
-        if let message = value["assignmentError"] as? String {
-          self.showMessage(self.local("Could not add the new tag: \(message)", "无法添加新标签：\(message)"))
-        }
       } else if name == "paste-queue-state" {
         if self.applyPasteQueueState(value), let error = value["error"] as? String {
           self.pasteQueue.reportError(error)
@@ -387,6 +447,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         if !self.dragging { self.refreshTabs() }
       } else if name == "preview-focused", let number = value["windowNumber"] as? Int {
         self.retainMainAppearanceForPreview(windowNumber: number)
+      } else if name == "preview-pdf" {
+        self.pdfWindowNumber = value["windowNumber"] as? Int
       } else if name == "preview-hover", let inside = value["inside"] as? Bool {
         self.previews.pointerInPreview(inside)
       } else if name == "preview-navigation" {
@@ -423,7 +485,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     toolbar.onFilter = { _ in blocked() }; toolbar.onAddTab = blocked
     toolbar.onTabContextMenu = { _, _ in blocked() }
-    toolbar.onTabReorder = { _, _, _ in blocked() }; toolbar.onTabDragging = nil
+    toolbar.onTabReorder = { _, _, _, finish in blocked(); finish() }; toolbar.onTabDragging = nil
     toolbar.onRefresh = blocked; toolbar.onPasteQueue = blocked
     toolbar.onSettings = blocked; toolbar.onDiagnostics = blocked
     intro.model.onAction = { [weak self] _, args in
@@ -446,7 +508,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   @discardableResult
   private func applyPasteQueueState(_ value: [String: Any]) -> Bool {
     let wasActive = pasteQueue.active
+    let epoch = pasteQueue.activationEpoch
     guard let status = try? panelDecode(PanelPasteQueueStatus.self, value), pasteQueue.apply(status) else { return false }
+    if wasActive != pasteQueue.active || epoch != status.activationEpoch { queueKeyboardTarget = nil }
     if !wasActive && pasteQueue.active { previews.clear() }
     refreshQueueSelectionUI()
     return true
@@ -460,9 +524,11 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     status()
   }
   private func updateVisibleSelection() {
+    let focus = queueKeyboardIndex
     for path in list.indexPathsForVisibleItems() {
       guard let view = (list.item(at: path) as? PanelCardItem)?.cardView else { continue }
       view.queueSelectionMode = pasteQueue.active
+      view.queueKeyboardFocused = path.item == focus
       view.selected = pasteQueue.active
         ? ref(path.item).map { pasteQueue.selectedHashes.contains($0.hash) } ?? false
         : path.item == selected
@@ -540,7 +606,10 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       if config.developerReconfigure == true { starting = false }
       else { animate(show: true) { [weak self] in self?.starting = false } }
     }
-    if onboarding == nil { resumeHistory() }
+    if onboarding == nil {
+      resumeHistory()
+      refreshMenuTags()
+    }
   }
   private func focus() {
     NSApp.activate(ignoringOtherApps: true)
@@ -593,10 +662,12 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   func dismiss(animated: Bool = true) {
     guard !closed else { return }
+    searchEnter = nil
     toolbar.cancelInteraction()
     if animated {
       guard !hiding else { return }
       hiding = true
+      bridge.send("preview-cancel-pending")
       animate(show: false) { [weak self] in self?.window.close() }
     } else {
       transition &+= 1
@@ -608,14 +679,15 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     saveCheckpoint(force: true)
     closed = true
     generation &+= 1
-    debounce?.cancel()
-    debounce = nil
+    abandonQuery()
     if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
     boundsObserver = nil
     applicationFocus?.close()
     applicationFocus = nil
     if let mainRoleObserver { NotificationCenter.default.removeObserver(mainRoleObserver) }
     mainRoleObserver = nil
+    if let previewEscapeMonitor { NSEvent.removeMonitor(previewEscapeMonitor) }
+    previewEscapeMonitor = nil
     previewWindows.removeAllObjects()
     previews.close()
     pendingPreviewSelection = nil
@@ -623,6 +695,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     onboarding?.removeFromSuperview()
     onboarding = nil
     toolbar.releaseContent()
+    finishTabReorder = nil
     queueBar.releaseContent()
     search.delegate = nil
     for view in renderedViews.allObjects { view.releaseContent() }
@@ -653,6 +726,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   func windowDidResignKey(_ notification: Notification) {
     bridge.setKey(false)
+    searchEnter = nil
     scheduleFocusLoss()
   }
   private func retainMainAppearanceForPreview(windowNumber number: Int) {
@@ -679,16 +753,16 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       self.bridge.send("blur")
     }
   }
-  private func changeFilter(_ index: Int) {
+  private func changeFilter(_ index: Int, revalidatePreview: Bool = false) {
     guard let label = PanelFilterQuery.label(index: index, tabs: tabs) else { return }
     pendingTabSelection = nil
-    previews.clear()
+    if !revalidatePreview { previews.clear() }
     pendingPreviewSelection = nil
     filterIndex = index
     filter = label
     let previousHashes = (0..<min(count, 36)).compactMap { ref($0)?.hash }
     toolbar.setSelection(index)
-    reload()
+    reload(revalidatePreview: revalidatePreview)
     // WebView animates the new result cards when the filter actually changes
     // them; compare against the first page captured before this reload.
     filterEntryPreviousHashes = previousHashes
@@ -708,28 +782,84 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     setInfoVisible(true)
     if count == 0 { emptyState.show(title: message, detail: "") }
   }
-  func controlTextDidEndEditing(_ obj: Notification) { toolbar.endEmptySearch() }
+  func controlTextDidEndEditing(_ obj: Notification) {
+    searchEnter = nil
+    toolbar.endEmptySearch()
+  }
   func controlTextDidChange(_ obj: Notification) {
-    if (search.currentEditor() as? NSTextView)?.hasMarkedText() == true { return }
+    abandonQuery()
+    generation &+= 1
+    readyQuery = nil
     previews.clear()
     pendingPreviewSelection = nil
-    scheduleReload()
+    showQueryLoading()
+    if searchEditor?.hasMarkedText() != true { scheduleReload() }
   }
   func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
     if textView.hasMarkedText() { return false }
     if selector == #selector(NSResponder.insertNewline(_:)) {
-      action("paste", at: selected)
+      searchFirstResult()
       return true
     }
     if selector == #selector(NSResponder.cancelOperation(_:)) {
-      dismiss()
+      escapeSearch()
       return true
     }
     if selector == #selector(NSResponder.moveDown(_:)) {
+      searchEnter = nil
       window.makeFirstResponder(list)
       return true
     }
     return false
+  }
+  private func escapeSearch() {
+    searchEnter = nil
+    if !currentQuery.keywords.isEmpty {
+      searchEditor?.string = ""
+      search.stringValue = ""
+      reload()
+    } else if !search.isHidden {
+      toolbar.endEmptySearch()
+      window.makeFirstResponder(list)
+    } else { dismiss() }
+  }
+  private func abandonQuery() {
+    menuRequest &+= 1
+    if queueKeyboardTarget != nil {
+      queueKeyboardTarget = nil
+      updateVisibleSelection()
+    }
+    debounce?.cancel()
+    debounce = nil
+    queryTimeout?.cancel()
+    queryTimeout = nil
+    if let queryRequestId { bridge.abandon(queryRequestId) }
+    queryRequestId = nil
+    loadingQuery = nil
+    searchEnter = nil
+  }
+  private func searchFirstResult() {
+    guard !busyAction, !hiding, !dragging, searchEditor?.hasMarkedText() != true,
+      NSApp.currentEvent?.isARepeat != true else { return }
+    if hasCurrentResults { action("paste", at: 0); return }
+    let query = currentQuery
+    if loadingQuery != query { reload() }
+    if loadingQuery == query { searchEnter = query }
+  }
+  private func showQueryLoading() {
+    let title = local("Loading history…", "正在加载历史记录…")
+    let detail = count > 0 ? local("Previous results are unavailable while searching", "正在查询，暂不可操作旧结果") : ""
+    emptyState.show(title: title, detail: detail, loading: true)
+    footer.stringValue = title
+  }
+  private func queryFailed(_ message: String) {
+    abandonQuery()
+    readyQuery = nil
+    let title = local("Could not load history", "无法加载历史记录")
+    footer.stringValue = title
+    emptyState.show(title: title, detail: message, actionTitle: local("Retry", "重试")) { [weak self] in
+      self?.reload()
+    }
   }
   private func scheduleReload() {
     debounce?.cancel()
@@ -737,8 +867,14 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     debounce = work
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
   }
-  private func reload() {
-    guard !closed, onboarding == nil else { return }
+  private func reload(revalidatePreview: Bool = false) {
+    guard !closed, !hiding, onboarding == nil, searchEditor?.hasMarkedText() != true else { return }
+    abandonQuery()
+    clearPreviewFeedback()
+    tagActionError = nil
+    readyQuery = nil
+    let query = currentQuery
+    loadingQuery = query
     refreshTabs()
     filterEntryPending = false
     filterEntryPreviousHashes = []
@@ -769,21 +905,42 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     list.reloadData()
     syncListSize()
     scroll.contentView.scroll(to: .zero)
-    emptyState.show(title: local("Loading history…", "正在加载历史记录…"), detail: "", loading: true)
-    footer.stringValue = local("Loading history…", "正在加载历史记录…")
-    bridge.send("open", ["keywords": search.stringValue, "label": filter, "tabId": activeTabId]) { [weak self] result in
-      guard let self, self.generation == epoch, !self.closed else { return }
+    showQueryLoading()
+    queryRequestId = bridge.send("open", ["keywords": query.keywords, "label": query.label, "tabId": query.tabId,
+      "revalidatePreview": revalidatePreview]) { [weak self] result in
+      guard let self, self.generation == epoch, !self.closed, !self.hiding,
+        self.currentQuery == query, self.searchEditor?.hasMarkedText() != true else { return }
+      let enter = self.searchEnter == query
+      self.abandonQuery()
       do {
         let page = try panelDecode(PanelPage.self, result.get())
+        self.readyQuery = query
         self.token = page.token
         self.accept(page)
         self.scheduleViewport()
+        // Resigning the window, app deactivation and ending field editing all
+        // clear the intent; only the still-active field can consume the reply.
+        if enter, let editor = self.searchEditor,
+          self.window.firstResponder === editor { self.action("paste", at: 0) }
         self.synchronizeHistoryIfNeeded()
       } catch {
         self.filterEntryPending = false
-        self.showMessage(error.localizedDescription)
+        if revalidatePreview { self.previews.clear() }
+        self.queryFailed(error.localizedDescription)
       }
     }
+    guard queryRequestId != nil else {
+      if revalidatePreview { previews.clear() }
+      queryFailed(local("The search request could not be sent.", "无法发送查询请求。"))
+      return
+    }
+    let timeout = DispatchWorkItem { [weak self] in
+      guard let self, self.generation == epoch, self.loadingQuery == query, !self.hiding else { return }
+      if revalidatePreview { self.previews.clear() }
+      self.queryFailed(self.local("The history request timed out.", "查询历史记录超时。"))
+    }
+    queryTimeout = timeout
+    DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: timeout)
   }
   private var activeTabId: String {
     if filterIndex == 0 { return "all" }
@@ -796,7 +953,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     let index = min(max(0, count - 1), Int(floor(x / stride)))
     let desired = range()
     var value: [String: Any] = [
-      "tabId": activeTabId, "keywords": search.stringValue, "viewRevision": token?.revision ?? 1,
+      "tabId": activeTabId, "keywords": currentQuery.keywords, "viewRevision": token?.revision ?? 1,
       "anchorHash": ref(index)?.hash ?? "", "anchorIndex": index,
       "offset": Double(min(0.999999, max(0, (x - CGFloat(index) * stride) / stride))),
       "selectedHash": ref(selected)?.hash ?? "", "start": desired.lowerBound, "end": desired.upperBound,
@@ -811,7 +968,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     return value
   }
   private func saveCheckpoint(force: Bool = false) {
-    guard !closed, !applyingHistory, let token else { return }
+    guard !closed, readyQuery == currentQuery, searchEditor?.hasMarkedText() != true,
+      !applyingHistory, let token else { return }
     let previous = viewportRevision
     let value = historyCheckpoint()
     if force || previous != viewportRevision {
@@ -821,7 +979,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private func resumeHistory() {
     generation &+= 1
     let epoch = generation
-    bridge.send("history-resume", ["preserveHistory": config.developerReconfigure == true]) { [weak self] result in
+    let args: [String: Any] = ["preserveHistory": config.developerReconfigure == true,
+      "hash": config.editorReturnHash ?? ""]
+    bridge.send("history-resume", args) { [weak self] result in
       guard let self, !self.closed, self.generation == epoch else { return }
       do {
         let value = try panelDecode(PanelHistoryPresentation.self, result.get())
@@ -840,8 +1000,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
           }
         }
         try self.applyHistoryDelta(value.delta)
+        self.readyQuery = self.currentQuery
         self.synchronizeHistoryIfNeeded()
-      } catch { self.showMessage(error.localizedDescription) }
+      } catch { self.queryFailed(error.localizedDescription) }
     }
   }
   private func requestHistorySync() {
@@ -850,7 +1011,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     synchronizeHistoryIfNeeded()
   }
   private func synchronizeHistoryIfNeeded() {
-    guard onboarding == nil, historyDirty, !historySyncing, !closed, !hiding, !dragging, !busyAction,
+    guard onboarding == nil, hasCurrentResults, historyDirty, !historySyncing, !dragging, !busyAction,
       window.attachedSheet == nil, let token else { return }
     historyDirty = false
     historySyncing = true
@@ -912,6 +1073,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     if delta.resourcesChanged { media.clear() }
     if previousSelection != ref(selected)?.hash {
+      clearPreviewFeedback()
       pendingPreviewSelection = (selected, 0)
     } else if let pending = pendingPreviewSelection {
       pendingPreviewSelection = (selected, pending.direction)
@@ -937,10 +1099,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     for path in list.indexPathsForVisibleItems() {
       if let item = list.item(at: path) as? PanelCardItem { configure(item, index: path.item) }
     }
-    if count == 0 {
-      emptyState.show(title: local("No matching history", "没有匹配的历史记录"),
-        detail: local("Try another search or filter", "试试其他关键词或筛选条件"))
-    } else { emptyState.hide() }
+    showResultState()
     lastViewport = ""
     lastCheckpointKey = ""
     viewportRevision = max(viewportRevision, delta.viewportRevision)
@@ -980,15 +1139,25 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     for path in list.indexPathsForVisibleItems() {
       if let item = list.item(at: path) as? PanelCardItem { configure(item, index: path.item) }
     }
-    if count == 0 {
-      emptyState.show(
-        title: local("No matching history", "没有匹配的历史记录"),
-        detail: local("Try another search or filter", "试试其他关键词或筛选条件"))
-    } else {
-      emptyState.hide()
-    }
+    showResultState()
     refreshSelectedPreview()
     status()
+  }
+  private func showResultState() {
+    guard count == 0 else { emptyState.hide(); return }
+    if currentQuery.keywords.isEmpty && activeTabId == "all" {
+      emptyState.show(title: local("No clipboard history yet", "还没有剪贴板历史"),
+        detail: local("Copy something in another app to get started.", "到另一个应用复制内容，即可开始。"))
+      return
+    }
+    emptyState.show(title: local("No matching history", "没有匹配的历史记录"),
+      detail: local("Try another search or filter.", "试试其他关键词或筛选条件。"),
+      actionTitle: local("Clear search and filters", "清除搜索与筛选")) { [weak self] in
+        guard let self else { return }
+        self.searchEditor?.string = ""
+        self.search.stringValue = ""
+        self.changeFilter(0)
+      }
   }
   private func syncListSize() {
     let viewport = scroll.contentView.bounds.size
@@ -1029,6 +1198,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       chinese: chinese, query: search.stringValue, selected: pasteQueue.active
         ? entry.map { pasteQueue.selectedHashes.contains($0.hash) } ?? false : index == selected)
     view.queueSelectionMode = pasteQueue.active
+    view.queueKeyboardFocused = index == queueKeyboardIndex
     if let hash = entry?.hash, filterEntryHashes.contains(hash), !filterEntryAnimated.contains(hash) {
       filterEntryAnimated.insert(hash)
       view.playFilterEntry(sequence: filterEntrySequence, hash: hash, index: index)
@@ -1045,8 +1215,14 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     view.hoverLeft = { [weak self] in
       if let previewItem { self?.previews.leave(previewItem) }
     }
-    view.activate = { [weak self] in self?.action("paste", at: index) }
-    view.requestMenu = { [weak self] point in self?.openContextMenu(at: index, point: point) }
+    view.activate = { [weak self] in
+      guard let self, let entry, self.ref(index)?.hash == entry.hash else { return }
+      self.action("paste", at: index)
+    }
+    view.requestMenu = { [weak self] point in
+      guard let self, let entry, self.ref(index)?.hash == entry.hash else { return }
+      self.openContextMenu(at: index, point: point)
+    }
     view.prepareDrag = { [weak self] completion in
       guard let self, !self.pasteQueue.active, let hash = self.ref(index)?.hash else { return }
       self.dragging = true
@@ -1100,7 +1276,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     return start..<max(start, end)
   }
   private func updateViewport() {
-    guard !closed, !applyingHistory, let token, count > 0 else { return }
+    guard hasCurrentResults, !applyingHistory, let token, count > 0 else { return }
     if layout.viewportSize != scroll.contentView.bounds.size { syncListSize() }
     let desired = range()
     let epoch = generation
@@ -1205,7 +1381,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       }
     }
 
-    if let error = pasteQueue.error {
+    if let error = pasteQueue.error ?? tagActionError ?? previewError {
       footer.stringValue = error
       return
     }
@@ -1223,17 +1399,31 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         : local(" · Enter paste · ⌘C copy · Space preview · Esc close",
           " · Enter 粘贴 · ⌘C 复制 · 空格预览 · Esc 关闭"))
   }
+  private func clearPreviewFeedback() {
+    if let previewRequestId { bridge.abandon(previewRequestId) }
+    previewRequestId = nil
+    guard previewError != nil else { return }
+    previewError = nil
+    status()
+  }
   private func refreshSelectedPreview() {
+    if pasteQueue.active { pendingPreviewSelection = nil; return }
     guard let pending = pendingPreviewSelection, pending.index == selected,
       let entry = ref(selected) else { return }
     pendingPreviewSelection = nil
     previews.selection(PanelPreviewItem(hash: entry.hash, itemType: entry.itemType), direction: pending.direction)
   }
+  private var queueKeyboardIndex: Int? {
+    guard pasteQueue.active, let queueKeyboardTarget, ref(selected)?.hash == queueKeyboardTarget else { return nil }
+    return selected
+  }
   private func select(_ index: Int, scroll shouldScroll: Bool) {
     guard index >= 0, index < count else { return }
     let previous = selected
     selected = index
+    if pasteQueue.active { queueKeyboardTarget = hasCurrentResults ? ref(index)?.hash : nil }
     if index != previous {
+      clearPreviewFeedback()
       pendingPreviewSelection = (index, shouldScroll ? (index > previous ? 1 : -1) : 0)
       refreshSelectedPreview()
     }
@@ -1261,7 +1451,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       }
       return event.modifierFlags.intersection([.command, .option, .control]).isEmpty
     }
-    guard !dragging else { return false }
+    guard !dragging, window.attachedSheet == nil else { return false }
     if event.keyCode == 48 && event.modifierFlags.contains(.control)
       && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.option) {
       let total = PanelFilterQuery.count(tabs: tabs)
@@ -1274,7 +1464,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         return true
       }
       if event.charactersIgnoringModifiers?.lowercased() == "c" {
-        action(event.modifierFlags.contains(.shift) ? "plain" : "copy", at: selected)
+        guard event.modifierFlags.intersection([.shift, .option, .control]).isEmpty
+        else { return false }
+        action("copy", at: selected)
         return true
       }
       if event.charactersIgnoringModifiers?.lowercased() == "r" {
@@ -1284,7 +1476,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     switch event.keyCode {
     case 53:
-      dismiss()
+      escapeSearch()
       return true
     case 123:
       select(max(0, selected - 1), scroll: true)
@@ -1296,7 +1488,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       openContextMenu(at: selected, point: nil)
       return true
     case 36, 76:
-      action("paste", at: selected)
+      if !pasteQueue.active || queueKeyboardIndex != nil { action("paste", at: selected) }
       return true
     case 48 where config.tabQuickSelectEnabled:
       select(max(0, min(count - 1, selected + (event.modifierFlags.contains(.shift) ? -1 : 1))), scroll: true)
@@ -1307,33 +1499,26 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       }
       return true
     case 51, 117:
-      action("delete", at: selected)
+      if !event.isARepeat, let entry = ref(selected) { confirmDeleteRecord(entry.hash) }
       return true
     default: return false
     }
   }
   private func action(_ operation: String, at index: Int) {
     guard !busyAction, let entry = ref(index) else { return }
+    if operation == "paste", !hasCurrentResults { return }
     let hash = entry.hash
     if operation == "paste" && pasteQueue.active {
       toggleQueueSelection(at: index)
       return
     }
-    if operation == "preview" {
-      previews.open(PanelPreviewItem(hash: hash, itemType: entry.itemType))
-      return
-    }
-    // Match the WebView: deleting a history record is immediate. Only custom
-    // tab and record-tag deletion ask for confirmation there.
-    perform(operation, hash: hash, index: index)
+    perform(operation, hash: hash)
   }
-  private func perform(_ operation: String, hash: String, index: Int? = nil) {
+  private func perform(_ operation: String, hash: String) {
     busyAction = true
-    var args: [String: Any] = ["hash": hash]
-    args["plain"] = operation == "plain" || operation == "paste-plain"
-    args["favorite"] = !(cards[hash]?.favorite ?? false)
-    let op = operation == "plain" ? "copy" : operation == "paste-plain" ? "paste" : operation
-    bridge.send(op, args) { [weak self] result in
+    let plain = operation == "paste-plain"
+    let op = plain ? "paste" : operation
+    if bridge.send(op, ["hash": hash, "plain": plain], completion: { [weak self] result in
       guard let self, !self.closed else { return }
       self.busyAction = false
       defer { self.synchronizeHistoryIfNeeded() }
@@ -1344,22 +1529,42 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
           self.applyPasteQueueState(value)
           return
         }
-        if operation == "delete" || operation == "favorite" {
-          self.requestHistorySync()
-        } else {
-          self.showMessage(self.local("Copied to clipboard", "已复制到剪贴板"))
-        }
+        self.showMessage(self.local("Copied to clipboard", "已复制到剪贴板"))
       }
+    }) == nil {
+      busyAction = false
+      showMessage(local("Could not send the clipboard action.", "无法发送剪贴板操作。"))
     }
   }
 
-  // MARK: Card context menu (mirrors the WebView menu; see NativePanelContextMenu)
+  private func confirmDeleteRecord(_ hash: String) {
+    guard !busyAction, hasCurrentResults, window.attachedSheet == nil else { return }
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = local("Delete record?", "删除记录？")
+    alert.informativeText = local("This clipboard record will be permanently removed.", "这条剪贴板记录将被永久删除。")
+    let delete = alert.addButton(withTitle: local("Delete", "删除"))
+    delete.hasDestructiveAction = true
+    delete.keyEquivalent = ""
+    alert.addButton(withTitle: local("Cancel", "取消")).keyEquivalent = "\u{1b}"
+    alert.beginSheetModal(for: window) { [weak self] response in
+      guard let self, !self.closed, !self.hiding else { return }
+      if response == .alertFirstButtonReturn, self.hasCurrentResults, self.containsRecord(hash) {
+        self.menuRun("delete", ["hash": hash], success: nil)
+      } else { self.synchronizeHistoryIfNeeded() }
+    }
+  }
 
-  // Record tags offered by the card menu (last loaded list).
-  private var tags: [PanelTag] = []
+  // MARK: Card context menu
+
+  private var menuTags: PanelMenuTags = .loading
+  private var tagsRequest = 0
+  private var tagActionError: String?
+  private var menuColors: (hash: String, options: [PanelColorOption]?)?
   // The user's filter tabs and record tags, in their stored order.
   private var tabs: [PanelTab] = []
   private var tabsRequest = 0
+  private var finishTabReorder: (() -> Void)?
   private var pendingTabSelection: String?
 
   private func openAddTabMenu() {
@@ -1422,7 +1627,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     alert.beginSheetModal(for: window) { [weak self] response in
       guard let self, !self.closed, !self.hiding else { return }
       if response == .alertFirstButtonReturn {
-        self.menuRun("tab-delete", ["tabId": tab.id], success: nil) { [weak self] in self?.focus() }
+        self.menuRun("tab-delete", ["tabId": tab.id], success: nil, completed: { [weak self] in self?.focus() })
       } else { self.focus() }
     }
   }
@@ -1431,7 +1636,11 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     tabsRequest &+= 1
     let request = tabsRequest
     bridge.send("tabs") { [weak self] result in
-      guard let self, !self.closed, self.tabsRequest == request, case .success(let value) = result,
+      guard let self, !self.closed, self.tabsRequest == request else { return }
+      let finish = self.finishTabReorder
+      self.finishTabReorder = nil
+      defer { finish?() }
+      guard case .success(let value) = result,
         let tabs = try? panelDecode([PanelTab].self, value) else { return }
       let selection = self.pendingTabSelection
       self.pendingTabSelection = nil
@@ -1442,6 +1651,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     guard next != tabs || id != nil else { return }
     let fixed = PanelFilterQuery.fixed
     let active = tabs.indices.contains(filterIndex - fixed) ? tabs[filterIndex - fixed] : nil
+    let revalidatePreview = hasCurrentResults
     tabs = next
     toolbar.setTabs(next)
     if let id, let index = PanelFilterQuery.index(id: id, tabs: next) {
@@ -1456,7 +1666,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       if next[position].label != active.label { changeFilter(filterIndex) }
     } else {
       // Like the WebView, fall back to All when the active tab is gone.
-      changeFilter(0)
+      changeFilter(0, revalidatePreview: revalidatePreview)
     }
   }
   private var menuRequest = 0
@@ -1464,89 +1674,106 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   // `point` is in the card view's flipped coordinates; nil opens it from the
   // keyboard at the WebView's offset (card left + 14, top + 40).
   private func openContextMenu(at index: Int, point: NSPoint?) {
-    guard !busyAction, window.attachedSheet == nil, let entry = ref(index),
-      cards[entry.hash] != nil else { return }
+    guard !busyAction, hasCurrentResults, window.attachedSheet == nil, let entry = ref(index),
+      let card = cards[entry.hash] else { return }
+    if point == nil { select(index, scroll: true) }
+    guard let view = (list.item(at: IndexPath(item: index, section: 0)) as? PanelCardItem)?.cardView,
+      view.card?.hash == card.hash else { return }
     menuRequest &+= 1
     let request = menuRequest
-    if point == nil { select(index, scroll: true) }
+    searchEnter = nil
     previews.cancelHover()
-    loadMenuData(hash: entry.hash, color: entry.itemType == "Color") { [weak self] tags, colors in
-      guard let self, !self.closed, request == self.menuRequest, self.selected == index,
-        self.window.attachedSheet == nil, let card = self.cards[entry.hash],
-        let view = (self.list.item(at: IndexPath(item: index, section: 0)) as? PanelCardItem)?
-          .cardView
-      else { return }
-      let handler = PanelMenuHandler { [weak self] action in
-        self?.performMenu(action, card: card, index: index)
-      }
-      let menu = PanelContextMenu.menu(
-        PanelContextMenu.options(card: card, tags: tags, colors: colors, chinese: self.chinese),
-        handler: handler)
-      let scale = CGFloat(self.config.scale)
-      // popUp(positioning:) pins the menu's top-left like a pop-up button and
-      // scrolls when it does not fit; the docked panel sits at the screen
-      // bottom, so use a context-menu popup, which opens upward fully expanded.
-      let location = view.convert(point ?? NSPoint(x: 14 * scale, y: 40 * scale), to: nil)
-      guard
-        let event = NSEvent.mouseEvent(
-          with: .rightMouseDown, location: location, modifierFlags: [],
-          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: self.window.windowNumber,
-          context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
-      else { return }
-      NSMenu.popUpContextMenu(menu, with: event, for: view)
-      withExtendedLifetime(handler) {}
-    }
-  }
-
-  // Like the WebView, a failed tag load falls back to the last list and a
-  // failed color lookup shows the unsupported entry.
-  private func loadMenuData(
-    hash: String, color: Bool, completion: @escaping ([PanelTag], [PanelColorOption]) -> Void
-  ) {
-    bridge.send("tags") { [weak self] result in
-      guard let self, !self.closed else { return }
-      if case .success(let value) = result, let tags = try? panelDecode([PanelTag].self, value) {
-        self.tags = tags
-      }
-      let tags = self.tags
-      guard color else { return completion(tags, []) }
-      self.bridge.send("color-options", ["hash": hash]) { result in
-        var colors: [PanelColorOption] = []
-        if case .success(let value) = result {
-          colors = (try? panelDecode([PanelColorOption].self, value)) ?? []
-        }
-        completion(tags, colors)
+    if card.itemType == "Color" { loadMenuColors(card.hash) }
+    var chosen: PanelMenuAction?
+    let handler = PanelMenuHandler { chosen = $0 }
+    let menu = PanelContextMenu.menu(PanelContextMenu.options(card: card, tags: menuTags,
+      colors: menuColors?.options, chinese: chinese, queueActive: pasteQueue.active), handler: handler)
+    let scale = CGFloat(config.scale)
+    let location = view.convert(point ?? NSPoint(x: 14 * scale, y: 40 * scale), to: nil)
+    withExtendedLifetime(handler) {
+      let screenPoint = window.convertPoint(toScreen: location)
+      let screen = NSScreen.screens.first { $0.frame.contains(screenPoint) } ?? window.screen
+      if point != nil, let screen,
+        let origin = PanelContextMenu.upwardOrigin(at: screenPoint, menuHeight: menu.size.height,
+          screen: screen.visibleFrame) {
+        menu.items.reverse()
+        let viewOrigin = view.convert(window.convertPoint(fromScreen: origin), from: nil)
+        menu.popUp(positioning: nil, at: viewOrigin, in: view)
+      } else if let event = NSEvent.mouseEvent(with: .rightMouseDown, location: location, modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+        context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+        NSMenu.popUpContextMenu(menu, with: event, for: view)
       }
     }
+    guard let chosen, request == menuRequest else { return }
+    performMenu(chosen, card: card)
   }
 
-  private func performMenu(_ menuAction: PanelMenuAction, card: PanelCard, index: Int) {
+  private func refreshMenuTags() {
+    tagsRequest &+= 1
+    let request = tagsRequest
+    menuTags = .loading
+    if bridge.send("tags", completion: { [weak self] result in
+      guard let self, !self.closed, self.tagsRequest == request else { return }
+      if let value = try? result.get(), let tags = try? panelDecode([PanelTag].self, value) {
+        self.menuTags = .loaded(tags)
+      } else { self.menuTags = .failed }
+    }) == nil { menuTags = .failed }
+  }
+
+  private func loadMenuColors(_ hash: String) {
+    guard menuColors?.hash != hash else { return }
+    menuColors = (hash, nil)
+    // The menu keeps its initial contents while it is tracking the pointer.
+    if bridge.send("color-options", ["hash": hash], completion: { [weak self] result in
+      guard let self, !self.closed, self.menuColors?.hash == hash else { return }
+      if let value = try? result.get() {
+        self.menuColors = (hash, (try? panelDecode([PanelColorOption].self, value)) ?? [])
+      } else {
+        self.menuColors = nil
+      }
+    }) == nil { menuColors = nil }
+  }
+
+  private func containsRecord(_ hash: String) -> Bool {
+    pages.values.contains { $0.contains { $0.hash == hash } }
+  }
+
+  func performMenu(_ menuAction: PanelMenuAction, card: PanelCard) {
     let hash = card.hash
+    guard !busyAction, hasCurrentResults, window.attachedSheet == nil, containsRecord(hash) else { return }
     switch menuAction {
-    case .preview: action("preview", at: index)
-    case .editText: action("edit", at: index)
-    case .viewImageText: action("ocr", at: index)
-    case .toggleFavorite: action("favorite", at: index)
-    case .pastePlainText: action("paste-plain", at: index)
-    case .delete: action("delete", at: index)
+    case .copyAndPaste:
+      if !pasteQueue.active { perform("paste", hash: hash) }
+    case .preview: previews.open(PanelPreviewItem(hash: hash, itemType: card.itemType))
+    case .editText: menuRun("edit", ["hash": hash], success: nil, reload: false)
+    case .viewImageText: menuRun("ocr", ["hash": hash], success: nil, reload: false)
+    case .favorite(let favorite):
+      menuRun("favorite", ["hash": hash, "favorite": favorite], success: nil)
+    case .pastePlainText:
+      if !pasteQueue.active { perform("paste-plain", hash: hash) }
+    case .delete: confirmDeleteRecord(hash)
+    case .retryTags:
+      refreshMenuTags()
     case .createTag:
       let anchor = PanelContextMenu.editorAnchor(mouse: NSEvent.mouseLocation,
         primaryHeight: NSScreen.screens.first?.frame.maxY ?? 0)
       openTabEditor(record: true, anchor: anchor, assignTo: hash)
     case .assignTag(let tag):
       menuRun("tag-assign", ["hash": hash, "tagId": tag.id],
-        success: local("Added tag \(tag.name)", "已添加标签 \(tag.name)"))
+        success: local("Added tag \(tag.name)", "已添加标签 \(tag.name)"), reloadAfterFailure: true)
     case .removeTag(let tag):
       menuRun("tag-remove", ["hash": hash, "tagIds": [tag.id]],
-        success: local("Removed tag \(tag.name)", "已移除标签 \(tag.name)"))
+        success: local("Removed tag \(tag.name)", "已移除标签 \(tag.name)"), reloadAfterFailure: true)
     case .removeAllTags:
       menuRun("tag-remove", ["hash": hash, "tagIds": card.tags.map(\.id)],
-        success: local("Removed all record tags", "已移除全部记录标签"))
+        success: local("Removed all record tags", "已移除全部记录标签"), reloadAfterFailure: true)
     case .exportImage:
       PanelMenuSheets.chooseExportTarget(window: window) { [weak self] url in
-        self?.menuRun("export-image", ["hash": hash, "target": url.path], success: nil) {
+        guard let self, self.hasCurrentResults, self.containsRecord(hash) else { return }
+        self.menuRun("export-image", ["hash": hash, "target": url.path], success: nil, completed: {
           PanelMenuSheets.rememberExportDirectory(of: url)
-        }
+        })
       }
     case .openFolder:
       menuRun("open-folder", ["hash": hash], success: nil, reload: false)
@@ -1560,27 +1787,46 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
 
   private func menuRun(
     _ op: String, _ args: [String: Any], success: String?, reload: Bool = true,
-    completed: (() -> Void)? = nil
+    reloadAfterFailure: Bool = false, failed: (() -> Void)? = nil, completed: (() -> Void)? = nil
   ) {
-    guard !busyAction else { return }
+    guard !busyAction else { failed?(); return }
     busyAction = true
-    bridge.send(op, args) { [weak self] result in
+    if reloadAfterFailure { tagActionError = nil }
+    if bridge.send(op, args, completion: { [weak self] result in
       guard let self, !self.closed else {
-        if case .success = result { completed?() }
+        if case .success = result { completed?() } else { failed?() }
         return
       }
       self.busyAction = false
       defer { self.synchronizeHistoryIfNeeded() }
       switch result {
       case .failure(let error):
-        self.showMessage(
-          self.local("Action failed: \(error.localizedDescription)",
-            "操作失败：\(error.localizedDescription)"))
+        if op == "edit", !self.hiding, self.window.attachedSheet == nil {
+          let alert = NSAlert()
+          alert.messageText = self.local("Could not open the text editor", "无法打开文本编辑器")
+          alert.informativeText = error.localizedDescription
+          alert.addButton(withTitle: self.local("OK", "确定"))
+          alert.beginSheetModal(for: self.window)
+          failed?()
+          return
+        }
+        let message = self.local("Action failed: \(error.localizedDescription)",
+          "操作失败：\(error.localizedDescription)")
+        if reloadAfterFailure, self.hasCurrentResults {
+          self.reload()
+          self.tagActionError = message
+        }
+        self.showMessage(message)
+        failed?()
       case .success:
         completed?()
         if reload { self.requestHistorySync() }
         if let success { self.showMessage(success) }
       }
+    }) == nil {
+      busyAction = false
+      showMessage(local("Could not send the action.", "无法发送操作。"))
+      failed?()
     }
   }
 }

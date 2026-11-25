@@ -9,10 +9,6 @@ static MANIFEST: LazyLock<Value> = LazyLock::new(|| {
     .expect("installed material-icon-theme manifest")
 });
 
-fn svg(filename: &str) -> Option<&'static str> {
-    include!(concat!(env!("OUT_DIR"), "/native-file-icons.rs"))
-}
-
 fn association(kind: &str, key: &str, dark: bool) -> Option<&'static str> {
     if !dark {
         if let Some(name) = MANIFEST["light"][kind][key].as_str() {
@@ -54,12 +50,12 @@ fn icon_name(path: &str, dark: bool) -> Option<&'static str> {
     None
 }
 
-fn material_svg(name: &str) -> &'static str {
+fn material_asset(name: &str) -> &'static str {
     MANIFEST["iconDefinitions"][name]["iconPath"]
         .as_str()
         .and_then(|path| path.rsplit('/').next())
-        .and_then(svg)
-        .unwrap_or("")
+        .and_then(|filename| filename.strip_suffix(".svg"))
+        .unwrap_or("document")
 }
 
 fn compact_path(path: &str) -> String {
@@ -108,17 +104,16 @@ pub(super) fn presentation(info: &crate::FilePreviewInfo, english: bool) -> Valu
         };
         // These three shipping product glyphs are intentionally not the
         // library's folder/outlined-document artwork.
-        let (name, source) = if folder {
-            ("yellow-folder", "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path fill='#fbc02d' d='m6.922 3.768-.644-.536A1 1 0 0 0 5.638 3H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1H7.562a1 1 0 0 1-.64-.232'/></svg>".to_string())
+        let (name, asset) = if folder {
+            ("yellow-folder", "vpaste-yellow-folder")
         } else if multiple && !mixed {
-            let path = "M8 16h8v2H8zm0-4h8v2H8zm6-10H6C4.9 2 4 2.9 4 4v16c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8zm4 18H6V4h7v5h5z";
-            ("document-stack", format!("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 76 60'><svg x='0' y='6' width='54' height='54' viewBox='0 0 24 24' opacity='.48'><path fill='#42a5f5' d='{path}'/></svg><svg x='11' y='4' width='54' height='54' viewBox='0 0 24 24' opacity='.72'><path fill='#42a5f5' d='{path}'/></svg><svg x='22' y='2' width='54' height='54' viewBox='0 0 24 24'><path fill='#42a5f5' d='{path}'/></svg></svg>"))
+            ("document-stack", "vpaste-document-stack")
         } else if name == "document" && extension == "TXT" {
-            ("text-document", "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='#42a5f5' d='M6 2h8l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2'/><path fill='#e3f2fd' d='M14 2v5h5z'/><path fill='#fff' d='M7 10h9v1.6H7zm0 3.5h9v1.6H7zM7 17h6.5v1.6H7z'/></svg>".to_string())
+            ("text-document", "vpaste-text-document")
         } else {
-            (name, material_svg(name).to_string())
+            (name, material_asset(name))
         };
-        json!({"name": name, "svg": source})
+        json!({"name": name, "asset": asset})
     };
     json!({"light": resolve(false), "dark": resolve(true), "label": label,
         "path": compact_path(&info.display_path), "fullPath": info.display_path,
@@ -161,7 +156,7 @@ mod tests {
         ] {
             for dark in [false, true] {
                 let name = icon_name(path, dark).expect(path);
-                assert!(!material_svg(name).is_empty(), "{path} -> {name}");
+                assert_ne!(material_asset(name), "document", "{path} -> {name}");
             }
         }
         assert!(icon_name("C:/unknown.something-vpaste", false).is_none());
@@ -198,5 +193,31 @@ mod tests {
         file.exists = false;
         assert_eq!(presentation(&file, true)["light"]["name"], "document");
         assert_eq!(presentation(&file, true)["exists"], false);
+    }
+
+    #[test]
+    fn sends_only_embedded_file_icon_identity_per_theme() {
+        let file = presentation(&info("C:/src/main.ts"), true);
+        assert_eq!(
+            file["light"],
+            json!({"name": "typescript", "asset": "typescript"})
+        );
+        assert_eq!(file["dark"], file["light"]);
+
+        let themed = presentation(&info("C:/project/example.toml"), true);
+        assert_eq!(
+            themed["light"],
+            json!({"name": "toml_light", "asset": "toml_light"})
+        );
+        assert_eq!(themed["dark"], json!({"name": "toml", "asset": "toml"}));
+
+        let mut folder = info("C:/notes");
+        folder.kind = "single-folder".into();
+        assert_eq!(
+            presentation(&folder, true)["light"]["asset"],
+            "vpaste-yellow-folder"
+        );
+        let unknown = presentation(&info("C:/unknown.something-vpaste"), true);
+        assert_eq!(unknown["dark"]["asset"], "document");
     }
 }

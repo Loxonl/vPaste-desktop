@@ -928,8 +928,9 @@ Acceptance criteria:
 
 - Filter tabs and record-tag tabs reorder together by stable id. All, Favorites
   and the add button remain fixed. Normal click and context-click behavior stay.
-- A local AppKit drag session shows a tab preview and insertion marker, supports
-  horizontal edge scrolling, suspends hover preview/focus-loss dismissal, and
+- A local AppKit drag session shows only the tab title, shifts neighboring tabs
+  to make room without an insertion marker, supports horizontal edge scrolling,
+  suspends hover preview/focus-loss dismissal, and
   releases its timer, cursor and callbacks on finish, cancel or teardown.
 - Drop commits once through Rust using the latest known tabs. Cancel or dropping
   outside the panel commits nothing. Reordering preserves the selected tab and
@@ -940,8 +941,8 @@ Acceptance criteria:
 
 Coverage is added before implementation for mixed-kind before/after moves,
 invalid targets, newly added tabs, history preservation, geometry/edge scrolling,
-teardown and non-moving edit notifications. Local regression suites are not
-executed at the user's request.
+teardown and non-moving edit notifications. The focused drag suite was run in
+the text-preview follow-up; the broader regression suites were not run.
 
 The WebView drop path now asks Rust to move ids rather than replacing order from
 an older UI snapshot; its existing target-index placement is retained. Rust
@@ -952,11 +953,19 @@ startup state-normalization effect is removed so unloaded record-tag ids are not
 lost. Add/edit mode now also reaches the WebView receiver, and creation uses
 current tab data instead of mount-time callback data.
 
-The shared AppKit row surface owns the drag preview, insertion marker, local-only
-move payload, edge timer and cleanup. Its recognizer has priority over descendant
-button gestures so a successful drag cannot also activate a tab. Clicks without
-movement and right-click menus retain their existing paths. The existing AppKit
-fallback teardown is moved beside its content to release the drag surface too.
+The shared AppKit row surface owns the text-only drag preview, local-only move
+payload, edge timer and cleanup. It has no insertion marker. Its recognizer has
+priority over descendant button gestures so a successful drag cannot also
+activate a tab. Clicks without movement and right-click menus retain their
+existing paths. The existing AppKit fallback teardown is moved beside its
+content to release the drag surface too.
+
+Text-preview follow-up: the drag image is rendered from each button's attributed
+title, including any title emoji, into a transparent image sized to the text.
+The matching drop animation targets that same text-sized frame. A focused XCTest
+and production Swift typecheck passed. Physical pointer-driven sorting was not
+repeated in this follow-up; the earlier isolated fixture confirmed the reorder
+path, and the current session cannot synthesize the system drag gesture.
 
 Verification: the final macOS Debug build, Release check, Swift production and
 focused XCTest typechecking with both SDK flags, Rust test-source compilation
@@ -968,8 +977,9 @@ after mixed-tag movement, active-tab preservation, ordinary clicking, context
 menus, drag-out cancellation and fixed-tab protection. Read-only database
 inspection confirmed the resulting order and retained 500 history rows and one
 tag association. The isolated app and private frontend were stopped. No local
-regression suite was run; Windows/macOS 11 runtime checks, sustained edge-hover
-scrolling and explicit Escape cancellation were not exercised interactively.
+regression suite beyond the focused drag tests was run; Windows/macOS 11 runtime
+checks, sustained edge-hover scrolling and explicit Escape cancellation were not
+exercised interactively.
 
 
 ### Native toolbar paste queue entry

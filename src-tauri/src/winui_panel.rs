@@ -14,19 +14,22 @@ use tauri::{AppHandle, Emitter, Listener, Manager};
 mod actions;
 mod app_actions;
 mod behavior;
-mod bridge;
+pub(crate) mod bridge;
 use bridge::response as response_bytes;
 mod drag;
+mod editor;
 mod file_icons;
 mod filters;
 mod focus;
 mod layout;
+mod ocr;
 pub(crate) mod onboarding;
 mod presentation;
 pub(crate) mod preview;
 mod reader;
 mod search;
 mod tab_order;
+pub(crate) mod tray;
 // This projection has no AppKit dependency. Keep the macOS importer unchanged.
 #[path = "native_panel/rich_text.rs"]
 mod rich_text;
@@ -45,7 +48,6 @@ type PanelReceive = unsafe extern "C" fn(*const u8, usize);
 type PanelSetBehavior = unsafe extern "C" fn(*const u8, usize) -> i32;
 type PanelSetClickMode = unsafe extern "C" fn(bool) -> i32;
 type PanelSetQueueView = unsafe extern "C" fn(bool) -> i32;
-type PanelShowQueueNoActivate = unsafe extern "C" fn() -> i32;
 type PanelInitialize = unsafe extern "C" fn(extern "C" fn(bool), PanelRequest, bool, bool) -> i32;
 type BootstrapInitialize = unsafe extern "system" fn(u32, *const u16, u64, u32) -> i32;
 type BootstrapShutdown = unsafe extern "system" fn();
@@ -67,7 +69,6 @@ struct PanelApi {
     set_click_mode: PanelSetClickMode,
     set_behavior: PanelSetBehavior,
     set_queue_view: PanelSetQueueView,
-    show_queue_no_activate: PanelShowQueueNoActivate,
     hide_for_queue_paste: PanelCall,
     refresh_tags: PanelCall,
     window_handle: PanelWindowHandle,
@@ -269,22 +270,6 @@ fn load_panel_api() -> Result<PanelApi, String> {
         // SAFETY: the exported function accepts the queue-view visibility flag.
         Ok(unsafe { std::mem::transmute::<*mut c_void, PanelSetQueueView>(address) })
     }
-    unsafe fn show_queue_no_activate_symbol(
-        module: *mut c_void,
-    ) -> Result<PanelShowQueueNoActivate, String> {
-        let address = unsafe {
-            GetProcAddress(
-                module,
-                b"vpaste_winui_show_queue_no_activate\0".as_ptr().cast(),
-            )
-        };
-        if address.is_null() {
-            return Err("WinUI no-activate queue-show export is missing".into());
-        }
-        // SAFETY: the exported function accepts no arguments and returns HRESULT.
-        Ok(unsafe { std::mem::transmute::<*mut c_void, PanelShowQueueNoActivate>(address) })
-    }
-
     // SAFETY: the matching C++ export snapshots an HWND as uintptr_t.
     let window_handle =
         unsafe { GetProcAddress(module, b"vpaste_winui_window_handle\0".as_ptr().cast()) };
@@ -346,7 +331,6 @@ fn load_panel_api() -> Result<PanelApi, String> {
         // SAFETY: matches the synchronous byte-buffer C ABI in WinUiPanel.cpp.
         set_behavior: unsafe { std::mem::transmute::<*mut c_void, PanelSetBehavior>(set_behavior) },
         set_queue_view: unsafe { set_queue_view_symbol(module)? },
-        show_queue_no_activate: unsafe { show_queue_no_activate_symbol(module)? },
         hide_for_queue_paste: unsafe { symbol(module, b"vpaste_winui_hide_for_queue_paste\0")? },
         refresh_tags: unsafe { symbol(module, b"vpaste_winui_refresh_tags\0")? },
         window_handle: unsafe {
@@ -381,16 +365,24 @@ fn check_hresult(operation: &str, result: i32) -> Result<(), String> {
 /// Initializes Windows App SDK and starts the island's dedicated STA UI thread.
 pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
     let _ = APP.set(app.clone());
-    for event in [
-        "listen_new_clipboard",
-        "clipboard-item-edited",
-        "clipboard-resources-updated",
-        "image-ocr-updated",
-    ] {
+    for event in ["listen_new_clipboard", "clipboard-resources-updated"] {
         // Resource notifications may explicitly target the clipboard WebView,
         // which does not exist in this backend.
         app.listen_any(event, move |_| refresh());
     }
+    app.listen_any("clipboard-item-edited", move |event| {
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            send_response(0, "clipboardItemEdited", Ok(payload));
+        }
+        refresh();
+    });
+    app.listen_any("image-ocr-updated", move |_| {
+        send_response(0, "imageOcrUpdated", Ok(json!({})));
+        if crate::CLIPBOARD_VISIBLE.load(std::sync::atomic::Ordering::SeqCst) {
+            refresh();
+        }
+    });
+    // 后端所有 history-reset 均通过全局 app.emit 广播，沿用 app.listen 以匹配呈现契约
     app.listen("history-reset", move |_| {
         preview::owner_hidden();
         send_response(0, "historyReset", Ok(json!({})));
@@ -398,28 +390,36 @@ pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
     app.listen_any("custom-tabs-changed", move |_| {
         send_response(0, "filtersChanged", Ok(json!({})));
     });
-    app.listen("item-tags-changed", move |_| {
+    app.listen_any("item-tags-changed", move |_| {
         refresh_tags();
     });
-    app.listen("tab-order-changed", move |event| {
+    app.listen_any("tab-order-changed", move |event| {
         if let Ok(order) = serde_json::from_str::<serde_json::Value>(event.payload()) {
             send_response(0, "tabOrderChanged", Ok(order));
         }
     });
-    app.listen("paste-queue-state-changed", move |event| {
-        if let Ok(state) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+    app.listen_any("paste-queue-state-changed", move |_event| {
+        if let Ok(state) = crate::paste_queue::winui_state_value() {
             send_response(0, "queueStateUpdate", Ok(state));
         }
     });
-    app.listen("app-update-state-changed", move |event| {
+    app.listen_any("app-update-state-changed", move |event| {
         if let Ok(state) = serde_json::from_str::<serde_json::Value>(event.payload()) {
             send_response(0, "updateStateChanged", Ok(state));
         }
+        if let Some(app) = APP.get() {
+            tray::refresh(app);
+        }
     });
-    app.listen("clipboard-capture-rejected", move |_| {
+    app.listen_any("clipboard-history-pause-changed", move |_| {
+        if let Some(app) = APP.get() {
+            tray::refresh(app);
+        }
+    });
+    app.listen_any("clipboard-capture-rejected", move |_| {
         send_response(0, "captureRejected", Ok(json!({})));
     });
-    app.listen("clipboard-behavior-config-changed", move |_| {
+    app.listen_any("clipboard-behavior-config-changed", move |_| {
         app_actions::reset_preview();
         if let Err(error) = apply_behavior() {
             log::error!("Failed to update WinUI input preferences: {error}");
@@ -431,6 +431,7 @@ pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
             log::debug!("WinUI click-mode update deferred: {error}");
         }
         if let Some(app) = APP.get() {
+            tray::refresh(app);
             let owned = app.clone();
             if let Err(error) = app.run_on_main_thread(move || {
                 if let Err(error) = layout::refresh(&owned) {
@@ -442,10 +443,18 @@ pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
         }
         refresh();
     });
-    app.listen("language-changed", move |_| {
+    app.listen_any("language-changed", move |_| {
         app_actions::reset_preview();
         if let Err(error) = apply_language() {
             log::debug!("WinUI language update deferred: {error}");
+        }
+        let english = crate::config::get()
+            .multilingual
+            .to_ascii_lowercase()
+            .starts_with("en");
+        if let Some(app) = APP.get() {
+            onboarding::refresh_language(app, english);
+            tray::refresh(app);
         }
     });
     let language = crate::config::get().multilingual;
@@ -523,6 +532,57 @@ pub(crate) fn restore_after_editor() -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn text_editor_focused() -> bool {
+    editor::focused()
+}
+
+pub(crate) fn editor_open() -> bool {
+    editor::is_open()
+}
+
+pub(crate) fn raise_editor_if_open() {
+    editor::raise_if_open();
+}
+
+pub(crate) fn refresh_layout(app: &AppHandle) -> Result<(), String> {
+    layout::refresh(app)
+}
+
+/// 当 WinUI 原生编辑器、托盘菜单或非普通预览的原生子窗获得前台焦点时，阻止 focus_watch 将焦点强拉回主列表。
+pub(crate) fn other_native_window_foreground() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+
+    if editor::focused() || modal_active() {
+        return true;
+    }
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.0 == 0 {
+        return false;
+    }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(foreground, Some(&mut pid)) };
+    if pid != std::process::id() {
+        return false;
+    }
+    let Ok(panel) = api() else {
+        return false;
+    };
+    let hwnd = foreground.0 as usize;
+    let main_hwnd = unsafe { (panel.window_handle)() };
+    if hwnd == main_hwnd {
+        return false;
+    }
+    let reader_hwnd = unsafe { (panel.reader_handle)() };
+    // 当 reader 作为普通预览（非编辑器且非 OCR 工具栏文本预览）时，交由 preview_foreground 处理。
+    if hwnd == reader_hwnd
+        && !editor::is_open()
+        && !crate::WINUI_IMAGE_TEXT_PREVIEW.load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return false;
+    }
+    true
+}
+
 pub(crate) fn set_queue_view(active: bool) -> Result<(), String> {
     let panel = api()?;
     // SAFETY: the DLL marshals the view switch to its dedicated WinUI thread.
@@ -577,14 +637,6 @@ pub(crate) fn finish_size_preview() -> Result<bool, String> {
     Ok(snapshot.was_visible)
 }
 
-pub(crate) fn show_queue_no_activate() -> Result<(), String> {
-    let panel = api()?;
-    // SAFETY: the DLL marshals the non-activating show operation to its UI thread.
-    check_hresult("non-activating queue show", unsafe {
-        (panel.show_queue_no_activate)()
-    })
-}
-
 pub(crate) fn hide_for_queue_paste() -> Result<(), String> {
     let panel = api()?;
     // SAFETY: the DLL hides the panel without discarding its queue return state.
@@ -607,6 +659,22 @@ pub(crate) fn shutdown() {
     }
 }
 
+static PENDING_CAPTURE_SYNC: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static LATEST_QUERY_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_query_generation() -> u64 {
+    LATEST_QUERY_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
+fn current_query_generation() -> u64 {
+    LATEST_QUERY_GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn is_query_generation_current(generation: u64) -> bool {
+    LATEST_QUERY_GENERATION.load(std::sync::atomic::Ordering::Acquire) == generation
+}
+
 fn show_on_ui_thread() -> Result<(), String> {
     let panel = api()?;
     if let Some(app) = APP.get() {
@@ -614,6 +682,7 @@ fn show_on_ui_thread() -> Result<(), String> {
     }
     apply_behavior()?;
     apply_theme()?;
+    PENDING_CAPTURE_SYNC.store(true, std::sync::atomic::Ordering::SeqCst);
     // SAFETY: the DLL marshals this call to its dedicated UI thread.
     check_hresult("show", unsafe { (panel.show)() })?;
     check_hresult("history refresh", unsafe { (panel.refresh)() })?;
@@ -639,11 +708,18 @@ fn toggle_on_ui_thread() -> Result<(), String> {
     if !crate::CLIPBOARD_VISIBLE.load(std::sync::atomic::Ordering::SeqCst) {
         crate::windows_paste_focus::capture_foreground();
         crate::record_foreground_app_before_clipboard();
+        PENDING_CAPTURE_SYNC.store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(app) = APP.get() {
             layout::before_show(app)?;
         }
     }
     check_hresult("toggle", unsafe { (panel.toggle)() })?;
+    if !should_refresh_after_toggle(
+        crate::CLIPBOARD_VISIBLE.load(std::sync::atomic::Ordering::SeqCst),
+    ) {
+        PENDING_CAPTURE_SYNC.store(false, std::sync::atomic::Ordering::SeqCst);
+        return Ok(());
+    }
     check_hresult("history refresh", unsafe { (panel.refresh)() })?;
     check_hresult("tag refresh", unsafe { (panel.refresh_tags)() })
 }
@@ -708,7 +784,7 @@ fn send_response(id: u64, op: &str, result: Result<serde_json::Value, String>) {
 }
 
 unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
-    if input.is_null() || length == 0 || length > bridge::MAX_REQUEST_BYTES {
+    if input.is_null() || length == 0 || length > bridge::MAX_DOCUMENT_BYTES {
         return;
     }
     // SAFETY: the C++ caller keeps the JSON buffer alive for this callback.
@@ -722,6 +798,11 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
     };
     let id = request.id;
     let op = request.op.clone();
+    let query_generation = match op.as_str() {
+        "query" => next_query_generation(),
+        "queryMore" => current_query_generation(),
+        _ => 0,
+    };
     if op == "query" {
         let resources = app.state::<crate::background_resources::BackgroundResources>();
         resources.reset_links_for_view(resources.epoch());
@@ -731,6 +812,12 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
         return;
     }
     if reader::handle(&app, &op, &request.argument) {
+        return;
+    }
+    if editor::focus_changed(&op, &request.argument) {
+        return;
+    }
+    if onboarding::handle(&app, id, &op, &payload) {
         return;
     }
     if matches!(op.as_str(), "dragBegin" | "dragEnd") {
@@ -766,7 +853,7 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
     } else {
         crate::PreviewMode::Selection
     };
-    if op == "previewDismiss" && crate::PREVIEW_PINNED.load(std::sync::atomic::Ordering::SeqCst) {
+    if op == "previewDismiss" && crate::preview_protected_from_replacement() {
         return;
     }
     if matches!(op.as_str(), "previewClose" | "previewDismiss")
@@ -776,7 +863,9 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
         send_response(id, &op, Ok(serde_json::Value::Null));
         return;
     }
-    let preview_request = if matches!(
+    let preview_request = if op == "imageText" {
+        Some(preview::reserve(request.id, crate::PreviewMode::Manual))
+    } else if matches!(
         op.as_str(),
         "previewToggle" | "previewSelect" | "hoverPreview"
     ) {
@@ -788,7 +877,7 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
         if !preview_mode.allows(
             preview::open(),
             crate::PREVIEW_HOVER.load(std::sync::atomic::Ordering::SeqCst),
-            crate::PREVIEW_PINNED.load(std::sync::atomic::Ordering::SeqCst),
+            crate::preview_protected_from_replacement(),
         ) {
             return;
         }
@@ -798,6 +887,7 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
     };
     tauri::async_runtime::spawn(async move {
         let result = match request.op.as_str() {
+            "nativeTrayAction" => tray::dispatch(app.clone(), &request.argument, &payload).await,
             "appState" => app_actions::snapshot(app.clone()),
             "appTool" => app_actions::open_tool(app.clone(), &request.argument).await,
             "updateInstall" => app_actions::install(app.clone(), &request.argument).await,
@@ -857,6 +947,7 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
                     0,
                     0,
                     request.limit,
+                    query_generation,
                 )
                 .await
             }
@@ -868,6 +959,7 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
                     request.last_id,
                     request.last_time,
                     36,
+                    query_generation,
                 )
                 .await
             }
@@ -897,18 +989,17 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
                     Err("Invalid quick-input key / 无效的快速粘贴按键".into())
                 }
             }
-            "imageText" => crate::show_image_text_window(app.clone(), request.hash)
-                .await
-                .map(|_| json!({})),
+            "imageText" => ocr::open(app.clone(), request.hash, preview_request.unwrap()).await,
+            "nativeOcrCopy" => ocr::copy(app.clone(), payload).await,
             "openFolder" | "copyFolder" | "copyColor" | "clearTags" | "exportPrepare"
             | "exportImage" => {
                 actions::dispatch(app.clone(), op.clone(), request.hash, request.argument).await
             }
             "favorite" => update_favorite(app.clone(), request.hash, request.favorite).await,
             "delete" => delete_history_item(app.clone(), request.hash).await,
-            "edit" => crate::open_text_editor_window(app.clone(), request.hash)
-                .await
-                .map(|_| json!({})),
+            "edit" => editor::open(app.clone(), request.hash).await,
+            "nativeEditorSave" => editor::save(app.clone(), payload).await,
+            "nativeEditorClose" => editor::close(&request.argument).await,
             "assignTag" | "recordTagAssign" => {
                 update_item_tag(request.hash, request.tag_id, true).await
             }
@@ -930,10 +1021,7 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
         {
             let _ = app.emit("item-tags-changed", json!({}));
         }
-        if result.is_ok() && op == "delete" {
-            let _ = app.emit("listen_new_clipboard", ());
-        }
-        if result.is_err() && matches!(op.as_str(), "paste" | "pastePlain" | "quickPaste") {
+        if result.is_err() && should_reopen_panel_after_action_error(&op) {
             let _ = show_on_ui_thread();
         }
         if op == "dragPrepare" {
@@ -947,7 +1035,9 @@ unsafe extern "C" fn panel_request(input: *const u8, length: usize) {
                 Err(_) => log::warn!("[winui-drag] stage=prepare-failed"),
             }
         }
-        if preview_request.is_none_or(preview::current) {
+        let query_current = !matches!(op.as_str(), "query" | "queryMore")
+            || is_query_generation_current(query_generation);
+        if preview_request.is_none_or(preview::current) && query_current {
             send_response(id, &op, result);
         }
     });
@@ -963,6 +1053,9 @@ fn history_summary(item: crate::history_views::HistoryRef) -> serde_json::Value 
         "time": item.time,
         "favorite": item.label & 1 != 0,
         "tags": item.tags,
+        "isRichText": item.is_rich_text,
+        "linkResource": item.link_resource,
+        "hasOcrText": item.has_ocr_text,
     })
 }
 
@@ -973,9 +1066,20 @@ async fn query_history(
     last_id: u64,
     last_time: u64,
     limit: usize,
+    query_generation: u64,
 ) -> Result<serde_json::Value, String> {
+    let sync_pending_capture = last_id == 0
+        && PENDING_CAPTURE_SYNC.swap(false, std::sync::atomic::Ordering::SeqCst)
+        && !crate::local_acceptance_no_capture();
     let limit = query_page_size(limit)?;
     let (page, highlight_terms) = tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(all(target_os = "windows", not(test)))]
+        if sync_pending_capture && !crate::memory_profile_active() {
+            // 与 React ShowGate 对齐：首次呼出若正在异步捕获剪贴板/富文本延迟渲染，先等落库再返回首屏。
+            let _ = crate::clipboard::windows::listen::wait_for_capture();
+        }
+        #[cfg(not(all(target_os = "windows", not(test))))]
+        let _ = sync_pending_capture;
         let label = if let Some(id) = filter.strip_prefix("custom:") {
             filters::history_label(id, &tag_name)?
         } else {
@@ -988,27 +1092,93 @@ async fn query_history(
             last_time,
             limit,
             &label,
-            || true,
+            move || is_query_generation_current(query_generation),
         )?;
         Ok::<_, String>((page, search::highlight_terms(&keywords)))
     })
     .await
     .map_err(|error| error.to_string())??;
     let page = page.ok_or_else(|| "Clipboard history query was cancelled".to_string())?;
-    let items = page
-        .list
-        .into_iter()
-        .map(history_summary)
-        .collect::<Vec<_>>();
+    Ok(pack_history_query_page(
+        page.list,
+        page.has_more,
+        page.next_id,
+        page.next_time,
+        highlight_terms,
+        MAX_QUERY_PAYLOAD_BYTES,
+    ))
+}
+
+const MAX_QUERY_PAYLOAD_BYTES: usize = 3 * 1024 * 1024 + 512 * 1024;
+
+fn pack_history_query_page(
+    list: Vec<crate::history_views::HistoryRef>,
+    has_more: bool,
+    next_id: u64,
+    next_time: u64,
+    highlight_terms: Vec<String>,
+    max_payload_bytes: usize,
+) -> serde_json::Value {
+    let overhead = 512
+        + serde_json::to_vec(&highlight_terms)
+            .map(|bytes| bytes.len())
+            .unwrap_or(0);
+    let mut used = overhead;
+    let mut items = Vec::with_capacity(list.len());
+    let mut effective_has_more = has_more;
+    let mut effective_next_id = next_id;
+    let mut effective_next_time = next_time;
+    let mut last_cursor: Option<(u64, u64)> = None;
+
+    for item in list {
+        let item_id = item.id as u64;
+        let item_time = item.time;
+        let mut summary = history_summary(item);
+        let mut item_bytes = serde_json::to_vec(&summary)
+            .map(|bytes| bytes.len())
+            .unwrap_or(0);
+        // 首条记录若极端超限则先裁剪文本字段，确保永远不会因单条过大让整页查询触发 "Native result is too large"。
+        if items.is_empty() && used.saturating_add(item_bytes) > max_payload_bytes {
+            let allow_text = max_payload_bytes.saturating_sub(used + 512).min(4096);
+            if let Some(obj) = summary.as_object_mut() {
+                for key in ["preview", "displayText", "linkResource", "appSource"] {
+                    if let Some(serde_json::Value::String(text)) = obj.get_mut(key) {
+                        if text.len() > allow_text {
+                            let mut end = allow_text;
+                            while end > 0 && !text.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            text.truncate(end);
+                        }
+                    }
+                }
+            }
+            item_bytes = serde_json::to_vec(&summary)
+                .map(|bytes| bytes.len())
+                .unwrap_or(0);
+        }
+        if !items.is_empty() && used.saturating_add(item_bytes + 1) > max_payload_bytes {
+            effective_has_more = true;
+            if let Some((cursor_id, cursor_time)) = last_cursor {
+                effective_next_id = cursor_id;
+                effective_next_time = cursor_time;
+            }
+            break;
+        }
+        used = used.saturating_add(item_bytes + 1);
+        items.push(summary);
+        last_cursor = Some((item_id, item_time));
+    }
+
     let count = items.len();
-    Ok(json!({
+    json!({
         "items": items,
         "knownCount": count,
-        "hasMore": page.has_more,
-        "nextId": page.next_id,
-        "nextTime": page.next_time,
+        "hasMore": effective_has_more,
+        "nextId": effective_next_id,
+        "nextTime": effective_next_time,
         "highlightTerms": highlight_terms,
-    }))
+    })
 }
 
 fn query_page_size(requested: usize) -> Result<usize, String> {
@@ -1052,7 +1222,7 @@ fn history_filter_label(filter: &str, tag_name: &str) -> String {
 }
 
 async fn update_favorite(
-    app: AppHandle,
+    _app: AppHandle,
     hash: String,
     favorite: bool,
 ) -> Result<serde_json::Value, String> {
@@ -1064,8 +1234,6 @@ async fn update_favorite(
     if affected == 0 {
         return Err("Clipboard item was not found".to_string());
     }
-    app.emit("listen_new_clipboard", ())
-        .map_err(|error| error.to_string())?;
     Ok(json!({ "favorite": favorite }))
 }
 
@@ -1113,7 +1281,7 @@ async fn query_card(
         .clone();
     let resource_epoch = resources.epoch();
     let summary_hash = hash.clone();
-    let (mut card, media_path) = tauri::async_runtime::spawn_blocking(move || {
+    let (mut card, media_path, original_image) = tauri::async_runtime::spawn_blocking(move || {
         let payload = crate::clipboard::history_card_payload(&summary_hash, false)?;
         let is_rich_text = presentation::is_rich_format(&payload);
         let item = payload.item;
@@ -1125,6 +1293,7 @@ async fn query_card(
         let title_color = item.title_color.clone();
         let mut media_path = None;
         let mut display_title = String::new();
+        let mut original_image = None;
         let mut display_subtitle = String::new();
         let mut file_count = 0;
         let mut file_format = String::new();
@@ -1134,6 +1303,7 @@ async fn query_card(
         let display_text = match item.item_type {
             crate::clipboard::item::ItemType::Image => {
                 media_path = Some(item.preview_content.clone());
+                original_image = Some(item.content.clone());
                 item.text_content.clone()
             }
             crate::clipboard::item::ItemType::File => {
@@ -1211,13 +1381,7 @@ async fn query_card(
                     .map(|preview| preview.text)
                     .unwrap_or_default()
             }
-            _ => {
-                if item.text_content.is_empty() {
-                    item.content.clone()
-                } else {
-                    item.text_content.clone()
-                }
-            }
+            _ => bounded_card_display_text(&item.item_type, &item.content, &item.text_content),
         };
         let is_gif = presentation::is_gif_format(
             &item.item_type.to_string(),
@@ -1254,6 +1418,7 @@ async fn query_card(
                 } else { serde_json::Value::Null },
             }),
             media_path,
+            original_image,
         ))
     })
     .await
@@ -1268,16 +1433,21 @@ async fn query_card(
     card["cardPixelWidth"] = json!(width);
     card["assetPath"] = json!("");
     card["dimensions"] = json!("");
-    if let Some(path) = media_path.filter(|path| !path.is_empty()) {
-        match crate::media_resources::resolve_for_card_width(
-            path.clone(),
-            crate::media_resources::MediaIntent::Card,
-            refresh,
-            width,
-        )
-        .await
-        {
-            Ok(media) => {
+    if let Some(path) = media_path {
+        let resource = if let Some(original) = original_image {
+            presentation::resolve_image_card(path, original, refresh, width).await
+        } else {
+            crate::media_resources::resolve_for_card_width(
+                path.clone(),
+                crate::media_resources::MediaIntent::Card,
+                refresh,
+                width,
+            )
+            .await
+            .map(|media| (media, path))
+        };
+        match resource {
+            Ok((media, path)) => {
                 card["assetPath"] = json!(media.asset_path);
                 if media.metadata.width > 0 && media.metadata.height > 0 {
                     card["dimensions"] = json!(format!(
@@ -1289,8 +1459,6 @@ async fn query_card(
             }
             Err(error) => card["mediaError"] = json!(error),
         }
-    } else if card["itemType"] == "Image" {
-        card["mediaError"] = json!("Image source is unavailable / 图片源文件不可用");
     }
     Ok(card)
 }
@@ -1335,19 +1503,36 @@ async fn run_history_action(
     if let Some(path) = info.missing_paths.first() {
         return Err(format!("Source file is missing: {path}"));
     }
-    if paste && !crate::check_paste_accessibility_permission().granted {
-        return Err("Paste automation permission is not available".to_string());
-    }
     crate::copy_history_record(app.clone(), hash.clone(), plain_text).await?;
     if paste {
-        hide_on_ui_thread()?;
-        let result = tauri::async_runtime::spawn_blocking(move || {
-            crate::paste(&hash, quick_trigger.as_ref().map(|_| true), quick_trigger)
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-        result?;
-        Ok(json!({ "message": "Pasted" }))
+        match winui_paste_permission_flow(crate::check_paste_accessibility_permission().granted) {
+            WinUiPastePermissionFlow::FallbackCopyWithNotice => {
+                hide_for_queue_paste()?;
+                crate::restore_foreground_app_before_paste();
+                let notice_app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = crate::show_paste_fallback_notice(notice_app).await;
+                });
+                Ok(json!({ "message": "Copied" }))
+            }
+            WinUiPastePermissionFlow::AutoPaste => {
+                // 粘贴隐藏必须立即退出屏幕并释放 WS_EX_TOPMOST，避免与 120ms 后的 Ctrl+V 发生动画竞争。
+                hide_for_queue_paste()?;
+                let result = tauri::async_runtime::spawn_blocking(move || {
+                    crate::paste(&hash, quick_trigger.as_ref().map(|_| true), quick_trigger)
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                if let Err(error) = result {
+                    let notice_app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = crate::show_paste_fallback_notice(notice_app).await;
+                    });
+                    return Err(error);
+                }
+                Ok(json!({ "message": "Pasted" }))
+            }
+        }
     } else {
         Ok(json!({ "message": "Copied" }))
     }
@@ -1379,6 +1564,49 @@ fn refresh_tags() {
     }
 }
 
+fn should_reopen_panel_after_action_error(_op: &str) -> bool {
+    false
+}
+
+fn should_refresh_after_toggle(visible_after_toggle: bool) -> bool {
+    visible_after_toggle
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WinUiPastePermissionFlow {
+    AutoPaste,
+    FallbackCopyWithNotice,
+}
+
+fn winui_paste_permission_flow(has_permission: bool) -> WinUiPastePermissionFlow {
+    if has_permission {
+        WinUiPastePermissionFlow::AutoPaste
+    } else {
+        WinUiPastePermissionFlow::FallbackCopyWithNotice
+    }
+}
+
+fn bounded_card_display_text(
+    item_type: &crate::clipboard::item::ItemType,
+    content: &str,
+    text_content: &str,
+) -> String {
+    let raw = if text_content.is_empty() {
+        content
+    } else {
+        text_content
+    };
+    if *item_type == crate::clipboard::item::ItemType::Text
+        && raw.len() > crate::clipboard_budget::TEXT_PREVIEW_BYTES
+    {
+        crate::clipboard_budget::text_preview(raw.as_bytes().to_vec())
+            .map(|preview| preview.text)
+            .unwrap_or_else(|_| crate::clipboard_budget::limit_error())
+    } else {
+        raw.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1399,6 +1627,9 @@ mod tests {
                 source_metadata: Default::default(),
                 title_color: String::new(),
                 preview_text: "Full preview".into(),
+                is_rich_text: false,
+                link_resource: String::new(),
+                has_ocr_text: false,
             })
         };
         let before = summary("old-hash");
@@ -1511,7 +1742,9 @@ mod tests {
             })?;
             // SAFETY: the native exports marshal show and synthetic control
             // assertions to the owning STA. No AppHandle or user data is used.
-            super::check_hresult("show", unsafe { (panel.show)() })?;
+            if std::env::var_os("VPASTE_WINUI_TRAY_CHECK").is_none() {
+                super::check_hresult("show", unsafe { (panel.show)() })?;
+            }
             let test = unsafe {
                 super::GetProcAddress(
                     panel._module as *mut std::ffi::c_void,
@@ -1533,6 +1766,38 @@ mod tests {
         })();
         super::shutdown();
         assert!(result.is_ok(), "native shell failed: {result:?}");
+    }
+
+    #[test]
+    #[ignore = "requires the Windows App SDK runtime and an interactive desktop"]
+    fn native_batch2_regressions() {
+        let result = (|| -> Result<(), String> {
+            super::initialize_native(false, false)?;
+            let panel = super::api()?;
+            // SAFETY: Debug 测试导出在同一 STA 上验证 Batch 2 所有交互/焦点/同步/渲染修复回归。
+            let test = unsafe {
+                super::GetProcAddress(
+                    panel._module as *mut std::ffi::c_void,
+                    b"vpaste_winui_test_batch2_regressions\0".as_ptr().cast(),
+                )
+            };
+            if test.is_null() {
+                return Err("WinUI batch2 regression export is missing".to_string());
+            }
+            let test: unsafe extern "C" fn(*mut u32) -> i32 = unsafe { std::mem::transmute(test) };
+            let mut stage = 0;
+            let status = unsafe { test(&mut stage) };
+            eprintln!(
+                "WinUI batch2 regressions: stage={stage}, HRESULT=0x{:08X}",
+                status as u32
+            );
+            super::check_hresult(&format!("batch2 regressions stage {stage}"), status)
+        })();
+        super::shutdown();
+        assert!(
+            result.is_ok(),
+            "native batch2 regressions failed: {result:?}"
+        );
     }
 
     #[test]
@@ -1562,6 +1827,7 @@ mod tests {
                 ("C:/docs/report.pdf", "single-icon", false),
                 ("C:/notes.txt", "single-icon", false),
                 ("C:/project/package.json", "single-icon", false),
+                ("C:/project/example.toml", "single-icon", false),
                 ("C:/unknown.something-vpaste", "single-icon", false),
                 ("C:/documents", "single-folder", false),
                 ("C:/notes.txt", "multiple", true),
@@ -1618,5 +1884,129 @@ mod tests {
         super::shutdown();
         assert!(result.is_ok(), "native initialization failed: {result:?}");
         assert!(matches!(shown, Ok(Ok(()))), "native show failed: {shown:?}");
+    }
+
+    #[test]
+    fn winui_regression_paste_action_error_and_toggle_hide_policy() {
+        assert!(!super::should_reopen_panel_after_action_error("paste"));
+        assert!(!super::should_reopen_panel_after_action_error("pastePlain"));
+        assert!(!super::should_reopen_panel_after_action_error("quickPaste"));
+        assert!(!super::should_refresh_after_toggle(false));
+        assert!(super::should_refresh_after_toggle(true));
+        assert_eq!(
+            super::winui_paste_permission_flow(false),
+            super::WinUiPastePermissionFlow::FallbackCopyWithNotice
+        );
+        assert_eq!(
+            super::winui_paste_permission_flow(true),
+            super::WinUiPastePermissionFlow::AutoPaste
+        );
+    }
+
+    #[test]
+    fn winui_regression_large_text_card_query_is_bounded_and_summary_tracks_resources() {
+        let oversized_text = "A".repeat(5 * 1024 * 1024);
+        let display_text = super::bounded_card_display_text(
+            &crate::clipboard::item::ItemType::Text,
+            &oversized_text,
+            "",
+        );
+        let encoded = super::bridge::response(
+            1,
+            "card",
+            Ok(serde_json::json!({ "displayText": display_text })),
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert!(
+            parsed.get("error").is_none(),
+            "oversized Text card exceeded bridge budget: {}",
+            parsed["error"]
+        );
+
+        let base_ref = || crate::history_views::HistoryRef {
+            id: 10,
+            hash: "hash-res".into(),
+            item_type: crate::clipboard::item::ItemType::Link,
+            time: 99,
+            label: 0,
+            tags: vec![],
+            app_source: "Browser".into(),
+            app_icon_path: String::new(),
+            source_metadata: Default::default(),
+            title_color: String::new(),
+            preview_text: "Example".into(),
+            is_rich_text: true,
+            link_resource: "C:\\cache\\icon.png:favicon".into(),
+            has_ocr_text: true,
+        };
+        let without_resource = super::history_summary(crate::history_views::HistoryRef {
+            is_rich_text: false,
+            link_resource: String::new(),
+            has_ocr_text: false,
+            ..base_ref()
+        });
+        let with_resource = super::history_summary(base_ref());
+        assert_ne!(without_resource, with_resource);
+        assert_eq!(with_resource["isRichText"], true);
+        assert_eq!(with_resource["linkResource"], "C:\\cache\\icon.png:favicon");
+        assert_eq!(with_resource["hasOcrText"], true);
+    }
+
+    #[test]
+    fn winui_regression_query_history_respects_bridge_budget() {
+        // 模拟全量刷新携带数百条含超长字段的历史摘要时，不应触发 4 MiB bridge 溢出错误，
+        // 而是按预算截断并保持正确的 hasMore / nextId / nextTime 分页游标。
+        let large_preview = "P".repeat(24 * 1024);
+        let refs = (0..220_usize)
+            .map(|idx| crate::history_views::HistoryRef {
+                id: 1000 - idx,
+                hash: format!("hash-{idx}"),
+                item_type: crate::clipboard::item::ItemType::Text,
+                time: (5000 - idx) as u64,
+                label: 0,
+                tags: vec![],
+                app_source: "Code.exe".into(),
+                app_icon_path: String::new(),
+                source_metadata: Default::default(),
+                title_color: String::new(),
+                preview_text: large_preview.clone(),
+                is_rich_text: false,
+                link_resource: String::new(),
+                has_ocr_text: false,
+            })
+            .collect::<Vec<_>>();
+        let payload = super::pack_history_query_page(
+            refs,
+            false,
+            781,
+            4781,
+            vec!["alpha".into()],
+            super::MAX_QUERY_PAYLOAD_BYTES,
+        );
+        let kept_count = payload["items"].as_array().unwrap().len();
+        assert!(kept_count > 0 && kept_count < 220);
+        assert_eq!(payload["knownCount"], kept_count);
+        assert_eq!(payload["hasMore"], true);
+        assert_eq!(payload["nextId"], 1000 - (kept_count - 1));
+        assert_eq!(payload["nextTime"], 5000 - (kept_count as u64 - 1));
+        let encoded = super::bridge::response(77, "query", Ok(payload)).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert!(
+            parsed.get("error").is_none(),
+            "packed history query exceeded bridge limit: {:?}",
+            parsed.get("error")
+        );
+    }
+
+    #[test]
+    fn winui_regression_query_generation_cancels_superseded_search() {
+        let older = super::next_query_generation();
+        assert_eq!(super::current_query_generation(), older);
+        assert!(super::is_query_generation_current(older));
+
+        let newer = super::next_query_generation();
+        assert!(!super::is_query_generation_current(older));
+        assert!(super::is_query_generation_current(newer));
     }
 }

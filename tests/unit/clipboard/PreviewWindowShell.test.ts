@@ -70,8 +70,9 @@ describe("preview window outer shell", () => {
 
     it("keeps one cleared hidden preview resident without an idle destruction timer", () => {
         const closing = sourceBetween("fn hide_preview_window", "fn show_main_panel_for_app");
-        expect(closing).toContain("retain_preview_window(&app)");
-        const retention = sourceBetween("fn retain_preview_window", "fn hide_preview_and_clipboard");
+        expect(closing).toContain("close_preview_and_focus(app)");
+        expect(closing).toContain("close_preview_window(&app)");
+        const retention = sourceBetween("fn close_preview_window", "fn hide_preview_and_clipboard");
         expect(retention).toContain("clear_preview_content(&preview_window)");
         expect(retention).toContain("preview_window.hide()");
         expect(retention).not.toContain("auxiliary_windows::destroy");
@@ -115,7 +116,7 @@ describe("preview window outer shell", () => {
         expect(auxiliarySource).toContain("page_ready_ms");
     });
 
-    it("uses one CSS-owned rounded surface without a competing Win32 region", () => {
+    it("uses one outer frame: CSS for the legacy preview and DWM only for the Windows WinUI fallback", () => {
         const creation = sourceBetween(
             "fn build_preview_window",
             "fn preview_window_active",
@@ -129,10 +130,15 @@ describe("preview window outer shell", () => {
             "if let tauri::WindowEvent::CloseRequested",
         );
         const shellRule = previewStyles.match(/\.preview-shell\s*\{([^}]*)\}/)?.[1];
+        const systemShellRule = previewStyles.match(/\.preview-shell\[data-chrome="winui"\]\s*\{([^}]*)\}/)?.[1];
 
         expect(creation).toContain(".transparent(true)");
         expect(creation).toContain(".background_color(tauri::window::Color(0, 0, 0, 0))");
-        expect(creation).toContain(".shadow(false)");
+        expect(creation).toMatch(/let system_frame =\s*cfg!\(all\(target_os = "windows", feature = "winui"\)\) && main_panel_mode::winui\(\);/);
+        expect(creation).toContain(".shadow(system_frame)");
+        expect(creation).toMatch(/if !system_frame \{[^}]*window\.set_shadow\(false\)/);
+        expect(creation).toMatch(/if system_frame \{\s*apply_winui_auxiliary_frame\(window\)/);
+        expect(creation).toContain("DWMWA_WINDOW_CORNER_PREFERENCE");
         expect(creation).not.toContain("apply_windows_rounded_window_region");
         expect(showing).not.toContain("apply_windows_rounded_window_region");
         expect(preCloseWindowEvents).not.toContain("apply_windows_rounded_window_region");
@@ -140,5 +146,16 @@ describe("preview window outer shell", () => {
         expect(shellRule).toContain("border-radius: var(--ui-radius-window)");
         expect(uiTokens).toContain("--ui-radius-window: 12px");
         expect(shellRule).toContain("overflow: hidden");
+        expect(systemShellRule).toContain("border-radius: 0");
+        expect(systemShellRule).toContain("background: var(--ui-winui-aux-window-surface)");
+        expect(systemShellRule).toContain("backdrop-filter: none");
+    });
+
+    it("leaves the HWND unpainted when the WinUI fallback uses Acrylic", () => {
+        const material = sourceBetween("fn apply_winui_auxiliary_frame", "fn preview_window_active");
+        expect(material).toMatch(/else if material && extended \{\s*None/);
+        expect(material).toContain("webview.window().set_background_color(host_fill)");
+        expect(material).toContain("webview.set_background_color(Some(");
+        expect(material).not.toContain("window.set_background_color(Some(");
     });
 });

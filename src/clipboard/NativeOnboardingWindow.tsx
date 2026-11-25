@@ -11,9 +11,9 @@ import { formatShortcutLabel } from "../shortcutDisplay";
 import { loadAndApplyTheme } from "../theme";
 import type { ConfigData } from "../config/settingsTypes";
 import { mainShortcutFromConfig } from "./clipboardBehavior";
-import { buildTutorialFilterTabs, initializeTutorialFilterTabs, markTutorialFiltersInitialized,
+import { buildTutorialFilterTabs, configuredTutorialTabs, initializeTutorialFilterTabs, markTutorialFiltersInitialized,
     updateTutorialFilterTabs, type TutorialFilterId } from "./clipboardTutorial";
-import { loadCustomTabs, normalizeCustomTabs, saveCustomTabs, type CustomTab } from "./customTabs";
+import { saveCustomTabs, type CustomTab } from "./customTabs";
 import TutorialOverlay from "./TutorialOverlay";
 import styles from "./NativeOnboardingWindow.module.css";
 
@@ -50,8 +50,7 @@ export default function NativeOnboardingWindow() {
                 welcomeImage.decode?.().catch(() => undefined),
             ]);
             const config = JSON.parse(rawConfig) as ConfigData;
-            const stored = normalizeCustomTabs(value);
-            const previous = stored.length ? stored : loadCustomTabs();
+            const { stored, tabs: previous } = configuredTutorialTabs(value);
             const initial = initializeTutorialFilterTabs(previous, config.onboarding_completed === false,
                 key => translateWithPack(getLanguagePack(config.multilingual), key));
             if (initial !== previous || (!stored.length && previous.length)) {

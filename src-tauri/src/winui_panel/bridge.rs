@@ -2,9 +2,13 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-pub(super) const PROTOCOL_VERSION: u32 = 3;
+pub(super) const PROTOCOL_VERSION: u32 = 8;
 pub(super) const MAX_REQUEST_BYTES: usize = 16 * 1024;
-pub(super) const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+// An editor document can use the full clipboard text budget. A JSON control
+// character can occupy six bytes; leave room for its command envelope.
+pub(super) const MAX_DOCUMENT_BYTES: usize =
+    crate::clipboard_budget::TEXT_CAPTURE_BYTES * 6 + MAX_REQUEST_BYTES;
 
 pub(super) fn check_version(actual: u32) -> Result<(), String> {
     if actual == PROTOCOL_VERSION {
@@ -48,22 +52,32 @@ pub(super) struct Request {
 }
 
 pub(super) fn request(bytes: &[u8]) -> Result<(Request, Value), String> {
-    if bytes.is_empty() || bytes.len() > MAX_REQUEST_BYTES {
+    if bytes.is_empty() || bytes.len() > MAX_DOCUMENT_BYTES {
         return Err("invalid WinUI request size".into());
     }
     let value: Value = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    let request = serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+    let request = Request::deserialize(&value).map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_REQUEST_BYTES
+        && !matches!(request.op.as_str(), "nativeEditorSave" | "nativeOcrCopy")
+    {
+        return Err("invalid WinUI request size".into());
+    }
     // Queue and tag parsers also consume their own fields from the full payload.
     Ok((request, value))
 }
 
-pub(super) fn response(id: u64, op: &str, result: Result<Value, String>) -> Option<Vec<u8>> {
+pub(crate) fn response(id: u64, op: &str, result: Result<Value, String>) -> Option<Vec<u8>> {
     let value = match result {
         Ok(data) => json!({"id":id, "op":op, "data":data}),
         Err(error) => json!({"id":id, "op":op, "error":error}),
     };
     let bytes = serde_json::to_vec(&value).ok()?;
-    if bytes.len() > MAX_RESPONSE_BYTES {
+    let limit = if op == "nativeEditorOpen" {
+        MAX_DOCUMENT_BYTES
+    } else {
+        MAX_RESPONSE_BYTES
+    };
+    if bytes.len() > limit {
         return serde_json::to_vec(&json!({"id":id, "op":op,
             "error":"Native result is too large; narrow the filter and retry / 返回内容过大，请缩小筛选范围后重试"})).ok();
     }
@@ -78,6 +92,8 @@ mod tests {
     fn rejects_incompatible_dll_before_starting_ui() {
         assert!(check_version(PROTOCOL_VERSION).is_ok());
         assert!(check_version(1).is_err());
+        assert!(check_version(6).is_err());
+        assert!(check_version(7).is_err());
         assert!(check_version(0).unwrap_err().contains("rebuild"));
         assert!(check_version(PROTOCOL_VERSION + 1).is_err());
     }
@@ -114,5 +130,30 @@ mod tests {
         assert_eq!(error["id"], 10);
         assert_eq!(error["op"], "edit");
         assert_eq!(error["error"], "保存失败");
+    }
+
+    #[test]
+    fn larger_documents_do_not_expand_general_bridge_limits() {
+        let document = "\n中😀".repeat(MAX_REQUEST_BYTES);
+        for op in ["nativeEditorSave", "nativeOcrCopy", "query"] {
+            let encoded = serde_json::to_vec(&json!({
+                "id":19, "op":op, "argument":"1", "documentText":document
+            }))
+            .unwrap();
+            assert!(encoded.len() > MAX_REQUEST_BYTES);
+            assert_eq!(request(&encoded).is_ok(), op != "query");
+        }
+        let response = response(
+            7,
+            "nativeEditorOpen",
+            Ok(json!({"text":"\n".repeat(MAX_RESPONSE_BYTES)})),
+        )
+        .unwrap();
+        assert!(response.len() > MAX_RESPONSE_BYTES);
+        let decoded: Value = serde_json::from_slice(&response).unwrap();
+        assert_eq!(
+            decoded["data"]["text"].as_str().unwrap().len(),
+            MAX_RESPONSE_BYTES
+        );
     }
 }

@@ -517,6 +517,26 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
     if crate::main_panel_mode::winui() {
         crate::winui_panel::initialize(app.clone())?;
         record_startup_memory("winui-initialized");
+        if std::env::args().any(|arg| arg == "--memory-profile-tray-check") {
+            // Exercise the ordinary tray route on the isolated desktop, with
+            // no shell icon, clipboard listeners or real user configuration.
+            let owner = app.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::show_vpaste_tray_menu(
+                    &owner,
+                    tauri::Rect {
+                        position: tauri::PhysicalPosition::new(320.0, 240.0).into(),
+                        size: tauri::PhysicalSize::new(16.0, 16.0).into(),
+                    },
+                )
+                .await;
+                log::info!(
+                    "Isolated tray route: webview_created={}",
+                    owner.get_webview_window("trayMenu").is_some()
+                );
+            });
+            return Ok(());
+        }
         if std::env::args().any(|arg| arg == "--memory-profile-auxiliary-check") {
             let owner = app.clone();
             // A trusted control page for the local CDP regression. This branch

@@ -20,10 +20,12 @@ struct CardMenuExtras {
     winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutItem pastePlain{nullptr};
 };
 
+winrt::Microsoft::UI::Xaml::Controls::PathIcon MakeImageTextIcon();
+winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutItem MakeImageTextAction(
+    std::wstring const &hash, bool english, CardActionRequest const &request);
 CardMenuExtras AppendCardActions(
     winrt::Microsoft::UI::Xaml::Controls::MenuFlyout const &menu,
-    std::wstring const &hash, winrt::hstring const &type, bool hasTags,
-    bool english, CardActionRequest request);
+    std::wstring const &hash, winrt::hstring const &type, bool english, CardActionRequest request);
 void UpdateCardActions(CardMenuExtras const &menu,
     winrt::Windows::Data::Json::JsonObject const &metadata,
     std::wstring const &hash, CardActionRequest request);

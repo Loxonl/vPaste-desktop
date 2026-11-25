@@ -162,7 +162,14 @@ final class PanelCardView: NSView, NSDraggingSource {
     }
   }
   var queueCheckVisible: Bool { !queueCheck.isHidden }
+  var queueKeyboardFocused = false {
+    didSet {
+      if oldValue != queueKeyboardFocused { selectionOutline.isHidden = !showsSelectionOutline }
+    }
+  }
+  private var showsSelectionOutline: Bool { selected || (queueSelectionMode && queueKeyboardFocused) }
   private func updateQueueCheck() {
+    selectionOutline.isHidden = !showsSelectionOutline
     queueCheck.isHidden = !queueSelectionMode || !selected
     setAccessibilityValue(queueSelectionMode ? NSNumber(value: selected) : nil)
   }
@@ -170,7 +177,6 @@ final class PanelCardView: NSView, NSDraggingSource {
     didSet {
       if oldValue != selected {
         needsDisplay = true
-        selectionOutline.isHidden = !selected
         updateQueueCheck()
         updateAnimation()
       }
@@ -288,7 +294,6 @@ final class PanelCardView: NSView, NSDraggingSource {
     selectionOutline.lineWidth = 2 * scale
     selectionOutline.strokeColor =
       (PanelStyle.dark(self) ? PanelStyle.accent(self) : PanelStyle.rgb(0x1976d2)).cgColor
-    selectionOutline.isHidden = !selected
     queueCheck.frame = NSRect(x: bounds.width - 34 * scale, y: bounds.height - 34 * scale,
       width: 24 * scale, height: 24 * scale)
     queueCheck.layer?.cornerRadius = 12 * scale
@@ -751,6 +756,7 @@ final class PanelCardView: NSView, NSDraggingSource {
     resetFilterEntryAnimation()
     selected = false
     queueSelectionMode = false
+    queueKeyboardFocused = false
     hoverLeft?()
     hoverEntered = nil
     hoverLeft = nil

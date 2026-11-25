@@ -90,8 +90,12 @@
     <ClCompile Include="WinUiAppActions.cpp" />
     <ClCompile Include="WinUiHoverPreview.cpp" />
     <ClCompile Include="WinUiReader.cpp" />
+    <ClCompile Include="WinUiOnboarding.cpp" />
+    <ClCompile Include="WinUiTrayWindow.cpp" />
     <ResourceCompile Include="WinUiNameEmoji.rc" />
     <ResourceCompile Include="WinUiMotion.rc" />
+    <ResourceCompile Include="WinUiOnboarding.rc" />
+    <ResourceCompile Include="$(VPasteFileIconResources)" Condition="'$(VPasteFileIconResources)' != ''" />
     <ClInclude Include="WinUiMotion.h" />
     <ClInclude Include="WinUiDockMotion.h" />
     <ClInclude Include="WinUiTabIndicator.h" />
@@ -100,8 +104,10 @@
     <ClInclude Include="WinUiResourceProbe.h" />
     <ClInclude Include="WinUiQueueView.h" />
     <ClInclude Include="WinUiQueueWindow.h" />
+    <ClInclude Include="WinUiTrayWindow.h" />
     <ClInclude Include="WinUiTagManager.h" />
     <ClInclude Include="WinUiAppearance.h" />
+    <ClInclude Include="WinUiMenuFocus.h" />
     <ClInclude Include="WinUiRichContent.h" />
     <ClInclude Include="WinUiDrag.h" />
     <ClInclude Include="WinUiFilterEditor.h" />
@@ -110,8 +116,10 @@
     <ClInclude Include="WinUiKeyboard.h" />
     <ClInclude Include="WinUiHistoryViewport.h" />
     <ClInclude Include="WinUiRecordTagEditor.h" />
+    <ClInclude Include="WinUiEditorKeys.h" />
     <ClInclude Include="WinUiCardContent.h" />
     <ClInclude Include="WinUiAppActions.h" />
+    <ClInclude Include="WinUiHeaderArtwork.h" />
     <ClInclude Include="WinUiHoverPreview.h" />
     <ClInclude Include="WinUiReader.h" />
   </ItemGroup>

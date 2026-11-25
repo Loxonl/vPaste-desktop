@@ -2,6 +2,7 @@
 #undef GetCurrentTime
 #include "WinUiAppActions.h"
 #include "WinUiAppearance.h"
+#include "WinUiHeaderArtwork.h"
 #include <utility>
 #ifdef _DEBUG
 #include <algorithm>
@@ -11,6 +12,8 @@
 #ifdef _DEBUG
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
+#include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
+#include <winrt/Windows.Storage.Streams.h>
 winrt::Windows::Foundation::IAsyncAction NextNativeFrame();
 #endif
 
@@ -19,17 +22,42 @@ using namespace winrt::Microsoft::UI::Xaml;
 using namespace winrt::Microsoft::UI::Xaml::Controls;
 using namespace winrt::Windows::Data::Json;
 
+namespace {
+constexpr double DeveloperIconSize = 13;
+
+Viewbox DeveloperIcon(const wchar_t *path) {
+    // 规范化 SVG 路径以消除 Z+m 偏移歧义；将 PathIcon 置于 24x24 画布内由 Viewbox 缩放，
+    // 既保留 24 单位参考系，又自动继承按钮各交互态（Hover/Pressed/Disabled/高对比）的 Foreground。
+    const auto normalized = NormalizeSvgPathForXaml(path);
+    const auto xaml = std::wstring{LR"(<Viewbox xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+        <Grid Width="24" Height="24"><PathIcon Width="24" Height="24" Data="F1 )"}
+        + normalized + LR"("/></Grid></Viewbox>)";
+    auto icon = Markup::XamlReader::Load(winrt::hstring{xaml}).as<Viewbox>();
+    icon.Width(DeveloperIconSize);
+    icon.Height(DeveloperIconSize);
+    Automation::AutomationProperties::SetAccessibilityView(icon, Automation::Peers::AccessibilityView::Raw);
+    return icon;
+}
+
+// Four independent panes, with a clear cross-shaped gap at toolbar scale.
+constexpr wchar_t WindowsGuideMark[] = LR"(M3,3 H11 V11 H3 Z M13,3 H21 V11 H13 Z M3,13 H11 V21 H3 Z M13,13 H21 V21 H13 Z)";
+}
+
 struct AppActions::Impl : std::enable_shared_from_this<Impl> {
     FrameworkElement owner{nullptr};
     Request request;
     Report report;
     std::function<void()> restoreFocus;
-    AppBarButton tools, update;
-    std::vector<AppBarButton> developerButtons;
+    Border developerGroup;
+    TextBlock developerBadge{nullptr};
+    std::vector<TextBlock> guideCaptions;
+    std::vector<Border> developerDividers;
+    Button tools, update;
+    std::vector<Button> developerButtons;
     ContentDialog confirmation{nullptr};
     std::int64_t revision = -1;
     std::uint64_t generation = 0, pendingTool = 0, pendingInstall = 0;
-    bool english = false, developer = false, toolsVisible = true, darkPreview = false;
+    bool english = false, developer = false, toolsVisible = true, darkPreview = false, compact = false;
     bool ready = false, installing = false, confirming = false, closing = false;
     winrt::hstring version;
 
@@ -42,6 +70,21 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
 
     void Initialize() {
         const auto weak = weak_from_this();
+        ApplyStyle(developerGroup, L"VPaste.DeveloperGroupSurface");
+        developerGroup.VerticalAlignment(VerticalAlignment::Center);
+        StackPanel developerActions;
+        developerActions.Orientation(Orientation::Horizontal);
+        developerActions.Spacing(2);
+        developerGroup.Child(developerActions);
+        TextBlock badge;
+        badge.Text(L"DEV");
+        ApplyStyle(badge, L"VPaste.DeveloperBadge");
+        badge.Margin({7, 0, 5, 0});
+        developerBadge = badge;
+        developerActions.Children().Append(badge);
+        ApplyStyle(tools, L"VPaste.RoundToolbarCommand");
+        // 光学居中及收敛宽度，使眼睛图标在 28x28 圆中与队列/设置保持协调。
+        tools.Content(HeaderIcon(HeaderArtwork::VisibilityOutlined, HeaderIconMetrics{CompactIconSize, 0.97, 0.0, 0.45}));
         tools.Click([weak](auto const &, auto const &) {
             if (const auto self = weak.lock(); self && self->developer) {
                 self->toolsVisible = !self->toolsVisible; self->Refresh();
@@ -49,16 +92,24 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
         });
         for (const auto name : {L"tutorial-windows", L"tutorial-mac", L"language", L"theme",
                                L"testRoom", L"memory", L"uiLab"}) {
-            AppBarButton button;
-            ApplyStyle(button, L"VPaste.RoundToolbarCommand");
+            Button button;
+            ApplyStyle(button, L"VPaste.DeveloperToolbarButton");
             button.Tag(winrt::box_value(winrt::hstring{name}));
             button.Click([weak, name = std::wstring{name}](auto const &, auto const &) {
                 if (const auto self = weak.lock()) self->OpenTool(name);
             });
             developerButtons.push_back(button);
+            developerActions.Children().Append(button);
+            if (developerButtons.size() == 2 || developerButtons.size() == 4) {
+                Border divider;
+                ApplyStyle(divider, L"VPaste.DeveloperDivider");
+                divider.Margin({2, 0, 2, 0});
+                developerDividers.push_back(divider);
+                developerActions.Children().Append(divider);
+            }
         }
-        update.Icon(SymbolIcon{Symbol::Sync});
-        for (const auto &button : {tools, update}) ApplyStyle(button, L"VPaste.RoundToolbarCommand");
+        // 更新箭头适当留白，保证在 100% 和 150% DPI 下上下尖角均不贴边裁剪。
+        update.Content(HeaderIcon(HeaderArtwork::SyncRounded, HeaderIconMetrics{CompactIconSize, 0.98, 0.0, 0.0}));
         ApplyStyle(update, L"VPaste.RoundToolbarUpdate");
         update.Click([weak](auto const &, auto const &) { if (const auto self = weak.lock()) self->Confirm(); });
         Localize();
@@ -66,19 +117,22 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
 
     void Refresh() {
         tools.Visibility(developer ? Visibility::Visible : Visibility::Collapsed);
-        tools.Icon(Glyph(toolsVisible ? L"\uE890" : L"\uED1A"));
-        tools.Label(toolsVisible ? Text(L"隐藏开发工具", L"Hide developer tools") : Text(L"显示开发工具", L"Show developer tools"));
+        NameIconButton(tools, toolsVisible ? Text(L"隐藏开发工具", L"Hide developer tools") : Text(L"显示开发工具", L"Show developer tools"));
+        developerGroup.Visibility(developer && toolsVisible ? Visibility::Visible : Visibility::Collapsed);
+        // 窄屏下隐藏非必需 DEV 文本标识及引导字样，避免挤压中间标签栏和右侧主操作按钮。
+        if (developerBadge) developerBadge.Visibility(compact ? Visibility::Collapsed : Visibility::Visible);
+        for (std::size_t i = 0; i < guideCaptions.size(); ++i) {
+            guideCaptions[i].Visibility(compact ? Visibility::Collapsed : Visibility::Visible);
+            if (i < developerButtons.size()) developerButtons[i].Width(compact ? 30 : 42);
+        }
         for (const auto &button : developerButtons) {
             button.Visibility(developer && toolsVisible ? Visibility::Visible : Visibility::Collapsed);
             button.IsEnabled(!pendingTool);
         }
         update.Visibility(ready || installing ? Visibility::Visible : Visibility::Collapsed);
         update.IsEnabled(ready && !confirming && !closing && !pendingInstall);
-        update.Label(installing || pendingInstall ? Text(L"正在安装…", L"Installing…") : Text(L"重启更新", L"Restart to update"));
-        const auto label = update.Label() + (version.empty() ? L"" : L" · " + version);
-        ToolTipService::SetToolTip(update, winrt::box_value(label));
-        Automation::AutomationProperties::SetName(update, label);
-        Automation::AutomationProperties::SetName(tools, tools.Label());
+        const auto label = installing || pendingInstall ? Text(L"正在安装…", L"Installing…") : Text(L"重启更新", L"Restart to update");
+        NameIconButton(update, label + (version.empty() ? L"" : L" · " + version));
     }
 
     void LocalizeConfirmation() {
@@ -93,22 +147,33 @@ struct AppActions::Impl : std::enable_shared_from_this<Impl> {
 
     void Localize() {
         std::size_t index = 0;
-        const auto set = [&](const wchar_t *zh, const wchar_t *en, const wchar_t *glyph) {
+        guideCaptions.clear();
+        const auto set = [&](const wchar_t *zh, const wchar_t *en, const wchar_t *path, const wchar_t *caption = nullptr) {
             const auto button = developerButtons[index++];
-            button.Label(Text(zh, en)); button.Icon(Glyph(glyph));
-            Automation::AutomationProperties::SetName(button, button.Label());
-            ToolTipService::SetToolTip(button, winrt::box_value(button.Label()));
+            NameIconButton(button, Text(zh, en));
+            if (caption) {
+                StackPanel content;
+                content.Orientation(Orientation::Horizontal); content.Spacing(3);
+                content.Children().Append(DeveloperIcon(path));
+                TextBlock text; text.Text(caption); text.FontSize(10); text.FontWeight({720});
+                text.VerticalAlignment(VerticalAlignment::Center);
+                content.Children().Append(text);
+                guideCaptions.push_back(text);
+                button.Width(compact ? 30 : 42);
+                button.Content(content);
+            } else if (path) button.Content(DeveloperIcon(path));
+            else {
+                TextBlock text; text.Text(english ? L"EN" : L"中"); text.FontSize(10); text.FontWeight({720});
+                button.Content(text);
+            }
         };
-        set(L"Windows 使用引导", L"Windows tutorial", L"\uE782");
-        set(L"Mac 使用引导", L"Mac tutorial", L"\uE977");
-        set(L"切换预览语言", L"Switch preview language", L"\uF2B7");
-        // The current language remains visible, like the shipping 中 / EN button.
-        FontIcon language; language.Glyph(english ? L"EN" : L"中"); language.FontSize(11);
-        language.FontFamily(Media::FontFamily{L"Segoe UI"}); developerButtons[2].Icon(language);
-        set(L"切换预览主题", L"Switch preview theme", darkPreview ? L"\uE708" : L"\uE706");
-        set(L"测试间", L"Test room", L"\uE9D9");
-        set(L"内存监视器", L"Memory monitor", L"\uE950");
-        set(L"组件样板间（浏览器）", L"UI Lab (browser)", L"\uE774");
+        set(L"Windows 使用引导", L"Windows tutorial", WindowsGuideMark, L"Win");
+        set(L"Mac 使用引导", L"Mac tutorial", HeaderArtwork::Apple, L"Mac");
+        set(L"切换预览语言", L"Switch preview language", nullptr);
+        set(L"切换预览主题", L"Switch preview theme", darkPreview ? HeaderArtwork::DarkModeRounded : HeaderArtwork::LightModeRounded);
+        set(L"测试间", L"Test room", HeaderArtwork::ScienceOutlined);
+        set(L"内存监视器", L"Memory monitor", HeaderArtwork::MemoryOutlined);
+        set(L"组件样板间（浏览器）", L"UI Lab (browser)", HeaderArtwork::DashboardCustomizeOutlined);
         LocalizeConfirmation(); Refresh();
     }
 
@@ -199,15 +264,21 @@ AppActions::AppActions(FrameworkElement owner, Request request, Report report,
     impl_->Initialize();
 }
 AppActions::~AppActions() { Deactivate(); }
-AppBarButton AppActions::ToolsButton() const { return impl_->tools; }
-std::vector<AppBarButton> AppActions::DeveloperButtons() const { return impl_->developerButtons; }
-AppBarButton AppActions::UpdateButton() const { return impl_->update; }
+Border AppActions::DeveloperGroup() const { return impl_->developerGroup; }
+Button AppActions::ToolsButton() const { return impl_->tools; }
+Button AppActions::UpdateButton() const { return impl_->update; }
 bool AppActions::Receive(JsonObject const &response) { return impl_->Receive(response); }
 bool AppActions::ModalOpen() const { return impl_->confirming || impl_->closing; }
 void AppActions::SetLanguage(bool english) { impl_->english = english; impl_->Localize(); }
 void AppActions::SetTheme(ElementTheme theme) { if (impl_->confirmation) impl_->confirmation.RequestedTheme(theme); }
+void AppActions::SetCompact(bool compact) {
+    if (impl_->compact == compact) return;
+    impl_->compact = compact;
+    impl_->Refresh();
+}
 void AppActions::Deactivate() { impl_->CancelConfirmation(); }
 #ifdef _DEBUG
+std::vector<Button> AppActions::DeveloperButtons() const { return impl_->developerButtons; }
 ContentDialog AppActions::TestDialog() const { return impl_->confirmation; }
 void AppActions::TestToolAction(std::wstring const &name) { impl_->OpenTool(name); }
 
@@ -262,15 +333,15 @@ winrt::Windows::Foundation::IAsyncAction TestAppActionsControls(FrameworkElement
         if (failed) response.Insert(L"error", JsonValue::CreateStringValue(L"Synthetic retryable failure"));
         actions.Receive(response);
     };
-    CommandBar bar;
-    bar.DefaultLabelPosition(CommandBarDefaultLabelPosition::Collapsed);
-    for (const auto &button : actions.DeveloperButtons()) bar.PrimaryCommands().Append(button);
-    bar.PrimaryCommands().Append(actions.ToolsButton()); bar.PrimaryCommands().Append(actions.UpdateButton());
+    StackPanel bar;
+    bar.Orientation(Orientation::Horizontal);
+    bar.Children().Append(actions.DeveloperGroup());
+    bar.Children().Append(actions.ToolsButton()); bar.Children().Append(actions.UpdateButton());
     bar.HorizontalAlignment(HorizontalAlignment::Right); bar.VerticalAlignment(VerticalAlignment::Top);
     const auto host = owner.as<Grid>();
     host.Children().Append(bar);
     struct RemoveBar {
-        Grid host; CommandBar bar;
+        Grid host; StackPanel bar;
         ~RemoveBar() { std::uint32_t index = 0; if (host.Children().IndexOf(bar, index)) host.Children().RemoveAt(index); }
     } remove{host, bar};
     stage = 97;
@@ -282,7 +353,47 @@ winrt::Windows::Foundation::IAsyncAction TestAppActionsControls(FrameworkElement
     runtime(true); update(1, L"ready"); co_await NextNativeFrame();
     winrt::check_hresult(actions.ToolsButton().Visibility() == Visibility::Visible && actions.UpdateButton().IsEnabled() ? S_OK : E_FAIL);
     const auto tools = actions.DeveloperButtons();
-    winrt::check_hresult(tools.size() == 7 && !actions.ToolsButton().Flyout() && tools[5].Label() == L"内存监视器" ? S_OK : E_FAIL);
+    const auto guideFits = [](const Button &button, const wchar_t *label) {
+        const auto row = button.Content().try_as<StackPanel>();
+        if (!row || row.Orientation() != Orientation::Horizontal || row.Children().Size() != 2) return false;
+        const auto icon = row.Children().GetAt(0).try_as<Viewbox>();
+        const auto caption = row.Children().GetAt(1).try_as<TextBlock>();
+        return button.ActualWidth() >= 42 && button.ActualHeight() == 26 && icon && caption &&
+            caption.Text() == label && row.Spacing() >= 3 && icon.ActualWidth() == DeveloperIconSize &&
+            caption.TransformToVisual(row).TransformPoint({0, 0}).X >= icon.ActualWidth() + 2;
+    };
+    winrt::check_hresult(tools.size() == 7 && !actions.ToolsButton().Flyout() &&
+        guideFits(tools[0], L"Win") && guideFits(tools[1], L"Mac") &&
+        Automation::AutomationProperties::GetName(tools[0]) == L"Windows 使用引导" &&
+        Automation::AutomationProperties::GetName(tools[5]) == L"内存监视器" ? S_OK : E_FAIL);
+    stage = 981;
+    // Check the painted glyph, not only its declared layout width.
+    {
+        const auto mark = tools[0].Content().as<StackPanel>().Children().GetAt(0).as<Viewbox>();
+        Media::Imaging::RenderTargetBitmap bitmap;
+        co_await bitmap.RenderAsync(mark, 24, 24);
+        auto buffer = co_await bitmap.GetPixelsAsync();
+        std::vector<std::uint8_t> pixels(buffer.Length());
+        winrt::Windows::Storage::Streams::DataReader::FromBuffer(buffer).ReadBytes(pixels);
+        winrt::check_hresult(bitmap.PixelWidth() == 24 && bitmap.PixelHeight() == 24 ? S_OK : E_FAIL);
+        const auto alpha = [&](int x, int y) { return pixels[(y * 24 + x) * 4 + 3]; };
+        for (const auto y : {7, 17}) {
+            winrt::check_hresult(alpha(7, y) > 100 && alpha(17, y) > 100 && alpha(12, y) < 16 ? S_OK : E_FAIL);
+        }
+        winrt::check_hresult(alpha(7, 12) < 16 && alpha(17, 12) < 16 ? S_OK : E_FAIL);
+        const auto memory = tools[5].Content().as<Viewbox>();
+        winrt::check_hresult(memory.ActualWidth() == DeveloperIconSize ? S_OK : E_FAIL);
+        co_await bitmap.RenderAsync(memory, 24, 24);
+        buffer = co_await bitmap.GetPixelsAsync();
+        pixels.resize(buffer.Length());
+        winrt::Windows::Storage::Streams::DataReader::FromBuffer(buffer).ReadBytes(pixels);
+        winrt::check_hresult(bitmap.PixelWidth() == 24 && bitmap.PixelHeight() == 24 ? S_OK : E_FAIL);
+        int first = 24, last = -1;
+        for (int y = 0; y < 24; ++y) for (int x = 0; x < 24; ++x) {
+            if (alpha(x, y) > 100) { first = std::min(first, x); last = std::max(last, x); }
+        }
+        winrt::check_hresult(last - first >= 16 ? S_OK : E_FAIL);
+    }
     for (const auto &button : tools) winrt::check_hresult(button.Visibility() == Visibility::Visible ? S_OK : E_FAIL);
     Invoke(actions.ToolsButton()); co_await NextNativeFrame();
     for (const auto &button : tools) winrt::check_hresult(button.Visibility() == Visibility::Collapsed ? S_OK : E_FAIL);
@@ -305,8 +416,8 @@ winrt::Windows::Foundation::IAsyncAction TestAppActionsControls(FrameworkElement
     }
     stage = 100;
     actions.SetLanguage(true);
-    winrt::check_hresult(actions.ToolsButton().Label() == L"Hide developer tools" &&
-        tools[6].Label() == L"UI Lab (browser)" ? S_OK : E_FAIL);
+    winrt::check_hresult(Automation::AutomationProperties::GetName(actions.ToolsButton()) == L"Hide developer tools" &&
+        Automation::AutomationProperties::GetName(tools[6]) == L"UI Lab (browser)" ? S_OK : E_FAIL);
     Invoke(actions.UpdateButton()); co_await NextNativeFrame();
     winrt::check_hresult(actions.ModalOpen() && !actions.UpdateButton().IsEnabled() && actions.TestDialog().DefaultButton() == ContentDialogButton::Close &&
         actions.TestDialog().PrimaryButtonText() == L"Restart to update" ? S_OK : E_FAIL);

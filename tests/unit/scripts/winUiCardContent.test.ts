@@ -5,6 +5,14 @@ const directory = "src-tauri/native-demo/windows/winui/";
 const read = (path: string) => readFileSync(path, "utf8");
 
 describe("native card content feedback", () => {
+    it("ships file type art in the WinUI DLL and loads it without runtime SVG parsing", () => {
+        const content = read(`${directory}WinUiCardContent.cpp`);
+        const fileIcons = content.slice(content.indexOf("namespace {"), content.indexOf("LoadTransparencyGrid"));
+        expect(fileIcons).toContain("BitmapImage");
+        expect(fileIcons).toContain("FindResourceW");
+        expect(fileIcons).not.toContain("SvgImageSource");
+        expect(read(`${directory}WinUiPanel.vcxproj`)).toContain('ResourceCompile Include="$(VPasteFileIconResources)"');
+    });
     it("uses native ranges and the accepted query rather than HTML or a second renderer", () => {
         const content = read(`${directory}WinUiCardContent.cpp`);
         expect(content.includes("FindStringOrdinal")).toBe(true);

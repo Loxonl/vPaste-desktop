@@ -111,6 +111,15 @@ pub struct UpdateState {
     release_url: &'static str,
 }
 
+#[cfg(all(target_os = "windows", feature = "winui"))]
+impl UpdateState {
+    pub(crate) fn tray_restart_ready(&self) -> bool {
+        self.status == UpdateStatus::Ready
+            && !self.portable
+            && self.source != UpdateSource::MacAppStore
+    }
+}
+
 impl Default for UpdateState {
     fn default() -> Self {
         Self {
@@ -1356,6 +1365,25 @@ mod tests {
     const TEST_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSL3FUWm00NEg4UkNZVFNtVlJMVlI3YVloeDBTTGxHZDVuR2I5NCtLVzF3eXJHT2M3NFNVOGJSeWNHY09JWHZPRFBidG9FbmE5Wk9kcFZZL1ZFMkRaekt4UjE4c0taaGcwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxODU1NTY1CWZpbGU6cGF5bG9hZC5iaW4KS2YxbHpNbHB6TnZCVDlwalh4R2QvMlU2WlJoVEZwQ1pLUURSWVZhVWZlNHl1eTVoVFpSQWI0YVpJNDdxR0lUWUZXbGdnM0NVd3NINGJHbmtVY2FCQ2c9PQo=";
     const TEST_PAYLOAD: &[u8] = b"vpaste updater cache fixture\n";
     const TARGET: &str = "darwin-aarch64";
+
+    #[cfg(all(target_os = "windows", feature = "winui"))]
+    #[test]
+    fn tray_restart_row_matches_webview_readiness() {
+        use super::{UpdateSource, UpdateState};
+        let mut state = UpdateState {
+            status: UpdateStatus::Ready,
+            ..UpdateState::default()
+        };
+        assert!(state.tray_restart_ready());
+        state.portable = true;
+        assert!(!state.tray_restart_ready());
+        state.portable = false;
+        state.status = UpdateStatus::Installing;
+        assert!(!state.tray_restart_ready());
+        state.status = UpdateStatus::Ready;
+        state.source = UpdateSource::MacAppStore;
+        assert!(!state.tray_restart_ready());
+    }
 
     #[test]
     fn confirmed_install_matches_the_locked_package_without_changing_legacy_calls() {

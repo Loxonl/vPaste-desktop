@@ -23,6 +23,18 @@ body,
   -webkit-backdrop-filter: blur(16px) saturate(1.08);
 }
 
+.preview-shell[data-chrome="winui"] {
+  border-radius: 0;
+  color: var(--ui-winui-aux-text);
+  background: var(--ui-winui-aux-window-surface);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+@media (forced-colors: active) {
+  .preview-shell[data-chrome="winui"] { background: Canvas; }
+}
+
 .preview-pin {
   position: fixed;
   top: 10px;
@@ -61,6 +73,56 @@ body,
   box-shadow: var(--ui-preview-pin-active-shadow);
 }
 
+.preview-native-toolbar {
+  flex: 0 0 calc(var(--ui-control-height) + var(--ui-space-2));
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-2);
+  margin-inline: var(--ui-space-4) var(--ui-space-2);
+  border-bottom: 1px solid var(--ui-winui-aux-divider);
+}
+
+.preview-native-title {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--ui-winui-aux-title-font);
+}
+
+.preview-native-action {
+  flex-shrink: 0;
+  width: var(--ui-control-height);
+  height: var(--ui-control-height);
+  border-radius: var(--ui-preview-native-action-radius);
+  padding: 0;
+  background: transparent;
+  color: var(--ui-winui-aux-text);
+}
+
+.preview-native-action:hover {
+  background: var(--ui-preview-pin-hover-surface);
+  color: var(--ui-preview-pin-hover-text);
+}
+
+.preview-native-action.pinned {
+  background: var(--ui-preview-pin-active-surface);
+  color: var(--ui-preview-pin-active-text);
+}
+
+.preview-native-action:active {
+  opacity: 0.8;
+}
+
+.preview-native-glyph {
+  font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+  font-size: var(--ui-space-4);
+  line-height: 1;
+}
+
 .preview-content {
   position: relative;
   flex: 1;
@@ -70,6 +132,16 @@ body,
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.preview-shell[data-chrome="winui"] .preview-content::before {
+  content: "";
+  position: absolute;
+  inset: var(--ui-space-2);
+  pointer-events: none;
+  border: 1px solid var(--ui-winui-aux-divider);
+  border-radius: var(--ui-radius-window);
+  background: var(--ui-winui-aux-reading-layer);
 }
 
 .preview-state {
@@ -283,6 +355,28 @@ body,
   background: var(--ui-rich-canvas-dark-surface);
   color: var(--ui-rich-canvas-dark-text);
   color-scheme: dark;
+}
+
+.preview-shell[data-chrome="winui"] :is(.preview-text, .preview-link-stage) {
+  background: transparent;
+  box-shadow: none;
+}
+
+.preview-shell[data-chrome="winui"] :is(.preview-text, .preview-rich) {
+  font: var(--ui-winui-aux-body-font);
+}
+
+.preview-shell[data-chrome="winui"] .preview-text {
+  color: var(--ui-winui-aux-text);
+}
+
+.preview-shell[data-chrome="winui"] .preview-rich {
+  box-shadow: none;
+}
+
+.preview-shell[data-chrome="winui"] .preview-rich[data-rich-canvas="light"] {
+  background: var(--ui-winui-aux-light-document);
+  color: var(--ui-winui-aux-light-document-text);
 }
 
 .preview-rich[data-rich-canvas="dark"] td,

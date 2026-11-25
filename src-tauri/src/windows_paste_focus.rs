@@ -17,9 +17,11 @@ use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThre
 const CAPTURE_BUDGET: Duration = Duration::from_millis(200);
 const RESTORE_BUDGET: Duration = Duration::from_millis(350);
 static WORKER: OnceLock<Option<Worker>> = OnceLock::new();
+pub(crate) const PASTE_TARGET_LOST: &str =
+    "The original paste window is no longer active / 原粘贴窗口已不在前台";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Target {
+pub(crate) struct Target {
     window: usize,
     process: u32,
 }
@@ -33,6 +35,29 @@ impl Target {
 
     fn foreground() -> Option<Self> {
         Self::from_window(unsafe { GetForegroundWindow() }.0 as usize)
+    }
+
+    pub(crate) fn external_foreground() -> Option<Self> {
+        Self::foreground().filter(|target| target.process != std::process::id())
+    }
+
+    pub(crate) fn recorded() -> Option<Self> {
+        Self::from_window(
+            crate::LAST_FOREGROUND_HWND_BEFORE_CLIPBOARD.load(Ordering::SeqCst) as usize,
+        )
+        .filter(|target| target.process != std::process::id())
+    }
+
+    pub(crate) fn require_foreground(self) -> Result<(), String> {
+        self.require_matching(Self::external_foreground())
+    }
+
+    fn require_matching(self, current: Option<Self>) -> Result<(), String> {
+        if current == Some(self) {
+            Ok(())
+        } else {
+            Err(PASTE_TARGET_LOST.into())
+        }
     }
 }
 
@@ -171,7 +196,8 @@ pub fn capture_foreground() {
     }
 }
 
-pub fn restore_before_paste(window: usize) -> Result<(), String> {
+pub fn restore_before_paste(target: Target) -> Result<(), String> {
+    target.require_foreground()?;
     let Some(worker) = worker() else {
         return Ok(());
     };
@@ -179,8 +205,6 @@ pub fn restore_before_paste(window: usize) -> Result<(), String> {
     if generation == 0 || worker.captured_generation.swap(0, Ordering::SeqCst) != generation {
         return Ok(());
     }
-    let target =
-        Target::from_window(window).ok_or("Original paste window is no longer available")?;
     let result = worker.call(
         RequestId { target, generation },
         Operation::Restore,
@@ -423,6 +447,25 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn queued_paste_does_not_fall_through_to_another_window_or_reused_handle() {
+        let target = request(100, 1).target;
+        assert!(target.require_matching(Some(target)).is_ok());
+        for current in [
+            None,
+            Some(request(200, 1).target),
+            Some(Target {
+                process: 99,
+                ..target
+            }),
+        ] {
+            assert_eq!(
+                target.require_matching(current),
+                Err(PASTE_TARGET_LOST.into())
+            );
+        }
     }
 
     #[test]

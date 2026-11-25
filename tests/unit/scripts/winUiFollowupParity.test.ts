@@ -7,12 +7,14 @@ const panel = read("src-tauri/native-demo/windows/winui/WinUiPanel.cpp");
 
 describe("reviewed reference artwork and native window contracts", () => {
     it("uses both original toolbar SVG paths rather than a different settings font glyph", () => {
+        const artwork = read("src-tauri/native-demo/windows/winui/WinUiHeaderArtwork.h");
         for (const name of ["SettingsOutlined", "PlaylistAddCheckRounded"]) {
             const source = read(`node_modules/@mui/icons-material/${name}.js`);
-            expect(panel).toContain(source.match(/d: "([^"]+)"/)![1]);
+            expect(artwork.includes(source.match(/d: "([^"]+)"/)![1])).toBe(true);
+            expect(panel.includes("HeaderArtwork::" + name)).toBe(true);
         }
-        expect(panel).toContain("artworkScale.ScaleX(vpaste::winui::CompactIconSize / 24.0)");
-        expect(panel).toContain("action.Icon().as<PathIcon>().Data().Transform(artworkScale)");
+        expect(artwork).toContain("scale.ScaleX(size / 24.0)");
+        expect(artwork).toContain("icon.Data().Transform(scale)");
         expect(panel).not.toContain("g_panel.settings.Icon(vpaste::winui::CompactSymbol(Symbol::Setting))");
     });
     it("keeps a cancellable animation object for a dragged tab instead of an unowned implicit transition", () => {
@@ -22,21 +24,34 @@ describe("reviewed reference artwork and native window contracts", () => {
         const rebuild = panel.slice(panel.indexOf("void RebuildDynamicTabs()"), panel.indexOf("void ApplyFilters("));
         expect(rebuild).not.toContain("g_panel.customTabs.Items().Clear()");
     });
-    it("retains the styled WebView tray and avoids destroying it at every dismissal on Windows", () => {
+    it("routes the Windows WinUI tray before WebView creation, retaining the existing fallback", () => {
         const main = read("src-tauri/src/main.rs");
-        expect(main).not.toContain("winui_panel::tray::build");
+        const tray = main.slice(main.indexOf("async fn show_vpaste_tray_menu("), main.indexOf("fn install_vpaste_tray("));
+        const nativeRoute = tray.indexOf("winui_panel::tray::open(");
+        expect(nativeRoute).toBeGreaterThanOrEqual(0);
+        expect(nativeRoute).toBeLessThan(tray.indexOf("auxiliary_windows::ensure("));
+        const warmup = main.slice(main.indexOf("install_vpaste_tray(app.handle())?"), main.indexOf("// Register user-facing entry points"));
+        expect(warmup.includes("!main_panel_mode::winui()")).toBe(true);
         expect(main).toContain('App("tray-menu".into())');
         const hide = main.slice(main.indexOf("fn hide_tray_menu("), main.indexOf("fn resize_tray_menu("));
         expect(hide).toContain("window.hide()");
         expect(hide).toContain('#[cfg(not(target_os = "windows"))]');
     });
+    it("reuses existing tray actions instead of moving capture or updater policy into XAML", () => {
+        const rust = read("src-tauri/src/winui_panel.rs");
+        expect(rust.includes('"nativeTrayAction" => tray::dispatch')).toBe(true);
+        const tray = read("src-tauri/src/winui_panel/tray.rs");
+        for (const action of ["toggle_clipboard_history_paused", "show_main_panel_for_app", "open_config_window_from_source", "restart_and_install_app_update", "quit_app"]) {
+            expect(tray).toContain(action);
+        }
+    });
     it("uses the shipping file icon manifest and same special product glyphs", () => {
         const file = read("src-tauri/src/winui_panel/file_icons.rs");
         expect(file).toContain("node_modules/material-icon-theme/dist/material-icons.json");
         const web = read("src/clipboard/FileTypePresentation.tsx");
-        for (const glyph of ["DOCUMENT_GLYPH_PATH", "FOLDER_GLYPH_PATH"]) {
+        for (const [glyph, asset] of [["DOCUMENT_GLYPH_PATH", "document-stack"], ["FOLDER_GLYPH_PATH", "yellow-folder"]]) {
             const path = web.match(new RegExp(`const ${glyph} = "([^"]+)"`))![1];
-            expect(file).toContain(path);
+            expect(read(`src-tauri/native-demo/windows/winui/file-icons/vpaste-${asset}.svg`)).toContain(path);
         }
         expect(panel).toContain("row.dimensionsFrame.Visibility(row.dimensions.Visibility())");
         expect(panel).not.toContain("GetParent(row.dimensions)");

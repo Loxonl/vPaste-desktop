@@ -1,8 +1,6 @@
 import AppKit
 import XCTest
 
-// Mirrors tests/unit/clipboard/clipboardContextMenu.test.ts: the native card
-// menu must offer the same entries, order and conditions as the WebView.
 @MainActor
 final class NativePanelContextMenuTests: XCTestCase {
   private let types = ["Text", "TextFile", "Color", "Image", "Link", "File"]
@@ -20,36 +18,37 @@ final class NativePanelContextMenuTests: XCTestCase {
   private func options(
     _ card: PanelCard, tags: [PanelTag] = [], colors: [PanelColorOption] = [], chinese: Bool = false
   ) -> [PanelMenuOption] {
-    PanelContextMenu.options(card: card, tags: tags, colors: colors, chinese: chinese)
+    PanelContextMenu.options(card: card, tags: .loaded(tags), colors: colors, chinese: chinese)
   }
 
-  func testOffersImageTextOnlyForImagesAsTheSecondEntry() {
+  func testOffersImageTextOnlyForImagesAfterPreview() {
     for type in types {
       let menu = options(card(type))
       let index = menu.firstIndex { $0.action == .viewImageText }
-      XCTAssertEqual(index, type == "Image" ? 1 : nil, type)
+      XCTAssertEqual(index, type == "Image" ? 2 : nil, type)
     }
   }
 
-  func testKeepsBaseFavoriteTextAndDeleteActionsInWebViewOrder() {
+  func testBaseActionsKeepExplicitFavoriteIntentAndSeparateDelete() {
     let menu = options(card("Text", favorite: true))
     XCTAssertEqual(menu.map(\.title), [
-      "Preview", "Edit text", "Remove from Favorites", "Add Record Tag", "Paste as Plain Text",
-      "Delete Record",
+      "Copy and paste", "Paste as plain text", "Preview", "Edit text", "Remove favorite", "Tags", "", "Delete record",
     ])
     XCTAssertEqual(menu.map(\.action), [
-      .preview, .editText, .toggleFavorite, .createTag, .pastePlainText, .delete,
+      .copyAndPaste, .pastePlainText, .preview, .editText, .favorite(false), nil, nil, .delete,
     ])
-    XCTAssertFalse(menu.map(\.title).contains("Paste"))
-    XCTAssertFalse(menu.map(\.title).contains("Copy"))
+    XCTAssertTrue(options(card("Text")).contains { $0.action == .favorite(true) })
+    XCTAssertTrue(menu.dropLast().last?.isSeparator == true)
+    XCTAssertFalse(menu.map(\.title).contains("Copy as plain text"))
   }
 
-  func testUsesWebViewChineseLabels() {
+  func testUsesNativeParityChineseLabels() {
     let menu = options(card("Text"), chinese: true)
-    XCTAssertEqual(menu.map(\.title), [
-      "预览", "编辑文字", "加入收藏", "添加记录标签", "粘贴为纯文本", "删除记录",
+    XCTAssertEqual(menu.filter { !$0.isSeparator }.map(\.title), [
+      "复制并粘贴", "粘贴为纯文本", "预览", "编辑文本", "收藏", "标签", "删除记录",
     ])
-    XCTAssertEqual(options(card("Image"), chinese: true)[1].title, "查看图片文字")
+    XCTAssertEqual(options(card("Image"), chinese: true).first { $0.action == .viewImageText }?.title, "识别图片文字")
+    XCTAssertEqual(options(card("Image")).first { $0.action == .viewImageText }?.title, "Recognize text in image")
   }
 
   func testOffersEditingOnlyForTextBackedItems() {
@@ -68,33 +67,75 @@ final class NativePanelContextMenuTests: XCTestCase {
     }
   }
 
-  func testShowsOnlyAssignableAndCurrentlyValidAssignedTags() throws {
+  func testQueueMenuKeepsPreviewFirstWithoutOfferingCopyAndPaste() {
+    let menu = PanelContextMenu.options(card: card("Text"), tags: .loaded([]), colors: nil,
+      chinese: false, queueActive: true)
+    XCTAssertEqual(menu.first?.action, .preview)
+    XCTAssertFalse(menu.contains { $0.action == .copyAndPaste })
+  }
+
+  func testMouseMenuCanAnchorFullyAboveThePointerWhenItCannotFitBelow() {
+    let display = NSRect(x: -800, y: -200, width: 800, height: 600)
+    XCTAssertEqual(PanelContextMenu.upwardOrigin(at: NSPoint(x: -50, y: -175), menuHeight: 140,
+      screen: display), NSPoint(x: -50, y: -31))
+    XCTAssertEqual(PanelContextMenu.upwardOrigin(at: NSPoint(x: -50, y: -225), menuHeight: 140,
+      screen: display), NSPoint(x: -50, y: -56))
+    XCTAssertNil(PanelContextMenu.upwardOrigin(at: NSPoint(x: -50, y: 30), menuHeight: 140, screen: display))
+    XCTAssertNil(PanelContextMenu.upwardOrigin(at: NSPoint(x: -50, y: -20), menuHeight: 500, screen: display))
+  }
+
+  func testIgnoresStaleAssignmentsAndKeepsCreateAndAssign() throws {
     let assigned = PanelTag(id: 1, name: "Assigned")
     let stale = PanelTag(id: 99, name: "Stale")
     let available = PanelTag(id: 2, name: "Available")
     let menu = options(card("Text", tags: [assigned, stale]), tags: [assigned, available])
-    let add = try XCTUnwrap(menu.first { $0.title == "Add Record Tag" })
-    XCTAssertNil(add.action)
-    XCTAssertEqual(add.children.map(\.title), ["Create Record Tag", "Available"])
-    XCTAssertEqual(add.children.map(\.action), [.createTag, .assignTag(available)])
-    let remove = try XCTUnwrap(menu.first { $0.title == "Remove Record Tag" })
-    XCTAssertEqual(remove.children.map(\.title), ["Remove All Record Tags", "Assigned"])
-    XCTAssertEqual(remove.children.map(\.action), [.removeAllTags, .removeTag(assigned)])
-    XCTAssertTrue(remove.children[0].danger)
-    XCTAssertFalse(remove.children[1].danger)
+    let tags = try XCTUnwrap(menu.first { $0.title == "Tags" })
+    XCTAssertNil(tags.action)
+    XCTAssertEqual(tags.children.map(\.action), [
+      .createTag, .removeTag(assigned), .assignTag(available), nil, .removeAllTags,
+    ])
+    XCTAssertFalse(tags.children.map(\.title).contains("Stale"))
   }
 
-  func testShowsDisabledPlaceholderWhenEveryTagIsAssigned() throws {
-    let tag = PanelTag(id: 1, name: "Only")
-    let add = try XCTUnwrap(
-      options(card("Text", tags: [tag]), tags: [tag]).first { $0.title == "Add Record Tag" })
-    XCTAssertEqual(add.children.map(\.title), ["Create Record Tag", "No record tags to add"])
-    XCTAssertNil(add.children[1].action)
+  func testAssignedAndUnassignedTagsShareOneCheckableMenu() throws {
+    let assigned = PanelTag(id: 1, name: "Assigned")
+    let available = PanelTag(id: 2, name: "Available")
+    let handler = PanelMenuHandler { _ in }
+    let menu = PanelContextMenu.menu(
+      options(card("Text", tags: [assigned]), tags: [assigned, available]), handler: handler)
+    let tags = try XCTUnwrap(menu.item(withTitle: "Tags")?.submenu)
+    XCTAssertEqual(tags.item(withTitle: "Assigned")?.state, .on)
+    XCTAssertEqual(tags.item(withTitle: "Available")?.state, .off)
+    XCTAssertTrue(tags.items.dropLast().last?.isSeparatorItem == true)
+    XCTAssertEqual(tags.items.last?.title, "Remove all assigned tags")
+  }
+
+  func testLoadingFailureAndKnownEmptyDoNotDelayBasicActions() throws {
+    let handler = PanelMenuHandler { _ in }
+    for (availability, expected) in [
+      (PanelMenuTags.loading, ["Loading tags… Reopen the menu."]),
+      (.failed, ["Tags unavailable", "Retry loading tags"]),
+      (.loaded([]), ["Create and assign tag…", "No record tags"]),
+    ] {
+      let options = PanelContextMenu.options(card: card("Color"), tags: availability, colors: nil, chinese: false)
+      let menu = PanelContextMenu.menu(options, handler: handler)
+      XCTAssertTrue(menu.item(withTitle: "Preview")?.isEnabled == true)
+      XCTAssertTrue(menu.item(withTitle: "Add favorite")?.isEnabled == true)
+      let tags = try XCTUnwrap(menu.item(withTitle: "Tags")?.submenu)
+      XCTAssertEqual(tags.items.map(\.title), expected)
+      for item in tags.items {
+        XCTAssertEqual(item.isEnabled, ["Retry loading tags", "Create and assign tag…"].contains(item.title))
+      }
+      let colorLoading = try XCTUnwrap(menu.item(withTitle: "Copy color as")?.submenu?.items.first)
+      XCTAssertEqual(colorLoading.title, "Loading color formats… Reopen the menu.")
+      XCTAssertFalse(colorLoading.isEnabled)
+      XCTAssertTrue(menu.items.dropLast().last?.isSeparatorItem == true)
+    }
   }
 
   func testAddsExportAndFolderActionsForASingleImageFile() {
     XCTAssertEqual(options(card("File", exportImage: true)).map(\.action), [
-      .preview, .toggleFavorite, .createTag, .exportImage, .openFolder, .copyFolder, .delete,
+      .copyAndPaste, .preview, .favorite(true), nil, .exportImage, .copyFolder, .openFolder, nil, .delete,
     ])
     XCTAssertFalse(options(card("File")).contains { $0.action == .exportImage })
     XCTAssertTrue(options(card("Image", exportImage: true)).contains { $0.action == .exportImage })
@@ -105,14 +146,14 @@ final class NativePanelContextMenuTests: XCTestCase {
       PanelColorOption(format: "HEX", value: "#3366FF"),
       PanelColorOption(format: "RGB", value: "rgb(51, 102, 255)"),
     ])
-    let conversions = try XCTUnwrap(menu.first { $0.title == "Copy Color As" }).children
+    let conversions = try XCTUnwrap(menu.first { $0.title == "Copy color as" }).children
     XCTAssertEqual(conversions.map(\.title), ["HEX #3366FF", "RGB rgb(51, 102, 255)"])
     XCTAssertEqual(conversions[1].action, .copyColor("rgb(51, 102, 255)"))
   }
 
   func testShowsUnsupportedColorEntryWhenConversionsAreUnavailable() throws {
-    let conversions = try XCTUnwrap(
-      options(card("Color")).first { $0.title == "Copy Color As" }).children
+    let menu = options(card("Color"))
+    let conversions = try XCTUnwrap(menu.first { $0.title == "Copy color as" }).children
     XCTAssertEqual(conversions.map(\.title), ["This color format cannot be converted yet"])
     XCTAssertNil(conversions[0].action)
   }
@@ -123,14 +164,13 @@ final class NativePanelContextMenuTests: XCTestCase {
     let tag = PanelTag(id: 1, name: "Only")
     let menu = PanelContextMenu.menu(
       options(card("Text", tags: [tag]), tags: [tag]), handler: handler)
-    let add = try XCTUnwrap(menu.items.first { $0.title == "Add Record Tag" })
-    XCTAssertNotNil(add.submenu)
-    XCTAssertNil(add.representedObject, "A submenu parent must not run an action")
-    XCTAssertFalse(add.target === handler)
-    let placeholder = try XCTUnwrap(add.submenu?.items.last)
+    let tags = try XCTUnwrap(menu.item(withTitle: "Tags"))
+    XCTAssertNotNil(tags.submenu)
+    XCTAssertNil(tags.representedObject, "A submenu parent must not run an action")
+    XCTAssertFalse(tags.target === handler)
+    let placeholder = try XCTUnwrap(tags.submenu?.item(withTitle: "All tags are assigned"))
     XCTAssertFalse(placeholder.isEnabled)
-    let removeAll = try XCTUnwrap(
-      menu.items.first { $0.title == "Remove Record Tag" }?.submenu?.items.first)
+    let removeAll = try XCTUnwrap(tags.submenu?.items.last)
     let color = removeAll.attributedTitle?.attribute(.foregroundColor, at: 0, effectiveRange: nil)
     XCTAssertEqual(color as? NSColor, .systemRed)
     let delete = try XCTUnwrap(menu.items.last)

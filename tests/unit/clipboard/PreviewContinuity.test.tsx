@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import Preview from "../../../src/clipboard/Preview";
 import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
 import { motionDurationsMs, motionTokens } from "../../../src/ui/motion";
@@ -17,6 +17,8 @@ const text = (id: number, content: string, direction = 0) => ({
     request_id: id, item_type: "Text", content, navigation_direction: direction,
 });
 
+beforeAll(async () => { await import("../../../src/clipboard/ImageTextView"); });
+
 beforeEach(() => {
     listeners = new Map();
     tauri.listen.mockReset().mockImplementation(async (name, callback) => {
@@ -33,6 +35,58 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("continuous preview session", () => {
+    it("opens the macOS OCR editor unpinned", async () => {
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "commit_preview_window") return true;
+            if (command === "recognize_image_text") return { status: "complete", text: "Recognized text", error: null };
+            return undefined;
+        });
+        render(<MotionTestProvider><Preview /></MotionTestProvider>);
+        emit("preview-item", { request_id: 1, item_type: "ImageText", content: "image", protect_image_text_draft: true });
+        await screen.findByDisplayValue("Recognized text");
+        expect(screen.getByRole("button", { name: "preview.pin" })).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("keeps a macOS OCR draft until the user confirms discarding it", async () => {
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "commit_preview_window") return true;
+            if (command === "recognize_image_text") return { status: "complete", text: "Recognized text", error: null };
+            return undefined;
+        });
+        render(<MotionTestProvider reducedMotion="always"><Preview /></MotionTestProvider>);
+        const openOcr = (request_id: number) => emit("preview-item", {
+            request_id, item_type: "ImageText", content: "image", protect_image_text_draft: true,
+        });
+        openOcr(1);
+        const editor = await screen.findByDisplayValue("Recognized text");
+        fireEvent.change(editor, { target: { value: "My draft" } });
+        const user = userEvent.setup();
+        await user.click(screen.getByRole("button", { name: "common.close" }));
+        expect(tauri.invoke).not.toHaveBeenCalledWith("hide_preview_window");
+        expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "editor.keepEditing" }));
+        await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+        expect(editor).toHaveValue("My draft");
+
+        fireEvent.keyDown(editor, { key: "Escape" });
+        expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+        await user.keyboard("{Escape}");
+        await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+        expect(editor).toHaveValue("My draft");
+
+        emit("preview-close-requested");
+        expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "editor.discard" }));
+        expect(tauri.invoke).toHaveBeenCalledWith("hide_preview_window");
+        emit("preview-clear");
+        openOcr(2);
+        const reopened = await screen.findByDisplayValue("Recognized text");
+        tauri.invoke.mockClear();
+        fireEvent.keyDown(reopened, { key: "Escape" });
+        expect(tauri.invoke).toHaveBeenCalledWith("hide_preview_window");
+        await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    });
+
     it("commits the shared image-text window while OCR is loading and releases it on clear", async () => {
         let finishOcr!: (result: { status: string; text: string; error: null }) => void;
         const ocr = new Promise(resolve => { finishOcr = resolve; });

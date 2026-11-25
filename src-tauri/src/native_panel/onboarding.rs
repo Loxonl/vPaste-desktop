@@ -171,7 +171,14 @@ pub(super) async fn handle(app: AppHandle, request: &super::Request) -> Result<V
         .await?;
     } else if exiting {
         let config = crate::config::get();
-        super::present(app, config.multilingual, config.theme_mode, false, true)?;
+        super::present(
+            app,
+            config.multilingual,
+            config.theme_mode,
+            false,
+            true,
+            None,
+        )?;
     }
     Ok(snapshot().unwrap_or(Value::Null))
 }

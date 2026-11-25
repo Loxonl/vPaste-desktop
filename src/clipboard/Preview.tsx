@@ -5,6 +5,7 @@ import { error } from "@tauri-apps/plugin-log";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
 import { ToolbarIconButton } from "../ui/ToolbarIconButton";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { ItemType } from "./Item";
 import { isImagePath, type FilePreviewInfo } from "./itemPresentation";
 import { richHtmlHasVisibleContent, sanitizeRichHtml } from "./richPreview";
@@ -25,6 +26,8 @@ type PreviewPayload = {
     request_id?: number;
     navigation_direction?: number;
     hover?: boolean;
+    native_toolbar?: boolean;
+    protect_image_text_draft?: boolean;
     item_type?: ItemType | string;
     itemType?: ItemType | string;
     content: string;
@@ -93,6 +96,8 @@ type PreviewBodyProps = {
     payload: PreviewPayload;
     t: (key: string, params?: Record<string, string | number>) => string;
     onReady?: () => void;
+    onClose?: () => void;
+    onImageTextDraftEdited?: () => void;
     active?: boolean;
 };
 
@@ -100,7 +105,7 @@ export function PreviewBody(props: PreviewBodyProps) {
     return <Suspense fallback={null}><PreviewContent {...props} /></Suspense>;
 }
 
-function PreviewContent({ payload, t, onReady, active = true }: PreviewBodyProps) {
+function PreviewContent({ payload, t, onReady, onClose, onImageTextDraftEdited, active = true }: PreviewBodyProps) {
     const [fileInfo, setFileInfo] = useState<FilePreviewInfo | null>(null);
     const [fileError, setFileError] = useState("");
     const [fileText, setFileText] = useState("");
@@ -218,7 +223,8 @@ function PreviewContent({ payload, t, onReady, active = true }: PreviewBodyProps
 
     if (payload.item_type === "ImageText") {
         return <ImageTextView hash={payload.content} imagePath={payloadPreviewContent(payload)} t={t} active={active}
-            onClose={() => { void invoke("hide_preview_window").catch(e => error(`Failed to close image text: ${e}`)); }} />;
+            onClose={payload.native_toolbar ? undefined : onClose}
+            onDraftEdited={payload.protect_image_text_draft ? onImageTextDraftEdited : undefined} />;
     }
 
     if (type === ItemType.Image) {
@@ -362,6 +368,22 @@ export default function Preview() {
     const latestRequestRef = useRef(0);
     const currentLayerRef = useRef<PreviewLayer | null>(null);
     const pendingLayerRef = useRef<PreviewLayer | null>(null);
+    const imageTextDraftEdited = useRef(false);
+    const [confirmImageTextClose, setConfirmImageTextClose] = useState(false);
+    const confirmImageTextCloseRef = useRef(false);
+    confirmImageTextCloseRef.current = confirmImageTextClose;
+
+    const hidePreview = useCallback(() => {
+        pendingLayerRef.current = null;
+        void invoke("hide_preview_window").catch(e => error(`Failed to hide preview: ${e}`));
+    }, []);
+    const closePreview = useCallback(() => {
+        if (currentLayerRef.current?.payload.protect_image_text_draft && imageTextDraftEdited.current) {
+            setConfirmImageTextClose(true);
+            return;
+        }
+        hidePreview();
+    }, [hidePreview]);
 
     const commitLayer = useCallback(async (layer: PreviewLayer, reuse = false) => {
         if (pendingLayerRef.current?.id !== layer.id) return;
@@ -383,7 +405,8 @@ export default function Preview() {
                 : { ...layer, phase: "current" as const };
             currentLayerRef.current = next;
             hoverRef.current = layer.payload.hover === true;
-            const initiallyPinned = layer.payload.item_type === "ImageText";
+            const initiallyPinned = layer.payload.item_type === "ImageText"
+                && !layer.payload.native_toolbar && !layer.payload.protect_image_text_draft;
             pinnedRef.current = initiallyPinned;
             setPinned(initiallyPinned);
             setLayers(current => reuse ? [next] : current.map(entry => ({
@@ -421,6 +444,8 @@ export default function Preview() {
             sequenceRef.current += 1;
             pendingLayerRef.current = null;
             currentLayerRef.current = null;
+            imageTextDraftEdited.current = false;
+            setConfirmImageTextClose(false);
             hoverRef.current = false;
             pinnedRef.current = false;
             setPinned(false);
@@ -428,10 +453,11 @@ export default function Preview() {
             setLayers([]);
         });
         const unlistenPromoted = listen("preview-promoted", () => { hoverRef.current = false; });
+        const unlistenClose = listen("preview-close-requested", closePreview);
         const unlistenBrowserKey = listen<{ key: string; ctrlKey: boolean; shiftKey: boolean }>("preview-browser-key", event => {
             window.dispatchEvent(new KeyboardEvent("keydown", event.payload));
         });
-        const cancelReady = notifyAuxiliaryWindowReady([unlisten, unlistenClear, unlistenPromoted, unlistenBrowserKey]);
+        const cancelReady = notifyAuxiliaryWindowReady([unlisten, unlistenClear, unlistenPromoted, unlistenBrowserKey, unlistenClose]);
         // Replay a first request that arrived while this lazy route was still loading.
         const mountSequence = sequenceRef.current;
         void Promise.all([unlisten, unlistenClear]).then(() => invoke<PreviewPayload | null>("pending_preview_item"))
@@ -439,7 +465,10 @@ export default function Preview() {
                 if (payload && sequenceRef.current === mountSequence) receive(payload);
             }).catch(e => error(`Failed to restore pending preview: ${e}`));
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.isComposing || event.keyCode === 229) return;
+            if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+            if (event.key === "Escape" && confirmImageTextCloseRef.current) return;
+            if (event.key !== "Escape" && event.target instanceof Element
+                && event.target.closest("[data-preview-toolbar] button")) return;
             const imageText = (pendingLayerRef.current ?? currentLayerRef.current)?.payload.item_type === "ImageText";
             if (imageText && event.key !== "Escape") return;
             const tabDirection = clipboardTabNavigationDirection(event);
@@ -466,8 +495,7 @@ export default function Preview() {
             if (event.key === "Escape" || event.key === " " || event.key === "Spacebar") {
                 event.preventDefault();
                 if (event.repeat) return;
-                pendingLayerRef.current = null;
-                void invoke("hide_preview_window").catch(e => error(`Failed to hide preview: ${e}`));
+                closePreview();
             }
         };
         window.addEventListener("keydown", handleKeyDown);
@@ -478,10 +506,11 @@ export default function Preview() {
             unlisten.then(fn => fn()).catch(e => error(`Failed to unlisten preview: ${e}`));
             unlistenClear.then(fn => fn()).catch(e => error(`Failed to unlisten preview clear: ${e}`));
             unlistenPromoted.then(fn => fn()).catch(e => error(`Failed to unlisten preview promotion: ${e}`));
+            unlistenClose.then(fn => fn()).catch(e => error(`Failed to unlisten preview close: ${e}`));
             unlistenBrowserKey.then(fn => fn()).catch(() => error("Failed to unlisten webpage preview keys"));
             window.removeEventListener("keydown", handleKeyDown);
         };
-    }, [commitLayer]);
+    }, [commitLayer, closePreview]);
 
     const togglePinned = () => {
         const next = !pinnedRef.current;
@@ -489,21 +518,31 @@ export default function Preview() {
         setPinned(next);
         void invoke("set_preview_pinned", { pinned: next }).catch(e => error(`Failed to set preview pinned: ${e}`));
     };
+    const nativeToolbar = new URLSearchParams(window.location.search).get("chrome") === "winui"
+        || layers.some(layer => layer.phase !== "exiting" && layer.payload.native_toolbar === true);
+    const pinButton = <ToolbarIconButton
+        size="medium"
+        className={[styles[nativeToolbar ? "preview-native-action" : "preview-pin"], pinned ? styles.pinned : ""].join(" ")}
+        disableRipple={nativeToolbar || undefined}
+        disabled={nativeToolbar && (pendingLayerRef.current !== null || currentLayerRef.current === null)}
+        label={pinned ? t("preview.unpin") : t("preview.pin")}
+        aria-pressed={pinned}
+        onClick={togglePinned}
+    >
+        {nativeToolbar
+            ? <span className={styles["preview-native-glyph"]} aria-hidden="true">{pinned ? "\uE842" : "\uE718"}</span>
+            : pinned ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
+    </ToolbarIconButton>;
 
     return (
-        <div className={styles["preview-shell"]}
+        <div className={styles["preview-shell"]} data-chrome={nativeToolbar ? "winui" : undefined}
             onMouseEnter={() => { if (hoverRef.current) void invoke("preview_pointer_changed", { inside: true }).catch(e => error(`Failed to retain hover preview: ${e}`)); }}
             onMouseLeave={() => { if (hoverRef.current) void invoke("preview_pointer_changed", { inside: false }).catch(e => error(`Failed to leave hover preview: ${e}`)); }}
         >
-            <ToolbarIconButton
-                size="medium"
-                className={[styles["preview-pin"], pinned ? styles.pinned : ""].join(" ")}
-                label={pinned ? t("preview.unpin") : t("preview.pin")}
-                aria-pressed={pinned}
-                onClick={togglePinned}
-            >
-                {pinned ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
-            </ToolbarIconButton>
+            {nativeToolbar ? <header className={styles["preview-native-toolbar"]} data-preview-toolbar="native">
+                <h1 className={styles["preview-native-title"]}>{t("preview.title")}</h1>
+                {pinButton}
+            </header> : pinButton}
             <div className={styles["preview-content"]}>
                 {layers.length === 0 && <div className={styles["preview-empty"]}>{t("preview.waiting")}</div>}
                 {layers.map(layer => (
@@ -529,10 +568,14 @@ export default function Preview() {
                             }
                         }}
                     >
-                        <PreviewBody payload={layer.payload} t={t} active={layer.phase === "current"} onReady={() => { void commitLayer(layer); }} />
+                        <PreviewBody payload={layer.payload} t={t} active={layer.phase === "current"} onReady={() => { void commitLayer(layer); }}
+                            onClose={closePreview} onImageTextDraftEdited={() => { imageTextDraftEdited.current = true; }} />
                     </m.div>
                 ))}
             </div>
+            <ConfirmDialog open={confirmImageTextClose} title={t("editor.discardTitle")} description={t("editor.discardDescription")}
+                cancelLabel={t("editor.keepEditing")} confirmLabel={t("editor.discard")}
+                onCancel={() => setConfirmImageTextClose(false)} onConfirm={hidePreview} />
         </div>
     );
 }

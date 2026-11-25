@@ -14,14 +14,16 @@ type OcrRecord = {
     error: "language_unavailable" | "unsupported" | "resource_limit" | "timeout" | "failed" | null;
 };
 
-export default function ImageTextView({ hash, imagePath, t, onClose, active = true }: {
+export default function ImageTextView({ hash, imagePath, t, onClose, onDraftEdited, active = true }: {
     hash: string;
     imagePath: string;
     t: TFunction;
-    onClose: () => void;
+    onClose?: () => void;
+    onDraftEdited?: () => void;
     active?: boolean;
 }) {
     const closeButton = useRef<HTMLButtonElement>(null);
+    const editor = useRef<HTMLTextAreaElement>(null);
     const [record, setRecord] = useState<OcrRecord | null>(null);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -91,7 +93,7 @@ export default function ImageTextView({ hash, imagePath, t, onClose, active = tr
     };
     const copyAll = async () => {
         if (!text || copying) return;
-        closeButton.current?.focus();
+        (closeButton.current ?? editor.current)?.focus();
         const current = generation.current;
         setCopying(true);
         setCopyFailed(false);
@@ -135,13 +137,18 @@ export default function ImageTextView({ hash, imagePath, t, onClose, active = tr
                     {record && (
                         <TextField
                             autoFocus
+                            inputRef={editor}
                             fullWidth
                             multiline
                             label={t("ocr.title")}
                             InputLabelProps={{ shrink: true }}
                             className={styles.field}
                             value={text}
-                            onChange={event => { edited.current = true; setText(event.target.value); }}
+                            onChange={event => {
+                                edited.current = true;
+                                setText(event.target.value);
+                                onDraftEdited?.();
+                            }}
                             onCopy={copySelection}
                             InputProps={{ inputComponent: "textarea", className: styles.input }}
                             inputProps={{ spellCheck: false, className: styles.text }}
@@ -155,10 +162,10 @@ export default function ImageTextView({ hash, imagePath, t, onClose, active = tr
                         <ContentCopyOutlinedIcon fontSize="small" />
                         {t("ocr.copy")}
                     </Button>
-                    <Button ref={closeButton} className={styles.action} variant="text" color="inherit" onClick={onClose}>
+                    {onClose && <Button ref={closeButton} className={styles.action} variant="text" color="inherit" onClick={onClose}>
                         <CloseIcon fontSize="small" />
                         {t("common.close")}
-                    </Button>
+                    </Button>}
                 </div>
             </div>
         </section>

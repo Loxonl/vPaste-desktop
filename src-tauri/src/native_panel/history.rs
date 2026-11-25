@@ -2,8 +2,9 @@
 use super::{current, deliver, PanelTab};
 use crate::{
     clipboard,
-    history_views::{self, HistoryQuery, HistoryRef, ViewToken},
+    history_views::{self, HistoryQuery, HistoryRef, HistoryViewPage, ViewToken},
 };
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -258,7 +259,11 @@ pub(super) fn suspend() {
     // Swift releases the card payloads, media, observers and window on close.
 }
 
-pub(super) fn open(query: HistoryQuery, tab_id: String, request: u64) -> Result<Value, String> {
+pub(super) fn open(
+    query: &HistoryQuery,
+    tab_id: String,
+    request: u64,
+) -> Result<HistoryViewPage, String> {
     let _operation = OPERATIONS.lock().unwrap_or_else(|err| err.into_inner());
     let seq = CHANGES.load(Ordering::Acquire);
     let page = history_views::open_for_owner(
@@ -273,7 +278,7 @@ pub(super) fn open(query: HistoryQuery, tab_id: String, request: u64) -> Result<
     state.token = Some(page.token.clone());
     state.checkpoint = Checkpoint {
         tab_id,
-        keywords: query.keywords,
+        keywords: query.keywords.clone(),
         ..Default::default()
     };
     state.sent = sent;
@@ -285,11 +290,105 @@ pub(super) fn open(query: HistoryQuery, tab_id: String, request: u64) -> Result<
     log::debug!("native history open view={} revision=1", page.token.view_id);
     drop(state);
     DEADLINE_WAKE.notify_one();
-    serde_json::to_value(page).map_err(|err| err.to_string())
+    Ok(page)
 }
 
-pub(super) fn resume(tabs: Vec<PanelTab>, request: u64, preserve: bool) -> Result<Value, String> {
+pub(super) fn contains_preview(
+    query: &HistoryQuery,
+    page: &HistoryViewPage,
+    hash: &str,
+    is_current: impl Fn() -> bool,
+) -> Result<bool, String> {
+    if page.items.iter().any(|item| item.hash == hash) {
+        return Ok(true);
+    }
+    if !page.has_more || !is_current() {
+        return Ok(false);
+    }
+    let Some(anchor) = history_anchor(hash)? else {
+        return Ok(false);
+    };
+    query_contains_anchor(query, &anchor, is_current)
+}
+
+fn history_anchor(hash: &str) -> Result<Option<history_views::HistoryAnchor>, String> {
+    clipboard::db::db()
+        .query_row(
+            "select id,time from clipboard where hash = ?1",
+            [hash],
+            |row| {
+                Ok(history_views::HistoryAnchor {
+                    hash: hash.to_owned(),
+                    id: row.get(0)?,
+                    time: row.get(1)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())
+}
+
+fn query_contains_anchor(
+    query: &HistoryQuery,
+    anchor: &history_views::HistoryAnchor,
+    is_current: impl Fn() -> bool,
+) -> Result<bool, String> {
+    let Some(before) = u64::try_from(anchor.id)
+        .ok()
+        .and_then(|id| id.checked_add(1))
+    else {
+        return Ok(false);
+    };
+    // Seek directly to this record when it isn't among the first page's refs.
+    let result = clipboard::native_history_ref_page(
+        &query.keywords,
+        before,
+        anchor.time,
+        1,
+        &query.label,
+        is_current,
+    )?;
+    Ok(result
+        .and_then(|page| page.list.into_iter().next())
+        .is_some_and(|item| item.hash == anchor.hash))
+}
+
+fn locate_editor_return(
+    query: &mut HistoryQuery,
+    saved: &mut Checkpoint,
+    anchor: history_views::HistoryAnchor,
+) -> Result<Option<history_views::HistoryAnchor>, String> {
+    let mut fallback = query.clone();
+    while !query_contains_anchor(&fallback, &anchor, || true)? {
+        if !fallback.keywords.is_empty() {
+            fallback.keywords.clear();
+        } else if !fallback.label.is_empty() {
+            fallback.label.clear();
+        } else {
+            return Ok(None);
+        }
+    }
+    if fallback.label != query.label {
+        saved.tab_id = "all".into();
+    }
+    saved.keywords.clone_from(&fallback.keywords);
+    *query = fallback;
+    saved.reset_position();
+    saved.anchor_hash.clone_from(&anchor.hash);
+    saved.selected_hash.clone_from(&anchor.hash);
+    saved.cursor = Some(anchor.clone());
+    Ok(Some(anchor))
+}
+
+pub(super) fn resume(
+    tabs: Vec<PanelTab>,
+    request: u64,
+    preserve: bool,
+    editor_hash: Option<&str>,
+) -> Result<Value, String> {
     let _operation = OPERATIONS.lock().unwrap_or_else(|err| err.into_inner());
+    let editor_anchor = editor_hash.map(history_anchor).transpose()?.flatten();
+    let preserve = preserve || editor_anchor.is_some();
     let config = crate::config::get();
     let mut saved = STATE
         .lock()
@@ -312,13 +411,17 @@ pub(super) fn resume(tabs: Vec<PanelTab>, request: u64, preserve: bool) -> Resul
             }
         },
     };
-    let query = HistoryQuery {
+    let mut query = HistoryQuery {
         keywords: saved.keywords.clone(),
-        label: label.clone(),
+        label,
+    };
+    let anchor = match editor_anchor {
+        Some(anchor) => locate_editor_return(&mut query, &mut saved, anchor)?,
+        None => None,
     };
     let existing = {
         let state = STATE.lock().unwrap_or_else(|err| err.into_inner());
-        if state.query != query {
+        if state.query != query && anchor.is_none() {
             saved.reset_position();
         }
         (state.query == query)
@@ -328,6 +431,7 @@ pub(super) fn resume(tabs: Vec<PanelTab>, request: u64, preserve: bool) -> Resul
     let existing = existing
         .filter(|token| history_views::validate_native(&token.view_id, token.revision).is_ok());
     let retained = existing.is_some();
+    let label = query.label.clone();
     if let Some(token) = existing {
         let mut state = STATE.lock().unwrap_or_else(|err| err.into_inner());
         state.token = Some(token);
@@ -360,7 +464,7 @@ pub(super) fn resume(tabs: Vec<PanelTab>, request: u64, preserve: bool) -> Resul
         retained,
         saved.tab_id
     );
-    let patch = snapshot(0, &[], true)?;
+    let patch = snapshot(0, &[], true, anchor.as_ref())?;
     Ok(
         json!({"tabs":tabs,"tabId":saved.tab_id,"keywords":saved.keywords,"label":label,"delta":patch}),
     )
@@ -377,7 +481,7 @@ pub(super) fn synchronize(view_id: &str, revision: u64, known: &[String]) -> Res
     if token.view_id != view_id {
         return Err("history view expired".into());
     }
-    snapshot(revision, known, revision != token.revision)
+    snapshot(revision, known, revision != token.revision, None)
 }
 
 fn changed_refs(old: &[SentRef], next: &[HistoryRef]) -> Vec<HistoryRef> {
@@ -428,7 +532,12 @@ fn rebase_session(
     Ok((token, position))
 }
 
-fn snapshot(base: u64, known: &[String], full: bool) -> Result<Value, String> {
+fn snapshot(
+    base: u64,
+    known: &[String],
+    full: bool,
+    editor_anchor: Option<&history_views::HistoryAnchor>,
+) -> Result<Value, String> {
     let seq = CHANGES.load(Ordering::Acquire);
     let resources = RESOURCES.load(Ordering::Acquire);
     let resets = RESETS.load(Ordering::Acquire);
@@ -458,11 +567,14 @@ fn snapshot(base: u64, known: &[String], full: bool) -> Result<Value, String> {
     let changed =
         applied != seq || deadline.is_some_and(|at| at <= clipboard::current_timestamp_millis());
     // A missed viewport revision needs an anchored window, not another query.
-    let rebase =
-        changed || reset || checkpoint.view_revision != token.revision || (full && base != 0);
+    let rebase = editor_anchor.is_some()
+        || changed
+        || reset
+        || checkpoint.view_revision != token.revision
+        || (full && base != 0);
     let mut anchor_index = checkpoint.anchor_index;
     if rebase {
-        let result = rebase_session(&token, anchor.as_ref(), &checkpoint)?;
+        let result = rebase_session(&token, editor_anchor.or(anchor.as_ref()), &checkpoint)?;
         token = result.0;
         anchor_index = result.1;
     }
@@ -675,17 +787,18 @@ mod tests {
         conn.execute("insert into clipboard(hash,time,content,preview_content,item_type,search_index,source,app_source,app_icon_path,title_color,icon,label) values('legacy-null',5000,NULL,NULL,'Text',1,NULL,'','','','',0)", []).unwrap();
         conn.execute("update clipboard set source=NULL where hash='h20'", [])
             .unwrap();
-        let opened = open(
-            HistoryQuery {
-                keywords: String::new(),
-                label: String::new(),
-            },
-            "all".into(),
-            history_views::reserve_native_open(),
-        )
-        .unwrap();
-        let id = opened["token"]["viewId"].as_str().unwrap().to_string();
-        let resumed = resume(vec![], history_views::reserve_native_open(), false).unwrap();
+        let all = HistoryQuery {
+            keywords: String::new(),
+            label: String::new(),
+        };
+        let opened = open(&all, "all".into(), history_views::reserve_native_open()).unwrap();
+        assert!(contains_preview(&all, &opened, "h0", || true).unwrap());
+        assert!(!opened.items.iter().any(|item| item.hash == "h150"));
+        assert!(contains_preview(&all, &opened, "h150", || true).unwrap());
+        assert!(!contains_preview(&all, &opened, "invisible", || true).unwrap());
+        assert!(!contains_preview(&all, &opened, "deleted", || true).unwrap());
+        let id = opened.token.view_id;
+        let resumed = resume(vec![], history_views::reserve_native_open(), false, None).unwrap();
         assert_eq!(resumed["delta"]["token"]["viewId"], id);
         assert_eq!(resumed["delta"]["token"]["revision"], 1);
         let known = resumed["delta"]["refs"]
@@ -777,7 +890,7 @@ mod tests {
         assert!(deleted["pages"].as_array().unwrap().len() <= 6);
         // Membership changes use the same retained query, including an empty result.
         let favorites = open(
-            HistoryQuery {
+            &HistoryQuery {
                 keywords: String::new(),
                 label: "__favorite".into(),
             },
@@ -785,8 +898,8 @@ mod tests {
             history_views::reserve_native_open(),
         )
         .unwrap();
-        let favorite_id = favorites["token"]["viewId"].as_str().unwrap();
-        assert_eq!(favorites["items"].as_array().unwrap().len(), 0);
+        let favorite_id = &favorites.token.view_id;
+        assert!(favorites.items.is_empty());
         clipboard::set_favorite("h5", true).unwrap();
         CHANGES.fetch_add(1, Ordering::AcqRel);
         let added = synchronize(favorite_id, 1, &[]).unwrap();
@@ -814,6 +927,101 @@ mod tests {
     }
 
     #[test]
+    fn editor_return_selects_the_explicit_record_even_without_position_retention() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(root.path().to_string_lossy().into());
+        crate::config::save(crate::config::Config {
+            storage_dir: root.path().to_string_lossy().into(),
+            retain_last_position: false,
+            ..Default::default()
+        });
+        clipboard::db::init();
+        let conn = clipboard::db::db();
+        for index in 0..120_u64 {
+            conn.execute("insert into clipboard(hash,time,content,preview_content,item_type,search_index,source,app_source,app_icon_path,title_color,icon,label) values(?1,?2,'body','body','Text',1,'','','','','',0)",
+                rusqlite::params![format!("edit-{index}"), 1000 - index]).unwrap();
+        }
+        let all = HistoryQuery {
+            keywords: String::new(),
+            label: String::new(),
+        };
+        open(&all, "all".into(), history_views::reserve_native_open()).unwrap();
+        let reopened = |hash: Option<&str>| {
+            resume(vec![], history_views::reserve_native_open(), false, hash).unwrap()
+        };
+        let chosen = |frame: &Value| {
+            let delta = &frame["delta"];
+            let index = delta["selectedIndex"].as_u64().unwrap() as usize;
+            let page = delta["pages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|page| page["pageIndex"] == index / 36)
+                .unwrap();
+            page["hashes"][index % 36].as_str().unwrap().to_owned()
+        };
+        assert_eq!(chosen(&reopened(Some("edit-100"))), "edit-100");
+        conn.execute(
+            "update clipboard set hash='edited', time=999, content='body needle' where hash='edit-100'",
+            [],
+        )
+        .unwrap();
+        CHANGES.fetch_add(1, Ordering::AcqRel);
+        assert_eq!(chosen(&reopened(Some("edited"))), "edited");
+        assert_eq!(chosen(&reopened(Some("missing"))), "edit-0");
+        assert_eq!(chosen(&reopened(None)), "edit-0");
+
+        clipboard::set_favorite("edited", true).unwrap();
+        let edited_id = conn
+            .query_row("select id from clipboard where hash='edited'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        crate::search::engine::rebuild(vec![(
+            edited_id,
+            999,
+            "body needle".into(),
+            "edited".into(),
+        )])
+        .unwrap();
+        let favorites_query = HistoryQuery {
+            keywords: "needle".into(),
+            label: "__favorite".into(),
+        };
+        open(
+            &favorites_query,
+            "favorite".into(),
+            history_views::reserve_native_open(),
+        )
+        .unwrap();
+        let matched = reopened(Some("edited"));
+        assert_eq!(matched["keywords"], "needle");
+        assert_eq!(matched["tabId"], "favorite");
+        assert_eq!(chosen(&matched), "edited");
+
+        conn.execute(
+            "update clipboard set content='new body' where hash='edited'",
+            [],
+        )
+        .unwrap();
+        crate::search::engine::rebuild(Vec::new()).unwrap();
+        let outside_search = reopened(Some("edited"));
+        assert_eq!(outside_search["keywords"], "");
+        assert_eq!(outside_search["tabId"], "favorite");
+        assert_eq!(chosen(&outside_search), "edited");
+        let mut state = STATE.lock().unwrap();
+        if let Some(token) = state.token.take() {
+            history_views::close(&token.view_id);
+        }
+        state.sent.clear();
+        state.checkpoint = Checkpoint::default();
+        drop(state);
+        crate::search::engine::shutdown_runtime_for_tests();
+        crate::config::save(crate::config::Config::default());
+    }
+
+    #[test]
     fn developer_appearance_rebuild_keeps_the_viewport_even_when_normal_reopen_does_not() {
         let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
         let root = tempfile::tempdir().unwrap();
@@ -832,7 +1040,7 @@ mod tests {
                 rusqlite::params![format!("dev-{index}"), 1000 - index]).unwrap();
         }
         let opened = open(
-            HistoryQuery {
+            &HistoryQuery {
                 keywords: String::new(),
                 label: String::new(),
             },
@@ -840,7 +1048,7 @@ mod tests {
             history_views::reserve_native_open(),
         )
         .unwrap();
-        let id = opened["token"]["viewId"].as_str().unwrap().to_string();
+        let id = opened.token.view_id;
         checkpoint(
             &id,
             Checkpoint {
@@ -854,11 +1062,11 @@ mod tests {
             },
         );
         suspend();
-        let preview = resume(vec![], history_views::reserve_native_open(), true).unwrap();
+        let preview = resume(vec![], history_views::reserve_native_open(), true, None).unwrap();
         assert_eq!(preview["delta"]["token"]["viewId"], id);
         assert_eq!(preview["delta"]["anchorIndex"], 2);
         assert_eq!(preview["delta"]["offset"], 0.3);
-        let normal = resume(vec![], history_views::reserve_native_open(), false).unwrap();
+        let normal = resume(vec![], history_views::reserve_native_open(), false, None).unwrap();
         assert_eq!(normal["delta"]["anchorIndex"], 0);
         assert_eq!(normal["delta"]["offset"], 0.0);
         history_views::close(&id);
@@ -909,6 +1117,9 @@ mod tests {
             source_metadata: Default::default(),
             title_color: String::new(),
             preview_text: String::new(),
+            is_rich_text: false,
+            link_resource: String::new(),
+            has_ocr_text: false,
         }
     }
 }

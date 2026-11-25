@@ -38,6 +38,11 @@ describe("private WinUI transport and shared motion source", () => {
         }
     });
 
+    it("does not reuse a released ABI version for the native document and guide protocol", () => {
+        const rust = read("src-tauri/src/winui_panel/bridge.rs");
+        expect(Number(rust.match(/PROTOCOL_VERSION: u32 = (\d+);/)?.[1])).toBeGreaterThan(7);
+    });
+
     it("embeds the same motion data rather than another native timing scale", () => {
         expect(read(nativeRoot + "WinUiMotion.rc")).toContain("src/ui/motion/tokens.json");
         expect(read("src/ui/motion/tokens.ts")).toContain('from "./tokens.json"');

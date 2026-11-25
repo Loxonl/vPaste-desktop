@@ -37,7 +37,7 @@ describe("WinUI native drag contract", () => {
 
     it("retains queue move menus while adding a local-only reorder grip", () => {
         const queue = source("src-tauri/native-demo/windows/winui/WinUiQueueView.cpp");
-        for (const token of ["QueueDropOrder", "QueuePointerOrder", "pendingDragState", "CapturePointer(args.Pointer())", "PointerCaptureLost", "queueReorder", "MenuFlyout rowMenu"]) has(queue, token);
+        for (const token of ["QueueDropOrder", "QueuePointerSlot", "pendingDragState", "CapturePointer(args.Pointer())", "PointerCaptureLost", "queueReorder", "MenuFlyout rowMenu"]) has(queue, token);
     });
 
     it("releases the drag owner before closing the XAML apartment", () => {

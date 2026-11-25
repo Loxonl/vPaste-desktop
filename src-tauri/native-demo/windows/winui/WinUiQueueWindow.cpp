@@ -13,7 +13,16 @@
 #include <winrt/Windows.Graphics.h>
 
 namespace vpaste::winui {
-namespace { constexpr wchar_t QueueClass[] = L"VPasteWinUiQueueWindow"; }
+namespace {
+constexpr wchar_t QueueClass[] = L"VPasteWinUiQueueWindow";
+
+void UpdateQueueFrame(HWND window) {
+    // Keep the rounded DWM shadow; the system frame would otherwise paint an
+    // additional active/inactive outline around this nonactivating popup.
+    const COLORREF border = HighContrastEnabled() ? DWMWA_COLOR_DEFAULT : DWMWA_COLOR_NONE;
+    (void)DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR, &border, sizeof(border));
+}
+}
 
 QueueWindow::QueueWindow(HWND referenceWindow, winrt::Microsoft::UI::Xaml::FrameworkElement content,
     std::function<void()> onClose) : reference(referenceWindow), close(std::move(onClose)) {
@@ -34,6 +43,7 @@ QueueWindow::QueueWindow(HWND referenceWindow, winrt::Microsoft::UI::Xaml::Frame
             const BOOL dark = sender.template as<winrt::Microsoft::UI::Xaml::FrameworkElement>().ActualTheme()
                 == winrt::Microsoft::UI::Xaml::ElementTheme::Dark;
             (void)DwmSetWindowAttribute(handle, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+            UpdateQueueFrame(handle);
         });
         content.Width(QueueContentWidth); content.Height(QueueContentHeight);
         viewport.Child(content); source.Content(viewport);
@@ -41,6 +51,7 @@ QueueWindow::QueueWindow(HWND referenceWindow, winrt::Microsoft::UI::Xaml::Frame
         const auto corners = DWMWCP_ROUND;
         (void)DwmSetWindowAttribute(window, DWMWA_WINDOW_CORNER_PREFERENCE, &corners, sizeof(corners));
         const MARGINS shadow{1, 1, 1, 1}; (void)DwmExtendFrameIntoClientArea(window, &shadow);
+        UpdateQueueFrame(window);
         // Only the heading is a move surface; queue buttons and rows keep their input.
         const auto header = content.as<winrt::Microsoft::UI::Xaml::Controls::Grid>().Children().GetAt(0)
             .as<winrt::Microsoft::UI::Xaml::Controls::Grid>();
@@ -104,7 +115,7 @@ void QueueWindow::Hide() { ShowWindow(window, SW_HIDE); }
 void QueueWindow::SetAppearance(bool english, winrt::Microsoft::UI::Xaml::ElementTheme theme) {
     SetWindowTextW(window, english ? L"vPaste — Paste queue" : L"vPaste — 粘贴队列");
     viewport.RequestedTheme(theme);
-    const BOOL dark = viewport.ActualTheme() == winrt::Microsoft::UI::Xaml::ElementTheme::Dark;
+    const BOOL dark = ResolveDarkTheme(theme, viewport.ActualTheme());
     (void)DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
 }
 
@@ -129,6 +140,7 @@ LRESULT CALLBACK QueueWindow::WindowProc(HWND handle, UINT message, WPARAM wpara
         case WM_DISPLAYCHANGE: self->Constrain(); return 0;
         case WM_SETTINGCHANGE:
             if (wparam == SPI_SETWORKAREA) self->Constrain();
+            UpdateQueueFrame(handle);
             break;
         case WM_EXITSIZEMOVE: self->Constrain(); return 0;
         case WM_CLOSE: if (self->close) self->close(); return 0;

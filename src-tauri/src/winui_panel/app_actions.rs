@@ -105,11 +105,6 @@ pub(super) async fn open_tool(app: AppHandle, argument: &str) -> Result<Value, S
         Tool::TutorialWindows | Tool::TutorialMac => {
             #[cfg(debug_assertions)]
             {
-                let window = crate::auxiliary_windows::ensure(
-                    &app,
-                    crate::auxiliary_windows::WindowKind::DevTutorial,
-                )
-                .await?;
                 let platform = if argument == "tutorial-mac" {
                     "mac"
                 } else {
@@ -117,24 +112,7 @@ pub(super) async fn open_tool(app: AppHandle, argument: &str) -> Result<Value, S
                 };
                 let payload = json!({"platform":platform,"languageCode":language,"themePreview":theme,
                     "shortcut":crate::config::get().shortcut_keys.main_window.unwrap_or_else(|| "Alt+V".into())});
-                super::hide_on_ui_thread()?;
-                let tutorial_app = app.clone();
-                crate::auxiliary_windows::on_main_thread(app.clone(), move || {
-                    if !crate::auxiliary_windows::is_open(&window) {
-                        return Err("Tutorial preview closed while opening".into());
-                    }
-                    crate::center_window_on_monitor(
-                        &window,
-                        crate::main_panel_monitor(&tutorial_app),
-                    )?;
-                    window
-                        .emit("dev-tutorial-open", payload)
-                        .map_err(|err| err.to_string())?;
-                    window.show().map_err(|err| err.to_string())?;
-                    crate::activate_native_window(&window, "developer tutorial preview");
-                    window.set_focus().map_err(|err| err.to_string())
-                })
-                .await?;
+                super::onboarding::open_preview(app.clone(), payload).await?;
             }
         }
         Tool::Memory => {

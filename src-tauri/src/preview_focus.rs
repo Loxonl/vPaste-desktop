@@ -1,6 +1,9 @@
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct State {
     pub(crate) pinned: bool,
+    pub(crate) keep_draft: bool,
+    /// The unpinned OCR editor dismisses on a real click back into the panel.
+    pub(crate) close_on_clipboard_focus: bool,
     pub(crate) preview_foreground: bool,
     pub(crate) clipboard_foreground: bool,
     pub(crate) memory_monitor_active: bool,
@@ -25,10 +28,18 @@ pub(crate) enum Action {
 }
 
 pub(crate) fn decide(state: State, phase: Phase) -> Action {
-    if state.pinned || state.preview_foreground || state.memory_monitor_active {
+    if state.pinned || state.keep_draft || state.preview_foreground || state.memory_monitor_active {
         return Action::Keep;
     }
     if state.clipboard_foreground {
+        if state.close_on_clipboard_focus {
+            return match phase {
+                Phase::Initial {
+                    opening_grace: true,
+                } => Action::Recheck,
+                _ => Action::HidePreview,
+            };
+        }
         return match phase {
             Phase::Initial { .. } => Action::Keep,
             Phase::GraceRecheck if state.focus_handoff => Action::Keep,
@@ -172,6 +183,83 @@ impl FocusWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_protected_draft_survives_external_blur_without_pinning() {
+        let phase = Phase::Initial {
+            opening_grace: false,
+        };
+        assert_eq!(decide(State::default(), phase), Action::HideBoth);
+        let editor = State {
+            keep_draft: true,
+            ..State::default()
+        };
+        assert_eq!(decide(editor, phase), Action::Keep);
+        assert_eq!(decide(editor, Phase::GraceRecheck), Action::Keep);
+    }
+
+    #[test]
+    fn unpinned_ocr_dismisses_on_focus_loss_without_changing_ordinary_preview_behavior() {
+        let editor = State {
+            close_on_clipboard_focus: true,
+            clipboard_foreground: true,
+            ..State::default()
+        };
+        let immediate = Phase::Initial {
+            opening_grace: false,
+        };
+        assert_eq!(decide(editor, immediate), Action::HidePreview);
+        assert_eq!(
+            decide(
+                editor,
+                Phase::Initial {
+                    opening_grace: true
+                }
+            ),
+            Action::Recheck
+        );
+        assert_eq!(decide(editor, Phase::GraceRecheck), Action::HidePreview);
+        assert_eq!(
+            decide(
+                State {
+                    pinned: true,
+                    ..editor
+                },
+                immediate
+            ),
+            Action::Keep
+        );
+        assert_eq!(
+            decide(
+                State {
+                    preview_foreground: true,
+                    ..editor
+                },
+                immediate
+            ),
+            Action::Keep
+        );
+        assert_eq!(
+            decide(
+                State {
+                    clipboard_foreground: false,
+                    ..editor
+                },
+                immediate
+            ),
+            Action::HideBoth
+        );
+        assert_eq!(
+            decide(
+                State {
+                    close_on_clipboard_focus: false,
+                    ..editor
+                },
+                immediate
+            ),
+            Action::Keep
+        );
+    }
 
     #[test]
     fn focusing_memory_monitor_preserves_both_windows_during_and_after_grace() {

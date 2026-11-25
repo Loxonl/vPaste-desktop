@@ -1,4 +1,11 @@
-use std::{env, fs, path::PathBuf, process::Command};
+use std::{
+    collections::BTreeSet,
+    env,
+    fmt::Write,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 const TRAY_ICON_SIZE: u32 = 128;
 const TRAY_ICON_SCALE: f32 = 1.1;
@@ -148,6 +155,111 @@ fn build_swift_native_panel() {
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
 }
 
+fn generate_winui_file_icon_resources(project: &Path, out: &Path) -> PathBuf {
+    let library = project.join("../node_modules/material-icon-theme");
+    let manifest_path = library.join("dist/material-icons.json");
+    let icons = library.join("icons");
+    let product = project.join("native-demo/windows/winui/file-icons");
+    for path in [&manifest_path, &icons, &product] {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(&manifest_path).expect("npm install must provide material-icon-theme"),
+    )
+    .expect("parse material-icon-theme manifest");
+    let mut names = BTreeSet::from(["document", "folder-resource"]);
+    for theme in [&manifest, &manifest["light"]] {
+        for group in ["fileExtensions", "fileNames"] {
+            if let Some(associations) = theme[group].as_object() {
+                names.extend(associations.values().filter_map(serde_json::Value::as_str));
+            }
+        }
+    }
+    let sources = names
+        .into_iter()
+        .map(|name| {
+            let filename = manifest["iconDefinitions"][name]["iconPath"]
+                .as_str()
+                .and_then(|path| path.rsplit('/').next())
+                .unwrap_or_else(|| panic!("missing file icon definition: {name}"));
+            icons.join(filename)
+        })
+        .chain(
+            [
+                "vpaste-yellow-folder",
+                "vpaste-document-stack",
+                "vpaste-text-document",
+            ]
+            .map(|name| product.join(format!("{name}.svg"))),
+        );
+    let output = out.join("file-icons");
+    fs::create_dir_all(&output).expect("create WinUI file artwork output");
+    let mut resources = String::from("#pragma code_page(65001)\n");
+    let mut resource_ids = BTreeSet::new();
+    let options = resvg::usvg::Options::default();
+    // The widest file artwork slot is 86 DIP. A bounded 256px raster covers
+    // desktop scaling through 300% while preserving each SVG's aspect ratio.
+    const MAX_EDGE: u32 = 256;
+    for source in sources.collect::<BTreeSet<_>>() {
+        let svg = fs::read_to_string(&source)
+            .unwrap_or_else(|error| panic!("read {}: {error}", source.display()));
+        let tree = resvg::usvg::Tree::from_str(&svg, &options)
+            .unwrap_or_else(|error| panic!("parse {}: {error}", source.display()));
+        let size = tree.size();
+        let scale = MAX_EDGE as f32 / size.width().max(size.height());
+        let pixels = |dimension: f32| ((dimension * scale).ceil() as u32).clamp(1, MAX_EDGE);
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(pixels(size.width()), pixels(size.height()))
+            .expect("allocate file icon pixmap");
+        resvg::render(
+            &tree,
+            resvg::tiny_skia::Transform::from_scale(scale, scale),
+            &mut pixmap.as_mut(),
+        );
+        assert!(
+            pixmap.data().chunks_exact(4).any(|pixel| pixel[3] != 0),
+            "empty file icon artwork: {}",
+            source.display()
+        );
+        let png = pixmap.encode_png().expect("encode file icon PNG");
+        let stem = source
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .expect("file icon stem");
+        // RC keeps quotes in named RCDATA identifiers. Use bare ASCII
+        // identifiers, with the same normalization as the XAML loader.
+        assert!(stem.is_ascii(), "non-ASCII file icon stem: {stem}");
+        let id: String = stem
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_uppercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        assert!(
+            resource_ids.insert(id.clone()),
+            "duplicate file icon resource: {id}"
+        );
+        let bitmap = output.join(format!("{stem}.png"));
+        if fs::read(&bitmap).ok().as_deref() != Some(png.as_slice()) {
+            fs::write(&bitmap, png).expect("write file icon PNG");
+        }
+        writeln!(
+            resources,
+            "VPASTE_FILE_ICON_{id} RCDATA \"{}\"",
+            bitmap.to_string_lossy().replace('\\', "/")
+        )
+        .expect("format file icon resource");
+    }
+    let script = out.join("WinUiFileIcons.rc");
+    if fs::read_to_string(&script).ok().as_deref() != Some(resources.as_str()) {
+        fs::write(&script, resources).expect("write WinUI file icon resources");
+    }
+    script
+}
+
 fn build_winui_panel() {
     if env::var_os("CARGO_FEATURE_WINUI").is_none() {
         return;
@@ -158,33 +270,6 @@ fn build_winui_panel() {
     if env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("x86_64") {
         panic!("the WinUI 3 experiment currently supports Windows x64 only");
     }
-
-    // Reuse the installed WebView icon library, including its filename and
-    // theme associations. No second hand-maintained extension/icon list.
-    let icons = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
-        .join("../node_modules/material-icon-theme/icons");
-    println!("cargo:rerun-if-changed={}", icons.display());
-    println!("cargo:rerun-if-changed=../node_modules/material-icon-theme/dist/material-icons.json");
-    let mut files = fs::read_dir(&icons)
-        .expect("npm install must provide material-icon-theme")
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "svg"))
-        .collect::<Vec<_>>();
-    files.sort();
-    let mut embedded = String::from("match filename {\n");
-    for file in files {
-        embedded.push_str(&format!(
-            "{:?} => Some(include_str!({:?})),\n",
-            file.file_name().unwrap().to_string_lossy(),
-            file
-        ));
-    }
-    embedded.push_str("_ => None,\n}\n");
-    fs::write(
-        PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("native-file-icons.rs"),
-        embedded,
-    )
-    .expect("write native file icon assets");
 
     const PROJECT: &str = "native-demo/windows/winui/WinUiPanel.vcxproj";
     const SOURCE: &str = "native-demo/windows/winui/WinUiPanel.cpp";
@@ -208,6 +293,7 @@ fn build_winui_panel() {
     println!("cargo:rerun-if-changed={TAG_MANAGER_SOURCE}");
     println!("cargo:rerun-if-changed={TAG_MANAGER_HEADER}");
     println!("cargo:rerun-if-changed={APPEARANCE_HEADER}");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiMenuFocus.h");
     println!("cargo:rerun-if-changed={RICH_SOURCE}");
     println!("cargo:rerun-if-changed={RICH_HEADER}");
     println!("cargo:rerun-if-changed={DRAG_SOURCE}");
@@ -223,15 +309,27 @@ fn build_winui_panel() {
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiHistoryViewport.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiRecordTagEditor.cpp");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiRecordTagEditor.h");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiEditorKeys.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiCardContent.cpp");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiCardPreview.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiCardContent.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiAppActions.cpp");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiAppActions.h");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiHeaderArtwork.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiHoverPreview.cpp");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiHoverPreview.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiReader.cpp");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiReader.h");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiOnboarding.cpp");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiOnboarding.h");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiOnboarding.rc");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiOnboardingStyles.xaml");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiTrayWindow.cpp");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiTrayWindow.h");
+    println!("cargo:rerun-if-changed=icons/128x128@2x.png");
+    println!("cargo:rerun-if-changed=../src/assets/tutorial/shortcut-popover.svg");
+    println!("cargo:rerun-if-changed=../src/assets/tutorial/permission-background.svg");
+    println!("cargo:rerun-if-changed=../src/assets/tutorial/permission-paste.svg");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiMotion.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiDockMotion.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiTabIndicator.h");
@@ -255,6 +353,7 @@ fn build_winui_panel() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR")).join("winui");
     let intermediate_dir = out_dir.join("obj");
     fs::create_dir_all(&intermediate_dir).expect("create WinUI build output directory");
+    let file_icon_resources = generate_winui_file_icon_resources(&project_dir, &out_dir);
 
     let msbuild = find_msbuild();
     let status = Command::new(&msbuild)
@@ -264,6 +363,10 @@ fn build_winui_panel() {
         .arg("/p:Platform=x64")
         .arg(format!("/p:OutDir={}\\", out_dir.display()))
         .arg(format!("/p:IntDir={}\\", intermediate_dir.display()))
+        .arg(format!(
+            "/p:VPasteFileIconResources={}",
+            file_icon_resources.display()
+        ))
         .arg(format!(
             "/p:GeneratedFilesDir={}\\generated\\",
             out_dir.display()

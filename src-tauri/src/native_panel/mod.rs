@@ -763,6 +763,11 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
                 }
             }
             let _reset = Reset;
+            let paste_target = if r.op == "paste" {
+                crate::macos_recorded_paste_target()
+            } else {
+                None
+            };
             let info = crate::history_item_action_info(hash.clone()).await?;
             if !info.missing_paths.is_empty() {
                 return Err(format!("Source file missing: {}", info.missing_paths[0]));
@@ -782,7 +787,11 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
                 })
                 .await?;
                 if allowed {
-                    let result = blocking(move || crate::paste(&hash, None, None)).await;
+                    let result = blocking(move || {
+                        let target_pid = paste_target.ok_or(crate::MACOS_PASTE_TARGET_LOST)?;
+                        crate::paste_to_target(&hash, None, None, Some(target_pid))
+                    })
+                    .await;
                     if result.is_err() {
                         let _ = crate::show_paste_fallback_notice(app.clone()).await;
                     }

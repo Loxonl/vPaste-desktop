@@ -483,6 +483,7 @@ struct PreviewPayload {
     preview_asset_path: String,
     text_content: String,
     rich_html: String,
+    has_rich_format: bool,
     rich_resources: Vec<rich_card_assets::RichImageResource>,
     app_source: String,
 }
@@ -1639,9 +1640,13 @@ fn restore_foreground_app_before_paste() {
 }
 
 #[cfg(target_os = "macos")]
+fn macos_recorded_paste_target() -> Option<i32> {
+    LAST_FOREGROUND_APP_PID.lock().ok().and_then(|pid| *pid)
+}
+
+#[cfg(target_os = "macos")]
 fn restore_foreground_app_before_paste() {
-    let pid = LAST_FOREGROUND_APP_PID.lock().ok().and_then(|pid| *pid);
-    if let Some(pid) = pid {
+    if let Some(pid) = macos_recorded_paste_target() {
         activate_macos_app(pid);
     }
 }
@@ -4606,6 +4611,8 @@ fn handle_main_panel_focus_lost(app: tauri::AppHandle) {
             || text_editor_window_active(&app)
             || memory_monitor_window_active(&app)
             || native_auxiliary_window_active()
+            || (cfg!(target_os = "macos")
+                && app_window_is_foreground(&app, "pasteQueue", "paste queue exit confirmation"))
         {
             return;
         }
@@ -5479,16 +5486,16 @@ async fn prepare_preview_window(
             rich_resources,
             app_source,
             text_truncated,
+            has_rich_format,
         ) = if let Some(hash) = history_hash {
-            let card = clipboard::history_card_payload(&hash, false)?;
-            let item = card.item;
+            let (item, render, has_rich_format) = clipboard::history_preview_payload(&hash, mode)?;
             let (text, truncated) = if item.item_type == clipboard::item::ItemType::TextFile {
                 let preview = clipboard::plain_text_preview(&hash)?;
                 (preview.text, preview.truncated)
             } else {
                 (item.text_content, false)
             };
-            let render = card.rich_render.unwrap_or_default();
+            let render = render.unwrap_or_default();
             (
                 item.item_type.to_string(),
                 item.content,
@@ -5498,8 +5505,10 @@ async fn prepare_preview_window(
                 Some(render.resources),
                 item.app_source,
                 truncated,
+                has_rich_format,
             )
         } else {
+            let has_rich_format = !rich_html.trim().is_empty();
             (
                 item_type,
                 content,
@@ -5509,6 +5518,7 @@ async fn prepare_preview_window(
                 rich_resources,
                 app_source,
                 text_truncated.unwrap_or(false),
+                has_rich_format,
             )
         };
         let preview_content = if item_type == "ImageText" {
@@ -5558,6 +5568,7 @@ async fn prepare_preview_window(
                 preview_asset_path,
                 text_content,
                 rich_html,
+                has_rich_format,
                 rich_resources: rich_resources.unwrap_or_default(),
                 app_source,
             },
@@ -7579,6 +7590,8 @@ fn build_file_preview_info(content: String) -> Result<FilePreviewInfo, String> {
     };
     let kind = if is_directory {
         "single-folder"
+    } else if !exists {
+        "single-icon"
     } else if is_pdf {
         "pdf-preview"
     } else if is_text_preview {
@@ -9331,18 +9344,21 @@ mod file_preview_tests {
     }
 
     #[test]
-    fn missing_file_preview_reports_an_invalid_path() {
+    fn missing_text_and_pdf_files_use_the_missing_file_presentation() {
         let workspace = tempfile::tempdir().unwrap();
-        let missing_path = workspace.path().join("deleted.txt");
+        for (extension, available_kind) in [("txt", "text-preview"), ("pdf", "pdf-preview")] {
+            let file = workspace.path().join(format!("sample.{extension}"));
+            let content = serde_json::to_string(&[file.to_string_lossy()]).unwrap();
+            let missing = build_file_preview_info(content.clone()).unwrap();
+            assert!(!missing.exists);
+            assert_eq!(missing.kind, "single-icon", "{extension}");
+            assert_eq!(missing.missing_paths, vec![file.to_string_lossy()]);
 
-        let info = build_file_preview_info(
-            serde_json::to_string(&vec![missing_path.to_string_lossy().to_string()]).unwrap(),
-        )
-        .unwrap();
-
-        assert!(!info.exists);
-        assert_eq!(info.kind, "text-preview");
-        assert_eq!(info.missing_paths, vec![missing_path.to_string_lossy()]);
+            fs::write(&file, b"fixture document").unwrap();
+            let available = build_file_preview_info(content).unwrap();
+            assert!(available.exists);
+            assert_eq!(available.kind, available_kind);
+        }
     }
 }
 
@@ -12180,7 +12196,7 @@ async fn copy_history_item(
 }
 
 #[cfg(target_os = "macos")]
-fn simulate_paste_shortcut(queue_target_pid: Option<i32>) -> Result<(), String> {
+fn simulate_paste_shortcut(target_pid: Option<i32>) -> Result<(), String> {
     use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, EventField};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
@@ -12204,9 +12220,9 @@ fn simulate_paste_shortcut(queue_target_pid: Option<i32>) -> Result<(), String> 
         EventField::EVENT_SOURCE_USER_DATA,
         PASTE_QUEUE_MAC_EVENT_MARKER,
     );
-    if let Some(pid) = queue_target_pid {
+    if let Some(pid) = target_pid {
         // Pin delivery to the checked process even if focus moves as the events are posted.
-        require_macos_paste_queue_target(pid, false)?;
+        require_macos_paste_target(pid, false)?;
         key_down.post_to_pid(pid);
         key_up.post_to_pid(pid);
     } else {
@@ -12217,11 +12233,11 @@ fn simulate_paste_shortcut(queue_target_pid: Option<i32>) -> Result<(), String> 
 }
 
 #[cfg(target_os = "macos")]
-const MACOS_PASTE_QUEUE_TARGET_LOST: &str =
+const MACOS_PASTE_TARGET_LOST: &str =
     "The original paste app is no longer active / 原粘贴应用已不在前台";
 
 #[cfg(target_os = "macos")]
-fn macos_paste_queue_target_matches(
+fn macos_paste_target_matches(
     target_pid: i32,
     foreground_pid: Option<i32>,
     allow_own_app: bool,
@@ -12231,38 +12247,38 @@ fn macos_paste_queue_target_matches(
 }
 
 #[cfg(target_os = "macos")]
-fn require_macos_paste_queue_target(target_pid: i32, allow_own_app: bool) -> Result<(), String> {
-    if macos_paste_queue_target_matches(target_pid, macos_foreground_app_pid(), allow_own_app) {
+fn require_macos_paste_target(target_pid: i32, allow_own_app: bool) -> Result<(), String> {
+    if macos_paste_target_matches(target_pid, macos_foreground_app_pid(), allow_own_app) {
         Ok(())
     } else {
-        Err(MACOS_PASTE_QUEUE_TARGET_LOST.into())
+        Err(MACOS_PASTE_TARGET_LOST.into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn restore_macos_paste_target(target_pid: i32) -> Result<(), String> {
+    match macos_foreground_app_pid() {
+        Some(pid) if pid == target_pid => Ok(()),
+        Some(pid) if pid == std::process::id() as i32 => {
+            activate_macos_app(target_pid);
+            Ok(())
+        }
+        _ => Err(MACOS_PASTE_TARGET_LOST.into()),
     }
 }
 
 #[cfg(all(test, target_os = "macos"))]
 #[test]
-fn macos_paste_queue_rejects_a_different_frontmost_app_at_either_stage() {
+fn macos_paste_rejects_a_different_frontmost_app_at_either_stage() {
     let own_pid = std::process::id() as i32;
     let target = own_pid + 1;
     let other = own_pid + 2;
-    assert!(macos_paste_queue_target_matches(
-        target,
-        Some(target),
-        false
-    ));
-    assert!(macos_paste_queue_target_matches(
-        target,
-        Some(own_pid),
-        true
-    ));
-    assert!(!macos_paste_queue_target_matches(
-        target,
-        Some(own_pid),
-        false
-    ));
+    assert!(macos_paste_target_matches(target, Some(target), false));
+    assert!(macos_paste_target_matches(target, Some(own_pid), true));
+    assert!(!macos_paste_target_matches(target, Some(own_pid), false));
     for foreground in [Some(other), None] {
-        assert!(!macos_paste_queue_target_matches(target, foreground, true));
-        assert!(!macos_paste_queue_target_matches(target, foreground, false));
+        assert!(!macos_paste_target_matches(target, foreground, true));
+        assert!(!macos_paste_target_matches(target, foreground, false));
     }
 }
 
@@ -12395,7 +12411,7 @@ fn prepare_paste_queue_click_target(
     }
 
     #[cfg(target_os = "macos")]
-    require_macos_paste_queue_target(target_pid, true)?;
+    require_macos_paste_target(target_pid, true)?;
     if main_surface_visible() {
         #[cfg(all(debug_assertions, target_os = "macos"))]
         if native_panel::preview::active() {
@@ -12410,11 +12426,7 @@ fn prepare_paste_queue_click_target(
         }
     }
     #[cfg(target_os = "macos")]
-    match macos_foreground_app_pid() {
-        Some(pid) if pid == target_pid => {}
-        Some(pid) if pid == std::process::id() as i32 => activate_macos_app(target_pid),
-        _ => return Err(MACOS_PASTE_QUEUE_TARGET_LOST.into()),
-    }
+    restore_macos_paste_target(target_pid)?;
     #[cfg(not(target_os = "macos"))]
     restore_foreground_app_before_paste();
     std::thread::sleep(std::time::Duration::from_millis(40));
@@ -12478,8 +12490,8 @@ fn process_paste_queue_request_inner(app: &tauri::AppHandle, request: PasteQueue
         let target_pid = {
             let target_pid = request
                 .target_pid
-                .ok_or_else(|| MACOS_PASTE_QUEUE_TARGET_LOST.to_string())?;
-            require_macos_paste_queue_target(
+                .ok_or_else(|| MACOS_PASTE_TARGET_LOST.to_string())?;
+            require_macos_paste_target(
                 target_pid,
                 request.origin == PasteQueueRequestOrigin::QueueWindow,
             )?;
@@ -13442,6 +13454,26 @@ async fn apply_paste_queue_activation_inner(
             if !requests.current(request) {
                 return Ok(());
             }
+            #[cfg(target_os = "macos")]
+            if paste_queue::is_active() {
+                let window = app
+                    .get_webview_window("pasteQueue")
+                    .ok_or_else(|| "Paste queue window is unavailable".to_string())?;
+                record_foreground_app_before_clipboard();
+                window.set_focusable(true).map_err(|err| err.to_string())?;
+                if let Err(err) = window
+                    .emit(
+                        "paste-queue-exit-requested",
+                        paste_queue::activation_epoch(),
+                    )
+                    .and_then(|()| window.set_focus())
+                {
+                    let _ = window.set_focusable(false);
+                    return Err(err.to_string());
+                }
+                requests.finish(request);
+                return Ok(());
+            }
             deactivate_paste_queue_window_inner(&app)?;
             requests.finish(request);
             paste_queue::emit_state(&app);
@@ -13473,6 +13505,50 @@ async fn set_paste_queue_active(
 ) -> Result<paste_queue::PasteQueueState, String> {
     set_paste_queue_active_impl(&app, active).await?;
     paste_queue::state()
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn respond_to_paste_queue_exit(
+    window: tauri::WebviewWindow,
+    activation_epoch: u64,
+    confirmed: bool,
+) -> Result<(), String> {
+    if window.label() != "pasteQueue" {
+        return Err("Paste queue confirmation must come from the queue window".into());
+    }
+    let app = window.app_handle().clone();
+    auxiliary_windows::on_main_thread(app.clone(), move || {
+        if !paste_queue::is_active() || activation_epoch != paste_queue::activation_epoch() {
+            return Ok(());
+        }
+        let restore_focus = window.is_focused().unwrap_or(false);
+        window.set_focusable(false).map_err(|err| err.to_string())?;
+        let result = if confirmed {
+            let result = deactivate_paste_queue_window(&app);
+            paste_queue::emit_state(&app);
+            result
+        } else {
+            Ok(())
+        };
+        if restore_focus {
+            #[cfg(debug_assertions)]
+            if native_panel::preview::active() {
+                let _ = native_panel::show_default(app);
+                return result;
+            }
+            if let Some(main) = app
+                .get_webview_window("clipboard")
+                .filter(|main| main_surface_visible() && main.is_visible().unwrap_or(false))
+            {
+                let _ = main.set_focus();
+            } else {
+                restore_foreground_app_before_paste();
+            }
+        }
+        result
+    })
+    .await
 }
 
 #[tauri::command]
@@ -13573,14 +13649,29 @@ fn paste(
     restore_alt: Option<bool>,
     trigger_key: Option<String>,
 ) -> Result<(), String> {
+    paste_to_target(
+        _hash,
+        restore_alt,
+        trigger_key,
+        #[cfg(target_os = "macos")]
+        None,
+    )
+}
+
+fn paste_to_target(
+    hash: &str,
+    restore_alt: Option<bool>,
+    trigger_key: Option<String>,
+    #[cfg(target_os = "macos")] target_pid: Option<i32>,
+) -> Result<(), String> {
     let _cleanup = auto_cleanup::pause();
     #[cfg(target_os = "windows")]
     let target =
         windows_paste_focus::Target::recorded().ok_or(windows_paste_focus::PASTE_TARGET_LOST)?;
     let restore_alt = restore_alt.unwrap_or(false);
     let trigger_key = trigger_key.as_deref();
-    if !_hash.is_empty() {
-        if let Err(err) = clipboard::touch(_hash) {
+    if !hash.is_empty() {
+        if let Err(err) = clipboard::touch(hash) {
             error!("Failed to update clipboard item recency: {:?}", err);
         }
     }
@@ -13606,6 +13697,16 @@ fn paste(
     if windows_paste_focus::Target::recorded() != Some(target) {
         return Err(windows_paste_focus::PASTE_TARGET_LOST.into());
     }
+    #[cfg(target_os = "macos")]
+    if let Some(pid) = target_pid {
+        if macos_recorded_paste_target() != Some(pid) {
+            return Err(MACOS_PASTE_TARGET_LOST.into());
+        }
+        restore_macos_paste_target(pid)?;
+    } else {
+        restore_foreground_app_before_paste();
+    }
+    #[cfg(not(target_os = "macos"))]
     restore_foreground_app_before_paste();
     if restore_alt {
         release_quick_input_keys(trigger_key);
@@ -13621,7 +13722,7 @@ fn paste(
 
     if let Err(err) = simulate_paste_shortcut(
         #[cfg(target_os = "macos")]
-        None,
+        target_pid,
     ) {
         error!("Failed to simulate paste shortcut: {}", err);
         return Err(err);
@@ -15035,10 +15136,23 @@ fn main() {
                 }
                 if window.label() == "pasteQueue" {
                     api.prevent_close();
-                    if let Err(err) = deactivate_paste_queue_window(window.app_handle()) {
-                        paste_queue::set_error(None, err);
+                    #[cfg(target_os = "macos")]
+                    {
+                        let app = window.app_handle().clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(err) = set_paste_queue_active_impl(&app, false).await {
+                                paste_queue::set_error(None, err);
+                                paste_queue::emit_state(&app);
+                            }
+                        });
                     }
-                    paste_queue::emit_state(window.app_handle());
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        if let Err(err) = deactivate_paste_queue_window(window.app_handle()) {
+                            paste_queue::set_error(None, err);
+                        }
+                        paste_queue::emit_state(window.app_handle());
+                    }
                 }
                 if window.label() == "config" {
                     api.prevent_close();
@@ -15384,6 +15498,8 @@ fn main() {
             get_paste_queue_state,
             set_paste_queue_menu_open,
             set_paste_queue_active,
+            #[cfg(target_os = "macos")]
+            respond_to_paste_queue_exit,
             add_paste_queue_items,
             reorder_paste_queue,
             reverse_paste_queue,

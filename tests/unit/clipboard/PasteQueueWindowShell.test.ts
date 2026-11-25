@@ -45,6 +45,12 @@ describe("paste queue native window", () => {
         expect(mainSource).toContain('window.emit("paste-queue-dismiss-menu", ())');
     });
 
+    it("keeps the Mac main panel open while its queue exit confirmation has focus", () => {
+        const blur = mainSource.split("fn handle_main_panel_focus_lost")[1]
+            .split("fn handle_preview_focus_lost")[0];
+        expect(blur).toMatch(/app_window_is_foreground\(&app, "pasteQueue", "paste queue exit confirmation"\)[\s\S]*return;/);
+    });
+
     it("restores the previous target app for queue-window item clicks only", () => {
         expect(mainSource).toContain("enum PasteQueueRequestOrigin");
         expect(mainSource).toContain("PasteQueueRequestOrigin::QueueWindow");
@@ -71,7 +77,7 @@ describe("paste queue native window", () => {
             .split("fn process_paste_queue_request(")[0];
         const send = mainSource.split("fn simulate_paste_shortcut(")[1].split("fn paste_shortcut_inputs")[0];
         expect(worker).toMatch(/request\s*\.target_pid[\s\S]*restore_paste_queue_item[\s\S]*simulate_paste_shortcut\([\s\S]*Some\(target_pid\)/);
-        expect(send).toMatch(/require_macos_paste_queue_target\(pid, false\)\?;\s*key_down\.post_to_pid\(pid\);\s*key_up\.post_to_pid\(pid\);/);
+        expect(send).toMatch(/require_macos_paste_target\(pid, false\)\?;\s*key_down\.post_to_pid\(pid\);\s*key_up\.post_to_pid\(pid\);/);
     });
 
     it("does not intercept a normal Ctrl+V inside a vPaste surface", () => {
@@ -90,6 +96,14 @@ describe("paste queue native window", () => {
         expect(prepare).not.toContain("capture_foreground()");
         expect(prepare).toContain("restore_before_paste(target)?;");
         expect(mainSource).toContain("prepare_paste_queue_click_target(app, request.origin, target)?;");
+    });
+
+    it("binds native macOS history paste to the original app before the clipboard write", () => {
+        const nativeSource = readFileSync(join(process.cwd(), "src-tauri", "src", "native_panel", "mod.rs"), "utf8");
+        const action = nativeSource.split('"copy" | "paste" =>')[1].split('"favorite" =>')[0];
+        const paste = mainSource.split("fn paste_to_target(")[1]?.split("fn record_text_history")[0] ?? "";
+        expect(action).toMatch(/macos_recorded_paste_target\(\)[\s\S]*copy_history_record[\s\S]*paste_to_target\(&hash, None, None, Some\(target_pid\)\)/);
+        expect(paste).toMatch(/restore_macos_paste_target\(pid\)\?;[\s\S]*simulate_paste_shortcut\([\s\S]*target_pid,/);
     });
 
     it("keeps ordinary Windows paste bound to the recorded window even without a UI Automation snapshot", () => {

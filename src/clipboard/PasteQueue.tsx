@@ -184,6 +184,7 @@ export default function PasteQueue() {
     const [pointerHash, setPointerHash] = useState<string | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
     const [confirmingClear, setConfirmingClear] = useState(false);
+    const [exitRequest, setExitRequest] = useState<number | null>(null);
     const [clock, setClock] = useState(Date.now());
     const rowElements = useRef(new Map<string, HTMLLIElement>());
     const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -204,6 +205,11 @@ export default function PasteQueue() {
                 return next.revision >= current.revision ? next : current;
             }),
         );
+        const unlistenExit = listen<number>("paste-queue-exit-requested", event => {
+            setMenuOpen(false);
+            setConfirmingClear(false);
+            setExitRequest(event.payload);
+        });
         const unlistenMenuDismiss = listen(
             "paste-queue-dismiss-menu",
             () => setMenuOpen(false),
@@ -223,12 +229,14 @@ export default function PasteQueue() {
         );
         const cancelReady = notifyAuxiliaryWindowReady([
             unlisten,
+            unlistenExit,
             unlistenMenuDismiss,
             unlistenPointerPosition,
         ]);
         return () => {
             cancelReady();
             void unlisten.then(remove => remove());
+            void unlistenExit.then(remove => remove());
             void unlistenMenuDismiss.then(remove => remove());
             void unlistenPointerPosition.then(remove => remove());
         };
@@ -330,6 +338,11 @@ export default function PasteQueue() {
     };
 
     const close = () => void run("set_paste_queue_active", { active: false });
+    const respondToExit = (confirmed: boolean) => {
+        if (exitRequest === null) return;
+        setExitRequest(null);
+        void run("respond_to_paste_queue_exit", { activationEpoch: exitRequest, confirmed });
+    };
     const paste = (hash: string) => void run("paste_queue_item", { hash });
     const remove = (hash: string) => void run("remove_paste_queue_item", { hash });
     const reverse = () => void run("reverse_paste_queue");
@@ -583,15 +596,15 @@ export default function PasteQueue() {
                     )}
                 </AnimatePresence>
                 <ConfirmDialog
-                    open={confirmingClear}
-                    title={t("pasteQueue.clear")}
-                    description={t("pasteQueue.clearConfirm")}
+                    open={confirmingClear || exitRequest !== null}
+                    title={t(exitRequest === null ? "pasteQueue.clear" : "pasteQueue.close")}
+                    description={t(exitRequest === null ? "pasteQueue.clearConfirm" : "pasteQueue.exitConfirm")}
                     cancelLabel={t("pasteQueue.keep")}
-                    confirmLabel={t("pasteQueue.clear")}
+                    confirmLabel={t(exitRequest === null ? "pasteQueue.clear" : "pasteQueue.close")}
                     backdropClassName={styles.dialogBackdrop}
                     confirmDisabled={state.busy}
-                    onCancel={() => setConfirmingClear(false)}
-                    onConfirm={clear}
+                    onCancel={() => exitRequest === null ? setConfirmingClear(false) : respondToExit(false)}
+                    onConfirm={() => exitRequest === null ? clear() : respondToExit(true)}
                 />
                 <AnimatePresence mode="wait" initial={false}>
                     {undoVisible && (

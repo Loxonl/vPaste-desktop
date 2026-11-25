@@ -1916,7 +1916,6 @@ export default function Clipboard() {
                 { active: !pasteQueueActive },
             );
             applyPasteQueueState(payload);
-            setQueueSelectedHashes([]);
             setContextMenu(null);
             setTabContextMenu(null);
         } catch (reason) {

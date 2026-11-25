@@ -22,6 +22,13 @@ describe("paste queue selection toolbar lifecycle", () => {
         expect(toggleSource).not.toContain("if (!pasteQueueActive)");
     });
 
+    it("keeps pending selections until the queue actually exits", () => {
+        const toggle = clipboardSource.split("const openPasteQueueSelection")[1]
+            .split("const addSelectedItemsToPasteQueue")[0];
+        expect(toggle).not.toContain("setQueueSelectedHashes([])");
+        expect(clipboardSource).toMatch(/if \(!state\.active\) \{\s+setQueueSelectedHashes\(\[\]\)/);
+    });
+
     it("is controlled by queue activation and has no independent cancel action", () => {
         expect(clipboardSource).toContain("const queueSelectionMode = pasteQueueActive;");
         expect(clipboardSource).not.toContain("cancelPasteQueueSelection");

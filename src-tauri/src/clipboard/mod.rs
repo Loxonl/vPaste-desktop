@@ -17,6 +17,7 @@ use twox_hash::XxHash64;
 
 use crate::clipboard::db::db;
 use crate::clipboard::item::{convert_type, Item, ItemTag, ItemType, Page};
+use crate::preview_behavior::PreviewMode;
 use crate::preview_http::PreviewHttpClient;
 pub(crate) use crate::preview_http::{is_previewable_domain_link, preview_http_client};
 use crate::{app_runtime_dir, history_storage_dir, history_store, search::engine};
@@ -120,6 +121,7 @@ const CARD_TEXT_PREVIEW_CHARS: usize = 1_800;
 const LARGE_TEXT_THRESHOLD_BYTES: usize = 10_000;
 const RICH_CARD_SOURCE_MAX_BYTES: u64 = 256 * 1024;
 const RICH_CARD_HTML_MAX_BYTES: usize = 256 * 1024;
+const RICH_READER_HTML_MAX_BYTES: u64 = crate::clipboard_budget::MIB as u64;
 const RICH_CARD_INLINE_IMAGE_MAX_BYTES: u64 = 1024 * 1024;
 const RICH_CARD_INLINE_IMAGES_MAX_BYTES: u64 = 4 * RICH_CARD_INLINE_IMAGE_MAX_BYTES;
 const MAX_EDITOR_CONTENT_BYTES: usize = crate::clipboard_budget::RICH_CAPTURE_BYTES;
@@ -980,32 +982,53 @@ pub(crate) fn history_filter_deadline(
         .min()
 }
 
+fn stored_history_item(hash: &str) -> Result<StoredItem, String> {
+    db().query_row(
+        "select * from clipboard where hash = ?1",
+        [hash],
+        read_stored_item,
+    )
+    .map_err(|err| err.to_string())
+}
+
 pub(crate) fn history_action_item(hash: &str) -> Result<Item, String> {
-    let stored = db()
-        .query_row(
-            "select * from clipboard where hash = ?1",
-            [hash],
-            read_stored_item,
-        )
-        .map_err(|err| err.to_string())?;
     Ok(materialize_item_with_rich(
-        stored,
+        stored_history_item(hash)?,
         Vec::new(),
         String::new(),
     ))
+}
+
+pub(crate) fn history_preview_payload(
+    hash: &str,
+    mode: PreviewMode,
+) -> Result<
+    (
+        Item,
+        Option<crate::rich_card_assets::RichRenderPayload>,
+        bool,
+    ),
+    String,
+> {
+    let stored = stored_history_item(hash)?;
+    let meta = rich_meta_from_source(&stored.source);
+    let render = meta.as_ref().and_then(|meta| match mode {
+        PreviewMode::Hover => rich_render_from_path(&meta.html_path),
+        PreviewMode::Manual | PreviewMode::Selection => {
+            rich_render_with_limit(&meta.html_path, RICH_READER_HTML_MAX_BYTES)
+        }
+    });
+    let has_rich_format =
+        meta.is_some_and(|meta| !meta.html_path.is_empty() || !meta.rtf_path.is_empty());
+    let item = materialize_item_with_rich(stored, Vec::new(), String::new());
+    Ok((item, render, has_rich_format))
 }
 
 pub(crate) fn history_card_payload(
     hash: &str,
     include_drag: bool,
 ) -> Result<crate::history_views::HistoryCardPayload, String> {
-    let stored = db()
-        .query_row(
-            "select * from clipboard where hash = ?1",
-            [hash],
-            read_stored_item,
-        )
-        .map_err(|err| err.to_string())?;
+    let stored = stored_history_item(hash)?;
     let render = rich_meta_from_source(&stored.source)
         .and_then(|meta| rich_render_from_path(&meta.html_path));
     let drag_html = if include_drag {
@@ -2151,7 +2174,7 @@ fn read_rich_html_fragment_with_limit(path: &str, limit: u64) -> Option<String> 
     }
     let stamp = rich_html_file_stamp(path);
     if let Some(cached) = stamp.and_then(|stamp| cached_rich_html(path, stamp)) {
-        return rich_card_html_within_budget(&cached, limit).then_some(cached);
+        return rich_html_within_budget(&cached, limit).then_some(cached);
     }
     let (fragment, style_blocks) = rich_fragment_parts(path, limit)?;
     let fragment = wrap_excel_table_fragment(inline_local_file_images(&fragment));
@@ -2161,7 +2184,7 @@ fn read_rich_html_fragment_with_limit(path: &str, limit: u64) -> Option<String> 
         format!("{}\n{}", style_blocks, fragment)
     };
     let html = html.trim().to_string();
-    if html.is_empty() || !rich_card_html_within_budget(&html, limit) {
+    if html.is_empty() || !rich_html_within_budget(&html, limit) {
         return None;
     }
     if let Some(stamp) = stamp {
@@ -2171,13 +2194,11 @@ fn read_rich_html_fragment_with_limit(path: &str, limit: u64) -> Option<String> 
 }
 
 fn rich_fragment_parts(path: &str, limit: u64) -> Option<(String, String)> {
-    if path.is_empty()
-        || history_store::file_len(path).ok()?
-            > limit + base64_len(RICH_CARD_INLINE_IMAGES_MAX_BYTES)
-    {
+    if path.is_empty() {
         return None;
     }
-    let bytes = history_store::read_file(path).ok()?;
+    let source_limit = limit + base64_len(RICH_CARD_INLINE_IMAGES_MAX_BYTES);
+    let bytes = crate::clipboard_budget::read_file_limited(path, source_limit as usize).ok()?;
     if bytes.is_empty() {
         return None;
     }
@@ -2212,13 +2233,22 @@ pub(crate) fn rich_render_for_hash(
 pub(crate) fn rich_render_from_path(
     path: &str,
 ) -> Option<crate::rich_card_assets::RichRenderPayload> {
+    rich_render_with_limit(
+        path,
+        RICH_CARD_SOURCE_MAX_BYTES.min(RICH_CARD_HTML_MAX_BYTES as u64),
+    )
+}
+
+fn rich_render_with_limit(
+    path: &str,
+    limit: u64,
+) -> Option<crate::rich_card_assets::RichRenderPayload> {
     let stamp = rich_html_file_stamp(path)?;
     if let Some(render) =
         crate::rich_card_assets::cached_render(path, stamp.len, stamp.modified_nanos)
     {
         return Some(render);
     }
-    let limit = RICH_CARD_SOURCE_MAX_BYTES.min(RICH_CARD_HTML_MAX_BYTES as u64);
     let (fragment, mut styles) = rich_fragment_parts(path, limit)?;
     let mut images = crate::rich_card_assets::Images::new(path);
     let mut html = transform_rich_images(&fragment, &mut |src| images.resolve(src), true);
@@ -2238,11 +2268,15 @@ pub(crate) fn rich_render_from_path(
     } else {
         format!("{styles}\n{html}")
     };
-    if html.trim().is_empty() || !rich_card_html_within_budget(&html, limit) {
+    if html.trim().is_empty() || !rich_html_within_budget(&html, limit) {
         return None;
     }
     let render = images.finish(html)?;
-    crate::rich_card_assets::cache_render(path, stamp.len, stamp.modified_nanos, &render).ok()?;
+    // Reader-only renders would bypass the card budget when read from the shared cache.
+    if limit <= RICH_CARD_SOURCE_MAX_BYTES.min(RICH_CARD_HTML_MAX_BYTES as u64) {
+        crate::rich_card_assets::cache_render(path, stamp.len, stamp.modified_nanos, &render)
+            .ok()?;
+    }
     Some(render)
 }
 
@@ -2251,8 +2285,8 @@ fn base64_len(bytes: u64) -> u64 {
 }
 
 // Embedded images (e.g. Word's base64 pictures) have their own budget so they
-// don't count against the card markup limit.
-fn rich_card_html_within_budget(html: &str, markup_limit: u64) -> bool {
+// don't count against the markup limit.
+fn rich_html_within_budget(html: &str, markup_limit: u64) -> bool {
     let Ok(pattern) = regex::Regex::new(r"(?i)data:image/[a-z0-9.+-]+;base64,([a-z0-9+/=]*)")
     else {
         return false;
@@ -5507,6 +5541,64 @@ mod tests {
 
         delete_by_hash(&hash).unwrap();
         crate::config::save(crate::config::Config::default());
+    }
+
+    #[test]
+    fn explicit_reader_keeps_markup_above_the_card_budget() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().to_string());
+        crate::config::save(crate::config::Config {
+            storage_dir: root.path().to_string_lossy().to_string(),
+            ..Default::default()
+        });
+        db::init();
+
+        let hash = "reader-rich-300k".to_string();
+        let html = format!("<p>{}</p><strong>Rich ending</strong>", "x".repeat(300_000));
+        insert_test_room_rich_text(
+            hash.clone(),
+            "Plain fallback".into(),
+            html.as_bytes().to_vec(),
+            "Editor",
+            1,
+        );
+
+        for mode in [PreviewMode::Manual, PreviewMode::Selection] {
+            let (_, reader, has_rich_format) = history_preview_payload(&hash, mode).unwrap();
+            assert!(has_rich_format);
+            assert!(reader.is_some_and(|render| render.html == html));
+        }
+        let (_, hover, has_rich_format) =
+            history_preview_payload(&hash, PreviewMode::Hover).unwrap();
+        assert!(has_rich_format);
+        assert!(hover.is_none());
+        assert!(history_card_payload(&hash, true)
+            .unwrap()
+            .rich_render
+            .is_none());
+        let meta = rich_clipboard_meta(&hash).unwrap();
+        assert_eq!(
+            history_store::read_file(&meta.html_path).unwrap(),
+            html.as_bytes()
+        );
+
+        let oversized_hash = "reader-rich-oversized".to_string();
+        let oversized_html = format!("<p>{}</p>", "x".repeat(RICH_READER_HTML_MAX_BYTES as usize));
+        insert_test_room_rich_text(
+            oversized_hash.clone(),
+            "Plain fallback".into(),
+            oversized_html.into_bytes(),
+            "Editor",
+            2,
+        );
+        let (item, reader, has_rich_format) =
+            history_preview_payload(&oversized_hash, PreviewMode::Manual).unwrap();
+        assert!(has_rich_format);
+        assert!(reader.is_none());
+        assert_eq!(item.content, "Plain fallback");
+        reset_test_storage_config();
     }
 
     #[test]

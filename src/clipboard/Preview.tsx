@@ -41,6 +41,7 @@ type PreviewPayload = {
     textTruncated?: boolean;
     rich_html?: string;
     richHtml?: string;
+    has_rich_format?: boolean;
     rich_resources?: RichImageResource[];
     richResources?: RichImageResource[];
 };
@@ -260,7 +261,7 @@ function PreviewContent({ payload, t, onReady, onClose, onImageTextDraftEdited, 
 
     if (type === ItemType.File) {
         if (fileError) {
-            return <div className={styles["preview-empty"]}>{t("preview.unsupported")}</div>;
+            return <div className={styles["preview-empty"]}>{t("clipboard.previewFailed", { error: fileError })}</div>;
         }
         if (!fileInfo) {
             return <div className={styles["preview-empty"]}>{t("preview.generating")}</div>;
@@ -334,6 +335,7 @@ function PreviewContent({ payload, t, onReady, onClose, onImageTextDraftEdited, 
         <div className={styles["preview-text-stage"]}>
             <pre className={styles["preview-text"]}>{text || t("preview.noText")}</pre>
             {(payload.text_truncated || payload.textTruncated) && <div role="status" className={styles["preview-text-note"]}>{t("preview.textTruncated")}</div>}
+            {payload.has_rich_format && <div role="status" className={styles["preview-text-note"]}>{t("preview.richFormatUnavailable")}</div>}
         </div>
     );
 }
@@ -351,6 +353,7 @@ function samePreviewContent(a: PreviewPayload, b: PreviewPayload) {
         && payloadPreviewAssetPath(a) === payloadPreviewAssetPath(b)
         && payloadTextContent(a) === payloadTextContent(b)
         && Boolean(a.text_truncated || a.textTruncated) === Boolean(b.text_truncated || b.textTruncated)
+        && Boolean(a.has_rich_format) === Boolean(b.has_rich_format)
         && payloadRichHtml(a) === payloadRichHtml(b);
 }
 

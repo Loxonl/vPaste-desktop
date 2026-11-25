@@ -301,6 +301,7 @@ const enUS: LanguagePack = {
         "preview.openOriginalLink": "Open original link",
         "preview.readingText": "Reading text",
         "preview.textTruncated": "Showing part of the text",
+        "preview.richFormatUnavailable": "Original formatting is unavailable",
         "preview.noText": "No previewable text",
         "preview.multipleNote": "{count} files. Batch preview is not supported yet",
         "preview.fileMissing": "Source file is missing or moved",

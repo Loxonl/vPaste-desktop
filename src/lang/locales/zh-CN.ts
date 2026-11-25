@@ -301,6 +301,7 @@ const zhCN: LanguagePack = {
         "preview.openOriginalLink": "打开原链接",
         "preview.readingText": "正在读取文本内容",
         "preview.textTruncated": "仅显示部分文本",
+        "preview.richFormatUnavailable": "无法显示原有富文本格式",
         "preview.noText": "没有可预览的文本内容",
         "preview.multipleNote": "共 {count} 个文件，暂不支持批量文件预览",
         "preview.fileMissing": "源文件不存在或已移动",

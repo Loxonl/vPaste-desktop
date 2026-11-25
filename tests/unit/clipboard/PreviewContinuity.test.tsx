@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import Preview from "../../../src/clipboard/Preview";
+import type { FilePreviewInfo } from "../../../src/clipboard/itemPresentation";
 import { MotionTestProvider } from "../../../src/ui/motion/MotionTestProvider";
 import { motionDurationsMs, motionTokens } from "../../../src/ui/motion";
 import userEvent from "@testing-library/user-event";
@@ -194,6 +195,45 @@ describe("continuous preview session", () => {
             .toHaveAttribute("data-preview-direction", "forward");
         expect(screen.getByText("Next").closest("[data-preview-phase]"))
             .not.toHaveAttribute("inert");
+    });
+
+    it("reports a text file read failure after loading its file information", async () => {
+        tauri.invoke.mockImplementation(async (command: string) => {
+            if (command === "commit_preview_window") return true;
+            if (command === "file_preview_info") return {
+                kind: "text-preview",
+                paths: ["vanished.txt"],
+                exists: true,
+                missing_paths: [],
+                display_path: "vanished.txt",
+                secondary_text: "",
+                extension: "txt",
+                preview_path: "",
+            } satisfies FilePreviewInfo;
+            if (command === "read_preview_text_file") throw new Error("File removed after lookup");
+            return undefined;
+        });
+        render(<MotionTestProvider reducedMotion="always"><Preview /></MotionTestProvider>);
+        emit("preview-item", { request_id: 1, item_type: "File", content: '["vanished.txt"]' });
+        const feedback = await screen.findByText("clipboard.previewFailed");
+        await waitFor(() => expect(feedback.closest("[data-preview-phase]"))
+            .toHaveAttribute("data-preview-phase", "current"));
+    });
+
+    it("reports unavailable formatting even when the replacement text matches", async () => {
+        render(<MotionTestProvider reducedMotion="always"><Preview /></MotionTestProvider>);
+        emit("preview-item", text(1, "Same text"));
+        await waitFor(() => expect(screen.getByText("Same text").closest("[data-preview-phase]"))
+            .toHaveAttribute("data-preview-phase", "current"));
+        expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+        emit("preview-item", { ...text(2, "Same text"), has_rich_format: true });
+        expect(await screen.findByRole("status")).toHaveTextContent("preview.richFormatUnavailable");
+
+        emit("preview-item", { ...text(3, "Same text"), has_rich_format: true, rich_html: "<strong>Restored text</strong>" });
+        await waitFor(() => expect(screen.getByText("Restored text").closest("[data-preview-phase]"))
+            .toHaveAttribute("data-preview-phase", "current"));
+        await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     });
 
     it("reuses an unchanged viewer and requests native animation only in normal motion mode", async () => {

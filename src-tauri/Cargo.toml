@@ -85,7 +85,7 @@ windows = { version = "0.56.0", features = ["Foundation", "Foundation_Collection
 reqwest = { version = "0.12.24", features = ["native-tls-alpn"] }
 cocoa = "0.25"
 objc = "0.2.7"
-core-graphics = "0.19.2"
+core-graphics = { version = "0.19.2", features = ["elcapitan"] }
 drag = "=2.1.1"
 block = "=0.1.6"
 

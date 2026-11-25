@@ -410,13 +410,18 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       if name == "history-dirty" {
         self.requestHistorySync()
       } else if name == "tabs-changed" {
-        if let id = value["activeId"] as? String { self.pendingTabSelection = id }
+        if let error = value["assignmentError"] as? String {
+          self.pendingTabSelection = nil
+          let message = self.local("Tag created, but assignment failed. Add it from the original card’s Tags menu. (\(error))",
+            "标签已创建，但赋值失败。请在原卡片的「标签」菜单中添加。（\(error)）")
+          self.tagActionError = message
+          self.showMessage(message)
+        } else if let id = value["activeId"] as? String {
+          self.pendingTabSelection = id
+        }
         self.refreshMenuTags()
         self.refreshTabs()
         self.requestHistorySync()
-        if let message = value["assignmentError"] as? String {
-          self.showMessage(self.local("Could not add the new tag: \(message)", "无法添加新标签：\(message)"))
-        }
       } else if name == "paste-queue-state" {
         if self.applyPasteQueueState(value), let error = value["error"] as? String {
           self.pasteQueue.reportError(error)

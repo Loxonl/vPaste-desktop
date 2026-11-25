@@ -327,6 +327,38 @@ final class NativePanelSearchTests: XCTestCase {
     }
   }
 
+  func testCreatedTagAssignmentFailureKeepsCurrentResultsAndOffersManualRetry() throws {
+    try withPanel(hashes: ["A", "B"], keywords: "result") { controller, search, _ in
+      let content = try XCTUnwrap(search.window?.contentView)
+      let review: [String: Any] = ["id": "record:9", "name": "Review", "label": "review", "record": true]
+      searchRequests.removeAll()
+
+      controller.bridge.receive(["session": 42, "event": "tabs-changed", "activeId": "record:9",
+        "assignmentError": "fixture assignment refused"])
+      let tabs = try XCTUnwrap(searchRequests.last { $0["op"] as? String == "tabs" })
+      reply(controller, tabs, data: [review])
+
+      XCTAssertFalse(searchRequests.contains { $0["op"] as? String == "open" })
+      XCTAssertEqual(search.stringValue, "result")
+      XCTAssertTrue(allViews(content).compactMap { $0 as? NSTextField }.contains {
+        $0.stringValue.contains("Tag created") && $0.stringValue.contains("original card")
+      })
+    }
+  }
+
+  func testCreatedTagAssignmentSuccessSelectsNewTab() throws {
+    try withPanel { controller, _, _ in
+      let review: [String: Any] = ["id": "record:9", "name": "Review", "label": "review", "record": true]
+      searchRequests.removeAll()
+
+      controller.bridge.receive(["session": 42, "event": "tabs-changed", "activeId": "record:9"])
+      let tabs = try XCTUnwrap(searchRequests.last { $0["op"] as? String == "tabs" })
+      reply(controller, tabs, data: [review])
+
+      XCTAssertEqual(searchRequests.last { $0["op"] as? String == "open" }?["tabId"] as? String, "record:9")
+    }
+  }
+
   private var actions: [[String: Any]] {
     searchRequests.filter { ["paste", "delete"].contains($0["op"] as? String ?? "") }
   }

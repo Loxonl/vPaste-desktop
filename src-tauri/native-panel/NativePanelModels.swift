@@ -240,7 +240,16 @@ final class PanelBridge {
     request["id"] = next
     request["session"] = session
     request["op"] = op
-    guard let data = try? JSONSerialization.data(withJSONObject: request), data.count <= 64 * 1024 else { return nil }
+    guard let data = try? JSONSerialization.data(withJSONObject: request) else { return nil }
+    guard data.count <= 64 * 1024 else {
+      // The editor needs a reply to leave its saving state when a legacy draft is too large.
+      if op == "tab-editor-save" {
+        completion?(.failure(NSError(domain: "vPaste", code: 1, userInfo: [
+          NSLocalizedDescriptionKey: "Tab draft is too large / 标签内容过长"
+        ])))
+      }
+      return nil
+    }
     let id = next
     if let completion { pending[id] = completion }
     data.withUnsafeBytes { bytes in

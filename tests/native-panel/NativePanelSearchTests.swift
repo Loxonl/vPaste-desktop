@@ -416,6 +416,28 @@ final class NativePanelSearchTests: XCTestCase {
     }
   }
 
+  func testOversizeTabEditorSaveReportsFailureAndAllowsRetry() throws {
+    try withPanel { controller, _, _ in
+      searchRequests.removeAll()
+      var message: String?
+      let oversized = String(repeating: "x", count: 64 * 1024)
+      XCTAssertNil(controller.bridge.send("tab-editor-save", ["draft": ["name": oversized]]) { result in
+        if case .failure(let error) = result { message = error.localizedDescription }
+      })
+      XCTAssertTrue(message?.contains("Tab draft is too large") == true)
+      XCTAssertTrue(searchRequests.isEmpty)
+
+      var saved: String?
+      let id = try XCTUnwrap(controller.bridge.send("tab-editor-save", ["draft": ["name": "Review"]]) { result in
+        saved = ((try? result.get()) as? [String: Any])?["activeId"] as? String
+      })
+      let request = try XCTUnwrap(searchRequests.last)
+      XCTAssertEqual(request["id"] as? UInt64, id)
+      reply(controller, request, data: ["activeId": "record:9"])
+      XCTAssertEqual(saved, "record:9")
+    }
+  }
+
   private var actions: [[String: Any]] {
     searchRequests.filter { ["paste", "delete"].contains($0["op"] as? String ?? "") }
   }

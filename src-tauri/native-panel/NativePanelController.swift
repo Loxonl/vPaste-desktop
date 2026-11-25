@@ -5,6 +5,7 @@ import QuartzCore
 final class NativeHistoryPanel: NSPanel {
   var keyHandler: ((NSEvent) -> Bool)?
   var pointerHandler: (() -> Void)?
+  var interceptEditorInput: (() -> Bool)?
   var sizePreview = false { didSet { updateGlassAppearance() } }
   init(dockedFrame: NSRect) {
     super.init(contentRect: dockedFrame, styleMask: [.borderless], backing: .buffered, defer: false)
@@ -56,12 +57,15 @@ final class NativeHistoryPanel: NSPanel {
     #endif
   }
   override func sendEvent(_ event: NSEvent) {
+    if [.leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .keyDown].contains(event.type),
+      interceptEditorInput?() == true { return }
     if [.leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel].contains(event.type) {
       pointerHandler?()
     }
     super.sendEvent(event)
   }
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    if interceptEditorInput?() == true { return true }
     let editor = firstResponder as? NSTextView
     let composing = editor?.hasMarkedText() == true
     let command = event.modifierFlags.contains(.command)
@@ -269,6 +273,11 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     window.delegate = self
     window.keyHandler = { [weak self] event in self?.key(event) ?? false }
     window.pointerHandler = { [weak self] in self?.previews.cancelHover() }
+    window.interceptEditorInput = { [weak self] in
+      guard let editor = self?.tabEditor else { return false }
+      editor.activate()
+      return true
+    }
     previewEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
       let handled = MainActor.assumeIsolated {
         guard let self, !self.closed, !self.hiding, event.keyCode == 53,
@@ -285,7 +294,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     applicationFocus = PanelApplicationFocus { [weak self] active in
       guard let self, !self.closed, !self.config.sizePreview else { return }
-      self.bridge.setKey(active && self.window.isKeyWindow)
+      self.bridge.setKey(active && (self.window.isKeyWindow || self.tabEditor?.isKeyWindow == true))
       if !active {
         self.searchEnter = nil
         self.scheduleFocusLoss()
@@ -621,7 +630,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   func activate(toggle: Bool) -> Bool {
     guard !closed, !hiding, !config.sizePreview else { return false }
-    if toggle { dismiss() } else { focus() }
+    if toggle { dismiss() }
+    else if let tabEditor { NSApp.activate(ignoringOtherApps: true); tabEditor.activate() }
+    else { focus() }
     return true
   }
   private func animate(show: Bool, completion: @escaping () -> Void) {
@@ -663,6 +674,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   func dismiss(animated: Bool = true) {
     guard !closed else { return }
     searchEnter = nil
+    closeTabEditor()
     toolbar.cancelInteraction()
     if animated {
       guard !hiding else { return }
@@ -678,6 +690,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     guard !closed else { return }
     saveCheckpoint(force: true)
     closed = true
+    closeTabEditor()
     generation &+= 1
     abandonQuery()
     if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
@@ -713,6 +726,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     window.delegate = nil
     window.keyHandler = nil
     window.pointerHandler = nil
+    window.interceptEditorInput = nil
     if ProcessInfo.processInfo.arguments.contains("--native-panel-check") {
       NSLog(
         "[native-panel] closed cards=%d pages=%d decodedBytes=%d", cards.count, pages.count,
@@ -747,8 +761,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     guard onboarding == nil else { return }
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
       guard let self, !self.closed, (!self.starting || !NSApp.isActive),
-        (!self.window.isKeyWindow || !NSApp.isActive),
-        self.window.attachedSheet == nil, !self.dragging
+        self.window.attachedSheet == nil, !self.dragging,
+        PanelTabEditorWindow.allowsParentBlur(editorOpen: self.tabEditor != nil,
+          applicationActive: NSApp.isActive, parentKey: self.window.isKeyWindow)
       else { return }
       self.bridge.send("blur")
     }
@@ -1566,15 +1581,16 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private var tabsRequest = 0
   private var finishTabReorder: (() -> Void)?
   private var pendingTabSelection: String?
+  private var tabEditor: PanelTabEditor?
+  private var tabEditorLoading = false
+  private var tabEditorGeneration = 0
 
   private func openAddTabMenu() {
-    guard !closed, !hiding, !busyAction, window.attachedSheet == nil else { return }
+    guard canOpenTabEditor else { return }
     previews.cancelHover()
     let mouse = NSEvent.mouseLocation
-    let anchor = PanelContextMenu.editorAnchor(mouse: mouse,
-      primaryHeight: NSScreen.screens.first?.frame.maxY ?? 0)
     let handler = PanelTabKindHandler { [weak self] record in
-      self?.openTabEditor(record: record, anchor: anchor)
+      self?.openTabEditor(record: record, anchor: mouse)
     }
     let menu = PanelContextMenu.tabKindMenu(chinese: chinese, handler: handler)
     // Associate the menu with the elevated panel, as the card context menu does.
@@ -1584,22 +1600,80 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { return }
     withExtendedLifetime(handler) { NSMenu.popUpContextMenu(menu, with: event, for: toolbar) }
   }
-  private func openTabEditor(record: Bool, anchor: [CGFloat], assignTo hash: String = "", tabID: String = "") {
-    menuRun("tab-editor", ["kind": record ? "record" : "filter", "point": anchor, "hash": hash, "tabId": tabID],
-      success: nil, reload: false)
+  private var canOpenTabEditor: Bool {
+    !closed && !hiding && !busyAction && !tabEditorLoading && tabEditor == nil
+      && window.attachedSheet == nil
+  }
+
+  private func openTabEditor(record: Bool, anchor: NSPoint, tabID: String = "") {
+    guard canOpenTabEditor else { return }
+    tabEditorLoading = true
+    tabEditorGeneration &+= 1
+    let generation = tabEditorGeneration
+    let target = ["kind": record ? "record" : "filter", "tabId": tabID]
+    bridge.send("tab-editor-data", target) { [weak self] result in
+      guard let self, !self.closed, !self.hiding, self.tabEditorGeneration == generation else { return }
+      self.tabEditorLoading = false
+      guard NSApp.isActive, self.window.isKeyWindow else { return }
+      do {
+        let data = try panelDecode(PanelTabEditorData.self, result.get())
+        guard self.canOpenTabEditor else { return }
+        self.previews.clear()
+        let editor = PanelTabEditor(data: data, chinese: self.chinese, onSave: { [weak self] draft in
+          self?.saveTabEditor(target: target, draft: draft, generation: generation)
+        }, onCancel: { [weak self] in
+          guard let self, self.tabEditorGeneration == generation else { return }
+          self.closeTabEditor()
+          if NSApp.isActive { self.focus() }
+        })
+        self.tabEditor = editor
+        editor.show(parent: self.window, anchor: anchor)
+        self.bridge.setKey(NSApp.isActive && editor.isKeyWindow)
+      } catch {
+        self.showMessage(self.local("Could not open tab editor: \(error.localizedDescription)",
+          "无法打开标签编辑器：\(error.localizedDescription)"))
+      }
+    }
+  }
+
+  private func saveTabEditor(target: [String: String], draft: [String: Any], generation: Int) {
+    var args: [String: Any] = target
+    args["draft"] = draft
+    bridge.send("tab-editor-save", args) { [weak self] result in
+      guard let self, !self.closed, !self.hiding, self.tabEditorGeneration == generation,
+        let editor = self.tabEditor else { return }
+      switch result {
+      case .failure(let error): editor.reportError(error.localizedDescription)
+      case .success(let raw):
+        let saved = raw as? [String: Any]
+        self.closeTabEditor()
+        self.pendingTabSelection = saved?["activeId"] as? String
+        self.refreshTabs()
+        self.requestHistorySync()
+        if NSApp.isActive { self.focus() }
+        if saved?["orderWarning"] as? Bool == true {
+          self.showMessage(self.local("Tab saved, but its order could not be saved.", "标签已保存，但无法保存顺序。"))
+        }
+      }
+    }
+  }
+
+  private func closeTabEditor() {
+    tabEditorGeneration &+= 1
+    tabEditorLoading = false
+    let editor = tabEditor
+    tabEditor = nil
+    editor?.close()
   }
 
   private func openTabContextMenu(id: String, at mouse: NSPoint) {
-    guard !closed, !hiding, !busyAction, window.attachedSheet == nil,
-      tabs.contains(where: { $0.id == id }) else { return }
+    guard canOpenTabEditor, tabs.contains(where: { $0.id == id }) else { return }
     previews.cancelHover()
-    let anchor = PanelContextMenu.editorAnchor(mouse: mouse,
-      primaryHeight: NSScreen.screens.first?.frame.maxY ?? 0)
     let handler = PanelTabMenuHandler { [weak self] action in
       guard let self, !self.closed, !self.hiding,
         let tab = self.tabs.first(where: { $0.id == id }) else { return }
       switch action {
-      case .edit: self.openTabEditor(record: tab.record, anchor: anchor, tabID: id)
+      case .edit: self.openTabEditor(record: tab.record, anchor: mouse, tabID: id)
       case .delete: self.confirmDeleteTab(tab)
       }
     }
@@ -1758,7 +1832,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     case .createTag:
       let anchor = PanelContextMenu.editorAnchor(mouse: NSEvent.mouseLocation,
         primaryHeight: NSScreen.screens.first?.frame.maxY ?? 0)
-      openTabEditor(record: true, anchor: anchor, assignTo: hash)
+      menuRun("tab-editor", ["kind": "record", "point": anchor, "hash": hash],
+        success: nil, reload: false)
     case .assignTag(let tag):
       menuRun("tag-assign", ["hash": hash, "tagId": tag.id],
         success: local("Added tag \(tag.name)", "已添加标签 \(tag.name)"), reloadAfterFailure: true)

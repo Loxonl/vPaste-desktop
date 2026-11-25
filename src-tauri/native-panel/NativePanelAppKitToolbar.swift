@@ -215,7 +215,6 @@ final class PanelLegacyToolbar: NSView {
   private var searchButton: PanelIconButton!
   private var queueButton: PanelIconButton!
   private var settingsButton: PanelIconButton!
-  private var closeButton: PanelIconButton!
   private weak var search: NSSearchField?
   private var scale: CGFloat = 1
   private var chinese = false
@@ -291,7 +290,6 @@ final class PanelLegacyToolbar: NSView {
     addSubview(developer)
     queueButton = icon("list.bullet", local("Open paste queue", "开启粘贴队列"), #selector(toggleQueue))
     settingsButton = icon("gearshape", local("Settings", "设置"), #selector(settings))
-    closeButton = icon("xmark", local("Close native panel", "关闭原生主界面"), #selector(closePanel))
     setSelection(0)
   }
   private func addTab(_ title: String, symbol: String = "", id: String = "") {
@@ -371,14 +369,13 @@ final class PanelLegacyToolbar: NSView {
     let devWidth = tools.width(toolbarWidth: bounds.width, searching: searchOpen)
     let fieldWidth = min(
       276 * scale,
-      max(100 * scale, bounds.width - 2 * pad - devWidth - 4 * button - 5 * gap - 68 * scale))
+      max(100 * scale, bounds.width - 2 * pad - devWidth - 3 * button - 4 * gap - 68 * scale))
     let expanded: CGFloat = searchOpen ? fieldWidth + 12 * scale : 0
     search?.frame = NSRect(
       x: pad + button + 7 * scale, y: (bounds.height - 32 * scale) / 2, width: fieldWidth,
       height: 32 * scale)
-    closeButton.frame = NSRect(
+    settingsButton.frame = NSRect(
       x: bounds.width - pad - button, y: center, width: button, height: button)
-    settingsButton.frame = closeButton.frame.offsetBy(dx: -button - gap, dy: 0)
     queueButton.frame = settingsButton.frame.offsetBy(dx: -button - gap, dy: 0)
     developer.frame = NSRect(
       x: queueButton.frame.minX - gap - devWidth, y: (bounds.height - 32 * scale) / 2,
@@ -460,5 +457,4 @@ final class PanelLegacyToolbar: NSView {
   }
   @objc private func toggleQueue() { onPasteQueue?() }
   @objc private func settings() { onSettings?() }
-  @objc private func closePanel() { onClose?() }
 }

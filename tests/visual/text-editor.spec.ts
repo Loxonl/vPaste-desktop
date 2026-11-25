@@ -144,7 +144,7 @@ test("retains dirty drafts on focus loss, supports native undo and confirms disc
     await field.focus();
     await page.keyboard.press("End");
     await page.keyboard.type(" changed");
-    await page.keyboard.press("Control+z");
+    await page.keyboard.press("ControlOrMeta+z");
     await expect(field).not.toContainText("changed");
     await page.keyboard.type(" draft");
     await page.mouse.click(1, 1);
@@ -205,7 +205,7 @@ test("sanitizes pasted rich content and keeps it in native undo history", async 
     });
     await expect(field).toContainText("safe paste");
     expect(await field.innerHTML()).not.toMatch(/script|onclick|tracker/);
-    await field.press("Control+z");
+    await field.press("ControlOrMeta+z");
     await expect(field).not.toContainText("safe paste");
 });
 

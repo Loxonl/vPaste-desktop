@@ -436,8 +436,15 @@ final class NativePanelToolbarTests: XCTestCase {
         XCTAssertEqual(radio.accessibilityFrame().width, frame.width, accuracy: 2.1)
         XCTAssertTrue(control.bounds.contains(frames[index]))
       }
-      XCTAssertEqual(surface.tabFrames.map(\.id), ["a", "record:2"])
-      XCTAssertEqual(surface.tabFrames.map(\.frame), frames.dropFirst(2).map { control.convert($0, to: surface) })
+      let dragFrames = surface.tabFrames
+      XCTAssertEqual(dragFrames.map(\.id), ["a", "record:2"])
+      for (dragged, frame) in zip(dragFrames, frames.dropFirst(2)) {
+        let expected = control.convert(frame, to: surface)
+        XCTAssertEqual(dragged.frame.minX, expected.minX, accuracy: 0.01)
+        XCTAssertEqual(dragged.frame.minY, expected.minY, accuracy: 0.01)
+        XCTAssertEqual(dragged.frame.width, expected.width, accuracy: 0.01)
+        XCTAssertEqual(dragged.frame.height, expected.height, accuracy: 0.01)
+      }
       XCTAssertGreaterThan(frames[2].width, frames[0].width, "Native sizing must accommodate the long label")
       state.select(3); control.update(); control.revealSelection()
       let selected = control.convert(control.tabFrames[3], to: surface)

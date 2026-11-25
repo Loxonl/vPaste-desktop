@@ -526,6 +526,10 @@ unsafe extern "C" fn request(bytes: *const u8, length: usize) {
             let _ = preview::dismiss_hover(&app, req.hover_request);
             return;
         }
+        "preview-cancel-pending" => {
+            preview::cancel_pending();
+            return;
+        }
         "preview-close" => {
             let _ = crate::retain_preview_window(&app);
             return;

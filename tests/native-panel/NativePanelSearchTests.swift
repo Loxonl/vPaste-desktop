@@ -81,18 +81,6 @@ final class NativePanelSearchTests: XCTestCase {
     }
   }
 
-  func testCopyAndPasteMenuUsesTheOriginalFormatOfTheCapturedCard() throws {
-    try withPanel(hashes: ["A", "B"]) { controller, _, _ in
-      let b = try panelDecode(PanelCard.self, card("B"))
-      let options = PanelContextMenu.options(card: b, tags: .loading, colors: nil, chinese: false)
-      controller.performMenu(try XCTUnwrap(options.first { $0.title == "Copy and paste" }?.action), card: b)
-      let request = try XCTUnwrap(actions.last)
-      XCTAssertEqual(request["op"] as? String, "paste")
-      XCTAssertEqual(request["hash"] as? String, "B")
-      XCTAssertEqual(request["plain"] as? Bool, false)
-    }
-  }
-
   func testFavoriteMenuKeepsTheCapturedHashAndIntentAfterHistoryReorders() throws {
     try withPanel(hashes: ["A", "B"]) { controller, _, _ in
       let b = try panelDecode(PanelCard.self, card("B"))
@@ -113,6 +101,18 @@ final class NativePanelSearchTests: XCTestCase {
       let favorite = try XCTUnwrap(searchRequests.last { $0["op"] as? String == "favorite" })
       XCTAssertEqual(favorite["hash"] as? String, "B")
       XCTAssertEqual(favorite["favorite"] as? Bool, true)
+    }
+  }
+
+  func testCopyAndPasteMenuUsesTheOriginalFormatOfTheCapturedCard() throws {
+    try withPanel(hashes: ["A", "B"]) { controller, _, _ in
+      let b = try panelDecode(PanelCard.self, card("B"))
+      let options = PanelContextMenu.options(card: b, tags: .loading, colors: nil, chinese: false)
+      controller.performMenu(try XCTUnwrap(options.first { $0.title == "Copy and paste" }?.action), card: b)
+      let request = try XCTUnwrap(actions.last)
+      XCTAssertEqual(request["op"] as? String, "paste")
+      XCTAssertEqual(request["hash"] as? String, "B")
+      XCTAssertEqual(request["plain"] as? Bool, false)
     }
   }
 

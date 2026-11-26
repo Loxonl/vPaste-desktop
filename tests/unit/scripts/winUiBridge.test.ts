@@ -77,6 +77,12 @@ describe("private WinUI transport and shared motion source", () => {
         expect(iss).toContain('Source: "{code:InstallerLogoAfterPayloadCheck}"');
     });
 
+    it("declares the native NuGet target before importing MSBuild targets", () => {
+        const project = read(nativeRoot + "WinUiPanel.vcxproj");
+        const beforeImports = project.slice(0, project.indexOf("<Import "));
+        expect(beforeImports).toContain("<NuGetTargetMoniker>native,Version=v0.0</NuGetTargetMoniker>");
+    });
+
     it("blocks the internal RC from portable autostart even when startup is enabled in its profile", () => {
         const main = read("src-tauri/src/main.rs").replace(/\s+/g, " ");
         const internalRc = "main_panel_mode::WINDOWS_INTERNAL_RC";

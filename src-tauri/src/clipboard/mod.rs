@@ -727,7 +727,7 @@ pub(crate) fn history_ref_page(
     )
 }
 
-#[cfg(all(debug_assertions, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 pub(crate) fn native_history_ref_page(
     keywords: &str,
     last_id: u64,
@@ -882,7 +882,7 @@ fn history_text_visible(item_type: &str, content: &str, source: &str) -> bool {
 
 // Locate a retained viewport by sort key. Only metadata crosses this cursor;
 // bodies/images and the full result hash list are never accumulated in memory.
-#[cfg(all(debug_assertions, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 pub(crate) fn history_ref_seek(
     query: &crate::history_views::HistoryQuery,
     anchor: &crate::history_views::HistoryAnchor,
@@ -966,7 +966,7 @@ pub(crate) fn history_ref_seek(
     Ok((position, first, cursor))
 }
 
-#[cfg(all(debug_assertions, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 pub(crate) fn history_filter_deadline(
     label: &str,
     times: impl Iterator<Item = u64>,
@@ -1165,7 +1165,7 @@ fn search_stored_batch_with_cancellation(
     }))
 }
 
-#[cfg(all(debug_assertions, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 fn native_search_stored_batch(
     keywords: &str,
     last_id: u64,

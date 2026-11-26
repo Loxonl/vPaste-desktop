@@ -14,20 +14,20 @@ const ANCHOR_LIMIT: usize = 4096;
 const CACHE_BYTES: usize = 7 * 1024 * 1024; // reserve the remaining MiB for bounded anchors/indices
 static NEXT_VIEW: AtomicU64 = AtomicU64::new(1);
 static OPEN_REQUEST: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(debug_assertions, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 static NATIVE_OPEN_REQUEST: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ViewOwner {
     Main,
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     NativeExperiment,
 }
 impl ViewOwner {
     fn requests(self) -> &'static AtomicU64 {
         match self {
             Self::Main => &OPEN_REQUEST,
-            #[cfg(all(debug_assertions, target_os = "macos"))]
+            #[cfg(target_os = "macos")]
             Self::NativeExperiment => &NATIVE_OPEN_REQUEST,
         }
     }
@@ -258,7 +258,7 @@ pub(crate) fn read_page(id: &str, revision: u64, index: usize) -> Result<History
         let mut scan_index = mut_index;
         let mut cursor = mut_cursor;
         while scan_index <= index {
-            #[cfg(all(debug_assertions, target_os = "macos"))]
+            #[cfg(target_os = "macos")]
             let page = if view.owner == ViewOwner::NativeExperiment {
                 crate::clipboard::native_history_ref_page(
                     &view.query.keywords,
@@ -278,7 +278,7 @@ pub(crate) fn read_page(id: &str, revision: u64, index: usize) -> Result<History
                     current,
                 )?
             };
-            #[cfg(not(all(debug_assertions, target_os = "macos")))]
+            #[cfg(not(target_os = "macos"))]
             let page = crate::clipboard::history_ref_page(
                 &view.query.keywords,
                 cursor.0,
@@ -413,7 +413,7 @@ pub(crate) fn cache_bytes() -> usize {
         .sum()
 }
 
-#[cfg(all(debug_assertions, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 pub(crate) fn native_open_is_current(request: u64) -> bool {
     ViewOwner::NativeExperiment
         .requests()
@@ -421,7 +421,7 @@ pub(crate) fn native_open_is_current(request: u64) -> bool {
         == request
 }
 
-#[cfg(all(debug_assertions, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 pub(crate) fn reserve_native_open() -> u64 {
     ViewOwner::NativeExperiment
         .requests()
@@ -429,7 +429,7 @@ pub(crate) fn reserve_native_open() -> u64 {
         + 1
 }
 
-#[cfg(all(debug_assertions, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 #[derive(Clone, Debug)]
 pub(crate) struct HistoryAnchor {
     pub(crate) hash: String,
@@ -439,7 +439,7 @@ pub(crate) struct HistoryAnchor {
 
 // Rebase only the retained page window after a mutation. Replacing the view
 // under the same id invalidates old workers without opening another query.
-#[cfg(all(debug_assertions, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 pub(crate) fn refresh_native(
     id: &str,
     revision: u64,
@@ -483,7 +483,7 @@ pub(crate) fn refresh_native(
     Ok((token, position))
 }
 
-#[cfg(all(debug_assertions, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 pub(crate) fn native_cached_refs(id: &str, revision: u64) -> Result<Vec<HistoryRef>, String> {
     let view = view(id, revision)?;
     let cache = view.cache.lock().unwrap_or_else(|err| err.into_inner());
@@ -494,7 +494,7 @@ pub(crate) fn native_cached_refs(id: &str, revision: u64) -> Result<Vec<HistoryR
         .collect())
 }
 
-#[cfg(all(debug_assertions, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 pub(crate) fn validate_native(id: &str, revision: u64) -> Result<(), String> {
     let active = view(id, revision)?;
     if active.owner != ViewOwner::NativeExperiment {
@@ -503,7 +503,7 @@ pub(crate) fn validate_native(id: &str, revision: u64) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(all(debug_assertions, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 pub(crate) fn native_view_count() -> usize {
     VIEWS
         .lock()

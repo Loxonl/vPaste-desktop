@@ -28,6 +28,7 @@ use log::{error, info, LevelFilter};
 use rand::RngCore;
 use serde::Serialize;
 use tauri::image::Image as TauriImage;
+#[cfg(not(target_os = "macos"))]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -68,6 +69,8 @@ mod image_ocr;
 mod image_preview;
 #[cfg(all(target_os = "macos", feature = "mac-app-store"))]
 mod mac_app_store;
+#[cfg(target_os = "macos")]
+mod macos_tray;
 mod main_panel_mode;
 mod maintenance;
 mod media_resources;
@@ -77,7 +80,7 @@ mod memory_profile;
 mod native_drag_preview;
 #[cfg(target_os = "macos")]
 mod native_drag_snapshot;
-#[cfg(all(debug_assertions, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 mod native_panel;
 #[cfg(any(test, debug_assertions))]
 mod office_test_fixtures;
@@ -188,6 +191,7 @@ static PREVIEW_PENDING: Mutex<Option<PreparedPreview>> = Mutex::new(None);
 static CLIPBOARD_SUPPRESS_BLUR_HIDE_UNTIL: AtomicU64 = AtomicU64::new(0);
 static ONBOARDING_ACTIVE: AtomicBool = AtomicBool::new(false);
 static ONBOARDING_SHORTCUT_DEMO_ENABLED: AtomicBool = AtomicBool::new(false);
+#[cfg(not(target_os = "macos"))]
 static TRAY_MENU_WATCH_GENERATION: AtomicU64 = AtomicU64::new(0);
 static TRAY_ICON_VISIBLE: AtomicBool = AtomicBool::new(false);
 static PERMISSION_GUIDE_RETURN_TO_CONFIG: AtomicBool = AtomicBool::new(false);
@@ -234,7 +238,9 @@ const PASTE_QUEUE_WINDOWS_EVENT_MARKER: usize = 0x5650_5155;
 const PASTE_FALLBACK_NOTICE_TOP_INSET: f64 = 18.0;
 const PASTE_FALLBACK_NOTICE_DURATION_MS: u64 = 4_000;
 const AUXILIARY_WINDOW_GUTTER: f64 = 8.0;
+#[cfg(not(target_os = "macos"))]
 const TRAY_MENU_WIDTH: i32 = 216;
+#[cfg(not(target_os = "macos"))]
 const TRAY_MENU_HEIGHT: i32 = 184;
 const TAB_EDITOR_CONTENT_WIDTH: f64 = 286.0;
 const TAB_EDITOR_DEFAULT_CONTENT_HEIGHT: f64 = 400.0;
@@ -334,11 +340,11 @@ fn open_native_main_panel(
 }
 
 fn native_auxiliary_window_active() -> bool {
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     {
         native_panel::is_key_window()
     }
-    #[cfg(not(all(debug_assertions, target_os = "macos")))]
+    #[cfg(not(target_os = "macos"))]
     {
         false
     }
@@ -497,7 +503,7 @@ struct PreviewWindowSize {
 #[derive(Clone)]
 struct PreparedPreview {
     payload: PreviewPayload,
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     is_pdf: bool,
     mode: PreviewMode,
     rect: PreviewRect,
@@ -1174,7 +1180,7 @@ fn clipboard_screen_bounds(
     if let Some(surface) = winui_panel::preview::surface() {
         return surface.bounds;
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if let Some(surface) = native_panel::preview::surface() {
         return surface.bounds;
     }
@@ -3328,7 +3334,7 @@ fn should_restore_winui_after_permission_guide(is_winui: bool) -> bool {
 }
 
 fn restore_parent_after_permission_guide(app: &tauri::AppHandle) {
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if PERMISSION_GUIDE_RETURN_TO_NATIVE_PANEL.swap(false, Ordering::SeqCst) {
         let _ = native_panel::show_default(app.clone());
         return;
@@ -3351,7 +3357,7 @@ fn restore_parent_after_permission_guide(app: &tauri::AppHandle) {
             return;
         }
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if main_panel_mode::native() {
         let _ = native_panel::show_default(app.clone());
         return;
@@ -3424,7 +3430,7 @@ async fn open_onboarding_permission_window_from_source(
         } else {
             center_window_on_monitor(&window, main_panel_monitor(&app))?;
         }
-        #[cfg(all(debug_assertions, target_os = "macos"))]
+        #[cfg(target_os = "macos")]
         if source_window
             .as_ref()
             .is_none_or(|source| source.label() == "onboardingPermission")
@@ -3450,7 +3456,6 @@ async fn open_onboarding_permission_window_from_source(
         #[cfg(target_os = "macos")]
         {
             let level = 102;
-            #[cfg(debug_assertions)]
             let level = if native_panel::preview::active()
                 || source_window
                     .as_ref()
@@ -3756,7 +3761,7 @@ fn app_window_is_foreground(app: &tauri::AppHandle, label: &str, context: &str) 
     if label == "clipboard" && main_panel_mode::winui() {
         return winui_panel::preview::foreground();
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if label == "clipboard" && native_panel::preview::active() {
         return native_panel::is_key_window();
     }
@@ -3780,7 +3785,7 @@ fn close_preview_window(app: &tauri::AppHandle) -> Result<(), String> {
     if main_panel_mode::winui() {
         winui_panel::preview::closed();
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     native_panel::preview::closed();
     PREVIEW_HOVER.store(false, Ordering::SeqCst);
     PREVIEW_HOVER_REQUEST.fetch_add(1, Ordering::SeqCst);
@@ -3812,7 +3817,7 @@ fn hide_preview_and_clipboard(app: &tauri::AppHandle, context: &str) {
         let _ = winui_panel::hide();
         return;
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if native_panel::preview::active() {
         native_panel::preview::hide(app);
     }
@@ -3873,7 +3878,7 @@ fn cursor_inside_app_windows(app: &tauri::AppHandle) -> bool {
     if winui_panel::preview::cursor_inside() {
         return true;
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if native_panel::preview::cursor_inside() {
         return true;
     }
@@ -4054,6 +4059,7 @@ fn is_quick_input_modifier_pressed(_trigger_key: String) -> bool {
     false
 }
 
+#[cfg(not(target_os = "macos"))]
 fn watch_tray_menu_outside_click(window: tauri::WebviewWindow) {
     let generation = TRAY_MENU_WATCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     std::thread::spawn(move || {
@@ -4390,7 +4396,7 @@ fn move_focus_to_clipboard(app: &tauri::AppHandle, context: &str) {
         let _ = winui_panel::preview::focus();
         return;
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if native_panel::preview::active() {
         begin_preview_focus_handoff();
         let _ = native_panel::preview::focus(app);
@@ -4422,7 +4428,7 @@ fn cursor_focus_region(app: &tauri::AppHandle) -> Option<preview_focus::FocusTar
     if winui_panel::preview::cursor_inside() {
         return Some(FocusTarget::Clipboard);
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if native_panel::preview::cursor_inside() {
         return Some(FocusTarget::Clipboard);
     }
@@ -4468,7 +4474,7 @@ fn focus_watch_state(app: &tauri::AppHandle) -> preview_focus::WatchState {
 }
 
 fn main_surface_visible() -> bool {
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if native_panel::preview::active() {
         return true;
     }
@@ -4523,7 +4529,7 @@ fn ensure_focus_watch(app: &tauri::AppHandle) {
                         let _ = winui_panel::preview::focus();
                         continue;
                     }
-                    #[cfg(all(debug_assertions, target_os = "macos"))]
+                    #[cfg(target_os = "macos")]
                     if native_panel::preview::active() {
                         begin_preview_focus_handoff();
                         let _ = native_panel::preview::focus(&app);
@@ -4601,7 +4607,7 @@ fn activate_from_background(window: &tauri::WebviewWindow, context: &str) {
 fn activate_from_background(_window: &tauri::WebviewWindow, _context: &str) {}
 
 fn handle_main_panel_focus_lost(app: tauri::AppHandle) {
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if native_panel::onboarding::active() {
         return;
     }
@@ -4629,7 +4635,7 @@ fn handle_main_panel_focus_lost(app: tauri::AppHandle) {
             hide_preview_and_clipboard(&app, "clipboard blur outside app");
             return;
         }
-        #[cfg(all(debug_assertions, target_os = "macos"))]
+        #[cfg(target_os = "macos")]
         if native_panel::preview::active() {
             if !native_panel::is_key_window() {
                 hide_preview_and_clipboard(&app, "native main blur outside app");
@@ -4883,7 +4889,7 @@ fn preview_position_avoiding_clipboard(
     if let Some(surface) = winui_panel::preview::surface() {
         return centered_preview_position(surface.preview_area(PREVIEW_CLIPBOARD_GAP), size);
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if let Some(surface) = native_panel::preview::surface() {
         let area = surface.preview_area(PREVIEW_CLIPBOARD_GAP);
         return centered_preview_position(area, size);
@@ -4927,7 +4933,7 @@ fn preview_bounds_avoiding_clipboard(app: &tauri::AppHandle, bounds: ScreenBound
     if let Some(surface) = winui_panel::preview::surface() {
         return surface.preview_area(PREVIEW_CLIPBOARD_GAP);
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if let Some(surface) = native_panel::preview::surface() {
         return surface.preview_area(PREVIEW_CLIPBOARD_GAP);
     }
@@ -5271,7 +5277,7 @@ fn commit_preview_window(
     if animated {
         animate_preview_rect(window.clone(), &prepared, from, duration_ms, easing);
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     native_panel::preview::set_pdf_window(prepared.is_pdf.then_some(&window));
     // Restore the native level for first show and visible-window reuse alike.
     #[cfg(target_os = "macos")]
@@ -5331,14 +5337,11 @@ fn preview_origin_current(native_request: Option<u64>) -> bool {
     {
         return native_request.is_none_or(winui_panel::preview::current);
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     {
         native_request.is_none_or(native_panel::preview::current)
     }
-    #[cfg(not(any(
-        all(debug_assertions, target_os = "macos"),
-        all(target_os = "windows", feature = "winui")
-    )))]
+    #[cfg(not(any(target_os = "macos", all(target_os = "windows", feature = "winui"))))]
     {
         let _ = native_request;
         true
@@ -5620,7 +5623,7 @@ async fn prepare_preview_window(
             WINUI_PDF_PREVIEW.store(is_pdf_preview, Ordering::SeqCst);
             *pending = Some(PreparedPreview {
                 payload: payload.clone(),
-                #[cfg(all(debug_assertions, target_os = "macos"))]
+                #[cfg(target_os = "macos")]
                 is_pdf: is_pdf_preview,
                 mode,
                 rect: PreviewRect {
@@ -5674,7 +5677,7 @@ fn preview_navigate_selection(
     }
     let payload =
         serde_json::json!({"direction":direction,"key":key,"ctrlKey":ctrl_key.unwrap_or(false)});
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if native_panel::preview::route(serde_json::json!({"event":"preview-navigation",
         "direction":direction,"key":key,"ctrlKey":ctrl_key.unwrap_or(false)}))
     {
@@ -5690,7 +5693,7 @@ fn preview_pointer_changed(app: tauri::AppHandle, inside: bool) -> Result<(), St
         winui_panel::preview::pointer_changed(inside);
         return Ok(());
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if native_panel::preview::route(serde_json::json!({"event":"preview-hover","inside":inside})) {
         return Ok(());
     }
@@ -5888,11 +5891,11 @@ fn hide_preview_window(app: tauri::AppHandle, window: tauri::WebviewWindow) -> R
 
 fn close_preview_and_focus(app: tauri::AppHandle) -> Result<(), String> {
     close_preview_window(&app)?;
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if native_panel::preview::active() {
         return native_panel::preview::focus(&app);
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if main_panel_mode::native() {
         return native_panel::show_default(app);
     }
@@ -5901,7 +5904,7 @@ fn close_preview_and_focus(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn show_main_panel_for_app(app: &tauri::AppHandle) -> Result<(), String> {
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if main_panel_mode::native() {
         return native_panel::show_default(app.clone());
     }
@@ -6011,7 +6014,7 @@ async fn open_tab_editor_window(
                 fit_content_window_to_work_area(&window)?;
             }
         }
-        #[cfg(all(debug_assertions, target_os = "macos"))]
+        #[cfg(target_os = "macos")]
         if native_panel::preview::active() {
             set_macos_window_level(&window, 104);
         }
@@ -6066,7 +6069,7 @@ async fn open_emoji_picker_window(
     let window =
         auxiliary_windows::ensure(&app, auxiliary_windows::WindowKind::EmojiPicker).await?;
     auxiliary_windows::on_main_thread(app.clone(), move || {
-        #[cfg(all(debug_assertions, target_os = "macos"))]
+        #[cfg(target_os = "macos")]
         if native_panel::preview::active() {
             set_macos_window_level(&window, 105);
         }
@@ -6185,7 +6188,7 @@ fn hide_tab_editor_window(window: tauri::WebviewWindow) -> Result<(), String> {
         let _ = auxiliary_windows::destroy(&emoji_picker_window);
     }
     auxiliary_windows::destroy(&window).map_err(|err| err.to_string())?;
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if native_panel::tab_editor_closed(&app) {
         return Ok(());
     }
@@ -6200,7 +6203,7 @@ fn apply_custom_tabs_from_editor(
     app: tauri::AppHandle,
     payload: serde_json::Value,
 ) -> Result<(), String> {
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     {
         // The editor also saves these itself, but as a separate request; store
         // them before the native panel re-reads its tabs.
@@ -7209,10 +7212,10 @@ async fn save_clipboard_text(
         .unwrap()
         .as_ref()
         .map(|target| target.hash.clone());
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     let native_target = previous_hash.clone().filter(|_| main_panel_mode::native());
     let item = save_clipboard_text_for_hash(app, previous_hash, update).await?;
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if let Some(hash) = native_target {
         if let Some(target) = TEXT_EDITOR_TARGET
             .lock()
@@ -7255,7 +7258,7 @@ fn hide_text_editor_window(app: tauri::AppHandle) -> Result<(), String> {
         begin_preview_focus_handoff();
         return winui_panel::restore_after_editor();
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if main_panel_mode::native() {
         return native_panel::show_after_editor(app, _target.map(|target| target.hash));
     }
@@ -7681,7 +7684,7 @@ fn toggle_clipboard_window(app: &tauri::AppHandle) {
         }
         ToggleEditorAction::TogglePanel => {}
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if main_panel_mode::native() || native_panel::onboarding::active() {
         if let Err(error) = native_panel::toggle(app.clone()) {
             error!("Failed to toggle native main panel: {error}");
@@ -10337,6 +10340,26 @@ fn cleanup_legacy_autostart_entries() {
 #[cfg(not(target_os = "windows"))]
 fn cleanup_legacy_autostart_entries() {}
 
+fn persist_settings_config(mut next: Config) -> Result<Config, String> {
+    #[cfg(all(target_os = "macos", debug_assertions))]
+    let mut language_changed = false;
+    let saved = config::try_update(|current| {
+        #[cfg(all(target_os = "macos", debug_assertions))]
+        {
+            language_changed = current.multilingual != next.multilingual;
+        }
+        next.last_update_check_at = current.last_update_check_at.clone();
+        // Panel sizing can change after the Settings form took its snapshot.
+        next.clipboard_panel_size = current.clipboard_panel_size;
+        *current = next;
+    })?;
+    #[cfg(all(target_os = "macos", debug_assertions))]
+    if language_changed {
+        native_panel::developer::set_language_preview(None);
+    }
+    Ok(saved)
+}
+
 #[tauri::command]
 fn save_config(app: tauri::AppHandle, config: String) -> Result<SettingsSaveInfo, String> {
     let _cleanup = auto_cleanup::pause();
@@ -10387,7 +10410,6 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<SettingsSaveInfo
         "开关粘贴队列",
     )?;
     let automatic_updates_enabled = config_struct.update_check_enabled;
-    let next_language = config_struct.multilingual.clone();
     let next_theme_mode = config_struct.theme_mode.clone();
 
     // Release both old registrations before acquiring either new one. This keeps
@@ -10414,13 +10436,7 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<SettingsSaveInfo
     }
     sync_tray_visibility(&app, config_struct.display_tray_icon)?;
 
-    let saved_config = config::try_update(|current| {
-        config_struct.last_update_check_at = current.last_update_check_at.clone();
-        // The panel-size commands own this preference; another settings save
-        // must not overwrite a gesture that completed after its form snapshot.
-        config_struct.clipboard_panel_size = current.clipboard_panel_size;
-        *current = config_struct;
-    })?;
+    let saved_config = persist_settings_config(config_struct)?;
     app_updater::set_automatic_updates_enabled(automatic_updates_enabled);
     sync_tray_theme_for_mode(&app, &next_theme_mode);
     #[cfg(all(target_os = "windows", feature = "winui"))]
@@ -10432,7 +10448,7 @@ fn save_config(app: tauri::AppHandle, config: String) -> Result<SettingsSaveInfo
             }
         }
     }
-    let _ = app.emit("language-changed", next_language);
+    let _ = app.emit("language-changed", &saved_config.multilingual);
     let _ = app.emit("theme-changed", next_theme_mode);
     let _ = app.emit("clipboard-behavior-config-changed", saved_config);
     if let Err(err) = ensure_history_storage_dirs() {
@@ -12415,7 +12431,7 @@ fn prepare_paste_queue_click_target(
     #[cfg(target_os = "macos")]
     require_macos_paste_target(target_pid, true)?;
     if main_surface_visible() {
-        #[cfg(all(debug_assertions, target_os = "macos"))]
+        #[cfg(target_os = "macos")]
         if native_panel::preview::active() {
             native_panel::preview::hide(app);
         }
@@ -13250,7 +13266,7 @@ fn show_paste_queue_window(
         .get_webview_window("clipboard")
         .map(|clipboard_window| target_clipboard_screen_bounds(&clipboard_window))
         .unwrap_or_else(|| screen_bounds(&window));
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     let bounds = native_panel::preview::surface()
         .map(|surface| surface.bounds)
         .unwrap_or(bounds);
@@ -13360,7 +13376,7 @@ async fn apply_paste_queue_activation_inner(
     if request.active {
         if !local_acceptance_no_capture() && !is_process_trusted_with_prompt(false) {
             let source_window = app.get_webview_window("clipboard");
-            #[cfg(all(debug_assertions, target_os = "macos"))]
+            #[cfg(target_os = "macos")]
             let source_window = match source_window {
                 None if native_panel::preview::active() || main_panel_mode::native() => Some(
                     auxiliary_windows::ensure(
@@ -14125,6 +14141,7 @@ fn toggle_clipboard_history_paused(app: tauri::AppHandle) -> Result<bool, String
     Ok(set_clipboard_history_paused_state(&app, paused))
 }
 
+#[cfg(not(target_os = "macos"))]
 async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
     let started = Instant::now();
     let cursor = cursor_physical_position();
@@ -14187,12 +14204,6 @@ async fn show_vpaste_tray_menu(app: &tauri::AppHandle, rect: tauri::Rect) {
                         )
                     })
                     .unwrap_or((0, 0, i32::MAX, i32::MAX));
-                #[cfg(target_os = "macos")]
-                let (target_x, target_y) = (
-                    (icon_center_x - menu_size.width as i32 / 2).clamp(min_x, max_x),
-                    icon_bottom_y.clamp(min_y, max_y),
-                );
-                #[cfg(not(target_os = "macos"))]
                 let (target_x, target_y) = (
                     cursor
                         .map(|position| position.x + TRAY_MENU_CURSOR_GAP)
@@ -14229,27 +14240,30 @@ fn install_vpaste_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 
     let tray_builder = tauri::tray::TrayIconBuilder::with_id(TRAY_ICON_ID)
         .icon(tray_icon)
-        .tooltip("vPaste")
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                rect,
-                button,
-                button_state,
-                ..
-            } = event
-            {
-                if matches!(button, MouseButton::Left | MouseButton::Right)
-                    && button_state == MouseButtonState::Up
-                {
-                    let app = tray.app_handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        show_vpaste_tray_menu(&app, rect).await;
-                    });
-                }
-            }
-        });
+        .tooltip("vPaste");
     #[cfg(target_os = "macos")]
-    let tray_builder = tray_builder.icon_as_template(true);
+    let tray_builder = tray_builder
+        .icon_as_template(true)
+        .on_tray_icon_event(macos_tray::handle_event);
+    #[cfg(not(target_os = "macos"))]
+    let tray_builder = tray_builder.on_tray_icon_event(|tray, event| {
+        if let TrayIconEvent::Click {
+            rect,
+            button,
+            button_state,
+            ..
+        } = event
+        {
+            if matches!(button, MouseButton::Left | MouseButton::Right)
+                && button_state == MouseButtonState::Up
+            {
+                let app = tray.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    show_vpaste_tray_menu(&app, rect).await;
+                });
+            }
+        }
+    });
     let _tray = tray_builder.build(app)?;
 
     TRAY_ICON_VISIBLE.store(true, Ordering::SeqCst);
@@ -14382,6 +14396,7 @@ fn build_auxiliary_window(
         .always_on_top(true)
         .shadow(false)
         .inner_size(940.0 * text_scale, 430.0 * text_scale),
+        #[cfg(not(target_os = "macos"))]
         WindowKind::TrayMenu => {
             WebviewWindowBuilder::new(handle, "trayMenu", App("tray-menu".into()))
                 .title("vPaste Tray")
@@ -14454,13 +14469,7 @@ fn build_auxiliary_window(
                 101
             },
         );
-        if matches!(kind, WindowKind::TrayMenu) {
-            configure_macos_overlay_window(&window);
-        }
-        if matches!(
-            kind,
-            WindowKind::OnboardingPermission | WindowKind::TrayMenu
-        ) {
+        if matches!(kind, WindowKind::OnboardingPermission) {
             configure_macos_transparent_window(&window);
         }
     }
@@ -14557,7 +14566,7 @@ fn refresh_clipboard_window_frame(window: &tauri::Window) -> tauri::Result<()> {
 
 fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     if main_panel_mode::native() {
-        return Err(io::Error::other("The main WebView is disabled by --main-ui=native").into());
+        return Err(io::Error::other("The main WebView is disabled in native panel mode").into());
     }
     let monitor = handle.primary_monitor().ok().flatten();
     panel_size::use_configured_size(monitor.as_ref());
@@ -15181,7 +15190,7 @@ fn main() {
                 if window.label() == "tabEditor" {
                     api.prevent_close();
                     let _ = auxiliary_windows::destroy_native(window);
-                    #[cfg(all(debug_assertions, target_os = "macos"))]
+                    #[cfg(target_os = "macos")]
                     native_panel::tab_editor_closed(window.app_handle());
                 }
                 if window.label() == "emojiPicker" {
@@ -15195,7 +15204,7 @@ fn main() {
                 }
             }
             if let tauri::WindowEvent::Focused(focused) = event {
-                #[cfg(all(debug_assertions, target_os = "macos"))]
+                #[cfg(target_os = "macos")]
                 if *focused && matches!(window.label(), "clipboardPreview" | browser_preview::LABEL) {
                     // A focusable Tao window also becomes AppKit's main window.
                     // Keep the native panel's glass active without reclaiming key focus.

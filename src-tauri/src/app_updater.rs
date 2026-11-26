@@ -111,12 +111,17 @@ pub struct UpdateState {
     release_url: &'static str,
 }
 
-#[cfg(all(target_os = "windows", feature = "winui"))]
+#[cfg(any(target_os = "macos", all(target_os = "windows", feature = "winui")))]
 impl UpdateState {
     pub(crate) fn tray_restart_ready(&self) -> bool {
         self.status == UpdateStatus::Ready
             && !self.portable
             && self.source != UpdateSource::MacAppStore
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn tray_store_update_available(&self) -> bool {
+        self.source == UpdateSource::MacAppStore && self.status == UpdateStatus::Available
     }
 }
 
@@ -1366,11 +1371,12 @@ mod tests {
     const TEST_PAYLOAD: &[u8] = b"vpaste updater cache fixture\n";
     const TARGET: &str = "darwin-aarch64";
 
-    #[cfg(all(target_os = "windows", feature = "winui"))]
+    #[cfg(any(target_os = "macos", all(target_os = "windows", feature = "winui")))]
     #[test]
     fn tray_restart_row_matches_webview_readiness() {
         use super::{UpdateSource, UpdateState};
         let mut state = UpdateState {
+            source: UpdateSource::Direct,
             status: UpdateStatus::Ready,
             ..UpdateState::default()
         };
@@ -1383,6 +1389,22 @@ mod tests {
         state.status = UpdateStatus::Ready;
         state.source = UpdateSource::MacAppStore;
         assert!(!state.tray_restart_ready());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn tray_store_row_requires_an_available_app_store_update() {
+        use super::{UpdateSource, UpdateState};
+        let mut state = UpdateState {
+            source: UpdateSource::Direct,
+            status: UpdateStatus::Available,
+            ..UpdateState::default()
+        };
+        assert!(!state.tray_store_update_available());
+        state.source = UpdateSource::MacAppStore;
+        assert!(state.tray_store_update_available());
+        state.status = UpdateStatus::Ready;
+        assert!(!state.tray_store_update_available());
     }
 
     #[test]

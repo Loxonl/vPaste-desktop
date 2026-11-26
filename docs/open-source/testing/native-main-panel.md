@@ -1,27 +1,22 @@
-# macOS DEV native main-panel experiment
+# macOS native main panel
 
 ## Entry and acceptance criteria
 
-By default the React main window remains the app's main window. On macOS, start a
-Debug build with `npm run dev:debug` and click **Native panel / 原生主界面** in the
-main window's DEV toolbar. The existing native-controls demo has a separate entry.
-
-To use the native panel for every main-window wake in that DEV process:
+The AppKit main panel is the default when starting vPaste on macOS in Debug or
+Release. The developer launcher uses the same default. Select either renderer
+explicitly with the following options:
 
 ```sh
-sudo npm run dev:debug -- --main-ui=native
-sudo npm run dev:debug -- --main-ui=webview
+npm run dev:debug -- --main-ui=native
+npm run dev:debug -- --main-ui=webview
 ```
 
-`--main-ui native` and `--main-ui webview` are accepted too. The launcher also
-reads `npm_config_main_ui` when npm consumes an option before the `--` separator;
-explicit script arguments take priority. It prints the chosen interface and app
-arguments before launch, including when an existing instance blocks startup.
-To change backends, stop the existing `dev:debug` command and restart it: the
-current Tauri runner keeps its arguments across Rust rebuilds. Omission defaults
-to WebView. Invalid/missing/duplicate values and unsupported native selections fail
-before startup. Native requires macOS, Debug and `--dev-mode`; the option is never
-saved to user configuration.
+The app also accepts `--main-ui native` and `--main-ui webview`. The launcher
+reads `npm_config_main_ui` when npm consumes an option before the `--` separator.
+Explicit script arguments take priority. To change backends, restart the app
+with the desired option. Invalid, missing, duplicate, and unsupported selections
+fail before startup. Renderer selection is process-local. The DEV toolbar and
+diagnostic probes remain limited to Debug workflows.
 
 In native mode there is no `clipboard` WebView at startup, while collapsed or on
 repeated wake. A guard in its builder rejects accidental creation. Native startup
@@ -40,8 +35,8 @@ that tutorial state. The existing tutorial itself still requires WebView mode.
 
 | Requirement | Implementation |
 | --- | --- |
-| macOS DEV only | Frontend DEV/platform gate, Rust Debug + `--dev-mode` guard, and macOS Debug-only Swift compilation |
-| Keep the current default interface | With no option or `--main-ui=webview`, preserve the existing main window, routing and show/hide; only explicit macOS DEV native mode reroutes wakes |
+| macOS Debug and Release | AppKit panel and Rust bridge build in both profiles. The optional WebView-to-AppKit DEV preview and developer actions retain their Debug + `--dev-mode` gate |
+| Default to AppKit on macOS | No renderer argument or `--main-ui=native` routes wakes to AppKit. `--main-ui=webview` selects the existing WebView route |
 | Use real history | Share the existing Rust database, history query service, thumbnails and original-format actions |
 | Isolate the two readers | One bounded query per owner, with separate request generations; opening/closing either owner preserves the other |
 | Recycle data and media | Viewport-sized AppKit items and card payloads, bounded metadata pages, 16 MiB/48-entry decoded-image cache, close-time cancellation and cleanup |
@@ -173,7 +168,7 @@ not enter the SwiftUI model.
 | Keep main commands usable across focus changes | Route Cmd+F/Cmd+R from toolbar/window focus; leave text-copy, cursor movement and composition Escape with the search editor |
 | Preserve list virtualization, window motion and glass | Keep `NSCollectionView`, `PanelScroll`, the fixed `NSPanel`, existing Core Animation transitions and backdrop |
 | Release the hosted view on close | Clear callbacks, invalidate delayed search-focus requests, detach the hosting view and clear the search delegate |
-| Keep existing platform and deployment support | Compile only in macOS Debug; macOS 11 retains `PanelLegacyToolbar`; the SwiftUI renderer uses macOS 12+ APIs |
+| Keep existing platform and deployment support | Compile in macOS Debug and Release; macOS 11 retains `PanelLegacyToolbar`; the SwiftUI renderer uses macOS 12+ APIs |
 
 Manual AppKit drawing of toolbar controls is replaced only on the SwiftUI path.
 The old implementation remains in `NativePanelAppKitToolbar.swift` for macOS 11.
@@ -193,12 +188,12 @@ require a native rebuild rather than frontend hot reload.
   original copy/paste formats and full-content auxiliary previews are preserved.
 - The footer reports retained card payloads and this panel's decoded-image cache,
   not process resident memory or physical footprint. AppKit allocations live in
-  the Rust host process. The original main WebView remains alive in the default
-  side-by-side experiment; `--main-ui=native` skips it. Neither path is a measured
+  the Rust host process. The original main WebView remains alive if the developer opens the
+  AppKit preview in explicit WebView mode. Normal AppKit startup skips it. Neither path is a measured
   memory-reduction result
   without separate profiling.
-- Swift sources and the Rust native-panel module are absent from Release and
-  Windows builds. The release command stub rejects attempts to invoke the panel.
+- The production panel and tray build in macOS Debug and Release. The DEV-only
+  command for opening an AppKit preview from the WebView remains gated.
 
 ## Isolated interactive verification
 
@@ -252,7 +247,7 @@ intentionally not run, per request.
 | Criterion | Changed mechanism |
 | --- | --- |
 | `npm run dev:debug -- --main-ui=native` reaches Rust with the choice | Shared launcher option parser canonicalizes both argument forms; platform validation runs before launching |
-| Omission and explicit `webview` preserve the existing route | Process-local Rust selection defaults to WebView; Windows/release native requests are rejected |
+| Omission and explicit `webview` select the expected renderer | Process-local selection defaults to AppKit on macOS and WebView elsewhere. Explicit AppKit requests require macOS |
 | Native starts/wakes without a main renderer | Skip the main builder and frontend readiness/prewarm; central show/toggle routes use AppKit; the builder rejects native-mode calls |
 | Capture does not need a window | macOS listener emits through AppHandle with the same capture/retry/queue logic |
 | Auxiliary actions do not manufacture a hidden main window | Optional source for settings, target-screen fallback notices, native return focus and AppKit size previews |

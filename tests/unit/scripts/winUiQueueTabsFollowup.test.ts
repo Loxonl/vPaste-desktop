@@ -71,6 +71,6 @@ describe("retired standalone native sample", () => {
         const build = read("src-tauri/build.rs");
         expect(build).not.toContain("build_native_demo");
         expect(build).toContain('"native-panel/NativePanelBridge.h"');
-        expect(build).toContain("build_swift_native_panel()");
+        expect(build).toContain("build_swift_macos()");
     });
 });

@@ -5706,13 +5706,16 @@ fn is_preview_window_visible(app: tauri::AppHandle) -> bool {
     preview_window_visible(&app) || PREVIEW_REQUESTS.active()
 }
 
+fn preview_protected_from_replacement() -> bool {
+    PREVIEW_PINNED.load(Ordering::SeqCst) || WINUI_IMAGE_TEXT_PREVIEW.load(Ordering::SeqCst)
+}
+
 fn preview_request_allowed(mode: PreviewMode, visible: bool) -> bool {
     !MACOS_IMAGE_TEXT_DRAFT_PROTECTED.load(Ordering::SeqCst)
         && mode.allows(
             visible,
             PREVIEW_HOVER.load(Ordering::SeqCst),
-            PREVIEW_PINNED.load(Ordering::SeqCst)
-                || WINUI_IMAGE_TEXT_PREVIEW.load(Ordering::SeqCst),
+            preview_protected_from_replacement(),
         )
 }
 
@@ -14565,7 +14568,7 @@ fn refresh_clipboard_window_frame(window: &tauri::Window) -> tauri::Result<()> {
 }
 
 fn build_clipboard_window(handle: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {
-    if main_panel_mode::native() {
+    if !main_panel_mode::allows_main_webview() {
         return Err(io::Error::other("The main WebView is disabled in native panel mode").into());
     }
     let monitor = handle.primary_monitor().ok().flatten();
@@ -14815,6 +14818,180 @@ fn show_startup_error(message: &str) {
     }
 }
 
+#[cfg(any(all(target_os = "windows", feature = "winui"), test))]
+fn winui_explicit_startup_error_message(error: &str) -> String {
+    format!(
+        "vPaste could not start in WinUI 3 mode (--main-ui=winui):\n\n{error}\n\nInstall Microsoft Windows App Runtime 2.6.5 (x64) and retry, or launch with --main-ui=webview."
+    )
+}
+
+#[cfg(any(all(target_os = "windows", feature = "winui"), test))]
+fn winui_fallback_notification_copy(language: &str) -> (&'static str, &'static str) {
+    if language.eq_ignore_ascii_case("Chinese") || language.to_ascii_lowercase().starts_with("zh") {
+        (
+            "vPaste 已切换至 WebView 模式",
+            "未检测到兼容的 Windows App Runtime 2.6.5 (x64)，已自动回退到 WebView 界面继续运行。安装 Windows App Runtime 2.6.5 (x64) 后重启即可使用原生界面。",
+        )
+    } else {
+        (
+            "vPaste switched to WebView mode",
+            "Compatible Windows App Runtime 2.6.5 (x64) is unavailable, so vPaste fell back to WebView mode. Install Windows App Runtime 2.6.5 (x64) and restart to use the native UI.",
+        )
+    }
+}
+
+/// 在 tauri_plugin_log 尚未注册的启动早期落盘显式 WinUI 失败诊断，避免无控制台启动无迹可寻。
+#[cfg(any(all(target_os = "windows", feature = "winui"), test))]
+fn write_early_startup_diagnostic(app_data_dir: &Path, message: &str) -> Option<PathBuf> {
+    let logs_dir = app_data_dir.join("logs");
+    if fs::create_dir_all(&logs_dir).is_err() {
+        return None;
+    }
+    let log_path = logs_dir.join("winui-startup-error.log");
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let entry = format!("[{timestamp}] {message}\n\n");
+    let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    else {
+        return None;
+    };
+    file.write_all(entry.as_bytes()).ok()?;
+    Some(log_path)
+}
+
+#[cfg(all(target_os = "windows", feature = "winui"))]
+fn stderr_is_redirected_or_console() -> bool {
+    const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4;
+    const FILE_TYPE_UNKNOWN: u32 = 0;
+    const INVALID_HANDLE_VALUE: isize = -1;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(std_handle: u32) -> isize;
+        fn GetFileType(file: isize) -> u32;
+    }
+
+    // SAFETY: 仅查询当前进程标准错误句柄类型，无所有权转移或外部副作用。
+    let handle = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+    if handle == 0 || handle == INVALID_HANDLE_VALUE {
+        return false;
+    }
+    unsafe { GetFileType(handle) != FILE_TYPE_UNKNOWN }
+}
+
+#[cfg(all(target_os = "windows", feature = "winui"))]
+fn report_explicit_winui_startup_error(message: &str) {
+    eprintln!("{message}");
+    if std::env::var_os("VPASTE_NO_STARTUP_DIALOG").is_none()
+        && !local_acceptance_no_capture()
+        && !stderr_is_redirected_or_console()
+    {
+        show_startup_error(message);
+    }
+}
+
+#[cfg(all(target_os = "windows", feature = "winui"))]
+fn notify_winui_fallback(app: &tauri::AppHandle, language: &str) {
+    use tauri_plugin_notification::NotificationExt;
+
+    let (title, body) = winui_fallback_notification_copy(language);
+    if let Err(err) = app.notification().builder().title(title).body(body).show() {
+        log::warn!("Failed to show WinUI fallback notification: {err}");
+    }
+}
+
+fn should_show_panel_on_startup(
+    local_acceptance: bool,
+    macos: bool,
+    explicit_winui: bool,
+    update_restart: bool,
+) -> bool {
+    local_acceptance || macos || explicit_winui || update_restart
+}
+
+#[cfg(test)]
+mod winui_default_startup_tests {
+    use super::{
+        should_show_panel_on_startup, winui_explicit_startup_error_message,
+        winui_fallback_notification_copy, write_early_startup_diagnostic,
+    };
+
+    #[test]
+    fn default_windows_startup_stays_quiet_while_explicit_or_update_restart_opens_panel() {
+        assert!(!should_show_panel_on_startup(false, false, false, false));
+        assert!(should_show_panel_on_startup(false, false, true, false));
+        assert!(should_show_panel_on_startup(false, false, false, true));
+        assert!(should_show_panel_on_startup(true, false, false, false));
+        assert!(should_show_panel_on_startup(false, true, false, false));
+    }
+
+    #[test]
+    fn explicit_winui_error_early_diagnostic_and_fallback_notices_are_actionable() {
+        let message = winui_explicit_startup_error_message("HRESULT 0x80040010");
+        assert!(message.contains("--main-ui=winui"));
+        assert!(message.contains("Windows App Runtime 2.6.5 (x64)"));
+        assert!(message.contains("--main-ui=webview"));
+
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = write_early_startup_diagnostic(temp.path(), &message)
+            .expect("early diagnostic log should be written");
+        let saved = std::fs::read_to_string(&log_path).unwrap();
+        assert!(saved.contains("HRESULT 0x80040010"));
+        assert!(saved.contains("--main-ui=webview"));
+
+        let (zh_title, zh_body) = winui_fallback_notification_copy("Chinese");
+        assert!(zh_title.contains("WebView"));
+        assert!(zh_body.contains("Windows App Runtime 2.6.5 (x64)"));
+
+        let (en_title, en_body) = winui_fallback_notification_copy("English");
+        assert!(en_title.contains("WebView"));
+        assert!(en_body.contains("Windows App Runtime 2.6.5 (x64)"));
+    }
+
+    #[test]
+    fn single_instance_plugin_is_registered_before_winui_runtime_initialization() {
+        let source = include_str!("main.rs");
+        let main_fn = source
+            .find("fn main() {")
+            .expect("main entry point must exist");
+        let body = &source[main_fn..];
+        let configure_pos = body
+            .find("main_panel_mode::configure()")
+            .expect("mode configure must exist");
+        let single_instance_pos = body
+            .find("tauri_plugin_single_instance::init")
+            .expect("single-instance plugin must exist");
+        let setup_pos = body
+            .find(".setup(move |app|")
+            .expect("setup hook must exist");
+        let coordinator_pos = body
+            .find("main_panel_mode::initialize_winui_or_fallback(")
+            .expect("production winui startup coordinator must exist");
+        let winui_init_pos = body
+            .find("winui_panel::initialize(")
+            .expect("winui initialization must exist");
+
+        // 不支持的 --main-ui 参数必须在单实例路由前被拒绝，避免干扰已有主实例；
+        // WinUI Runtime 初始化必须位于单实例之后（setup 内），确保第二实例先被路由退出。
+        assert!(configure_pos < single_instance_pos);
+        assert!(single_instance_pos < setup_pos);
+        assert!(setup_pos < coordinator_pos);
+        assert!(coordinator_pos < winui_init_pos);
+    }
+
+    #[test]
+    fn build_clipboard_window_blocks_main_webview_in_winui_and_native_modes() {
+        let source = include_str!("main.rs");
+        let builder_fn = source
+            .find("fn build_clipboard_window(")
+            .expect("build_clipboard_window must exist");
+        let guard_slice = &source[builder_fn..builder_fn + 260];
+        assert!(guard_slice.contains("!main_panel_mode::allows_main_webview()"));
+    }
+}
+
 fn local_acceptance_no_capture() -> bool {
     #[cfg(all(target_os = "windows", feature = "winui-acceptance"))]
     {
@@ -14950,10 +15127,8 @@ fn main() {
         }
     }
     let installer_exit_requested = maintenance::installer_exit_requested();
-    let show_panel_on_startup = local_acceptance_no_capture()
-        || cfg!(target_os = "macos")
-        || main_panel_mode::winui()
-        || startup_panel::is_update_restart(std::env::args_os(), env!("CARGO_PKG_VERSION"));
+    let update_restart =
+        startup_panel::is_update_restart(std::env::args_os(), env!("CARGO_PKG_VERSION"));
 
     if !memory_profile_active() {
         if let Err(err) = runtime_mode::configure_webview_data_directory() {
@@ -15315,9 +15490,25 @@ fn main() {
                 return Ok(());
             }
             #[cfg(all(target_os = "windows", feature = "winui"))]
-            if main_panel_mode::winui() {
-                winui_panel::initialize(app.handle().clone()).map_err(io::Error::other)?;
-                info!("WinUI 3 experiment initialized; no main WebView will be created");
+            let mut winui_fallback_reason: Option<String> = None;
+            #[cfg(all(target_os = "windows", feature = "winui"))]
+            match main_panel_mode::initialize_winui_or_fallback(|| {
+                winui_panel::initialize(app.handle().clone())
+            }) {
+                Ok(main_panel_mode::WinUiStartupOutcome::Webview) => {}
+                Ok(main_panel_mode::WinUiStartupOutcome::WinUiReady) => {
+                    info!("WinUI 3 main panel initialized; no main WebView will be created");
+                }
+                Ok(main_panel_mode::WinUiStartupOutcome::FallbackToWebview { reason }) => {
+                    eprintln!("WinUI 3 unavailable ({reason}); falling back to WebView main panel.");
+                    winui_fallback_reason = Some(reason);
+                }
+                Err(error) => {
+                    let message = winui_explicit_startup_error_message(&error);
+                    let _ = write_early_startup_diagnostic(&app_local_data_dir, &message);
+                    report_explicit_winui_startup_error(&message);
+                    std::process::exit(1);
+                }
             }
             if !local_acceptance_no_capture() {
                 app_updater::start_background_checks(app.handle().clone());
@@ -15431,12 +15622,27 @@ fn main() {
                         .build(),
                 )
                 .expect("load log plugin error");
+            #[cfg(all(target_os = "windows", feature = "winui"))]
+            if let Some(reason) = winui_fallback_reason.as_deref() {
+                log::warn!(
+                    "WinUI 3 startup failed ({reason}); running in WebView fallback mode"
+                );
+                if !local_acceptance_no_capture() && !memory_profile_active() {
+                    notify_winui_fallback(&handle, &config.multilingual);
+                }
+            }
             #[cfg(target_os = "windows")]
             if !local_acceptance_no_capture() {
                 windows_paste_focus::initialize();
             }
             #[cfg(target_os = "windows")]
             windows_main_shortcut::log_status();
+            let show_panel_on_startup = should_show_panel_on_startup(
+                local_acceptance_no_capture(),
+                cfg!(target_os = "macos"),
+                main_panel_mode::explicit_winui(),
+                update_restart,
+            );
             std::thread::spawn(move || {
                 if !config.onboarding_completed && !main_panel_mode::native() {
                     if let Err(err) = show_onboarding_window(&handle) {

@@ -224,7 +224,7 @@ final class PanelLegacyToolbar: NSView {
   override init(frame: NSRect) { super.init(frame: frame) }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-  func configure(scale: CGFloat, chinese: Bool, search: NSSearchField) {
+  func configure(scale: CGFloat, chinese: Bool, search: NSSearchField, developerTools: Bool = true) {
     guard !built else { return }
     built = true
     self.scale = scale
@@ -277,7 +277,7 @@ final class PanelLegacyToolbar: NSView {
     addButton.contentTintColor = PanelStyle.secondary(self)
     addButton.setAccessibilityLabel(local("Add tab", "添加标签"))
     tabStrip.addSubview(addButton)
-    tools = PanelDeveloperTools(scale: scale, chinese: chinese)
+    tools = PanelDeveloperTools(scale: scale, chinese: chinese, enabled: developerTools)
     developer = PanelDeveloperToolbar(tools: tools)
     tools.onAction = { [weak self] action in
       switch action {
@@ -287,7 +287,7 @@ final class PanelLegacyToolbar: NSView {
       }
     }
     tools.onExpansionChanged = { [weak self] in self?.needsLayout = true }
-    addSubview(developer)
+    if developerTools { addSubview(developer) }
     queueButton = icon("list.bullet", local("Open paste queue", "开启粘贴队列"), #selector(toggleQueue))
     settingsButton = icon("gearshape", local("Settings", "设置"), #selector(settings))
     setSelection(0)

@@ -108,6 +108,7 @@ pub(crate) enum WindowKind {
     PasteFallbackNotice,
     OnboardingPermission,
     NativeOnboarding,
+    #[cfg(not(target_os = "macos"))]
     TrayMenu,
     EmojiPicker,
     TabEditor,
@@ -128,6 +129,7 @@ impl WindowKind {
             Self::PasteFallbackNotice => "pasteFallbackNotice",
             Self::OnboardingPermission => "onboardingPermission",
             Self::NativeOnboarding => "nativeOnboarding",
+            #[cfg(not(target_os = "macos"))]
             Self::TrayMenu => "trayMenu",
             Self::EmojiPicker => "emojiPicker",
             Self::TabEditor => "tabEditor",
@@ -315,6 +317,7 @@ mod tests {
             WindowKind::PasteFallbackNotice,
             WindowKind::OnboardingPermission,
             WindowKind::NativeOnboarding,
+            #[cfg(not(target_os = "macos"))]
             WindowKind::TrayMenu,
             WindowKind::EmojiPicker,
             WindowKind::TabEditor,
@@ -331,6 +334,7 @@ mod tests {
                 "pasteFallbackNotice",
                 "onboardingPermission",
                 "nativeOnboarding",
+                #[cfg(not(target_os = "macos"))]
                 "trayMenu",
                 "emojiPicker",
                 "tabEditor",
@@ -367,13 +371,13 @@ mod tests {
     #[tokio::test]
     async fn recreating_a_destroyed_window_waits_for_its_new_page() {
         let readiness = Readiness::default();
-        let receiver = readiness.subscribe(WindowKind::TrayMenu);
-        readiness.signal("trayMenu").unwrap();
-        readiness.reset(WindowKind::TrayMenu);
+        let receiver = readiness.subscribe(WindowKind::Config);
+        readiness.signal("config").unwrap();
+        readiness.reset(WindowKind::Config);
         let pending = tokio::spawn(wait_for_ready(receiver));
         tokio::task::yield_now().await;
         assert!(!pending.is_finished());
-        readiness.signal("trayMenu").unwrap();
+        readiness.signal("config").unwrap();
         pending.await.unwrap().unwrap();
     }
 

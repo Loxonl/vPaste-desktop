@@ -143,12 +143,12 @@ struct Inner {
 pub(crate) struct BackgroundResources(Arc<Inner>, Option<&'static str>);
 
 impl BackgroundResources {
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     pub(crate) fn native() -> Self {
         Self(Arc::default(), Some("native-clipboard-resources-updated"))
     }
 
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     pub(crate) fn visible_at(&self, epoch: u64) -> bool {
         let state = self
             .0

@@ -292,7 +292,7 @@ fn apply_preview(
         crate::winui_panel::show_size_preview(source, size.scale())?;
         return Ok(None);
     }
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if crate::main_panel_mode::native() {
         PERCENT.store(size.percent(), Ordering::SeqCst);
         crate::native_panel::show_default(app.clone())?;
@@ -356,7 +356,7 @@ fn finish(
 
     // Remove the preview before writing configuration. Neither cancellation nor
     // a failed save may leave a non-interactive main panel on screen.
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     if crate::main_panel_mode::native() {
         crate::native_panel::close_preview(app)?;
         crate::CLIPBOARD_VISIBLE.store(false, Ordering::SeqCst);

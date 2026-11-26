@@ -131,7 +131,7 @@ fn default_theme_mode() -> String {
     "system".to_string()
 }
 
-fn default_language() -> String {
+pub(crate) fn default_language() -> String {
     system_language::default_language()
 }
 
@@ -165,6 +165,11 @@ use std::sync::RwLock;
 
 lazy_static! {
     static ref CACHE: RwLock<Option<Config>> = RwLock::new(None);
+}
+
+#[cfg(all(test, target_os = "macos", debug_assertions))]
+pub(crate) fn replace_test_cache(config: Option<Config>) -> Option<Config> {
+    std::mem::replace(&mut *CACHE.write().unwrap(), config)
 }
 
 pub fn init() {

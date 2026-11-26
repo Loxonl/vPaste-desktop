@@ -3,11 +3,9 @@ import { describe, expect, it } from "vitest";
 import { parseDevDebugOptions } from "../../../scripts/dev-debug-options.mjs";
 
 describe("developer main interface selection", () => {
-    it("keeps WebView as the default on both supported platforms", () => {
-        for (const platform of ["darwin", "win32"]) {
-            expect(parseDevDebugOptions([], platform)).toEqual({
-                mainUi: "webview", appArgs: ["--dev-mode", "--main-ui=webview"],
-            });
+    it("uses the app default without forcing a renderer argument", () => {
+        for (const [platform, mainUi] of [["darwin", "native"], ["win32", "webview"], ["linux", "webview"]]) {
+            expect(parseDevDebugOptions([], platform)).toEqual({ mainUi, appArgs: ["--dev-mode"] });
         }
     });
     it("forwards native and webview choices in a canonical app argument", () => {

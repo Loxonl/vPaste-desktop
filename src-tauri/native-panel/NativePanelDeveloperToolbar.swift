@@ -12,6 +12,7 @@ final class PanelDeveloperTools: ObservableObject {
   }
   let scale: CGFloat
   let chinese: Bool
+  let enabled: Bool
   var onAction: ((String) -> Void)?
   var onExpansionChanged: (() -> Void)?
   struct Action {
@@ -21,9 +22,10 @@ final class PanelDeveloperTools: ObservableObject {
     var text = ""
   }
   let actions: [Action]
-  init(scale: CGFloat, chinese: Bool) {
+  init(scale: CGFloat, chinese: Bool, enabled: Bool = true) {
     self.scale = scale
     self.chinese = chinese
+    self.enabled = enabled
     func local(_ en: String, _ zh: String) -> String { chinese ? zh : en }
     actions = [
       Action(id: "tutorial-mac", symbol: "applelogo", title: local("Mac tutorial", "Mac 引导"), text: "Mac"),
@@ -38,11 +40,12 @@ final class PanelDeveloperTools: ObservableObject {
     ]
   }
   func width(toolbarWidth: CGFloat, searching: Bool) -> CGFloat {
+    guard enabled else { return 0 }
     guard expanded else { return 28 * scale }
     return (toolbarWidth / scale >= (searching ? 1120 : 920) ? Self.fullWidth : Self.menuWidth) * scale
   }
   func perform(_ id: String) {
-    guard actions.contains(where: { $0.id == id }) else { return }
+    guard enabled, actions.contains(where: { $0.id == id }) else { return }
     onAction?(id)
   }
   func toggle() { expanded.toggle(); onExpansionChanged?() }

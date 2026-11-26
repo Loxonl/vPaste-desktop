@@ -68,14 +68,10 @@ fn generate_onboarding_art() {
     }
 }
 
-/// The real macOS panel is independent of the retired standalone sample.
-fn build_swift_native_panel() {
-    if env::var("PROFILE").as_deref() != Ok("debug")
-        || env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
-    {
+fn build_swift_macos() {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
-    generate_onboarding_art();
     const PANEL_SOURCES: &[&str] = &[
         "native-panel/NativePanelModels.swift",
         "native-panel/NativePanelStyle.swift",
@@ -95,19 +91,22 @@ fn build_swift_native_panel() {
         "native-panel/NativePanelPreview.swift",
         "native-panel/NativePanelController.swift",
     ];
+    let mut sources = vec!["native-panel/MacOSTrayMenu.swift"];
+    generate_onboarding_art();
+    sources.extend_from_slice(PANEL_SOURCES);
     println!("cargo:rerun-if-changed=native-panel/NativePanelBridge.h");
-    for source in PANEL_SOURCES {
+    for source in &sources {
         println!("cargo:rerun-if-changed={source}");
     }
 
     let arch = match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
         Ok("aarch64") => "arm64",
         Ok("x86_64") => "x86_64",
-        other => panic!("unsupported macOS architecture for the native panel: {other:?}"),
+        other => panic!("unsupported macOS architecture for Swift: {other:?}"),
     };
     let target = format!("{arch}-apple-macos11.0");
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
-    let library = out_dir.join("libVPasteNativePanel.a");
+    let library = out_dir.join("libVPasteNative.a");
 
     println!("cargo:rerun-if-env-changed=SDKROOT");
     println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
@@ -127,9 +126,12 @@ fn build_swift_native_panel() {
     } else {
         swift.arg("swiftc");
     }
+    if env::var("PROFILE").as_deref() == Ok("debug") {
+        swift.args(["-D", "VPASTE_NATIVE_DEBUG"]);
+    }
     let status = swift
         .args(["-emit-library", "-static", "-parse-as-library"])
-        .args(["-swift-version", "5", "-module-name", "VPasteNativePanel"])
+        .args(["-swift-version", "5", "-module-name", "VPasteNative"])
         .args([
             "-target",
             &target,
@@ -140,13 +142,13 @@ fn build_swift_native_panel() {
         .arg(out_dir.join("swift-module-cache"))
         .arg("-o")
         .arg(&library)
-        .args(PANEL_SOURCES)
+        .args(sources)
         .status()
         .expect("run `xcrun swiftc` (install Xcode or the Command Line Tools)");
-    assert!(status.success(), "Swift native panel failed to compile");
+    assert!(status.success(), "macOS Swift sources failed to compile");
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib=static=VPasteNativePanel");
+    println!("cargo:rustc-link-lib=static=VPasteNative");
     // The Swift objects autolink their runtime libraries; point the linker at them.
     let info = Command::new("xcrun")
         .args(["swiftc", "-print-target-info", "-target", &target])
@@ -494,7 +496,7 @@ fn main() {
         );
     }
     generate_tray_icon_mask();
-    build_swift_native_panel();
+    build_swift_macos();
     build_winui_panel();
     tauri_build::build()
 }

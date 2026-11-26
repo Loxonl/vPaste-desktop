@@ -1,5 +1,6 @@
 //! macOS DEV AppKit panel. The optional --main-ui=native route uses it without
 //! creating a main WebView. Owns one bounded history view, separately from Main.
+#[cfg(debug_assertions)]
 pub(crate) mod developer;
 mod history;
 pub(crate) mod onboarding;
@@ -86,7 +87,7 @@ fn dispose() {
             app.unlisten(id);
         }
     }
-    if std::env::args().any(|arg| arg == "--native-panel-check") {
+    if cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--native-panel-check") {
         eprintln!(
             "[native-panel] disposed nativeViews={} listeners={}",
             history_views::native_view_count(),
@@ -114,6 +115,7 @@ fn main_docked_frame(app: &AppHandle) -> Option<Value> {
         "width":frame.size.width,"height":frame.size.height}))
 }
 
+#[cfg(debug_assertions)]
 pub(crate) fn show(app: AppHandle, language: String, theme: String) -> Result<(), String> {
     present(app, language, theme, false, false, None)
 }
@@ -171,9 +173,10 @@ fn present(
     reconfigure: bool,
     editor_return_hash: Option<String>,
 ) -> Result<(), String> {
-    if !crate::get_developer_mode() {
-        return Err("Native panel requires --dev-mode".into());
+    if !crate::main_panel_mode::native() && !crate::get_developer_mode() {
+        return Err("Native panel preview requires --dev-mode".into());
     }
+    #[cfg(debug_assertions)]
     let (language, theme) = developer::appearance(language, theme);
     APP.get_or_init(|| app.clone());
     history::watch(&app);
@@ -263,6 +266,7 @@ fn present(
                 "pasteQueue": queue_selection::snapshot(),
                 "sizePreview": preview,
                 "developerReconfigure": reconfigure,
+                "developerTools": crate::get_developer_mode(),
                 "editorReturnHash": editor_return_hash,
                 "onboarding": onboarding,
                 "language": language,
@@ -282,7 +286,7 @@ fn present(
             .unwrap_or_default();
             // SAFETY: AppKit thread; both borrowed buffers are copied by Swift.
             unsafe { vpaste_native_panel_show(&CALLBACKS, bytes.as_ptr(), bytes.len()) };
-            if std::env::args().any(|arg| arg == "--native-panel-check") {
+            if cfg!(debug_assertions) && std::env::args().any(|arg| arg == "--native-panel-check") {
                 let mut labels = app.webview_windows().into_keys().collect::<Vec<_>>();
                 labels.sort();
                 eprintln!(
@@ -529,7 +533,7 @@ unsafe extern "C" fn request(bytes: *const u8, length: usize) {
     else {
         return;
     };
-    if !crate::get_developer_mode() || !current(req.session) {
+    if !current(req.session) {
         return;
     }
     if req.op == "close" {
@@ -713,6 +717,7 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
             let hash = (!r.hash.is_empty()).then(|| r.hash.clone());
             blocking(move || history::resume(panel_tabs()?, open, preserve, hash.as_deref())).await
         }
+        #[cfg(debug_assertions)]
         "developer" => developer::open(app.clone(), &r.target, &r.language, &r.theme).await,
         "onboarding" => onboarding::handle(app.clone(), r).await,
         "history-sync" => {

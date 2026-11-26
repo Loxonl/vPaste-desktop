@@ -21,7 +21,6 @@ fn parse(
     args: &[String],
     macos: bool,
     windows: bool,
-    debug: bool,
     winui_feature: bool,
 ) -> Result<MainUi, String> {
     let mut choice = None;
@@ -43,11 +42,13 @@ fn parse(
             _ => return Err("--main-ui must be native, winui, or webview".into()),
         });
     }
-    let mode = choice.unwrap_or_default();
-    if mode == MainUi::Native
-        && !(macos && debug && args.iter().any(|argument| argument == "--dev-mode"))
-    {
-        return Err("--main-ui=native requires a macOS Debug build with --dev-mode".into());
+    let mode = choice.unwrap_or(if macos {
+        MainUi::Native
+    } else {
+        MainUi::Webview
+    });
+    if mode == MainUi::Native && !macos {
+        return Err("--main-ui=native requires macOS".into());
     }
     if mode == MainUi::WinUi && !(windows && winui_feature) {
         return Err("--main-ui=winui requires a Windows build with the winui feature".into());
@@ -61,7 +62,6 @@ pub fn configure() -> Result<(), String> {
         &arguments,
         cfg!(target_os = "macos"),
         cfg!(target_os = "windows"),
-        cfg!(debug_assertions),
         cfg!(feature = "winui"),
     )?;
     MODE.set(mode)
@@ -110,37 +110,32 @@ mod tests {
     }
 
     #[test]
-    fn absent_and_explicit_webview_preserve_the_existing_backend() {
-        assert_eq!(
-            parse(&args(&["vpaste", "--dev-mode"]), true, false, true, false).unwrap(),
-            MainUi::Webview
-        );
-        assert_eq!(
-            parse(
-                &args(&["vpaste", "--main-ui=webview"]),
-                false,
-                true,
-                false,
-                false
-            )
-            .unwrap(),
-            MainUi::Webview
-        );
-    }
-    #[test]
-    fn native_accepts_both_forms_only_on_macos_dev() {
-        for argument in [
-            args(&["--dev-mode", "--main-ui=native"]),
-            args(&["--dev-mode", "--main-ui", "native"]),
+    fn macos_defaults_to_native_and_other_platforms_to_webview() {
+        for (macos, windows, expected) in [
+            (true, false, MainUi::Native),
+            (false, true, MainUi::Webview),
+            (false, false, MainUi::Webview),
         ] {
+            for args in [args(&["vpaste"]), args(&["vpaste", "--dev-mode"])] {
+                assert_eq!(parse(&args, macos, windows, false).unwrap(), expected);
+            }
             assert_eq!(
-                parse(&argument, true, false, true, false).unwrap(),
+                parse(&args(&["--main-ui=webview"]), macos, windows, false).unwrap(),
+                MainUi::Webview
+            );
+        }
+    }
+
+    #[test]
+    fn native_accepts_both_forms_on_macos_without_developer_mode() {
+        for argument in [args(&["--main-ui=native"]), args(&["--main-ui", "native"])] {
+            assert_eq!(
+                parse(&argument, true, false, false).unwrap(),
                 MainUi::Native
             );
-            assert!(parse(&argument, false, true, true, false).is_err());
-            assert!(parse(&argument, true, false, false, false).is_err());
+            assert!(parse(&argument, false, true, false).is_err());
+            assert!(parse(&argument, false, false, false).is_err());
         }
-        assert!(parse(&args(&["--main-ui=native"]), true, false, true, false).is_err());
     }
     #[test]
     fn closing_the_last_auxiliary_window_keeps_native_background_services_alive() {
@@ -159,19 +154,13 @@ mod tests {
             args(&["--dev-mode", "--main-ui", "winui"]),
             args(&["--main-ui=winui"]),
         ] {
-            for debug in [true, false] {
-                assert_eq!(
-                    parse(&arguments, false, true, debug, true).unwrap(),
-                    MainUi::WinUi
-                );
-            }
+            assert_eq!(parse(&arguments, false, true, true).unwrap(), MainUi::WinUi);
         }
         let arguments = args(&["--dev-mode", "--main-ui=winui"]);
-        assert!(parse(&arguments, true, false, true, true).is_err());
-        assert!(parse(&arguments, false, true, true, false).is_err());
-        assert!(parse(&arguments, false, true, false, false).is_err());
+        assert!(parse(&arguments, true, false, true).is_err());
+        assert!(parse(&arguments, false, true, false).is_err());
         assert_eq!(
-            parse(&args(&[]), false, true, false, true).unwrap(),
+            parse(&args(&[]), false, true, true).unwrap(),
             MainUi::Webview
         );
     }
@@ -184,7 +173,7 @@ mod tests {
             args(&["--main-ui=other"]),
             args(&["--main-ui=webview", "--main-ui=native"]),
         ] {
-            assert!(parse(&argument, true, false, true, false).is_err());
+            assert!(parse(&argument, true, false, false).is_err());
         }
     }
 
@@ -195,7 +184,7 @@ mod tests {
             assert_eq!(arguments.contains(&"--dev-mode"), developer_mode);
             assert_eq!(arguments.len(), if developer_mode { 2 } else { 1 });
             assert_eq!(
-                parse(&args(&arguments), false, true, developer_mode, true).unwrap(),
+                parse(&args(&arguments), false, true, true).unwrap(),
                 MainUi::WinUi
             );
         }

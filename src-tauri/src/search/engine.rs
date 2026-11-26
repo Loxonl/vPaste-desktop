@@ -650,7 +650,7 @@ impl SearchSession {
 
     // Native viewport seeking counts matches without collecting a TopDocs
     // prefix proportional to the retained scroll position.
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     pub(crate) fn visit_hashes(
         &self,
         batch_size: usize,
@@ -718,7 +718,7 @@ impl SearchSession {
 
     // A fixed TopDocs heap with a sort-key cursor: skipped pending documents
     // advance the cursor instead of growing the heap with the browse depth.
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     pub(crate) fn search_after(
         &self,
         before: (u64, u64),

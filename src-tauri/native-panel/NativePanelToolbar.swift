@@ -43,15 +43,15 @@ final class PanelToolbar: NSView {
   private var content: (NSView & PanelToolbarContent)?
   private(set) var rendererName = "unconfigured"
 
-  func configure(scale: CGFloat, chinese: Bool, search: NSSearchField) {
+  func configure(scale: CGFloat, chinese: Bool, search: NSSearchField, developerTools: Bool = true) {
     guard content == nil else { return }
     let view: NSView & PanelToolbarContent
     if #available(macOS 12.0, *) {
-      view = PanelSwiftUIToolbarHost(scale: scale, chinese: chinese, search: search)
+      view = PanelSwiftUIToolbarHost(scale: scale, chinese: chinese, search: search, developerTools: developerTools)
       rendererName = "SwiftUI"
     } else {
       let fallback = PanelLegacyToolbar()
-      fallback.configure(scale: scale, chinese: chinese, search: search)
+      fallback.configure(scale: scale, chinese: chinese, search: search, developerTools: developerTools)
       view = fallback
       rendererName = "AppKit fallback"
     }
@@ -169,11 +169,11 @@ final class PanelToolbarState: ObservableObject {
   var onDiagnostics: (() -> Void)?
   var onDeveloper: ((String) -> Void)?
 
-  init(scale: CGFloat, chinese: Bool, search: NSSearchField) {
+  init(scale: CGFloat, chinese: Bool, search: NSSearchField, developerTools: Bool = true) {
     self.scale = scale
     self.chinese = chinese
     self.search = search
-    developer = PanelDeveloperTools(scale: scale, chinese: chinese)
+    developer = PanelDeveloperTools(scale: scale, chinese: chinese, enabled: developerTools)
     fixedChoices = [
       ("All", "全部", "", "square.grid.3x3.fill"), ("Favorites", "收藏", "", "star"),
     ].map { PanelFilterChoice(title: chinese ? $0.1 : $0.0, emoji: $0.2, symbol: $0.3) }
@@ -280,8 +280,8 @@ class PanelToolbarHostingView<Content: View>: NSHostingView<Content> {
 final class PanelSwiftUIToolbarHost: PanelToolbarHostingView<PanelToolbarView>, PanelToolbarContent {
   private let state: PanelToolbarState
   private var focusRequest = 0
-  init(scale: CGFloat, chinese: Bool, search: NSSearchField) {
-    state = PanelToolbarState(scale: scale, chinese: chinese, search: search)
+  init(scale: CGFloat, chinese: Bool, search: NSSearchField, developerTools: Bool = true) {
+    state = PanelToolbarState(scale: scale, chinese: chinese, search: search, developerTools: developerTools)
     super.init(rootView: PanelToolbarView(state: state, tools: state.developer))
     rootView.onSearch = { [weak self] in self?.toggleSearch() }
   }
@@ -392,9 +392,11 @@ struct PanelToolbarView: View {
         icon("plus", state.local("Add tab", "添加标签"), systemGlass: true) { state.addTab() }
           .disabled(!state.interactive)
           .position(x: left + viewportWidth + 22 * s, y: geometry.size.height / 2)
-        PanelDeveloperToolsView(tools: tools, infoVisible: state.infoVisible)
-          .frame(width: developerWidth, height: 32 * s)
-          .position(x: developerX, y: geometry.size.height / 2)
+        if tools.enabled {
+          PanelDeveloperToolsView(tools: tools, infoVisible: state.infoVisible)
+            .frame(width: developerWidth, height: 32 * s)
+            .position(x: developerX, y: geometry.size.height / 2)
+        }
         icon("list.bullet", state.queueActive
           ? state.local("Close paste queue", "关闭粘贴队列")
           : state.local("Open paste queue", "开启粘贴队列"), active: state.queueActive) { state.onPasteQueue?() }

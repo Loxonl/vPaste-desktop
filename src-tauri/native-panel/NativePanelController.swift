@@ -1,4 +1,12 @@
 import AppKit
+
+private let panelDiagnosticsEnabled: Bool = {
+  #if VPASTE_NATIVE_DEBUG
+  return ProcessInfo.processInfo.arguments.contains("--native-panel-check")
+  #else
+  return false
+  #endif
+}()
 import ObjectiveC
 import QuartzCore
 
@@ -49,7 +57,7 @@ final class NativeHistoryPanel: NSPanel {
       typealias SetAppearance = @convention(c) (AnyObject, Selector, ObjCBool) -> Void
       let setAppearance = unsafeBitCast(method_getImplementation(method), to: SetAppearance.self)
       setAppearance(self, selector, ObjCBool(!sizePreview))
-      if ProcessInfo.processInfo.arguments.contains("--native-panel-check") {
+      if panelDiagnosticsEnabled {
         NSLog("[native-panel] keep-glass-appearance=%d sizePreview=%d", !sizePreview, sizePreview)
       }
       // Do not reset this in windowWillClose: that notification precedes orderOut
@@ -322,7 +330,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     backdrop.wantsLayer = true
     backdrop.autoresizingMask = [.width, .height]
     root.addSubview(backdrop)
-    toolbar.configure(scale: config.scale, chinese: chinese, search: search)
+    toolbar.configure(scale: config.scale, chinese: chinese, search: search,
+      developerTools: config.developerTools == true)
     toolbar.translatesAutoresizingMaskIntoConstraints = false
     // Keep control glass outside the window material while sharing its slide surface.
     backdrop.addSubview(toolbar)
@@ -598,7 +607,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     // already below the clipped surface, just like the existing main panel.
     PanelSlide.prepare(
       backdrop, hidden: !config.sizePreview && config.developerReconfigure != true && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
-    if ProcessInfo.processInfo.arguments.contains("--native-panel-check") {
+    if panelDiagnosticsEnabled {
       NSLog("[native-panel] toolbar=%@", toolbar.rendererName)
       NSLog(
         "[native-panel] backdrop=%@ host=%@ expected=%@ movable=%d backgroundMovable=%d scrollers=%d/%d",
@@ -640,7 +649,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     let id = transition
     let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     let duration = (show ? config.showDuration : config.hideDuration) / 1000
-    let check = ProcessInfo.processInfo.arguments.contains("--native-panel-check")
+    let check = panelDiagnosticsEnabled
     if check {
       NSLog(
         "[native-panel] slide=%@ duration=%.3f reduced=%d startY=%.1f host=%@",
@@ -727,7 +736,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     window.keyHandler = nil
     window.pointerHandler = nil
     window.interceptEditorInput = nil
-    if ProcessInfo.processInfo.arguments.contains("--native-panel-check") {
+    if panelDiagnosticsEnabled {
       NSLog(
         "[native-panel] closed cards=%d pages=%d decodedBytes=%d", cards.count, pages.count,
         media.decodedBytes)
@@ -751,7 +760,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         let preview = NSApp.keyWindow, preview.windowNumber == number else { return }
       self.previewWindows.add(preview)
       self.window.retainMainAppearanceForPreview()
-      if ProcessInfo.processInfo.arguments.contains("--native-panel-check") {
+      if panelDiagnosticsEnabled {
         NSLog("[native-panel] preview-focus main=%d key=%d alpha=%.2f",
           self.window.isMainWindow, self.window.isKeyWindow, self.window.alphaValue)
       }
@@ -1396,7 +1405,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     else { showMessage(error.localizedDescription) }
   }
   private func status() {
-    if ProcessInfo.processInfo.arguments.contains("--native-panel-check") {
+    if panelDiagnosticsEnabled {
       let diagnostic =
         "items=\(count) selected=\(selected) frame=\(list.frame) bounds=\(list.bounds) clip=\(scroll.contentView.bounds) extent=\(layout.collectionViewContentSize)"
       if diagnostic != lastDiagnostic {

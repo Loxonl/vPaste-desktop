@@ -1,5 +1,5 @@
 export function parseDevDebugOptions(args, platform, environment = {}) {
-  let mainUi = "webview";
+  let mainUi = platform === "darwin" ? "native" : "webview";
   let supplied = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -18,6 +18,7 @@ export function parseDevDebugOptions(args, platform, environment = {}) {
   // npm_config_* instead of argv. Explicit script arguments take precedence.
   if (!supplied && environment.npm_config_main_ui !== undefined) {
     mainUi = environment.npm_config_main_ui;
+    supplied = true;
     if (!["native", "winui", "webview"].includes(mainUi)) {
       throw new Error("--main-ui must be native, winui, or webview.");
     }
@@ -28,5 +29,5 @@ export function parseDevDebugOptions(args, platform, environment = {}) {
   if (mainUi === "winui" && platform !== "win32") {
     throw new Error("The WinUI 3 main interface is available in Windows DEV builds only.");
   }
-  return { mainUi, appArgs: ["--dev-mode", `--main-ui=${mainUi}`] };
+  return { mainUi, appArgs: supplied ? ["--dev-mode", `--main-ui=${mainUi}`] : ["--dev-mode"] };
 }

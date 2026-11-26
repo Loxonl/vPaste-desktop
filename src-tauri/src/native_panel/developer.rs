@@ -3,14 +3,26 @@ use serde_json::{json, Value};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
-static PREVIEW: Mutex<Option<(String, String)>> = Mutex::new(None);
+static PREVIEW: Mutex<(Option<String>, Option<String>)> = Mutex::new((None, None));
 
 pub(super) fn appearance(language: String, theme: String) -> (String, String) {
+    let preview = PREVIEW.lock().unwrap_or_else(|err| err.into_inner());
+    (
+        preview.0.clone().unwrap_or(language),
+        preview.1.clone().unwrap_or(theme),
+    )
+}
+
+pub(crate) fn preview_language() -> Option<String> {
     PREVIEW
         .lock()
         .unwrap_or_else(|err| err.into_inner())
+        .0
         .clone()
-        .unwrap_or((language, theme))
+}
+
+pub(crate) fn set_language_preview(language: Option<String>) {
+    PREVIEW.lock().unwrap_or_else(|err| err.into_inner()).0 = language;
 }
 
 fn validate(action: &str, developer: bool, language: &str, theme: &str) -> Result<(), String> {
@@ -63,8 +75,11 @@ pub(super) async fn open(
             } else {
                 theme
             };
-            *PREVIEW.lock().unwrap_or_else(|err| err.into_inner()) =
-                Some((next_language.into(), next_theme.into()));
+            if action == "language" {
+                set_language_preview(Some(next_language.into()));
+            } else {
+                PREVIEW.lock().unwrap_or_else(|err| err.into_inner()).1 = Some(next_theme.into());
+            }
             if let Some(memory) = app.get_webview_window("devMemory") {
                 let _ = memory.emit(
                     "dev-memory-open",

@@ -120,6 +120,14 @@ jobs:
           key: pr-cargo-${{ runner.os }}-${{ runner.arch }}-1.91.1-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             pr-cargo-${{ runner.os }}-${{ runner.arch }}-1.91.1-
+      - name: Cache Windows App SDK NuGet packages
+        if: matrix.platform == 'Windows'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: pr-nuget-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src-tauri/native-demo/windows/winui/WinUiPanel.vcxproj') }}
+          restore-keys: |
+            pr-nuget-${{ runner.os }}-${{ runner.arch }}-
       - name: Install frontend dependencies and build assets
         run: npm ci && npm run build
       - name: Check Rust formatting
@@ -132,6 +140,12 @@ jobs:
         run: |
           cargo test --locked --all-targets --manifest-path src-tauri/Cargo.toml
           cargo test --locked --manifest-path tools/verify-updater-manifest/Cargo.toml
+      - name: Check Windows WinUI Release compilation
+        if: matrix.platform == 'Windows'
+        run: cargo check --release --locked --features winui --bin vPaste --manifest-path src-tauri/Cargo.toml
+      - name: Test Windows WinUI startup and updater restart
+        if: matrix.platform == 'Windows'
+        run: cargo test --release --locked --features winui --bin vPaste --manifest-path src-tauri/Cargo.toml -- winui_startup winui_default_startup_tests main_panel_mode::tests startup_panel::tests app_updater::tests
 
   required:
     name: PR checks passed

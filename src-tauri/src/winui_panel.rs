@@ -1,4 +1,4 @@
-//! Opt-in Windows WinUI 3 host. The XAML bridge is loaded on demand
+//! Windows WinUI 3 host. The XAML bridge is loaded on demand
 //! so the ordinary WebView backend does not load Windows App SDK runtime.
 
 use std::{
@@ -53,7 +53,7 @@ type BootstrapInitialize = unsafe extern "system" fn(u32, *const u16, u64, u32) 
 type BootstrapShutdown = unsafe extern "system" fn();
 
 struct PanelApi {
-    _module: usize,
+    _module: LoadedModule,
     initialize: PanelInitialize,
     show: PanelCall,
     toggle: PanelCall,
@@ -78,14 +78,25 @@ struct PanelApi {
 }
 
 struct BootstrapApi {
-    _module: usize,
+    _module: LoadedModule,
     shutdown: BootstrapShutdown,
 }
 
-static PANEL_API: OnceLock<Result<PanelApi, String>> = OnceLock::new();
-static BOOTSTRAP_API: OnceLock<Result<BootstrapApi, String>> = OnceLock::new();
-static BOOTSTRAP_SHUTDOWN_DONE: AtomicBool = AtomicBool::new(false);
-static PANEL_SHUTDOWN_DONE: AtomicBool = AtomicBool::new(false);
+impl Drop for BootstrapApi {
+    fn drop(&mut self) {
+        // SAFETY: the bootstrap is initialized and its module is still loaded.
+        unsafe { (self.shutdown)() };
+    }
+}
+
+struct NativeLibraries {
+    // Drop the panel module before disconnecting the runtime dependency.
+    panel: PanelApi,
+    bootstrap: BootstrapApi,
+}
+
+static NATIVE_LIBRARIES: OnceLock<Result<NativeLibraries, String>> = OnceLock::new();
+static NATIVE_SHUTDOWN_DONE: AtomicBool = AtomicBool::new(false);
 static APP: OnceLock<AppHandle> = OnceLock::new();
 static ACTION_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -106,29 +117,19 @@ fn format_bootstrap_error(error: &str) -> String {
     )
 }
 
-/// 在模块加载后、初始化成功提交前若中途失败，自动释放 DLL 句柄避免泄漏。
-struct LoadedModule(*mut c_void);
+/// Owns the module reference returned by LoadLibraryW.
+struct LoadedModule(usize);
 
 impl LoadedModule {
     fn as_ptr(&self) -> *mut c_void {
-        self.0
-    }
-
-    fn into_raw(self) -> usize {
-        let raw = self.0 as usize;
-        std::mem::forget(self);
-        raw
+        self.0 as *mut c_void
     }
 }
 
 impl Drop for LoadedModule {
     fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: 句柄尚未移交进程级 OnceLock 且原生初始化未提交，可安全释放。
-            unsafe {
-                FreeLibrary(self.0);
-            }
-        }
+        // SAFETY: this reference came from a successful LoadLibraryW call.
+        unsafe { FreeLibrary(self.as_ptr()) };
     }
 }
 
@@ -176,7 +177,8 @@ fn runtime_directory() -> Result<PathBuf, String> {
 }
 
 fn load_bootstrap() -> Result<BootstrapApi, String> {
-    let library_path = runtime_directory()?.join("Microsoft.WindowsAppRuntime.Bootstrap.dll");
+    let directory = runtime_directory()?;
+    let library_path = directory.join("Microsoft.WindowsAppRuntime.Bootstrap.dll");
     let library_name = wide_null(library_path.as_os_str());
     // SAFETY: the path is a NUL-terminated UTF-16 string valid through the call.
     let module = unsafe { LoadLibraryW(library_name.as_ptr()) };
@@ -187,7 +189,7 @@ fn load_bootstrap() -> Result<BootstrapApi, String> {
             std::io::Error::last_os_error()
         ));
     }
-    let module = LoadedModule(module);
+    let module = LoadedModule(module as usize);
     // SAFETY: export names are NUL-terminated ASCII strings.
     let initialize = unsafe {
         GetProcAddress(
@@ -212,18 +214,17 @@ fn load_bootstrap() -> Result<BootstrapApi, String> {
             0,
         )
     })
-    .map_err(|error| format_bootstrap_error(&error))?;
+    .map_err(|error| {
+        let mut message = format_bootstrap_error(&error);
+        if directory.join("Install-WinUiRuntime.ps1").is_file() {
+            message.push_str(" This portable bundle includes Install-WinUiRuntime.ps1.");
+        }
+        message
+    })?;
     Ok(BootstrapApi {
-        _module: module.into_raw(),
+        _module: module,
         shutdown,
     })
-}
-
-fn bootstrap() -> Result<&'static BootstrapApi, String> {
-    BOOTSTRAP_API
-        .get_or_init(load_bootstrap)
-        .as_ref()
-        .map_err(Clone::clone)
 }
 
 fn load_panel_api() -> Result<PanelApi, String> {
@@ -239,7 +240,7 @@ fn load_panel_api() -> Result<PanelApi, String> {
             std::io::Error::last_os_error()
         ));
     }
-    let guard = LoadedModule(raw_module);
+    let guard = LoadedModule(raw_module as usize);
     let module = guard.as_ptr();
 
     // SAFETY: the version export has a no-argument C ABI and no UI side effects.
@@ -252,7 +253,7 @@ fn load_panel_api() -> Result<PanelApi, String> {
     bridge::check_version(unsafe { version() })?;
 
     // SAFETY: every symbol below has the matching no-argument C ABI declared
-    // in WinUiPanel.cpp and the module remains loaded for the process lifetime.
+    // in WinUiPanel.cpp and the API owns the module reference.
     unsafe fn symbol(module: *mut c_void, name: &'static [u8]) -> Result<PanelCall, String> {
         // SAFETY: symbol names are NUL-terminated byte strings.
         let address = unsafe { GetProcAddress(module, name.as_ptr().cast()) };
@@ -366,8 +367,7 @@ fn load_panel_api() -> Result<PanelApi, String> {
     if set_behavior.is_null() {
         return Err("WinUI behavior export is missing".into());
     }
-    let panel_api = PanelApi {
-        _module: 0,
+    Ok(PanelApi {
         initialize: unsafe { initialize_symbol(module)? },
         show: unsafe { symbol(module, b"vpaste_winui_show\0")? },
         toggle: unsafe { symbol(module, b"vpaste_winui_toggle\0")? },
@@ -396,18 +396,31 @@ fn load_panel_api() -> Result<PanelApi, String> {
         },
         focus_history: unsafe { symbol(module, b"vpaste_winui_focus_history\0")? },
         shutdown: unsafe { shutdown_symbol(module)? },
-    };
-    Ok(PanelApi {
-        _module: guard.into_raw(),
-        ..panel_api
+        _module: guard,
     })
 }
 
+fn load_native_libraries() -> Result<NativeLibraries, String> {
+    let bootstrap = load_bootstrap()?;
+    let panel = load_panel_api()?;
+    Ok(NativeLibraries { panel, bootstrap })
+}
+
 fn api() -> Result<&'static PanelApi, String> {
-    PANEL_API
-        .get_or_init(load_panel_api)
+    if NATIVE_SHUTDOWN_DONE.load(std::sync::atomic::Ordering::Acquire) {
+        return Err("The WinUI panel has shut down".into());
+    }
+    NATIVE_LIBRARIES
+        .get()
+        .ok_or_else(|| "The WinUI panel has not started".to_string())?
         .as_ref()
+        .map(|libraries| &libraries.panel)
         .map_err(Clone::clone)
+}
+
+pub(crate) fn check_runtime() -> Result<(), String> {
+    let _libraries = load_native_libraries()?;
+    Ok(())
 }
 
 fn check_hresult(operation: &str, result: i32) -> Result<(), String> {
@@ -533,7 +546,7 @@ pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
 }
 
 fn initialize_native(english: bool, single_click_paste: bool) -> Result<(), String> {
-    let _ = bootstrap()?;
+    let _ = NATIVE_LIBRARIES.get_or_init(load_native_libraries);
     let panel = api()?;
     // SAFETY: the native side stores these process-lifetime callbacks and calls
     // them from its UI thread with valid arguments. The callback never waits
@@ -714,17 +727,14 @@ pub(crate) fn hide_for_queue_paste() -> Result<(), String> {
 pub(crate) fn shutdown() {
     DRAG_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
     MODAL_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
-    if !PANEL_SHUTDOWN_DONE.swap(true, std::sync::atomic::Ordering::AcqRel) {
-        if let Some(Ok(panel)) = PANEL_API.get() {
+    if !NATIVE_SHUTDOWN_DONE.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        if let Some(Ok(libraries)) = NATIVE_LIBRARIES.get() {
             // SAFETY: called during Tauri shutdown or failed init cleanup;
             // the bridge stops and joins its dedicated UI thread before returning.
-            unsafe { (panel.shutdown)() };
-        }
-    }
-    if !BOOTSTRAP_SHUTDOWN_DONE.swap(true, std::sync::atomic::Ordering::AcqRel) {
-        if let Some(Ok(bootstrap)) = BOOTSTRAP_API.get() {
-            // SAFETY: the WinUI UI thread has been joined above.
-            unsafe { (bootstrap.shutdown)() };
+            unsafe {
+                (libraries.panel.shutdown)();
+                (libraries.bootstrap.shutdown)();
+            }
         }
     }
 }
@@ -1817,7 +1827,7 @@ mod tests {
             }
             let test = unsafe {
                 super::GetProcAddress(
-                    panel._module as *mut std::ffi::c_void,
+                    panel._module.as_ptr(),
                     b"vpaste_winui_test_shell_parity\0".as_ptr().cast(),
                 )
             };
@@ -1847,7 +1857,7 @@ mod tests {
             // SAFETY: Debug 测试导出在同一 STA 上验证 Batch 2 所有交互/焦点/同步/渲染修复回归。
             let test = unsafe {
                 super::GetProcAddress(
-                    panel._module as *mut std::ffi::c_void,
+                    panel._module.as_ptr(),
                     b"vpaste_winui_test_batch2_regressions\0".as_ptr().cast(),
                 )
             };
@@ -1886,7 +1896,7 @@ mod tests {
             // cases on the native STA. No AppHandle or user database is used.
             let test = unsafe {
                 super::GetProcAddress(
-                    panel._module as *mut std::ffi::c_void,
+                    panel._module.as_ptr(),
                     b"vpaste_winui_test_history_and_queue\0".as_ptr().cast(),
                 )
             };
@@ -1929,7 +1939,7 @@ mod tests {
             // Exercise real window key messages, not only the handler helper.
             let route = unsafe {
                 super::GetProcAddress(
-                    panel._module as *mut std::ffi::c_void,
+                    panel._module.as_ptr(),
                     b"vpaste_winui_test_preview_key_route\0".as_ptr().cast(),
                 )
             };

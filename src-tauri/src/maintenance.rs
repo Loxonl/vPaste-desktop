@@ -28,6 +28,9 @@ pub fn try_handle_maintenance_command() -> Result<bool, String> {
         return Ok(false);
     };
 
+    if crate::main_panel_mode::WINDOWS_INTERNAL_RC {
+        return Err("The internal portable RC does not export installed app data.".into());
+    }
     export_uninstall_data(&output_path)?;
     Ok(true)
 }

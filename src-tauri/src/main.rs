@@ -7021,10 +7021,15 @@ fn open_accessibility_settings(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+#[cfg(all(target_os = "windows", feature = "winui-rc"))]
+const APP_VERSION: &str = env!("VPASTE_WINDOWS_INTERNAL_RC_VERSION");
+#[cfg(not(all(target_os = "windows", feature = "winui-rc")))]
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[tauri::command]
 fn get_app_version() -> AppVersionInfo {
     AppVersionInfo {
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: APP_VERSION.to_string(),
     }
 }
 
@@ -10138,6 +10143,9 @@ fn sync_macos_main_app_service(startup: bool) -> Option<Result<bool, String>> {
 }
 
 fn check_autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
+    if main_panel_mode::WINDOWS_INTERNAL_RC {
+        return Ok(false);
+    }
     #[cfg(target_os = "windows")]
     if runtime_mode::is_portable() {
         return portable_autostart::is_enabled();
@@ -10154,6 +10162,9 @@ fn check_autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
 }
 
 fn sync_autostart(app: &tauri::AppHandle, startup: bool) -> Result<bool, String> {
+    if main_panel_mode::WINDOWS_INTERNAL_RC {
+        return Ok(false);
+    }
     #[cfg(target_os = "windows")]
     if runtime_mode::is_portable() {
         return portable_autostart::set_enabled(startup);
@@ -14954,11 +14965,11 @@ mod winui_default_startup_tests {
     fn single_instance_plugin_is_registered_before_winui_runtime_initialization() {
         let source = include_str!("main.rs");
         let main_fn = source
-            .find("fn main() {")
+            .find("\nfn main() {")
             .expect("main entry point must exist");
         let body = &source[main_fn..];
         let configure_pos = body
-            .find("main_panel_mode::configure()")
+            .rfind("main_panel_mode::configure()")
             .expect("mode configure must exist");
         let single_instance_pos = body
             .find("tauri_plugin_single_instance::init")
@@ -14966,9 +14977,10 @@ mod winui_default_startup_tests {
         let setup_pos = body
             .find(".setup(move |app|")
             .expect("setup hook must exist");
-        let coordinator_pos = body
-            .find("main_panel_mode::initialize_winui_or_fallback(")
-            .expect("production winui startup coordinator must exist");
+        let coordinator_pos = setup_pos
+            + body[setup_pos..]
+                .find("main_panel_mode::initialize_winui_or_fallback(")
+                .expect("production winui startup coordinator must exist");
         let winui_init_pos = body
             .find("winui_panel::initialize(")
             .expect("winui initialization must exist");
@@ -15074,18 +15086,76 @@ fn memory_profile_active() -> bool {
     }
 }
 
+fn application_context() -> tauri::Context<tauri::Wry> {
+    let context = tauri::generate_context!();
+    #[cfg(all(target_os = "windows", feature = "winui-rc"))]
+    if context.config().identifier != "com.loxonl.vpaste"
+        || context.package_info().name != "vPaste Internal RC"
+        || context.package_info().version.to_string() != APP_VERSION
+        || context.config().plugins.0.contains_key("updater")
+    {
+        eprintln!("WinUI RC requires its internal product label, version and offline update configuration.");
+        std::process::exit(2);
+    }
+    context
+}
+
 fn main() {
     if std::env::args().any(|argument| argument == "--winui-build-info") {
-        println!(
-            "{}",
-            serde_json::json!({
-                "version": env!("CARGO_PKG_VERSION"),
-                "winui": cfg!(all(target_os = "windows", feature = "winui")),
-                "localAcceptance": cfg!(feature = "winui-acceptance"),
-                "debug": cfg!(debug_assertions),
-                "arch": std::env::consts::ARCH,
-            })
-        );
+        let info = serde_json::json!({
+            "version": APP_VERSION,
+            "winui": cfg!(all(target_os = "windows", feature = "winui")),
+            "localAcceptance": cfg!(feature = "winui-acceptance"),
+            "debug": cfg!(debug_assertions),
+            "arch": std::env::consts::ARCH,
+        });
+        #[cfg(target_os = "windows")]
+        let info = {
+            if let Err(error) = main_panel_mode::configure() {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+            let mut info = info;
+            // Test renderer selection and DLL loading before starting Tauri or
+            // creating a panel, so the diagnostic never touches app data.
+            #[cfg(feature = "winui")]
+            match main_panel_mode::initialize_winui_or_fallback(winui_panel::check_runtime) {
+                Ok(main_panel_mode::WinUiStartupOutcome::FallbackToWebview { reason }) => {
+                    info["fallbackReason"] = serde_json::json!(reason);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("{}", winui_explicit_startup_error_message(&error));
+                    std::process::exit(1);
+                }
+            }
+            let context = application_context();
+            info["buildId"] = serde_json::json!(APP_VERSION);
+            info["internalRc"] = serde_json::json!(main_panel_mode::WINDOWS_INTERNAL_RC);
+            info["appIdentifier"] = serde_json::json!(context.config().identifier);
+            info["appName"] = serde_json::json!(context.package_info().name);
+            info["defaultMainUi"] = serde_json::json!(main_panel_mode::default_main_ui_name());
+            info["updaterConfigured"] =
+                serde_json::json!(context.config().plugins.0.contains_key("updater"));
+            info["updateFeedEnabled"] = serde_json::json!(app_updater::update_feed_enabled());
+            info["autostartSupported"] = serde_json::json!(!main_panel_mode::WINDOWS_INTERNAL_RC);
+            if main_panel_mode::WINDOWS_INTERNAL_RC {
+                info["internalProfileReady"] =
+                    serde_json::json!(runtime_mode::portable_data_directory().is_ok());
+            }
+            info["updateRestart"] = serde_json::json!(startup_panel::is_update_restart(
+                std::env::args_os(),
+                APP_VERSION
+            ));
+            info["winuiDebug"] = serde_json::json!(cfg!(feature = "winui-debug"));
+            info["mainUi"] = serde_json::json!(if main_panel_mode::winui() {
+                "winui"
+            } else {
+                "webview"
+            });
+            info
+        };
+        println!("{info}");
         return;
     }
     if image_ocr::worker::run_if_requested() {
@@ -15127,8 +15197,11 @@ fn main() {
         }
     }
     let installer_exit_requested = maintenance::installer_exit_requested();
-    let update_restart =
-        startup_panel::is_update_restart(std::env::args_os(), env!("CARGO_PKG_VERSION"));
+    if main_panel_mode::WINDOWS_INTERNAL_RC && installer_exit_requested {
+        eprintln!("The internal portable RC does not accept installer exit requests.");
+        std::process::exit(2);
+    }
+    let update_restart = startup_panel::is_update_restart(std::env::args_os(), APP_VERSION);
 
     if !memory_profile_active() {
         if let Err(err) = runtime_mode::configure_webview_data_directory() {
@@ -15141,7 +15214,10 @@ fn main() {
     // The single-instance plugin may terminate this process before Tauri setup.
     // Refresh an opted-in portable path first so moving the folder still works.
     #[cfg(target_os = "windows")]
-    if !memory_profile_active() && !local_acceptance_no_capture() {
+    if !main_panel_mode::WINDOWS_INTERNAL_RC
+        && !memory_profile_active()
+        && !local_acceptance_no_capture()
+    {
         if let Err(err) = portable_autostart::reconcile_before_single_instance() {
             eprintln!("Failed to reconcile portable autostart before single-instance setup: {err}");
         }
@@ -15163,7 +15239,7 @@ fn main() {
         error!("{:?}", backtrace::Backtrace::new())
     }));
 
-    let mut context = tauri::generate_context!();
+    let mut context = application_context();
     #[cfg(debug_assertions)]
     if memory_profile_active() {
         context.config_mut().build.dev_url = Some(memory_profile::dev_origin());
@@ -15199,13 +15275,20 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init());
     #[cfg(debug_assertions)]
     let builder = builder.manage(dev_memory::Monitor::default());
-    #[cfg(not(all(target_os = "macos", feature = "mac-app-store")))]
+    #[cfg(not(any(
+        all(target_os = "macos", feature = "mac-app-store"),
+        all(target_os = "windows", feature = "winui-rc")
+    )))]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
-    builder
-        .plugin(tauri_plugin_autostart::init(
+    let builder = if main_panel_mode::WINDOWS_INTERNAL_RC {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(main_panel_mode::autostart_arguments()),
         ))
+    };
+    builder
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -15543,7 +15626,10 @@ fn main() {
                 config
             };
             #[cfg(target_os = "windows")]
-            if runtime_mode::is_portable() && !local_acceptance_no_capture() {
+            if !main_panel_mode::WINDOWS_INTERNAL_RC
+                && runtime_mode::is_portable()
+                && !local_acceptance_no_capture()
+            {
                 if let Err(err) = portable_autostart::reconcile(config.startup) {
                     error!("Failed to reconcile portable autostart at startup: {}", err);
                 }

@@ -316,9 +316,10 @@ No backend is saved to the user configuration file.
 
 Deployment is framework-dependent. The matching Windows App SDK Runtime NuGet
 package supplies four Microsoft-signed x64 MSIX packages, runtime license and
-notices in `runtime/`; the build also writes `SHA256SUMS.txt`. If the 2.6 runtime
-is missing, run the included `Install-WinUiRuntime.ps1` once. Keep the complete
-bundle, including `SHA256SUMS.txt`: the script checks all four files, hashes,
+notices in `runtime/`. The build also writes `SHA256SUMS.txt`. If Windows App
+Runtime 2.6.5 or a compatible 2.6 update is missing, run the included
+`Install-WinUiRuntime.ps1` once. Keep the complete bundle, including
+`SHA256SUMS.txt`. The script checks all four files, hashes,
 expected package identities, architecture and minimum Windows versions before
 the first installation. It then skips same/newer installed versions and uses
 `Add-AppxPackage` for the current user, without
@@ -327,7 +328,8 @@ policies. `-WhatIf` checks the proposed installation without changing the system
 The manifest's hashes detect incomplete/corrupt copies; `Add-AppxPackage` still
 verifies Microsoft signatures. This is preflight, not transactional installation:
 a later Windows/policy error can still leave some validated packages installed.
-The bootstrap reports this installation step when runtime initialization fails.
+When runtime initialization fails, vPaste shows its error and the
+`--main-ui=webview` recovery command.
 
 The package scripts use .NET streaming SHA256 rather than depending on
 `Get-FileHash`, which was unavailable in the npm-spawned Windows PowerShell 5.1

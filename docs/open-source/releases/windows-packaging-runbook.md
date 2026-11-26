@@ -44,7 +44,10 @@ Use a Windows 10 22H2 or Windows 11 x64 build machine with:
 
 - Node.js 24.11.1 and npm 11
 - Rust 1.91.1 with the repository lockfile
-- the Visual Studio C++ and Windows SDK requirements for Tauri 2
+- Visual Studio 2022 with the C++ v143 toolset and an installed x64 Windows SDK
+  10.0.22000.0 or newer
+- access to NuGet or a complete local cache for the pinned Windows App SDK
+  dependencies
 - WebView2 for local application smoke tests
 - Inno Setup 6.7.3
 
@@ -99,20 +102,31 @@ npm run check:licenses
 cargo fmt --all --check --manifest-path src-tauri/Cargo.toml
 cargo test --locked --all-targets --manifest-path src-tauri/Cargo.toml
 cargo check --locked --manifest-path src-tauri/Cargo.toml
+cargo check --release --locked --features winui --bin vPaste --manifest-path src-tauri/Cargo.toml
 npm run build:windows
 ```
 
 `npm run build:windows` is the official local packaging entry point. It:
 
-1. builds the Tauri release binary without a Tauri bundle;
-2. creates a clean Portable staging directory;
-3. adds `portable.flag`, `LICENSE`, and `vPaste.exe`;
-4. creates the Portable ZIP;
-5. generates the Inno visual assets;
-6. compiles the Inno installer;
-7. creates SHA-256 checksums;
-8. creates and validates the WinGet manifest; and
-9. rejects installer overhead greater than 2 MiB relative to the Portable ZIP.
+1. Builds the Tauri release binary and native panel with `--features winui`.
+2. Creates a clean Portable staging directory.
+3. Stages the executable, portable marker, product license, both WinUI DLLs
+   and the Windows App SDK license and notice.
+4. Creates the Portable ZIP.
+5. Generates the Inno visual assets.
+6. Compiles the Inno installer with the same WinUI payload and a SHA-256 receipt.
+7. Creates SHA-256 checksums.
+8. Creates and validates the WinGet manifest.
+9. Rejects installer overhead greater than 2 MiB relative to the Portable ZIP.
+
+Use a fresh output directory for local comparison builds so each package keeps
+its own Setup, ZIP, and checksums. The WebView-only comparison retains normal
+updater configuration and omits the WinUI payload.
+
+```powershell
+./scripts/build-windows-release.ps1 -OutputDirectory .codex/tmp/windows-winui
+./scripts/build-windows-release.ps1 -WebViewOnly -OutputDirectory .codex/tmp/windows-webview
+```
 
 During installer UI development only, the existing release binary can be
 repackaged without rebuilding the application:
@@ -148,13 +162,21 @@ Get-Content `
   .\src-tauri\target\release\bundle\windows\SHA256SUMS.txt
 ```
 
-The ZIP root must contain only:
+The official Portable ZIP contains these entries.
 
 ```text
 vPaste.exe
 LICENSE
 portable.flag
+VPasteWinUiPanel.dll
+Microsoft.WindowsAppRuntime.Bootstrap.dll
+winui-licenses/license.txt
+winui-licenses/NOTICE.txt
 ```
+
+The package uses the installed Windows App Runtime 2.6.5 (x64) or a compatible
+2.6 update. Validate default WinUI startup on a compatible device, automatic
+WebView fallback without that Runtime, and `--main-ui=webview` in both cases.
 
 Do not accept application data, logs, WebView2 data, or developer files in the
 ZIP.
@@ -189,10 +211,12 @@ For installer preparation changes, run the isolated native regression on Windows
 after populating the Inno asset cache with a local Windows build:
 
 ```powershell
-./scripts/test-windows-installer-update.ps1 -Scenario running
-./scripts/test-windows-installer-update.ps1 -Scenario stopped
-./scripts/test-windows-installer-update.ps1 -Scenario repair
-./scripts/test-windows-installer-update.ps1 -Scenario fresh
+./scripts/test-windows-installer-update.ps1 -OfficialWinUi -Scenario running
+./scripts/test-windows-installer-update.ps1 -OfficialWinUi -Scenario fresh
+./scripts/test-windows-installer-update.ps1 -OfficialWinUi -Scenario repair -Fault skip-winui-dll
+./scripts/test-windows-installer-update.ps1 -Scenario downgrade
+./scripts/test-windows-installer-update.ps1 -Scenario downgrade -Fault skip-exe
+./scripts/test-windows-installer-update.ps1 -OfficialWinUi -Scenario fresh -Fault reparse-parent
 ```
 
 The test compiles the real installer script against a synthetic executable,
@@ -201,7 +225,9 @@ and uses a unique temporary destination. It checks occupied-file shutdown,
 replacement, unrelated-file preservation and a bounded completion time; its
 external-shutdown stall injection reproduces the previous unbounded wait.
 It also checks the occupied-file prompt's native control bounds and that error
-messages retain their separate fallback layout. It does not install vPaste or
+messages retain their separate fallback layout. Both modes roll back if the
+replacement executable is skipped, and reject junctions in the destination's
+directory chain. The fixture does not install vPaste or
 verify the interactive appearance. Also manually check
 that the occupied-application prompt is readable and operable. Keep process
 shutdown in native Restart Manager handling, outside `NextButtonClick`; do not
@@ -217,7 +243,7 @@ the Inno package. Confirm that it:
   locations;
 - does not launch the legacy uninstaller;
 - removes the legacy uninstall registration only after success; and
-- restores the previous executable if replacement fails.
+- restores the previous executable and WinUI payload if replacement fails.
 
 ### Uninstall
 
@@ -283,13 +309,13 @@ use a self-signed certificate to imitate publisher trust.
 
 If Authenticode signing is enabled in the future, preserve this order:
 
-1. build `vPaste.exe`;
-2. Authenticode-sign `vPaste.exe` with timestamping;
-3. compile the Inno installer;
-4. Authenticode-sign the final installer with timestamping;
-5. generate the updater/minisign signature from the final installer bytes;
-6. generate SHA-256 checksums from those same final bytes; and
-7. create `latest.json` with the final immutable asset URLs.
+1. Build `vPaste.exe` and `VPasteWinUiPanel.dll`.
+2. Authenticode-sign both vPaste binaries with timestamping.
+3. Compile the Inno installer.
+4. Authenticode-sign the final installer with timestamping.
+5. Generate the updater/minisign signature from the final installer bytes.
+6. Generate SHA-256 checksums from those same final bytes.
+7. Create `latest.json` with the final immutable asset URLs.
 
 Changing a signed artifact after step 4 invalidates the downstream signature,
 checksum, and manifest. Rebuild the entire chain instead of patching an asset.

@@ -104,6 +104,16 @@ impl MainUi {
 
 static SELECTION: OnceLock<Selection> = OnceLock::new();
 static WINUI_FALLBACK_TO_WEBVIEW: AtomicBool = AtomicBool::new(false);
+pub(crate) const WINDOWS_INTERNAL_RC: bool = cfg!(all(target_os = "windows", feature = "winui-rc"));
+
+#[cfg(target_os = "windows")]
+pub(crate) fn default_main_ui_name() -> &'static str {
+    if cfg!(feature = "winui") {
+        "winui"
+    } else {
+        "webview"
+    }
+}
 
 fn parse_selection(
     args: &[String],
@@ -267,6 +277,18 @@ mod tests {
     }
 
     #[test]
+    fn internal_rc_starts_winui_and_accepts_explicit_webview() {
+        let select = |arguments: &[&str]| parse(&args(arguments), false, true, true).unwrap();
+        assert_eq!(select(&[]), MainUi::WinUi);
+        assert_eq!(select(&["--updated-from=2.0.0-rc.1"]), MainUi::WinUi);
+        assert_eq!(select(&["--main-ui=webview"]), MainUi::Webview);
+        assert_eq!(
+            select(&["--updated-from=2.0.0-rc.1", "--main-ui", "webview"]),
+            MainUi::Webview
+        );
+    }
+
+    #[test]
     fn macos_defaults_to_native_and_non_winui_platforms_default_to_webview() {
         for (macos, windows, expected) in [
             (true, false, MainUi::Native),
@@ -361,7 +383,6 @@ mod tests {
                 WinUiFailureDisposition::FailExplicitRequest
             );
         }
-
         // 非 Windows 或未开启 winui feature 的构建不受影响。
         assert_eq!(
             parse(&args(&[]), true, false, true).unwrap(),

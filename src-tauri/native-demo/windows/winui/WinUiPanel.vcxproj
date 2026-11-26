@@ -14,7 +14,7 @@
     <ProjectGuid>{FA2A9120-3626-485B-AB31-1263F4F67C3D}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>VPasteWinUiPanel</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.22000.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion Condition="'$(WindowsTargetPlatformVersion)' == ''">10.0.22000.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">

@@ -11,6 +11,12 @@ The Release workflow runs `npm run check:licenses` and publishes `THIRD_PARTY_LI
 
 macOS DMG creation also uses the build-only Python packages `dmgbuild` 1.6.7, `ds_store` 1.3.3, and `mac_alias` 2.2.3 (all MIT). Their versions are pinned in `scripts/requirements-macos-dmg.txt`; they are not bundled into the app or installer.
 
+## Microsoft Windows App SDK
+
+Windows x64 WinUI Setup and Portable packages include `Microsoft.WindowsAppRuntime.Bootstrap.dll` from `runtimes/win-x64/native/` in the `Microsoft.WindowsAppSDK.Foundation` NuGet package, version `2.6.5`. Copyright © Microsoft Corporation. All rights reserved.
+
+The bundles include Microsoft's Windows App SDK license terms and third-party notices as `winui-licenses/license.txt` and `winui-licenses/NOTICE.txt` from `Microsoft.WindowsAppSDK.WinUI` version `2.6.5`. The Foundation and WinUI NuGet packages contain identical `license.txt` files.
+
 ## Native Icon Artwork
 
 The WinUI OCR menu embeds [Scan Text 24 Regular](https://github.com/microsoft/fluentui-system-icons/blob/main/assets/Scan%20Text/SVG/ic_fluent_scan_text_24_regular.svg) from Microsoft Fluent UI System Icons (MIT).

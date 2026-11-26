@@ -15,12 +15,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Development UI leaked into the production frontend.' }
     $releaseRoot = Join-Path $repoRoot 'src-tauri/target/release'
     $executable = Join-Path $releaseRoot 'vPaste.exe'
-    $infoText = & $executable --winui-build-info | Out-String
-    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the Release executable.' }
-    $info = $infoText | ConvertFrom-Json
-    if (-not $info.winui -or $info.debug -or $info.localAcceptance -or $info.arch -ne 'x86_64') {
-        throw 'Expected a Windows x64 Release binary built with --features winui.'
-    }
+    $info = & (Join-Path $PSScriptRoot 'check-windows-release-binary.ps1') -Executable $executable -WinUi
     & node scripts/check-office-release-isolation.mjs --binary $executable
     if ($LASTEXITCODE -ne 0) { throw 'Release isolation check failed.' }
 
@@ -32,21 +27,6 @@ try {
     $packages = @('Microsoft.WindowsAppRuntime.2.msix', 'Microsoft.WindowsAppRuntime.DDLM.2.msix',
         'Microsoft.WindowsAppRuntime.Main.2.msix', 'Microsoft.WindowsAppRuntime.Singleton.2.msix')
     $nativeFiles = @('vPaste.exe', 'VPasteWinUiPanel.dll', 'Microsoft.WindowsAppRuntime.Bootstrap.dll')
-    foreach ($file in $nativeFiles) {
-        if (-not (Test-Path -LiteralPath (Join-Path $releaseRoot $file))) { throw "Missing native output: $file" }
-    }
-    $nativeImage = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes((Join-Path $releaseRoot 'VPasteWinUiPanel.dll')))
-    $exports = @('protocol_version', 'initialize', 'show', 'hide', 'toggle', 'refresh', 'refresh_tags',
-        'set_layout', 'get_layout', 'window_handle', 'reader_handle', 'focus_history', 'set_behavior',
-        'hide_for_queue_paste', 'set_theme', 'set_language', 'set_click_mode', 'set_queue_view',
-        'show_queue_no_activate', 'receive', 'shutdown')
-    foreach ($name in $exports) {
-        if (-not $nativeImage.Contains("vpaste_winui_$name" + [char]0)) { throw "Missing WinUI export: $name" }
-    }
-    if ($nativeImage.Contains('vpaste_winui_test_') -or
-        $nativeImage -match '(?i)(MSVCP\d+D|VCRUNTIME\d+(?:_\d+)?D|ucrtbased)\.dll') {
-        throw 'WinUI Release DLL contains Debug probes or requires a Debug CRT.'
-    }
     foreach ($file in $packages) {
         if (-not (Test-Path -LiteralPath (Join-Path $runtimeRoot "tools/MSIX/win10-x64/$file"))) {
             throw "Missing offline runtime: $file. Restore Microsoft.WindowsAppSDK.Runtime $sdkVersion."

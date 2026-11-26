@@ -48,9 +48,53 @@ pub(crate) fn portable_data_directory() -> Result<Option<PathBuf>, String> {
     let executable_dir = executable
         .parent()
         .ok_or_else(|| "failed to locate the vPaste executable directory".to_string())?;
-    Ok(portable_data_directory_for(executable_dir))
+
+    #[cfg(all(target_os = "windows", feature = "winui-rc"))]
+    {
+        internal_rc_data_directory(executable_dir, crate::APP_VERSION).map(Some)
+    }
+    #[cfg(not(all(target_os = "windows", feature = "winui-rc")))]
+    {
+        Ok(portable_data_directory_for(executable_dir))
+    }
 }
 
+#[cfg(all(target_os = "windows", feature = "winui-rc"))]
+fn internal_rc_data_directory(executable_dir: &Path, version: &str) -> Result<PathBuf, String> {
+    use std::os::windows::fs::MetadataExt;
+
+    const REPARSE_POINT: u32 = 0x400;
+    let marker = executable_dir.join("internal-rc.flag");
+    let marker_error = "Extract the entire internal RC ZIP to a dedicated writable folder. A matching internal-rc.flag is required.";
+    let meta = fs::symlink_metadata(&marker).map_err(|_| marker_error.to_string())?;
+    if !meta.is_file()
+        || meta.file_attributes() & REPARSE_POINT != 0
+        || !fs::read_to_string(&marker).is_ok_and(|content| content.trim() == version)
+    {
+        return Err(marker_error.into());
+    }
+
+    let profile = executable_dir.join("internal-rc-data");
+    for path in [
+        executable_dir,
+        &profile,
+        &profile.join(PORTABLE_WEBVIEW_DATA_DIR),
+    ] {
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_dir() && meta.file_attributes() & REPARSE_POINT == 0 => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => {
+                return Err(format!(
+                    "The internal RC requires a regular directory at {}.",
+                    path.display()
+                ))
+            }
+        }
+    }
+    Ok(profile)
+}
+
+#[cfg(any(test, not(all(target_os = "windows", feature = "winui-rc"))))]
 pub(crate) fn portable_data_directory_for(executable_dir: &Path) -> Option<PathBuf> {
     executable_dir
         .join(PORTABLE_MARKER)

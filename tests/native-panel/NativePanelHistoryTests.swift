@@ -42,6 +42,30 @@ final class NativePanelHistoryTests: XCTestCase {
     XCTAssertEqual(merged[1]?.count, 35)
   }
 
+  func testLiveEditsUseChangedRowsInsteadOfTheTail() {
+    let old = [0: ["a", "b", "c"].map(ref)]
+    let head = PanelHistoryEdits(old: old, new: [0: ["new", "a", "b", "c"].map(ref)],
+      oldCount: 3, newCount: 4)
+    XCTAssertEqual(head.inserted, [IndexPath(item: 0, section: 0)])
+    XCTAssertTrue(head.removed.isEmpty)
+    let middle = PanelHistoryEdits(old: old, new: [0: ["a", "c"].map(ref)],
+      oldCount: 3, newCount: 2)
+    XCTAssertEqual(middle.removed, [IndexPath(item: 1, section: 0)])
+    XCTAssertTrue(middle.inserted.isEmpty)
+    let replacement = PanelHistoryEdits(old: old, new: [0: ["a", "new", "c"].map(ref)],
+      oldCount: 3, newCount: 3)
+    XCTAssertEqual(replacement.removed, [IndexPath(item: 1, section: 0)])
+    XCTAssertEqual(replacement.inserted, replacement.removed)
+  }
+
+  func testLoadingAnotherPageDoesNotAnimateUnchangedSlots() {
+    let old = [0: (0..<36).map { ref("h\($0)") }]
+    let new = [1: (36..<72).map { ref("h\($0)") }]
+    let edit = PanelHistoryEdits(old: old, new: new, oldCount: 72, newCount: 72)
+    XCTAssertTrue(edit.removed.isEmpty)
+    XCTAssertTrue(edit.inserted.isEmpty)
+  }
+
   private func ref(_ hash: String) -> PanelRef {
     PanelRef(hash: hash, itemType: "Text", time: 1, label: 0, appSource: "", titleColor: "")
   }

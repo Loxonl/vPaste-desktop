@@ -140,9 +140,24 @@ struct Inner {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct BackgroundResources(Arc<Inner>);
+pub(crate) struct BackgroundResources(Arc<Inner>, Option<&'static str>);
 
 impl BackgroundResources {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    pub(crate) fn native() -> Self {
+        Self(Arc::default(), Some("native-clipboard-resources-updated"))
+    }
+
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    pub(crate) fn visible_at(&self, epoch: u64) -> bool {
+        let state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.visible && state.epoch == epoch
+    }
+
     pub(crate) fn epoch(&self) -> u64 {
         self.0
             .state
@@ -438,11 +453,12 @@ impl BackgroundResources {
     async fn link_update_loop(&self, app: tauri::AppHandle) {
         loop {
             let epoch = self.next_link_update().await;
-            let _ = app.emit_to(
-                "clipboard",
-                "clipboard-resources-updated",
-                serde_json::json!({ "epoch": epoch }),
-            );
+            let payload = serde_json::json!({ "epoch": epoch });
+            if let Some(event) = self.1 {
+                let _ = app.emit(event, payload);
+            } else {
+                let _ = app.emit_to("clipboard", "clipboard-resources-updated", payload);
+            }
         }
     }
 

@@ -1,7 +1,8 @@
 //! Rust-owned native browsing state; AppKit can release its window independently.
 use super::{current, deliver, PanelTab};
 use crate::{
-    clipboard,
+    background_resources::BackgroundResources,
+    clipboard::{self, item::Item},
     history_views::{self, HistoryQuery, HistoryRef, HistoryViewPage, ViewToken},
 };
 use rusqlite::OptionalExtension;
@@ -101,6 +102,7 @@ struct SentRef {
 fn fingerprint(item: &HistoryRef) -> u64 {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     hash.write(&serde_json::to_vec(item).unwrap_or_default());
+    hash.write(item.link_resource.as_bytes());
     hash.finish()
 }
 fn summarize(items: &[HistoryRef]) -> Vec<SentRef> {
@@ -118,17 +120,36 @@ fn summarize(items: &[HistoryRef]) -> Vec<SentRef> {
 }
 struct State {
     token: Option<ViewToken>,
+    open_request: u64,
     query: HistoryQuery,
     checkpoint: Checkpoint,
     sent: Vec<SentRef>,
     applied: u64,
-    resources: u64,
     resets: u64,
     deadline: Option<u64>,
+}
+impl State {
+    fn select_link_view(&mut self, request: u64, query: &HistoryQuery) -> Result<(), String> {
+        if !history_views::native_open_is_current(request) {
+            return Err("history view expired".into());
+        }
+        LINK_RESOURCES.select_history_link_view(LINK_RESOURCES.epoch(), request, query.clone());
+        self.open_request = request;
+        Ok(())
+    }
+
+    fn accepts_link_cards(&self, view_id: &str, revision: u64) -> bool {
+        history_views::native_open_is_current(self.open_request)
+            && self
+                .token
+                .as_ref()
+                .is_some_and(|token| token.view_id == view_id && token.revision == revision)
+    }
 }
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
     Mutex::new(State {
         token: None,
+        open_request: 0,
         query: HistoryQuery {
             keywords: String::new(),
             label: String::new(),
@@ -136,15 +157,15 @@ static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
         checkpoint: Checkpoint::default(),
         sent: Vec::new(),
         applied: 0,
-        resources: 0,
         resets: 0,
         deadline: None,
     })
 });
+// The optional AppKit panel can coexist with the main WebView.
+static LINK_RESOURCES: LazyLock<BackgroundResources> = LazyLock::new(BackgroundResources::native);
 // Database work is serialized off the AppKit thread; checkpoints never wait on it.
 static OPERATIONS: Mutex<()> = Mutex::new(());
 static CHANGES: AtomicU64 = AtomicU64::new(0);
-static RESOURCES: AtomicU64 = AtomicU64::new(0);
 static SCHEDULED: AtomicBool = AtomicBool::new(false);
 static WATCHING: AtomicBool = AtomicBool::new(false);
 static RESETS: AtomicU64 = AtomicU64::new(0);
@@ -163,21 +184,24 @@ pub(super) fn watch(app: &AppHandle) {
         "listen_new_clipboard",
         "clipboard-item-edited",
         "clipboard-resources-updated",
+        "native-clipboard-resources-updated",
         "item-tags-changed",
         "image-ocr-updated",
         "history-reset",
     ] {
         // Resource updates may target the clipboard WebView, including native-only mode.
-        app.listen_any(name, move |_| {
+        app.listen_any(name, move |event| {
+            if name == "native-clipboard-resources-updated"
+                && !serde_json::from_str::<Value>(event.payload())
+                    .ok()
+                    .and_then(|payload| payload["epoch"].as_u64())
+                    .is_some_and(|epoch| LINK_RESOURCES.visible_at(epoch))
+            {
+                return;
+            }
             CHANGES.fetch_add(1, Ordering::AcqRel);
             if name == "history-reset" {
                 RESETS.fetch_add(1, Ordering::AcqRel);
-            }
-            if matches!(
-                name,
-                "clipboard-item-edited" | "clipboard-resources-updated" | "history-reset"
-            ) {
-                RESOURCES.fetch_add(1, Ordering::AcqRel);
             }
             schedule();
         });
@@ -257,7 +281,30 @@ pub(super) fn checkpoint(token: &str, mut checkpoint: Checkpoint) {
     }
 }
 
+pub(super) fn start_link_previews() {
+    let _state = STATE.lock().unwrap_or_else(|err| err.into_inner());
+    LINK_RESOURCES.set_visible(true);
+}
+
+pub(super) fn submit_link_cards(
+    app: AppHandle,
+    session: u64,
+    view_id: &str,
+    revision: u64,
+    links: &[Item],
+) {
+    if links.is_empty() {
+        return;
+    }
+    let state = STATE.lock().unwrap_or_else(|err| err.into_inner());
+    if current(session) && state.accepts_link_cards(view_id, revision) {
+        LINK_RESOURCES.submit(app, links, LINK_RESOURCES.epoch(), false);
+    }
+}
+
 pub(super) fn suspend() {
+    let _state = STATE.lock().unwrap_or_else(|err| err.into_inner());
+    LINK_RESOURCES.set_visible(false);
     history_views::reserve_native_open();
     DEADLINE_WAKE.notify_one();
     // The view contains refs/cursors only, already capped by history_views.
@@ -279,6 +326,7 @@ pub(super) fn open(
     )?;
     let sent = summarize(&page.items);
     let mut state = STATE.lock().unwrap_or_else(|err| err.into_inner());
+    state.select_link_view(request, query)?;
     state.query = query.clone();
     state.token = Some(page.token.clone());
     state.checkpoint = Checkpoint {
@@ -288,7 +336,6 @@ pub(super) fn open(
     };
     state.sent = sent;
     state.applied = seq;
-    state.resources = RESOURCES.load(Ordering::Acquire);
     state.resets = RESETS.load(Ordering::Acquire);
     state.deadline =
         clipboard::history_filter_deadline(&query.label, page.items.iter().map(|item| item.time));
@@ -439,6 +486,7 @@ pub(super) fn resume(
     let label = query.label.clone();
     if let Some(token) = existing {
         let mut state = STATE.lock().unwrap_or_else(|err| err.into_inner());
+        state.select_link_view(request, &query)?;
         state.token = Some(token);
         state.checkpoint = saved.clone();
     } else {
@@ -452,12 +500,12 @@ pub(super) fn resume(
         let sent = summarize(&page.items);
         saved.view_revision = page.token.revision;
         let mut state = STATE.lock().unwrap_or_else(|err| err.into_inner());
+        state.select_link_view(request, &query)?;
         state.token = Some(page.token);
         state.query = query;
         state.checkpoint = saved.clone();
         state.sent = sent;
         state.applied = seq;
-        state.resources = RESOURCES.load(Ordering::Acquire);
         state.resets = RESETS.load(Ordering::Acquire);
         state.deadline = clipboard::history_filter_deadline(
             &state.query.label,
@@ -544,9 +592,8 @@ fn snapshot(
     editor_anchor: Option<&history_views::HistoryAnchor>,
 ) -> Result<Value, String> {
     let seq = CHANGES.load(Ordering::Acquire);
-    let resources = RESOURCES.load(Ordering::Acquire);
     let resets = RESETS.load(Ordering::Acquire);
-    let (mut token, query, checkpoint, sent, applied, resource_seq, reset_seq, deadline) = {
+    let (mut token, query, checkpoint, sent, applied, reset_seq, deadline) = {
         let state = STATE.lock().unwrap_or_else(|err| err.into_inner());
         (
             state.token.clone().ok_or("Native history is not open")?,
@@ -554,7 +601,6 @@ fn snapshot(
             state.checkpoint.clone(),
             state.sent.clone(),
             state.applied,
-            state.resources,
             state.resets,
             state.deadline,
         )
@@ -617,7 +663,7 @@ fn snapshot(
             .collect()
     };
     let changed_items = changed_refs(&previous, &refs);
-    let invalidated = if resources != resource_seq {
+    let invalidated = if reset {
         refs.iter()
             .map(|item| item.hash.clone())
             .collect::<Vec<_>>()
@@ -646,7 +692,7 @@ fn snapshot(
         "refs":changed_items,"knownCount":count,"hasMore":terminal.is_none(),
         "anchorIndex":anchor_index.min(count.saturating_sub(1)),"offset":checkpoint.offset,
         "selectedIndex":selected,"viewportRevision":checkpoint.viewport_revision,
-        "invalidated":invalidated,"resourcesChanged":resources != resource_seq});
+        "invalidated":invalidated,"resourcesChanged":reset});
     let sent = summarize(&refs);
     let mut state = STATE.lock().unwrap_or_else(|err| err.into_inner());
     if !state
@@ -659,7 +705,6 @@ fn snapshot(
     state.token = Some(token);
     state.sent = sent;
     state.applied = seq;
-    state.resources = resources;
     state.resets = resets;
     state.deadline = clipboard::history_filter_deadline(
         &query.label,
@@ -742,6 +787,23 @@ mod tests {
     }
 
     #[test]
+    fn a_link_image_change_invalidates_only_its_own_card() {
+        let mut first = reference("first", 2);
+        first.item_type = clipboard::item::ItemType::Link;
+        let second = reference("second", 1);
+        let old = summarize(&[first.clone(), second.clone()]);
+        first.link_resource = "/fixture/image:preview".into();
+        let changed = changed_refs(&old, &[first, second]);
+        assert_eq!(
+            changed
+                .iter()
+                .map(|item| item.hash.as_str())
+                .collect::<Vec<_>>(),
+            ["first"]
+        );
+    }
+
+    #[test]
     fn a_new_head_item_is_the_only_ref_payload_and_existing_hashes_are_not_duplicated() {
         let old = vec![reference("b", 2), reference("a", 1)];
         let next = vec![reference("c", 3), reference("b", 2), reference("a", 1)];
@@ -767,6 +829,75 @@ mod tests {
         checkpoint.offset = 0.0;
         checkpoint.anchor_index = 1;
         assert!(!checkpoint.at_head());
+    }
+
+    #[test]
+    fn native_link_scope_tracks_loaded_view_and_rejects_late_cards() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(root.path().to_string_lossy().into());
+        crate::config::save(crate::config::Config {
+            storage_dir: root.path().to_string_lossy().into(),
+            ..Default::default()
+        });
+        clipboard::db::init();
+        let conn = clipboard::db::db();
+        for index in 0..37u64 {
+            conn.execute("insert into clipboard(hash,time,content,preview_content,item_type,search_index,source,app_source,app_icon_path,title_color,icon,label) values(?1,?2,?3,?3,'Link',1,'','','','','',0)",
+                rusqlite::params![format!("link-{index}"), 1000 - index, format!("https://example.com/{index}")]).unwrap();
+        }
+        drop(conn);
+
+        let webview = BackgroundResources::default();
+        webview.set_visible(true);
+        let webview_epoch = webview.epoch();
+        start_link_previews();
+        let epoch = LINK_RESOURCES.epoch();
+        let all = HistoryQuery {
+            keywords: String::new(),
+            label: String::new(),
+        };
+        let first = open(&all, "all".into(), history_views::reserve_native_open()).unwrap();
+        assert_eq!(first.items[0].hash, "link-0");
+        let second_page =
+            history_views::read_page(&first.token.view_id, first.token.revision, 1).unwrap();
+        assert_eq!(second_page.items[0].hash, "link-36");
+        let accepts = |token: &ViewToken| {
+            STATE
+                .lock()
+                .unwrap()
+                .accepts_link_cards(&token.view_id, token.revision)
+        };
+        assert!(accepts(&second_page.token));
+
+        let reload = history_views::reserve_native_open();
+        assert!(!accepts(&first.token));
+        let refreshed = open(&all, "all".into(), reload).unwrap();
+        assert!(accepts(&refreshed.token));
+        assert_eq!(LINK_RESOURCES.epoch(), epoch);
+        let favorites = HistoryQuery {
+            label: "__favorite".into(),
+            ..all
+        };
+        let next = open(
+            &favorites,
+            "favorite".into(),
+            history_views::reserve_native_open(),
+        )
+        .unwrap();
+        assert!(next.items.is_empty());
+        assert!(accepts(&next.token));
+        assert!(!accepts(&refreshed.token));
+
+        suspend();
+        assert!(!accepts(&next.token));
+        assert!(!LINK_RESOURCES.visible_at(epoch));
+        assert!(webview.visible_at(webview_epoch));
+        history_views::close(&next.token.view_id);
+        let mut state = STATE.lock().unwrap();
+        state.token = None;
+        state.sent.clear();
+        state.checkpoint = Checkpoint::default();
     }
 
     #[test]

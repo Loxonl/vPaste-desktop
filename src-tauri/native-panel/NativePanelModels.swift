@@ -146,6 +146,72 @@ struct PanelHistoryDelta: Decodable {
     return result
   }
 }
+struct PanelHistoryEdits {
+  let removed: Set<IndexPath>
+  let inserted: Set<IndexPath>
+
+  init(old: [Int: [PanelRef]], new: [Int: [PanelRef]], oldCount: Int, newCount: Int) {
+    func positions(_ pages: [Int: [PanelRef]], count: Int) -> [(index: Int, hash: String)] {
+      guard count > 0 else { return [] }
+      var seen = Set<String>()
+      return pages.keys.sorted().flatMap { page -> [(index: Int, hash: String)] in
+        guard page >= 0, page <= (count - 1) / 36 else { return [] }
+        let start = page * 36
+        return pages[page, default: []].prefix(count - start).enumerated().compactMap {
+          seen.insert($0.element.hash).inserted ? (start + $0.offset, $0.element.hash) : nil
+        }
+      }
+    }
+    let before = positions(old, count: oldCount)
+    let after = positions(new, count: newCount)
+    let beforeHashes = before.map(\.hash)
+    let afterHashes = after.map(\.hash)
+    let removedHashes = Set(afterHashes.difference(from: beforeHashes).removals.compactMap {
+      if case let .remove(_, hash, _) = $0 { return hash }
+      return nil
+    })
+    let newIndices = Dictionary(uniqueKeysWithValues: after.map { ($0.hash, $0.index) })
+    let anchors = before.compactMap { item -> (Int, Int)? in
+      guard !removedHashes.contains(item.hash), let index = newIndices[item.hash] else { return nil }
+      return (item.index, index)
+    } + [(oldCount, newCount)]
+    let newAtIndex = Dictionary(uniqueKeysWithValues: after.map { ($0.index, $0.hash) })
+    var removed = Set<IndexPath>()
+    var inserted = Set<IndexPath>()
+    var oldStart = 0
+    var newStart = 0
+    var cursor = 0
+    for (oldEnd, newEnd) in anchors {
+      let oldLength = oldEnd - oldStart
+      let newLength = newEnd - newStart
+      // Unknown slots belong to unloaded pages. Keep them paired unless the
+      // neighboring retained cards prove that the gap gained or lost rows.
+      let oldExtra = max(0, oldLength - newLength)
+      let newExtra = max(0, newLength - oldLength)
+      for index in oldStart..<(oldStart + oldExtra) {
+        removed.insert(IndexPath(item: index, section: 0))
+      }
+      for index in newStart..<(newStart + newExtra) {
+        inserted.insert(IndexPath(item: index, section: 0))
+      }
+      while cursor < before.count, before[cursor].index < oldEnd {
+        let oldItem = before[cursor]
+        cursor += 1
+        guard oldItem.index >= oldStart + oldExtra else { continue }
+        let newIndex = newStart + newExtra + (oldItem.index - oldStart - oldExtra)
+        if let hash = newAtIndex[newIndex], hash != oldItem.hash {
+          removed.insert(IndexPath(item: oldItem.index, section: 0))
+          inserted.insert(IndexPath(item: newIndex, section: 0))
+        }
+      }
+      oldStart = oldEnd + 1
+      newStart = newEnd + 1
+      if cursor < before.count, before[cursor].index == oldEnd { cursor += 1 }
+    }
+    self.removed = removed
+    self.inserted = inserted
+  }
+}
 struct PanelRun: Decodable {
   let text: String
   let bold: Bool

@@ -15,6 +15,8 @@ final class PanelListLayout: NSCollectionViewFlowLayout {
   var viewportSize = NSSize(width: 1, height: 240)
   var verticalInset: CGFloat = 12
   var maximumCardHeight: CGFloat = 230
+  private var inserted = Set<IndexPath>()
+  private var removed = Set<IndexPath>()
   var cardHeight: CGFloat {
     min(maximumCardHeight, max(100, viewportSize.height - verticalInset * 2))
   }
@@ -30,6 +32,9 @@ final class PanelListLayout: NSCollectionViewFlowLayout {
     -> NSCollectionViewLayoutAttributes?
   {
     guard indexPath.item >= 0, indexPath.item < itemCount else { return nil }
+    return cardAttributes(at: indexPath)
+  }
+  private func cardAttributes(at indexPath: IndexPath) -> NSCollectionViewLayoutAttributes {
     let value = NSCollectionViewLayoutAttributes(forItemWith: indexPath)
     value.frame = NSRect(
       x: inset + CGFloat(indexPath.item) * (cardWidth + gap), y: verticalInset,
@@ -43,6 +48,36 @@ final class PanelListLayout: NSCollectionViewFlowLayout {
     return (first..<last).compactMap {
       layoutAttributesForItem(at: IndexPath(item: $0, section: 0))
     }
+  }
+  override func prepare(forCollectionViewUpdates updateItems: [NSCollectionViewUpdateItem]) {
+    super.prepare(forCollectionViewUpdates: updateItems)
+    inserted = Set(updateItems.filter { $0.updateAction == .insert }.compactMap(\.indexPathAfterUpdate))
+    removed = Set(updateItems.filter { $0.updateAction == .delete }.compactMap(\.indexPathBeforeUpdate))
+  }
+  override func initialLayoutAttributesForAppearingItem(at indexPath: IndexPath)
+    -> NSCollectionViewLayoutAttributes?
+  {
+    guard inserted.contains(indexPath) else {
+      return super.initialLayoutAttributesForAppearingItem(at: indexPath)
+    }
+    let value = cardAttributes(at: indexPath)
+    value.alpha = 0
+    return value
+  }
+  override func finalLayoutAttributesForDisappearingItem(at indexPath: IndexPath)
+    -> NSCollectionViewLayoutAttributes?
+  {
+    guard removed.contains(indexPath) else {
+      return super.finalLayoutAttributesForDisappearingItem(at: indexPath)
+    }
+    let value = cardAttributes(at: indexPath)
+    value.alpha = 0
+    return value
+  }
+  override func finalizeCollectionViewUpdates() {
+    super.finalizeCollectionViewUpdates()
+    inserted.removeAll()
+    removed.removeAll()
   }
   override func shouldInvalidateLayout(forBoundsChange newBounds: NSRect) -> Bool {
     newBounds.size != collectionView?.bounds.size
@@ -609,7 +644,7 @@ final class PanelCardView: NSView, NSDraggingSource {
       card.rich.isEmpty ? .zero : NSSize(width: 8 * scale, height: 8 * scale)
     if !card.assetPath.isEmpty {
       media.load(card.assetPath, pixels: 720) { [weak self] value in
-        guard self?.card?.hash == hash else { return }
+        guard self?.card?.hash == hash, self?.card?.assetPath == card.assetPath else { return }
         self?.image.image = value
       }
     } else {

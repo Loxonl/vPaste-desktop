@@ -916,8 +916,11 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     selected = 0
     lastViewport = ""
     media.clear()
+    let previousCount = layout.itemCount
     layout.itemCount = 0
-    list.reloadData()
+    if previousCount > 0 {
+      list.deleteItems(at: Set((0..<previousCount).map { IndexPath(item: $0, section: 0) }))
+    }
     syncListSize()
     scroll.contentView.scroll(to: .zero)
     showQueryLoading()
@@ -1064,12 +1067,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   private func applyHistoryDelta(_ delta: PanelHistoryDelta) throws {
     let next = try delta.merging(pages, token: token)
     let previousSelection = ref(selected)?.hash
-    let sameOrder = pages.mapValues { $0.map(\.hash) } == next.mapValues { $0.map(\.hash) }
     let targetX = (CGFloat(delta.anchorIndex) + CGFloat(delta.offset)) * (layout.cardWidth + layout.gap)
-    let sameWindow = sameOrder && delta.invalidated.isEmpty && delta.knownCount == count
-      && delta.hasMore == hasMore && delta.selectedIndex == selected
-      && abs(targetX - scroll.contentView.bounds.minX) < 0.5
-    let previousTrack = count + (hasMore ? 1 : 0)
+    let nextCount = delta.knownCount + (delta.hasMore ? 1 : 0)
+    let edits = PanelHistoryEdits(old: pages, new: next, oldCount: layout.itemCount, newCount: nextCount)
     applyingHistory = true
     defer { applyingHistory = false }
     generation &+= 1
@@ -1093,27 +1093,30 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     } else if let pending = pendingPreviewSelection {
       pendingPreviewSelection = (selected, pending.direction)
     }
-    if sameWindow {
-      lastViewport = ""
-      scheduleViewport()
-      return
+    if !edits.removed.isEmpty || !edits.inserted.isEmpty {
+      NSAnimationContext.runAnimationGroup { context in
+        context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.18
+        list.performBatchUpdates {
+          layout.itemCount = nextCount
+          list.deleteItems(at: edits.removed)
+          list.insertItems(at: edits.inserted)
+        }
+      }
+      syncListSize()
     }
-    layout.itemCount = count + (hasMore ? 1 : 0)
-    // The collection still owns only visible items. Ordinary patches change
-    // its extent and rebind those items; initial binding uses one reload.
-    if previousTrack == 0 || abs(layout.itemCount - previousTrack) > 216 {
-      list.reloadData()
-    } else if layout.itemCount > previousTrack {
-      list.insertItems(at: Set((previousTrack..<layout.itemCount).map { IndexPath(item: $0, section: 0) }))
-    } else if layout.itemCount < previousTrack {
-      list.deleteItems(at: Set((layout.itemCount..<previousTrack).map { IndexPath(item: $0, section: 0) }))
+    let x = min(max(0, targetX), max(0, list.bounds.width - scroll.contentView.bounds.width))
+    if abs(x - scroll.contentView.bounds.minX) >= 0.5 {
+      scroll.contentView.scroll(to: NSPoint(x: x, y: 0))
+      scroll.reflectScrolledClipView(scroll.contentView)
     }
-    syncListSize()
-    scroll.contentView.scroll(to: NSPoint(x: min(max(0, targetX), max(0, list.bounds.width - scroll.contentView.bounds.width)), y: 0))
-    scroll.reflectScrolledClipView(scroll.contentView)
     for path in list.indexPathsForVisibleItems() {
-      if let item = list.item(at: path) as? PanelCardItem { configure(item, index: path.item) }
+      if let item = list.item(at: path) as? PanelCardItem,
+        let shown = item.cardView.card?.hash, shown != ref(path.item)?.hash
+      {
+        configure(item, index: path.item)
+      }
     }
+    updateVisibleSelection()
     showResultState()
     lastViewport = ""
     lastCheckpointKey = ""
@@ -1133,7 +1136,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       }
     }
     let previousTrack = count + (hasMore ? 1 : 0)
-    pages[page.pageIndex] = page.items
+    let previousPage = pages.updateValue(page.items, forKey: page.pageIndex)
     count = max(count, page.startIndex + page.items.count)
     if !page.hasMore { terminalCount = page.knownCount }
     if let terminalCount {
@@ -1143,16 +1146,20 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       hasMore = true
     }
     layout.itemCount = count + (hasMore ? 1 : 0)
-    if previousTrack == 0 {
-      list.reloadData()
-    } else if layout.itemCount > previousTrack {
+    if layout.itemCount > previousTrack {
       list.insertItems(at: Set((previousTrack..<layout.itemCount).map { IndexPath(item: $0, section: 0) }))
     } else if layout.itemCount < previousTrack {
       list.deleteItems(at: Set((layout.itemCount..<previousTrack).map { IndexPath(item: $0, section: 0) }))
     }
     syncListSize()
     for path in list.indexPathsForVisibleItems() {
-      if let item = list.item(at: path) as? PanelCardItem { configure(item, index: path.item) }
+      let slot = path.item % 36
+      let previousHash = previousPage.flatMap { $0.indices.contains(slot) ? $0[slot].hash : nil }
+      if path.item / 36 == page.pageIndex, previousHash != ref(path.item)?.hash,
+        let item = list.item(at: path) as? PanelCardItem
+      {
+        configure(item, index: path.item)
+      }
     }
     showResultState()
     refreshSelectedPreview()
@@ -1369,7 +1376,9 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
         }
         for card in response.cards where wanted.contains(card.hash) { self.cards[card.hash] = card }
         for index in self.list.indexPathsForVisibleItems() {
-          if let item = self.list.item(at: index) as? PanelCardItem {
+          if let hash = self.ref(index.item)?.hash, returned.contains(hash),
+            let item = self.list.item(at: index) as? PanelCardItem
+          {
             self.configure(item, index: index.item)
           }
         }

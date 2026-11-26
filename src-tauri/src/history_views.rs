@@ -414,6 +414,14 @@ pub(crate) fn cache_bytes() -> usize {
 }
 
 #[cfg(all(debug_assertions, target_os = "macos"))]
+pub(crate) fn native_open_is_current(request: u64) -> bool {
+    ViewOwner::NativeExperiment
+        .requests()
+        .load(Ordering::Acquire)
+        == request
+}
+
+#[cfg(all(debug_assertions, target_os = "macos"))]
 pub(crate) fn reserve_native_open() -> u64 {
     ViewOwner::NativeExperiment
         .requests()

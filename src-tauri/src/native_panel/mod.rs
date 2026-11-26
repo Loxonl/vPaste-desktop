@@ -46,6 +46,7 @@ static LISTENERS: Mutex<Vec<tauri::EventId>> = Mutex::new(Vec::new());
 static ACTION: AtomicBool = AtomicBool::new(false);
 static TAG_EDITOR_TARGET: Mutex<Option<(u64, String)>> = Mutex::new(None);
 static WORK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+static LINK_PREVIEW_SESSION: AtomicU64 = AtomicU64::new(0);
 static CLOSED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 extern "C" fn set_key(key: bool) {
@@ -67,6 +68,7 @@ fn dispose() {
         .lock()
         .unwrap_or_else(|error| error.into_inner()) = None;
     ACTIVE.store(false, Ordering::Release);
+    LINK_PREVIEW_SESSION.store(0, Ordering::Release);
     KEY.store(false, Ordering::Release);
     preview::dispose(APP.get());
     SESSION.fetch_add(1, Ordering::AcqRel);
@@ -252,13 +254,17 @@ fn present(
                     }
                 }
             }
+            let onboarding = onboarding::snapshot();
+            if !preview && onboarding.is_none() {
+                LINK_PREVIEW_SESSION.store(session, Ordering::Release);
+            }
             let bytes = serde_json::to_vec(&json!({
                 "session": session,
                 "pasteQueue": queue_selection::snapshot(),
                 "sizePreview": preview,
                 "developerReconfigure": reconfigure,
                 "editorReturnHash": editor_return_hash,
-                "onboarding": onboarding::snapshot(),
+                "onboarding": onboarding,
                 "language": language,
                 "theme": theme,
                 "scale": scale,
@@ -603,6 +609,9 @@ unsafe extern "C" fn request(bytes: *const u8, length: usize) {
             let _ = crate::retain_preview_window(&app);
         }
     }
+    if req.op == "history-resume" && LINK_PREVIEW_SESSION.load(Ordering::Acquire) == req.session {
+        history::start_link_previews();
+    }
     let open = if matches!(req.op.as_str(), "open" | "history-resume") {
         history_views::reserve_native_open()
     } else {
@@ -726,6 +735,7 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
                 return Err("too many cards".into());
             }
             let mut cards = Vec::new();
+            let mut links = Vec::new();
             for hash in &r.hashes {
                 if !current(r.session) {
                     break;
@@ -733,10 +743,12 @@ async fn dispatch(app: &AppHandle, r: &Request, open: u64) -> Result<Value, Stri
                 history_views::validate_native(&r.view_id, r.revision)?;
                 let hash = hash.clone();
                 let width = r.width;
-                if let Ok(card) = blocking(move || display_card(&hash, width)).await {
+                if let Ok((card, link)) = blocking(move || display_card(&hash, width)).await {
                     cards.push(card);
+                    links.extend(link);
                 }
             }
+            history::submit_link_cards(app.clone(), r.session, &r.view_id, r.revision, &links);
             Ok(json!({"cards":cards}))
         }
         "viewport" => {
@@ -1190,9 +1202,10 @@ struct Card {
 fn bounded(s: &str) -> String {
     s.chars().take(16_384).collect()
 }
-fn display_card(hash: &str, width: u32) -> Result<Card, String> {
+fn display_card(hash: &str, width: u32) -> Result<(Card, Option<clipboard::item::Item>), String> {
     let payload = clipboard::history_card_payload(hash, false)?;
     let item = payload.item;
+    let link_item = (item.item_type == ItemType::Link).then(|| item.clone());
     let mut asset_path = String::new();
     let mut animation_path = String::new();
     let mut dimensions = String::new();
@@ -1302,7 +1315,7 @@ fn display_card(hash: &str, width: u32) -> Result<Card, String> {
         .as_ref()
         .map(rich_text::convert)
         .unwrap_or_default();
-    Ok(Card {
+    let card = Card {
         hash: item.hash,
         item_type: item.item_type.to_string(),
         text: bounded(&text),
@@ -1326,7 +1339,8 @@ fn display_card(hash: &str, width: u32) -> Result<Card, String> {
         rich,
         export_image: !export_image_source(&item.item_type, &item.content, &item.preview_content)
             .is_empty(),
-    })
+    };
+    Ok((card, link_item))
 }
 
 // One dynamic toolbar tab after the fixed All and Favorites tabs: a filter tab

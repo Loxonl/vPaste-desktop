@@ -84,11 +84,53 @@ struct BootstrapApi {
 
 static PANEL_API: OnceLock<Result<PanelApi, String>> = OnceLock::new();
 static BOOTSTRAP_API: OnceLock<Result<BootstrapApi, String>> = OnceLock::new();
+static BOOTSTRAP_SHUTDOWN_DONE: AtomicBool = AtomicBool::new(false);
+static PANEL_SHUTDOWN_DONE: AtomicBool = AtomicBool::new(false);
 static APP: OnceLock<AppHandle> = OnceLock::new();
 static ACTION_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MODAL_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SIZE_PREVIEW: Mutex<Option<SizePreviewSnapshot>> = Mutex::new(None);
+
+// 锁定与 WindowsAppSDK 2.6.5 构建一致的运行时版本下限 (2.6.5.0 = 0x0002_0006_0005_0000)。
+const RUNTIME_MAJOR_MINOR: u32 = 0x0002_0006;
+const RUNTIME_MIN_VERSION: u64 = package_version(2, 6, 5, 0);
+
+const fn package_version(major: u16, minor: u16, build: u16, revision: u16) -> u64 {
+    ((major as u64) << 48) | ((minor as u64) << 32) | ((build as u64) << 16) | (revision as u64)
+}
+
+fn format_bootstrap_error(error: &str) -> String {
+    format!(
+        "{error}. Windows App Runtime 2.6.5 (x64) or newer compatible 2.6 runtime is missing or incompatible. Install Windows App Runtime 2.6.5 (x64) and restart vPaste, or launch with --main-ui=webview."
+    )
+}
+
+/// 在模块加载后、初始化成功提交前若中途失败，自动释放 DLL 句柄避免泄漏。
+struct LoadedModule(*mut c_void);
+
+impl LoadedModule {
+    fn as_ptr(&self) -> *mut c_void {
+        self.0
+    }
+
+    fn into_raw(self) -> usize {
+        let raw = self.0 as usize;
+        std::mem::forget(self);
+        raw
+    }
+}
+
+impl Drop for LoadedModule {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: 句柄尚未移交进程级 OnceLock 且原生初始化未提交，可安全释放。
+            unsafe {
+                FreeLibrary(self.0);
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct SizePreviewSnapshot {
@@ -108,6 +150,7 @@ pub(crate) fn dragging() -> bool {
 unsafe extern "system" {
     fn LoadLibraryW(file_name: *const u16) -> *mut c_void;
     fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
+    fn FreeLibrary(module: *mut c_void) -> i32;
 }
 
 fn wide_null(value: &OsStr) -> Vec<u16> {
@@ -144,24 +187,34 @@ fn load_bootstrap() -> Result<BootstrapApi, String> {
             std::io::Error::last_os_error()
         ));
     }
+    let module = LoadedModule(module);
     // SAFETY: export names are NUL-terminated ASCII strings.
-    let initialize =
-        unsafe { GetProcAddress(module, b"MddBootstrapInitialize2\0".as_ptr().cast()) };
-    let shutdown = unsafe { GetProcAddress(module, b"MddBootstrapShutdown\0".as_ptr().cast()) };
+    let initialize = unsafe {
+        GetProcAddress(
+            module.as_ptr(),
+            b"MddBootstrapInitialize2\0".as_ptr().cast(),
+        )
+    };
+    let shutdown =
+        unsafe { GetProcAddress(module.as_ptr(), b"MddBootstrapShutdown\0".as_ptr().cast()) };
     if initialize.is_null() || shutdown.is_null() {
         return Err("Windows App SDK bootstrap exports are missing".into());
     }
     // SAFETY: signatures match MddBootstrapInitialize2 and MddBootstrapShutdown.
     let initialize: BootstrapInitialize = unsafe { std::mem::transmute(initialize) };
     let shutdown: BootstrapShutdown = unsafe { std::mem::transmute(shutdown) };
-    // Bind to the compatible 2.6 runtime, never an unrelated major/minor.
+    // Bind to compatible 2.6 runtime with minimum version floor 2.6.5.0.
     check_hresult("runtime initialization", unsafe {
-        initialize(0x0002_0006, std::ptr::null(), 0, 0)
-    }).map_err(|error| format!(
-        "{error}. Install the bundled Windows App SDK runtime offline with Install-WinUiRuntime.ps1, then restart vPaste."
-    ))?;
+        initialize(
+            RUNTIME_MAJOR_MINOR,
+            std::ptr::null(),
+            RUNTIME_MIN_VERSION,
+            0,
+        )
+    })
+    .map_err(|error| format_bootstrap_error(&error))?;
     Ok(BootstrapApi {
-        _module: module as usize,
+        _module: module.into_raw(),
         shutdown,
     })
 }
@@ -178,14 +231,16 @@ fn load_panel_api() -> Result<PanelApi, String> {
     let library_name = wide_null(library_path.as_os_str());
 
     // SAFETY: `library_name` is NUL-terminated and remains valid for the call.
-    let module = unsafe { LoadLibraryW(library_name.as_ptr()) };
-    if module.is_null() {
+    let raw_module = unsafe { LoadLibraryW(library_name.as_ptr()) };
+    if raw_module.is_null() {
         return Err(format!(
             "failed to load WinUI panel library {} (Windows error {})",
             library_path.display(),
             std::io::Error::last_os_error()
         ));
     }
+    let guard = LoadedModule(raw_module);
+    let module = guard.as_ptr();
 
     // SAFETY: the version export has a no-argument C ABI and no UI side effects.
     let version =
@@ -311,8 +366,8 @@ fn load_panel_api() -> Result<PanelApi, String> {
     if set_behavior.is_null() {
         return Err("WinUI behavior export is missing".into());
     }
-    Ok(PanelApi {
-        _module: module as usize,
+    let panel_api = PanelApi {
+        _module: 0,
         initialize: unsafe { initialize_symbol(module)? },
         show: unsafe { symbol(module, b"vpaste_winui_show\0")? },
         toggle: unsafe { symbol(module, b"vpaste_winui_toggle\0")? },
@@ -341,6 +396,10 @@ fn load_panel_api() -> Result<PanelApi, String> {
         },
         focus_history: unsafe { symbol(module, b"vpaste_winui_focus_history\0")? },
         shutdown: unsafe { shutdown_symbol(module)? },
+    };
+    Ok(PanelApi {
+        _module: guard.into_raw(),
+        ..panel_api
     })
 }
 
@@ -363,7 +422,20 @@ fn check_hresult(operation: &str, result: i32) -> Result<(), String> {
 }
 
 /// Initializes Windows App SDK and starts the island's dedicated STA UI thread.
+/// 先完成原生运行时与面板初始化，再注册 Tauri 事件监听器；若中途失败则立即清理，
+/// 确保默认回退到 WebView 后不会残留半初始化句柄或无效事件监听。
 pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
+    let language = crate::config::get().multilingual;
+    let english = language.to_ascii_lowercase().starts_with("en");
+    let single_click_paste =
+        crate::config::get().mouse_paste_mode == crate::config::MousePasteMode::Single;
+    if let Err(error) = initialize_native(english, single_click_paste)
+        .and_then(|()| apply_behavior())
+        .and_then(|()| layout::before_show(&app))
+    {
+        shutdown();
+        return Err(error);
+    }
     let _ = APP.set(app.clone());
     for event in ["listen_new_clipboard", "clipboard-resources-updated"] {
         // Resource notifications may explicitly target the clipboard WebView,
@@ -457,13 +529,7 @@ pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
             tray::refresh(app);
         }
     });
-    let language = crate::config::get().multilingual;
-    let english = language.to_ascii_lowercase().starts_with("en");
-    let single_click_paste =
-        crate::config::get().mouse_paste_mode == crate::config::MousePasteMode::Single;
-    initialize_native(english, single_click_paste)?;
-    apply_behavior()?;
-    layout::before_show(&app)
+    Ok(())
 }
 
 fn initialize_native(english: bool, single_click_paste: bool) -> Result<(), String> {
@@ -648,14 +714,18 @@ pub(crate) fn hide_for_queue_paste() -> Result<(), String> {
 pub(crate) fn shutdown() {
     DRAG_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
     MODAL_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
-    if let Some(Ok(panel)) = PANEL_API.get() {
-        // SAFETY: called during Tauri shutdown; the bridge stops and joins its
-        // dedicated UI thread before returning.
-        unsafe { (panel.shutdown)() };
+    if !PANEL_SHUTDOWN_DONE.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        if let Some(Ok(panel)) = PANEL_API.get() {
+            // SAFETY: called during Tauri shutdown or failed init cleanup;
+            // the bridge stops and joins its dedicated UI thread before returning.
+            unsafe { (panel.shutdown)() };
+        }
     }
-    if let Some(Ok(bootstrap)) = BOOTSTRAP_API.get() {
-        // SAFETY: the WinUI UI thread has been joined above.
-        unsafe { (bootstrap.shutdown)() };
+    if !BOOTSTRAP_SHUTDOWN_DONE.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        if let Some(Ok(bootstrap)) = BOOTSTRAP_API.get() {
+            // SAFETY: the WinUI UI thread has been joined above.
+            unsafe { (bootstrap.shutdown)() };
+        }
     }
 }
 
@@ -2008,5 +2078,89 @@ mod tests {
         let newer = super::next_query_generation();
         assert!(!super::is_query_generation_current(older));
         assert!(super::is_query_generation_current(newer));
+    }
+
+    #[test]
+    fn winui_startup_coordinator_and_runtime_floor_match_2_6_5_0() {
+        use crate::main_panel_mode::{MainUi, ModeState, Selection, WinUiStartupOutcome};
+
+        // 验证 Windows App Runtime 下限精确锁定 2.6.5.0 (0x0002_0006_0005_0000)。
+        assert_eq!(super::RUNTIME_MAJOR_MINOR, 0x0002_0006);
+        assert_eq!(super::RUNTIME_MIN_VERSION, 0x0002_0006_0005_0000);
+        assert_eq!(super::package_version(2, 6, 5, 0), 562_975_723_552_768);
+
+        // 1. 显式 --main-ui=webview 绝不触碰 WinUI / Runtime 初始化。
+        let mut webview_state = ModeState::from_selection(Selection {
+            mode: MainUi::Webview,
+            explicit: true,
+        });
+        let mut init_calls = 0usize;
+        let outcome = webview_state
+            .coordinate_winui_startup(|| {
+                init_calls += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(outcome, WinUiStartupOutcome::Webview);
+        assert_eq!(init_calls, 0);
+
+        // 2. 默认 WinUI 在缺少/不兼容 Windows App Runtime 2.6.5 时安全回退 WebView。
+        for simulated_error in [
+            super::format_bootstrap_error(
+                "WinUI runtime initialization failed (HRESULT 0x80040010)",
+            ),
+            "failed to load Windows App SDK bootstrap Microsoft.WindowsAppRuntime.Bootstrap.dll"
+                .to_string(),
+            "failed to load WinUI panel library VPasteWinUiPanel.dll".to_string(),
+            "WinUI bridge version 7 is incompatible with 8; rebuild the native app".to_string(),
+        ] {
+            let mut state = ModeState::from_selection(Selection {
+                mode: MainUi::WinUi,
+                explicit: false,
+            });
+            let mut calls = 0usize;
+            let outcome = state
+                .coordinate_winui_startup(|| {
+                    calls += 1;
+                    Err(simulated_error.clone())
+                })
+                .unwrap();
+            assert_eq!(calls, 1);
+            assert_eq!(
+                outcome,
+                WinUiStartupOutcome::FallbackToWebview {
+                    reason: simulated_error,
+                }
+            );
+            assert_eq!(state.effective_mode(), MainUi::Webview);
+            assert!(state.allows_main_webview());
+        }
+
+        // 3. 显式 --main-ui=winui 在 Runtime 缺失时必须返回清晰可操作的非零错误，不静默回退。
+        let runtime_error = super::format_bootstrap_error(
+            "WinUI runtime initialization failed (HRESULT 0x80070490)",
+        );
+        assert!(runtime_error.contains("Windows App Runtime 2.6.5 (x64)"));
+        assert!(runtime_error.contains("--main-ui=webview"));
+        let mut explicit_state = ModeState::from_selection(Selection {
+            mode: MainUi::WinUi,
+            explicit: true,
+        });
+        let explicit_error = explicit_state
+            .coordinate_winui_startup(|| Err(runtime_error.clone()))
+            .unwrap_err();
+        assert_eq!(explicit_error, runtime_error);
+        assert!(!explicit_state.allows_main_webview());
+
+        // 4. 默认 WinUI 在 Runtime 可用时正常进入 WinUI。
+        let mut ready_state = ModeState::from_selection(Selection {
+            mode: MainUi::WinUi,
+            explicit: false,
+        });
+        assert_eq!(
+            ready_state.coordinate_winui_startup(|| Ok(())).unwrap(),
+            WinUiStartupOutcome::WinUiReady
+        );
+        assert!(!ready_state.allows_main_webview());
     }
 }

@@ -95,6 +95,7 @@ winrt::Windows::Foundation::IAsyncAction NextNativeFrame() {
 #include "WinUiGeometry.h"
 #include "WinUiTabIndicator.h"
 #include "WinUiBridge.h"
+#include "WinUiDiagnostics.h"
 #include "WinUiResourceProbe.h"
 
 #include <chrono>
@@ -340,6 +341,60 @@ struct HistoryViewState {
     bool resetOnShow = false, pageFailed = false;
 } g_historyView;
 std::optional<winrt::event_token> g_historyVerifyToken;
+winrt::Microsoft::UI::Xaml::Application::UnhandledException_revoker g_unhandledExceptionRevoker;
+vpaste::winui::DiagnosticsLogger g_diagnostics;
+vpaste::winui::PowerLifecycleTracker g_powerLifecycle;
+
+void LogWinUiDiagnostic(std::string_view eventName, std::string_view details) noexcept {
+    (void)g_diagnostics.WriteLine(eventName, details);
+}
+
+void LogWinUiError(
+    const char *context,
+    HRESULT code,
+    std::string_view rawMessage = {}) noexcept {
+    try {
+        const auto snapshot = g_powerLifecycle.Snapshot(GetTickCount64());
+        const auto cleanMessage = vpaste::winui::SanitizeDiagnosticText(rawMessage);
+        char buffer[512]{};
+        const int len = std::snprintf(
+            buffer, sizeof(buffer),
+            "context=%s hr=0x%08X visible=%d tagManager=%d acrylic=%d suspendCount=%llu resumeCount=%llu pendingResumeShow=%d sinceResumeMs=%llu msg=\"%s\"",
+            context ? context : "unknown",
+            static_cast<unsigned>(code),
+            PanelVisible() ? 1 : 0,
+            g_panel.tagManagerViewActive ? 1 : 0,
+            g_panel.hasSystemBackdrop ? 1 : 0,
+            static_cast<unsigned long long>(snapshot.suspendCount),
+            static_cast<unsigned long long>(snapshot.resumeCount),
+            snapshot.pendingFirstShow ? 1 : 0,
+            static_cast<unsigned long long>(snapshot.elapsedSinceResumeMs),
+            cleanMessage.c_str());
+        if (len > 0) {
+            LogWinUiDiagnostic("winui_error", std::string_view(buffer, static_cast<std::size_t>(len)));
+        }
+    } catch (...) {}
+}
+
+void LogPowerResumeFirstShow(vpaste::winui::PowerResumeContext const &context, bool freshShow) noexcept {
+    try {
+        char buffer[384]{};
+        const int len = std::snprintf(
+            buffer, sizeof(buffer),
+            "suspendCount=%llu resumeCount=%llu sleepMs=%llu sinceResumeMs=%llu resumeKind=%s freshShow=%d tagManager=%d acrylic=%d",
+            static_cast<unsigned long long>(context.suspendCount),
+            static_cast<unsigned long long>(context.resumeCount),
+            static_cast<unsigned long long>(context.sleepDurationMs),
+            static_cast<unsigned long long>(context.elapsedSinceResumeMs),
+            context.userResume ? "user" : "automatic",
+            freshShow ? 1 : 0,
+            g_panel.tagManagerViewActive ? 1 : 0,
+            g_panel.hasSystemBackdrop ? 1 : 0);
+        if (len > 0) {
+            LogWinUiDiagnostic("power_resume_first_show", std::string_view(buffer, static_cast<std::size_t>(len)));
+        }
+    } catch (...) {}
+}
 
 void SyncHistoryViewport();
 void MaybeLoadMoreHistory();
@@ -2002,19 +2057,27 @@ void HistoryViewportInput() {
 
 void VerifyHistoryViewportAfterRender() {
     if (g_historyVerifyToken) return;
-    g_historyVerifyToken = winrt::Microsoft::UI::Xaml::Media::CompositionTarget::Rendering([](auto const &, auto const &) {
-        winrt::Microsoft::UI::Xaml::Media::CompositionTarget::Rendering(*g_historyVerifyToken);
-        g_historyVerifyToken.reset();
-        if (!g_historyView.restore || !g_historyView.restore->applied || !g_panel.historyScroll ||
-            g_historyLoading || g_panel.tagManagerViewActive || !PanelVisible()) return;
-        const auto target = vpaste::winui::ClampHistoryOffset(g_historyView.restore->offset, g_panel.historyScroll.ScrollableWidth());
-        if (std::abs(g_panel.historyScroll.HorizontalOffset() - target) <= 0.5) {
-            g_historyView.parkedOffset = target;
-            g_historyView.restore.reset();
-            MaybeLoadMoreHistory();
-        } else {
-            g_historyView.restore->applied = false;
-            PostMessageW(g_panel.window, kSyncHistoryViewport, 0, 0);
+    g_historyVerifyToken = winrt::Microsoft::UI::Xaml::Media::CompositionTarget::Rendering([](auto const &, auto const &) noexcept {
+        try {
+            if (g_historyVerifyToken) {
+                winrt::Microsoft::UI::Xaml::Media::CompositionTarget::Rendering(*g_historyVerifyToken);
+                g_historyVerifyToken.reset();
+            }
+            if (!g_historyView.restore || !g_historyView.restore->applied || !g_panel.historyScroll ||
+                g_historyLoading || g_panel.tagManagerViewActive || !PanelVisible()) return;
+            const auto target = vpaste::winui::ClampHistoryOffset(g_historyView.restore->offset, g_panel.historyScroll.ScrollableWidth());
+            if (std::abs(g_panel.historyScroll.HorizontalOffset() - target) <= 0.5) {
+                g_historyView.parkedOffset = target;
+                g_historyView.restore.reset();
+                MaybeLoadMoreHistory();
+            } else {
+                g_historyView.restore->applied = false;
+                PostMessageW(g_panel.window, kSyncHistoryViewport, 0, 0);
+            }
+        } catch (winrt::hresult_error const &error) {
+            LogWinUiError("composition_target_rendering", error.code(), winrt::to_string(error.message()));
+        } catch (...) {
+            LogWinUiError("composition_target_rendering", winrt::to_hresult());
         }
     });
 }
@@ -4124,45 +4187,70 @@ void RemoveTutorial() {
 }
 
 void SetVisible(bool visible, bool freshShow = true, bool animate) noexcept {
-    if (!visible) UpdateCardPreviewMotion(false);
-    if (g_panel.root) g_panel.root.IsHitTestVisible(visible);
-    if (!visible) CancelHoverPreview();
-    if (!visible && !g_panel.tagManagerViewActive) g_historyView.parkedOffset = HistoryOffset();
-    if (!visible) ShowAltHints(false);
-    if (!visible) g_searchSubmitRequestId = 0;
-    if (!visible) {
-        g_latestPreviewRequestId = 0;
-        g_queuePreviewFocus.reset();
-        g_textEditorReturnAfterQuery.reset();
-        g_historyView.removedTabFallback.reset();
-    }
-    if (!visible && g_panel.imageExport) g_panel.imageExport->Cancel();
-    if (!visible && g_panel.appActions) g_panel.appActions->Deactivate();
-    if (!visible && g_panel.deletionDialog) g_panel.deletionDialog.Hide();
-    if (!visible && g_panel.filterEditor) g_panel.filterEditor->Hide();
-    if (!visible && g_panel.recordTagEditor) g_panel.recordTagEditor->Hide();
-    if (!visible && g_panel.cardDrag) {
-        g_historyRefreshAfterDrag = false;
-        g_panel.cardDrag->Cancel();
-    }
-    if (!visible) DismissFeedback();
-    if (g_panel.window != nullptr) {
-        const bool entering = visible && (!g_panel.dockMotion->Visible() || IsIconic(g_panel.window));
-        if (entering && freshShow && !g_panel.tagManagerViewActive && !g_panel.onboarding) PrepareMainShow();
-        if (entering) g_panel.root.UpdateLayout();
-        try { g_panel.dockMotion->SetVisible(visible, animate && !g_panel.tagManagerViewActive); }
-        catch (winrt::hresult_error const &error) {
-            std::fprintf(stderr, "WinUI visibility failed: 0x%08X\n", static_cast<unsigned>(error.code()));
+    // 将整个可见性切换路径纳入 try/catch，避免 noexcept 函数内任意 WinRT 异常触发 std::terminate()。
+    try {
+        if (!visible) UpdateCardPreviewMotion(false);
+        if (g_panel.root) g_panel.root.IsHitTestVisible(visible);
+        if (!visible) CancelHoverPreview();
+        if (!visible && !g_panel.tagManagerViewActive) g_historyView.parkedOffset = HistoryOffset();
+        if (!visible) ShowAltHints(false);
+        if (!visible) g_searchSubmitRequestId = 0;
+        if (!visible) {
+            g_latestPreviewRequestId = 0;
+            g_queuePreviewFocus.reset();
+            g_textEditorReturnAfterQuery.reset();
+            g_historyView.removedTabFallback.reset();
+        }
+        if (!visible && g_panel.imageExport) g_panel.imageExport->Cancel();
+        if (!visible && g_panel.appActions) g_panel.appActions->Deactivate();
+        if (!visible && g_panel.deletionDialog) g_panel.deletionDialog.Hide();
+        if (!visible && g_panel.filterEditor) g_panel.filterEditor->Hide();
+        if (!visible && g_panel.recordTagEditor) g_panel.recordTagEditor->Hide();
+        if (!visible && g_panel.cardDrag) {
+            g_historyRefreshAfterDrag = false;
+            g_panel.cardDrag->Cancel();
+        }
+        if (!visible) DismissFeedback();
+        if (g_panel.window != nullptr) {
+            const bool entering = visible && (!g_panel.dockMotion->Visible() || IsIconic(g_panel.window));
+            // 仅在休眠唤醒后的首次显示路径落盘脱敏诊断上下文，不改变原有显示与动画逻辑。
+            if (entering) {
+                if (const auto resumeContext = g_powerLifecycle.ConsumeFirstShowAfterResume(GetTickCount64())) {
+                    LogPowerResumeFirstShow(*resumeContext, freshShow);
+                }
+            }
+            if (entering && freshShow && !g_panel.tagManagerViewActive && !g_panel.onboarding) PrepareMainShow();
+            if (entering) g_panel.root.UpdateLayout();
+            try { g_panel.dockMotion->SetVisible(visible, animate && !g_panel.tagManagerViewActive); }
+            catch (winrt::hresult_error const &error) {
+                std::fprintf(stderr, "WinUI visibility failed: 0x%08X\n", static_cast<unsigned>(error.code()));
+                LogWinUiError("dock_motion_set_visible", error.code(), winrt::to_string(error.message()));
+                ShowWindow(g_panel.window, visible ? SW_SHOW : SW_HIDE);
+            }
+            if (visible) {
+                (void)vpaste::winui::ActivateWindowFromBackground(g_panel.window);
+                if (g_panel.onboarding) g_panel.onboarding->Shown();
+                if (entering && !g_panel.tagManagerViewActive)
+                    ShowAltHints((GetAsyncKeyState(VK_MENU) & 0x8000) != 0 &&
+                        ((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) == 0);
+                if (entering && !g_panel.onboarding) ScheduleHistoryFocus();
+                UpdateCardPreviewMotion();
+            }
+        }
+    } catch (winrt::hresult_error const &error) {
+        std::fprintf(stderr, "WinUI SetVisible(%d) failed: 0x%08X %s\n",
+            visible ? 1 : 0, static_cast<unsigned>(error.code()), winrt::to_string(error.message()).c_str());
+        LogWinUiError(visible ? "set_visible_show" : "set_visible_hide", error.code(), winrt::to_string(error.message()));
+        if (g_panel.window != nullptr) {
             ShowWindow(g_panel.window, visible ? SW_SHOW : SW_HIDE);
         }
-        if (visible) {
-            (void)vpaste::winui::ActivateWindowFromBackground(g_panel.window);
-            if (g_panel.onboarding) g_panel.onboarding->Shown();
-            if (entering && !g_panel.tagManagerViewActive)
-                ShowAltHints((GetAsyncKeyState(VK_MENU) & 0x8000) != 0 &&
-                    ((GetAsyncKeyState(VK_CONTROL) | GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) == 0);
-            if (entering && !g_panel.onboarding) ScheduleHistoryFocus();
-            UpdateCardPreviewMotion();
+    } catch (...) {
+        const auto hr = winrt::to_hresult();
+        std::fprintf(stderr, "WinUI SetVisible(%d) failed: 0x%08X\n",
+            visible ? 1 : 0, static_cast<unsigned>(hr.value));
+        LogWinUiError(visible ? "set_visible_show" : "set_visible_hide", hr);
+        if (g_panel.window != nullptr) {
+            ShowWindow(g_panel.window, visible ? SW_SHOW : SW_HIDE);
         }
     }
     if (g_visibilityChanged != nullptr) {
@@ -4531,6 +4619,35 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
     case WM_NCCALCSIZE:
         if (wparam && !g_panel.tagManagerViewActive) return 0;
         return DefWindowProcW(window, message, wparam, lparam);
+    case WM_ERASEBKGND: {
+        // 停靠态与同仓库其余 WinUI 窗口保持一致，跳过 GDI 白色擦除以消除 XAML 首帧前的白框闪烁；
+        // 标签管理标准窗口态按当前有效主题/高对比度画布色填充，避免拖拽缩放边缘出现黑边残影。
+        if (!g_panel.tagManagerViewActive) return 1;
+        if (const auto dc = reinterpret_cast<HDC>(wparam)) {
+            RECT client{};
+            if (GetClientRect(window, &client)) {
+                const COLORREF fill = vpaste::winui::HighContrastEnabled()
+                    ? GetSysColor(COLOR_WINDOW)
+                    : (IsDarkTheme() ? RGB(23, 27, 34) : RGB(246, 247, 249));
+                if (const auto brush = CreateSolidBrush(fill)) {
+                    FillRect(dc, &client, brush);
+                    DeleteObject(brush);
+                }
+            }
+        }
+        return 1;
+    }
+    case WM_POWERBROADCAST:
+        // 严格遵守系统挂起 2 秒红线：仅更新纯内存原子状态与时间戳，绝不调用 WinRT/XAML/DWM 或文件 I/O。
+        if (wparam == PBT_APMSUSPEND) {
+            g_powerLifecycle.OnSuspend(GetTickCount64());
+            return TRUE;
+        }
+        if (wparam == PBT_APMRESUMEAUTOMATIC || wparam == PBT_APMRESUMESUSPEND) {
+            g_powerLifecycle.OnResume(GetTickCount64(), wparam == PBT_APMRESUMESUSPEND);
+            return TRUE;
+        }
+        return DefWindowProcW(window, message, wparam, lparam);
     case WM_NCHITTEST:
         if (g_sizePreviewActive) return HTTRANSPARENT;
         if (!g_panel.tagManagerViewActive) return HTCLIENT;
@@ -4702,12 +4819,19 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
 } catch (winrt::hresult_error const &error) {
     // Never unwind a WinRT exception through the Win32 callback ABI. Keep the
     // failing message and HRESULT visible for subsequent lifecycle diagnosis.
+    const auto messageText = winrt::to_string(error.message());
     std::fprintf(stderr, "WinUI window message=%u failed: HRESULT=0x%08X %s\n", message,
-        static_cast<unsigned>(error.code().value), winrt::to_string(error.message()).c_str());
+        static_cast<unsigned>(error.code().value), messageText.c_str());
+    char ctx[48]{};
+    std::snprintf(ctx, sizeof(ctx), "window_proc_msg_%u", message);
+    LogWinUiError(ctx, error.code(), messageText);
     return message >= WM_APP ? error.code().value : DefWindowProcW(window, message, wparam, lparam);
 } catch (...) {
     const auto error = winrt::to_hresult();
     std::fprintf(stderr, "WinUI window message=%u failed: HRESULT=0x%08X\n", message, static_cast<unsigned>(error.value));
+    char ctx[48]{};
+    std::snprintf(ctx, sizeof(ctx), "window_proc_msg_%u", message);
+    LogWinUiError(ctx, error);
     return message >= WM_APP ? error.value : DefWindowProcW(window, message, wparam, lparam);
 }
 
@@ -4719,7 +4843,8 @@ HRESULT CreatePanel() noexcept {
         windowClass.lpfnWndProc = WindowProc;
         windowClass.hInstance = GetModuleHandleW(nullptr);
         windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        // 与 WinUiTrayWindow / WinUiReader / WinUiQueueWindow 对齐，移除白色背景画刷以消除白框闪烁。
+        windowClass.hbrBackground = nullptr;
         windowClass.lpszClassName = kWindowClass;
         if (RegisterClassExW(&windowClass) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
             return HRESULT_FROM_WIN32(GetLastError());
@@ -4737,9 +4862,37 @@ HRESULT CreatePanel() noexcept {
         g_panel.dockMotion = std::make_unique<vpaste::winui::DockMotion>(g_panel.window, g_applyingLayout);
         g_panel.xamlManager =
             winrt::Microsoft::UI::Xaml::Hosting::WindowsXamlManager::InitializeForCurrentThread();
-        winrt::Microsoft::UI::Xaml::Application::Current()
-            .Resources().MergedDictionaries().Append(
-                winrt::Microsoft::UI::Xaml::Controls::XamlControlsResources());
+        auto application = winrt::Microsoft::UI::Xaml::Application::Current();
+        // 注册只读未处理异常观测钩子：仅落盘精确 HRESULT 与休眠上下文，严禁设 Handled(true) 强行续命。
+        g_unhandledExceptionRevoker = application.UnhandledException(
+            winrt::auto_revoke,
+            [](auto const &, winrt::Microsoft::UI::Xaml::UnhandledExceptionEventArgs const &args) noexcept {
+                try {
+                    const auto snapshot = g_powerLifecycle.Snapshot(GetTickCount64());
+                    const auto cleanMessage = vpaste::winui::SanitizeDiagnosticText(
+                        winrt::to_string(args.Message()));
+                    char buffer[512]{};
+                    const int len = std::snprintf(
+                        buffer, sizeof(buffer),
+                        "hr=0x%08X visible=%d tagManager=%d acrylic=%d suspended=%d suspendCount=%llu resumeCount=%llu pendingResumeShow=%d sleepMs=%llu sinceResumeMs=%llu msg=\"%s\"",
+                        static_cast<unsigned>(args.Exception().value),
+                        PanelVisible() ? 1 : 0,
+                        g_panel.tagManagerViewActive ? 1 : 0,
+                        g_panel.hasSystemBackdrop ? 1 : 0,
+                        snapshot.suspended ? 1 : 0,
+                        static_cast<unsigned long long>(snapshot.suspendCount),
+                        static_cast<unsigned long long>(snapshot.resumeCount),
+                        snapshot.pendingFirstShow ? 1 : 0,
+                        static_cast<unsigned long long>(snapshot.sleepDurationMs),
+                        static_cast<unsigned long long>(snapshot.elapsedSinceResumeMs),
+                        cleanMessage.c_str());
+                    if (len > 0) {
+                        LogWinUiDiagnostic("unhandled_exception", std::string_view(buffer, static_cast<std::size_t>(len)));
+                    }
+                } catch (...) {}
+            });
+        application.Resources().MergedDictionaries().Append(
+            winrt::Microsoft::UI::Xaml::Controls::XamlControlsResources());
         phase = "install appearance resources";
         vpaste::winui::InstallAppearanceResources();
         phase = "initialize XAML island";
@@ -4774,34 +4927,52 @@ HRESULT CreatePanel() noexcept {
         g_panel.viewport = Viewbox();
         g_panel.viewport.Stretch(Stretch::Uniform);
         g_panel.viewport.Child(root);
-        root.Loaded([](auto const &, auto const &) {
-            // Switching a management view unloads history. Focus is valid only
-            // after it is attached again, not immediately after Content changes.
-            if (GetForegroundWindow() == g_panel.window) PostMessageW(g_panel.window, kFocusHistory, 0, 0);
-            BindHistoryScroll(); PostMessageW(g_panel.window, kSyncHistoryViewport, 0, 0);
+        root.Loaded([](auto const &, auto const &) noexcept {
+            try {
+                // Switching a management view unloads history. Focus is valid only
+                // after it is attached again, not immediately after Content changes.
+                if (GetForegroundWindow() == g_panel.window) PostMessageW(g_panel.window, kFocusHistory, 0, 0);
+                BindHistoryScroll(); PostMessageW(g_panel.window, kSyncHistoryViewport, 0, 0);
+            } catch (winrt::hresult_error const &error) {
+                LogWinUiError("root_loaded", error.code(), winrt::to_string(error.message()));
+            } catch (...) {
+                LogWinUiError("root_loaded", winrt::to_hresult());
+            }
         });
-        root.Unloaded([](auto const &, auto const &) {
-            CancelHoverPreview();
-            if (g_panel.appActions) g_panel.appActions->Deactivate();
-            if (g_panel.deletionDialog) g_panel.deletionDialog.Hide();
-            if (g_panel.filterEditor) g_panel.filterEditor->Hide();
-            if (g_panel.recordTagEditor) g_panel.recordTagEditor->Hide();
-            DismissFeedback();
+        root.Unloaded([](auto const &, auto const &) noexcept {
+            try {
+                CancelHoverPreview();
+                if (g_panel.appActions) g_panel.appActions->Deactivate();
+                if (g_panel.deletionDialog) g_panel.deletionDialog.Hide();
+                if (g_panel.filterEditor) g_panel.filterEditor->Hide();
+                if (g_panel.recordTagEditor) g_panel.recordTagEditor->Hide();
+                DismissFeedback();
+            } catch (winrt::hresult_error const &error) {
+                LogWinUiError("root_unloaded", error.code(), winrt::to_string(error.message()));
+            } catch (...) {
+                LogWinUiError("root_unloaded", winrt::to_hresult());
+            }
         });
-        root.ActualThemeChanged([](auto const &, auto const &) {
-            // 销毁流程清空 g_panel.root 后，XAML 关闭期间仍可能派发挂起的主题变更回调。
-            if (!g_panel.root) return;
-            ApplyRowTheme();
-            const auto requested = g_panel.root.RequestedTheme();
-            const auto effective = EffectivePanelTheme(requested);
-            if (g_panel.appActions) g_panel.appActions->SetTheme(effective);
-            if (g_panel.queueView) g_panel.queueView->SetTheme(requested);
-            if (g_panel.queueWindow) g_panel.queueWindow->SetAppearance(g_english, requested);
-            if (g_panel.tagManager) g_panel.tagManager->SetTheme(requested);
-            if (g_panel.filterEditor) g_panel.filterEditor->SetTheme(requested);
-            if (g_panel.recordTagEditor) g_panel.recordTagEditor->SetTheme(requested);
-            if (g_panel.reader) g_panel.reader->SetAppearance(g_english, requested);
-            if (g_panel.textEditor) g_panel.textEditor->SetAppearance(g_english, requested);
+        root.ActualThemeChanged([](auto const &, auto const &) noexcept {
+            try {
+                // 销毁流程清空 g_panel.root 后，XAML 关闭期间仍可能派发挂起的主题变更回调。
+                if (!g_panel.root) return;
+                ApplyRowTheme();
+                const auto requested = g_panel.root.RequestedTheme();
+                const auto effective = EffectivePanelTheme(requested);
+                if (g_panel.appActions) g_panel.appActions->SetTheme(effective);
+                if (g_panel.queueView) g_panel.queueView->SetTheme(requested);
+                if (g_panel.queueWindow) g_panel.queueWindow->SetAppearance(g_english, requested);
+                if (g_panel.tagManager) g_panel.tagManager->SetTheme(requested);
+                if (g_panel.filterEditor) g_panel.filterEditor->SetTheme(requested);
+                if (g_panel.recordTagEditor) g_panel.recordTagEditor->SetTheme(requested);
+                if (g_panel.reader) g_panel.reader->SetAppearance(g_english, requested);
+                if (g_panel.textEditor) g_panel.textEditor->SetAppearance(g_english, requested);
+            } catch (winrt::hresult_error const &error) {
+                LogWinUiError("root_actual_theme_changed", error.code(), winrt::to_string(error.message()));
+            } catch (...) {
+                LogWinUiError("root_actual_theme_changed", winrt::to_hresult());
+            }
         });
         phase = "create panel controls";
         Grid header;
@@ -5520,13 +5691,16 @@ HRESULT CreatePanel() noexcept {
         (void)SendRequest(L"appState");
         return S_OK;
     } catch (const winrt::hresult_error &error) {
+        const auto messageText = winrt::to_string(error.message());
         std::fprintf(stderr, "WinUI startup failed during %s: 0x%08X %s\n",
-            phase, static_cast<unsigned>(error.code()), winrt::to_string(error.message()).c_str());
+            phase, static_cast<unsigned>(error.code()), messageText.c_str());
+        LogWinUiError(phase, error.code(), messageText);
         if (g_panel.window != nullptr) {
             DestroyWindow(g_panel.window);
         }
         return error.code();
     } catch (...) {
+        LogWinUiError(phase, E_FAIL);
         if (g_panel.window != nullptr) {
             DestroyWindow(g_panel.window);
         }
@@ -5681,6 +5855,7 @@ void RunUiThread() noexcept {
     g_dynamicIds.clear(); g_tabOrder.clear(); g_tabOrderLoadRequest = 0; g_tabOrderSaveRequest = 0;
     g_selectedTagId = 0;
     g_selectedTagName.clear();
+    g_unhandledExceptionRevoker.revoke();
     if (g_panel.xamlManager != nullptr) {
         g_panel.xamlManager.Close();
         g_panel.xamlManager = nullptr;
@@ -5709,6 +5884,16 @@ LRESULT SendPanelMessage(UINT message, WPARAM wparam = 0, LPARAM lparam = 0) noe
 
 extern "C" __declspec(dllexport) std::uint32_t vpaste_winui_protocol_version() noexcept {
     return vpaste::winui::BridgeVersion;
+}
+
+extern "C" __declspec(dllexport) int32_t vpaste_winui_set_diagnostics_log_path(
+    const wchar_t *path) noexcept {
+    if (path == nullptr || path[0] == L'\0') {
+        g_diagnostics.SetPath({});
+        return S_OK;
+    }
+    g_diagnostics.SetPath(std::wstring(path));
+    return S_OK;
 }
 
 extern "C" __declspec(dllexport) int32_t vpaste_winui_initialize(
@@ -12567,6 +12752,105 @@ extern "C" __declspec(dllexport) int32_t vpaste_winui_test_batch2_regressions(st
     auto result = completion->get_future();
     if (!g_dispatcher.DispatcherQueue().TryEnqueue([completion] {
         RunBatch2RegressionTests(completion);
+    })) return E_FAIL;
+    if (result.wait_for(std::chrono::seconds(30)) != std::future_status::ready) {
+        return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+    }
+    const auto [status, completedStage] = result.get();
+    *stage = completedStage;
+    return status;
+}
+
+winrt::fire_and_forget RunStage1DiagnosticsProbe(
+    std::wstring logPath,
+    std::shared_ptr<std::promise<std::pair<HRESULT, std::uint32_t>>> completion) {
+    std::uint32_t stage = 3001;
+    try {
+        // 3001: 校验脱敏清洗函数与轮转路径推导（不劈断 UTF-8，去除控制字符/换行）。
+        const auto sanitized = vpaste::winui::SanitizeDiagnosticText("line1\r\nline2\t\x01ok", 64);
+        winrt::check_hresult(sanitized == "line1 line2 ok" ? S_OK : E_FAIL);
+        const auto prevPath = vpaste::winui::PreviousDiagnosticsLogPath(logPath);
+        winrt::check_hresult(prevPath.ends_with(L".prev.log") ? S_OK : E_FAIL);
+
+        // 3002: 校验独立日志写入器达到上限后自动轮转为 .prev.log。
+        stage = 3002;
+        {
+            const std::wstring rotatePath = logPath + L".rotate-test.log";
+            const std::wstring rotatePrev = vpaste::winui::PreviousDiagnosticsLogPath(rotatePath);
+            DeleteFileW(rotatePath.c_str());
+            DeleteFileW(rotatePrev.c_str());
+            vpaste::winui::DiagnosticsLogger bounded;
+            bounded.SetPath(rotatePath, 160);
+            winrt::check_hresult(bounded.WriteLine("probe_one", "payload=alpha_0123456789") ? S_OK : E_FAIL);
+            winrt::check_hresult(bounded.WriteLine("probe_two", "payload=beta_0123456789") ? S_OK : E_FAIL);
+            winrt::check_hresult(GetFileAttributesW(rotatePrev.c_str()) != INVALID_FILE_ATTRIBUTES ? S_OK : E_FAIL);
+            DeleteFileW(rotatePath.c_str());
+            DeleteFileW(rotatePrev.c_str());
+        }
+
+        // 3003: 校验主窗口类已移除 COLOR_WINDOW + 1 背景画刷且绝未设置 WS_EX_NOREDIRECTIONBITMAP。
+        stage = 3003;
+        winrt::check_hresult(g_panel.window != nullptr ? S_OK : E_UNEXPECTED);
+        const auto classBrush = GetClassLongPtrW(g_panel.window, GCLP_HBRBACKGROUND);
+        winrt::check_hresult(classBrush == 0 ? S_OK : E_FAIL);
+        const auto exStyle = GetWindowLongPtrW(g_panel.window, GWL_EXSTYLE);
+        winrt::check_hresult((exStyle & WS_EX_NOREDIRECTIONBITMAP) == 0 ? S_OK : E_FAIL);
+
+        // 3004: 校验停靠态与标签管理态 WM_ERASEBKGND 均返回 1 且不崩溃。
+        stage = 3004;
+        SetVisible(false, false, false);
+        const auto dockErase = SendMessageW(g_panel.window, WM_ERASEBKGND, 0, 0);
+        winrt::check_hresult(dockErase == 1 ? S_OK : E_FAIL);
+        SetTagManagerActive(true);
+        co_await NextNativeFrame();
+        HDC screenDc = GetDC(g_panel.window);
+        const auto mgmtErase = SendMessageW(g_panel.window, WM_ERASEBKGND, reinterpret_cast<WPARAM>(screenDc), 0);
+        if (screenDc) ReleaseDC(g_panel.window, screenDc);
+        winrt::check_hresult(mgmtErase == 1 ? S_OK : E_FAIL);
+        SetTagManagerActive(false);
+        co_await NextNativeFrame();
+
+        // 3005: 合成发送 WM_POWERBROADCAST(PBT_APMSUSPEND -> PBT_APMRESUMEAUTOMATIC) 并触发首次 SetVisible(true)，
+        // 验证纯原子状态机正常流转且仅在首次显示时写入一次 power_resume_first_show 诊断日志。
+        stage = 3005;
+        g_powerLifecycle.Reset();
+        SetVisible(false, false, false);
+        winrt::check_hresult(SendMessageW(g_panel.window, WM_POWERBROADCAST, PBT_APMSUSPEND, 0) == TRUE ? S_OK : E_FAIL);
+        const auto suspendedSnap = g_powerLifecycle.Snapshot(GetTickCount64());
+        winrt::check_hresult(suspendedSnap.suspended && suspendedSnap.suspendCount == 1 && !suspendedSnap.pendingFirstShow ? S_OK : E_FAIL);
+        winrt::check_hresult(SendMessageW(g_panel.window, WM_POWERBROADCAST, PBT_APMRESUMEAUTOMATIC, 0) == TRUE ? S_OK : E_FAIL);
+        const auto resumedSnap = g_powerLifecycle.Snapshot(GetTickCount64());
+        winrt::check_hresult(!resumedSnap.suspended && resumedSnap.resumeCount == 1 && resumedSnap.pendingFirstShow ? S_OK : E_FAIL);
+
+        SetVisible(true, true, false);
+        co_await NextNativeFrame();
+        const auto afterShowSnap = g_powerLifecycle.Snapshot(GetTickCount64());
+        winrt::check_hresult(!afterShowSnap.pendingFirstShow ? S_OK : E_FAIL);
+
+        // 二次隐藏再显示不应重复标记 pendingFirstShow。
+        SetVisible(false, false, false);
+        SetVisible(true, true, false);
+        co_await NextNativeFrame();
+        SetVisible(false, false, false);
+
+        completion->set_value({S_OK, stage});
+    } catch (winrt::hresult_error const &err) {
+        completion->set_value({err.code(), stage});
+    } catch (...) {
+        completion->set_value({E_FAIL, stage});
+    }
+}
+
+extern "C" __declspec(dllexport) int32_t vpaste_winui_test_stage1_diagnostics(
+    const wchar_t *logPath, std::uint32_t *stage) noexcept {
+    if (!logPath || !stage || !g_dispatcher) return E_INVALIDARG;
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    auto completion = std::make_shared<std::promise<std::pair<HRESULT, std::uint32_t>>>();
+    auto result = completion->get_future();
+    std::wstring pathCopy(logPath);
+    if (!g_dispatcher.DispatcherQueue().TryEnqueue([pathCopy = std::move(pathCopy), completion] {
+        RunStage1DiagnosticsProbe(pathCopy, completion);
     })) return E_FAIL;
     if (result.wait_for(std::chrono::seconds(30)) != std::future_status::ready) {
         return HRESULT_FROM_WIN32(ERROR_TIMEOUT);

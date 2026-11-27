@@ -48,6 +48,7 @@ type PanelReceive = unsafe extern "C" fn(*const u8, usize);
 type PanelSetBehavior = unsafe extern "C" fn(*const u8, usize) -> i32;
 type PanelSetClickMode = unsafe extern "C" fn(bool) -> i32;
 type PanelSetQueueView = unsafe extern "C" fn(bool) -> i32;
+type PanelSetDiagnosticsLogPath = unsafe extern "C" fn(*const u16) -> i32;
 type PanelInitialize = unsafe extern "C" fn(extern "C" fn(bool), PanelRequest, bool, bool) -> i32;
 type BootstrapInitialize = unsafe extern "system" fn(u32, *const u16, u64, u32) -> i32;
 type BootstrapShutdown = unsafe extern "system" fn();
@@ -74,6 +75,7 @@ struct PanelApi {
     window_handle: PanelWindowHandle,
     reader_handle: PanelWindowHandle,
     focus_history: PanelCall,
+    set_diagnostics_log_path: Option<PanelSetDiagnosticsLogPath>,
     shutdown: PanelShutdown,
 }
 
@@ -367,6 +369,21 @@ fn load_panel_api() -> Result<PanelApi, String> {
     if set_behavior.is_null() {
         return Err("WinUI behavior export is missing".into());
     }
+    // 诊断日志路径导出为可选绑定，保持与既有协议版本 8 兼容。
+    let set_diagnostics_log_path = unsafe {
+        GetProcAddress(
+            module,
+            b"vpaste_winui_set_diagnostics_log_path\0".as_ptr().cast(),
+        )
+    };
+    let set_diagnostics_log_path = if set_diagnostics_log_path.is_null() {
+        None
+    } else {
+        // SAFETY: 导出函数签名接收只读 NUL 结尾 UTF-16 路径并返回 HRESULT。
+        Some(unsafe {
+            std::mem::transmute::<*mut c_void, PanelSetDiagnosticsLogPath>(set_diagnostics_log_path)
+        })
+    };
     Ok(PanelApi {
         initialize: unsafe { initialize_symbol(module)? },
         show: unsafe { symbol(module, b"vpaste_winui_show\0")? },
@@ -395,6 +412,7 @@ fn load_panel_api() -> Result<PanelApi, String> {
             std::mem::transmute::<*mut c_void, PanelWindowHandle>(reader_handle)
         },
         focus_history: unsafe { symbol(module, b"vpaste_winui_focus_history\0")? },
+        set_diagnostics_log_path,
         shutdown: unsafe { shutdown_symbol(module)? },
         _module: guard,
     })
@@ -442,9 +460,12 @@ pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
     let english = language.to_ascii_lowercase().starts_with("en");
     let single_click_paste =
         crate::config::get().mouse_paste_mode == crate::config::MousePasteMode::Single;
-    if let Err(error) = initialize_native(english, single_click_paste)
-        .and_then(|()| apply_behavior())
-        .and_then(|()| layout::before_show(&app))
+    let diagnostics_log_path =
+        crate::winui_diagnostics_log_path(std::path::Path::new(&crate::get_app_data_dir()));
+    if let Err(error) =
+        initialize_native_with_diagnostics(english, single_click_paste, Some(&diagnostics_log_path))
+            .and_then(|()| apply_behavior())
+            .and_then(|()| layout::before_show(&app))
     {
         shutdown();
         return Err(error);
@@ -545,9 +566,28 @@ pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn initialize_native(english: bool, single_click_paste: bool) -> Result<(), String> {
+fn configure_diagnostics_log_path(panel: &PanelApi, log_path: &std::path::Path) {
+    let Some(set_path) = panel.set_diagnostics_log_path else {
+        return;
+    };
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let wide = wide_null(log_path.as_os_str());
+    // SAFETY: wide 为 NUL 结尾的 UTF-16 路径字符串，调用期间保持有效，DLL 会同步拷贝路径。
+    let _ = unsafe { set_path(wide.as_ptr()) };
+}
+
+fn initialize_native_with_diagnostics(
+    english: bool,
+    single_click_paste: bool,
+    diagnostics_log_path: Option<&std::path::Path>,
+) -> Result<(), String> {
     let _ = NATIVE_LIBRARIES.get_or_init(load_native_libraries);
     let panel = api()?;
+    if let Some(path) = diagnostics_log_path {
+        configure_diagnostics_log_path(panel, path);
+    }
     // SAFETY: the native side stores these process-lifetime callbacks and calls
     // them from its UI thread with valid arguments. The callback never waits
     // for database work; it schedules that work on the shared Tokio runtime.
@@ -559,6 +599,11 @@ fn initialize_native(english: bool, single_click_paste: bool) -> Result<(), Stri
             single_click_paste,
         )
     })
+}
+
+#[cfg(test)]
+fn initialize_native(english: bool, single_click_paste: bool) -> Result<(), String> {
+    initialize_native_with_diagnostics(english, single_click_paste, None)
 }
 
 extern "C" fn visibility_changed(visible: bool) {
@@ -1886,6 +1931,55 @@ mod tests {
         assert!(
             result.is_ok(),
             "native batch2 regressions failed: {result:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the Windows App SDK runtime and an interactive desktop"]
+    fn native_stage1_diagnostics_and_erase_bkgnd() {
+        let temp = tempfile::tempdir().unwrap();
+        let diag_path = temp
+            .path()
+            .join("logs")
+            .join(crate::WINUI_DIAGNOSTICS_LOG_FILE);
+        let result = (|| -> Result<(), String> {
+            super::initialize_native_with_diagnostics(false, true, Some(&diag_path))?;
+            let panel = super::api()?;
+            let test = unsafe {
+                super::GetProcAddress(
+                    panel._module.as_ptr(),
+                    b"vpaste_winui_test_stage1_diagnostics\0".as_ptr().cast(),
+                )
+            };
+            if test.is_null() {
+                return Err("WinUI stage1 diagnostics test export is missing".to_string());
+            }
+            let wide_path = super::wide_null(diag_path.as_os_str());
+            // SAFETY: Debug 测试导出在同一 STA 上验证 WM_POWERBROADCAST、WM_ERASEBKGND、
+            // 去白框画刷与脱敏诊断日志轮转，且只操作隔离临时目录。
+            let test: unsafe extern "C" fn(*const u16, *mut u32) -> i32 =
+                unsafe { std::mem::transmute(test) };
+            let mut stage = 0;
+            let status = unsafe { test(wide_path.as_ptr(), &mut stage) };
+            eprintln!(
+                "WinUI stage1 diagnostics probe: stage={stage}, HRESULT=0x{:08X}",
+                status as u32
+            );
+            super::check_hresult(&format!("stage1 diagnostics probe stage {stage}"), status)?;
+            let saved = std::fs::read_to_string(&diag_path)
+                .map_err(|err| format!("read diagnostics log failed: {err}"))?;
+            let resume_entries = saved.matches("event=power_resume_first_show").count();
+            if resume_entries != 1 {
+                return Err(format!(
+                    "expected exactly 1 power_resume_first_show entry in diagnostics log, got {resume_entries}: {saved}"
+                ));
+            }
+            Ok(())
+        })();
+        super::shutdown();
+        assert!(
+            result.is_ok(),
+            "native stage1 diagnostics probe failed: {result:?}"
         );
     }
 

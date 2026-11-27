@@ -103,6 +103,7 @@
     <ClInclude Include="WinUiTabIndicator.h" />
     <ClInclude Include="WinUiGeometry.h" />
     <ClInclude Include="WinUiBridge.h" />
+    <ClInclude Include="WinUiDiagnostics.h" />
     <ClInclude Include="WinUiResourceProbe.h" />
     <ClInclude Include="WinUiQueueView.h" />
     <ClInclude Include="WinUiQueueWindow.h" />

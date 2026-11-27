@@ -39,7 +39,7 @@ use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
-use tauri_plugin_log::{Target, TargetKind};
+use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 use WebviewUrl::App;
 
 #[cfg(target_os = "macos")]
@@ -15044,6 +15044,24 @@ fn winui_fallback_notification_copy(language: &str) -> (&'static str, &'static s
     }
 }
 
+/// 单份应用运行日志的大小上限（2 MiB），避免沿用 tauri-plugin-log 默认 40 KB 频繁清空历史日志。
+const APP_LOG_MAX_FILE_SIZE: u128 = 2 * 1024 * 1024;
+/// 轮转保留的日志文件总数（含当前活跃文件），确保崩溃重启后仍可追溯上次会话日志。
+const APP_LOG_ROTATION_KEEP_FILES: usize = 5;
+/// WinUI 轻量脱敏诊断日志文件名，与早期启动诊断共用同一 logs 目录约定。
+#[cfg(any(all(target_os = "windows", feature = "winui"), test))]
+pub(crate) const WINUI_DIAGNOSTICS_LOG_FILE: &str = "winui-diagnostics.log";
+
+fn app_log_rotation_strategy() -> RotationStrategy {
+    RotationStrategy::KeepSome(APP_LOG_ROTATION_KEEP_FILES)
+}
+
+/// 解析 WinUI 诊断日志完整路径，自动跟随安装版与便携版的运行数据目录约定。
+#[cfg(any(all(target_os = "windows", feature = "winui"), test))]
+pub(crate) fn winui_diagnostics_log_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("logs").join(WINUI_DIAGNOSTICS_LOG_FILE)
+}
+
 /// 在 tauri_plugin_log 尚未注册的启动早期落盘显式 WinUI 失败诊断，避免无控制台启动无迹可寻。
 #[cfg(any(all(target_os = "windows", feature = "winui"), test))]
 fn write_early_startup_diagnostic(app_data_dir: &Path, message: &str) -> Option<PathBuf> {
@@ -15118,9 +15136,48 @@ fn should_show_panel_on_startup(
 #[cfg(test)]
 mod winui_default_startup_tests {
     use super::{
-        should_show_panel_on_startup, winui_explicit_startup_error_message,
-        winui_fallback_notification_copy, write_early_startup_diagnostic,
+        app_log_rotation_strategy, should_show_panel_on_startup, winui_diagnostics_log_path,
+        winui_explicit_startup_error_message, winui_fallback_notification_copy,
+        write_early_startup_diagnostic, APP_LOG_MAX_FILE_SIZE, APP_LOG_ROTATION_KEEP_FILES,
+        WINUI_DIAGNOSTICS_LOG_FILE,
     };
+    use tauri_plugin_log::RotationStrategy;
+
+    #[test]
+    fn app_log_rotation_retains_history_and_winui_diagnostics_shares_logs_dir() {
+        assert_eq!(APP_LOG_MAX_FILE_SIZE, 2 * 1024 * 1024);
+        assert_eq!(APP_LOG_ROTATION_KEEP_FILES, 5);
+        assert!(matches!(
+            app_log_rotation_strategy(),
+            RotationStrategy::KeepSome(5)
+        ));
+
+        // 安装版与便携版目录均共用 <app_data_dir>/logs/ 目录约定。
+        let installed_root = tempfile::tempdir().unwrap();
+        let portable_root = tempfile::tempdir().unwrap();
+        let portable_data = portable_root.path().join("data");
+        std::fs::create_dir_all(&portable_data).unwrap();
+
+        let installed_diag = winui_diagnostics_log_path(installed_root.path());
+        let installed_startup =
+            write_early_startup_diagnostic(installed_root.path(), "startup check").unwrap();
+        assert_eq!(installed_diag.parent(), installed_startup.parent());
+        assert_eq!(
+            installed_diag.file_name().and_then(|name| name.to_str()),
+            Some(WINUI_DIAGNOSTICS_LOG_FILE)
+        );
+
+        let portable_diag = winui_diagnostics_log_path(&portable_data);
+        assert_eq!(
+            portable_diag,
+            portable_data.join("logs").join(WINUI_DIAGNOSTICS_LOG_FILE)
+        );
+
+        // 确认 main.rs 的日志插件显式绑定了自定义上限与轮转保留策略，而非回退到 40 KB KeepOne。
+        let source = include_str!("main.rs");
+        assert!(source.contains(".max_file_size(APP_LOG_MAX_FILE_SIZE)"));
+        assert!(source.contains(".rotation_strategy(app_log_rotation_strategy())"));
+    }
 
     #[test]
     fn default_windows_startup_stays_quiet_while_explicit_or_update_restart_opens_panel() {
@@ -15896,6 +15953,8 @@ fn main() {
                             }),
                             Target::new(TargetKind::Stdout),
                         ])
+                        .max_file_size(APP_LOG_MAX_FILE_SIZE)
+                        .rotation_strategy(app_log_rotation_strategy())
                         .level(LevelFilter::Info)
                         .level_for("tantivy", LevelFilter::Error)
                         .build(),

@@ -91,7 +91,7 @@ jobs:
           - platform: macOS
             os: macos-15
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash

@@ -83,6 +83,16 @@ describe("private WinUI transport and shared motion source", () => {
         expect(beforeImports).toContain("<NuGetTargetMoniker>native,Version=v0.0</NuGetTargetMoniker>");
     });
 
+    it("gives the PR Rust matrix enough timeout budget for Windows WinUI Release checks without fail-fast cancellation", () => {
+        const prChecks = read(".github/workflows/pr-checks.yml").replace(/\r\n/g, "\n");
+        const rustJob = prChecks.slice(prChecks.indexOf("  rust:\n"), prChecks.indexOf("\n  required:\n"));
+        const timeoutMatch = rustJob.match(/^\s*timeout-minutes:\s*(\d+)\s*$/m);
+
+        expect(rustJob).toContain("fail-fast: false");
+        expect(timeoutMatch).not.toBeNull();
+        expect(Number(timeoutMatch?.[1])).toBeGreaterThanOrEqual(60);
+    });
+
     it("blocks the internal RC from portable autostart even when startup is enabled in its profile", () => {
         const main = read("src-tauri/src/main.rs").replace(/\s+/g, " ");
         const internalRc = "main_panel_mode::WINDOWS_INTERNAL_RC";

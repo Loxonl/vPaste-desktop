@@ -20,6 +20,7 @@ public:
     HWND Handle() const { return window; }
 private:
     static LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM);
+    void Place(RECT const &rect);
     void Resize();
     void Constrain(RECT const *suggested = nullptr);
     HWND window = nullptr, reference = nullptr;
@@ -28,5 +29,6 @@ private:
     winrt::Microsoft::UI::Xaml::Controls::Viewbox viewport{nullptr};
     double textScale = 1;
     bool positioned = false;
+    bool placing = false;
 };
 }

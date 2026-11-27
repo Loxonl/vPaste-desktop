@@ -627,6 +627,15 @@ pub(crate) fn refresh_layout(app: &AppHandle) -> Result<(), String> {
     layout::refresh(app)
 }
 
+/// 主面板处于隐藏状态（含开机静默自启后首次）时，开启粘贴队列前需先将隐藏主面板同步到当前目标屏幕与 DPI。
+pub(crate) fn should_realign_hidden_panel_before_queue(panel_visible: bool) -> bool {
+    !panel_visible
+}
+
+pub(crate) fn prepare_monitor_for_hidden_panel(app: &AppHandle) -> Result<(), String> {
+    layout::before_show(app)
+}
+
 /// 当 WinUI 原生编辑器、托盘菜单或非普通预览的原生子窗获得前台焦点时，阻止 focus_watch 将焦点强拉回主列表。
 pub(crate) fn other_native_window_foreground() -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};

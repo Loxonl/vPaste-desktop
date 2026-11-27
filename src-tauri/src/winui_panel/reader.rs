@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{Emitter, Manager};
 use windows::Win32::{
     Foundation::{HWND, RECT},
-    UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect, IsChild, IsWindowVisible},
+    UI::WindowsAndMessaging::{GetForegroundWindow, IsChild, IsWindowVisible},
 };
 
 static EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -237,9 +237,8 @@ pub(super) fn visible() -> bool {
 
 pub(super) fn visible_rect() -> Option<RECT> {
     let window = window()?;
-    let mut bounds = RECT::default();
-    unsafe { GetWindowRect(window, &mut bounds) }.ok()?;
-    Some(bounds)
+    // 统一在 Per-Monitor V2 上下文中查询物理外框，避免调用线程 DPI 上下文不同导致交接矩形虚拟化偏移。
+    super::layout::physical_geometry(window).map(|(_, bounds, _)| bounds)
 }
 
 pub(super) fn foreground() -> bool {

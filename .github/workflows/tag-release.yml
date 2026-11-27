@@ -197,7 +197,7 @@ jobs:
   macos:
     name: Package macOS (${{ matrix.arch }})
     needs: validate
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 90
     environment: release
     strategy:

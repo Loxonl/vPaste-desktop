@@ -341,6 +341,7 @@ fn build_winui_panel() {
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiGeometry.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiMotion.rc");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiBridge.h");
+    println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiDiagnostics.h");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiResourceProbe.h");
     println!("cargo:rerun-if-changed=../src/ui/motion/tokens.json");
     println!("cargo:rerun-if-changed=native-demo/windows/winui/WinUiNameEmoji.h");

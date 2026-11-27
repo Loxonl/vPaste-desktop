@@ -81,13 +81,29 @@ void QueueWindow::Resize() {
     source.SiteBridge().MoveAndResize({0, 0, bounds.right, bounds.bottom});
 }
 
+void QueueWindow::Place(RECT const &rect) {
+    // 跨不同 DPI 屏幕重定位时，Windows 会在 SetWindowPos 内同步派发 WM_DPICHANGED；
+    // 用 placing 守卫拦截同步建议矩形，防止对已按目标屏 DPI 计算好的尺寸做二次缩放或位置漂移。
+    const auto previous = std::exchange(placing, true);
+    const auto moved = SetWindowPos(window, HWND_TOPMOST,
+        rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
+        SWP_NOACTIVATE);
+    placing = previous;
+    winrt::check_bool(moved);
+}
+
 void QueueWindow::Constrain(RECT const *suggested) {
     if (!window || !positioned) return;
     RECT current{}; winrt::check_bool(GetWindowRect(window, &current));
     const auto fitted = FitToMonitorWorkArea(suggested ? *suggested : current);
-    if (!EqualRect(&current, &fitted)) winrt::check_bool(SetWindowPos(window, nullptr,
-        fitted.left, fitted.top, fitted.right - fitted.left, fitted.bottom - fitted.top,
-        SWP_NOZORDER | SWP_NOACTIVATE));
+    if (!EqualRect(&current, &fitted)) {
+        const auto previous = std::exchange(placing, true);
+        const auto moved = SetWindowPos(window, nullptr,
+            fitted.left, fitted.top, fitted.right - fitted.left, fitted.bottom - fitted.top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+        placing = previous;
+        winrt::check_bool(moved);
+    }
     Resize();
 }
 
@@ -101,10 +117,10 @@ void QueueWindow::Show(double scale, bool reposition) {
             static_cast<LONG>(std::lround(QueueContentWidth * dpi * scale)));
         const auto height = std::min(info.rcWork.bottom - info.rcWork.top,
             static_cast<LONG>(std::lround(QueueContentHeight * dpi * scale)));
-        winrt::check_bool(SetWindowPos(window, HWND_TOPMOST,
-            std::max(info.rcWork.left, info.rcWork.right - width - static_cast<LONG>(std::lround(24 * dpi))),
-            info.rcWork.top + (info.rcWork.bottom - info.rcWork.top - height) / 2,
-            width, height, SWP_NOACTIVATE));
+        const auto left = std::max(info.rcWork.left,
+            info.rcWork.right - width - static_cast<LONG>(std::lround(24 * dpi)));
+        const auto top = info.rcWork.top + (info.rcWork.bottom - info.rcWork.top - height) / 2;
+        Place({left, top, left + width, top + height});
         positioned = true;
     }
     Constrain(); Resize(); ShowWindow(window, SW_SHOWNOACTIVATE);
@@ -135,6 +151,7 @@ LRESULT CALLBACK QueueWindow::WindowProc(HWND handle, UINT message, WPARAM wpara
         case WM_ERASEBKGND: return 1;
         case WM_SIZE: if (self->window) self->Resize(); return 0;
         case WM_DPICHANGED: {
+            if (self->placing) { self->Resize(); return 0; }
             self->Constrain(reinterpret_cast<RECT *>(lparam)); return 0;
         }
         case WM_DISPLAYCHANGE: self->Constrain(); return 0;

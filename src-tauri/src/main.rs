@@ -1022,17 +1022,40 @@ fn should_reapply_clipboard_size_after_scale_change(label: &str, visible: bool) 
     label == "clipboard" && visible
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn needs_cross_dpi_reposition(current_scale: f64, target_scale: f64) -> bool {
+    current_scale.is_finite()
+        && target_scale.is_finite()
+        && current_scale > 0.0
+        && target_scale > 0.0
+        && (current_scale - target_scale).abs() > 0.001
+}
+
+fn centered_rect_in_work_area(
+    work_area: (i32, i32, u32, u32),
+    logical_window_size: (f64, f64),
+    target_scale_factor: f64,
+) -> (i32, i32, u32, u32) {
+    let (work_x, work_y, work_width, work_height) = work_area;
+    let width = (logical_window_size.0 * target_scale_factor)
+        .round()
+        .clamp(1.0, f64::from(work_width.max(1))) as u32;
+    let height = (logical_window_size.1 * target_scale_factor)
+        .round()
+        .clamp(1.0, f64::from(work_height.max(1))) as u32;
+    let x = i64::from(work_x) + (i64::from(work_width) - i64::from(width)).max(0) / 2;
+    let y = i64::from(work_y) + (i64::from(work_height) - i64::from(height)).max(0) / 2;
+    (x as i32, y as i32, width, height)
+}
+
 fn centered_window_position_in_work_area(
     work_area: (i32, i32, u32, u32),
     logical_window_size: (f64, f64),
     target_scale_factor: f64,
 ) -> (i32, i32) {
-    let (work_x, work_y, work_width, work_height) = work_area;
-    let window_width = (logical_window_size.0 * target_scale_factor).round() as i64;
-    let window_height = (logical_window_size.1 * target_scale_factor).round() as i64;
-    let x = work_x as i64 + (work_width as i64 - window_width).max(0) / 2;
-    let y = work_y as i64 + (work_height as i64 - window_height).max(0) / 2;
-    (x as i32, y as i32)
+    let (x, y, _, _) =
+        centered_rect_in_work_area(work_area, logical_window_size, target_scale_factor);
+    (x, y)
 }
 
 fn physical_window_center(position: (i32, i32), size: (u32, u32)) -> (f64, f64) {
@@ -1147,26 +1170,59 @@ fn center_window_on_monitor(
     };
     let current_scale_factor = window.scale_factor().map_err(|err| err.to_string())?;
     let outer_size = window.outer_size().map_err(|err| err.to_string())?;
+    #[cfg(target_os = "windows")]
+    let logical_inner_size = {
+        let inner_size = window.inner_size().map_err(|err| err.to_string())?;
+        (
+            inner_size.width as f64 / current_scale_factor,
+            inner_size.height as f64 / current_scale_factor,
+        )
+    };
     let logical_window_size = (
         outer_size.width as f64 / current_scale_factor,
         outer_size.height as f64 / current_scale_factor,
     );
+    let target_scale = monitor.scale_factor();
     let work_area = monitor.work_area();
-    let (x, y) = centered_window_position_in_work_area(
-        (
-            work_area.position.x,
-            work_area.position.y,
-            work_area.size.width,
-            work_area.size.height,
-        ),
-        logical_window_size,
-        monitor.scale_factor(),
+    let work_rect = (
+        work_area.position.x,
+        work_area.position.y,
+        work_area.size.width,
+        work_area.size.height,
     );
+    let (x, y) =
+        centered_window_position_in_work_area(work_rect, logical_window_size, target_scale);
     window
         .set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }))
         .map_err(|err| err.to_string())?;
     #[cfg(target_os = "windows")]
-    if ui_text_scale::current() > 1.0 {
+    {
+        // Windows 11 下跨不同 DPI 屏幕移动窗口时，Tao 的 WM_DPICHANGED 会用系统 suggested_rect
+        // 覆盖刚写入的位置与尺寸；在 DPI 切换落地后按目标屏缩放重设精确尺寸与居中位置。
+        if needs_cross_dpi_reposition(current_scale_factor, target_scale) {
+            let target_inner = tauri::PhysicalSize::new(
+                (logical_inner_size.0 * target_scale).round().max(1.0) as u32,
+                (logical_inner_size.1 * target_scale).round().max(1.0) as u32,
+            );
+            window
+                .set_size(tauri::Size::Physical(target_inner))
+                .map_err(|err| err.to_string())?;
+            let settled_outer = window.outer_size().map_err(|err| err.to_string())?;
+            let settled_scale = window.scale_factor().unwrap_or(target_scale);
+            let settled_logical = (
+                settled_outer.width as f64 / settled_scale,
+                settled_outer.height as f64 / settled_scale,
+            );
+            let (settled_x, settled_y) =
+                centered_window_position_in_work_area(work_rect, settled_logical, target_scale);
+            window
+                .set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                    x: settled_x,
+                    y: settled_y,
+                }))
+                .map_err(|err| err.to_string())?;
+        }
+        // 无论是否放大系统字体，跨屏或小屏高缩放场景均需确保窗口不超过目标工作区且不被任务栏裁切。
         fit_content_window_to_monitor(window, &monitor)?;
     }
     Ok(())
@@ -1362,6 +1418,123 @@ mod clipboard_monitor_selection_tests {
                 Some("fallback")
             ),
             Some("source")
+        );
+    }
+
+    #[test]
+    fn text_editor_centers_on_the_active_main_panel_monitor_not_primary_center() {
+        let source = include_str!("main.rs");
+        let start = source
+            .rfind("\nasync fn show_text_editor_window(")
+            .expect("show_text_editor_window should exist");
+        let body = &source[start..start + 900];
+        assert!(
+            body.contains("center_window_on_monitor(&window, main_panel_monitor(&app))"),
+            "show_text_editor_window 应跟随主面板所在屏居中，而非默认落在主屏"
+        );
+        assert!(
+            !body.contains("window.center()"),
+            "show_text_editor_window 不应直接调用 window.center() 导致副屏打开时漂到主屏"
+        );
+    }
+
+    #[test]
+    fn hidden_winui_panel_realigns_target_monitor_before_opening_paste_queue() {
+        #[cfg(all(target_os = "windows", feature = "winui"))]
+        {
+            assert!(crate::winui_panel::should_realign_hidden_panel_before_queue(false));
+            assert!(!crate::winui_panel::should_realign_hidden_panel_before_queue(true));
+        }
+        let source = include_str!("main.rs");
+        let fn_start = source
+            .rfind("\nasync fn apply_paste_queue_activation_inner(")
+            .expect("apply_paste_queue_activation_inner should exist");
+        let body = &source[fn_start..fn_start + 3200];
+        let branch = body
+            .find("if winui_queue_ui_enabled()")
+            .expect("winui_queue_ui_enabled branch should exist");
+        let branch_body = &body[branch..branch + 1100];
+        let realign = branch_body
+            .find("winui_panel::prepare_monitor_for_hidden_panel(&app_for_main)")
+            .expect("隐藏主面板在副屏快捷键开启粘贴队列前必须先同步目标显示器");
+        let open_queue = branch_body
+            .find("winui_panel::set_queue_view(true)")
+            .expect("set_queue_view(true) should exist");
+        assert!(
+            realign < open_queue,
+            "必须先校准隐藏主面板的目标显示器与 DPI，再打开粘贴队列"
+        );
+    }
+
+    #[test]
+    fn mixed_dpi_detection_and_negative_work_area_centering_stay_clamped() {
+        assert!(!super::needs_cross_dpi_reposition(1.5, 1.5));
+        assert!(!super::needs_cross_dpi_reposition(1.0, 1.0005));
+        assert!(super::needs_cross_dpi_reposition(1.5, 1.0));
+        assert!(super::needs_cross_dpi_reposition(1.0, 1.5));
+        assert!(super::needs_cross_dpi_reposition(1.25, 2.0));
+        assert!(!super::needs_cross_dpi_reposition(0.0, 1.5));
+        assert!(!super::needs_cross_dpi_reposition(f64::NAN, 1.5));
+
+        // 左侧负坐标 100% 副屏居中 720x700 设置窗
+        assert_eq!(
+            super::centered_rect_in_work_area((-1920, 0, 1920, 1040), (720.0, 700.0), 1.0),
+            (-1320, 170, 720, 700)
+        );
+        // 上方负坐标 150% 矮工作区（1080p@150% 扣 40px 任务栏 = 1020px < 700*1.5=1050px）不越界不被裁切
+        assert_eq!(
+            super::centered_rect_in_work_area((0, -1080, 1920, 1020), (720.0, 700.0), 1.5),
+            (420, -1080, 1080, 1020)
+        );
+    }
+
+    #[test]
+    fn winui_queue_window_guards_repositioning_against_synchronous_wm_dpichanged() {
+        let source = include_str!("../native-demo/windows/winui/WinUiQueueWindow.cpp");
+        let dpi_case = source
+            .find("case WM_DPICHANGED:")
+            .expect("WM_DPICHANGED handler should exist");
+        let dpi_body = &source[dpi_case..dpi_case + 220];
+        assert!(
+            dpi_body.contains("self->placing"),
+            "WinUiQueueWindow::WindowProc 处理 WM_DPICHANGED 时必须检查 placing 守卫，防止 Show() 跨 DPI 屏重定位触发二次缩放"
+        );
+        let place_fn = source
+            .find("void QueueWindow::Place(")
+            .expect("QueueWindow::Place should exist");
+        let place_body = &source[place_fn..place_fn + 500];
+        assert!(
+            place_body.contains("std::exchange(placing, true)"),
+            "QueueWindow::Place 调用 SetWindowPos 时必须置位 placing 守卫"
+        );
+        let show_fn = source
+            .find("void QueueWindow::Show(")
+            .expect("QueueWindow::Show should exist");
+        let show_body = &source[show_fn..show_fn + 1100];
+        assert!(
+            show_body.contains("Place("),
+            "QueueWindow::Show 跨屏重定位必须经由带 placing 守卫的 Place()"
+        );
+    }
+
+    #[test]
+    fn cross_dpi_webview_helpers_reapply_geometry_after_dpi_boundary_crossing() {
+        let source = include_str!("main.rs");
+        let center_start = source
+            .rfind("\nfn center_window_on_monitor(")
+            .expect("center_window_on_monitor should exist");
+        let center_body = &source[center_start..center_start + 2200];
+        assert!(
+            center_body.contains("needs_cross_dpi_reposition("),
+            "center_window_on_monitor 跨不同 DPI 屏幕移动窗口时必须在 WM_DPICHANGED 后重算尺寸与居中坐标"
+        );
+        let preview_start = source
+            .find("\nfn set_preview_rect(")
+            .expect("Windows set_preview_rect should exist");
+        let preview_body = &source[preview_start..preview_start + 2200];
+        assert!(
+            preview_body.contains("needs_cross_dpi_reposition("),
+            "set_preview_rect 跨不同 DPI 屏幕移动预览窗时必须在 WM_DPICHANGED 后按目标屏真实边框重设矩形"
         );
     }
 }
@@ -4988,32 +5161,47 @@ fn set_preview_rect(
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
     let handle = window.hwnd().map_err(|err| err.to_string())?;
-    // SetWindowPos sizes the outer frame; our target sizes the WebView client area.
-    let outer = window.outer_size().map_err(|err| err.to_string())?;
-    let inner = window.inner_size().map_err(|err| err.to_string())?;
-    let position = tauri::PhysicalPosition::new(
-        (rect.x * scale).round() as i32,
-        (rect.y * scale).round() as i32,
-    );
-    // The WinUI fallback now has a system frame. Keep its client attached to
-    // the same anchor instead of introducing a jump by the frame inset.
-    let position = if main_panel_mode::winui() {
-        clipboard_window_outer_position(window, position)?
-    } else {
-        position
+    let before_scale = window.scale_factor().unwrap_or(scale);
+    let apply_once = || -> Result<(), String> {
+        // SetWindowPos sizes the outer frame; our target sizes the WebView client area.
+        let outer = window.outer_size().map_err(|err| err.to_string())?;
+        let inner = window.inner_size().map_err(|err| err.to_string())?;
+        let position = tauri::PhysicalPosition::new(
+            (rect.x * scale).round() as i32,
+            (rect.y * scale).round() as i32,
+        );
+        // The WinUI fallback now has a system frame. Keep its client attached to
+        // the same anchor instead of introducing a jump by the frame inset.
+        let position = if main_panel_mode::winui() {
+            clipboard_window_outer_position(window, position)?
+        } else {
+            position
+        };
+        unsafe {
+            SetWindowPos(
+                HWND(handle.0 as _),
+                HWND::default(),
+                position.x,
+                position.y,
+                (rect.width * scale).round() as i32
+                    + outer.width.saturating_sub(inner.width) as i32,
+                (rect.height * scale).round() as i32
+                    + outer.height.saturating_sub(inner.height) as i32,
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            )
+        }
+        .map_err(|err| err.to_string())
     };
-    unsafe {
-        SetWindowPos(
-            HWND(handle.0 as _),
-            HWND::default(),
-            position.x,
-            position.y,
-            (rect.width * scale).round() as i32 + outer.width.saturating_sub(inner.width) as i32,
-            (rect.height * scale).round() as i32 + outer.height.saturating_sub(inner.height) as i32,
-            SWP_NOACTIVATE | SWP_NOZORDER,
-        )
+    apply_once()?;
+    // 跨不同 DPI 屏幕首次定位时，SetWindowPos 会同步触发 Tao 的 WM_DPICHANGED 并应用系统建议矩形；
+    // 在新 DPI 与边框厚度生效后补写一次目标矩形，避免预览窗被二次缩放或发生外框偏移。
+    let after_scale = window.scale_factor().unwrap_or(scale);
+    if needs_cross_dpi_reposition(before_scale, scale)
+        || needs_cross_dpi_reposition(before_scale, after_scale)
+    {
+        apply_once()?;
     }
-    .map_err(|err| err.to_string())
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -7180,7 +7368,7 @@ async fn show_text_editor_window(
     auxiliary_windows::on_main_thread(app.clone(), move || {
         if !window.is_visible().map_err(|err| err.to_string())? {
             *TEXT_EDITOR_TARGET.lock().unwrap() = Some(TextEditorTarget { hash, prepared });
-            window.center().map_err(|err| err.to_string())?;
+            center_window_on_monitor(&window, main_panel_monitor(&app))?;
             window.show().map_err(|err| err.to_string())?;
             window
                 .emit("text-editor-open", ())
@@ -13431,10 +13619,15 @@ async fn apply_paste_queue_activation_inner(
                         return Ok(());
                     }
                 }
-                if !CLIPBOARD_VISIBLE.load(Ordering::SeqCst) {
+                let clipboard_visible = CLIPBOARD_VISIBLE.load(Ordering::SeqCst);
+                if !clipboard_visible {
                     #[cfg(target_os = "windows")]
                     windows_paste_focus::capture_foreground();
                     record_foreground_app_before_clipboard();
+                    #[cfg(all(target_os = "windows", feature = "winui"))]
+                    if winui_panel::should_realign_hidden_panel_before_queue(clipboard_visible) {
+                        winui_panel::prepare_monitor_for_hidden_panel(&app_for_main)?;
+                    }
                 }
                 #[cfg(all(target_os = "windows", feature = "winui"))]
                 winui_panel::set_queue_view(true)?;

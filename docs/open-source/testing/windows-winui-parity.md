@@ -48,7 +48,7 @@ PR #363; it does not repeat the already implemented migration.
 | Card actions and external drag | Native menus and system DataPackage; existing Rust actions | Regress payload/state ownership; real target negotiation remains manual |
 | Space/hover preview, editing and OCR | Existing React preview window plus selection/edit flows | WinUI `Reader` handles supported text, image, color and simple file payloads; unsupported rich HTML/PDF and oversized payloads retain the existing WebView reader fallback. Native reader stays on one HWND while content and geometry transition. |
 | Settings | Existing React/MUI window, destroyed on close | No migration in this batch |
-| macOS and release | Independent native UI; WinUI remains Debug opt-in | No macOS UI, installer, release or workflow changes |
+| macOS and release | Independent native UI; historical stage 1–3 record (subsequent PR #426/#427 enabled default WinUI 3 in Windows x64 Release with automatic WebView fallback) | No macOS UI, installer, release or workflow changes in stages 1–3 |
 
 ## Visual and native-control audit — 2026-11-14
 

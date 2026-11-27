@@ -7,9 +7,12 @@ retains the chronological implementation and regression history.
 
 The reference UI is the shipping **React WebView**, not Vue. Preserve its
 layout, operations and Rust behavior; use actual WinUI controls for native
-input, menus and dialogs. This audit does not switch the default renderer,
-remove the WebView implementation or change distribution. The later local
-Release memory comparison is recorded separately below.
+input, menus and dialogs. Starting with PR #426 / #427 (v2.0.0-rc.4+), official
+Windows x64 Release packages (`--features winui`) default to WinUI 3 with
+automatic fallback to WebView when x64 Windows App Runtime 2.6.5+ is
+unavailable, and `--main-ui=webview` remains available as a per-launch override.
+The historical audit batches below retain their original scope and local
+evidence; the Release memory comparison is recorded separately below.
 
 For D1–D8 results and later acceptance work, see the
 [concrete differences and decision list](windows-winui-next-decisions.md).
@@ -236,8 +239,8 @@ half-second delay justified changing query/cache/animation behavior. Capture
 physical selection and first presented frame with the real history if it
 recurs; these tests do not certify desktop motion or long-run memory.
 
-Raw fixtures, inputs, logs and samples are under ignored
-`.codex/tmp/winui-phase3-release/`. The read-only memory observer timestamps
+Raw fixtures, inputs, logs and samples were recorded under an ignored local
+temporary artifact directory (`winui-phase3-release`). The read-only memory observer timestamps
 samples and discards a complete interval if a descendant disappears mid-read;
 it does not count a partial tree or silently accept a lost root. Its isolated
 regression reproduced the old failure and verified the new sample/exit rules.
@@ -276,7 +279,8 @@ total process-tree memory. The workload is deliberately file-heavy.
 file types by horizontal scrolling. This separates icon rendering from the
 database and WebView2 children; it is not an estimate of savings for every
 history or proof of a leak. The uncompressed Release EXE + DLL grew by about
-1.6 MiB. Raw samples are under ignored `.codex/tmp/winui-memory-attribution/`;
+1.6 MiB. Raw samples were recorded under an ignored local temporary artifact
+directory (`winui-memory-attribution`);
 the initial resource-name and visibility attempts were excluded.
 
 ## #389 closeout: main flows, windows and focus
@@ -409,8 +413,8 @@ On the same marked 500-item fixture, using average private commit from seconds
 5–9 in two alternating runs, the previous and updated WinUI builds measured
 **377.6/378.8 MiB** and **239.3/239.9 MiB**, respectively (about **37% less**).
 Measurements exclude auxiliary WebViews; no heap trimming, thumbnail removal,
-or user data reset was used. Logs and samples are under the ignored
-`.codex/tmp/winui-desktop-followup-20261118/` folder. An additional actual-App
+or user data reset was used. Logs and samples were recorded under an ignored
+local temporary artifact folder (`winui-desktop-followup-20261118`). An additional actual-App
 run with `VPASTE_WINUI_MEDIA_PROBE=1` confirmed two successful file-type SVG
 loads; bitmap presentation did not emit completion on this isolated desktop
 and remains a visible-desktop check. The focused native suite passed stage 265
@@ -486,7 +490,7 @@ inside its popup; Escape's queued focus handoff completes before a fresh reopen;
 checkerboard pixel checks count light/dark crossings so antialiasing cannot
 double-count one edge. Both themes measure 70 crossings over 560 pixels.
 
-Local artifacts are in ignored `.codex/tmp/winui-eight-parity-20261117/`,
+Local artifacts were recorded under an ignored local temporary artifact directory (`winui-eight-parity-20261117`),
 including failing-before-fix logs and settled light/Chinese and dark/English
 captures of queue recovery, source selection, Emoji, and file/image readers.
 XAML captures deliberately exclude DWM/Acrylic composition; their transparent
@@ -548,8 +552,8 @@ Queue paste retains its guard against a drag-release click. A fresh press uses
 mouse paste blocked; the source regression failed before this change. Sorting
 followed by a physical paste click remains in the manual acceptance list.
 
-Local artifacts are under ignored
-`.codex/tmp/winui-queue-shortcuts-20261117/`, including failing-before-fix logs,
+Local artifacts were recorded under an ignored local temporary artifact directory
+(`winui-queue-shortcuts-20261117`), including failing-before-fix logs,
 native fixtures and settled light/Chinese and dark/English screenshots. Screenshot
 fixtures assert their queue row count so stale revisions cannot silently produce
 misleading captures. Native tests wait for measured viewport state, not a fixed
@@ -576,7 +580,7 @@ The reference for this pass is `PasteQueue.tsx`/its CSS, `ClipboardHeader.tsx`,
 | Developer controls | **S/U/X:** restore eight independent buttons: Windows/Mac tutorial previews, language/theme preview, Test Room, memory, native demo and UI Lab. The eye hides/shows the group, initially expanded. Runtime gating remains Debug plus exact `--dev-mode`; ordinary dev and Release do not expose the controls. Language/theme previews are session-only, including hide/show. Tutorial windows reuse the existing isolated draft and shared builder; no saved preferences or main WebView are created for these actions. Native tests check control routing, duplicate protection, errors/retry and hidden state. **A/M:** launching each tool from the ordinary App and macOS runtime acceptance remain unverified in this pass. |
 | Card record tags | **S/X:** replace the joined summary with individual ordered pills, 92-DIP truncation, 4-DIP gaps and the reference overlay position. More than two tags use a duplicated clipped track and the shared eight-second marquee; hidden/unloaded/disabled-animation states stop it. The overlay does not intercept card input. Native tests verify individual content, geometry, animation state and cleanup; physical readability/motion remains manual. |
 
-Local artifacts: `.codex/tmp/winui-card-queue-debug-20261117/` (ignored).
+Local artifacts were recorded under an ignored local temporary artifact directory (`winui-card-queue-debug-20261117`).
 Focused frontend tests passed 7 files / 34 tests; WinUI Rust tests passed 64,
 developer gating passed 3, and auxiliary lifecycle tests passed 8. Actual-XAML
 shell regression passed stage 257 and history/queue/reader regression passed
@@ -629,8 +633,8 @@ Release targets or macOS results:
   component sample does not prove a long-running leak is absent. Continued
   render/heap attribution is needed before changing caches or rendering policy.
 
-Local artifacts for this follow-up are under ignored
-`.codex/tmp/winui-focus-resources-20261117/`. Style checks, production frontend
+Local artifacts for this follow-up were recorded under an ignored local temporary
+artifact directory (`winui-focus-resources-20261117`). Style checks, production frontend
 build, focused source tests (22 files / 91 tests), Rust formatting and WinUI Rust
 tests (63 passed, two desktop suites run separately) passed. Debug and Release
 native component builds passed; the Debug App build passed. The native shell
@@ -897,7 +901,7 @@ existing React settings window. It does not introduce a native tray menu.
 | Settings dragging captures desktop input | Earlier packed-coordinate IPC workaround was rejected by the user's physical test and removed; see the media/settings follow-up above for WebView2 caption regions. Same-monitor display notifications remain deduplicated. | Real hold/move/release, followed by clicking another application without Alt+Tab. No physical pass is inferred from DOM/IPC or programmatic movement. |
 | File cards differ from the reference | Reuse material-icon-theme filename/parent/extension/light-dark associations and the product's TXT/folder/multiple/mixed artwork, canvas, badge and compact path rules. Seven actual presentations render in both themes; file-card captures were inspected. | Real single/multiple/folder/missing-file cards and actual thumbnail availability. |
 
-Verification artifacts are local in `.codex/tmp/winui-review-20261117/`:
+Verification artifacts were recorded under an ignored local temporary artifact directory (`winui-review-20261117`):
 
 - Style architecture, production and native-debug frontend builds, embedded
   native-debug assets, formatting and diff checks pass. Ordinary Windows
@@ -914,7 +918,7 @@ Verification artifacts are local in `.codex/tmp/winui-review-20261117/`:
 - The latest actual App uses a marked synthetic profile under `src-tauri/tmp`.
   It passes six inactive-queue mutation guards, visible preview reuse/pinning,
   three close/reopen cycles, settings destruction/recreation and guide release;
-  no main WebView is created. An earlier fixture under `.codex` could not write
+  no main WebView is created. An earlier fixture in a restricted local temporary directory could not write
   its search index because of that directory's ACL; no permissions were changed.
   The final writable fixture passed. Only that temporary process was stopped.
 

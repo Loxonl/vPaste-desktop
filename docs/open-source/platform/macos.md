@@ -1,24 +1,22 @@
-# macOS Adaptation Plan
+# macOS Platform Notes
 
-## Goal
+## Current Status
 
-Bring vPaste to macOS while preserving the core product model: local-first clipboard history, visual cards, search, favorites, custom tabs, preview, and keyboard-first workflows.
+macOS is a supported desktop platform targeting **macOS 11 Big Sur or newer** across Apple silicon (`aarch64`), Intel (`x86_64`), and Universal direct-download DMGs, plus a separate Mac App Store build path (macOS 13+).
 
-The macOS implementation should be native where the platform requires it. Do not force Windows clipboard or tray assumptions into shared code.
+In v2.0 RC / `main`, macOS defaults to the native **AppKit / SwiftUI main panel** (using Liquid Glass on macOS 26+ when built with a compatible SDK and `NSVisualEffectView` frosted glass on earlier versions), a **native menu bar menu**, and a **native tab editor**, while retaining `--main-ui=webview` as a per-launch fallback. See [macOS native main panel](../testing/native-main-panel.md) for detailed architecture and behavior notes.
 
-## First Milestone
+The macOS implementation uses native platform APIs where required instead of forcing Windows clipboard or tray assumptions into shared code.
 
-The first milestone should be small and verifiable:
+## Implemented Capabilities
 
-1. App starts on macOS.
-2. Main panel opens with a global shortcut.
-3. Plain text clipboard history works.
-4. Image clipboard history works.
-5. File path history from Finder works.
-6. Search and activate/paste work.
-7. A local unsigned dev build can be produced.
-
-Do not start with notarization, full rich text fidelity, or plugin architecture.
+- Native AppKit / SwiftUI bottom floating main panel (default in Debug and Release), with `--main-ui=webview` fallback.
+- Native menu bar menu for Show/Hide, Pause/Resume capture, Update and restart, Settings, and Quit.
+- `NSPasteboard` clipboard listener and restore for plain text, rich HTML/RTF, images/GIFs, colors, and Finder files/folders/multi-file items.
+- Source app attribution via `NSWorkspace` (with Universal Clipboard remote-item detection).
+- Image OCR (editable side-by-side and searchable in history), saved-text editing (`F2`), favorites, tags, custom filter tabs, paste queue, and native `NSDraggingSession` external drag.
+- Active Space / fullscreen app support and Accessibility-guided automatic pasting (with manual `⌘ + V` fallback notice).
+- Developer ID signed and notarized DMG + `.app.tar.gz` updater releases, plus a separate sandboxed [Mac App Store build](../mac-app-store-build.md).
 
 ## Platform Areas
 
@@ -93,7 +91,7 @@ Use a macOS-safe launch-at-login mechanism. Avoid Windows startup registry assum
 
 Public macOS releases target macOS 11 Big Sur or newer. Apple silicon support starts at macOS 11, and Intel/universal release builds use the same `MACOSX_DEPLOYMENT_TARGET=11.0` baseline unless a separate legacy Intel build is explicitly created and tested.
 
-Local ad-hoc `.app` / `.dmg` packaging is available through `npm run build:macos`. The public Release workflow implements the following requirements and will fail until its protected credentials are configured:
+Local ad-hoc `.app` / `.dmg` packaging is available through `npm run build:macos`. The public Release workflow (`.github/workflows/tag-release.yml`, running on `macos-15`) signs, notarizes, staples, and verifies every DMG and updater archive using credentials stored in the protected GitHub `release` environment:
 
 - Apple Developer account.
 - Developer ID Application certificate.
@@ -105,27 +103,14 @@ Local ad-hoc `.app` / `.dmg` packaging is available through `npm run build:macos
 
 Stable builds use `https://vpaste.app/download/stable/latest.json`; RC builds use the separate `https://vpaste.app/download/rc/latest.json`. Each manifest contains separate `darwin-aarch64` and `darwin-x86_64` entries pointing to signed `.app.tar.gz` packages. The tag release workflow merges those entries with the Windows updater fragment; it writes the combined `latest.json` to `Loxonl/vPaste-website` under `download/<channel>/latest.json` after verifying every package (see [update-feed-publication.md](../releases/update-feed-publication.md)). The app downloads, verifies, and caches an available package in the background, then exposes one “Update and restart” action in settings, the main panel (a round blue sync icon right of the settings button that asks for confirmation first), and the menu-bar/tray menu. That action re-verifies the cached bundle, installs it with the Tauri updater, and restarts the app. After a restart, the first successful manifest check restores the cached bundle without downloading it again; while offline the bundle is kept but not offered. Installation behavior must still be smoke-tested on both architectures before a public Release is published.
 
-## Expected Risks
+## Platform Risks & Watchpoints
 
 - Clipboard format names and priority differ from Windows.
 - Finder file copy and drag semantics differ from `CF_HDROP`.
-- App focus and overlay window behavior may require macOS-specific tuning.
+- App focus, Liquid Glass / frosted-glass appearance, and overlay window behavior require macOS-specific verification across active Spaces and fullscreen apps.
 - Menu bar apps have different user expectations than Windows tray apps.
 - Notarization and code signing introduce a separate release pipeline.
-- Accessibility permissions may affect automated paste or focus behavior.
-
-## Recommended Work Breakdown
-
-1. Build and run baseline Tauri app on macOS.
-2. Implement text listener and restore.
-3. Implement image listener and restore.
-4. Implement Finder file URL listener and restore.
-5. Implement source app name/icon.
-6. Validate main panel focus, outside click behavior, and keyboard navigation.
-7. Add macOS settings differences.
-8. Validate local `.app`/`.dmg` packaging.
-9. Configure and validate the protected signing/notarization environment.
-10. Validate clean install and updater flow on both architectures.
+- Accessibility permissions affect automated paste and focus restoration.
 
 ## Verification Matrix
 

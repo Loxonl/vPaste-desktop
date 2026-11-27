@@ -11,7 +11,7 @@ all settings work on a user's desktop.
 | Persisted field | Runtime consumer and reference behavior | Evidence / remaining boundary |
 | --- | --- | --- |
 | `startup` | `main.rs::save_config`, shared autostart registration and portable guards | Shared path retained; this pass does not alter the user's startup registration. |
-| `display_tray_icon` | `sync_tray_visibility`; the same icon opens the shipping WebView menu in both main renderers | Windows hides/reuses the prepared menu; appearance and commands remain unchanged. Actual shell icon visibility remains manual. |
+| `display_tray_icon` | `sync_tray_visibility`; in WinUI mode the tray icon opens the lazy native WinUI tray popup, while WebView mode reuses the shipping `/tray-menu` WebView | Native tray popup and legacy WebView menu share the same Rust state/commands. Actual shell icon visibility remains manual. |
 | `multilingual` | `language-changed` → native `set_language`; settings uses the existing language provider | Native language/control tests; real app guide/language check separately recorded. |
 | `theme_mode` | shared theme event and native `apply_theme`, including reader/editors | Native light/dark checks; system contrast/DWM appearance remains manual. |
 | `storage_history` | Legacy serialized field; no current UI or runtime consumer was found in either renderer | Preserve compatibility; do not invent a new native retention policy. |

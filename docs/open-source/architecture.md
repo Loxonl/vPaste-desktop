@@ -2,31 +2,39 @@
 
 ## Overview
 
-vPaste is a Tauri 2 desktop client with a React UI and Rust native backend. The frontend owns presentation and interaction state. The Rust side owns desktop integration, clipboard collection and restoration, local storage, indexing, link preview fetching, filesystem operations, and platform-specific behavior.
+vPaste is a Tauri 2 desktop client with a Rust native backend, native main panels on Windows x64 (**WinUI 3**) and macOS (**AppKit / SwiftUI**), and a **React 18 + MUI 5 + Motion** frontend for shared auxiliary windows and the `--main-ui=webview` main-panel fallback. The Rust side owns desktop integration, clipboard collection and restoration, local storage, search indexing, image OCR, link preview fetching, filesystem operations, and platform-specific behavior.
 
 ## Main Layers
 
-### Frontend
+### Native Main Panels (Default in v2.0 RC / `main`)
 
-- React 18 + TypeScript + Vite.
+- **Windows x64 WinUI 3 (`src-tauri/native-demo/windows/winui/`, `src-tauri/src/winui_panel/`)**: compiled with `--features winui`, default in official Windows x64 Release packages when x64 Windows App Runtime 2.6.5+ is available (with automatic fallback to WebView when unavailable). Provides the native main dock, native tray menu popup, native paste queue, native tag/filter editors, native plain-text editor, native OCR reader, and native preview reader for plain text, images, colors, and common files. See [Windows WinUI bridge ownership](development/windows-winui-bridge.md).
+- **macOS AppKit / SwiftUI (`src-tauri/native-panel/`, `src-tauri/src/native_panel/`)**: default on macOS Debug and Release builds. Provides the native `NSPanel` / `NSCollectionView` main panel (with Liquid Glass on macOS 26+ and frosted-glass fallback on macOS 11–25), SwiftUI toolbar on macOS 12+ (AppKit fallback on macOS 11), native menu bar menu, and native tab editor. See [macOS native main panel](testing/native-main-panel.md).
+- Process-local renderer selection (`src-tauri/src/main_panel_mode.rs`) supports `--main-ui=webview` on both platforms without persisting a backend choice to user configuration.
+
+### Frontend (React WebView & Auxiliary Windows)
+
+- React 18 + TypeScript + Vite + MUI 5 + Motion.
 - Routes:
-  - `/clipboard` - main history panel.
-  - `/clipboard/preview` - preview window.
-  - `/config` - settings window.
-  - `/tray-menu` - custom Windows tray menu.
+  - `/clipboard` - WebView main history panel (used by Stable v1.7.0, Windows WebView fallback, and `--main-ui=webview`).
+  - `/clipboard/preview` - auxiliary preview window (always used for rich HTML, live webpages, and PDFs; also used for all previews in WebView mode).
+  - `/config` - on-demand settings window (destroyed on close in both native and WebView modes).
+  - `/tray-menu` - WebView tray menu (used on Windows in WebView mode).
+  - `text-editor.html` - rich-text editor window (and plain-text editor in WebView mode).
 - Key areas:
-  - `src/clipboard/Clipboard.tsx` - panel shell, tabs, search, selection, keyboard control.
+  - `src/clipboard/Clipboard.tsx` - WebView panel shell, tabs, search, selection, keyboard control (product reference).
   - `src/clipboard/Item.tsx` - item card rendering and right-click actions.
-  - `src/clipboard/Preview.tsx` - image, text, rich text, file, and link preview.
+  - `src/clipboard/Preview.tsx` - image, text, rich text, file, OCR, and link preview.
   - `src/config/Config.tsx` - settings and preferences.
   - `src/lang/` - language packs.
 
 ### Tauri / Rust Backend
 
 - `src-tauri/src/main.rs` registers windows, tray/menu bar behavior, global shortcuts, Tauri commands, updater, config, and app lifecycle.
-- `src-tauri/src/clipboard/` owns history records, plaintext storage, cleanup, archive transfers, link previews, and restore logic.
+- `src-tauri/src/main_panel_mode.rs` coordinates process-local renderer selection (`native`, `winui`, `webview`) and safe WinUI-to-WebView fallback.
+- `src-tauri/src/clipboard/` owns history records, plaintext storage, cleanup, archive transfers, link previews, image OCR, and restore logic.
 - `src-tauri/src/clipboard/windows/` and `src-tauri/src/clipboard/macos/` contain platform-specific clipboard code.
-- `src-tauri/src/search/` owns Tantivy indexing and queries.
+- `src-tauri/src/search/` owns Tantivy indexing and queries (including recognized OCR text).
 - `src-tauri/src/config/` owns persisted settings and shortcut normalization.
 
 ## Data Flow

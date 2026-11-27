@@ -11,7 +11,8 @@ body:
     id: version
     attributes:
       label: Version or commit
-      description: App version, commit hash, or source build information.
+      description: Include channel if known (e.g., v1.7.0 Stable, v2.0.0-rc.6, or source commit).
+      placeholder: v2.0.0-rc.6 (Installer / Portable / DMG)
     validations:
       required: true
   - type: dropdown
@@ -24,6 +25,30 @@ body:
         - Other
     validations:
       required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS version, displays & DPI (optional)
+      description: Helps diagnose native panel, scaling, and runtime issues (e.g., Windows 11 24H2, 2 monitors 150%/100%, Windows App Runtime 2.6.5; or macOS 15.x Apple silicon).
+      placeholder: Windows 11 24H2 · 150% DPI · Windows App Runtime 2.6.5
+  - type: dropdown
+    id: main-ui
+    attributes:
+      label: Main panel mode
+      description: "On v2.0 RC, Windows defaults to WinUI 3 and macOS defaults to AppKit. If a native panel fails, try quitting vPaste and launching with `--main-ui=webview`."
+      options:
+        - Default (WinUI 3 on Windows 2.0 / AppKit on macOS 2.0)
+        - WebView (v1.7.0 Stable or launched with --main-ui=webview)
+        - Automatically fell back to WebView
+        - Not sure
+  - type: dropdown
+    id: webview-fallback
+    attributes:
+      label: "Reproduces with `--main-ui=webview`? (optional, v2.0 RC)"
+      options:
+        - Not tested / Not applicable
+        - Yes — reproduces in both native and WebView
+        - No — happens only in native mode (WinUI 3 / AppKit)
   - type: textarea
     id: steps
     attributes:
@@ -51,6 +76,7 @@ body:
         - Text
         - Link / URL
         - Image
+        - Image OCR
         - File
         - Rich HTML / RTF
         - Color

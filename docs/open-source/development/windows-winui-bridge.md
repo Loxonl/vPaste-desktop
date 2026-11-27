@@ -1,10 +1,16 @@
 # Windows WinUI bridge ownership
 
-This bridge belongs to the opt-in Windows native UI. It is compiled on Windows
-x64 with the `winui` feature in Debug or Release; `winui-debug` remains a
+This bridge belongs to the Windows x64 native UI. It is compiled on Windows x64
+with the `winui` feature in Debug or Release; `winui-debug` remains a
 compatibility alias. It is not a public Tauri command or a format stored in user
-configuration. macOS keeps its independent Swift UI and existing activation gate.
-The shipping WebView remains the default unless `--main-ui=winui` is supplied.
+configuration. macOS keeps its independent AppKit / SwiftUI UI (also default on
+macOS). On Windows x64 builds compiled with `--features winui` (including
+official v2.0 RC Release packages), WinUI 3 is the default main UI and
+automatically falls back to the shipping WebView when Windows App Runtime
+2.6.5+ is unavailable; `--main-ui=webview` forces WebView without loading WinUI,
+and explicit `--main-ui=winui` exits non-zero with diagnostics if initialization
+fails. Ordinary Windows `npm run dev:debug` still defaults to WebView unless
+`--main-ui=winui` is supplied.
 
 ## Initialization and messages
 
@@ -303,16 +309,18 @@ installed app's history. The executable, `VPasteWinUiPanel.dll` and
 `Microsoft.WindowsAppRuntime.Bootstrap.dll` must remain adjacent. A second
 installed vPaste process should be closed before testing the portable.
 
-Enabling autostart from a Windows WinUI session records `--main-ui=winui` in
-the existing login entry. A Debug developer session also retains `--dev-mode`
-so its data remains isolated; profiling and other diagnostic arguments are
-never forwarded. Portable entry ownership follows the quoted executable path,
-while reconciliation compares the complete command. A secondary launch from
-the same path leaves that entry alone; the primary session reconciles its
-selected mode during setup. Ordinary WebView and non-Windows startup arguments
-remain unchanged. Updating an existing portable entry's arguments preserves a
-Task Manager startup disable; only explicitly enabling startup resets it.
-No backend is saved to the user configuration file.
+Enabling autostart from a Windows WinUI session does **not** record
+`--main-ui=winui` in the login entry: official WinUI-enabled builds already
+default to WinUI with automatic WebView fallback, so omitting the flag avoids
+locking out older WebView-only binaries or blocking fallback. A Debug developer
+session still retains `--dev-mode` so its data remains isolated; profiling and
+other diagnostic arguments are never forwarded. Portable entry ownership follows
+the quoted executable path, while reconciliation compares the complete command.
+A secondary launch from the same path leaves that entry alone; the primary
+session reconciles its selected mode during setup. Ordinary WebView and
+non-Windows startup arguments remain unchanged. Updating an existing portable
+entry's arguments preserves a Task Manager startup disable; only explicitly
+enabling startup resets it. No backend is saved to the user configuration file.
 
 Deployment is framework-dependent. The matching Windows App SDK Runtime NuGet
 package supplies four Microsoft-signed x64 MSIX packages, runtime license and
@@ -479,10 +487,10 @@ ABI. Focus restoration schedules ordinary XAML layout rather than forcing
 For settings consumers and the distinction between source/native/actual-App
 evidence and physical acceptance, use the
 [configuration inventory](../testing/windows-winui-settings-parity.md) and
-[scenario matrix](../testing/windows-winui-acceptance-matrix.md). The tray keeps
-the shipping React WebView menu in WinUI mode too. On Windows it is prepared
-hidden and hidden/reused after dismissal, avoiding a cold WebView creation at
-each right-click; its React layout and actions are unchanged. Settings remains
+[scenario matrix](../testing/windows-winui-acceptance-matrix.md). In WinUI mode
+the tray uses the lazy native WinUI tray popup described above, without
+prewarming a tray WebView; only the legacy WebView renderer prepares and reuses
+the React `/tray-menu` WebView on Windows. Settings remains
 on-demand and is still destroyed on close. Its Windows title-bar drag now uses
 WebView2 non-client CSS caption regions with no competing JS/IPC drag handler.
 The manual packed-coordinate move workaround did not pass the user's physical

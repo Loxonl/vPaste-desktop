@@ -41,6 +41,7 @@ body:
         - Text
         - Link / URL
         - Image
+        - Image OCR
         - File
         - Rich HTML / RTF
         - Color

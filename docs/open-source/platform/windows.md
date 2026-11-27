@@ -9,8 +9,18 @@ Windows is the primary implemented and tested platform.
 The minimum installation target is **Windows 10 1709 (build 16299)** in an
 x64-compatible environment, including later Windows 10 releases such as
 21H2 / LTSC 2021 and 22H2, plus Windows 11. A working WebView2 Runtime is
-required for both installed and Portable packages; the installer bootstraps it
+required for both installed and Portable packages (for Settings, rich/PDF/link
+previews, and the WebView main-panel fallback); the installer bootstraps it
 when missing. No native x86 or ARM64 application package is currently built.
+
+In v2.0 RC / `main`, official Windows x64 Release packages (`--features winui`)
+default to the **WinUI 3** main panel, which dynamically requires **Windows App
+Runtime 2.6.5 (x64)** or a compatible 2.6 update (Windows 10 **1809 / build
+17763** or later). When WinUI cannot initialize on an older supported Windows 10
+build or on a host without that runtime, default startup automatically falls
+back to the WebView main panel with an actionable warning. Users can also quit
+vPaste and launch with `--main-ui=webview` for explicit fallback without loading
+WinUI.
 
 This floor follows Microsoft's [WebView2 Windows client requirements](https://learn.microsoft.com/en-us/microsoft-edge/webview2/#supported-windows-versions)
 for ordinary Windows 10 releases. Older LTSC editions listed by Microsoft are
@@ -35,20 +45,22 @@ Windows 10 runtime verification.
 
 ## Implemented Capabilities
 
-- Tauri 2 Windows desktop app.
-- Inno Setup current-user installer, Portable ZIP, and Tauri updater artifacts.
-- Global shortcut to open the main panel.
-- Bottom floating main panel with keyboard navigation.
-- Custom tray menu in Chinese/English language flow.
+- Tauri 2 Windows x64 desktop app with default **WinUI 3** main panel (v2.0 RC / `main`) and automatic/explicit `--main-ui=webview` fallback.
+- Inno Setup current-user installer (with bundled WinUI payload and rollback checks), Portable ZIP, and Tauri updater artifacts.
+- Global shortcuts to open the main panel (including optional `Win + V` takeover) and toggle the paste queue.
+- Bottom floating main panel with keyboard navigation, single/double-click paste, hover preview, and three-step height adjustment.
+- Native WinUI tray popup (and legacy WebView tray menu in WebView mode) in Chinese/English language flow.
 - Local clipboard history for text, links, colors, images, screenshots, files, folders, multi-file items, HTML, RTF, and PNG-rich clipboard payloads.
-- Image and screenshot cards with preview and resolution overlay.
+- Image and screenshot cards with preview, resolution overlay, export, and Windows native **Image OCR** (editable side-by-side and searchable in history).
 - File/folder cards with path display, source existence checks, and path actions.
-- Favorites and custom filter tabs.
-- Search, including cached link titles.
-- Preview window for text, rich text, images, files, and links.
+- Favorites, tags, and custom filter tabs.
+- Search, including cached link titles and recognized OCR text.
+- Preview window (native WinUI reader for plain text, images, colors, and common files; on-demand WebView reader for rich text, PDFs, and live links).
+- Saved-text editing (`F2` or context menu; native plain-text editor and on-demand rich-text WebView editor).
+- Paste queue with drag reordering, undo, and destination-focus verification.
 - Paste recovery restores the previous foreground window and uses native `SendInput` for Ctrl+V.
-- Settings window with language, theme, shortcuts, personalization, data migration, cleanup, and update checks.
-- Export/import history.
+- Settings window with language, theme, shortcuts, personalization, data migration, automatic/manual cleanup, and update checks.
+- Export/import history (`.vphistory` v3 archives).
 - Local-first storage and basic sensitive clipboard protection.
 - App source icon capture and card header color extraction.
 

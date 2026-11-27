@@ -40,8 +40,8 @@ vPaste automatically records supported clipboard content and displays it as card
 
 | Type | Display and preview | Available actions |
 | --- | --- | --- |
-| Text | Plain and rich text, including headings, lists, tables, and links | Search the content; paste with formatting or as plain text |
-| Images | Card thumbnails, full-size previews, dimensions, and GIF identification | Paste or drag into compatible apps; export as an image file |
+| Text | Plain and rich text, including headings, lists, tables, and links | Search and edit saved content; paste with formatting or as plain text |
+| Images | Card thumbnails, full-size previews, dimensions, and GIF identification | Paste or drag into compatible apps; export as an image file; recognize and search image text via OCR (v2.0 RC+) |
 | Links | URL, plus the page title and image when link previews are enabled | Search by title or URL; preview the page or open it in a browser |
 | Colors | Color swatch and value | Convert between HEX, RGB, and HSL; copy the value you need |
 | Files | Single files, folders, and multi-file records; previews for supported formats | Paste or drag files; open their location or copy their paths |
@@ -58,8 +58,8 @@ Rich-text fidelity, file previews, and drag-and-drop support depend on the sourc
 
 Launch vPaste and complete the first-run guide, then copy as usual. Press `Alt + V` on Windows or `Option + V` on macOS to open your history, select a card, and press `Enter` to paste into the current app. On macOS, the guide explains how to grant Accessibility permission for automatic pasting.
 
-- **Content preview:** press `Space` to inspect full text, images, webpages, and supported file content before pasting.
-- **Paste format:** keep supported rich-text formatting, or use `Shift + Enter` to paste as plain text.
+- **Content preview:** press `Space` to inspect full text, images, webpages, and supported file content before pasting, or enable optional hover preview in Settings.
+- **Paste format and mouse controls:** keep supported rich-text formatting, use `Shift + Enter` to paste as plain text, and choose single-click or double-click paste in Settings.
 - **Paste queue:** turn on the queue, copy several items in sequence, then use `Ctrl + V` or `⌘ + V` to paste them in order, for example into separate form fields.
 - **Drag and drop:** drag text, links, images, or files into compatible apps; multi-file records can be dragged together.
 - **Multiple displays:** the panel follows the screen you are working on.
@@ -75,18 +75,18 @@ Default controls:
 | Search in the panel | `Ctrl + F` | `⌘ + F` |
 | Select the previous / next card | `←` / `→` | `←` / `→` |
 | Preview the selected card | `Space` | `Space` |
+| Edit the selected text record | `F2` | `F2` |
 | Delete the selected record | `Delete` | `Backspace` (`⌫`) |
 | Paste the selected card | `Enter` | `Enter` |
 | Paste as plain text | `Shift + Enter` | `Shift + Enter` |
 
-Panel, queue, and plain-text paste shortcuts can be changed in Settings.
+Panel, queue, and plain-text paste shortcuts can be changed in Settings. On Windows, you can also record `Win + V` as the main-panel shortcut to take over Windows clipboard history while vPaste is running.
 The deletion key is fixed and only acts in the panel, outside text editing and dialogs.
 
 ### Interface settings
 
 - **Appearance and language:** follow the system theme or choose light or dark mode; switch between English and Simplified Chinese.
-- **Startup and background behavior:** configure startup, tray, and background options in Settings.
-- **Panel state:** optionally remember your search, selected tab, and scroll position when reopening the panel.
+- **Panel layout and behavior:** adjust the three-step panel height slider with live preview, configure startup/tray/background options, and optionally remember your search, selected tab, and scroll position when reopening the panel.
 
 ### Local storage and privacy
 
@@ -101,9 +101,15 @@ Clipboard history is stored locally. vPaste does not upload it to a cloud servic
 
 | Platform | System | Download |
 | --- | --- | --- |
-| Windows · x64 | Windows 10 1709+ / Windows 11; WebView2 required | [Installer `.exe` / Portable `.zip`](https://github.com/Loxonl/vPaste-desktop/releases) |
+| Windows · x64 | Windows 10 1709+ / Windows 11; WebView2 required (v2.0 RC WinUI 3 uses x64 Windows App Runtime 2.6.5+ on Windows 10 1809+ with automatic WebView fallback) | [Installer `.exe` / Portable `.zip`](https://github.com/Loxonl/vPaste-desktop/releases) |
 | macOS · Apple silicon | macOS 11 or later | [Apple silicon `.dmg`](https://github.com/Loxonl/vPaste-desktop/releases) |
 | macOS · Intel | macOS 11 or later | [Intel `.dmg`](https://github.com/Loxonl/vPaste-desktop/releases) |
+| macOS · Universal | macOS 11 or later (Apple silicon & Intel, download-only) | [Universal `.dmg`](https://github.com/Loxonl/vPaste-desktop/releases) |
+
+**Stable vs. v2.0.0 RC:**
+- **Stable (`v1.7.0`, recommended for everyday use):** uses the shipping WebView main panel on Windows and macOS and follows the Stable update channel.
+- **v2.0.0 RC (pre-release on GitHub Releases and `main`):** introduces native main panels by default (**WinUI 3** on Windows x64 when Windows App Runtime 2.6.5+ is available, with automatic fallback to WebView; **AppKit** main panel and native menu bar menu on macOS) along with image OCR. Export a `.vphistory` backup before testing an RC. If a native panel fails to open, fully quit vPaste and launch it with `--main-ui=webview`.
+- **Windows signing note:** Windows packages are currently unsigned and may trigger “Unknown publisher” or SmartScreen prompts; macOS releases are Developer ID signed and notarized.
 
 ## FAQ
 
@@ -130,9 +136,9 @@ The supported desktop platforms are currently Windows and macOS. There is no off
 
 ## Development
 
-vPaste uses **Tauri 2 + Rust** for the desktop app and **React 18 + TypeScript + MUI 5 + Motion** for the interface.
+vPaste uses **Tauri 2 + Rust** for the desktop core, **WinUI 3 (Windows x64)** and **AppKit / SwiftUI (macOS)** for native main panels on `main` / v2.0 RC, and **React 18 + TypeScript + MUI 5 + Motion** for shared auxiliary windows and the WebView main panel.
 
-To build from source, install Node.js (see [`.node-version`](.node-version)), npm 11, Rust (see `rust-version` in [`Cargo.toml`](src-tauri/Cargo.toml)), and the [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/).
+To build from source, install Node.js (see [`.node-version`](.node-version)), npm 11, Rust (see `rust-version` in [`Cargo.toml`](src-tauri/Cargo.toml)), and the [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/). On Windows, building the WinUI 3 main panel (`--main-ui=winui` or `npm run build:windows`) also requires Visual Studio 2022 with the C++ v143 toolset, Windows SDK 10.0.22000+, NuGet access/cache for the pinned Windows App SDK packages, and x64 Windows App Runtime 2.6.5+ to run WinUI locally.
 
 ```sh
 git clone https://github.com/Loxonl/vPaste-desktop.git
@@ -141,31 +147,23 @@ npm ci
 npm run dev:debug
 ```
 
-`dev:debug` runs the desktop app on Windows or macOS with development-only tutorial and test tools. On macOS, quit an existing vPaste instance first. `npm run dev` runs only the frontend and does not provide native clipboard integration.
+`dev:debug` runs the desktop app on Windows or macOS with development-only tutorial and test tools. Quit any running vPaste instance first. `npm run dev` runs only the frontend and does not provide native clipboard integration.
 
-On macOS DEV, choose the main interface for that process:
+Select the main interface for a `dev:debug` process (process-local; never saved to user config):
 
 ```sh
+# macOS (defaults to native AppKit when --main-ui is omitted)
 npm run dev:debug -- --main-ui=native
+npm run dev:debug -- --main-ui=webview
+
+# Windows (dev:debug defaults to webview; pass winui to build and run WinUI 3)
+npm run dev:debug -- --main-ui=winui
 npm run dev:debug -- --main-ui=webview
 ```
 
-Use the `--` separator shown above so npm forwards the option directly. The
-launcher also accepts npm's `npm_config_main_ui` option when npm consumes
-`--main-ui=native` before the separator. Explicit script arguments take priority.
-Startup prints the selected interface and forwarded app arguments. Changing the
-choice requires stopping the current `dev:debug` command and starting it again;
-frontend reloads or Rust rebuilds retain the current runner's startup arguments.
+Use the `--` separator shown above so npm forwards the option directly (the launcher also reads `npm_config_main_ui`, with explicit arguments taking priority). Changing backends requires stopping the running process and starting it again. In packaged Release builds (`npm run build:windows` with `--features winui`, or `npm run build:macos`), both Windows x64 and macOS default to their native main panels, while `--main-ui=webview` remains available as a per-launch fallback. Use `./scripts/build-windows-release.ps1 -WebViewOnly` on Windows when building a WebView-only comparison package.
 
-Omitting `--main-ui` keeps the existing WebView interface. Native mode opens the
-experimental Swift/AppKit panel for startup, shortcuts and app/tray wake actions,
-without creating the main WebView or prewarming a preview WebView. Clipboard
-capture stays in Rust. Existing settings, preview, editor and OCR pages use
-WebViews only when explicitly opened. This does not persist a backend preference
-or enable the experiment in release/Windows builds. See the
-[native-panel notes](docs/open-source/testing/native-main-panel.md) for limits.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for checks, the [architecture guide](docs/open-source/architecture.md) for a source overview, and the [documentation index](docs/README.md) for platform and packaging details.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for checks, the [architecture guide](docs/open-source/architecture.md) for a source overview, [Windows WinUI bridge notes](docs/open-source/development/windows-winui-bridge.md), [macOS native panel notes](docs/open-source/testing/native-main-panel.md), and the [documentation index](docs/README.md) for platform and packaging details.
 
 ## Contributing
 

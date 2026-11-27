@@ -1,6 +1,8 @@
 # Windows x64 WinUI 内部 RC
 
-这是 Windows 内部便携测试包。当前版本为 `2.0.0-rc.1`。从未提交的 Windows 补丁构建时，以配套清单里的完整基线和补丁 SHA-256 为准。内部 RC 默认启动 WinUI，保留 WebView 主面板用于比较和回退。
+> **说明（v2.0.0 公开 RC 现状）：** 目前 Windows x64（WinUI 3 默认入口 + 安全回退）与 macOS（AppKit 默认原生）均已合入 `main` 并通过 GitHub Releases 公开发布 `v2.0.0-rc.x`（如 `v2.0.0-rc.6`）。普通测试用户请直接从 GitHub Releases 下载正式安装包或便携包。本文档记录的是维护者使用 `-WinUiCandidate -InternalRcVersion` 构建离线隔离内部试用便携包的本地流程。
+
+这是 Windows 内部便携测试包（示例版本 `2.0.0-rc.1`）。从未提交的 Windows 补丁构建时，以配套清单里的完整基线和补丁 SHA-256 为准。内部 RC 默认启动 WinUI，保留 WebView 主面板用于比较和回退。
 
 ## 运行和回退
 

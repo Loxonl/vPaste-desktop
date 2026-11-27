@@ -40,8 +40,8 @@ vPaste 会自动记录支持的剪贴板内容，以卡片形式显示，并附�
 
 | 类型 | 展示与预览 | 支持的操作 |
 | --- | --- | --- |
-| 文本 | 纯文本与富文本，包括标题、列表、表格和链接 | 搜索正文；保留格式粘贴，或粘贴为纯文本 |
-| 图片 | 卡片缩略图、完整大图、图片尺寸和 GIF 识别 | 粘贴或拖入支持的应用；导出为图片文件 |
+| 文本 | 纯文本与富文本，包括标题、列表、表格和链接 | 搜索并编辑已保存内容；保留格式粘贴，或粘贴为纯文本 |
+| 图片 | 卡片缩略图、完整大图、图片尺寸和 GIF 识别 | 粘贴或拖入支持的应用；导出为图片文件；支持图片 OCR 文字识别与搜索（v2.0 RC+） |
 | 链接 | 显示网址；开启链接预览后显示网页标题和预览图 | 按标题或网址搜索；预览网页，或在浏览器中打开 |
 | 颜色 | 同时显示色块和颜色值 | 在 HEX、RGB、HSL 之间转换，复制所需格式的颜色值 |
 | 文件 | 单个文件、文件夹和多文件记录；预览支持的文件格式 | 粘贴或拖出文件；打开所在位置，或复制文件路径 |
@@ -58,8 +58,8 @@ vPaste 会自动记录支持的剪贴板内容，以卡片形式显示，并附�
 
 启动 vPaste 并完成首次使用引导后，像平时一样复制即可。Windows 按 `Alt + V`，macOS 按 `Option + V` 呼出历史，选中卡片后按 `Enter` 粘贴到当前应用。macOS 的首次使用引导会说明自动粘贴所需的辅助功能权限。
 
-- **内容预览：** 按 `Space` 查看完整文本、大图、网页和支持的文件内容，再决定是否粘贴。
-- **粘贴格式：** 保留支持的富文本格式，或按 `Shift + Enter` 粘贴为纯文本。
+- **内容预览：** 按 `Space` 查看完整文本、大图、网页和支持的文件内容，再决定是否粘贴；也可在设置中开启悬停预览。
+- **粘贴格式与鼠标操作：** 保留支持的富文本格式，按 `Shift + Enter` 粘贴为纯文本，并可在设置中选择单击或双击粘贴。
 - **粘贴队列：** 开启队列后依次复制多条内容，再用 `Ctrl + V` 或 `⌘ + V` 按顺序粘贴，适合填写多个表单字段。
 - **跨应用拖拽：** 将文本、链接、图片或文件拖入支持的应用，多文件记录可以一起拖出。
 - **多屏使用：** 主面板跟随当前操作的屏幕显示。
@@ -75,16 +75,18 @@ vPaste 会自动记录支持的剪贴板内容，以卡片形式显示，并附�
 | 在面板中搜索 | `Ctrl + F` | `⌘ + F` |
 | 选择上一张 / 下一张卡片 | `←` / `→` | `←` / `→` |
 | 预览选中卡片 | `Space` | `Space` |
+| 编辑选中文本记录 | `F2` | `F2` |
+| 删除选中记录 | `Delete` | `Backspace`（`⌫`） |
 | 粘贴选中内容 | `Enter` | `Enter` |
 | 粘贴为纯文本 | `Shift + Enter` | `Shift + Enter` |
 
-主面板、粘贴队列和纯文本粘贴快捷键可以在设置中修改。
+主面板、粘贴队列和纯文本粘贴快捷键可以在设置中修改。Windows 下也可将主面板快捷键设为 `Win + V`，在运行期间接管系统剪贴板历史。
+删除快捷键为固定按键，仅在面板聚焦且不处于文本编辑或弹窗时生效。
 
 ### 界面设置
 
 - **外观与语言：** 跟随系统或选择浅色、深色主题，支持英文和简体中文界面。
-- **启动与后台：** 在设置中调整开机启动、托盘和后台运行选项。
-- **面板状态：** 按需记住搜索内容、选中的标签页和滚动位置，下次打开时继续使用。
+- **面板布局与行为：** 支持三档主面板高度实时预览，在设置中调整开机启动、托盘与后台运行选项，并可按需记住搜索内容、选中的标签页和滚动位置。
 
 ### 本地存储与隐私
 
@@ -99,9 +101,15 @@ vPaste 会自动记录支持的剪贴板内容，以卡片形式显示，并附�
 
 | 平台 | 系统要求 | 下载入口 |
 | --- | --- | --- |
-| Windows · x64 | Windows 10 1709 及以上 / Windows 11；需要 WebView2 | [`.exe` 安装包 / `.zip` 便携包](https://github.com/Loxonl/vPaste-desktop/releases) |
+| Windows · x64 | Windows 10 1709 及以上 / Windows 11；需要 WebView2（v2.0 RC 的 WinUI 3 主面板在 Windows 10 1809+ 上需 x64 Windows App Runtime 2.6.5+，不可用时自动回退 WebView） | [`.exe` 安装包 / `.zip` 便携包](https://github.com/Loxonl/vPaste-desktop/releases) |
 | macOS · Apple 芯片 | macOS 11 及以上 | [Apple 芯片版 `.dmg`](https://github.com/Loxonl/vPaste-desktop/releases) |
 | macOS · Intel 芯片 | macOS 11 及以上 | [Intel 芯片版 `.dmg`](https://github.com/Loxonl/vPaste-desktop/releases) |
+| macOS · 通用版 | macOS 11 及以上（Apple 芯片与 Intel 通用，仅用于手动下载） | [通用版 `.dmg`](https://github.com/Loxonl/vPaste-desktop/releases) |
+
+**稳定版与 v2.0.0 RC 说明：**
+- **稳定版（`v1.7.0`，推荐日常使用）：** Windows 与 macOS 使用 WebView 主面板，跟随 Stable 更新通道。
+- **v2.0.0 RC（GitHub Releases 预发布与 `main` 现状）：** 默认启用双端原生主面板（Windows x64 在运行时可用时默认使用 **WinUI 3**，否则自动回退 WebView；macOS 默认使用 **AppKit** 主面板与原生菜单栏菜单）并新增图片 OCR。试用 RC 前建议先导出 `.vphistory` 备份；如原生面板无法打开，请完全退出 vPaste 后使用 `--main-ui=webview` 启动回退。
+- **签名提示：** Windows 安装包暂未进行代码签名，可能触发「未知发布者」或 SmartScreen 提示；macOS 发布包已完成 Developer ID 签名与公证。
 
 ## 常见问题
 
@@ -128,9 +136,9 @@ vPaste 需要辅助功能权限，才能向当前应用发送粘贴操作。请�
 
 ## 本地开发
 
-vPaste 使用 **Tauri 2 + Rust** 构建桌面应用，界面基于 **React 18 + TypeScript + MUI 5 + Motion**。
+vPaste 使用 **Tauri 2 + Rust** 构建桌面核心，在 `main` / v2.0 RC 中使用 **WinUI 3（Windows x64）** 与 **AppKit / SwiftUI（macOS）** 实现原生主面板，并使用 **React 18 + TypeScript + MUI 5 + Motion** 实现共享辅助窗口与 WebView 主面板。
 
-从源码运行前，请安装 Node.js（版本见 [`.node-version`](.node-version)）、npm 11、Rust（版本见 [`Cargo.toml`](src-tauri/Cargo.toml) 的 `rust-version`），以及 [Tauri 对应平台的开发依赖](https://v2.tauri.app/start/prerequisites/)。
+从源码运行前，请安装 Node.js（版本见 [`.node-version`](.node-version)）、npm 11、Rust（版本见 [`Cargo.toml`](src-tauri/Cargo.toml) 的 `rust-version`），以及 [Tauri 对应平台的开发依赖](https://v2.tauri.app/start/prerequisites/)。Windows 上构建 WinUI 3 主面板（`--main-ui=winui` 或 `npm run build:windows`）还需安装 Visual Studio 2022（C++ v143 工具集）、Windows SDK 10.0.22000+、可访问/已缓存的 Windows App SDK NuGet 依赖，以及用于本地运行的 x64 Windows App Runtime 2.6.5+。
 
 ```sh
 git clone https://github.com/Loxonl/vPaste-desktop.git
@@ -139,9 +147,23 @@ npm ci
 npm run dev:debug
 ```
 
-`dev:debug` 在 Windows 或 macOS 上运行桌面应用，并提供仅在开发模式下可用的引导预览和测试工具。macOS 上请先退出已运行的 vPaste。`npm run dev` 仅启动前端，不包含原生剪贴板能力。
+`dev:debug` 在 Windows 或 macOS 上运行桌面应用，并提供仅在开发模式下可用的引导预览和测试工具。运行前请先退出已运行的 vPaste 实例。`npm run dev` 仅启动前端，不包含原生剪贴板能力。
 
-检查命令见 [CONTRIBUTING.md](CONTRIBUTING.md)，源码结构见[架构说明](docs/open-source/architecture.md)，平台与打包细节见[文档索引](docs/README.md)。
+可通过 `--main-ui` 按进程指定 `dev:debug` 的主界面模式（不写入用户配置）：
+
+```sh
+# macOS（省略 --main-ui 时默认启动原生 AppKit 主面板）
+npm run dev:debug -- --main-ui=native
+npm run dev:debug -- --main-ui=webview
+
+# Windows（dev:debug 默认启动 WebView；传入 winui 以编译并启动 WinUI 3）
+npm run dev:debug -- --main-ui=winui
+npm run dev:debug -- --main-ui=webview
+```
+
+请保留上述 `--` 分隔符以便 npm 直接转发参数（启动器也兼容 `npm_config_main_ui`，显式参数优先）。切换主界面需先停止当前进程再重启。正式 Release 打包（Windows `npm run build:windows` 默认启用 `--features winui`，macOS `npm run build:macos`）均默认使用原生主面板，并保留 `--main-ui=webview` 启动回退开关；Windows 如需构建纯 WebView 对照包，可运行 `./scripts/build-windows-release.ps1 -WebViewOnly`。
+
+检查命令见 [CONTRIBUTING.md](CONTRIBUTING.md)，源码结构见[架构说明](docs/open-source/architecture.md)，原生界面详见 [Windows WinUI 桥接说明](docs/open-source/development/windows-winui-bridge.md) 与 [macOS 原生主面板说明](docs/open-source/testing/native-main-panel.md)，平台与打包细节见[文档索引](docs/README.md)。
 
 ## 参与贡献
 

@@ -1,6 +1,6 @@
 # macOS Release Flow
 
-Official releases provide separate Apple silicon (`aarch64`) and Intel (`x86_64`) packages, plus a download-only universal DMG that runs natively on both. All target macOS 11 Big Sur or newer.
+Official releases provide separate Apple silicon (`aarch64`) and Intel (`x86_64`) packages, plus a download-only universal DMG that runs natively on both. All target macOS 11 Big Sur or newer (`MACOSX_DEPLOYMENT_TARGET=11.0`). In v2.0 RC / `main`, packaged macOS builds default to the native AppKit main panel and native menu bar menu while retaining `--main-ui=webview` as a per-launch fallback.
 
 Both platform maintainers use the shared [release checklist](release-checklist.md)
 and [Release Notes Format and Template](release-notes-template.md) for the same
@@ -23,7 +23,7 @@ The installer artwork lives in `src-tauri/macos/dmg/background.svg`. Run `npm ru
 
 ## Official packages
 
-Publishing a GitHub Release with a matching `v<version>` tag starts `.github/workflows/tag-release.yml`, including the `aarch64`, `x86_64`, and `universal` macOS matrix jobs. Each macOS job:
+Publishing a GitHub Release with a matching `v<version>` tag starts `.github/workflows/tag-release.yml`, including the `aarch64`, `x86_64`, and `universal` macOS matrix jobs running on `macos-15`. Each macOS job:
 
 1. Installs the pinned Rust target, npm lockfile, Python 3.12, and pinned `dmgbuild`.
 2. Imports a `Developer ID Application` certificate into an ephemeral keychain.

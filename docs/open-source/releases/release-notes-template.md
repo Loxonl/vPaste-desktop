@@ -33,14 +33,19 @@ are a published example, not a list of changes to copy into later versions.
    SmartScreen warning in both language sections.
 6. Do not add a `Packages / 安装包` section or package-type boilerplate.
    Source and compare links may occupy one shared line after the language
-   sections and before the download table.
+   sections and before the download table. **Always verify both links before
+   publishing or editing:** `<full-source-sha>` must match the exact commit SHA
+   targeted by this tag, and `<new-tag>` in `compare/<previous-tag>...<new-tag>`
+   must match the current Release tag (do not leave an earlier RC tag or commit
+   SHA when revising notes across consecutive RCs).
 7. End the body with the managed manual-download table immediately above Assets.
    The download block contains only the table: no `Downloads / 下载` heading,
    explanatory paragraphs, checksum links, or metadata links. Checksums,
    licenses, signatures, and updater archives remain available in Assets;
    removing note text does not remove those files or their validation.
 8. Preview the final body with GitHub's Markdown renderer. Check category order,
-   bold labels, bilingual content, current warnings, and actual download URLs.
+   bold labels, bilingual content, current warnings, exact footer Source/compare
+   links, and actual download URLs.
    When editing historical notes, preserve maintenance warnings and lifecycle
    metadata unless their removal was explicitly approved; never replace assets,
    tags, release dates, Stable/RC status, or updater feeds to restyle a page.

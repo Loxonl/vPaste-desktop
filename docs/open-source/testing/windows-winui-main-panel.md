@@ -1,5 +1,14 @@
 # Windows WinUI 3 main-panel MVP
 
+> **Current status (v2.0 RC / `main`):** This document preserves the early MVP
+> implementation and local verification history. Starting with PR #426 / #427,
+> official Windows x64 Release packages (`--features winui`) default to WinUI 3
+> with automatic WebView fallback when x64 Windows App Runtime 2.6.5+ is
+> unavailable (`--main-ui=webview` remains available as an explicit fallback).
+> For the current architecture contract and acceptance status, see
+> [Windows WinUI bridge ownership](../development/windows-winui-bridge.md) and
+> [Windows WinUI acceptance matrix](windows-winui-acceptance-matrix.md).
+
 The current stages 1–3 follow-up and consolidated manual checks are recorded in
 [Windows WinUI parity](windows-winui-parity.md).
 

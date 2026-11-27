@@ -33,7 +33,8 @@ These rules apply to every React UI change, including auxiliary Tauri windows. T
 
 ## Native UI migration parity
 
-- Treat the shipping React WebView as the product reference. Before changing WinUI behavior, trace the matching reference UI and shared Rust path using [the acceptance matrix](docs/open-source/testing/windows-winui-acceptance-matrix.md).
+- Both Windows x64 (`--features winui`) and macOS now default to native main panels (WinUI 3 on Windows with automatic WebView fallback; AppKit/SwiftUI on macOS), while preserving `--main-ui=webview` as the explicit fallback and product reference.
+- Treat the shipping React WebView as the product reference. Before changing WinUI or macOS native behavior, trace the matching reference UI and shared Rust path using [the Windows acceptance matrix](docs/open-source/testing/windows-winui-acceptance-matrix.md) and [the macOS native panel notes](docs/open-source/testing/native-main-panel.md).
 - Compare complete scenarios: triggering conditions, event order, geometry, content readiness, window/control lifetime, cancellation and rapid repeated input. Native control defaults are not automatically equivalent to the reference interaction.
 - Add regression coverage for the reported difference and preserved neighboring behavior. A connected command, source assertion, unchanged HWND or resting screenshot alone does not establish interaction parity.
-- Record source, unit, native-XAML, actual-App and physical/manual evidence separately in the matrix. Document intentional differences; do not mark physical motion, DPI or focus as passed from synthetic tests. Keep visual checks local.
+- Record source (S), unit (U), native-XAML (X), actual-App (A) and physical/manual (M) evidence separately in the matrix and PR description. Document intentional differences; do not mark physical motion, DPI or focus as passed from synthetic tests. Keep visual checks local.

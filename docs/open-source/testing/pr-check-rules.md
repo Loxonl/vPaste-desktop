@@ -39,14 +39,16 @@ Use GitHub GraphQL for unresolved review thread details when `gh pr view` is not
 
 ## Required Commands By Change Type
 
-The ordinary PR workflow uses `pull_request` with a read-only token, checks the PR merge commit, and does not use release environments or signing secrets. It runs frontend style checks, build/types, the full unit suite, release-version consistency, and license inventory on Ubuntu. Windows and macOS jobs check Rust formatting, compilation, and tests, including the updater-manifest verifier. A failed, cancelled, or unexpectedly skipped build/test job prevents the final check from passing.
+The ordinary PR workflow (`.github/workflows/pr-checks.yml`) uses `pull_request` with a read-only token, checks the PR merge commit, and does not use release environments or signing secrets. It runs frontend style checks, build/types, the full unit suite, release-version consistency, and license inventory on Ubuntu (`ubuntu-24.04`). Windows (`windows-2022`) and macOS (`macos-15`) jobs check Rust formatting, compilation, and tests, including the updater-manifest verifier. On Windows, the Rust job also runs `cargo check --release --locked --features winui --bin vPaste` and focused WinUI startup/fallback and updater-restart tests (`winui_startup`, `winui_default_startup_tests`, `main_panel_mode::tests`, `startup_panel::tests`, `app_updater::tests`). A failed, cancelled, or unexpectedly skipped build/test job prevents the final check from passing.
 
-Only changes confined to Markdown, `docs/`, `LICENSE`, issue forms, and `CODEOWNERS` skip build/test jobs. Workflow, source, configuration, script, and lockfile changes run the checks. Visual tests and native clipboard smoke tests remain local; the hosted checks do not launch the desktop UI, build installers, or publish a release.
+Only changes confined to Markdown, `docs/`, `LICENSE`, issue forms, and `CODEOWNERS` skip build/test jobs. Workflow, source, configuration, script, and lockfile changes run the checks. Visual tests, loaded-XAML checks, and native clipboard smoke tests remain local; the hosted checks do not launch the desktop UI, build installers, or publish a release.
 
 | Change Type | Required Check |
 |---|---|
-| Frontend TypeScript/CSS/UI | `npm run check:ui` |
+| Frontend TypeScript/CSS/UI | `npm run check:ui` (local; record normal and reduced-motion checks) |
 | Rust backend/Tauri commands | `cargo check --locked --all-targets --manifest-path src-tauri\Cargo.toml` and `cargo test --locked --all-targets --manifest-path src-tauri\Cargo.toml` |
+| Windows WinUI native UI / startup | `cargo check --release --locked --features winui --bin vPaste --manifest-path src-tauri\Cargo.toml`, focused WinUI startup/unit tests, and separate S/U/X/A/M evidence in the PR and [acceptance matrix](windows-winui-acceptance-matrix.md) |
+| macOS AppKit / SwiftUI native UI | macOS `cargo check` / Swift typecheck and separate evidence notes per [native-main-panel.md](native-main-panel.md) |
 | Rust formatting-sensitive changes | `cargo fmt --all --check --manifest-path src-tauri\Cargo.toml` |
 | Clipboard behavior | Relevant cases from `docs/open-source/testing/clipboard-cases.md` |
 | Word/Excel capture, rich preview, or queue | Relevant [Office profiles](office-regressions.md); record native, browser, and manual outcomes separately |

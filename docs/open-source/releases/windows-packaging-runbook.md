@@ -25,6 +25,7 @@ The following files define the packaging contract:
 | `scripts/generate-inno-assets.ps1` | Installer and uninstaller image assets |
 | `scripts/generate-winget-manifest.mjs` | Local WinGet singleton manifest |
 | `scripts/generate-updater-manifest.mjs` | Platform updater manifest |
+| `.github/workflows/tag-release.yml` | Published-release cross-platform build (`windows-2022` WinUI + `macos-15`), asset upload, and updater-feed publication |
 | `.github/workflows/release.yml` | Manually approved cross-platform Draft Release |
 | `src-tauri/src/runtime_mode.rs` | Installed versus Portable runtime behavior |
 | `src-tauri/src/app_updater.rs` | Update state, download, verification, cached recovery, and restart installation |
@@ -88,7 +89,7 @@ npm run check:release
 npm run check:licenses
 ```
 
-Build and validate an RC such as `1.6.0-rc.1` before the final stable version.
+Build and validate an RC such as `X.Y.Z-rc.1` before the final stable version.
 Never replace artifacts attached to an already published version.
 
 ## Quality gate
@@ -124,8 +125,8 @@ its own Setup, ZIP, and checksums. The WebView-only comparison retains normal
 updater configuration and omits the WinUI payload.
 
 ```powershell
-./scripts/build-windows-release.ps1 -OutputDirectory .codex/tmp/windows-winui
-./scripts/build-windows-release.ps1 -WebViewOnly -OutputDirectory .codex/tmp/windows-webview
+./scripts/build-windows-release.ps1 -OutputDirectory tmp/windows-winui
+./scripts/build-windows-release.ps1 -WebViewOnly -OutputDirectory tmp/windows-webview
 ```
 
 During installer UI development only, the existing release binary can be
@@ -339,7 +340,7 @@ The GitHub Actions workflow is intentionally manual:
 8. Review the SBOM, dependency inventory, licenses, and release notes.
 9. Keep this staging Release separate from the public Release; publishing it also triggers the package workflow and may encounter same-name assets from the staging build.
 
-For the public flow, create and publish a new Release with the reviewed tag, title, and notes. The `release.published` event starts the package workflow; pushing the tag alone does not. The workflow must not use `workflow_run` or `pull_request_target`, create Bot pull requests, or update the website manifest outside the verified publish step. Build jobs are read-only; only the final asset-upload job receives `contents: write`.
+For the public flow, confirm the protected GitHub `release` Environment has **Required reviewers** and all required signing/updater/website secrets configured, verify that the Release notes footer `[Source / 源码]` SHA and `[Full changelog / 完整变更]` `<new-tag>` match the exact release tag being published, and then create and publish a new Release with the reviewed tag, title, and notes. The `release.published` event starts `.github/workflows/tag-release.yml` (Windows x64 WinUI on `windows-2022` and macOS `aarch64`/`x86_64`/`universal` on `macos-15`); pushing the tag alone does not. The workflow must not use `workflow_run` or `pull_request_target`, create Bot pull requests, or update the website manifest outside the verified publish step. Build jobs are read-only; only the final asset-upload job receives `contents: write`.
 
 The release should contain:
 

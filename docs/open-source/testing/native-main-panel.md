@@ -178,22 +178,27 @@ no new toolbar animation, third-party dependency, deployment-target increase or
 main WebView. The same native-mode launch command applies; Swift source changes
 require a native rebuild rather than frontend hot reload.
 
-## Experimental limits
+## Current scope and known limits
 
-- The native header has fixed type/favorite filters. Custom-tab management, tag
-  editing and the rest of the settings UI continue in the existing interface.
+- Custom filter tabs, record-tag tabs, drag-to-reorder, paste-queue selection,
+  the native menu bar menu, and the native macOS tab editor are implemented in
+  the default AppKit / SwiftUI main panel. Settings, rich/PDF/link previews,
+  and rich-text editing open auxiliary WebViews on demand without creating a
+  resident main WebView.
 - Native rich-text preview supports a bounded subset of HTML styling. It does not
   reproduce arbitrary CSS, nested layout, or merged table-cell geometry. Display
   is limited to 16,384 characters / 512 attributed runs and 24 × 12 table cells;
   original copy/paste formats and full-content auxiliary previews are preserved.
-- The footer reports retained card payloads and this panel's decoded-image cache,
+- The diagnostics bar reports retained card payloads and this panel's decoded-image cache,
   not process resident memory or physical footprint. AppKit allocations live in
   the Rust host process. The original main WebView remains alive if the developer opens the
   AppKit preview in explicit WebView mode. Normal AppKit startup skips it. Neither path is a measured
   memory-reduction result
   without separate profiling.
-- The production panel and tray build in macOS Debug and Release. The DEV-only
-  command for opening an AppKit preview from the WebView remains gated.
+- The production panel and native menu bar menu build in macOS Debug and Release
+  and are the default on macOS (`--main-ui=webview` remains available as a
+  per-launch fallback). The DEV-only command for opening an AppKit preview from
+  the WebView remains gated to Debug + `--dev-mode`.
 
 ## Isolated interactive verification
 

@@ -20,7 +20,7 @@ body:
     id: environment
     attributes:
       label: Environment details
-      description: Window manager, display setup, affected apps, or other relevant details.
+      description: "Main panel mode (WinUI 3 / AppKit / WebView or `--main-ui=webview`), Windows App Runtime version if applicable, multi-monitor / DPI scaling, window manager, affected apps, or other relevant details."
   - type: textarea
     id: steps
     attributes:

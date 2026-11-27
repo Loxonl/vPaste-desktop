@@ -16,7 +16,9 @@ Windows 官方交付物为 Inno Setup 6.7.3 编译的 x64 当前用户安装包�
 
 - 读取旧卸载注册项和安装目录，在原目录覆盖程序文件。
 - 安装成功后才删除旧卸载器和旧注册项，不运行旧卸载流程，不触碰历史与配置。
-- 安装前备份现有 EXE；安装失败时恢复旧 EXE。
+- 替换前备份现有 EXE、产品许可和便携标记。包含 WinUI 载荷的安装器还备份两个 WinUI DLL、SDK 许可和载荷清单，并校验目录与目标路径非重解析点。备份失败时停止替换。安装出错或取消时，Inno 删除此次新增的文件，安装脚本恢复被覆盖文件和便携标记的原始内容。
+- WinUI 安装器在提交安装前核对 EXE、两个 DLL、许可和载荷清单。跳过任一关键文件的替换都会触发回滚。两种安装器都会在替换文件前拒绝重解析的 `.installer` 目录。
+- 纯 WebView 安装包覆盖含 WinUI 载荷的安装时，在确认纯 WebView EXE 和许可证已成功替换后，清理由载荷清单记录且 SHA-256 仍匹配的文件。没有清单的旧安装、内容已修改的文件、重解析点和目录内其他文件会保留。
 
 ## 应用内更新
 
@@ -25,9 +27,11 @@ Windows 官方交付物为 Inno Setup 6.7.3 编译的 x64 当前用户安装包�
 - 默认启动 60 秒后检查，此后在上次成功检查 24 小时后再检查并静默下载；失败按 15 分钟 → 1 小时 → 6 小时退避，不记为成功检查。下载完成并验签落盘后，设置页、主面板（设置按钮右侧的蓝色圆形更新图标，点击后先确认）和托盘提供同一个“更新并重启”操作，系统通知同一版本最多提醒一次。
 - 用户点击“重启更新”后，应用先复验缓存，再以静默参数启动安装器并退出；安装器无法启动时不退出，缓存仍有效时可直接重试；安装器完成替换后使用 `--updated-from` 启动新版本。
 - 新版更新器显式传入 `/NORESTARTAPPLICATIONS /RESTARTAPP`，由安装器既有的启动条目统一重启应用，避免 Restart Manager 与安装器分别启动一次。
+- Windows 更新重启只传入 `--updated-from`，不写入 `--main-ui=winui` 到开机自启参数。官方 WinUI 构建默认启动 WinUI，缺少 Windows App Runtime 2.6.5 (x64) 时自动回退 WebView 并给出提示；降级回纯 WebView 构建或显式 `--main-ui=webview` 均可无阻塞启动。
 - 更新重启参数与当前版本匹配时，在采集监听已启动、主面板事件订阅就绪后自动打开一次主面板；普通启动、开机自启和未完成引导时不因此打开主面板。macOS 保持原有的启动显示行为，并同样等待主面板订阅就绪。
 - Stable 使用 `https://vpaste.app/download/stable/latest.json`；RC 构建使用 `https://vpaste.app/download/rc/latest.json`，由 Release workflow 写入 `VPASTE_UPDATE_CHANNEL=rc` 选择。发布 Release 后，合并的 `latest.json` 经匿名下载校验后写入 `Loxonl/vPaste-website` 对应通道，详见 [update-feed-publication.md](update-feed-publication.md)。
 - 私有 Draft Release 仍硬性禁用公共 feed。Debug 可通过 `VPASTE_DEBUG_UPDATE_ENDPOINT` 使用本地签名测试源。
+- `-WinUiCandidate -InternalRcVersion 2.0.0-rc.1` 生成 [Windows 内部 WinUI RC Portable ZIP](windows-winui-rc-trial.md)。试用包走独立资料目录和手动解压，关闭应用内更新与登录自启。
 
 ## Portable
 

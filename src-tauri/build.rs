@@ -348,6 +348,10 @@ fn build_winui_panel() {
     println!("cargo:rerun-if-changed=../src/clipboard/name-prefix-emojis.json");
     println!("cargo:rerun-if-env-changed=USERPROFILE");
     println!("cargo:rerun-if-env-changed=NUGET_PACKAGES");
+    println!("cargo:rerun-if-env-changed=VPASTE_WINDOWS_SDK_VERSION");
+    println!("cargo:rerun-if-env-changed=WindowsSdkDir");
+    println!("cargo:rerun-if-env-changed=RestoreSources");
+    println!("cargo:rerun-if-env-changed=CARGO_NET_OFFLINE");
 
     let project_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"));
     let configuration = if env::var("PROFILE").as_deref() == Ok("release") {
@@ -360,12 +364,16 @@ fn build_winui_panel() {
     fs::create_dir_all(&intermediate_dir).expect("create WinUI build output directory");
     let file_icon_resources = generate_winui_file_icon_resources(&project_dir, &out_dir);
 
+    let sdk_version = select_windows_sdk_version();
+    let nuget_dir = nuget_packages_dir();
     let msbuild = find_msbuild();
-    let status = Command::new(&msbuild)
+    let mut command = Command::new(&msbuild);
+    command
         .current_dir(&project_dir)
         .args([PROJECT, "/restore", "/nologo", "/m", "/verbosity:minimal"])
         .arg(format!("/p:Configuration={configuration}"))
         .arg("/p:Platform=x64")
+        .arg(format!("/p:WindowsTargetPlatformVersion={sdk_version}"))
         .arg(format!("/p:OutDir={}\\", out_dir.display()))
         .arg(format!("/p:IntDir={}\\", intermediate_dir.display()))
         .arg(format!(
@@ -383,12 +391,26 @@ fn build_winui_panel() {
         .arg(format!(
             "/p:MSBuildProjectExtensionsPath={}\\nuget\\",
             out_dir.display()
-        ))
+        ));
+    // 离线 Cargo 构建时默认复用本机 NuGet 缓存，避免 MSBuild /restore 访问外网。
+    if env::var("CARGO_NET_OFFLINE").as_deref() == Ok("true")
+        && env::var_os("RestoreSources").is_none()
+        && nuget_dir.is_dir()
+    {
+        command
+            .arg(format!("/p:RestoreSources={}", nuget_dir.display()))
+            .arg("/p:NuGetAudit=false");
+    }
+    let status = command
         .status()
         .unwrap_or_else(|error| panic!("failed to run {}: {error}", msbuild.display()));
     assert!(
         status.success(),
-        "WinUI 3 {configuration} panel failed to build"
+        "WinUI 3 {configuration} panel failed to build (MSBuild: {}, Windows SDK: {}, NuGet packages: {}). \
+         Ensure Visual Studio C++ v143 toolset, Windows SDK >= 10.0.22000.0, and NuGet packages are available.",
+        msbuild.display(),
+        sdk_version,
+        nuget_dir.display()
     );
 
     let profile_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"))
@@ -396,14 +418,16 @@ fn build_winui_panel() {
         .nth(3)
         .expect("Cargo profile directory")
         .to_path_buf();
-    let bootstrap_dll = nuget_packages_dir()
+    let bootstrap_dll = nuget_dir
         .join("microsoft.windowsappsdk.foundation")
         .join("2.6.5")
         .join("runtimes/win-x64/native/Microsoft.WindowsAppRuntime.Bootstrap.dll");
     if !bootstrap_dll.is_file() {
         panic!(
-            "Windows App SDK bootstrap runtime was not restored at {}",
-            bootstrap_dll.display()
+            "Windows App SDK bootstrap runtime was not restored at {}. \
+             Verify Microsoft.WindowsAppSDK.WinUI/Runtime 2.6.5 in NUGET_PACKAGES ({}).",
+            bootstrap_dll.display(),
+            nuget_dir.display()
         );
     }
     let panel_dll = out_dir.join("VPasteWinUiPanel.dll");
@@ -465,6 +489,140 @@ fn nuget_packages_dir() -> PathBuf {
     PathBuf::from(env::var_os("USERPROFILE").expect("USERPROFILE")).join(".nuget/packages")
 }
 
+const MIN_WINDOWS_SDK_VERSION: (u32, u32, u32, u32) = (10, 0, 22000, 0);
+
+fn parse_windows_sdk_version(name: &str) -> Option<(u32, u32, u32, u32)> {
+    let mut parts = name.trim().split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next()?.parse::<u32>().ok()?;
+    let build = parts.next()?.parse::<u32>().ok()?;
+    let revision = parts.next()?.parse::<u32>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, build, revision))
+}
+
+fn windows_sdk_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut push_unique = |path: PathBuf| {
+        if !path.as_os_str().is_empty() && !roots.iter().any(|existing| existing == &path) {
+            roots.push(path);
+        }
+    };
+    if let Some(sdk_dir) = env::var_os("WindowsSdkDir") {
+        push_unique(PathBuf::from(sdk_dir));
+    }
+    if let Some(program_files) = env::var_os("ProgramFiles(x86)") {
+        push_unique(PathBuf::from(program_files).join("Windows Kits/10"));
+    }
+    push_unique(PathBuf::from(r"C:\Program Files (x86)\Windows Kits\10"));
+    roots
+}
+
+fn windows_sdk_is_complete(kit_root: &Path, version: &str) -> bool {
+    kit_root
+        .join("Include")
+        .join(version)
+        .join("um/Windows.h")
+        .is_file()
+        && kit_root
+            .join("Include")
+            .join(version)
+            .join("winrt/winstring.h")
+            .is_file()
+        && kit_root
+            .join("Lib")
+            .join(version)
+            .join("um/x64/WindowsApp.lib")
+            .is_file()
+}
+
+/// 自动探测本机或 CI Runner 已安装的兼容 Windows SDK (>= 10.0.22000.0)，
+/// 避免 windows-2022 等环境未安装精确 10.0.22000.0 时硬编码失败。
+fn select_windows_sdk_version() -> String {
+    let roots = windows_sdk_roots();
+    let mut discovered: Vec<((u32, u32, u32, u32), String)> = Vec::new();
+    for root in &roots {
+        let include_dir = root.join("Include");
+        let Ok(entries) = fs::read_dir(&include_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let Some(parsed) = parse_windows_sdk_version(&name) else {
+                continue;
+            };
+            if windows_sdk_is_complete(root, &name)
+                && !discovered.iter().any(|(_, existing)| existing == &name)
+            {
+                discovered.push((parsed, name));
+            }
+        }
+    }
+    discovered.sort_by_key(|(parsed, _)| *parsed);
+
+    if let Ok(requested) = env::var("VPASTE_WINDOWS_SDK_VERSION") {
+        let requested = requested.trim().to_string();
+        if !requested.is_empty() {
+            let parsed = parse_windows_sdk_version(&requested).unwrap_or_else(|| {
+                panic!(
+                    "Invalid VPASTE_WINDOWS_SDK_VERSION='{requested}'. \
+                     Expected a four-part version >= 10.0.22000.0 (for example 10.0.22621.0)."
+                )
+            });
+            assert!(
+                parsed >= MIN_WINDOWS_SDK_VERSION,
+                "VPASTE_WINDOWS_SDK_VERSION='{requested}' is below the required Windows SDK minimum 10.0.22000.0 for WinUI 3."
+            );
+            if discovered.iter().any(|(_, version)| version == &requested) {
+                return requested;
+            }
+            let available = if discovered.is_empty() {
+                "none".to_string()
+            } else {
+                discovered
+                    .iter()
+                    .map(|(_, version)| version.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            panic!(
+                "Requested Windows SDK '{requested}' (via VPASTE_WINDOWS_SDK_VERSION) was not found with complete C++/WinRT x64 headers and libraries. \
+                 Checked roots: {:?}. Discovered complete SDKs: {available}.",
+                roots
+            );
+        }
+    }
+
+    // 选择满足 >= 10.0.22000.0 的最低兼容 SDK，本地有 10.0.22000.0 时保持一致，
+    // 在仅安装 10.0.22621.0 / 10.0.26100.0 的 CI runner 上也能自动平滑构建。
+    if let Some((_, version)) = discovered
+        .iter()
+        .find(|(parsed, _)| *parsed >= MIN_WINDOWS_SDK_VERSION)
+    {
+        return version.clone();
+    }
+
+    let available = if discovered.is_empty() {
+        "none".to_string()
+    } else {
+        discovered
+            .iter()
+            .map(|(_, version)| version.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    panic!(
+        "No compatible Windows 10/11 SDK (>= 10.0.22000.0) with x64 WinRT headers and WindowsApp.lib was found for the WinUI 3 build. \
+         Checked roots: {:?}. Discovered complete SDKs: {available}. \
+         Install Windows 11 SDK 10.0.22000.0 or newer via Visual Studio Installer, or set WindowsSdkDir / VPASTE_WINDOWS_SDK_VERSION.",
+        roots
+    );
+}
+
 /// Extracts `paths.runtimeLibraryPaths` from `swiftc -print-target-info`.
 fn swift_runtime_library_paths(json: &str) -> Vec<String> {
     let Some(start) = json.find("\"runtimeLibraryPaths\"") else {
@@ -485,6 +643,31 @@ fn main() {
     println!("cargo:rerun-if-env-changed=VPASTE_PUBLIC_UPDATE_FEED");
     println!("cargo:rerun-if-env-changed=VPASTE_UPDATE_CHANNEL");
     println!("cargo:rerun-if-env-changed=VPASTE_APP_STORE_ID");
+    println!("cargo:rerun-if-env-changed=VPASTE_WINDOWS_INTERNAL_RC_VERSION");
+    if env::var_os("CARGO_FEATURE_WINUI_RC").is_some() {
+        assert!(
+            env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+                && env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64"),
+            "WinUI RC requires Windows x64"
+        );
+        assert!(
+            env::var("VPASTE_PUBLIC_UPDATE_FEED").as_deref() != Ok("1")
+                && env::var("VPASTE_UPDATE_CHANNEL")
+                    .unwrap_or_default()
+                    .is_empty(),
+            "WinUI RC cannot use a public update feed or channel"
+        );
+        let version = env::var("VPASTE_WINDOWS_INTERNAL_RC_VERSION")
+            .expect("Build the internal RC with -WinUiCandidate -InternalRcVersion");
+        assert!(
+            version.strip_prefix("2.0.0-rc.").is_some_and(|number| {
+                !number.is_empty()
+                    && !number.starts_with('0')
+                    && number.bytes().all(|byte| byte.is_ascii_digit())
+            }),
+            "Expected an internal version in the 2.0.0-rc.N family"
+        );
+    }
     if env::var_os("CARGO_FEATURE_MAC_APP_STORE").is_some() {
         let item_id = env::var("VPASTE_APP_STORE_ID")
             .expect("VPASTE_APP_STORE_ID is required for Mac App Store builds");

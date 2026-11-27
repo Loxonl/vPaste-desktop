@@ -1,0 +1,9 @@
+{
+  "productName": "vPaste Internal RC",
+  "bundle": {
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "updater": null
+  }
+}

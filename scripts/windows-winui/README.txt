@@ -2,8 +2,9 @@ vPaste - opt-in WinUI Release portable (Windows x64)
 
 1. Extract the entire folder. Keep the EXE, both DLLs, runtime folder and
    SHA256SUMS.txt together.
-2. If Windows App SDK 2.6 is not installed, right-click Install-WinUiRuntime.ps1
-   and choose Run with PowerShell. This installs the bundled Microsoft-signed
+2. If Windows App Runtime 2.6.5 or a compatible 2.6 update is not installed,
+   right-click Install-WinUiRuntime.ps1 and choose Run with PowerShell.
+   This installs the bundled Microsoft-signed
    packages for the current user; it does not download anything or need the Store.
    All four packages are checked for missing files, SHA256, package identity and
    Windows requirements before installation starts. Add-AppxPackage checks their

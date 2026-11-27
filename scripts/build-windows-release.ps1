@@ -1,6 +1,10 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [switch]$SkipAppBuild,
+    [switch]$WinUiCandidate,
+    [string]$InternalRcVersion,
+    [switch]$WebViewOnly,
+    [string]$OutputDirectory,
     [switch]$SignUpdater,
     [string]$ReleaseBaseUrl,
     [string]$AuthenticodeCertificateThumbprint,
@@ -11,6 +15,30 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+if ($WinUiCandidate -and $WebViewOnly) {
+    throw "-WebViewOnly cannot be combined with -WinUiCandidate."
+}
+if ($WinUiCandidate) {
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+        throw "The WinUI RC can only be built on Windows."
+    }
+    if ($SignUpdater -or $PSBoundParameters.ContainsKey("ReleaseBaseUrl") -or
+        $AuthenticodeCertificateThumbprint -or $AuthenticodeCertificatePath -or $AuthenticodeCertificatePassword -or
+        $PSBoundParameters.ContainsKey("AuthenticodeTimestampUrl")) {
+        throw "The WinUI RC is a manual package. Remove signing and release URL options."
+    }
+    if (($env:VPASTE_PUBLIC_UPDATE_FEED -and $env:VPASTE_PUBLIC_UPDATE_FEED -ne "0") -or $env:VPASTE_UPDATE_CHANNEL) {
+        throw "The WinUI RC cannot use a public update feed or channel."
+    }
+    if ($InternalRcVersion -cnotmatch '^2\.0\.0-rc\.[1-9][0-9]*$') {
+        throw "Supply -InternalRcVersion in the 2.0.0-rc.N family with -WinUiCandidate."
+    }
+    if ($OutputDirectory) {
+        throw "The internal RC always uses its own versioned output directory."
+    }
+} elseif ($PSBoundParameters.ContainsKey("InternalRcVersion")) {
+    throw "-InternalRcVersion requires -WinUiCandidate."
+}
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
@@ -45,6 +73,83 @@ function Get-Sha256 {
         $sha256.Dispose()
         $stream.Dispose()
     }
+}
+
+# The internal RC has its own portable output and never enters the installer or signer path.
+if ($WinUiCandidate) {
+    $targetRoot = Join-Path $repoRoot "src-tauri\target"
+    $releaseRoot = Join-Path $targetRoot "release"
+    $bundleRoot = Join-Path $releaseRoot "bundle\windows-internal-rc\$InternalRcVersion"
+    if (Test-Path -LiteralPath $bundleRoot) {
+        throw "The internal RC output already exists. Keep it and choose another RC number or archive it: $bundleRoot"
+    }
+
+    [xml]$project = Get-Content -Raw "src-tauri/native-demo/windows/winui/WinUiPanel.vcxproj"
+    $reference = $project.SelectSingleNode("//*[local-name()='PackageReference' and @Include='Microsoft.WindowsAppSDK.WinUI']")
+    $nugetRoot = if ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path $env:USERPROFILE ".nuget/packages" }
+    $winUiLicenseDir = Join-Path $nugetRoot "microsoft.windowsappsdk.winui/$($reference.Version)"
+    Invoke-Checked npm run check:release
+
+    if (-not $SkipAppBuild) {
+        $null = New-Item -ItemType Directory -Path $bundleRoot
+        $config = Get-Content -Raw "src-tauri/tauri.winui-rc.conf.json" | ConvertFrom-Json
+        $config | Add-Member -NotePropertyName "version" -NotePropertyValue $InternalRcVersion
+        $configPath = Join-Path $bundleRoot "tauri.internal-rc.json"
+        [IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Depth 10))
+        $buildEnvironment = @{
+            CARGO_TARGET_DIR = $targetRoot
+            CARGO_NET_OFFLINE = "true"
+            npm_config_offline = "true"
+            RestoreSources = $nugetRoot
+            NuGetAudit = "false"
+            VPASTE_PUBLIC_UPDATE_FEED = "0"
+            VPASTE_WINDOWS_INTERNAL_RC_VERSION = $InternalRcVersion
+        }
+        $previousEnvironment = @{}
+        try {
+            foreach ($name in $buildEnvironment.Keys) {
+                $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
+                [Environment]::SetEnvironmentVariable($name, $buildEnvironment[$name])
+            }
+            Invoke-Checked npx.cmd tauri build --no-bundle --config $configPath --features winui-rc
+        } finally {
+            foreach ($name in $previousEnvironment.Keys) {
+                [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name])
+            }
+        }
+    }
+
+    $appBinary = Join-Path $releaseRoot "vPaste.exe"
+    $info = & (Join-Path $PSScriptRoot "check-windows-release-binary.ps1") -Executable $appBinary -WinUiCandidate
+    if ($info.version -cne $InternalRcVersion) {
+        throw "Expected internal RC $InternalRcVersion, found $($info.version). Rebuild before packaging."
+    }
+    Invoke-Checked node scripts/check-office-release-isolation.mjs --binary $appBinary
+    Invoke-Checked node scripts/check-native-debug-assets.mjs production
+
+    $portableStage = Join-Path $bundleRoot "portable"
+    $null = New-Item -ItemType Directory -Path (Join-Path $portableStage "winui-licenses")
+    foreach ($file in @("vPaste.exe", "VPasteWinUiPanel.dll", "Microsoft.WindowsAppRuntime.Bootstrap.dll")) {
+        Copy-Item -LiteralPath (Join-Path $releaseRoot $file) -Destination $portableStage
+    }
+    foreach ($file in @("license.txt", "NOTICE.txt")) {
+        Copy-Item -LiteralPath (Join-Path $winUiLicenseDir $file) -Destination (Join-Path $portableStage "winui-licenses")
+    }
+    Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination $portableStage
+    $readme = Join-Path $repoRoot "docs\open-source\releases\windows-winui-rc-trial.md"
+    Copy-Item -LiteralPath $readme -Destination (Join-Path $portableStage "INTERNAL-RC.md")
+    Set-Content -LiteralPath (Join-Path $portableStage "internal-rc.flag") -Value $InternalRcVersion -Encoding ascii
+    $profileInfo = & (Join-Path $portableStage "vPaste.exe") --winui-build-info --main-ui=webview | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or $profileInfo.internalProfileReady -ne $true) {
+        throw "The internal RC portable profile did not pass validation."
+    }
+
+    $portableZip = Join-Path $bundleRoot "vPaste_${InternalRcVersion}_windows_x64_internal_portable.zip"
+    Compress-Archive -Path (Join-Path $portableStage "*") -DestinationPath $portableZip -CompressionLevel Optimal
+    $checksum = "$(Get-Sha256 -Path $portableZip)  $(Split-Path -Leaf $portableZip)"
+    Set-Content -LiteralPath (Join-Path $bundleRoot "SHA256SUMS.txt") -Value $checksum -Encoding ascii
+    Write-Host "Windows internal RC Portable ZIP: $portableZip"
+    return
 }
 
 function Find-InnoCompiler {
@@ -156,25 +261,68 @@ if ($version -notmatch '^(\d+)\.(\d+)\.(\d+)') {
 }
 $versionInfoVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
 
+$includeWinUi = -not $WebViewOnly
+$releaseRoot = Join-Path $repoRoot "src-tauri\target\release"
+$defaultBundleRoot = Join-Path $releaseRoot "bundle\windows"
+$bundleRoot = $defaultBundleRoot
+if ($OutputDirectory) {
+    $bundleRoot = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
+    if (Test-Path -LiteralPath $bundleRoot) {
+        throw "Specify a new directory for -OutputDirectory. Existing output was preserved: $bundleRoot"
+    }
+}
+$winUiLicenseDir = $null
+if ($includeWinUi) {
+    [xml]$project = Get-Content -Raw "src-tauri/native-demo/windows/winui/WinUiPanel.vcxproj"
+    $reference = $project.SelectSingleNode("//*[local-name()='PackageReference' and @Include='Microsoft.WindowsAppSDK.WinUI']")
+    if (-not $reference -or -not $reference.Version) {
+        throw "Could not determine the Microsoft.WindowsAppSDK.WinUI version from WinUiPanel.vcxproj."
+    }
+    $nugetRoot = if ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path $env:USERPROFILE ".nuget/packages" }
+    $winUiLicenseDir = Join-Path $nugetRoot "microsoft.windowsappsdk.winui/$($reference.Version)"
+}
+
 Invoke-Checked npm run check:release
 
 if (-not $SkipAppBuild) {
     if (-not $env:VPASTE_PUBLIC_UPDATE_FEED) {
         $env:VPASTE_PUBLIC_UPDATE_FEED = "0"
     }
-    Invoke-Checked npx.cmd tauri build --no-bundle --config src-tauri/tauri.local.conf.json
+    $tauriBuildArgs = @("tauri", "build", "--no-bundle")
+    if ($includeWinUi) {
+        $tauriBuildArgs += @("--features", "winui")
+    }
+    $tauriBuildArgs += @("--config", "src-tauri/tauri.local.conf.json")
+    Invoke-Checked npx.cmd @tauriBuildArgs
 }
+Invoke-Checked node scripts/check-native-debug-assets.mjs production
 
-$appBinary = Join-Path $repoRoot "src-tauri\target\release\vPaste.exe"
-if (-not (Test-Path -LiteralPath $appBinary)) {
-    throw "vPaste release binary was not found at $appBinary"
+$appBinary = Join-Path $releaseRoot "vPaste.exe"
+$checkBinaryArgs = @{ Executable = $appBinary }
+if ($includeWinUi) {
+    $checkBinaryArgs["WinUi"] = $true
+}
+$info = & (Join-Path $PSScriptRoot "check-windows-release-binary.ps1") @checkBinaryArgs
+if ($info.version -ne $version) {
+    throw "Expected Release binary version $version, found $($info.version). Rebuild before packaging."
 }
 Invoke-Checked node scripts/check-office-release-isolation.mjs --binary $appBinary
+if ($includeWinUi) {
+    foreach ($licenseFileName in @("license.txt", "NOTICE.txt")) {
+        $licensePath = Join-Path $winUiLicenseDir $licenseFileName
+        if (-not (Test-Path -LiteralPath $licensePath -PathType Leaf)) {
+            throw "Missing WinUI SDK license file at $licensePath. Restore Microsoft.WindowsAppSDK.WinUI packages before packaging."
+        }
+    }
+}
 if ($authenticodeCertificate) {
     Invoke-AuthenticodeSign -Path $appBinary -Certificate $authenticodeCertificate
+    if ($includeWinUi) {
+        # 仅签名自研 WinUI 面板 DLL，保留微软对 Bootstrap DLL 的原始签名，且在生成载荷清单前完成签名。
+        Invoke-AuthenticodeSign -Path (Join-Path $releaseRoot "VPasteWinUiPanel.dll") -Certificate $authenticodeCertificate
+    }
 }
 
-$bundleRoot = Join-Path $repoRoot "src-tauri\target\release\bundle\windows"
 $portableStage = Join-Path $bundleRoot "portable"
 $portableZip = Join-Path $bundleRoot "vPaste_${version}_windows_x64_portable.zip"
 $installer = Join-Path $bundleRoot "vPaste_${version}_windows_x64_setup.exe"
@@ -184,12 +332,13 @@ $installerLogo = Join-Path $repoRoot "src-tauri\icons\icon.png"
 $innoDependencyRoot = Join-Path $bundleRoot "inno-dependencies"
 $installerBackgroundLight = Join-Path $innoDependencyRoot "installer-background-light.png"
 $installerBackgroundDark = Join-Path $innoDependencyRoot "installer-background-dark.png"
+$winUiReceipt = Join-Path $innoDependencyRoot "winui-payload.sha256"
 New-Item -ItemType Directory -Path $bundleRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $innoDependencyRoot -Force | Out-Null
 if (Test-Path -LiteralPath $portableStage) {
     Remove-Item -LiteralPath $portableStage -Recurse -Force
 }
-foreach ($staleFile in @($portableZip, $installer, $installerSignature, $windowsManifest, (Join-Path $bundleRoot "vpaste-installer-logo.bmp"))) {
+foreach ($staleFile in @($portableZip, $installer, $installerSignature, $windowsManifest, $winUiReceipt, (Join-Path $bundleRoot "vpaste-installer-logo.bmp"))) {
     if (Test-Path -LiteralPath $staleFile) {
         Remove-Item -LiteralPath $staleFile -Force
     }
@@ -202,26 +351,57 @@ New-Item -ItemType Directory -Path $portableStage -Force | Out-Null
 Copy-Item -LiteralPath $appBinary -Destination (Join-Path $portableStage "vPaste.exe") -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $portableStage "LICENSE") -Force
 Set-Content -LiteralPath (Join-Path $portableStage "portable.flag") -Value "vPaste portable mode" -Encoding ascii
+if ($includeWinUi) {
+    $portableLicenses = Join-Path $portableStage "winui-licenses"
+    New-Item -ItemType Directory -Path $portableLicenses -Force | Out-Null
+    foreach ($dllName in @("VPasteWinUiPanel.dll", "Microsoft.WindowsAppRuntime.Bootstrap.dll")) {
+        Copy-Item -LiteralPath (Join-Path $releaseRoot $dllName) -Destination (Join-Path $portableStage $dllName) -Force
+    }
+    foreach ($licenseFileName in @("license.txt", "NOTICE.txt")) {
+        Copy-Item -LiteralPath (Join-Path $winUiLicenseDir $licenseFileName) -Destination (Join-Path $portableLicenses $licenseFileName) -Force
+    }
+
+    # 生成官方 WinUI 载荷收据，供降级回纯 WebView 安装器进行归属与哈希校验清理。
+    $receiptEntries = @(
+        @{ Relative = "VPasteWinUiPanel.dll"; Source = (Join-Path $releaseRoot "VPasteWinUiPanel.dll") },
+        @{ Relative = "Microsoft.WindowsAppRuntime.Bootstrap.dll"; Source = (Join-Path $releaseRoot "Microsoft.WindowsAppRuntime.Bootstrap.dll") },
+        @{ Relative = "winui-licenses\license.txt"; Source = (Join-Path $winUiLicenseDir "license.txt") },
+        @{ Relative = "winui-licenses\NOTICE.txt"; Source = (Join-Path $winUiLicenseDir "NOTICE.txt") }
+    )
+    $receiptLines = @("com.loxonl.vpaste WinUI payload 1")
+    $receiptLines += foreach ($entry in $receiptEntries) {
+        "$(Get-Sha256 -Path $entry.Source)  $($entry.Relative)"
+    }
+    Set-Content -LiteralPath $winUiReceipt -Value $receiptLines -Encoding ascii
+}
 Compress-Archive -Path (Join-Path $portableStage "*") -DestinationPath $portableZip -CompressionLevel Optimal
 
 $chineseMessagesFile = Get-ChineseMessagesFile `
-    -CacheDirectory (Join-Path $bundleRoot "inno-dependencies")
+    -CacheDirectory (Join-Path $defaultBundleRoot "inno-dependencies")
 
 $iscc = Find-InnoCompiler
 $innoScript = Join-Path $repoRoot "installer\windows\vpaste.iss"
-Invoke-Checked $iscc `
-    "/DAppVersion=$version" `
-    "/DVersionInfoVersion=$versionInfoVersion" `
-    "/DAppBinary=$appBinary" `
-    "/DOutputDir=$bundleRoot" `
-    "/DLicenseFile=$(Join-Path $repoRoot 'LICENSE')" `
-    "/DIconFile=$(Join-Path $repoRoot 'src-tauri\icons\icon.ico')" `
-    "/DInstallerLogo=$installerLogo" `
-    "/DInstallerBackgroundLight=$installerBackgroundLight" `
-    "/DInstallerBackgroundDark=$installerBackgroundDark" `
-    "/DInstallerAssetDir=$innoDependencyRoot" `
-    "/DChineseMessagesFile=$chineseMessagesFile" `
-    $innoScript
+$innoDefines = @(
+    "/DAppVersion=$version",
+    "/DVersionInfoVersion=$versionInfoVersion",
+    "/DAppBinary=$appBinary",
+    "/DOutputDir=$bundleRoot",
+    "/DLicenseFile=$(Join-Path $repoRoot 'LICENSE')",
+    "/DIconFile=$(Join-Path $repoRoot 'src-tauri\icons\icon.ico')",
+    "/DInstallerLogo=$installerLogo",
+    "/DInstallerBackgroundLight=$installerBackgroundLight",
+    "/DInstallerBackgroundDark=$installerBackgroundDark",
+    "/DInstallerAssetDir=$innoDependencyRoot",
+    "/DChineseMessagesFile=$chineseMessagesFile"
+)
+if ($includeWinUi) {
+    $innoDefines += @(
+        "/DWinUiBinaryDir=$releaseRoot",
+        "/DWinUiLicenseDir=$winUiLicenseDir",
+        "/DWinUiReceipt=$winUiReceipt"
+    )
+}
+Invoke-Checked $iscc @innoDefines $innoScript
 
 if (-not (Test-Path -LiteralPath $installer)) {
     throw "Inno Setup did not produce the expected installer at $installer"

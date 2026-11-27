@@ -31,6 +31,11 @@
 #ifndef InstallerAssetDir
   #error InstallerAssetDir must be supplied by the build script
 #endif
+#ifdef WinUiRcBuild
+  #define InstallerBuild WinUiRcBuild
+#else
+  #define InstallerBuild AppVersion
+#endif
 
 #define AppId "com.loxonl.vpaste"
 #define AppName "vPaste"
@@ -42,11 +47,13 @@
 AppId={#AppId}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppVerName={#AppName} {#AppVersion}
+AppVerName={#AppName} {#InstallerBuild}
 AppPublisher={#AppPublisher}
 AppPublisherURL={#AppUrl}
 AppSupportURL={#RepositoryUrl}/issues
+#ifndef WinUiRcBuild
 AppUpdatesURL={#RepositoryUrl}/releases
+#endif
 DefaultDirName={localappdata}\Programs\vPaste
 DefaultGroupName=vPaste
 DisableWelcomePage=no
@@ -59,9 +66,12 @@ PrivilegesRequiredOverridesAllowed=
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ; Match the WebView2 baseline in both interactive and silent installations.
+; WinUI 3 requires Windows 10 1809+ (17763) and Windows App Runtime 2.6.5 (x64)
+; dynamically at startup; keeping 10.0.16299 preserves automatic WebView fallback
+; on older supported Windows 10 builds.
 MinVersion=10.0.16299
 OutputDir={#OutputDir}
-OutputBaseFilename=vPaste_{#AppVersion}_windows_x64_setup
+OutputBaseFilename=vPaste_{#InstallerBuild}_windows_x64_setup
 SetupIconFile={#IconFile}
 UninstallDisplayIcon={app}\vPaste.exe
 UninstallDisplayName=vPaste
@@ -79,7 +89,12 @@ UsePreviousAppDir=yes
 UsePreviousGroup=no
 SetupLogging=yes
 VersionInfoCompany={#AppPublisher}
+#ifdef WinUiRcBuild
+VersionInfoDescription=vPaste WinUI RC Setup
+VersionInfoProductTextVersion={#WinUiRcBuild}
+#else
 VersionInfoDescription=vPaste Setup
+#endif
 VersionInfoProductName={#AppName}
 VersionInfoProductVersion={#VersionInfoVersion}
 VersionInfoVersion={#VersionInfoVersion}
@@ -92,11 +107,19 @@ Name: "chinesesimplified"; MessagesFile: "{#ChineseMessagesFile}"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "{#AppBinary}"; DestDir: "{app}"; DestName: "vPaste.exe"; Flags: ignoreversion restartreplace
+; Keep payload replacement in this install, including when Setup is elevated.
+Source: "{#AppBinary}"; DestDir: "{app}"; DestName: "vPaste.exe"; Flags: ignoreversion
 Source: "{#LicenseFile}"; DestDir: "{app}"; DestName: "LICENSE"; Flags: ignoreversion
+#ifdef WinUiBinaryDir
+Source: "{#WinUiBinaryDir}\VPasteWinUiPanel.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#WinUiBinaryDir}\Microsoft.WindowsAppRuntime.Bootstrap.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#WinUiLicenseDir}\license.txt"; DestDir: "{app}\winui-licenses"; Flags: ignoreversion
+Source: "{#WinUiLicenseDir}\NOTICE.txt"; DestDir: "{app}\winui-licenses"; Flags: ignoreversion
+Source: "{#WinUiReceipt}"; DestDir: "{app}\.installer"; DestName: "winui-payload.sha256"; Flags: ignoreversion
+#endif
 Source: "{#InstallerLogo}"; Flags: dontcopy
 Source: "{#InstallerAssetDir}\*.png"; Flags: dontcopy
-Source: "{#InstallerLogo}"; DestDir: "{app}\.installer"; DestName: "logo.png"; Flags: ignoreversion; Attribs: hidden
+Source: "{code:InstallerLogoAfterPayloadCheck}"; DestDir: "{app}\.installer"; DestName: "logo.png"; Flags: external ignoreversion; Attribs: hidden
 Source: "{#InstallerBackgroundLight}"; DestDir: "{app}\.installer"; DestName: "installer-background-light.png"; Flags: ignoreversion; Attribs: hidden
 Source: "{#InstallerBackgroundDark}"; DestDir: "{app}\.installer"; DestName: "installer-background-dark.png"; Flags: ignoreversion; Attribs: hidden
 Source: "{#InstallerAssetDir}\action-uninstall-zh.png"; DestDir: "{app}\.installer"; DestName: "action-uninstall-zh.png"; Flags: ignoreversion; Attribs: hidden
@@ -147,6 +170,16 @@ const
   InputSurfaceDark = $003C3127;
   BorderLight = $00E9D7CB;
   BorderDark = $005D4836;
+  WinUiReceiptPath = '.installer\winui-payload.sha256';
+  WinUiReceiptHeader = 'com.loxonl.vpaste WinUI payload 1';
+  InvalidFileAttributes = $FFFFFFFF;
+  FileNotFoundError = 2;
+  PathNotFoundError = 3;
+  FileAttributeDirectory = $10;
+  FileAttributeReparsePoint = $400;
+
+function GetPayloadFileAttributes(const Name: String): LongWord;
+  external 'GetFileAttributesW@kernel32.dll stdcall';
 
 function GetClassLong(Window: HWND; Index: Integer): Longint;
   external 'GetClassLongW@user32.dll stdcall';
@@ -190,7 +223,9 @@ var
   InstallTitleLabel: TNewStaticText;
   ExistingVersion: String;
   LegacyUninstallKey: String;
-  PreviousExecutableBackup: String;
+  PayloadRoot, PayloadBackupRoot: String;
+  PayloadPaths, PayloadBackupHashes: TArrayOfString;
+  PayloadInstallStarted: Boolean;
   InstallCompleted: Boolean;
   CreateDesktopShortcut: Boolean;
   RemoveUserData: Boolean;
@@ -497,6 +532,36 @@ begin
   Result := ComparePreRelease(LeftPreRelease, RightPreRelease);
 end;
 
+function ManagedPathExists(const Path: String; IsDirectory: Boolean): Boolean;
+var
+  Attributes: LongWord;
+  LastError: Integer;
+begin
+  Attributes := GetPayloadFileAttributes(Path);
+  Result := Attributes <> InvalidFileAttributes;
+  if not Result then
+  begin
+    LastError := DLLGetLastError;
+    if (LastError <> FileNotFoundError) and (LastError <> PathNotFoundError) then
+      RaiseException(Format('Cannot inspect %s (Windows error %d)', [Path, LastError]));
+    Exit;
+  end;
+  if ((Attributes and FileAttributeReparsePoint) <> 0) or
+     (((Attributes and FileAttributeDirectory) <> 0) <> IsDirectory) then
+    RaiseException('Unexpected file type or reparse point: ' + Path);
+end;
+
+procedure ValidateInstallDirectory(const Directory: String);
+var
+  Path, Parent: String;
+begin
+  Path := RemoveBackslashUnlessRoot(Directory);
+  Parent := ExtractFileDir(Path);
+  if (Parent <> '') and (CompareText(Parent, Path) <> 0) then
+    ValidateInstallDirectory(Parent);
+  ManagedPathExists(Path, True);
+end;
+
 function DirectoryIsWritable(const Directory: String): Boolean;
 var
   ProbePath: String;
@@ -504,6 +569,12 @@ var
 begin
   Log('Checking whether the installation directory is writable: ' + Directory);
   Result := False;
+  try
+    ValidateInstallDirectory(Directory);
+  except
+    Log('Installation directory rejected: ' + GetExceptionMessage);
+    Exit;
+  end;
   DirectoryCreated := not DirExists(Directory);
   if DirectoryCreated and (not ForceDirectories(Directory)) then
   begin
@@ -1145,29 +1216,196 @@ begin
   Log('Quick installation settings are valid');
 end;
 
+function WinUiPayloadPaths: TArrayOfString;
+begin
+  SetArrayLength(Result, 4);
+  Result[0] := 'VPasteWinUiPanel.dll';
+  Result[1] := 'Microsoft.WindowsAppRuntime.Bootstrap.dll';
+  Result[2] := 'winui-licenses\license.txt';
+  Result[3] := 'winui-licenses\NOTICE.txt';
+end;
+
+function ManagedFileExists(const RelativePath: String): Boolean;
+var
+  Subdirectory: String;
+begin
+  Subdirectory := ExtractFileDir(RelativePath);
+  if Subdirectory <> '' then
+    ManagedPathExists(PayloadRoot + Subdirectory, True);
+  Result := ManagedPathExists(PayloadRoot + RelativePath, False);
+end;
+
+function ManagedFileMatches(const RelativePath, ExpectedHash: String): Boolean;
+begin
+  Result := ManagedFileExists(RelativePath);
+  if Result then
+    Result := CompareText(GetSHA256OfFile(PayloadRoot + RelativePath), ExpectedHash) = 0;
+end;
+
+function InstallerLogoAfterPayloadCheck(Param: String): String;
+#ifdef WinUiBinaryDir
+var
+  Paths, Receipt: TArrayOfString;
+  Index: Integer;
+  RelativePath: String;
+#endif
+begin
+  Result := ExpandConstant('{tmp}\') + ExtractFileName('{#InstallerLogo}');
+  if not PayloadInstallStarted then
+    Exit;
+  { Inno ignores exceptions in BeforeInstall and AfterInstall callbacks.
+    Resolving this external file's source after the payload is written
+    lets an incomplete payload trigger Inno's own rollback. }
+  try
+    ValidateInstallDirectory(PayloadRoot);
+    if not ManagedFileMatches('vPaste.exe', '{#GetSHA256OfFile(AppBinary)}') then
+      RaiseException('vPaste.exe');
+    if not ManagedFileMatches('LICENSE', '{#GetSHA256OfFile(LicenseFile)}') then
+      RaiseException('LICENSE');
+    if ManagedFileExists('portable.flag') then
+      RaiseException('portable.flag');
+#ifdef WinUiBinaryDir
+    if not ManagedFileMatches(WinUiReceiptPath, '{#GetSHA256OfFile(WinUiReceipt)}') or
+       not LoadStringsFromFile(PayloadRoot + WinUiReceiptPath, Receipt) then
+      RaiseException(WinUiReceiptPath);
+    Paths := WinUiPayloadPaths;
+    if (GetArrayLength(Receipt) <> GetArrayLength(Paths) + 1) or
+       (Receipt[0] <> WinUiReceiptHeader) then
+      RaiseException(WinUiReceiptPath);
+    for Index := 0 to GetArrayLength(Paths) - 1 do
+    begin
+      RelativePath := Paths[Index];
+      if not ManagedFileExists(RelativePath) or
+         (CompareText(Receipt[Index + 1],
+           GetSHA256OfFile(PayloadRoot + RelativePath) + '  ' + RelativePath) <> 0) then
+        RaiseException(RelativePath);
+    end;
+    Log('Verified installed WinUI payload.');
+#else
+    Log('Verified installed WebView payload.');
+#endif
+  except
+#ifdef WinUiBinaryDir
+    Log('Incomplete WinUI payload: ' + GetExceptionMessage);
+#else
+    Log('Incomplete WebView payload: ' + GetExceptionMessage);
+#endif
+    RaiseException(Localized(
+      '安装文件不完整，安装程序将恢复原有文件。',
+      'Installation files are incomplete. Setup will restore the previous files.'));
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
-  ExistingExecutable: String;
+  Index, CommonIndex: Integer;
+  RelativePath, Backup: String;
 begin
   Result := EnsureWebView2;
   if Result <> '' then
     Exit;
 
-  ExistingExecutable := ExpandConstant('{app}\vPaste.exe');
-  if FileExists(ExistingExecutable) then
-  begin
-    Log('Backing up the existing executable before native occupied-file handling');
-    PreviousExecutableBackup := ExpandConstant('{tmp}\vPaste-previous.exe');
-    if not CopyFile(ExistingExecutable, PreviousExecutableBackup, False) then
+  PayloadRoot := AddBackslash(ExpandConstant('{app}'));
+  PayloadBackupRoot := ExpandConstant('{tmp}\vpaste-previous-payload');
+#ifdef WinUiBinaryDir
+  PayloadPaths := WinUiPayloadPaths;
+#else
+  SetArrayLength(PayloadPaths, 0);
+#endif
+  CommonIndex := GetArrayLength(PayloadPaths);
+  SetArrayLength(PayloadPaths, CommonIndex + 3);
+  PayloadPaths[CommonIndex] := 'vPaste.exe';
+  PayloadPaths[CommonIndex + 1] := 'LICENSE';
+  PayloadPaths[CommonIndex + 2] := 'portable.flag';
+#ifdef WinUiBinaryDir
+  SetArrayLength(PayloadPaths, CommonIndex + 4);
+  PayloadPaths[CommonIndex + 3] := WinUiReceiptPath;
+#endif
+  SetArrayLength(PayloadBackupHashes, GetArrayLength(PayloadPaths));
+  try
+    ValidateInstallDirectory(PayloadRoot);
+    ManagedPathExists(PayloadRoot + '.installer', True);
+    for Index := 0 to GetArrayLength(PayloadPaths) - 1 do
     begin
-      PreviousExecutableBackup := '';
-      Result := Localized(
-        '无法备份当前版本，安装已停止。请关闭 vPaste 后重试',
-        'The current version could not be backed up. Close vPaste and retry');
-      Exit;
+      RelativePath := PayloadPaths[Index];
+      PayloadBackupHashes[Index] := '';
+      if ManagedFileExists(RelativePath) then
+      begin
+        Backup := AddBackslash(PayloadBackupRoot) + RelativePath;
+        if not ForceDirectories(ExtractFileDir(Backup)) or
+           not CopyFile(PayloadRoot + RelativePath, Backup, False) then
+          RaiseException('Cannot save backup for ' + RelativePath);
+        PayloadBackupHashes[Index] := GetSHA256OfFile(Backup);
+        Log('Backed up installed payload: ' + RelativePath);
+      end;
     end;
+  except
+    Log('Payload backup failed before replacement: ' + GetExceptionMessage);
+    Result := Localized(
+      '无法备份当前版本，安装已停止。请关闭 vPaste 后重试',
+      'The current version could not be backed up. Close vPaste and retry');
   end;
 end;
+
+#ifndef WinUiBinaryDir
+procedure RemoveOwnedWinUiPayload;
+var
+  Paths, Receipt: TArrayOfString;
+  Index, ReceiptSize: Integer;
+  RelativePath: String;
+  RetryCleanup, RemovedLicense: Boolean;
+begin
+  ValidateInstallDirectory(PayloadRoot);
+  if not ManagedFileExists(WinUiReceiptPath) or
+     not FileSize(PayloadRoot + WinUiReceiptPath, ReceiptSize) or
+     (ReceiptSize > 1024) or
+     not LoadStringsFromFile(PayloadRoot + WinUiReceiptPath, Receipt) then
+    Exit;
+  Paths := WinUiPayloadPaths;
+  if (GetArrayLength(Receipt) <> GetArrayLength(Paths) + 1) or
+     (Receipt[0] <> WinUiReceiptHeader) then
+    Exit;
+  { Native Setup lets an interactive user skip a failed file. Only retire
+    the sidecars after verifying the replacement program and license. }
+  if not ManagedFileMatches('vPaste.exe', '{#GetSHA256OfFile(AppBinary)}') or
+     not ManagedFileMatches('LICENSE', '{#GetSHA256OfFile(LicenseFile)}') then
+  begin
+    Log('Kept WinUI payload because the standard replacement was incomplete.');
+    Exit;
+  end;
+
+  RetryCleanup := False;
+  RemovedLicense := False;
+  for Index := 0 to GetArrayLength(Paths) - 1 do
+  begin
+    RelativePath := Paths[Index];
+    try
+      if not ManagedFileExists(RelativePath) then
+        Continue;
+      if CompareText(Receipt[Index + 1],
+         GetSHA256OfFile(PayloadRoot + RelativePath) + '  ' + RelativePath) <> 0 then
+      begin
+        Log('Kept file outside the recorded WinUI payload: ' + RelativePath);
+        Continue;
+      end;
+      if not DeleteFile(PayloadRoot + RelativePath) then
+        RaiseException('Cannot remove ' + RelativePath);
+      Log('Removed recorded WinUI payload: ' + RelativePath);
+      RemovedLicense := RemovedLicense or (ExtractFileDir(RelativePath) = 'winui-licenses');
+    except
+      RetryCleanup := True;
+      Log('WinUI payload cleanup deferred: ' + GetExceptionMessage);
+    end;
+  end;
+  if RemovedLicense then
+    RemoveDir(PayloadRoot + 'winui-licenses');
+  if not RetryCleanup then
+  begin
+    if not DeleteFile(PayloadRoot + WinUiReceiptPath) then
+      Log('Could not remove the WinUI payload receipt.');
+  end;
+end;
+#endif
 
 procedure RemoveLegacyInstallationRegistration;
 begin
@@ -1178,10 +1416,19 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  if CurStep = ssInstall then
+    PayloadInstallStarted := True;
   if CurStep = ssPostInstall then
   begin
     InstallCompleted := True;
     RemoveLegacyInstallationRegistration;
+#ifndef WinUiBinaryDir
+    try
+      RemoveOwnedWinUiPayload;
+    except
+      Log('WinUI payload cleanup deferred: ' + GetExceptionMessage);
+    end;
+#endif
   end;
 end;
 
@@ -1309,10 +1556,53 @@ begin
 end;
 
 procedure DeinitializeSetup;
+var
+  Index: Integer;
+  RelativePath, Path, RecoveryDirectory: String;
+  RestoreFailed: Boolean;
 begin
-  if (not InstallCompleted) and (PreviousExecutableBackup <> '') and
-     FileExists(PreviousExecutableBackup) then
-    CopyFile(PreviousExecutableBackup, ExpandConstant('{app}\vPaste.exe'), False);
+  if not PayloadInstallStarted or InstallCompleted then
+    Exit;
+
+  { Inno removes newly installed files on rollback. For paths that existed
+    before installation, restore the original bytes from our snapshot. }
+  RestoreFailed := False;
+  for Index := 0 to GetArrayLength(PayloadPaths) - 1 do
+  begin
+    RelativePath := PayloadPaths[Index];
+    Path := PayloadRoot + RelativePath;
+    try
+      ValidateInstallDirectory(PayloadRoot);
+      if PayloadBackupHashes[Index] = '' then
+      begin
+        if ManagedFileExists(RelativePath) then
+          RaiseException('Inno rollback left a file at ' + RelativePath);
+        Continue;
+      end;
+      if ManagedFileExists(RelativePath) and
+         (GetSHA256OfFile(Path) = PayloadBackupHashes[Index]) then
+        Continue;
+      if not ForceDirectories(ExtractFileDir(Path)) or
+         not CopyFile(AddBackslash(PayloadBackupRoot) + RelativePath, Path, False) then
+        RaiseException('Cannot restore ' + RelativePath);
+      Log('Restored installed payload: ' + RelativePath);
+    except
+      RestoreFailed := True;
+      Log('Payload rollback incomplete: ' + GetExceptionMessage);
+    end;
+  end;
+  if RestoreFailed then
+  begin
+    RecoveryDirectory := ExpandConstant('{tmp}') + '-vpaste-recovery';
+    if DirExists(PayloadBackupRoot) and RenameFile(PayloadBackupRoot, RecoveryDirectory) then
+      Log('Kept payload backups at ' + RecoveryDirectory)
+    else
+      RecoveryDirectory := '';
+    SuppressibleMsgBox(Localized(
+      '未能完整恢复安装文件。请查看安装日志。',
+      'Some installation files could not be restored. See the setup log.') + #13#10 +
+      RecoveryDirectory, mbError, MB_OK, IDOK);
+  end;
 end;
 
 function LoadUninstallDataManifest: Boolean;

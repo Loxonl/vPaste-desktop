@@ -20,9 +20,34 @@ Outputs under `src-tauri/target/release/bundle/windows/`:
 - `SHA256SUMS.txt`
 - a validated WinGet singleton manifest for later manual submission
 
-The script pins Inno Setup 6.7.3, downloads the matching official Simplified Chinese translation from an immutable source tag, verifies its SHA-256, compiles the installer, and rejects installer overhead above 2 MiB relative to the Portable ZIP. Local builds keep the public updater feed disabled unless the caller explicitly sets `VPASTE_PUBLIC_UPDATE_FEED=1`.
+The script compiles the official Windows x64 Release with `--features winui`. Setup and Portable include `VPasteWinUiPanel.dll`, `Microsoft.WindowsAppRuntime.Bootstrap.dll`, and the Windows App SDK license and notice in `winui-licenses/`. Both use the system's installed Windows App Runtime. Inno records the installed WinUI files in `.installer/winui-payload.sha256`.
+
+Packaging uses Inno Setup 6.7.3, verifies the SHA-256 of the Simplified Chinese translation from the pinned source tag, and checks that the installer overhead stays within 2 MiB of the Portable ZIP. Use `-WebViewOnly` for a comparison or downgrade package. Local builds enable the public updater feed only when the caller explicitly sets `VPASTE_PUBLIC_UPDATE_FEED=1`.
+
+Runtime and OS floor: WinUI 3 is the default main UI on Windows x64 and dynamically requires Windows App Runtime 2.6.5 (x64) or a compatible 2.6 update (Windows 10 1809 / Build 17763+). The installer keeps `MinVersion=10.0.16299` so older supported Windows 10 builds or hosts without Windows App Runtime 2.6.5 automatically fall back to the retained `/clipboard` WebView UI with an actionable warning. `--main-ui=webview` remains a per-launch escape hatch without loading WinUI; explicit `--main-ui=winui` exits non-zero with diagnostics when the runtime is unavailable.
+
+Exit the current vPaste instance before choosing a different main UI for the next launch. Subsequent launches are routed to the existing instance.
 
 For public tag releases, the tag is the effective application version. Each isolated build runner synchronizes `package.json`, `package-lock.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock` to that Stable or RC version before running the strict version check and compiling artifacts. These temporary changes are not committed back to the tagged source.
+
+## Internal Windows x64 WinUI RC
+
+```powershell
+npm run build:windows -- -WinUiCandidate -InternalRcVersion 2.0.0-rc.1
+```
+
+The internal trial builds a Portable ZIP and checksums under
+`src-tauri/target/release/bundle/windows-internal-rc/<version>/`. Its
+Windows-only `winui-rc` feature defaults to WinUI, and `--main-ui=webview`
+selects WebView. The RC has a dedicated profile beside the executable and
+uses manual updates and manual launch. The build rejects signing, a release
+base URL and public updater settings. Regular Windows packaging uses the
+official Inno installer and Portable ZIP with WinUI enabled by default and
+safe WebView fallback.
+
+The [internal trial guide](windows-winui-rc-trial.md) covers Runtime
+requirements, profile isolation, fallback, testing limits, and the artifact
+record for pairing with a separately built Mac trial.
 
 ## Updater package
 

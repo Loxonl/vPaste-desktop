@@ -93,6 +93,7 @@ block = "=0.1.6"
 custom-protocol = ["tauri/custom-protocol"]
 mac-app-store = []
 winui = ["custom-protocol"]
+winui-rc = ["winui"]
 # Compatibility for existing development commands.
 winui-debug = ["winui"]
 # Local Release measurements only; the production builder rejects this feature.

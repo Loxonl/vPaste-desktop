@@ -22,6 +22,7 @@ use crate::{config, runtime_mode};
 const UPDATE_EVENT: &str = "app-update-state-changed";
 const RELEASES_URL: &str = "https://github.com/Loxonl/vPaste-desktop/releases";
 const RC_UPDATE_ENDPOINT: &str = "https://vpaste.app/download/rc/latest.json";
+const WINDOWS_WINUI_RC: bool = cfg!(all(target_os = "windows", feature = "winui-rc"));
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(60);
 const SCHEDULER_TICK: Duration = Duration::from_secs(60);
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -237,6 +238,9 @@ pub fn initialize(app: &AppHandle) {
 
 pub fn start_background_checks(app: AppHandle) {
     initialize(&app);
+    if WINDOWS_WINUI_RC {
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         if update_source() == UpdateSource::Direct
             && update_feed_enabled()
@@ -257,7 +261,7 @@ pub fn start_background_checks(app: AppHandle) {
 }
 
 fn public_update_feed_enabled() -> bool {
-    option_env!("VPASTE_PUBLIC_UPDATE_FEED") == Some("1")
+    !WINDOWS_WINUI_RC && option_env!("VPASTE_PUBLIC_UPDATE_FEED") == Some("1")
 }
 
 fn debug_update_endpoint() -> Option<String> {
@@ -270,7 +274,10 @@ fn debug_update_endpoint() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn update_feed_enabled() -> bool {
+pub(crate) fn update_feed_enabled() -> bool {
+    if WINDOWS_WINUI_RC {
+        return false;
+    }
     if update_source() == UpdateSource::MacAppStore {
         return true;
     }
@@ -614,7 +621,7 @@ pub async fn prepare_app_update(app: AppHandle) -> Result<UpdateState, String> {
     if update_source() == UpdateSource::MacAppStore {
         return Err("Mac App Store updates must be installed in the App Store".to_string());
     }
-    if runtime_mode::is_portable() {
+    if !WINDOWS_WINUI_RC && runtime_mode::is_portable() {
         UPDATE_STATE.lock().unwrap().status = UpdateStatus::ManualDownload;
         return Ok(emit_state(&app));
     }
@@ -1201,6 +1208,9 @@ pub(crate) async fn install_confirmed_update(
     app: AppHandle,
     expected_version: Option<&str>,
 ) -> Result<(), String> {
+    if WINDOWS_WINUI_RC {
+        return Err("WinUI RC updates must be installed manually".to_string());
+    }
     if update_source() == UpdateSource::MacAppStore {
         return Err("Mac App Store updates must be installed in the App Store".to_string());
     }
@@ -1442,7 +1452,7 @@ mod tests {
     fn release_feed_is_disabled_unless_explicitly_compiled_in() {
         assert_eq!(
             public_update_feed_enabled(),
-            option_env!("VPASTE_PUBLIC_UPDATE_FEED") == Some("1")
+            !super::WINDOWS_WINUI_RC && option_env!("VPASTE_PUBLIC_UPDATE_FEED") == Some("1")
         );
     }
 

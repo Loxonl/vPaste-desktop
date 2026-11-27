@@ -135,7 +135,7 @@ jobs:
         run: npm ci
 
       - name: Build Windows application binary
-        run: npx tauri build --no-bundle --config src-tauri/tauri.local.conf.json
+        run: npx tauri build --no-bundle --features winui --config src-tauri/tauri.local.conf.json
 
       - name: Build Windows packages and sign updater payload
         shell: pwsh
@@ -151,8 +151,9 @@ jobs:
         shell: pwsh
         run: |
           $appBinary = 'src-tauri/target/release/vPaste.exe'
+          $winuiPanelDll = 'src-tauri/target/release/VPasteWinUiPanel.dll'
           $installer = "src-tauri/target/release/bundle/windows/vPaste_$($env:RELEASE_VERSION)_windows_x64_setup.exe"
-          foreach ($path in @($appBinary, $installer)) {
+          foreach ($path in @($appBinary, $winuiPanelDll, $installer)) {
             if (-not (Test-Path -LiteralPath $path)) {
               throw "Expected Windows artifact was not found: $path"
             }

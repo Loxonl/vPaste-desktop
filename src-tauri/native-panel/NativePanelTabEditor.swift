@@ -138,8 +138,21 @@ final class PanelTabEditorWindow: NSPanel {
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { false }
 
-  static func allowsParentBlur(editorOpen: Bool, applicationActive: Bool, parentKey: Bool) -> Bool {
-    !editorOpen && (!parentKey || !applicationActive)
+  static func allowsParentBlur(
+    editorOpen: Bool,
+    applicationActive: Bool,
+    parentKey: Bool,
+    nonActivating: Bool = false
+  ) -> Bool {
+    !editorOpen && (!parentKey || (!nonActivating && !applicationActive))
+  }
+
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    if let editor = firstResponder as? NSTextView,
+      NativeHistoryPanel.forwardStandardTextEditShortcut(event, to: editor, sender: self) {
+      return true
+    }
+    return super.performKeyEquivalent(with: event)
   }
 
   static func shortcut(keyCode: UInt16, modifiers: NSEvent.ModifierFlags, composing: Bool) -> Shortcut? {
@@ -220,8 +233,11 @@ final class PanelTabEditor: NSObject, NSTextFieldDelegate {
     self.originalNameBody = data.applyingEmoji("", to: data.name)
     self.prefix = originalPrefix
     panel = PanelTabEditorWindow(contentRect: NSRect(x: 0, y: 0, width: 316, height: 100),
-      styleMask: [.titled, .utilityWindow], backing: .buffered, defer: false)
+      styleMask: [.titled, .utilityWindow, .nonactivatingPanel], backing: .buffered, defer: false)
     super.init()
+    panel.isFloatingPanel = true
+    panel.becomesKeyOnlyIfNeeded = false
+    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
     panel.isReleasedWhenClosed = false
     panel.isMovable = false
     panel.hidesOnDeactivate = false
@@ -266,6 +282,7 @@ final class PanelTabEditor: NSObject, NSTextFieldDelegate {
 
   func activate() {
     guard active, !isKeyWindow else { return }
+    panel.orderFrontRegardless()
     panel.makeKeyAndOrderFront(nil)
   }
 

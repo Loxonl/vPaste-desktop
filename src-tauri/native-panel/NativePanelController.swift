@@ -16,11 +16,21 @@ final class NativeHistoryPanel: NSPanel {
   var interceptEditorInput: (() -> Bool)?
   var sizePreview = false { didSet { updateGlassAppearance() } }
   init(dockedFrame: NSRect) {
-    super.init(contentRect: dockedFrame, styleMask: [.borderless], backing: .buffered, defer: false)
+    super.init(
+      contentRect: dockedFrame,
+      styleMask: [.borderless, .nonactivatingPanel],
+      backing: .buffered,
+      defer: false
+    )
+    isFloatingPanel = true
+    becomesKeyOnlyIfNeeded = false
+    hidesOnDeactivate = false
     isMovable = false
     isMovableByWindowBackground = false
     isReleasedWhenClosed = false
     animationBehavior = .none
+    level = NSWindow.Level(rawValue: 103)
+    collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
     setFrame(dockedFrame, display: false)
     updateGlassAppearance()
   }
@@ -72,6 +82,31 @@ final class NativeHistoryPanel: NSPanel {
     }
     super.sendEvent(event)
   }
+  static func forwardStandardTextEditShortcut(_ event: NSEvent, to editor: NSTextView, sender: Any?) -> Bool {
+    guard !editor.hasMarkedText() else { return false }
+    let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+    guard modifiers.contains(.command), !modifiers.contains(.option), !modifiers.contains(.control),
+      let character = event.charactersIgnoringModifiers?.lowercased() else { return false }
+    if modifiers == .command {
+      switch character {
+      case "a": return NSApp.sendAction(#selector(NSText.selectAll(_:)), to: editor, from: sender)
+      case "c": return NSApp.sendAction(#selector(NSText.copy(_:)), to: editor, from: sender)
+      case "x": return NSApp.sendAction(#selector(NSText.cut(_:)), to: editor, from: sender)
+      case "v": return NSApp.sendAction(#selector(NSText.paste(_:)), to: editor, from: sender)
+      case "z":
+        guard let undoManager = editor.undoManager, undoManager.canUndo else { return false }
+        undoManager.undo()
+        return true
+      default: return false
+      }
+    }
+    if modifiers == [.command, .shift], character == "z" {
+      guard let undoManager = editor.undoManager, undoManager.canRedo else { return false }
+      undoManager.redo()
+      return true
+    }
+    return false
+  }
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
     if interceptEditorInput?() == true { return true }
     let editor = firstResponder as? NSTextView
@@ -87,6 +122,9 @@ final class NativeHistoryPanel: NSPanel {
       && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.option)
     if (firstResponder is PanelList || toolbarCommand || dismissCommand || categoryCommand),
       keyHandler?(event) == true { return true }
+    if let editor, Self.forwardStandardTextEditShortcut(event, to: editor, sender: self) {
+      return true
+    }
     return super.performKeyEquivalent(with: event)
   }
 }
@@ -235,6 +273,8 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
   }
   private var boundsObserver: NSObjectProtocol?
   private var applicationFocus: PanelApplicationFocus?
+  private var workspaceActivationObserver: NSObjectProtocol?
+  private var globalMouseMonitor: Any?
   private var mainRoleObserver: NSObjectProtocol?
   private let previewWindows = NSHashTable<NSWindow>.weakObjects()
   private var pdfWindowNumber: Int?
@@ -277,7 +317,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     window.hidesOnDeactivate = false
     window.acceptsMouseMovedEvents = true
     window.level = NSWindow.Level(rawValue: 103)
-    window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+    window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
     window.delegate = self
     window.keyHandler = { [weak self] event in self?.key(event) ?? false }
     window.pointerHandler = { [weak self] in self?.previews.cancelHover() }
@@ -302,10 +342,49 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
     applicationFocus = PanelApplicationFocus { [weak self] active in
       guard let self, !self.closed, !self.config.sizePreview else { return }
-      self.bridge.setKey(active && (self.window.isKeyWindow || self.tabEditor?.isKeyWindow == true))
-      if !active {
+      if active {
+        self.bridge.setKey(self.window.isKeyWindow || self.tabEditor?.isKeyWindow == true)
+      } else {
         self.searchEnter = nil
-        self.scheduleFocusLoss()
+        if self.tabEditor == nil && self.window.attachedSheet == nil && !self.dragging {
+          self.window.resignKey()
+        }
+        self.bridge.setKey(false)
+        self.scheduleFocusLoss(forceDuringStart: true)
+      }
+    }
+    if !config.sizePreview {
+      // Non-activating panels keep the underlying app frontmost, so watch external
+      // clicks and app switches directly to dismiss cleanly without breaking IME.
+      globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(
+        matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+      ) { [weak self] _ in
+        MainActor.assumeIsolated {
+          guard let self, !self.closed, !self.hiding, self.onboarding == nil,
+            self.window.attachedSheet == nil, !self.dragging, self.tabEditor == nil,
+            self.searchEditor?.hasMarkedText() != true,
+            !self.window.frame.contains(NSEvent.mouseLocation)
+          else { return }
+          self.searchEnter = nil
+          self.window.resignKey()
+          self.bridge.setKey(false)
+          self.scheduleFocusLoss(forceDuringStart: true)
+        }
+      }
+      workspaceActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+        forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+      ) { [weak self] notification in
+        MainActor.assumeIsolated {
+          guard let self, !self.closed, !self.hiding, self.onboarding == nil,
+            self.window.attachedSheet == nil, !self.dragging, self.tabEditor == nil,
+            let activated = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+            activated.processIdentifier != ProcessInfo.processInfo.processIdentifier
+          else { return }
+          self.searchEnter = nil
+          self.window.resignKey()
+          self.bridge.setKey(false)
+          self.scheduleFocusLoss(forceDuringStart: true)
+        }
       }
     }
     mainRoleObserver = NotificationCenter.default.addObserver(
@@ -630,17 +709,21 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     }
   }
   private func focus() {
-    NSApp.activate(ignoringOtherApps: true)
+    // Non-activating ordering keeps the active Space intact (including native
+    // fullscreen Spaces) while still granting key focus for keyboard & IME input.
+    window.orderFrontRegardless()
     window.makeKeyAndOrderFront(nil)
-    // Borderless panels do not automatically become the app's main window.
-    window.makeMain()
+    if NSApp.isActive {
+      // Borderless panels do not automatically become the app's main window.
+      window.makeMain()
+    }
     window.makeFirstResponder(onboarding == nil ? list : nil)
     synchronizeHistoryIfNeeded()
   }
   func activate(toggle: Bool) -> Bool {
     guard !closed, !hiding, !config.sizePreview else { return false }
     if toggle { dismiss() }
-    else if let tabEditor { NSApp.activate(ignoringOtherApps: true); tabEditor.activate() }
+    else if let tabEditor { tabEditor.activate() }
     else { focus() }
     return true
   }
@@ -706,6 +789,12 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     boundsObserver = nil
     applicationFocus?.close()
     applicationFocus = nil
+    if let workspaceActivationObserver {
+      NSWorkspace.shared.notificationCenter.removeObserver(workspaceActivationObserver)
+    }
+    workspaceActivationObserver = nil
+    if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
+    globalMouseMonitor = nil
     if let mainRoleObserver { NotificationCenter.default.removeObserver(mainRoleObserver) }
     mainRoleObserver = nil
     if let previewEscapeMonitor { NSEvent.removeMonitor(previewEscapeMonitor) }
@@ -744,7 +833,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     if panelController === self { panelController = nil }
   }
   func windowDidBecomeKey(_ notification: Notification) {
-    bridge.setKey(NSApp.isActive)
+    bridge.setKey(window.isKeyWindow)
     if onboarding?.model.state.step == 1 { onboarding?.model.perform("status") }
   }
   func windowDidResignKey(_ notification: Notification) {
@@ -766,13 +855,14 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       }
     }
   }
-  private func scheduleFocusLoss() {
+  private func scheduleFocusLoss(forceDuringStart: Bool = false) {
     guard onboarding == nil else { return }
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-      guard let self, !self.closed, (!self.starting || !NSApp.isActive),
+      guard let self, !self.closed, (!self.starting || forceDuringStart),
         self.window.attachedSheet == nil, !self.dragging,
         PanelTabEditorWindow.allowsParentBlur(editorOpen: self.tabEditor != nil,
-          applicationActive: NSApp.isActive, parentKey: self.window.isKeyWindow)
+          applicationActive: NSApp.isActive, parentKey: self.window.isKeyWindow,
+          nonActivating: self.window.styleMask.contains(.nonactivatingPanel))
       else { return }
       self.bridge.send("blur")
     }
@@ -1632,7 +1722,7 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
     bridge.send("tab-editor-data", target) { [weak self] result in
       guard let self, !self.closed, !self.hiding, self.tabEditorGeneration == generation else { return }
       self.tabEditorLoading = false
-      guard NSApp.isActive, self.window.isKeyWindow else { return }
+      guard self.window.isKeyWindow else { return }
       do {
         let data = try panelDecode(PanelTabEditorData.self, result.get())
         guard self.canOpenTabEditor else { return }
@@ -1641,12 +1731,13 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
           self?.saveTabEditor(target: target, draft: draft, generation: generation)
         }, onCancel: { [weak self] in
           guard let self, self.tabEditorGeneration == generation else { return }
+          let shouldRefocus = self.tabEditor?.isKeyWindow == true || NSApp.isActive
           self.closeTabEditor()
-          if NSApp.isActive { self.focus() }
+          if shouldRefocus { self.focus() }
         })
         self.tabEditor = editor
         editor.show(parent: self.window, anchor: anchor)
-        self.bridge.setKey(NSApp.isActive && editor.isKeyWindow)
+        self.bridge.setKey(editor.isKeyWindow)
       } catch {
         self.showMessage(self.local("Could not open tab editor: \(error.localizedDescription)",
           "无法打开标签编辑器：\(error.localizedDescription)"))
@@ -1664,11 +1755,12 @@ final class NativePanelController: NSObject, NSWindowDelegate, NSSearchFieldDele
       case .failure(let error): editor.reportError(error.localizedDescription)
       case .success(let raw):
         let saved = raw as? [String: Any]
+        let shouldRefocus = editor.isKeyWindow || NSApp.isActive
         self.closeTabEditor()
         self.pendingTabSelection = saved?["activeId"] as? String
         self.refreshTabs()
         self.requestHistorySync()
-        if NSApp.isActive { self.focus() }
+        if shouldRefocus { self.focus() }
         if saved?["orderWarning"] as? Bool == true {
           self.showMessage(self.local("Tab saved, but its order could not be saved.", "标签已保存，但无法保存顺序。"))
         }

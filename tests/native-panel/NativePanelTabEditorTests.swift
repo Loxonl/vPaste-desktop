@@ -41,6 +41,27 @@ final class NativePanelTabEditorTests: XCTestCase {
     XCTAssertTrue(PanelTabEditorWindow.allowsParentBlur(editorOpen: false, applicationActive: false, parentKey: true))
     XCTAssertTrue(PanelTabEditorWindow.allowsParentBlur(editorOpen: false, applicationActive: true, parentKey: false))
     XCTAssertFalse(PanelTabEditorWindow.allowsParentBlur(editorOpen: false, applicationActive: true, parentKey: true))
+    XCTAssertFalse(PanelTabEditorWindow.allowsParentBlur(editorOpen: true, applicationActive: false, parentKey: false, nonActivating: true))
+    XCTAssertFalse(PanelTabEditorWindow.allowsParentBlur(editorOpen: false, applicationActive: false, parentKey: true, nonActivating: true))
+    XCTAssertTrue(PanelTabEditorWindow.allowsParentBlur(editorOpen: false, applicationActive: false, parentKey: false, nonActivating: true))
+  }
+
+  func testTabEditorPanelIsNonActivatingFullscreenOverlay() throws {
+    _ = NSApplication.shared
+    let screen = try XCTUnwrap(NSScreen.main)
+    let parent = NativeHistoryPanel(dockedFrame: NSRect(x: 40, y: 80, width: 300, height: 300))
+    defer { parent.close() }
+    let data = try decode(#"{"kind":"record","name":"Notes","emojis":["📌"]}"#)
+    let editor = PanelTabEditor(data: data, chinese: false, onSave: { _ in }, onCancel: {})
+    defer { editor.close() }
+    editor.show(parent: parent, anchor: NSPoint(x: screen.visibleFrame.midX, y: screen.visibleFrame.midY))
+    let child = try XCTUnwrap(parent.childWindows?.first as? NSPanel)
+    XCTAssertTrue(child.styleMask.contains(.nonactivatingPanel))
+    XCTAssertTrue(child.isFloatingPanel)
+    XCTAssertFalse(child.becomesKeyOnlyIfNeeded)
+    XCTAssertTrue(child.collectionBehavior.contains(.canJoinAllSpaces))
+    XCTAssertTrue(child.collectionBehavior.contains(.fullScreenAuxiliary))
+    XCTAssertTrue(child.collectionBehavior.contains(.ignoresCycle))
   }
 
   func testFilterDefaultsAndRecordPayload() throws {

@@ -1457,9 +1457,10 @@ std::uint64_t SendTagManagerRequest(const std::wstring &operation, std::int64_t 
 }
 
 void RefreshTags() {
-    g_recordTagsLoaded = false;
+    // SWR 缓存保留：首次尚未加载过标签时保持未加载态；已加载过则保留现有标签列表直至新响应覆盖，
+    // 消除每次呼出主面板瞬间右键卡片闪现“正在读取标签…”的空窗期。
     g_latestTagsRequestId = SendRequest(L"tags");
-    g_recordTagsFailed = !g_latestTagsRequestId;
+    if (!g_recordTagsLoaded) g_recordTagsFailed = !g_latestTagsRequestId;
     RefreshFilters();
     g_tabOrderLoadRequest = SendRequest(L"tabOrderLoad");
 }
@@ -1489,6 +1490,14 @@ winrt::Microsoft::UI::Xaml::Controls::SelectorBarItem DynamicTab(std::wstring co
     const auto found = std::find(g_dynamicIds.begin(), g_dynamicIds.end(), id);
     return found == g_dynamicIds.end() ? nullptr :
         g_panel.customTabs.Items().GetAt(static_cast<std::uint32_t>(std::distance(g_dynamicIds.begin(), found)));
+}
+
+winrt::Microsoft::UI::Xaml::Controls::MenuFlyout DynamicTabMenu(
+    winrt::Microsoft::UI::Xaml::Controls::SelectorBarItem const &tab) {
+    if (!tab) return nullptr;
+    if (const auto menu = tab.Resources().TryLookup(winrt::box_value(L"VPaste.TabContextMenu")))
+        return menu.try_as<winrt::Microsoft::UI::Xaml::Controls::MenuFlyout>();
+    return nullptr;
 }
 
 winrt::Microsoft::UI::Xaml::FrameworkElement EditorAnchor(std::wstring const &id, std::wstring const &hash = {}) {
@@ -1843,6 +1852,10 @@ void RebuildDynamicTabs() {
     for (auto const &id : g_dynamicIds) {
         SelectorBarItem tab;
         MenuFlyout menu;
+        // 标签菜单仅有 2 项（~84 DIP），主面板内嵌向下展开可彻底避免创建独立 PopupWindowSiteBridge 顶层弹窗，
+        // 消除 WinUI 3 #12516/#8829 静止光标持续转圈并对齐 React WebView 展开方向。
+        menu.ShouldConstrainToRootBounds(true);
+        menu.Placement(Controls::Primitives::FlyoutPlacementMode::BottomEdgeAlignedLeft);
         menu.Opened([](auto const &, auto const &) { g_searchSubmitRequestId = 0; CancelHoverPreview(); });
         MenuFlyoutItem edit, remove; edit.Icon(SymbolIcon{Symbol::Edit}); remove.Icon(SymbolIcon{Symbol::Delete});
         const auto filter = std::find_if(filters.begin(), filters.end(),
@@ -1880,7 +1893,27 @@ void RebuildDynamicTabs() {
         }
         menu.Items().Append(edit); menu.Items().Append(remove);
         vpaste::winui::BindMenuOpeningFocus(menu, g_panel.menuInput);
-        tab.ContextFlyout(menu);
+        // 菜单归属 tab.Resources()，统一走 ContextRequested + FlyoutShowOptions，不与 ContextFlyout 混用。
+        tab.Resources().Insert(winrt::box_value(L"VPaste.TabContextMenu"), menu);
+        tab.ContextRequested([weakMenu = winrt::make_weak(menu)](auto const &sender,
+            winrt::Microsoft::UI::Xaml::Input::ContextRequestedEventArgs const &args) {
+            const auto target = sender.template try_as<FrameworkElement>();
+            const auto popup = weakMenu.get();
+            if (!target || !popup) return;
+            Controls::Primitives::FlyoutShowOptions options;
+            options.Placement(Controls::Primitives::FlyoutPlacementMode::BottomEdgeAlignedLeft);
+            options.ShowMode(Controls::Primitives::FlyoutShowMode::Standard);
+            winrt::Windows::Foundation::Point point{};
+            if (args.TryGetPosition(target, point)) {
+                options.Position(winrt::box_value(point)
+                    .as<winrt::Windows::Foundation::IReference<winrt::Windows::Foundation::Point>>());
+                options.ExclusionRect(winrt::box_value(
+                    winrt::Windows::Foundation::Rect{point.X - 6.0f, point.Y - 6.0f, 12.0f, 12.0f})
+                    .as<winrt::Windows::Foundation::IReference<winrt::Windows::Foundation::Rect>>());
+            }
+            popup.ShowAt(target, options);
+            args.Handled(true);
+        });
         tab.CanDrag(true);
         tab.DragStarting([id](auto const &, auto const &args) {
             if (g_tabOrderSaveRequest || NativeEditorOpen()) { args.Cancel(true); return; }
@@ -2340,9 +2373,13 @@ bool OpenSelectedCardMenu(winrt::Windows::Foundation::IInspectable const &source
     if (index < 0 || static_cast<std::size_t>(index) >= g_panel.rows.size() || !HistoryRowsCurrent()) return false;
     g_searchSubmitRequestId = 0;
     auto &row = g_panel.rows[index];
-    if (!EnsureCardContextMenu(row, g_hashes[index]) || !row.surface.ContextFlyout()) return false;
+    const auto flyout = EnsureCardContextMenu(row, g_hashes[index]);
+    if (!flyout) return false;
     g_panel.menuInput->keyboardGesture = true;
-    row.surface.ContextFlyout().ShowAt(row.surface);
+    winrt::Microsoft::UI::Xaml::Controls::Primitives::FlyoutShowOptions options;
+    options.Placement(winrt::Microsoft::UI::Xaml::Controls::Primitives::FlyoutPlacementMode::TopEdgeAlignedLeft);
+    options.ShowMode(winrt::Microsoft::UI::Xaml::Controls::Primitives::FlyoutShowMode::Standard);
+    flyout.ShowAt(row.surface, options);
     return true;
 }
 
@@ -2781,10 +2818,11 @@ winrt::Microsoft::UI::Xaml::Controls::MenuFlyout EnsureCardContextMenu(
         return row.contextMenu;
     }
     const auto &type = row.itemType;
-    auto &surface = row.surface;
-    // 卡片右键菜单按需懒创建：常规列表渲染不再为 36 张卡片同步构造数百个菜单项与 SVG 图标。
+    // 卡片右键菜单按需懒创建：常规列表渲染不再为 36 张卡片同步构造数百个菜单项与 SVG 图标；
+    // 菜单高 260–360 DIP，需允许超出 302 DIP 矮窗体边界，统一走 ContextRequested + FlyoutShowOptions 弹出。
     MenuFlyout flyout;
-    flyout.Placement(Controls::Primitives::FlyoutPlacementMode::Top);
+    flyout.ShouldConstrainToRootBounds(false);
+    flyout.Placement(Controls::Primitives::FlyoutPlacementMode::TopEdgeAlignedLeft);
     MenuFlyoutItem pasteItem;
     pasteItem.Text(Text(L"复制并粘贴", L"Copy and paste"));
     pasteItem.Icon(SymbolIcon{Symbol::Paste});
@@ -2905,7 +2943,6 @@ winrt::Microsoft::UI::Xaml::Controls::MenuFlyout EnsureCardContextMenu(
         });
     });
     vpaste::winui::BindMenuOpeningFocus(flyout, g_panel.menuInput);
-    surface.ContextFlyout(flyout);
     row.menu = menuExtras;
     row.contextMenu = flyout;
     if (row.pendingMenuActions) {
@@ -2999,7 +3036,7 @@ void ApplyResponse(const std::string &bytes) {
             for (auto const &row : g_panel.rows)
                 if (const auto menu = row.contextMenu) menu.Hide();
             for (auto const &tab : g_panel.customTabs.Items())
-                if (const auto menu = tab.ContextFlyout()) menu.Hide();
+                if (const auto menu = DynamicTabMenu(tab)) menu.Hide();
             g_searchSubmitRequestId = 0;
             ++g_editorGeneration;
             if (g_panel.filterEditor) g_panel.filterEditor->Hide();
@@ -4059,15 +4096,25 @@ void ApplyResponse(const std::string &bytes) {
                     !SendRequest(L"favorite", target.hash, !favorite))
                     ShowFeedback(Text(L"收藏更改未发送，请重试", L"Could not send the favorite change. Try again."), true);
             });
-            // 右键或 Shift+F10/菜单键触发上下文菜单时才按需构建 MenuFlyout，避免切标签同步构造 36 套菜单。
+            // 右键或 Shift+F10/菜单键触发上下文菜单时才按需构建 MenuFlyout，避免切标签同步构造 36 套菜单；
+            // 统一使用 FlyoutShowOptions 与指针避让 ExclusionRect，避免独立弹窗直接落在静止光标下方触发 WinUI #12516/#8829。
             surface.ContextRequested([rowHash](auto const &,
                 winrt::Microsoft::UI::Xaml::Input::ContextRequestedEventArgs const &args) {
                 if (auto *current = FindCard(rowHash)) {
                     const auto flyout = EnsureCardContextMenu(*current, rowHash);
                     if (!flyout) return;
+                    Controls::Primitives::FlyoutShowOptions options;
+                    options.Placement(Controls::Primitives::FlyoutPlacementMode::TopEdgeAlignedLeft);
+                    options.ShowMode(Controls::Primitives::FlyoutShowMode::Standard);
                     winrt::Windows::Foundation::Point point{};
-                    if (args.TryGetPosition(current->surface, point)) flyout.ShowAt(current->surface, point);
-                    else flyout.ShowAt(current->surface);
+                    if (args.TryGetPosition(current->surface, point)) {
+                        options.Position(winrt::box_value(point)
+                            .as<winrt::Windows::Foundation::IReference<winrt::Windows::Foundation::Point>>());
+                        options.ExclusionRect(winrt::box_value(
+                            winrt::Windows::Foundation::Rect{point.X - 8.0f, point.Y - 8.0f, 16.0f, 16.0f})
+                            .as<winrt::Windows::Foundation::IReference<winrt::Windows::Foundation::Rect>>());
+                    }
+                    flyout.ShowAt(current->surface, options);
                     args.Handled(true);
                 }
             });
@@ -4294,6 +4341,14 @@ void SetVisible(bool visible, bool freshShow = true, bool animate) noexcept {
         if (!visible && g_panel.deletionDialog) g_panel.deletionDialog.Hide();
         if (!visible && g_panel.filterEditor) g_panel.filterEditor->Hide();
         if (!visible && g_panel.recordTagEditor) g_panel.recordTagEditor->Hide();
+        if (!visible) {
+            for (auto const &row : g_panel.rows)
+                if (const auto menu = row.contextMenu) menu.Hide();
+            if (g_panel.customTabs) {
+                for (auto const &tab : g_panel.customTabs.Items())
+                    if (const auto menu = DynamicTabMenu(tab)) menu.Hide();
+            }
+        }
         if (!visible && g_panel.cardDrag) {
             g_historyRefreshAfterDrag = false;
             g_panel.cardDrag->Cancel();
@@ -4814,7 +4869,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lpa
                 row.contextMenu.Hide();
                 row.contextMenu = nullptr;
                 row.menu = {};
-                if (row.surface) row.surface.ContextFlyout(nullptr);
             }
             if (row.type) row.type.Text(ItemTypeLabel(row.visualType.empty() ? row.itemType : row.visualType));
             if (row.richBadge) row.richBadge.Text(Text(L"富文本", L"Rich"));
@@ -6446,9 +6500,12 @@ winrt::fire_and_forget RunNativePresentationRegression(
             currentStage = 10;
             g_panel.history.SelectedIndex(-1);
             ApplyResponse(R"({"id":300,"op":"query","data":{"items":[{"hash":"test-a"},{"hash":"test-b"}]}})");
-            // 卡片右键菜单按需懒创建：渲染后默认不提前构造，首次请求时才创建。
+            // 卡片右键菜单按需懒创建：渲染后默认不提前构造，首次请求时才创建且不与 ContextFlyout 混用。
             winrt::check_hresult(!g_panel.rows[0].contextMenu && !g_panel.rows[0].surface.ContextFlyout() ? S_OK : E_FAIL);
             const auto firstCardMenu = EnsureCardContextMenu(g_panel.rows[0], g_hashes[0]);
+            winrt::check_hresult(!g_panel.rows[0].surface.ContextFlyout() &&
+                !firstCardMenu.ShouldConstrainToRootBounds() &&
+                firstCardMenu.Placement() == winrt::Microsoft::UI::Xaml::Controls::Primitives::FlyoutPlacementMode::TopEdgeAlignedLeft ? S_OK : E_FAIL);
             winrt::check_hresult(g_selectedHash == L"test-a" && firstCardMenu.Items().Size() >= 3 &&
                 firstCardMenu.Items().GetAt(firstCardMenu.Items().Size() - 1).as<winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutItem>().Text() ==
                     Text(L"复制并粘贴", L"Copy and paste") &&
@@ -7370,17 +7427,20 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 MenuFlyout files;
                 const auto fileMenu = AppendCardActions(files, L"file-fixture", L"File", true, SendCardAction);
                 winrt::check_hresult(find(files, L"Open containing folder") && find(files, L"Copy containing folder") &&
-                    !find(files, L"Paste as plain text") && fileMenu.exportImage.Visibility() == Visibility::Collapsed ? S_OK : E_FAIL);
+                    !find(files, L"Paste as plain text") && fileMenu.exportImage.Visibility() == Visibility::Collapsed &&
+                    !ToolTipService::GetToolTip(fileMenu.exportImage) ? S_OK : E_FAIL);
                 UpdateCardActions(fileMenu, JsonObject::Parse(LR"({"canExportImage":true})"), L"file-fixture", SendCardAction);
                 winrt::check_hresult(fileMenu.exportImage.Visibility() == Visibility::Visible ? S_OK : E_FAIL);
                 MenuFlyout image;
                 image.Items().Append(MakeImageTextAction(L"image-fixture", true, SendCardAction));
-                AppendCardActions(image, L"image-fixture", L"Image", true, SendCardAction);
+                const auto imageMenu = AppendCardActions(image, L"image-fixture", L"Image", true, SendCardAction);
                 const auto recognize = find(image, L"Recognize text in image");
                 winrt::check_hresult(recognize && recognize.Icon().try_as<PathIcon>() && find(image, L"Export image…") &&
-                    !find(image, L"Open containing folder") ? S_OK : E_FAIL);
+                    !find(image, L"Open containing folder") && !imageMenu.exportImage.IsEnabled() &&
+                    !ToolTipService::GetToolTip(imageMenu.exportImage) ? S_OK : E_FAIL);
                 MenuFlyout colors;
                 const auto colorMenu = AppendCardActions(colors, L"color-fixture", L"Color", true, SendCardAction);
+                winrt::check_hresult(!colorMenu.colors.IsEnabled() && !ToolTipService::GetToolTip(colorMenu.colors) ? S_OK : E_FAIL);
                 UpdateCardActions(colorMenu, JsonObject::Parse(LR"JSON({"colorFormats":[{"format":"HEX","value":"#0B86FF"},{"format":"RGB","value":"rgb(11, 134, 255)"},{"format":"HSL","value":"hsl(210, 100%, 52%)"}]})JSON"), L"color-fixture", SendCardAction);
                 winrt::check_hresult(colorMenu.colors.Items().Size() == 3 && colorMenu.colors.IsEnabled() ? S_OK : E_FAIL);
                 colors.ShowAt(g_panel.searchButton); co_await NextNativeFrame();
@@ -7904,10 +7964,13 @@ winrt::fire_and_forget RunNativePresentationRegression(
                 winrt::check_hresult(!g_panel.recordTagEditor->IsOpen() && previewRequests.size() == beforeStale ? S_OK : E_FAIL);
                 const auto add = g_panel.addTag.Flyout().as<MenuFlyout>();
                 currentStage = 676;
-                const auto tabMenu = DynamicTab(L"record:10").ContextFlyout().as<MenuFlyout>();
                 const auto dynamicTab = DynamicTab(L"record:10");
+                const auto tabMenu = DynamicTabMenu(dynamicTab);
                 const auto dynamicPadding = dynamicTab.Padding();
-                winrt::check_hresult(add.Items().Size() == 2 && tabMenu.Items().Size() == 2 &&
+                winrt::check_hresult(add.Items().Size() == 2 && !dynamicTab.ContextFlyout() &&
+                    tabMenu && tabMenu.Items().Size() == 2 &&
+                    tabMenu.ShouldConstrainToRootBounds() &&
+                    tabMenu.Placement() == Controls::Primitives::FlyoutPlacementMode::BottomEdgeAlignedLeft &&
                     dynamicTab.VerticalContentAlignment() == VerticalAlignment::Center &&
                     dynamicPadding.Top == 0 && dynamicPadding.Bottom == 0 &&
                     add.Items().GetAt(1).as<MenuFlyoutItem>().Text() == L"Record Tag" &&
@@ -9413,7 +9476,7 @@ winrt::fire_and_forget RunNativePresentationRegression(
                     co_await AwaitNativeLoaded(origin);
                     const auto menu = origin == g_panel.rows.front().surface
                         ? Controls::Primitives::FlyoutBase{EnsureCardContextMenu(g_panel.rows.front(), g_hashes.front())}
-                        : origin.ContextFlyout();
+                        : Controls::Primitives::FlyoutBase{DynamicTabMenu(origin.as<SelectorBarItem>())};
                     menu.ShowAt(origin); co_await NextNativeFrame();
                     winrt::check_hresult(menu.IsOpen() ? S_OK : E_FAIL);
                     ApplyResponse(R"({"op":"historyReset","data":{}})");
@@ -9526,7 +9589,7 @@ winrt::fire_and_forget RunNativePresentationRegression(
                     co_await AwaitNativeLoaded(origin);
                     const auto menu = kind == 3 ? g_panel.addTag.Flyout()
                         : kind == 0 ? Controls::Primitives::FlyoutBase{EnsureCardContextMenu(g_panel.rows.front(), g_hashes.front())}
-                        : origin.ContextFlyout();
+                        : Controls::Primitives::FlyoutBase{DynamicTabMenu(origin.as<SelectorBarItem>())};
                     menu.ShowAt(origin); co_await NextNativeFrame();
                     winrt::check_hresult(menu.IsOpen() ? S_OK : E_FAIL);
                     const bool retired = g_searchSubmitRequestId == 0;
@@ -9549,7 +9612,7 @@ winrt::fire_and_forget RunNativePresentationRegression(
                     co_await AwaitNativeLoaded(origin);
                     const auto menu = origin == g_panel.addTag ? g_panel.addTag.Flyout()
                         : origin == card ? Controls::Primitives::FlyoutBase{EnsureCardContextMenu(g_panel.rows.front(), g_hashes.front())}
-                        : origin.ContextFlyout();
+                        : Controls::Primitives::FlyoutBase{DynamicTabMenu(origin.as<SelectorBarItem>())};
                     menu.ShowAt(origin); co_await NextNativeFrame();
                     winrt::check_hresult(menu.IsOpen() ? S_OK : E_FAIL);
                     SetVisible(false, true, false); SetVisible(true, false, false);
@@ -10123,12 +10186,17 @@ winrt::Windows::Foundation::IAsyncAction CheckCardContextMenu(
         // Tags can arrive after history or change without replacing a retained card.
         stage = 2723;
         tagsReply(LR"({"op":"tags","data":{"items":[{"id":9,"name":"Work"},{"id":10,"name":"Notes"}]}})");
+        // SWR 缓存保留：已加载过标签后再次调用 RefreshTags() 不可清空 g_recordTagsLoaded，右键菜单标签子项瞬间直出。
+        const auto beforeSwrRefresh = g_latestTagsRequestId;
+        RefreshTags();
+        winrt::check_hresult(g_latestTagsRequestId > beforeSwrRefresh && g_recordTagsLoaded && !g_recordTagsFailed ? S_OK : E_FAIL);
         co_await show();
         const auto assigned = find(menu.Items(), L"Tags").try_as<MenuFlyoutSubItem>();
         if (!assigned || assigned.Items().Size() != 3) std::fprintf(stderr,
             "WinUI card tags: menuOpen=%d, loaded=%d, knownTags=%zu, submenuItems=%u\n",
             menu.IsOpen(), g_recordTagsLoaded, g_tagIds.size(), assigned ? assigned.Items().Size() : 0);
         winrt::check_hresult(assigned && assigned.Items().Size() == 3 &&
+            !find(assigned.Items(), L"Loading tags…") &&
             !assigned.Items().GetAt(0).as<ToggleMenuFlyoutItem>().IsChecked() &&
             !find(menu.Items(), L"Create and assign tag…") ? S_OK : E_FAIL);
         co_await closeMenu(menu);
@@ -10155,8 +10223,22 @@ winrt::Windows::Foundation::IAsyncAction CheckCardContextMenu(
         }
         stage = 2734;
         before = requests.size();
-        invoke(tags.GetAt(tags.Size() - 1)); co_await NextNativeFrame();
+        {
+            bool closed = false;
+            const auto observer = menu.Closed(winrt::auto_revoke, [&](auto const &, auto const &) { closed = true; });
+            invoke(tags.GetAt(tags.Size() - 1));
+            co_await NextNativeFrame();
+            if (menu.IsOpen()) menu.Hide();
+            for (int frame = 0; frame < 60 && !closed; ++frame) co_await NextNativeFrame();
+            winrt::check_hresult(closed ? S_OK : E_FAIL);
+        }
         winrt::check_hresult(sent(before, L"clearTags", L"menu-text") == 1 ? S_OK : E_FAIL);
+        // 二级子菜单触发轻关闭时 IsOpen/IsLoaded 可能在单帧内同步归零，显式等完非激活桌面焦点交接窗口。
+        {
+            const winrt::apartment_context ui;
+            co_await winrt::resume_after(std::chrono::milliseconds(180));
+            co_await ui;
+        }
         co_await closeMenu(menu);
         stage = 2735;
         tagsReply(LR"({"op":"tags","data":{"items":[{"id":10,"name":"Renamed"}]}})");
@@ -10594,10 +10676,21 @@ winrt::Windows::Foundation::IAsyncAction CheckMenuOpeningFocus(std::uint32_t &st
         ++stage;
         co_await AwaitNativeLoaded(origin);
         const bool add = origin == g_panel.addTag;
+        const bool card = origin == g_panel.rows[0].surface;
         const auto menu = (add ? g_panel.addTag.Flyout()
-            : origin == g_panel.rows[0].surface
+            : card
                 ? Controls::Primitives::FlyoutBase{EnsureCardContextMenu(g_panel.rows[0], g_hashes[0])}
-                : origin.ContextFlyout()).as<MenuFlyout>();
+                : Controls::Primitives::FlyoutBase{DynamicTabMenu(origin.as<SelectorBarItem>())}).as<MenuFlyout>();
+        if (!add) {
+            winrt::check_hresult(!origin.ContextFlyout() ? S_OK : E_FAIL);
+            if (card) {
+                winrt::check_hresult(!menu.ShouldConstrainToRootBounds() &&
+                    menu.Placement() == Controls::Primitives::FlyoutPlacementMode::TopEdgeAlignedLeft ? S_OK : E_FAIL);
+            } else {
+                winrt::check_hresult(menu.ShouldConstrainToRootBounds() &&
+                    menu.Placement() == Controls::Primitives::FlyoutPlacementMode::BottomEdgeAlignedLeft ? S_OK : E_FAIL);
+            }
+        }
         const auto first = menu.Items().GetAt(0);
         if (add) {
             Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(origin)
@@ -12878,6 +12971,65 @@ winrt::Windows::Foundation::IAsyncAction RunBatch2RegressionTests(
                 std::fprintf(stderr, "BATCH2_FOCUS_DIAG: empty focusedName=%ls area=%d\n",
                     emptyName.c_str(), static_cast<int>(MainInputArea(focusedAfterEmpty)));
                 failures.push_back("empty_category_lost_history_focus_to_header");
+            }
+            SetVisible(false, false, false);
+        }
+
+        // 2017: 标签右键内嵌向下展开、卡片右键解除 ContextFlyout 混用、RefreshTags SWR 缓存保留与无加载态 ToolTip 回归。
+        stage = 2017;
+        {
+            SetVisible(true, false, false);
+            co_await NextNativeFrame();
+            ApplyFilters(JsonArray::Parse(LR"([{"id":"ctx-filter","name":"Ctx Filter","filter":{}}])"));
+            g_recordTagsLoaded = false;
+            g_recordTagsFailed = false;
+            RefreshTags();
+            auto tagsOk = JsonObject::Parse(LR"({"op":"tags","data":{"items":[{"id":77,"name":"Ctx Tag"}]}})");
+            tagsOk.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestTagsRequestId)));
+            ApplyResponse(winrt::to_string(tagsOk.Stringify()));
+            co_await NextNativeFrame();
+            const auto prevTagsReq = g_latestTagsRequestId;
+            RefreshTags();
+            if (!(g_latestTagsRequestId > prevTagsReq && g_recordTagsLoaded && !g_recordTagsFailed && g_tagIds.size() == 1)) {
+                failures.push_back("refresh_tags_did_not_preserve_swr_cache");
+            }
+            for (auto const &tabId : std::array<std::wstring, 2>{L"ctx-filter", RecordTabId(77)}) {
+                const auto tab = DynamicTab(tabId);
+                const auto tabMenu = DynamicTabMenu(tab);
+                if (!tab || tab.ContextFlyout() || !tabMenu || !tabMenu.ShouldConstrainToRootBounds() ||
+                    tabMenu.Placement() != Controls::Primitives::FlyoutPlacementMode::BottomEdgeAlignedLeft) {
+                    failures.push_back("dynamic_tab_menu_not_in_root_bottom_left");
+                }
+            }
+            RequestHistory();
+            auto cardResp = JsonObject::Parse(LR"({"op":"query","data":{"items":[{"hash":"ctx-img","itemType":"Image","previewText":""},{"hash":"ctx-color","itemType":"Color","previewText":"#0B86FF"}],"hasMore":false}})");
+            cardResp.Insert(L"id", JsonValue::CreateNumberValue(static_cast<double>(g_latestHistoryRequestId)));
+            ApplyResponse(winrt::to_string(cardResp.Stringify()));
+            co_await NextNativeFrame();
+            if (g_panel.rows.size() >= 2) {
+                const auto imgMenu = EnsureCardContextMenu(g_panel.rows[0], g_hashes[0]);
+                const auto colorMenu = EnsureCardContextMenu(g_panel.rows[1], g_hashes[1]);
+                if (!imgMenu || g_panel.rows[0].surface.ContextFlyout() || imgMenu.ShouldConstrainToRootBounds() ||
+                    imgMenu.Placement() != Controls::Primitives::FlyoutPlacementMode::TopEdgeAlignedLeft) {
+                    failures.push_back("card_menu_context_flyout_or_placement_invalid");
+                }
+                if (!g_panel.rows[0].menu.exportImage || ToolTipService::GetToolTip(g_panel.rows[0].menu.exportImage) ||
+                    !g_panel.rows[1].menu.colors || ToolTipService::GetToolTip(g_panel.rows[1].menu.colors)) {
+                    failures.push_back("card_actions_retained_loading_tooltip");
+                }
+                g_panel.history.SelectedIndex(0);
+                g_selectedHash = g_hashes[0];
+                if (!OpenSelectedCardMenu()) {
+                    failures.push_back("open_selected_card_menu_failed");
+                } else {
+                    co_await NextNativeFrame();
+                    if (!imgMenu.IsOpen()) failures.push_back("open_selected_card_menu_did_not_open");
+                    SetVisible(false, false, false);
+                    co_await NextNativeFrame();
+                    if (imgMenu.IsOpen()) failures.push_back("set_visible_false_did_not_hide_card_menu");
+                }
+            } else {
+                failures.push_back("ctx_regression_cards_missing");
             }
             SetVisible(false, false, false);
         }

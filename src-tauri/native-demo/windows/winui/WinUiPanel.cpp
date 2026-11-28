@@ -1067,8 +1067,13 @@ void SetLoadingIndicatorVisible(bool visible) {
     using winrt::Microsoft::UI::Xaml::Visibility;
     if (!g_panel.loading) return;
     // 隐藏态同步关闭 IsIndeterminate，避免不可见时继续运行合成动画并消除左端蓝条瞬间闪现。
-    g_panel.loading.IsIndeterminate(visible);
-    g_panel.loading.Visibility(visible ? Visibility::Visible : Visibility::Collapsed);
+    if (visible) {
+        g_panel.loading.IsIndeterminate(true);
+        g_panel.loading.Visibility(Visibility::Visible);
+    } else {
+        g_panel.loading.IsIndeterminate(false);
+        g_panel.loading.Visibility(Visibility::Collapsed);
+    }
 }
 
 void HideLoadingIndicator() {
@@ -2335,10 +2340,9 @@ bool OpenSelectedCardMenu(winrt::Windows::Foundation::IInspectable const &source
     if (index < 0 || static_cast<std::size_t>(index) >= g_panel.rows.size() || !HistoryRowsCurrent()) return false;
     g_searchSubmitRequestId = 0;
     auto &row = g_panel.rows[index];
-    const auto flyout = EnsureCardContextMenu(row, g_hashes[index]);
-    if (!flyout) return false;
+    if (!EnsureCardContextMenu(row, g_hashes[index]) || !row.surface.ContextFlyout()) return false;
     g_panel.menuInput->keyboardGesture = true;
-    flyout.ShowAt(row.surface);
+    row.surface.ContextFlyout().ShowAt(row.surface);
     return true;
 }
 
@@ -2764,18 +2768,20 @@ void EditSelectedItem() {
 }
 
 winrt::Microsoft::UI::Xaml::Controls::MenuFlyout EnsureCardContextMenu(
-    HistoryRowVisual &row, std::wstring const &hash) {
+    HistoryRowVisual &row, std::wstring const &rowHash) {
     using namespace winrt::Microsoft::UI::Xaml;
     using namespace winrt::Microsoft::UI::Xaml::Controls;
-    const CardTarget target{hash, row.recordId};
+    const CardTarget target{rowHash, row.recordId};
     const auto requestCardAction = GuardedCardAction(target);
     if (row.contextMenu) {
         if (!row.contextMenu.IsOpen() && row.pendingMenuActions) {
             vpaste::winui::UpdateCardActions(
-                row.menu, std::exchange(row.pendingMenuActions, nullptr), hash, requestCardAction);
+                row.menu, std::exchange(row.pendingMenuActions, nullptr), rowHash, requestCardAction);
         }
         return row.contextMenu;
     }
+    const auto &type = row.itemType;
+    auto &surface = row.surface;
     // 卡片右键菜单按需懒创建：常规列表渲染不再为 36 张卡片同步构造数百个菜单项与 SVG 图标。
     MenuFlyout flyout;
     flyout.Placement(Controls::Primitives::FlyoutPlacementMode::Top);
@@ -2783,20 +2789,20 @@ winrt::Microsoft::UI::Xaml::Controls::MenuFlyout EnsureCardContextMenu(
     pasteItem.Text(Text(L"复制并粘贴", L"Copy and paste"));
     pasteItem.Icon(SymbolIcon{Symbol::Paste});
     pasteItem.KeyboardAcceleratorTextOverride(L"Enter");
-    pasteItem.Click([hash, requestCardAction](auto const &, auto const &) {
-        (void)requestCardAction(L"paste", hash, {});
+    pasteItem.Click([rowHash, requestCardAction](auto const &, auto const &) {
+        (void)requestCardAction(L"paste", rowHash, {});
     });
     MenuFlyoutItem deleteItem;
     deleteItem.Text(Text(L"删除记录", L"Delete record"));
     deleteItem.Icon(SymbolIcon{Symbol::Delete});
     deleteItem.KeyboardAcceleratorTextOverride(L"Delete");
-    deleteItem.Click([hash, target](auto const &, auto const &) {
-        if (FindCard(target)) DeleteCard(hash);
+    deleteItem.Click([rowHash, target](auto const &, auto const &) {
+        if (FindCard(target)) DeleteCard(rowHash);
     });
     flyout.Items().Append(deleteItem);
     flyout.Items().Append(MenuFlyoutSeparator{});
     const auto menuExtras = vpaste::winui::AppendCardActions(
-        flyout, hash, row.itemType, g_english, requestCardAction);
+        flyout, rowHash, type, g_english, requestCardAction);
     const auto tagSlot = flyout.Items().Size();
     flyout.Items().Append(MenuFlyoutItem{});
     MenuFlyoutItem favoriteItem;
@@ -2809,17 +2815,17 @@ winrt::Microsoft::UI::Xaml::Controls::MenuFlyout EnsureCardContextMenu(
             ShowFeedback(Text(L"收藏更改未发送，请重试", L"Could not send the favorite change. Try again."), true);
     });
     flyout.Items().Append(favoriteItem);
-    if (IsEditableTextItem(row.itemType)) {
+    if (IsEditableTextItem(type)) {
         MenuFlyoutItem editItem;
         editItem.Text(Text(L"编辑文本", L"Edit text"));
         editItem.Icon(SymbolIcon{Symbol::Edit});
         editItem.KeyboardAcceleratorTextOverride(L"F2");
-        editItem.Click([hash, requestCardAction](auto const &, auto const &) {
-            (void)requestCardAction(L"edit", hash, {});
+        editItem.Click([rowHash, requestCardAction](auto const &, auto const &) {
+            (void)requestCardAction(L"edit", rowHash, {});
         });
         flyout.Items().Append(editItem);
-    } else if (row.itemType == L"Image") {
-        flyout.Items().Append(vpaste::winui::MakeImageTextAction(hash, g_english, requestCardAction));
+    } else if (type == L"Image") {
+        flyout.Items().Append(vpaste::winui::MakeImageTextAction(rowHash, g_english, requestCardAction));
     }
     MenuFlyoutItem previewItem;
     previewItem.Text(Text(L"预览", L"Preview"));
@@ -2899,12 +2905,12 @@ winrt::Microsoft::UI::Xaml::Controls::MenuFlyout EnsureCardContextMenu(
         });
     });
     vpaste::winui::BindMenuOpeningFocus(flyout, g_panel.menuInput);
+    surface.ContextFlyout(flyout);
     row.menu = menuExtras;
     row.contextMenu = flyout;
-    row.surface.ContextFlyout(flyout);
     if (row.pendingMenuActions) {
         vpaste::winui::UpdateCardActions(
-            row.menu, std::exchange(row.pendingMenuActions, nullptr), hash, requestCardAction);
+            row.menu, std::exchange(row.pendingMenuActions, nullptr), rowHash, requestCardAction);
     }
     return flyout;
 }

@@ -8,12 +8,14 @@ describe("WinUI command flyout opening focus", () => {
     it("applies pointer-opening focus to the same native menus and their existing triggers", () => {
         const panel = read("WinUiPanel.cpp");
         const queue = read("WinUiQueueView.cpp");
-        expect(/BindMenuOpeningFocus\(menu, g_panel\.menuInput\);\s*tab\.ContextFlyout\(menu\)/.test(panel)).toBe(true);
+        expect(/BindMenuOpeningFocus\(menu, g_panel\.menuInput\);[\s\S]{0,160}tab\.Resources\(\)\.Insert\(winrt::box_value\(L"VPaste\.TabContextMenu"\), menu\)/.test(panel)).toBe(true);
+        expect(panel).not.toContain("tab.ContextFlyout(menu)");
         expect(/BindMenuOpeningFocus\(addMenu, g_panel\.menuInput\);\s*g_panel\.addTag\.Flyout\(addMenu\)/.test(panel)).toBe(true);
-        expect(/BindMenuOpeningFocus\(flyout, g_panel\.menuInput\);\s*surface\.ContextFlyout\(flyout\)/.test(panel)).toBe(true);
+        expect(/BindMenuOpeningFocus\(flyout, g_panel\.menuInput\);\s*row\.menu = menuExtras;\s*row\.contextMenu = flyout;/.test(panel)).toBe(true);
+        expect(panel).not.toContain("surface.ContextFlyout(flyout)");
         expect(/BindMenuOpeningFocus\(rowMenu, menuInput\);\s*paste\.ContextFlyout\(rowMenu\)/.test(queue)).toBe(true);
         expect(queue.includes("handle.ContextFlyout(rowMenu)")).toBe(true);
-        expect(panel).toContain("row.surface.ContextFlyout().ShowAt(row.surface)");
+        expect(panel).toContain("flyout.ShowAt(row.surface, options)");
     });
 
     it("gates native paint before Opened without replacing focus or menu key routing", () => {

@@ -1,3 +1,5 @@
+import { resolveShortcutKeyFromCode } from "../shortcutDisplay";
+
 export const WHEEL_LINE_DELTA_PX = 40;
 export const WHEEL_MOUSE_TIME_CONSTANT_MS = 60;
 export const WHEEL_PRECISION_TIME_CONSTANT_MS = 24;
@@ -14,9 +16,11 @@ export type PointerDragIntent = "pending" | "vertical" | "horizontal";
 function normalizeShortcutKey(key: string): string {
     const normalized = key.toLowerCase();
     if (normalized === "control") return "ctrl";
-    if (normalized === "cmd" || normalized === "command" || normalized === "meta") return "meta";
+    if (normalized === "option") return "alt";
+    if (normalized === "cmd" || normalized === "command" || normalized === "meta" || normalized === "super" || normalized === "win" || normalized === "windows") return "meta";
     if (normalized === "return") return "enter";
     if (normalized === "escape") return "esc";
+    if (normalized === " " || normalized === "spacebar") return "space";
     return normalized;
 }
 
@@ -30,10 +34,18 @@ export function matchesKeyboardShortcut(
         .filter(Boolean);
     if (parts.length === 0) return false;
 
-    const key = normalizeShortcutKey(event.key);
+    const rawKey = event.key || "";
+    const key = normalizeShortcutKey(rawKey);
     const expectedKey = parts[parts.length - 1];
     const modifiers = new Set(parts.slice(0, -1));
-    return key === expectedKey
+    const codeKey = resolveShortcutKeyFromCode(event.code);
+    const normalizedCodeKey = codeKey ? normalizeShortcutKey(codeKey) : null;
+    const isPlainAsciiKey = /^[a-zA-Z0-9-=[\]\\;'`,./ ]$/.test(rawKey);
+    const keyMatches = key === expectedKey
+        || (normalizedCodeKey !== null
+            && (event.altKey || !isPlainAsciiKey)
+            && normalizedCodeKey === expectedKey);
+    return keyMatches
         && event.ctrlKey === modifiers.has("ctrl")
         && event.metaKey === modifiers.has("meta")
         && event.altKey === modifiers.has("alt")

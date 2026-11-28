@@ -83,6 +83,16 @@ describe("clipboard input interactions", () => {
         expect(matchesKeyboardShortcut(new KeyboardEvent("keydown", {
             key: "Escape",
         }), "Esc")).toBe(true);
+        expect(matchesKeyboardShortcut(new KeyboardEvent("keydown", {
+            key: "√",
+            code: "KeyV",
+            altKey: true,
+        }), "Alt+V")).toBe(true);
+        expect(matchesKeyboardShortcut(new KeyboardEvent("keydown", {
+            key: "y",
+            code: "KeyZ",
+            ctrlKey: true,
+        }), "Control+Z")).toBe(false);
     });
 
     it("recognizes text-entry targets", () => {

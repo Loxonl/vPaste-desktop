@@ -100,10 +100,9 @@ void Animate(FrameworkElement const &element, float x, float y, Seconds duration
     // Loaded runs after the element joins the XAML tree and has a compositor.
     const auto play = [x, y, duration, delay, outgoing, underline](FrameworkElement const &target) {
         const auto compositor = CompositionTarget::GetCompositorForCurrentThread();
-        const auto curve = MotionTokens().GetNamedObject(L"easing").GetNamedArray(outgoing ? L"exit" : L"enter");
-        const auto easing = compositor.CreateCubicBezierEasingFunction(
-            {static_cast<float>(curve.GetNumberAt(0)), static_cast<float>(curve.GetNumberAt(1))},
-            {static_cast<float>(curve.GetNumberAt(2)), static_cast<float>(curve.GetNumberAt(3))});
+        const auto &timing = CachedMotionTiming();
+        const auto &curve = outgoing ? timing.easingExit : timing.easingEnter;
+        const auto easing = compositor.CreateCubicBezierEasingFunction({curve[0], curve[1]}, {curve[2], curve[3]});
         const auto configure = [duration, delay](auto const &animation, wchar_t const *property) {
             animation.Target(property);
             animation.Duration(std::chrono::duration_cast<TimeSpan>(duration));
@@ -164,8 +163,8 @@ struct OnboardingView::Impl : std::enable_shared_from_this<Impl> {
     ~Impl() { if (welcomeTimer) welcomeTimer.Stop(); }
 
     winrt::hstring Text(wchar_t const *zh, wchar_t const *en) const { return english ? en : zh; }
-    Seconds Duration(wchar_t const *name) const { return Seconds{MotionTokens().GetNamedObject(L"duration").GetNamedNumber(name)}; }
-    float Distance(wchar_t const *name) const { return static_cast<float>(MotionTokens().GetNamedObject(L"distance").GetNamedNumber(name)); }
+    Seconds Duration(wchar_t const *name) const { return Seconds{CachedMotionTiming().DurationByName(name)}; }
+    float Distance(wchar_t const *name) const { return CachedMotionTiming().DistanceByName(name); }
 
     std::uint64_t Send(wchar_t const *op, winrt::hstring const &filter = {}, bool enabled = false) {
         JsonObject payload;

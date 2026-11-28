@@ -373,7 +373,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         exitExpiry = winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().CreateTimer();
         exitExpiry.IsRepeating(false);
         exitExpiry.Interval(std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
-            std::chrono::duration<double>{MotionTokens().GetNamedObject(L"duration").GetNamedNumber(L"fast")}));
+            std::chrono::duration<double>{CachedMotionTiming().durationFast}));
         exitExpiry.Tick([weak](auto const &, auto const &) { if (auto self = weak.lock()) self->ClearExits(); });
         clearConfirmBar = Border();
         ApplyStyle(clearConfirmBar, L"VPaste.SelectionBar");
@@ -600,7 +600,7 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         if (AnimateRows()) {
             dragTransition = Vector3Transition{};
             dragTransition.Duration(std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
-                std::chrono::duration<double>{MotionTokens().GetNamedObject(L"duration").GetNamedNumber(L"fast")}));
+                std::chrono::duration<double>{CachedMotionTiming().durationFast}));
         }
         Canvas::SetZIndex(rowVisuals.at(hash).surface, 2);
         MovePointerReorder(y);
@@ -728,10 +728,8 @@ struct QueueView::Impl : std::enable_shared_from_this<QueueView::Impl> {
         Canvas::SetLeft(surface, point.X); Canvas::SetTop(surface, point.Y);
         exitingRows.Children().Append(surface);
         const auto compositor = CompositionTarget::GetCompositorForCurrentThread();
-        const auto curve = MotionTokens().GetNamedObject(L"easing").GetNamedArray(L"exit");
-        const auto easing = compositor.CreateCubicBezierEasingFunction(
-            {static_cast<float>(curve.GetNumberAt(0)), static_cast<float>(curve.GetNumberAt(1))},
-            {static_cast<float>(curve.GetNumberAt(2)), static_cast<float>(curve.GetNumberAt(3))});
+        const auto &curve = CachedMotionTiming().easingExit;
+        const auto easing = compositor.CreateCubicBezierEasingFunction({curve[0], curve[1]}, {curve[2], curve[3]});
         const auto animation = compositor.CreateScalarKeyFrameAnimation(); animation.Target(L"Opacity");
         animation.InsertKeyFrame(0, 1); animation.InsertKeyFrame(1, 0, easing);
         animation.Duration(exitExpiry.Interval()); surface.StartAnimation(animation);

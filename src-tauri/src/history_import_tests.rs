@@ -635,3 +635,50 @@ fn ordinary_image_and_textfile_import_paths_still_relocate() {
         assert_eq!(Path::new(&content), target.join("data/item"));
     }
 }
+
+#[test]
+fn custom_tabs_cache_stays_consistent_across_save_import_and_dir_switch() {
+    let _guard = TEST_APP_DATA_LOCK.lock().unwrap();
+    let root_a = tempfile::tempdir().unwrap();
+    let root_b = tempfile::tempdir().unwrap();
+    *GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(root_a.path().to_string_lossy().into_owned());
+    config::save(config::Config::default());
+
+    assert_eq!(get_custom_tabs().unwrap(), serde_json::json!([]));
+
+    let initial = serde_json::json!([
+        {"id": "tab-1", "name": "工作", "filter": {"itemType": "Text"}}
+    ]);
+    save_custom_tabs(initial.clone()).unwrap();
+    assert_eq!(get_custom_tabs().unwrap(), initial);
+
+    // 删除磁盘文件后再次读取仍应命中内存缓存，证实常规切标签不触发同步读盘。
+    let path_a = custom_tabs_path();
+    assert!(path_a.exists());
+    fs::remove_file(&path_a).unwrap();
+    assert_eq!(get_custom_tabs().unwrap(), initial);
+
+    // 写入新数据后应立即覆盖缓存。
+    let updated = serde_json::json!([
+        {"id": "tab-1", "name": "工作", "filter": {"itemType": "Text"}},
+        {"id": "tab-2", "name": "图片", "filter": {"itemType": "Image"}}
+    ]);
+    save_custom_tabs(updated.clone()).unwrap();
+    assert_eq!(get_custom_tabs().unwrap(), updated);
+
+    // 通过导入合并新增标签后，缓存应立即失效并读到最新合并结果。
+    let import_src = root_a.path().join("import-tabs.json");
+    fs::write(
+        &import_src,
+        r#"[{"id":"tab-3","name":"导入","filter":{"itemType":"Link"}}]"#,
+    )
+    .unwrap();
+    assert!(import_custom_tabs(&import_src, &path_a, None).unwrap());
+    let after_import = get_custom_tabs().unwrap();
+    assert_eq!(after_import.as_array().unwrap().len(), 3);
+    assert_eq!(after_import[2]["id"], "tab-3");
+
+    // 切换历史存储目录时，缓存按路径自动隔离，不会读到旧目录数据。
+    *GLOBAL_APP_DATA_DIR.lock().unwrap() = Some(root_b.path().to_string_lossy().into_owned());
+    assert_eq!(get_custom_tabs().unwrap(), serde_json::json!([]));
+}

@@ -8123,22 +8123,48 @@ fn list_language_packs() -> Result<Vec<LanguagePackFile>, String> {
     Ok(packs)
 }
 
+// 自定义筛选标签内存缓存（按文件路径隔离），消除每次切换自定义标签时的同步读盘与 JSON 反序列化。
+static CUSTOM_TABS_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<Option<(PathBuf, serde_json::Value)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+fn invalidate_custom_tabs_cache_for(path: &Path) {
+    if let Ok(mut guard) = CUSTOM_TABS_CACHE.lock() {
+        if guard.as_ref().is_some_and(|(cached, _)| cached == path) {
+            *guard = None;
+        }
+    }
+}
+
 #[tauri::command]
 fn get_custom_tabs() -> Result<serde_json::Value, String> {
-    ensure_history_storage_dirs()?;
     let path = custom_tabs_path();
-    if !path.exists() {
-        return Ok(serde_json::Value::Array(Vec::new()));
+    if let Ok(guard) = CUSTOM_TABS_CACHE.lock() {
+        if let Some((cached_path, cached_value)) = guard.as_ref() {
+            if cached_path == &path {
+                return Ok(cached_value.clone());
+            }
+        }
     }
-    let content = history_store::read_file(&path)
-        .and_then(|bytes| String::from_utf8(bytes).map_err(|err| err.to_string()))
-        .map_err(|err| err.to_string())?;
-    let value: serde_json::Value = serde_json::from_str(&content).map_err(|err| err.to_string())?;
-    Ok(if value.is_array() {
-        value
-    } else {
+    ensure_history_storage_dirs()?;
+    let value = if !path.exists() {
         serde_json::Value::Array(Vec::new())
-    })
+    } else {
+        let content = history_store::read_file(&path)
+            .and_then(|bytes| String::from_utf8(bytes).map_err(|err| err.to_string()))
+            .map_err(|err| err.to_string())?;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&content).map_err(|err| err.to_string())?;
+        if parsed.is_array() {
+            parsed
+        } else {
+            serde_json::Value::Array(Vec::new())
+        }
+    };
+    if let Ok(mut guard) = CUSTOM_TABS_CACHE.lock() {
+        *guard = Some((path, value.clone()));
+    }
+    Ok(value)
 }
 
 #[tauri::command]
@@ -8151,7 +8177,14 @@ fn save_custom_tabs(tabs: serde_json::Value) -> Result<(), String> {
         serde_json::Value::Array(Vec::new())
     };
     let content = serde_json::to_string_pretty(&value).map_err(|err| err.to_string())?;
-    history_store::write_file(path, content.as_bytes())
+    if let Err(err) = history_store::write_file(&path, content.as_bytes()) {
+        invalidate_custom_tabs_cache_for(&path);
+        return Err(err);
+    }
+    if let Ok(mut guard) = CUSTOM_TABS_CACHE.lock() {
+        *guard = Some((path, value));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -9112,6 +9145,7 @@ fn import_custom_tabs(
     if changed {
         let merged = serde_json::to_vec_pretty(&local).map_err(|err| err.to_string())?;
         history_store::write_file(target, &merged)?;
+        invalidate_custom_tabs_cache_for(target);
     }
     if let Some(progress) = progress {
         progress.add_file(bytes.len() as u64);

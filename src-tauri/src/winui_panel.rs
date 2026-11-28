@@ -1220,7 +1220,7 @@ async fn query_history(
             history_filter_label(&filter, &tag_name)
         };
         let (keywords, label) = search::resolve(&query, label);
-        let page = crate::clipboard::history_ref_page(
+        let page = crate::clipboard::history_ref_page_for_winui(
             &keywords,
             last_id,
             last_time,

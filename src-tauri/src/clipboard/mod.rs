@@ -720,6 +720,30 @@ pub(crate) fn history_ref_page(
         last_id,
         last_time,
         limit,
+        true,
+        is_current,
+        |id, time, limit, current| {
+            search_stored_batch_with_cancellation(keywords, id, time, limit, label, current)
+        },
+    )
+}
+
+// WinUI 列表摘要不消费 app_icon_path 与 title_color（均在可视区 card 详情按需下发），
+// 提供轻量投影跳过整页 36 次来源图标磁盘检查与主色计算。
+#[cfg_attr(not(feature = "winui"), allow(dead_code))]
+pub(crate) fn history_ref_page_for_winui(
+    keywords: &str,
+    last_id: u64,
+    last_time: u64,
+    limit: usize,
+    label: &str,
+    is_current: impl Fn() -> bool,
+) -> Result<Option<Page<crate::history_views::HistoryRef>>, String> {
+    collect_history_refs(
+        last_id,
+        last_time,
+        limit,
+        false,
         is_current,
         |id, time, limit, current| {
             search_stored_batch_with_cancellation(keywords, id, time, limit, label, current)
@@ -740,6 +764,7 @@ pub(crate) fn native_history_ref_page(
         last_id,
         last_time,
         limit,
+        true,
         is_current,
         |id, time, limit, current| {
             native_search_stored_batch(keywords, id, time, limit, label, current)
@@ -751,6 +776,7 @@ fn collect_history_refs(
     last_id: u64,
     last_time: u64,
     limit: usize,
+    include_source_artwork: bool,
     is_current: impl Fn() -> bool,
     fetch: impl Fn(u64, u64, usize, &dyn Fn() -> bool) -> Result<Option<Page<StoredItem>>, String>,
 ) -> Result<Option<Page<crate::history_views::HistoryRef>>, String> {
@@ -762,13 +788,26 @@ fn collect_history_refs(
             let Some(page) = fetch(id, time, remaining, &is_current)? else {
                 return Ok(None);
             };
-            let mut list = Vec::new();
+            let mut visible_stored = Vec::with_capacity(page.list.len());
             for stored in page.list {
                 if !is_current() {
                     return Ok(None);
                 }
                 if !history_text_visible(&stored.item_type, &stored.content, &stored.source) {
                     continue;
+                }
+                visible_stored.push(stored);
+            }
+            // 批量查询当前页全部记录的标签，消除逐条 36×N+1 SQLite 往返。
+            let ids = visible_stored
+                .iter()
+                .map(|stored| stored.id)
+                .collect::<Vec<_>>();
+            let mut tags_by_clipboard_id = tags_for_clipboard_ids(&ids).unwrap_or_default();
+            let mut list = Vec::with_capacity(visible_stored.len());
+            for stored in visible_stored {
+                if !is_current() {
+                    return Ok(None);
                 }
                 let mut item_type =
                     ItemType::from_str(&stored.item_type).map_err(|err| err.to_string())?;
@@ -778,10 +817,14 @@ fn collect_history_refs(
                 {
                     item_type = ItemType::File;
                 }
-                let tags = tags_for_clipboard_id(stored.id as i64).unwrap_or_default();
-                let app_icon_path = resolve_app_icon_path(&stored.app_source, stored.app_icon_path);
-                let title_color =
-                    app_icon_dominant_color(&app_icon_path).unwrap_or(stored.title_color);
+                let tags = tags_by_clipboard_id.remove(&stored.id).unwrap_or_default();
+                let (app_icon_path, title_color) = if include_source_artwork {
+                    let icon_path = resolve_app_icon_path(&stored.app_source, stored.app_icon_path);
+                    let color = app_icon_dominant_color(&icon_path).unwrap_or(stored.title_color);
+                    (icon_path, color)
+                } else {
+                    (stored.app_icon_path, stored.title_color)
+                };
                 let is_rich_text = rich_meta_from_source(&stored.source).is_some();
                 let link_resource = if item_type == ItemType::Link {
                     let mut parts = stored.content.split("|||");
@@ -1385,9 +1428,9 @@ fn build_filter_query(
     last_time: u64,
     limit: usize,
 ) -> (String, Vec<Value>) {
-    let mut clauses = vec!["(time < ? or (time = ? and id < ?))".to_string()];
+    // 使用行值比较 (time, id) < (?, ?) 让 SQLite 直接命中 (time DESC, id DESC) 复合索引范围扫描。
+    let mut clauses = vec!["(time, id) < (?, ?)".to_string()];
     let mut params = vec![
-        Value::Integer(last_time as i64),
         Value::Integer(last_time as i64),
         Value::Integer(last_id as i64),
     ];
@@ -1410,11 +1453,10 @@ fn build_indexed_filter_query(
     limit: usize,
 ) -> (String, Vec<Value>) {
     let mut clauses = vec![
-        "(time < ? or (time = ? and id < ?))".to_string(),
+        "(time, id) < (?, ?)".to_string(),
         format!("hash in ({})", vec!["?"; hashes.len()].join(", ")),
     ];
     let mut params = vec![
-        Value::Integer(last_time as i64),
         Value::Integer(last_time as i64),
         Value::Integer(last_id as i64),
     ];
@@ -4522,7 +4564,8 @@ mod tests {
             r#"__filter:{"mode":"custom","relative_amount":1000,"relative_unit":"month"}"#,
         );
         let (_, params) = build_filter_query(&filter, 0, 0, 10);
-        assert_eq!(params[3], Value::Integer(0));
+        // 行值游标 (time, id) < (?, ?) 占前 2 个参数，relative cutoff 位于 params[2]。
+        assert_eq!(params[2], Value::Integer(0));
     }
 
     #[test]
@@ -5977,7 +6020,8 @@ mod tests {
 
         let _: &String = &sql;
         assert!(sql.contains("app_source in (?, ?)"));
-        assert_eq!(params.len(), 6);
+        // 2 个行值游标参数 + 2 个 app_source 参数 + 1 个 limit 参数 = 5。
+        assert_eq!(params.len(), 5);
     }
 
     #[test]
@@ -6050,6 +6094,170 @@ mod tests {
             build_filter_query(&image_filter, i64::MAX as u64, i64::MAX as u64, 36);
         assert!(image_params.contains(&Value::Text("Image".into())));
         assert!(!image_params.contains(&Value::Text("File".into())));
+    }
+
+    #[test]
+    fn filter_queries_hit_composite_indexes_without_temp_btree_and_keep_cursor_order() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::init_schema(&conn).unwrap();
+        // 插入含相同 time 不同 id 的多条记录，验证行值游标与复合索引执行计划。
+        for (i, (time, item_type, label)) in [
+            (1000_i64, "Text", 0_i64),
+            (1000, "Image", 1),
+            (1000, "Text", 1),
+            (2000, "Image", 0),
+            (2000, "Text", 1),
+            (3000, "Image", 1),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            conn.execute(
+                "INSERT INTO clipboard(hash,time,content,preview_content,item_type,search_index,source,app_source,app_icon_path,title_color,label)
+                 VALUES(?1,?2,?3,?4,?5,1,'','Code','','',?6)",
+                rusqlite::params![format!("h-{i}"), time, format!("body-{i}"), format!("body-{i}"), item_type, label],
+            )
+            .unwrap();
+        }
+
+        let explain = |filter: &SearchFilter, last_id: u64, last_time: u64| -> Vec<String> {
+            let (sql, params) = build_filter_query(filter, last_id, last_time, 36);
+            let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            stmt.query_map(params_from_iter(params), |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+
+        let cases = [
+            (
+                "all",
+                SearchFilter {
+                    mode: Some("all".into()),
+                    ..Default::default()
+                },
+                "idx_clipboard_time_id",
+            ),
+            (
+                "favorite",
+                SearchFilter {
+                    mode: Some("favorite".into()),
+                    favorite: Some(true),
+                    ..Default::default()
+                },
+                "idx_clipboard_label_time_id",
+            ),
+            (
+                "image",
+                SearchFilter {
+                    mode: Some("all".into()),
+                    item_type: Some("Image".into()),
+                    ..Default::default()
+                },
+                "idx_clipboard_type_time_id",
+            ),
+        ];
+
+        for (name, filter, expected_index) in cases {
+            for (page_kind, last_id, last_time) in [
+                ("first_page", i64::MAX as u64, i64::MAX as u64),
+                ("next_page", 5_u64, 2000_u64),
+            ] {
+                let plans = explain(&filter, last_id, last_time);
+                let joined = plans.join(" | ");
+                assert!(
+                    joined.contains(expected_index),
+                    "{name}/{page_kind} 应命中索引 {expected_index}，实际计划：{joined}"
+                );
+                assert!(
+                    !joined.contains("USE TEMP B-TREE FOR ORDER BY"),
+                    "{name}/{page_kind} 不应出现临时 B-Tree 排序，实际计划：{joined}"
+                );
+            }
+        }
+
+        // 验证相同 time 下按 id DESC 翻页不漏行、不重行。
+        let all_filter = SearchFilter {
+            mode: Some("all".into()),
+            ..Default::default()
+        };
+        let (sql1, params1) = build_filter_query(&all_filter, i64::MAX as u64, i64::MAX as u64, 3);
+        let page1: Vec<(u64, u64)> = conn
+            .prepare(&sql1)
+            .unwrap()
+            .query_map(params_from_iter(params1), |row| {
+                Ok((row.get::<_, u64>("id")?, row.get::<_, u64>("time")?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(page1, vec![(6, 3000), (5, 2000), (4, 2000)]);
+
+        let (last_id, last_time) = *page1.last().unwrap();
+        let (sql2, params2) = build_filter_query(&all_filter, last_id, last_time, 10);
+        let page2: Vec<(u64, u64)> = conn
+            .prepare(&sql2)
+            .unwrap()
+            .query_map(params_from_iter(params2), |row| {
+                Ok((row.get::<_, u64>("id")?, row.get::<_, u64>("time")?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(page2, vec![(3, 1000), (2, 1000), (1, 1000)]);
+    }
+
+    #[test]
+    fn collect_history_refs_batches_tags_and_winui_projection_skips_source_artwork_io() {
+        let _guard = crate::TEST_APP_DATA_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        *crate::GLOBAL_APP_DATA_DIR.lock().unwrap() =
+            Some(root.path().to_string_lossy().into_owned());
+        crate::config::save(crate::config::Config::default());
+        db::try_init().unwrap();
+
+        let conn = db();
+        conn.execute_batch(
+            "INSERT INTO clipboard(id,hash,time,content,preview_content,item_type,search_index,source,app_source,app_icon_path,title_color,label)
+             VALUES (10,'ref-a',2000,'hello','hello','Text',1,'','Google Chrome','','',0),
+                    (11,'ref-b',1000,'world','world','Text',1,'','Visual Studio Code','','',1);
+             INSERT INTO tags(id,name,created_at,updated_at) VALUES (1,'beta',1,1),(2,'Alpha',1,1),(3,'gamma',1,1);
+             INSERT INTO clipboard_tags(clipboard_id,tag_id,created_at) VALUES (10,1,1),(10,2,1),(11,3,1);",
+        )
+        .unwrap();
+        drop(conn);
+
+        // React/通用路径与 WinUI 轻量路径返回的批量标签集合与排序应与单条查询完全等价。
+        let standard = history_ref_page("", 0, 0, 36, "__all", || true)
+            .unwrap()
+            .unwrap();
+        let winui = history_ref_page_for_winui("", 0, 0, 36, "__all", || true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(standard.list.len(), 2);
+        assert_eq!(winui.list.len(), 2);
+        fn tag_pairs(tags: &[ItemTag]) -> Vec<(i64, &str)> {
+            tags.iter().map(|tag| (tag.id, tag.name.as_str())).collect()
+        }
+        for (std_ref, winui_ref) in standard.list.iter().zip(winui.list.iter()) {
+            assert_eq!(std_ref.id, winui_ref.id);
+            assert_eq!(std_ref.hash, winui_ref.hash);
+            let single_tags = tags_for_clipboard_id(std_ref.id as i64).unwrap();
+            assert_eq!(tag_pairs(&std_ref.tags), tag_pairs(&single_tags));
+            assert_eq!(tag_pairs(&winui_ref.tags), tag_pairs(&single_tags));
+        }
+        assert_eq!(
+            winui.list[0]
+                .tags
+                .iter()
+                .map(|tag| tag.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Alpha", "beta"]
+        );
+        // 通用路径保留来源图标与主色解析；WinUI 轻量路径跳过来源图标/主色解析（保留库内原值）。
+        assert!(!standard.list[0].app_icon_path.is_empty());
+        assert!(winui.list[0].app_icon_path.is_empty());
+        assert!(winui.list[0].title_color.is_empty());
     }
 }
 

@@ -44,17 +44,106 @@ inline winrt::Windows::Data::Json::JsonObject MotionTokens() {
     return winrt::Windows::Data::Json::JsonObject::Parse(winrt::to_hstring(json));
 }
 
+// 纯 C++ POD 数值缓存：仅在首次访问时解析嵌入的 tokens.json，绝不持有任何静态 WinRT 对象，
+// 避免 DLL 卸载晚于 COM/Windows App Runtime 析构时发生进程退出崩溃。
+struct MotionTiming {
+    double durationQuick = 0.12;
+    double durationFast = 0.18;
+    double durationStandard = 0.24;
+    double durationSlow = 0.32;
+    float distanceSubtle = 6.0f;
+    float distanceStandard = 10.0f;
+    float distanceEmphasis = 16.0f;
+    double staggerTight = 0.018;
+    double continuousMarquee = 8.0;
+    double cardPreviewDelay = 0.32;
+    double cardPreviewMinDuration = 1.5;
+    double cardPreviewMaxDuration = 8.5;
+    double cardPreviewSecondsPerDip = 0.012;
+    double cardPreviewBottomPause = 0.9;
+    double cardPreviewRestartPause = 1.1;
+    double cardPreviewOverflowThreshold = 8.0;
+    double tabSpringStiffness = 1800.0;
+    double tabSpringDamping = 59.0;
+    double tabSpringMass = 0.65;
+    std::array<float, 4> easingEnter{0.22f, 1.0f, 0.36f, 1.0f};
+    std::array<float, 4> easingExit{0.4f, 0.0f, 1.0f, 1.0f};
+    std::array<float, 4> easingStandard{0.4f, 0.0f, 0.2f, 1.0f};
+
+    double DurationByName(std::wstring_view name) const noexcept {
+        if (name == L"quick") return durationQuick;
+        if (name == L"fast") return durationFast;
+        if (name == L"standard") return durationStandard;
+        if (name == L"slow") return durationSlow;
+        return durationStandard;
+    }
+
+    float DistanceByName(std::wstring_view name) const noexcept {
+        if (name == L"subtle") return distanceSubtle;
+        if (name == L"standard") return distanceStandard;
+        if (name == L"emphasis") return distanceEmphasis;
+        return distanceStandard;
+    }
+};
+
+inline MotionTiming const &CachedMotionTiming() {
+    static const MotionTiming cached = [] {
+        const auto tokens = MotionTokens();
+        const auto duration = tokens.GetNamedObject(L"duration");
+        const auto distance = tokens.GetNamedObject(L"distance");
+        const auto stagger = tokens.GetNamedObject(L"stagger");
+        const auto continuous = tokens.GetNamedObject(L"continuous");
+        const auto cardPreview = tokens.GetNamedObject(L"cardPreview");
+        const auto spring = tokens.GetNamedObject(L"spring").GetNamedObject(L"tabIndicator");
+        const auto easing = tokens.GetNamedObject(L"easing");
+        const auto readCurve = [&](wchar_t const *name) {
+            const auto curve = easing.GetNamedArray(name);
+            return std::array<float, 4>{
+                static_cast<float>(curve.GetNumberAt(0)),
+                static_cast<float>(curve.GetNumberAt(1)),
+                static_cast<float>(curve.GetNumberAt(2)),
+                static_cast<float>(curve.GetNumberAt(3)),
+            };
+        };
+        MotionTiming timing{};
+        timing.durationQuick = duration.GetNamedNumber(L"quick");
+        timing.durationFast = duration.GetNamedNumber(L"fast");
+        timing.durationStandard = duration.GetNamedNumber(L"standard");
+        timing.durationSlow = duration.GetNamedNumber(L"slow");
+        timing.distanceSubtle = static_cast<float>(distance.GetNamedNumber(L"subtle"));
+        timing.distanceStandard = static_cast<float>(distance.GetNamedNumber(L"standard"));
+        timing.distanceEmphasis = static_cast<float>(distance.GetNamedNumber(L"emphasis"));
+        timing.staggerTight = stagger.GetNamedNumber(L"tight");
+        timing.continuousMarquee = continuous.GetNamedNumber(L"marquee");
+        timing.cardPreviewDelay = cardPreview.GetNamedNumber(L"delay");
+        timing.cardPreviewMinDuration = cardPreview.GetNamedNumber(L"minDuration");
+        timing.cardPreviewMaxDuration = cardPreview.GetNamedNumber(L"maxDuration");
+        timing.cardPreviewSecondsPerDip = cardPreview.GetNamedNumber(L"secondsPerDip");
+        timing.cardPreviewBottomPause = cardPreview.GetNamedNumber(L"bottomPause");
+        timing.cardPreviewRestartPause = cardPreview.GetNamedNumber(L"restartPause");
+        timing.cardPreviewOverflowThreshold = cardPreview.GetNamedNumber(L"overflowThreshold");
+        timing.tabSpringStiffness = spring.GetNamedNumber(L"stiffness");
+        timing.tabSpringDamping = spring.GetNamedNumber(L"damping");
+        timing.tabSpringMass = spring.GetNamedNumber(L"mass");
+        timing.easingEnter = readCurve(L"enter");
+        timing.easingExit = readCurve(L"exit");
+        timing.easingStandard = readCurve(L"standard");
+        return timing;
+    }();
+    return cached;
+}
+
 inline bool NativeAnimationsEnabled() {
     return winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled();
 }
 
 inline winrt::Microsoft::UI::Composition::SpringVector2NaturalMotionAnimation SelectionSpring(
     winrt::Microsoft::UI::Composition::Compositor const &compositor) {
-    const auto spring = MotionTokens().GetNamedObject(L"spring").GetNamedObject(L"tabIndicator");
-    const auto stiffness = spring.GetNamedNumber(L"stiffness");
-    const auto mass = spring.GetNamedNumber(L"mass");
+    const auto &timing = CachedMotionTiming();
+    const auto stiffness = timing.tabSpringStiffness;
+    const auto mass = timing.tabSpringMass;
     const auto animation = compositor.CreateSpringVector2Animation();
-    animation.DampingRatio(static_cast<float>(std::min(1.0, spring.GetNamedNumber(L"damping") /
+    animation.DampingRatio(static_cast<float>(std::min(1.0, timing.tabSpringDamping /
         (2 * std::sqrt(stiffness * mass)))));
     animation.Period(std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
         std::chrono::duration<double>{2 * std::acos(-1.0) * std::sqrt(mass / stiffness)}));
@@ -75,19 +164,17 @@ inline bool AnimateResultItem(winrt::Microsoft::UI::Xaml::FrameworkElement const
     element.Translation({0, 0, 0});
     if (!enabled || !element.IsLoaded()) return false;
     const auto compositor = winrt::Microsoft::UI::Xaml::Media::CompositionTarget::GetCompositorForCurrentThread();
-    const auto tokens = MotionTokens();
-    const auto curve = tokens.GetNamedObject(L"easing").GetNamedArray(L"enter");
-    const auto easing = compositor.CreateCubicBezierEasingFunction(
-        {static_cast<float>(curve.GetNumberAt(0)), static_cast<float>(curve.GetNumberAt(1))},
-        {static_cast<float>(curve.GetNumberAt(2)), static_cast<float>(curve.GetNumberAt(3))});
+    const auto &timing = CachedMotionTiming();
+    const auto &curve = timing.easingEnter;
+    const auto easing = compositor.CreateCubicBezierEasingFunction({curve[0], curve[1]}, {curve[2], curve[3]});
     const auto animation = compositor.CreateVector3KeyFrameAnimation();
     animation.Target(L"Translation");
-    animation.InsertKeyFrame(0, {static_cast<float>(tokens.GetNamedObject(L"distance").GetNamedNumber(L"emphasis")), 0, 0});
+    animation.InsertKeyFrame(0, {timing.distanceEmphasis, 0, 0});
     animation.InsertKeyFrame(1, {0, 0, 0}, easing);
     animation.Duration(std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
-        std::chrono::duration<double>{tokens.GetNamedObject(L"duration").GetNamedNumber(L"slow")}));
+        std::chrono::duration<double>{timing.durationSlow}));
     animation.DelayTime(std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
-        std::chrono::duration<double>{(index % 12) * tokens.GetNamedObject(L"stagger").GetNamedNumber(L"tight")}));
+        std::chrono::duration<double>{(index % 12) * timing.staggerTight}));
     animation.DelayBehavior(winrt::Microsoft::UI::Composition::AnimationDelayBehavior::SetInitialValueBeforeDelay);
     element.StartAnimation(animation);
     element.Resources().Insert(key, animation);
@@ -115,17 +202,15 @@ inline bool FadeFeedback(winrt::Microsoft::UI::Xaml::FrameworkElement const &ele
     // Keep opacity and ThemeShadow's Translation on the XAML animation facade.
     // Mixing it with GetElementVisual breaks hit testing on elevated surfaces.
     const auto compositor = winrt::Microsoft::UI::Xaml::Media::CompositionTarget::GetCompositorForCurrentThread();
-    const auto tokens = MotionTokens();
-    const auto curve = tokens.GetNamedObject(L"easing").GetNamedArray(L"enter");
-    const auto easing = compositor.CreateCubicBezierEasingFunction(
-        {static_cast<float>(curve.GetNumberAt(0)), static_cast<float>(curve.GetNumberAt(1))},
-        {static_cast<float>(curve.GetNumberAt(2)), static_cast<float>(curve.GetNumberAt(3))});
+    const auto &timing = CachedMotionTiming();
+    const auto &curve = timing.easingEnter;
+    const auto easing = compositor.CreateCubicBezierEasingFunction({curve[0], curve[1]}, {curve[2], curve[3]});
     const auto animation = compositor.CreateScalarKeyFrameAnimation();
     animation.Target(L"Opacity");
     animation.InsertKeyFrame(0, 0);
     animation.InsertKeyFrame(1, 1, easing);
     animation.Duration(std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
-        std::chrono::duration<double>{tokens.GetNamedObject(L"duration").GetNamedNumber(L"fast")}));
+        std::chrono::duration<double>{timing.durationFast}));
     element.StartAnimation(animation);
     element.Resources().Insert(winrt::box_value(FeedbackAnimationResource), animation);
     return true;

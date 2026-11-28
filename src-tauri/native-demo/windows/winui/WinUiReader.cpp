@@ -550,14 +550,12 @@ struct Reader::Impl : std::enable_shared_from_this<Reader::Impl> {
         displayed.Opacity(1);
         if (!enabled || !NativeAnimationsEnabled()) { FinishContentTransition(); return; }
         const auto compositor = CompositionTarget::GetCompositorForCurrentThread();
-        const auto tokens = MotionTokens();
-        const auto curve = tokens.GetNamedObject(L"easing").GetNamedArray(L"enter");
-        const auto contentEasing = compositor.CreateCubicBezierEasingFunction(
-            {static_cast<float>(curve.GetNumberAt(0)), static_cast<float>(curve.GetNumberAt(1))},
-            {static_cast<float>(curve.GetNumberAt(2)), static_cast<float>(curve.GetNumberAt(3))});
+        const auto &timing = CachedMotionTiming();
+        const auto &curve = timing.easingEnter;
+        const auto contentEasing = compositor.CreateCubicBezierEasingFunction({curve[0], curve[1]}, {curve[2], curve[3]});
         auto batch = compositor.CreateScopedBatch(winrt::Microsoft::UI::Composition::CompositionBatchTypes::Animation);
         const auto duration = std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
-            std::chrono::duration<double>{tokens.GetNamedObject(L"duration").GetNamedNumber(L"fast")});
+            std::chrono::duration<double>{timing.durationFast});
         contentEnter = compositor.CreateScalarKeyFrameAnimation(); contentEnter.Target(L"Opacity");
         contentEnter.InsertKeyFrame(0, 0); contentEnter.InsertKeyFrame(1, 1, contentEasing); contentEnter.Duration(duration);
         contentExit = compositor.CreateScalarKeyFrameAnimation(); contentExit.Target(L"Opacity");

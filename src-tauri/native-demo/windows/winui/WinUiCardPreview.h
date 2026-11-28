@@ -52,18 +52,17 @@ class AutoScrollCardPreview : public std::enable_shared_from_this<AutoScrollCard
         if (!animation) return;
         const auto end = args.EndPosition();
         const auto compositor = animation.Compositor();
+        const auto &timing = CachedMotionTiming();
         if (toBottom_) {
-            const auto timing = MotionTokens().GetNamedObject(L"cardPreview");
-            animation.Duration(Duration(std::clamp(overflow_ * timing.GetNamedNumber(L"secondsPerDip"),
-                timing.GetNamedNumber(L"minDuration"), timing.GetNamedNumber(L"maxDuration"))));
+            animation.Duration(Duration(std::clamp(overflow_ * timing.cardPreviewSecondsPerDip,
+                timing.cardPreviewMinDuration, timing.cardPreviewMaxDuration)));
             animation.InsertKeyFrame(1, {end.x, end.y, 0}, compositor.CreateLinearEasingFunction());
             return;
         }
-        animation.Duration(Duration(MotionTokens().GetNamedObject(L"duration").GetNamedNumber(L"fast")));
-        const auto curve = MotionTokens().GetNamedObject(L"easing").GetNamedArray(L"standard");
+        animation.Duration(Duration(timing.durationFast));
+        const auto &curve = timing.easingStandard;
         animation.InsertKeyFrame(1, {end.x, end.y, 0}, compositor.CreateCubicBezierEasingFunction(
-            {static_cast<float>(curve.GetNumberAt(0)), static_cast<float>(curve.GetNumberAt(1))},
-            {static_cast<float>(curve.GetNumberAt(2)), static_cast<float>(curve.GetNumberAt(3))}));
+            {curve[0], curve[1]}, {curve[2], curve[3]}));
     }
     void Refresh() {
         if (!active_ || !visible_ || !viewport.IsLoaded() || !motionEnabled_ || viewport.ViewportHeight() <= 0) {
@@ -72,10 +71,10 @@ class AutoScrollCardPreview : public std::enable_shared_from_this<AutoScrollCard
         const auto overflow = viewport.ScrollableHeight();
         if (overflow_ > 0 && std::abs(overflow_ - overflow) < 0.5) return;
         Stop();
-        const auto timing = MotionTokens().GetNamedObject(L"cardPreview");
-        if (overflow <= timing.GetNamedNumber(L"overflowThreshold")) return;
+        const auto &timing = CachedMotionTiming();
+        if (overflow <= timing.cardPreviewOverflowThreshold) return;
         overflow_ = overflow;
-        Schedule(true, timing.GetNamedNumber(L"delay"));
+        Schedule(true, timing.cardPreviewDelay);
     }
 public:
     winrt::Microsoft::UI::Xaml::Controls::ScrollView viewport;
@@ -109,8 +108,8 @@ public:
         self->viewport.ScrollCompleted([weak](auto const &, auto const &args) {
             if (auto s = weak.lock(); s && s->request_ >= 0 && args.CorrelationId() == s->request_) {
                 s->request_ = -1;
-                const auto timing = MotionTokens().GetNamedObject(L"cardPreview");
-                s->Schedule(!s->toBottom_, timing.GetNamedNumber(s->toBottom_ ? L"bottomPause" : L"restartPause"));
+                const auto &timing = CachedMotionTiming();
+                s->Schedule(!s->toBottom_, s->toBottom_ ? timing.cardPreviewBottomPause : timing.cardPreviewRestartPause);
             }
         });
         self->viewport.Unloaded([weak](auto const &, auto const &) { if (auto s = weak.lock()) s->Stop(); });
@@ -160,7 +159,7 @@ class CardRecordTags : public std::enable_shared_from_this<CardRecordTags> {
         animation_.InsertKeyFrame(0, {0, 0, 0});
         animation_.InsertKeyFrame(1, {static_cast<float>(-distance), 0, 0}, compositor.CreateLinearEasingFunction());
         animation_.Duration(std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
-            std::chrono::duration<double>{MotionTokens().GetNamedObject(L"continuous").GetNamedNumber(L"marquee")}));
+            std::chrono::duration<double>{CachedMotionTiming().continuousMarquee}));
         animation_.IterationBehavior(winrt::Microsoft::UI::Composition::AnimationIterationBehavior::Forever);
         track_.StartAnimation(animation_);
     }

@@ -150,6 +150,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     )?;
     if has_tables {
         validate_schema(conn)?;
+        ensure_clipboard_query_indexes(conn)?;
         crate::image_ocr::init_schema(conn)?;
         super::source_metadata::init_schema(conn)?;
         init_tab_order(conn)?;
@@ -249,10 +250,20 @@ create unique index if not exists hash on clipboard(hash);
     ";
     let transaction = conn.unchecked_transaction()?;
     transaction.execute_batch(sql)?;
+    ensure_clipboard_query_indexes(&transaction)?;
     crate::image_ocr::init_schema(&transaction)?;
     init_tab_order(&transaction)?;
     transaction.pragma_update(None, "user_version", HISTORY_SCHEMA_VERSION)?;
     transaction.commit()
+}
+
+// 为按时间排序、收藏筛选和类型筛选提供复合索引，消除标签切换时的全表扫描与临时 B-Tree 排序。
+fn ensure_clipboard_query_indexes(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_clipboard_time_id ON clipboard(time DESC, id DESC);
+         CREATE INDEX IF NOT EXISTS idx_clipboard_label_time_id ON clipboard(label, time DESC, id DESC);
+         CREATE INDEX IF NOT EXISTS idx_clipboard_type_time_id ON clipboard(item_type, time DESC, id DESC);",
+    )
 }
 
 // Order of the dynamic toolbar tabs (filter tabs and record tags) by tab id.
@@ -797,5 +808,67 @@ mod tests {
             )
             .unwrap();
         assert_eq!(saved, ("saved".to_string(), 0, 123, "payload".to_string()));
+    }
+
+    #[test]
+    fn clipboard_query_indexes_are_created_for_new_and_legacy_databases_without_breaking_reopen() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let expected_indexes = [
+            "idx_clipboard_time_id",
+            "idx_clipboard_label_time_id",
+            "idx_clipboard_type_time_id",
+        ];
+        let existing_indexes = |conn: &Connection| -> Vec<String> {
+            conn.prepare("SELECT name FROM pragma_index_list('clipboard')")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        let created = existing_indexes(&connection);
+        for index in expected_indexes {
+            assert!(
+                created.iter().any(|name| name == index),
+                "新库应创建复合索引 {index}，当前索引：{created:?}"
+            );
+        }
+
+        // 模拟老库升级：删除辅助索引后再次 init_schema，应原地补齐索引且保留数据并兼容 validate_schema。
+        connection
+            .execute_batch(
+                "INSERT INTO clipboard(hash,time,content,item_type,label) VALUES('legacy',42,'body','Text',1);
+                 DROP INDEX idx_clipboard_time_id;
+                 DROP INDEX idx_clipboard_label_time_id;
+                 DROP INDEX idx_clipboard_type_time_id;",
+            )
+            .unwrap();
+        super::validate_schema(&connection).unwrap();
+        init_schema(&connection).unwrap();
+        let upgraded = existing_indexes(&connection);
+        for index in expected_indexes {
+            assert!(
+                upgraded.iter().any(|name| name == index),
+                "老库升级后应补齐复合索引 {index}，当前索引：{upgraded:?}"
+            );
+        }
+        // 再次重开不应导致 schema_version 递增（不重复建索引）。
+        let before_schema_version: i64 = connection
+            .pragma_query_value(None, "schema_version", |row| row.get(0))
+            .unwrap();
+        init_schema(&connection).unwrap();
+        let after_schema_version: i64 = connection
+            .pragma_query_value(None, "schema_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(before_schema_version, after_schema_version);
+        let kept: String = connection
+            .query_row(
+                "SELECT content FROM clipboard WHERE hash='legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, "body");
     }
 }

@@ -2539,23 +2539,30 @@ fn activate_native_window(window: &tauri::WebviewWindow, context: &str) {
     let window_clone = window.clone();
     let context_for_thread = context.to_string();
     if let Err(err) = window.run_on_main_thread(move || unsafe {
-        let app = NSApplication::sharedApplication(nil);
-        if app != nil {
-            app.activateIgnoringOtherApps_(YES);
-        }
-
         match window_clone.ns_window() {
             Ok(ns_window) => {
                 let ns_window = ns_window as id;
                 if ns_window != nil {
                     ns_window.orderFrontRegardless();
+                }
+                let app = NSApplication::sharedApplication(nil);
+                if app != nil {
+                    app.activateIgnoringOtherApps_(YES);
+                }
+                if ns_window != nil {
                     ns_window.makeKeyAndOrderFront_(nil);
                 }
             }
-            Err(err) => error!(
-                "Failed to get macOS native window for {}: {:?}",
-                context_for_thread, err
-            ),
+            Err(err) => {
+                let app = NSApplication::sharedApplication(nil);
+                if app != nil {
+                    app.activateIgnoringOtherApps_(YES);
+                }
+                error!(
+                    "Failed to get macOS native window for {}: {:?}",
+                    context_for_thread, err
+                )
+            }
         }
     }) {
         error!(
@@ -15936,9 +15943,7 @@ fn main() {
                 let _ = build_clipboard_window(app.handle())?;
             }
             #[cfg(target_os = "macos")]
-            if main_panel_mode::native() {
-                hide_macos_dock_icon();
-            }
+            hide_macos_dock_icon();
             initialize_paste_queue_worker(app.handle());
             get_app_data_dir();
             let handle = app.handle().clone();

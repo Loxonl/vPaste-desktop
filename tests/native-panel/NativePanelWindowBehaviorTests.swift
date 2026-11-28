@@ -182,6 +182,47 @@ final class NativePanelWindowBehaviorTests: XCTestCase {
     XCTAssertTrue(panel.canBecomeKey)
   }
 
+  func testDockedWindowIsNonActivatingFullscreenOverlay() {
+    _ = NSApplication.shared
+    let panel = NativeHistoryPanel(dockedFrame: NSRect(x: 0, y: 0, width: 1200, height: 302))
+    defer { panel.close() }
+    XCTAssertTrue(panel.styleMask.contains(.nonactivatingPanel))
+    XCTAssertTrue(panel.isFloatingPanel)
+    XCTAssertFalse(panel.becomesKeyOnlyIfNeeded)
+    XCTAssertFalse(panel.hidesOnDeactivate)
+    XCTAssertEqual(panel.level, NSWindow.Level(rawValue: 103))
+    XCTAssertTrue(panel.collectionBehavior.contains(.canJoinAllSpaces))
+    XCTAssertTrue(panel.collectionBehavior.contains(.fullScreenAuxiliary))
+    XCTAssertTrue(panel.collectionBehavior.contains(.ignoresCycle))
+  }
+
+  func testToolbarHostingViewAcceptsFirstMouseForInactiveAppClicks() {
+    _ = NSApplication.shared
+    if #available(macOS 12.0, *) {
+      let host = PanelSwiftUIToolbarHost(scale: 1, chinese: false, search: NSSearchField(), developerTools: false)
+      XCTAssertTrue(host.acceptsFirstMouse(for: nil))
+    }
+  }
+
+  func testNonActivatingPanelForwardsStandardTextEditingShortcuts() throws {
+    _ = NSApplication.shared
+    let panel = NativeHistoryPanel(dockedFrame: NSRect(x: 0, y: 0, width: 800, height: 302))
+    defer { panel.close() }
+    let field = NSSearchField(frame: NSRect(x: 10, y: 10, width: 200, height: 24))
+    field.stringValue = "hello world"
+    panel.contentView?.addSubview(field)
+    panel.makeFirstResponder(field)
+    let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+    editor.selectedRange = NSRange(location: 0, length: 0)
+    let selectAll = try XCTUnwrap(NSEvent.keyEvent(
+      with: .keyDown, location: .zero, modifierFlags: [.command],
+      timestamp: 0, windowNumber: panel.windowNumber, context: nil,
+      characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0
+    ))
+    XCTAssertTrue(panel.performKeyEquivalent(with: selectAll))
+    XCTAssertEqual(editor.selectedRange.length, 11)
+  }
+
   func testSizePreviewCannotTakeKeyboardOrMainWindowFocus() {
     _ = NSApplication.shared
     let panel = NativeHistoryPanel(dockedFrame: NSRect(x: -12, y: 0, width: 1944, height: 302))

@@ -201,6 +201,7 @@ final class PanelOnboardingHost: NSHostingView<PanelOnboardingView> {
   let model: PanelOnboardingModel
   override var acceptsFirstResponder: Bool { false }
   override var canBecomeKeyView: Bool { false }
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
   init(state: PanelOnboardingState, chinese: Bool, scale: CGFloat) {
     model = PanelOnboardingModel(state: state, chinese: chinese, scale: scale)
     super.init(rootView: PanelOnboardingView(model: model))

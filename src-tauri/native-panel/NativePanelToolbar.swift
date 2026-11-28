@@ -273,6 +273,7 @@ final class PanelToolbarState: ObservableObject {
 class PanelToolbarHostingView<Content: View>: NSHostingView<Content> {
   override var acceptsFirstResponder: Bool { false }
   override var canBecomeKeyView: Bool { false }
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 @available(macOS 12.0, *)

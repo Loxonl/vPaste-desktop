@@ -1,7 +1,13 @@
 import * as React from "react";
 import { ButtonBase, Stack, Switch } from "@mui/material";
 import { error } from "@tauri-apps/plugin-log";
-import { formatShortcutLabel, getModifierDisplayLabel, isMacPlatform, isWindowsPlatform } from "../../shortcutDisplay";
+import {
+    formatShortcutLabel,
+    getModifierDisplayLabel,
+    isMacPlatform,
+    isWindowsPlatform,
+    resolveShortcutKeyFromCode,
+} from "../../shortcutDisplay";
 import type { SettingsBridge } from "../SettingsBridge";
 import type { SettingsSectionProps, Shortcutkey, ShortcutRegistrationInfo, SettingsSaveInfo, TFunction } from "../settingsTypes";
 import { classes } from "../../ui/classNames";
@@ -68,8 +74,72 @@ function isReservedPasteAsTextShortcut(value: string) {
         || ["enter", "f2"].includes(normalizeShortcutForPolicy(value));
 }
 
-function isUnsupportedRecordedKey(event?: React.KeyboardEvent) {
-    return event?.key === "Dead" || event?.key === "Unidentified" || event?.key === "Process";
+const MODIFIER_KEYS = new Set(["META", "CONTROL", "ALT", "SHIFT", "ALTGRAPH", "OS"]);
+const MODIFIER_CODES = new Set([
+    "MetaLeft", "MetaRight",
+    "ControlLeft", "ControlRight",
+    "AltLeft", "AltRight",
+    "ShiftLeft", "ShiftRight",
+]);
+const UNSUPPORTED_RECORDED_KEYS = new Set(["dead", "unidentified", "process"]);
+const NAMED_RECORDED_KEYS: Record<string, string> = {
+    enter: "Enter",
+    return: "Enter",
+    tab: "Tab",
+    backspace: "Backspace",
+    delete: "Delete",
+    del: "Delete",
+    insert: "Insert",
+    home: "Home",
+    end: "End",
+    pageup: "PageUp",
+    pagedown: "PageDown",
+    arrowup: "ArrowUp",
+    arrowdown: "ArrowDown",
+    arrowleft: "ArrowLeft",
+    arrowright: "ArrowRight",
+};
+
+function normalizePlainRecordedKey(rawKey: string): string | null {
+    if (rawKey === " " || rawKey === "Spacebar") return "Space";
+    if (/^[a-zA-Z0-9]$/.test(rawKey)) return rawKey.toUpperCase();
+    if (/^[-=[\]\\;'`,./]$/.test(rawKey)) return rawKey;
+    if (/^F(?:[1-9]|1[0-9]|2[0-4])$/i.test(rawKey)) return rawKey.toUpperCase();
+    return NAMED_RECORDED_KEYS[rawKey.toLowerCase()] ?? null;
+}
+
+function resolveRecordedKey(event: React.KeyboardEvent): string | null {
+    const rawKey = event.key || "";
+    if (MODIFIER_KEYS.has(rawKey.toUpperCase()) || MODIFIER_CODES.has(event.code || "")) {
+        return null;
+    }
+
+    const codeKey = resolveShortcutKeyFromCode(event.code);
+
+    // On macOS, Option (Alt) composes characters or dead keys (e.g. Option+V -> "√",
+    // Option+E -> "Dead", Option+Space -> "\u00A0"), so resolve via physical code first.
+    if (isMacPlatform() && event.altKey && codeKey) {
+        return codeKey;
+    }
+
+    const plainKey = normalizePlainRecordedKey(rawKey);
+    if (plainKey) {
+        return plainKey;
+    }
+
+    if (codeKey) {
+        return codeKey;
+    }
+
+    return rawKey.length === 1
+        ? rawKey.toUpperCase()
+        : formatShortcutLabel(rawKey).replace(/\s\+\s/g, "+");
+}
+
+function isUnsupportedRecordedKey(value: string) {
+    return normalizeShortcutForPolicy(value)
+        .split("+")
+        .some(part => UNSUPPORTED_RECORDED_KEYS.has(part));
 }
 
 function getErrorText(errorValue: unknown): string {
@@ -82,7 +152,7 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
     const quickInputModifier = getModifierDisplayLabel("alt");
 
     const validateMainWindowShortcut = (value: string, event?: React.KeyboardEvent) => {
-        if (isUnsupportedRecordedKey(event)) {
+        if (isUnsupportedRecordedKey(value)) {
             return t("settings.shortcut.invalid");
         }
         if (!hasShortcutModifier(value)) {
@@ -108,7 +178,7 @@ export default function ShortcutSettings({ bridge, config, t, onSave }: Settings
     };
 
     const validatePasteAsTextShortcut = (value: string, event?: React.KeyboardEvent) => {
-        if (isUnsupportedRecordedKey(event)) {
+        if (isUnsupportedRecordedKey(value)) {
             return t("settings.shortcut.invalid");
         }
         if (isReservedQuickInputShortcut(value) || isReservedQuickInputShortcutEvent(event)) {
@@ -334,11 +404,8 @@ function ShortcutItem({ label, value, nativeRecordingBridge, onChange, onRecordi
         if (e.altKey) modifiers.push('Alt');
         if (e.shiftKey) modifiers.push('Shift');
 
-        const rawKey = e.key;
-        const keyUpper = rawKey.toUpperCase();
-        if (['META', 'CONTROL', 'ALT', 'SHIFT'].includes(keyUpper)) return;
-
-        const key = rawKey === " " ? "Space" : rawKey.length === 1 ? rawKey.toUpperCase() : formatShortcutLabel(rawKey).replace(/\s\+\s/g, "+");
+        const key = resolveRecordedKey(e);
+        if (!key) return;
         const shortcut = [...modifiers, key].join('+');
         saveShortcut(shortcut, e);
     };

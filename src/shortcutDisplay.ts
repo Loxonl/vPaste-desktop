@@ -1,5 +1,43 @@
 const MAC_PLATFORM_PATTERNS = ["mac", "darwin", "os x"];
 
+const CODE_TO_SHORTCUT_KEY: Record<string, string> = {
+    Space: "Space",
+    Enter: "Enter",
+    NumpadEnter: "Enter",
+    Tab: "Tab",
+    Backspace: "Backspace",
+    Delete: "Delete",
+    Insert: "Insert",
+    Home: "Home",
+    End: "End",
+    PageUp: "PageUp",
+    PageDown: "PageDown",
+    ArrowUp: "ArrowUp",
+    ArrowDown: "ArrowDown",
+    ArrowLeft: "ArrowLeft",
+    ArrowRight: "ArrowRight",
+    Minus: "-",
+    Equal: "=",
+    BracketLeft: "[",
+    BracketRight: "]",
+    Backslash: "\\",
+    Semicolon: ";",
+    Quote: "'",
+    Backquote: "`",
+    Comma: ",",
+    Period: ".",
+    Slash: "/",
+};
+
+export function resolveShortcutKeyFromCode(code?: string): string | null {
+    if (!code) return null;
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+    if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+    if (/^F(?:[1-9]|1[0-9]|2[0-4])$/.test(code)) return code;
+    if (/^Numpad[0-9]$/.test(code)) return code;
+    return CODE_TO_SHORTCUT_KEY[code] ?? null;
+}
+
 type NavigatorWithUserAgentData = Navigator & {
     userAgentData?: {
         platform?: string;

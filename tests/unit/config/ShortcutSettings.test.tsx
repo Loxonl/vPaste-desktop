@@ -221,4 +221,109 @@ describe("Shortcut settings recorder", () => {
         expect(alert).toHaveTextContent("settings.shortcut.requiresModifier");
         expect(recorder).toHaveAttribute("aria-describedby", alert.id);
     });
+
+    it("records Option + V on macOS via physical key code instead of the composed √ character", async () => {
+        vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+        const invoke = vi.fn(async (command: string) => {
+            if (command === "check_main_shortcut_registration") return { registered: true, conflict: false };
+            return null;
+        });
+        const bridge: SettingsBridge = {
+            invoke: invoke as SettingsBridge["invoke"],
+            listen: vi.fn(async () => () => undefined) as unknown as SettingsBridge["listen"],
+            open: vi.fn(),
+            save: vi.fn(),
+            convertFileSrc: vi.fn(path => path),
+            startWindowDragging: vi.fn(),
+            hideWindow: vi.fn(),
+        };
+        const onSave = vi.fn(async () => null);
+        render(
+            <AppThemeProvider>
+                <ShortcutSettings bridge={bridge} config={DEFAULT_CONFIG} onSave={onSave} t={key => key} />
+            </AppThemeProvider>,
+        );
+
+        await userEvent.setup().click(screen.getByRole("button", { name: /settings\.shortcuts\.main.*Option \+ V/ }));
+        const recorder = await screen.findByRole("button", { name: /settings\.shortcuts\.main.*settings\.shortcut\.recording/ });
+        fireEvent.keyDown(recorder, { key: "√", code: "KeyV", altKey: true });
+
+        await waitFor(() => expect(invoke).toHaveBeenCalledWith("check_main_shortcut_registration", { shortcut: "Alt+V" }));
+        await waitFor(() => expect(onSave).toHaveBeenCalledWith({
+            ...DEFAULT_CONFIG,
+            shortcut_keys: {
+                ...DEFAULT_CONFIG.shortcut_keys,
+                main_window: "Alt+V",
+            },
+        }));
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it.each([
+        ["Option + Shift + V", { key: "◊", code: "KeyV", altKey: true, shiftKey: true }, "Alt+Shift+V"],
+        ["Option + E dead key", { key: "Dead", code: "KeyE", altKey: true }, "Alt+E"],
+        ["Ctrl + Shift + 1", { key: "!", code: "Digit1", ctrlKey: true, shiftKey: true }, "Control+Shift+1"],
+        ["Ctrl + Shift + =", { key: "+", code: "Equal", ctrlKey: true, shiftKey: true }, "Control+Shift+="],
+    ])("resolves physical key codes for %s on macOS", async (_label, eventInit, expected) => {
+        vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+        const invoke = vi.fn(async () => ({ registered: true, conflict: false }));
+        const bridge: SettingsBridge = {
+            invoke: invoke as SettingsBridge["invoke"],
+            listen: vi.fn(async () => () => undefined) as unknown as SettingsBridge["listen"],
+            open: vi.fn(),
+            save: vi.fn(),
+            convertFileSrc: vi.fn(path => path),
+            startWindowDragging: vi.fn(),
+            hideWindow: vi.fn(),
+        };
+        const onSave = vi.fn(async () => null);
+        render(
+            <AppThemeProvider>
+                <ShortcutSettings bridge={bridge} config={DEFAULT_CONFIG} onSave={onSave} t={key => key} />
+            </AppThemeProvider>,
+        );
+
+        await userEvent.setup().click(screen.getByRole("button", { name: /settings\.shortcuts\.pasteQueue/ }));
+        const recorder = await screen.findByRole("button", { name: /settings\.shortcuts\.pasteQueue.*settings\.shortcut\.recording/ });
+        fireEvent.keyDown(recorder, eventInit);
+
+        await waitFor(() => expect(onSave).toHaveBeenCalledWith({
+            ...DEFAULT_CONFIG,
+            shortcut_keys: {
+                ...DEFAULT_CONFIG.shortcut_keys,
+                paste_queue_toggle: expected,
+            },
+        }));
+    });
+
+    it.each([
+        ["Option + Space", { key: "\u00A0", code: "Space", altKey: true }, "settings.shortcut.unsupportedSystem"],
+        ["Option + 1", { key: "¡", code: "Digit1", altKey: true }, "settings.shortcut.quickInputConflict"],
+        ["Option + 5 (German layout)", { key: "[", code: "Digit5", altKey: true }, "settings.shortcut.quickInputConflict"],
+        ["unresolvable Dead key", { key: "Dead", code: "", altKey: true }, "settings.shortcut.invalid"],
+    ])("still enforces shortcut policies for %s on macOS", async (_label, eventInit, expectedAlert) => {
+        vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+        const bridge: SettingsBridge = {
+            invoke: vi.fn(async () => null) as SettingsBridge["invoke"],
+            listen: vi.fn(async () => () => undefined) as unknown as SettingsBridge["listen"],
+            open: vi.fn(),
+            save: vi.fn(),
+            convertFileSrc: vi.fn(path => path),
+            startWindowDragging: vi.fn(),
+            hideWindow: vi.fn(),
+        };
+        const onSave = vi.fn(async () => null);
+        render(
+            <AppThemeProvider>
+                <ShortcutSettings bridge={bridge} config={DEFAULT_CONFIG} onSave={onSave} t={key => key} />
+            </AppThemeProvider>,
+        );
+
+        await userEvent.setup().click(screen.getByRole("button", { name: /settings\.shortcuts\.main/ }));
+        const recorder = await screen.findByRole("button", { name: /settings\.shortcuts\.main.*settings\.shortcut\.recording/ });
+        fireEvent.keyDown(recorder, eventInit);
+
+        expect(await screen.findByRole("alert")).toHaveTextContent(expectedAlert);
+        expect(onSave).not.toHaveBeenCalled();
+    });
 });
